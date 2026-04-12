@@ -16,9 +16,19 @@ struct LoginRequest {
 
 #[derive(Deserialize)]
 pub struct LoginResponse {
+    pub ok: bool,
     pub token: String,
     pub user_id: u64,
     pub username: String,
+    pub client_id: u64,
+    pub client_name: String,
+    pub clients: Vec<ClientInfo>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct ClientInfo {
+    pub id: u64,
+    pub name: String,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -46,8 +56,14 @@ pub struct ForwardConfig {
 
 #[derive(Deserialize)]
 pub struct HeartbeatResponse {
-    pub config_version: u64,
-    pub forwards: Vec<ForwardInfo>,
+    pub ok: bool,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct PullConfigsResponse {
+    pub ok: bool,
+    pub client: serde_json::Value,
+    pub forwards: Vec<serde_json::Value>,
 }
 
 impl PanelApi {
@@ -79,6 +95,9 @@ impl PanelApi {
             .error_for_status()?
             .json::<LoginResponse>()
             .await?;
+        if !resp.ok {
+            anyhow::bail!("login failed");
+        }
         self.token = Some(resp.token.clone());
         Ok(resp)
     }
@@ -86,12 +105,25 @@ impl PanelApi {
     pub async fn heartbeat(&self) -> anyhow::Result<HeartbeatResponse> {
         let token = self.token.as_deref().ok_or_else(|| anyhow::anyhow!("not authenticated"))?;
         let resp = self.client
-            .get(format!("{}/api/client/heartbeat", self.base_url))
+            .post(format!("{}/api/client/heartbeat", self.base_url))
             .bearer_auth(token)
             .send()
             .await?
             .error_for_status()?
             .json::<HeartbeatResponse>()
+            .await?;
+        Ok(resp)
+    }
+
+    pub async fn pull_configs(&self) -> anyhow::Result<PullConfigsResponse> {
+        let token = self.token.as_deref().ok_or_else(|| anyhow::anyhow!("not authenticated"))?;
+        let resp = self.client
+            .get(format!("{}/api/client/configs/pull", self.base_url))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<PullConfigsResponse>()
             .await?;
         Ok(resp)
     }

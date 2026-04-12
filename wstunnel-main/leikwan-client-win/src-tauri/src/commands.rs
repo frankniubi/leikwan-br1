@@ -46,11 +46,15 @@ pub async fn get_forwards(state: State<'_, AppState>) -> Result<Vec<ForwardInfo>
     if !api.is_authenticated() {
         return Err("not authenticated".into());
     }
-    match api.heartbeat().await {
+    match api.pull_configs().await {
         Ok(resp) => {
+            // Parse forwards from pull_configs response into ForwardInfo
+            let forward_list: Vec<ForwardInfo> = resp.forwards.iter().filter_map(|v| {
+                serde_json::from_value(v.clone()).ok()
+            }).collect();
             let mut forwards = state.forwards.lock().map_err(|e| e.to_string())?;
-            *forwards = resp.forwards.clone();
-            Ok(resp.forwards)
+            *forwards = forward_list.clone();
+            Ok(forward_list)
         }
         Err(e) => Err(e.to_string()),
     }
