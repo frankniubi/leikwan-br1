@@ -3938,23 +3938,24 @@ final class ProvisioningService
         }
 
         return [
-            'underlay' => [
-                'type' => (string) ($this->config->get('MPTCP_UNDERLAY_TYPE', 'wireguard') ?? 'wireguard'),
-                'mode' => 'slave_transit',
-                'interface_name' => 'lw-sidecar-' . $pointId,
-                'peer_keepalive_seconds' => max(0, (int) ($this->config->getInt('MPTCP_PEER_KEEPALIVE_SECONDS', 25) ?? 25)),
-                'legs' => $legs,
-            ],
+            'underlays' => array_values(array_map(function ($leg, $idx) use ($pointId) {
+                return [
+                    'type' => (string) ($this->config->get('MPTCP_UNDERLAY_TYPE', 'wireguard') ?? 'wireguard'),
+                    'mode' => 'slave_transit',
+                    'interface_name' => 'lw-sc-' . $pointId . '-' . $idx,
+                    'peer_keepalive_seconds' => max(0, (int) ($this->config->getInt('MPTCP_PEER_KEEPALIVE_SECONDS', 25) ?? 25)),
+                    'legs' => [$leg],
+                ];
+            }, $legs, array_keys($legs))),
             'mptcp_policy' => [
-                'endpoint_device' => 'lw-sidecar-' . $pointId,
                 'endpoint_id_base' => ($pointId % 25) * 10,
-                'endpoints' => array_map(
-                    static fn(array $leg): array => [
-                        'address' => (string) ($leg['sidecar_address'] ?? ''),
+                'endpoints' => array_values(array_map(function ($leg, $idx) use ($pointId) {
+                    return [
+                        'address' => (string) ($leg['local_address'] ?? ''),
+                        'dev' => 'lw-sc-' . $pointId . '-' . $idx,
                         'signal' => true,
-                    ],
-                    $legs
-                ),
+                    ];
+                }, $legs, array_keys($legs))),
             ],
             'wireguard_public_key' => trim((string) ($pointConfig['wireguard_public_key'] ?? '')),
         ];
