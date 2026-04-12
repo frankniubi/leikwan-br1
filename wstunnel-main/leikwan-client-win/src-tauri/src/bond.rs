@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::Mutex;
 
@@ -21,7 +22,8 @@ impl BondManager {
         bond_params: &BondParams,
     ) -> anyhow::Result<()> {
         let legs_str = legs.join(",");
-        let mut cmd = Command::new("leikwan-bond");
+        let bond_path = find_bond_binary();
+        let mut cmd = Command::new(&bond_path);
         cmd.arg("client")
             .arg("--protocol").arg(protocol)
             .arg("--listen").arg(listen)
@@ -39,6 +41,7 @@ impl BondManager {
             cmd.arg("--active-leg-limit").arg(bond_params.active_leg_limit.to_string());
         }
 
+        log::info!("starting bond: {:?}", bond_path);
         let child = cmd.spawn()?;
         let mut procs = self.processes.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         procs.insert(forward_id, child);
@@ -69,6 +72,20 @@ impl BondManager {
     pub fn is_running(&self, forward_id: u64) -> bool {
         self.processes.lock().map(|p| p.contains_key(&forward_id)).unwrap_or(false)
     }
+}
+
+/// Locate the leikwan-bond binary.
+/// Priority: 1) same directory as this exe  2) PATH
+fn find_bond_binary() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("leikwan-bond.exe");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from("leikwan-bond")
 }
 
 pub struct BondParams {
