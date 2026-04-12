@@ -1,0 +1,31 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #1a1a2e; color: #e0e0e0; }
+.view { display: none; } .view.active { display: flex; }
+
+/* Login */
+#login-view { height: 100vh; align-items: center; justify-content: center; }
+.login-card { background: #16213e; padding: 2rem; border-radius: 8px; width: 360px; }
+.login-card h1 { text-align: center; margin-bottom: 1.5rem; color: #e94560; }
+.login-card input { width: 100%; padding: 0.75rem; margin-bottom: 0.75rem; border: 1px solid #333; border-radius: 4px; background: #0f3460; color: #fff; }
+.login-card button { width: 100%; padding: 0.75rem; background: #e94560; border: none; border-radius: 4px; color: #fff; cursor: pointer; font-size: 1rem; }
+.login-card button:hover { background: #c73c54; }
+.error { color: #e94560; text-align: center; margin-top: 0.5rem; }
+
+/* Main */
+#main-view { flex-direction: column; height: 100vh; padding: 1rem; }
+header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
+header h2 { flex: 1; }
+#refresh-btn { padding: 0.5rem 1rem; background: #0f3460; border: 1px solid #333; color: #fff; border-radius: 4px; cursor: pointer; }
+
+/* Forward cards */
+.forward-card { background: #16213e; border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 1rem; }
+.forward-info { flex: 1; }
+.forward-name { font-weight: bold; font-size: 1.1rem; }
+.forward-detail { color: #888; font-size: 0.85rem; margin-top: 0.25rem; }
+.forward-stats { text-align: right; font-size: 0.85rem; color: #888; }
+.connect-btn { padding: 0.5rem 1.25rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+.connect-btn.off { background: #0f3460; color: #fff; }
+.connect-btn.on { background: #e94560; color: #fff; }
+.status-dot { width: 10px; height: 10px; border-radius: 50%; }
+.status-dot.connected { background: #4caf50; }
+.status-dot.disconnected { background: #666; }
