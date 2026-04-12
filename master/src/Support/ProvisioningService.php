@@ -1,0 +1,4498 @@
+<?php
+declare(strict_types=1);
+
+namespace Leikwan\Master\Support;
+
+use DateTimeImmutable;
+use DateTimeZone;
+use Leikwan\Master\Config;
+use Leikwan\Master\Database\Database;
+
+final class ProvisioningService
+{
+    private ?bool $nodeGroupIngressColumnsAvailable = null;
+    private ?bool $nodeGroupDescriptionColumnAvailable = null;
+    public function __construct(
+        private Config $config,
+        private Database $db,
+    ) {
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function createOrUpdateServiceFromWhmcs(array $payload): array
+    {
+        $userEmail = $this->requiredString($payload, 'user_email');
+        $userName = (string) ($payload['user_name'] ?? $userEmail);
+        $whmcsServiceId = (int) $this->requiredString($payload, 'whmcs_service_id');
+        $explicitPlanId = (int) ($payload['plan_id'] ?? 0);
+        $productCode = (string) ($payload['product_code'] ?? 'default');
+        $serviceName = (string) ($payload['service_name'] ?? ('WHMCS Service #' . $whmcsServiceId));
+        $expireAt = (string) ($payload['expire_at'] ?? gmdate('Y-m-d H:i:s', strtotime('+30 days')));
+        $bandwidthLimit = (int) ($payload['bandwidth_limit_mbps'] ?? 100);
+        $trafficLimit = (int) ($payload['traffic_limit_gb'] ?? 1000);
+        $status = (string) ($payload['status'] ?? 'active');
+        $forwards = is_array($payload['forwards'] ?? null) ? $payload['forwards'] : [];
+
+        return $this->db->transaction(function () use (
+            $userEmail,
+            $userName,
+            $whmcsServiceId,
+            $explicitPlanId,
+            $productCode,
+            $serviceName,
+            $expireAt,
+            $bandwidthLimit,
+            $trafficLimit,
+            $status,
+            $forwards
+        ): array {
+            $user = $this->ensureUser($userEmail, $userName);
+            $plan = $explicitPlanId > 0
+                ? ($this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id LIMIT 1', ['id' => $explicitPlanId]) ?? $this->ensurePlan($productCode, $bandwidthLimit, $trafficLimit))
+                : $this->ensurePlan($productCode, $bandwidthLimit, $trafficLimit);
+
+            $service = $this->db->fetchOne('SELECT * FROM services WHERE whmcs_service_id = :id LIMIT 1', [
+                'id' => $whmcsServiceId,
+            ]);
+            $billingSnapshot = $this->serviceBillingSnapshot($plan, $trafficLimit, $service);
+
+            if ($service === null) {
+                $serviceId = $this->db->insert('services', [
+                    'user_id' => $user['id'],
+                    'plan_id' => $plan['id'],
+                    'name' => $serviceName,
+                    'whmcs_service_id' => $whmcsServiceId,
+                    'status' => $status,
+                    'expire_at' => $expireAt,
+                    'bandwidth_limit_mbps' => $bandwidthLimit,
+                    'traffic_limit_gb' => $trafficLimit,
+                    'traffic_used_bytes' => 0,
+                    'client_token' => bin2hex(random_bytes(24)),
+                    'suspend_reason' => null,
+                    'billing_mode' => $billingSnapshot['billing_mode'],
+                    'billing_currency' => $billingSnapshot['billing_currency'],
+                    'monthly_base_fee' => $billingSnapshot['monthly_base_fee'],
+                    'monthly_included_traffic_gb' => $billingSnapshot['monthly_included_traffic_gb'],
+                    'traffic_price_per_gb' => $billingSnapshot['traffic_price_per_gb'],
+                    'billing_cycle_started_at' => $billingSnapshot['billing_cycle_started_at'],
+                    'billing_cycle_traffic_used_bytes' => $billingSnapshot['billing_cycle_traffic_used_bytes'],
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+                $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id', ['id' => $serviceId]);
+                $this->audit('service.created', [
+                    'service_id' => $serviceId,
+                    'whmcs_service_id' => $whmcsServiceId,
+                    'source' => 'whmcs',
+                ]);
+            } else {
+                $this->db->execute(
+                    'UPDATE services
+                     SET user_id = :user_id,
+                         plan_id = :plan_id,
+                         name = :name,
+                        status = :status,
+                        expire_at = :expire_at,
+                        bandwidth_limit_mbps = :bandwidth_limit_mbps,
+                        traffic_limit_gb = :traffic_limit_gb,
+                        billing_mode = :billing_mode,
+                        billing_currency = :billing_currency,
+                        monthly_base_fee = :monthly_base_fee,
+                        monthly_included_traffic_gb = :monthly_included_traffic_gb,
+                        traffic_price_per_gb = :traffic_price_per_gb,
+                        billing_cycle_started_at = :billing_cycle_started_at,
+                        billing_cycle_traffic_used_bytes = :billing_cycle_traffic_used_bytes,
+                        updated_at = :updated_at
+                     WHERE id = :id',
+                    [
+                        'id' => $service['id'],
+                        'user_id' => $user['id'],
+                        'plan_id' => $plan['id'],
+                        'name' => $serviceName,
+                        'status' => $status,
+                        'expire_at' => $expireAt,
+                        'bandwidth_limit_mbps' => $bandwidthLimit,
+                        'traffic_limit_gb' => $trafficLimit,
+                        'billing_mode' => $billingSnapshot['billing_mode'],
+                        'billing_currency' => $billingSnapshot['billing_currency'],
+                        'monthly_base_fee' => $billingSnapshot['monthly_base_fee'],
+                        'monthly_included_traffic_gb' => $billingSnapshot['monthly_included_traffic_gb'],
+                        'traffic_price_per_gb' => $billingSnapshot['traffic_price_per_gb'],
+                        'billing_cycle_started_at' => $billingSnapshot['billing_cycle_started_at'],
+                        'billing_cycle_traffic_used_bytes' => $billingSnapshot['billing_cycle_traffic_used_bytes'],
+                        'updated_at' => $this->now(),
+                    ]
+                );
+            }
+
+            $serviceId = (int) $service['id'];
+            foreach ($forwards as $forwardPayload) {
+                if (!is_array($forwardPayload)) {
+                    continue;
+                }
+                $this->createForward($serviceId, $forwardPayload, 'whmcs');
+            }
+
+            return $this->serviceSummary($serviceId);
+        });
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function renewService(array $payload): array
+    {
+        $service = $this->getServiceByWhmcsId((int) $this->requiredString($payload, 'whmcs_service_id'));
+        $this->db->execute(
+            'UPDATE services
+             SET status = :status,
+                 expire_at = :expire_at,
+                 suspend_reason = NULL,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $service['id'],
+                'status' => 'active',
+                'expire_at' => (string) ($payload['expire_at'] ?? gmdate('Y-m-d H:i:s', strtotime('+30 days'))),
+                'updated_at' => $this->now(),
+            ]
+        );
+        $this->queueLifecycleTasks((int) $service['id'], 'resume');
+        $this->audit('service.renewed', ['service_id' => $service['id'], 'source' => 'whmcs']);
+        return $this->serviceSummary((int) $service['id']);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function suspendService(array $payload): array
+    {
+        $service = $this->getServiceByWhmcsId((int) $this->requiredString($payload, 'whmcs_service_id'));
+        $reason = (string) ($payload['reason'] ?? 'billing');
+        $this->db->execute(
+            'UPDATE services
+             SET status = :status,
+                 suspend_reason = :reason,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $service['id'],
+                'status' => 'suspended',
+                'reason' => $reason,
+                'updated_at' => $this->now(),
+            ]
+        );
+        $this->queueLifecycleTasks((int) $service['id'], 'suspend');
+        $this->audit('service.suspended', ['service_id' => $service['id'], 'reason' => $reason, 'source' => 'whmcs']);
+        return $this->serviceSummary((int) $service['id']);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function terminateService(array $payload): array
+    {
+        $service = $this->getServiceByWhmcsId((int) $this->requiredString($payload, 'whmcs_service_id'));
+        $this->db->execute(
+            'UPDATE services SET status = :status, updated_at = :updated_at WHERE id = :id',
+            [
+                'id' => $service['id'],
+                'status' => 'terminated',
+                'updated_at' => $this->now(),
+            ]
+        );
+        $this->queueLifecycleTasks((int) $service['id'], 'destroy');
+        $this->audit('service.terminated', ['service_id' => $service['id'], 'source' => 'whmcs']);
+        return $this->serviceSummary((int) $service['id']);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function createForward(int $serviceId, array $payload, string $actor = 'user'): array
+    {
+        return $this->saveForward($serviceId, null, $payload, $actor);
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listNodeGroups(): array
+    {
+        $descriptionSelect = $this->nodeGroupDescriptionColumnAvailable()
+            ? 'g.description'
+            : 'NULL AS description';
+        $ingressSelect = $this->nodeGroupIngressSelectSql();
+        $groupBy = 'g.id, g.group_key, g.name, g.created_at, g.updated_at';
+        if ($this->nodeGroupDescriptionColumnAvailable()) {
+            $groupBy .= ', g.description';
+        }
+        if ($this->nodeGroupIngressColumnsAvailable()) {
+            $groupBy .= ', g.ingress_cdn_host, g.ingress_sni_host, g.ingress_path_strategy, g.ingress_port_strategy, g.ingress_preferred_public_port';
+        }
+
+        return $this->db->fetchAll(
+            'SELECT g.id, g.group_key, g.name, ' . $descriptionSelect . ',
+                    ' . $ingressSelect . ',
+                    g.created_at, g.updated_at, COUNT(n.id) AS node_count
+             FROM node_groups g
+             LEFT JOIN nodes n ON n.group_id = g.id AND (n.status = :active OR n.status = :degraded)
+             GROUP BY ' . $groupBy . '
+             ORDER BY g.name ASC, g.id ASC',
+            [
+                'active' => 'active',
+                'degraded' => 'degraded',
+            ]
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function saveNodeGroup(array $payload): array
+    {
+        $id = (int) ($payload['id'] ?? 0);
+        $groupKey = trim((string) ($payload['group_key'] ?? ''));
+        $name = trim((string) ($payload['name'] ?? ''));
+        $description = trim((string) ($payload['description'] ?? ''));
+        $ingressCdnHost = trim((string) ($payload['ingress_cdn_host'] ?? ''));
+        $ingressSniHost = trim((string) ($payload['ingress_sni_host'] ?? ''));
+        $ingressPathStrategy = trim((string) ($payload['ingress_path_strategy'] ?? 'random'));
+        $ingressPortStrategy = trim((string) ($payload['ingress_port_strategy'] ?? 'shared_preferred_port'));
+        $ingressPreferredPublicPort = (int) ($payload['ingress_preferred_public_port'] ?? 0);
+
+        if ($groupKey === '' || $name === '') {
+            throw new ApiException('invalid_node_group_payload', 422, ['payload' => $payload]);
+        }
+        if (!in_array($ingressPathStrategy, ['random', 'date-random'], true)) {
+            throw new ApiException('invalid_node_group_ingress_path_strategy', 422, ['strategy' => $ingressPathStrategy]);
+        }
+        if (!in_array($ingressPortStrategy, ['shared_preferred_port', 'client_range_then_target', 'target_port_then_client_range'], true)) {
+            throw new ApiException('invalid_node_group_ingress_port_strategy', 422, ['strategy' => $ingressPortStrategy]);
+        }
+
+        if ($id > 0) {
+            $assignments = [
+                'group_key = :group_key',
+                'name = :name',
+                'updated_at = :updated_at',
+            ];
+            $params = [
+                'id' => $id,
+                'group_key' => $groupKey,
+                'name' => $name,
+                'updated_at' => $this->now(),
+            ];
+            if ($this->nodeGroupDescriptionColumnAvailable()) {
+                $assignments[] = 'description = :description';
+                $params['description'] = $description !== '' ? $description : null;
+            }
+            if ($this->nodeGroupIngressColumnsAvailable()) {
+                $assignments[] = 'ingress_cdn_host = :ingress_cdn_host';
+                $assignments[] = 'ingress_sni_host = :ingress_sni_host';
+                $assignments[] = 'ingress_path_strategy = :ingress_path_strategy';
+                $assignments[] = 'ingress_port_strategy = :ingress_port_strategy';
+                $assignments[] = 'ingress_preferred_public_port = :ingress_preferred_public_port';
+                $params['ingress_cdn_host'] = $ingressCdnHost !== '' ? $ingressCdnHost : null;
+                $params['ingress_sni_host'] = $ingressSniHost !== '' ? $ingressSniHost : null;
+                $params['ingress_path_strategy'] = $ingressPathStrategy;
+                $params['ingress_port_strategy'] = $ingressPortStrategy;
+                $params['ingress_preferred_public_port'] = $ingressPreferredPublicPort > 0 ? $ingressPreferredPublicPort : null;
+            }
+            $this->db->execute(
+                'UPDATE node_groups SET ' . implode(', ', $assignments) . ' WHERE id = :id',
+                $params
+            );
+        } else {
+            $insert = [
+                'group_key' => $groupKey,
+                'name' => $name,
+                'created_at' => $this->now(),
+                'updated_at' => $this->now(),
+            ];
+            if ($this->nodeGroupDescriptionColumnAvailable()) {
+                $insert['description'] = $description !== '' ? $description : null;
+            }
+            if ($this->nodeGroupIngressColumnsAvailable()) {
+                $insert['ingress_cdn_host'] = $ingressCdnHost !== '' ? $ingressCdnHost : null;
+                $insert['ingress_sni_host'] = $ingressSniHost !== '' ? $ingressSniHost : null;
+                $insert['ingress_path_strategy'] = $ingressPathStrategy;
+                $insert['ingress_port_strategy'] = $ingressPortStrategy;
+                $insert['ingress_preferred_public_port'] = $ingressPreferredPublicPort > 0 ? $ingressPreferredPublicPort : null;
+            }
+            $id = $this->db->insert('node_groups', $insert);
+        }
+
+        $row = $this->db->fetchOne('SELECT * FROM node_groups WHERE id = :id LIMIT 1', ['id' => $id]);
+        return $row ?? [];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listClientGroups(): array
+    {
+        return $this->db->fetchAll(
+            'SELECT g.*, COUNT(c.id) AS client_count
+             FROM client_groups g
+             LEFT JOIN clients c ON c.group_id = g.id
+             GROUP BY g.id, g.group_key, g.name, g.description, g.created_at, g.updated_at
+             ORDER BY g.name ASC, g.id ASC'
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function saveClientGroup(array $payload): array
+    {
+        $id = (int) ($payload['id'] ?? 0);
+        $groupKey = trim((string) ($payload['group_key'] ?? ''));
+        $name = trim((string) ($payload['name'] ?? ''));
+        $description = trim((string) ($payload['description'] ?? ''));
+
+        if ($groupKey === '' || $name === '') {
+            throw new ApiException('invalid_client_group_payload', 422, ['payload' => $payload]);
+        }
+
+        if ($id > 0) {
+            $this->db->execute(
+                'UPDATE client_groups
+                 SET group_key = :group_key,
+                     name = :name,
+                     description = :description,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                [
+                    'id' => $id,
+                    'group_key' => $groupKey,
+                    'name' => $name,
+                    'description' => $description !== '' ? $description : null,
+                    'updated_at' => $this->now(),
+                ]
+            );
+        } else {
+            $id = $this->db->insert('client_groups', [
+                'group_key' => $groupKey,
+                'name' => $name,
+                'description' => $description !== '' ? $description : null,
+                'created_at' => $this->now(),
+                'updated_at' => $this->now(),
+            ]);
+        }
+
+        return $this->db->fetchOne('SELECT * FROM client_groups WHERE id = :id LIMIT 1', ['id' => $id]) ?? [];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listClients(): array
+    {
+        return $this->db->fetchAll(
+            'SELECT c.*, g.name AS group_name, g.group_key, fc.name AS default_forward_chain_name, u.email AS owner_email, u.name AS owner_name
+             FROM clients c
+             LEFT JOIN client_groups g ON g.id = c.group_id
+             LEFT JOIN forward_chains fc ON fc.id = c.default_forward_chain_id
+             LEFT JOIN users u ON u.id = c.owner_user_id
+             ORDER BY c.updated_at DESC, c.id DESC'
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listClientsForUser(int $userId): array
+    {
+        return $this->db->fetchAll(
+            'SELECT c.*, g.name AS group_name, g.group_key, fc.name AS default_forward_chain_name
+             FROM clients c
+             LEFT JOIN client_groups g ON g.id = c.group_id
+             LEFT JOIN forward_chains fc ON fc.id = c.default_forward_chain_id
+             WHERE c.owner_user_id = :user_id
+             ORDER BY c.updated_at DESC, c.id DESC',
+            ['user_id' => $userId]
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listSidecarPoints(): array
+    {
+        return $this->db->fetchAll(
+            'SELECT sp.*, u.email AS owner_email, u.name AS owner_name,
+                    COUNT(f.id) AS forward_count
+             FROM sidecar_points sp
+             LEFT JOIN users u ON u.id = sp.owner_user_id
+             LEFT JOIN forwards f ON f.bond_sidecar_point_id = sp.id AND f.enabled = 1
+             GROUP BY sp.id, sp.owner_user_id, sp.name, sp.sidecar_host, sp.listen_port, sp.bind_host, sp.total_speed_limit_mbps, sp.token_secret,
+                      sp.agent_token, sp.agent_version, sp.agent_update_request_token, sp.agent_update_requested_at, sp.last_heartbeat_at, sp.last_status, sp.last_error, sp.is_active,
+                      sp.created_at, sp.updated_at, u.email, u.name
+             ORDER BY sp.updated_at DESC, sp.id DESC'
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listSidecarPointsForUser(int $userId): array
+    {
+        return $this->db->fetchAll(
+            'SELECT sp.*, u.email AS owner_email, u.name AS owner_name,
+                    COUNT(f.id) AS forward_count
+             FROM sidecar_points sp
+             LEFT JOIN users u ON u.id = sp.owner_user_id
+             LEFT JOIN forwards f ON f.bond_sidecar_point_id = sp.id AND f.enabled = 1
+             WHERE sp.owner_user_id = :user_id OR sp.owner_user_id IS NULL
+             GROUP BY sp.id, sp.owner_user_id, sp.name, sp.sidecar_host, sp.listen_port, sp.bind_host, sp.total_speed_limit_mbps, sp.token_secret,
+                      sp.agent_token, sp.agent_version, sp.agent_update_request_token, sp.agent_update_requested_at, sp.last_heartbeat_at, sp.last_status, sp.last_error, sp.is_active,
+                      sp.created_at, sp.updated_at, u.email, u.name
+             ORDER BY sp.owner_user_id IS NULL DESC, sp.updated_at DESC, sp.id DESC',
+            ['user_id' => $userId]
+        );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function visibleSidecarPointForUser(int $pointId, int $userId): ?array
+    {
+        $row = $this->db->fetchOne(
+            'SELECT sp.*, u.email AS owner_email, u.name AS owner_name
+             FROM sidecar_points sp
+             LEFT JOIN users u ON u.id = sp.owner_user_id
+             WHERE sp.id = :id
+               AND (sp.owner_user_id = :user_id OR sp.owner_user_id IS NULL)
+             LIMIT 1',
+            ['id' => $pointId, 'user_id' => $userId]
+        );
+
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function sidecarPointById(int $pointId): ?array
+    {
+        $row = $this->db->fetchOne(
+            'SELECT sp.*, u.email AS owner_email, u.name AS owner_name
+             FROM sidecar_points sp
+             LEFT JOIN users u ON u.id = sp.owner_user_id
+             WHERE sp.id = :id LIMIT 1',
+            ['id' => $pointId]
+        );
+
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function saveSidecarPoint(array $payload): array
+    {
+        $id = (int) ($payload['id'] ?? 0);
+        $ownerUserId = (int) ($payload['owner_user_id'] ?? 0);
+        $name = trim((string) ($payload['name'] ?? ''));
+        $sidecarHost = trim((string) ($payload['sidecar_host'] ?? ''));
+        $listenPort = (int) ($payload['listen_port'] ?? 0);
+        $bindHost = trim((string) ($payload['bind_host'] ?? '0.0.0.0'));
+        $totalSpeedLimitMbps = ($payload['total_speed_limit_mbps'] ?? '') !== '' ? max(1, (int) $payload['total_speed_limit_mbps']) : null;
+        $isActive = !empty($payload['is_active']) ? 1 : 0;
+
+        if ($name === '' || $sidecarHost === '' || $listenPort <= 0) {
+            throw new ApiException('invalid_sidecar_point_payload', 422, ['payload' => $payload]);
+        }
+
+        $existing = $id > 0 ? ($this->sidecarPointById($id) ?? []) : [];
+        $tokenSecret = trim((string) ($payload['token_secret'] ?? ($existing['token_secret'] ?? '')));
+        $agentToken = trim((string) ($payload['agent_token'] ?? ($existing['agent_token'] ?? '')));
+        $agentConfigJson = $this->normalizeJsonField($payload['agent_config_json'] ?? ($existing['agent_config_json'] ?? null));
+        if ($tokenSecret === '') {
+            $tokenSecret = bin2hex(random_bytes(24));
+        }
+        if ($agentToken === '') {
+            $agentToken = bin2hex(random_bytes(24));
+        }
+
+        $normalized = [
+            'owner_user_id' => $ownerUserId > 0 ? $ownerUserId : null,
+            'name' => $name,
+            'sidecar_host' => $sidecarHost,
+            'listen_port' => $listenPort,
+            'bind_host' => $bindHost !== '' ? $bindHost : '0.0.0.0',
+            'total_speed_limit_mbps' => $totalSpeedLimitMbps,
+            'token_secret' => $tokenSecret,
+            'agent_token' => $agentToken,
+            'agent_config_json' => $agentConfigJson,
+            'is_active' => $isActive,
+            'updated_at' => $this->now(),
+        ];
+
+        if ($id > 0) {
+            $this->db->execute(
+                'UPDATE sidecar_points
+                 SET owner_user_id = :owner_user_id,
+                     name = :name,
+                     sidecar_host = :sidecar_host,
+                     listen_port = :listen_port,
+                     bind_host = :bind_host,
+                     total_speed_limit_mbps = :total_speed_limit_mbps,
+                     token_secret = :token_secret,
+                     agent_token = :agent_token,
+                     agent_config_json = :agent_config_json,
+                     is_active = :is_active,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                array_merge(['id' => $id], $normalized)
+            );
+        } else {
+            $id = $this->db->insert('sidecar_points', array_merge($normalized, [
+                'created_at' => $this->now(),
+            ]));
+        }
+
+        return $this->sidecarPointById($id) ?? [];
+    }
+
+    public function deleteSidecarPoint(int $pointId): void
+    {
+        $usage = (int) (($this->db->fetchOne(
+            'SELECT COUNT(*) AS total FROM forwards WHERE bond_sidecar_point_id = :id AND enabled = 1',
+            ['id' => $pointId]
+        )['total'] ?? 0));
+        if ($usage > 0) {
+            throw new ApiException('sidecar_point_delete_blocked', 409, ['usage' => $usage]);
+        }
+
+        $this->db->execute(
+            'DELETE FROM agent_usage_hourly
+             WHERE entity_type = :entity_type
+               AND entity_id = :entity_id',
+            [
+                'entity_type' => 'sidecar',
+                'entity_id' => $pointId,
+            ]
+        );
+        $this->db->execute('DELETE FROM sidecar_points WHERE id = :id', ['id' => $pointId]);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function saveClient(array $payload): array
+    {
+        $id = (int) ($payload['id'] ?? 0);
+        $groupId = (int) ($payload['group_id'] ?? 0);
+        $ownerUserId = (int) ($payload['owner_user_id'] ?? 0);
+        $name = trim((string) ($payload['name'] ?? ''));
+        $displayHost = trim((string) ($payload['display_host'] ?? ''));
+        $bindIp = trim((string) ($payload['bind_ip'] ?? ''));
+        $nicName = trim((string) ($payload['nic_name'] ?? ''));
+        $descriptionConfig = [
+            'protocol_filter_json' => $payload['protocol_filter_json'] ?? null,
+            'custom_config_json' => $payload['custom_config_json'] ?? null,
+            'tags_json' => $payload['tags_json'] ?? null,
+            'agent_config_json' => $payload['agent_config_json'] ?? null,
+        ];
+
+        if ($name === '' || $displayHost === '') {
+            throw new ApiException('invalid_client_payload', 422, ['payload' => $payload]);
+        }
+
+        if (($descriptionConfig['agent_config_json'] ?? null) !== null && trim((string) $descriptionConfig['agent_config_json']) !== '') {
+            json_decode((string) $descriptionConfig['agent_config_json'], true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new ApiException('invalid_agent_config_json', 422, ['message' => json_last_error_msg()]);
+            }
+        }
+
+        $normalized = [
+            'group_id' => $groupId > 0 ? $groupId : null,
+            'owner_user_id' => $ownerUserId > 0 ? $ownerUserId : null,
+            'agent_token' => (string) ($payload['agent_token'] ?? ''),
+            'agent_version' => ($payload['agent_version'] ?? '') !== '' ? (string) $payload['agent_version'] : null,
+            'last_sync_at' => ($payload['last_sync_at'] ?? '') !== '' ? (string) $payload['last_sync_at'] : null,
+            'name' => $name,
+            'display_host' => $displayHost,
+            'bind_ip' => $bindIp !== '' ? $bindIp : null,
+            'nic_name' => $nicName !== '' ? $nicName : null,
+            'port_range_start' => ($payload['port_range_start'] ?? '') !== '' ? (int) $payload['port_range_start'] : null,
+            'port_range_end' => ($payload['port_range_end'] ?? '') !== '' ? (int) $payload['port_range_end'] : null,
+            'traffic_multiplier' => (float) ($payload['traffic_multiplier'] ?? 1.0),
+            'allow_custom_endpoints' => !empty($payload['allow_custom_endpoints']) ? 1 : 0,
+            'force_slave_mode' => !empty($payload['force_slave_mode']) ? 1 : 0,
+            'allow_forward_chain' => !empty($payload['allow_forward_chain']) ? 1 : 0,
+            'allow_latency_test' => !empty($payload['allow_latency_test']) ? 1 : 0,
+            'allow_inbound_proxy' => !empty($payload['allow_inbound_proxy']) ? 1 : 0,
+            'default_endpoint_mode' => (string) ($payload['default_endpoint_mode'] ?? 'slave_group'),
+            'default_node_group_key' => ($payload['default_node_group_key'] ?? '') !== '' ? (string) $payload['default_node_group_key'] : null,
+            'default_forward_chain_id' => ($payload['default_forward_chain_id'] ?? '') !== '' ? (int) $payload['default_forward_chain_id'] : null,
+            'max_ip_count' => ($payload['max_ip_count'] ?? '') !== '' ? (int) $payload['max_ip_count'] : null,
+            'max_conn_per_ip' => ($payload['max_conn_per_ip'] ?? '') !== '' ? (int) $payload['max_conn_per_ip'] : null,
+            'protocol_filter_json' => $this->normalizeJsonField($descriptionConfig['protocol_filter_json']),
+            'custom_config_json' => $this->normalizeJsonField($descriptionConfig['custom_config_json']),
+            'agent_config_json' => $this->normalizeJsonField($descriptionConfig['agent_config_json']),
+            'speed_limit_mbps' => ($payload['speed_limit_mbps'] ?? '') !== '' ? (int) $payload['speed_limit_mbps'] : null,
+            'tags_json' => $this->normalizeJsonField($descriptionConfig['tags_json']),
+            'status' => (string) ($payload['status'] ?? 'active'),
+            'updated_at' => $this->now(),
+        ];
+        if ($normalized['agent_token'] === '') {
+            $normalized['agent_token'] = $id > 0
+                ? ((string) (($this->db->fetchOne('SELECT agent_token FROM clients WHERE id = :id LIMIT 1', ['id' => $id])['agent_token'] ?? '')) ?: bin2hex(random_bytes(24)))
+                : bin2hex(random_bytes(24));
+        }
+
+        if ($id > 0) {
+            $this->db->execute(
+                'UPDATE clients
+                 SET group_id = :group_id,
+                     owner_user_id = :owner_user_id,
+                     agent_token = :agent_token,
+                     agent_version = :agent_version,
+                     last_sync_at = :last_sync_at,
+                     name = :name,
+                     display_host = :display_host,
+                     bind_ip = :bind_ip,
+                     nic_name = :nic_name,
+                     port_range_start = :port_range_start,
+                     port_range_end = :port_range_end,
+                     traffic_multiplier = :traffic_multiplier,
+                     allow_custom_endpoints = :allow_custom_endpoints,
+                     force_slave_mode = :force_slave_mode,
+                     allow_forward_chain = :allow_forward_chain,
+                     allow_latency_test = :allow_latency_test,
+                     allow_inbound_proxy = :allow_inbound_proxy,
+                     default_endpoint_mode = :default_endpoint_mode,
+                     default_node_group_key = :default_node_group_key,
+                     default_forward_chain_id = :default_forward_chain_id,
+                     max_ip_count = :max_ip_count,
+                     max_conn_per_ip = :max_conn_per_ip,
+                     protocol_filter_json = :protocol_filter_json,
+                     custom_config_json = :custom_config_json,
+                     agent_config_json = :agent_config_json,
+                     speed_limit_mbps = :speed_limit_mbps,
+                     tags_json = :tags_json,
+                     status = :status,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                $normalized + ['id' => $id]
+            );
+        } else {
+            $id = $this->db->insert('clients', $normalized + [
+                'created_at' => $this->now(),
+            ]);
+        }
+
+        return $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $id]) ?? [];
+    }
+
+    /**
+     * @return array{detached_disabled_forwards:int}
+     */
+    public function deleteClient(int $clientId): array
+    {
+        $client = $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]);
+        if ($client === null) {
+            throw new ApiException('client_not_found', 404);
+        }
+
+        return $this->db->transaction(function (Database $db) use ($clientId): array {
+            $activeUsage = (int) (($db->fetchOne(
+                'SELECT COUNT(*) AS total FROM forwards WHERE line_client_id = :client_id AND enabled = 1',
+                ['client_id' => $clientId]
+            )['total'] ?? 0));
+            if ($activeUsage > 0) {
+                throw new ApiException('client_delete_blocked', 409, ['message' => 'Client is still referenced by active forwards.']);
+            }
+
+            $detachedDisabledForwards = $db->execute(
+                'UPDATE forwards
+                 SET line_client_id = NULL,
+                     updated_at = :updated_at
+                 WHERE line_client_id = :client_id
+                   AND enabled = 0',
+                [
+                    'client_id' => $clientId,
+                    'updated_at' => $this->now(),
+                ]
+            );
+
+            $deleted = $db->execute('DELETE FROM clients WHERE id = :id', ['id' => $clientId]);
+            if ($deleted !== 1) {
+                throw new ApiException('client_delete_failed', 500, ['message' => 'Failed to delete client row.']);
+            }
+            $db->execute(
+                'DELETE FROM agent_usage_hourly
+                 WHERE entity_type = :entity_type
+                   AND entity_id = :entity_id',
+                [
+                    'entity_type' => 'client',
+                    'entity_id' => $clientId,
+                ]
+            );
+
+            return [
+                'detached_disabled_forwards' => $detachedDisabledForwards,
+            ];
+        });
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listPlans(): array
+    {
+        $plans = $this->db->fetchAll(
+            'SELECT *
+             FROM service_plans
+             ORDER BY is_active DESC, name ASC, id ASC'
+        );
+
+        foreach ($plans as &$plan) {
+            $plan['allowed_node_groups'] = $this->allowedNodeGroupsForPlan((int) $plan['id']);
+            $plan['allowed_client_groups'] = $this->allowedClientGroupsForPlan((int) $plan['id']);
+            $plan['feature_flags'] = $this->decodeFeatureFlags((string) ($plan['feature_flags_json'] ?? ''));
+        }
+        unset($plan);
+
+        return $plans;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listPurchasablePlans(): array
+    {
+        return array_values(array_filter(
+            $this->listPlans(),
+            static fn(array $plan): bool => (int) ($plan['is_active'] ?? 0) === 1
+        ));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function purchaseService(int $userId, int $planId, string $serviceName = ''): array
+    {
+        return $this->purchaseFlexibleService(
+            $userId,
+            $planId,
+            0,
+            $serviceName
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function purchaseFlexibleService(int $userId, int $planId, int $requestedBandwidthMbps, string $serviceName = ''): array
+    {
+        $user = $this->tenantUserById($userId);
+        $plan = $this->activePlanById($planId);
+        $bandwidth = $this->normalizePurchasedBandwidth($plan, $requestedBandwidthMbps);
+        $currency = strtoupper(trim((string) ($plan['billing_currency'] ?? 'CNY')));
+        if ($currency === '') {
+            $currency = 'CNY';
+        }
+
+        $trafficLimit = max(0, (int) ($plan['default_traffic_limit_gb'] ?? 0));
+        $billingSnapshot = $this->serviceBillingSnapshot($plan, $trafficLimit, null);
+        $servicePreview = $this->buildFlexibleBillingPreview($plan, $bandwidth, $trafficLimit, 0, $billingSnapshot);
+        $overview = $this->billingOverviewFromService($servicePreview);
+        $purchasePrice = (float) ($overview['estimated_total_amount'] ?? 0);
+        $now = $this->now();
+        $expireAt = $this->nextBillingCycleStart($this->asUtcDateTime($now))->format('Y-m-d H:i:s');
+        $name = trim($serviceName) !== ''
+            ? trim($serviceName)
+            : trim((string) ($plan['name'] ?? 'Plan')) . ' ' . gmdate('Y-m-d H:i');
+
+        return $this->db->transaction(function () use ($user, $plan, $currency, $purchasePrice, $bandwidth, $trafficLimit, $billingSnapshot, $now, $expireAt, $name, $overview): array {
+            if ($purchasePrice > 0) {
+                $this->chargeWallet(
+                    (int) $user['id'],
+                    $currency,
+                    $purchasePrice,
+                    'plan_purchase',
+                    [
+                        'plan_id' => (int) $plan['id'],
+                        'plan_name' => (string) ($plan['name'] ?? ''),
+                        'bandwidth_limit_mbps' => $bandwidth,
+                        'charge_breakdown' => [
+                            'base_fee' => $overview['base_fee'] ?? '0.00',
+                            'bandwidth_addon' => $overview['bandwidth_addon_amount'] ?? '0.00',
+                        ],
+                    ]
+                );
+            }
+
+            $serviceId = $this->db->insert('services', [
+                'user_id' => $user['id'],
+                'plan_id' => $plan['id'],
+                'name' => $name,
+                'whmcs_service_id' => $this->generateSyntheticWhmcsServiceId(),
+                'status' => 'active',
+                'expire_at' => $expireAt,
+                'bandwidth_limit_mbps' => $bandwidth,
+                'traffic_limit_gb' => $trafficLimit,
+                'traffic_used_bytes' => 0,
+                'client_token' => bin2hex(random_bytes(24)),
+                'suspend_reason' => null,
+                'billing_mode' => $billingSnapshot['billing_mode'],
+                'billing_currency' => $billingSnapshot['billing_currency'],
+                'monthly_base_fee' => $billingSnapshot['monthly_base_fee'],
+                'monthly_included_traffic_gb' => $billingSnapshot['monthly_included_traffic_gb'],
+                'traffic_price_per_gb' => $billingSnapshot['traffic_price_per_gb'],
+                'billing_cycle_started_at' => $billingSnapshot['billing_cycle_started_at'],
+                'billing_cycle_traffic_used_bytes' => $billingSnapshot['billing_cycle_traffic_used_bytes'],
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            $this->audit('service.purchased', [
+                'service_id' => $serviceId,
+                'user_id' => (int) $user['id'],
+                'plan_id' => (int) $plan['id'],
+                'purchase_price' => $this->normalizeMoney($purchasePrice),
+                'currency' => $currency,
+                'bandwidth_limit_mbps' => $bandwidth,
+                'source' => 'wallet',
+            ]);
+
+            return $this->serviceSummary($serviceId);
+        });
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function resetServiceTraffic(int $userId, int $serviceId): array
+    {
+        $service = $this->db->fetchOne(
+            'SELECT s.*, p.traffic_reset_price AS plan_traffic_reset_price, p.billing_currency AS plan_billing_currency
+             FROM services s
+             INNER JOIN users u ON u.id = s.user_id
+             LEFT JOIN service_plans p ON p.id = s.plan_id
+             WHERE s.id = :service_id AND s.user_id = :user_id LIMIT 1',
+            [
+                'service_id' => $serviceId,
+                'user_id' => $userId,
+            ]
+        );
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+        if ((string) ($service['status'] ?? '') !== 'active') {
+            throw new ApiException('service_not_active', 422, ['message' => 'Only active services can reset traffic right now.']);
+        }
+
+        $currency = strtoupper(trim((string) ($service['plan_billing_currency'] ?? $service['billing_currency'] ?? 'CNY')));
+        if ($currency === '') {
+            $currency = 'CNY';
+        }
+        $resetPrice = (float) ($service['plan_traffic_reset_price'] ?? 0);
+        $usedBefore = max(0, (int) ($service['billing_cycle_traffic_used_bytes'] ?? 0));
+
+        return $this->db->transaction(function () use ($userId, $serviceId, $service, $currency, $resetPrice, $usedBefore): array {
+            if ($resetPrice > 0) {
+                $this->chargeWallet(
+                    $userId,
+                    $currency,
+                    $resetPrice,
+                    'traffic_reset',
+                    [
+                        'service_id' => $serviceId,
+                        'service_name' => (string) ($service['name'] ?? ''),
+                        'used_bytes_before' => $usedBefore,
+                    ]
+                );
+            }
+
+            $this->db->execute(
+                'UPDATE services
+                 SET billing_cycle_traffic_used_bytes = 0,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                [
+                    'id' => $serviceId,
+                    'updated_at' => $this->now(),
+                ]
+            );
+
+            $this->audit('service.traffic_reset', [
+                'service_id' => $serviceId,
+                'user_id' => $userId,
+                'reset_price' => $this->normalizeMoney($resetPrice),
+                'currency' => $currency,
+                'used_bytes_before' => $usedBefore,
+                'source' => 'wallet',
+            ]);
+
+            return $this->serviceSummary($serviceId);
+        });
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function updateFlexibleServiceOptions(int $userId, int $serviceId, int $requestedBandwidthMbps): array
+    {
+        $service = $this->db->fetchOne(
+            'SELECT s.*, p.default_bandwidth_limit_mbps AS plan_default_bandwidth_limit_mbps,
+                    p.bandwidth_step_mbps AS plan_bandwidth_step_mbps,
+                    p.bandwidth_step_price AS plan_bandwidth_step_price,
+                    p.billing_currency AS plan_billing_currency
+             FROM services s
+             LEFT JOIN service_plans p ON p.id = s.plan_id
+             WHERE s.id = :service_id AND s.user_id = :user_id LIMIT 1',
+            [
+                'service_id' => $serviceId,
+                'user_id' => $userId,
+            ]
+        );
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+        if ((string) ($service['status'] ?? '') !== 'active') {
+            throw new ApiException('service_not_active', 422, ['message' => 'Only active services can change flexible package options right now.']);
+        }
+
+        $bandwidth = $this->normalizePurchasedBandwidth([
+            'default_bandwidth_limit_mbps' => $service['plan_default_bandwidth_limit_mbps'] ?? $service['bandwidth_limit_mbps'],
+            'bandwidth_step_mbps' => $service['plan_bandwidth_step_mbps'] ?? 0,
+        ], $requestedBandwidthMbps);
+
+        $this->db->execute(
+            'UPDATE services
+             SET bandwidth_limit_mbps = :bandwidth_limit_mbps,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $serviceId,
+                'bandwidth_limit_mbps' => $bandwidth,
+                'updated_at' => $this->now(),
+            ]
+        );
+
+        $this->audit('service.flexible_options_updated', [
+            'service_id' => $serviceId,
+            'user_id' => $userId,
+            'bandwidth_limit_mbps' => $bandwidth,
+        ]);
+
+        return $this->serviceSummary($serviceId);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function savePlan(array $payload): array
+    {
+        $id = (int) ($payload['id'] ?? 0);
+        $name = trim((string) ($payload['name'] ?? ''));
+        $productCode = trim((string) ($payload['product_code'] ?? ''));
+        $description = trim((string) ($payload['description'] ?? ''));
+        $bandwidth = max(1, (int) ($payload['default_bandwidth_limit_mbps'] ?? 100));
+        $traffic = max(0, (int) ($payload['default_traffic_limit_gb'] ?? 1000));
+        $billingMode = $this->normalizeBillingMode((string) ($payload['billing_mode'] ?? 'monthly_bundle'));
+        $billingCurrency = strtoupper(trim((string) ($payload['billing_currency'] ?? 'CNY')));
+        $monthlyBaseFee = $this->normalizeMoney($payload['monthly_base_fee'] ?? '0');
+        $monthlyIncludedTraffic = max(0, (int) ($payload['monthly_included_traffic_gb'] ?? $traffic));
+        $trafficPricePerGb = $this->normalizeRate($payload['traffic_price_per_gb'] ?? '0');
+        $trafficResetPrice = $this->normalizeMoney($payload['traffic_reset_price'] ?? '0');
+        $bandwidthStepMbps = max(0, (int) ($payload['bandwidth_step_mbps'] ?? 0));
+        $bandwidthStepPrice = $this->normalizeMoney($payload['bandwidth_step_price'] ?? '0');
+        $includedClientCount = max(0, (int) ($payload['included_client_count'] ?? 0));
+        $extraClientPrice = $this->normalizeMoney($payload['extra_client_price'] ?? '0');
+        $isActive = (int) (($payload['is_active'] ?? '1') ? 1 : 0);
+        $featureFlagsJson = $this->normalizeJsonField($payload['feature_flags_json'] ?? $payload['feature_flags'] ?? null);
+        $groupIds = [];
+        foreach ((array) ($payload['allowed_node_group_ids'] ?? []) as $groupId) {
+            $casted = (int) $groupId;
+            if ($casted > 0) {
+                $groupIds[] = $casted;
+            }
+        }
+        $clientGroupIds = [];
+        foreach ((array) ($payload['allowed_client_group_ids'] ?? []) as $groupId) {
+            $casted = (int) $groupId;
+            if ($casted > 0) {
+                $clientGroupIds[] = $casted;
+            }
+        }
+
+        if ($name === '' || $productCode === '') {
+            throw new ApiException('invalid_plan_payload', 422, ['payload' => $payload]);
+        }
+
+        if ($billingCurrency === '') {
+            $billingCurrency = 'CNY';
+        }
+        if ($billingMode === 'monthly_bundle' && $monthlyIncludedTraffic <= 0) {
+            $monthlyIncludedTraffic = $traffic;
+        }
+
+        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds): array {
+            if ($id > 0) {
+                $this->db->execute(
+                    'UPDATE service_plans
+                     SET name = :name,
+                         product_code = :product_code,
+                         description = :description,
+                         default_bandwidth_limit_mbps = :bandwidth,
+                         default_traffic_limit_gb = :traffic,
+                         billing_mode = :billing_mode,
+                         billing_currency = :billing_currency,
+                         monthly_base_fee = :monthly_base_fee,
+                         monthly_included_traffic_gb = :monthly_included_traffic_gb,
+                         traffic_price_per_gb = :traffic_price_per_gb,
+                         traffic_reset_price = :traffic_reset_price,
+                         bandwidth_step_mbps = :bandwidth_step_mbps,
+                         bandwidth_step_price = :bandwidth_step_price,
+                         included_client_count = :included_client_count,
+                         extra_client_price = :extra_client_price,
+                         is_active = :is_active,
+                         feature_flags_json = :feature_flags_json,
+                         updated_at = :updated_at
+                     WHERE id = :id',
+                    [
+                        'id' => $id,
+                        'name' => $name,
+                        'product_code' => $productCode,
+                        'description' => $description !== '' ? $description : null,
+                        'bandwidth' => $bandwidth,
+                        'traffic' => $traffic,
+                        'billing_mode' => $billingMode,
+                        'billing_currency' => $billingCurrency,
+                        'monthly_base_fee' => $monthlyBaseFee,
+                        'monthly_included_traffic_gb' => $monthlyIncludedTraffic,
+                        'traffic_price_per_gb' => $trafficPricePerGb,
+                        'traffic_reset_price' => $trafficResetPrice,
+                        'bandwidth_step_mbps' => $bandwidthStepMbps,
+                        'bandwidth_step_price' => $bandwidthStepPrice,
+                        'included_client_count' => $includedClientCount,
+                        'extra_client_price' => $extraClientPrice,
+                        'is_active' => $isActive,
+                        'feature_flags_json' => $featureFlagsJson,
+                        'updated_at' => $this->now(),
+                    ]
+                );
+            } else {
+                $id = $this->db->insert('service_plans', [
+                    'name' => $name,
+                    'product_code' => $productCode,
+                    'description' => $description !== '' ? $description : null,
+                    'default_bandwidth_limit_mbps' => $bandwidth,
+                    'default_traffic_limit_gb' => $traffic,
+                    'billing_mode' => $billingMode,
+                    'billing_currency' => $billingCurrency,
+                    'monthly_base_fee' => $monthlyBaseFee,
+                    'monthly_included_traffic_gb' => $monthlyIncludedTraffic,
+                    'traffic_price_per_gb' => $trafficPricePerGb,
+                    'traffic_reset_price' => $trafficResetPrice,
+                    'bandwidth_step_mbps' => $bandwidthStepMbps,
+                    'bandwidth_step_price' => $bandwidthStepPrice,
+                    'included_client_count' => $includedClientCount,
+                    'extra_client_price' => $extraClientPrice,
+                    'is_active' => $isActive,
+                    'feature_flags_json' => $featureFlagsJson,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+            }
+
+            $this->db->execute('DELETE FROM service_plan_node_groups WHERE plan_id = :plan_id', [
+                'plan_id' => $id,
+            ]);
+            foreach (array_values(array_unique($groupIds)) as $groupId) {
+                $this->db->insert('service_plan_node_groups', [
+                    'plan_id' => $id,
+                    'node_group_id' => $groupId,
+                    'created_at' => $this->now(),
+                ]);
+            }
+
+            $this->db->execute('DELETE FROM service_plan_client_groups WHERE plan_id = :plan_id', [
+                'plan_id' => $id,
+            ]);
+            foreach (array_values(array_unique($clientGroupIds)) as $groupId) {
+                $this->db->insert('service_plan_client_groups', [
+                    'plan_id' => $id,
+                    'client_group_id' => $groupId,
+                    'created_at' => $this->now(),
+                ]);
+            }
+
+            $plan = $this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id LIMIT 1', ['id' => $id]) ?? [];
+            $plan['allowed_node_groups'] = $this->allowedNodeGroupsForPlan($id);
+            $plan['allowed_client_groups'] = $this->allowedClientGroupsForPlan($id);
+            $plan['feature_flags'] = $this->decodeFeatureFlags((string) ($plan['feature_flags_json'] ?? ''));
+            return $plan;
+        });
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function allowedNodeGroupsForPlan(int $planId): array
+    {
+        if ($planId <= 0) {
+            return [];
+        }
+
+        $descriptionSelect = $this->nodeGroupDescriptionColumnAvailable()
+            ? 'g.description'
+            : 'NULL AS description';
+        $ingressSelect = $this->nodeGroupIngressSelectSql();
+        $groupBy = 'g.id, g.group_key, g.name, g.created_at, g.updated_at';
+        if ($this->nodeGroupDescriptionColumnAvailable()) {
+            $groupBy .= ', g.description';
+        }
+        if ($this->nodeGroupIngressColumnsAvailable()) {
+            $groupBy .= ', g.ingress_cdn_host, g.ingress_sni_host, g.ingress_path_strategy, g.ingress_port_strategy, g.ingress_preferred_public_port';
+        }
+
+        return $this->db->fetchAll(
+            'SELECT g.id, g.group_key, g.name, ' . $descriptionSelect . ',
+                    ' . $ingressSelect . ',
+                    g.created_at, g.updated_at, COUNT(n.id) AS node_count
+             FROM service_plan_node_groups pg
+             INNER JOIN node_groups g ON g.id = pg.node_group_id
+             LEFT JOIN nodes n ON n.group_id = g.id AND (n.status = :active OR n.status = :degraded)
+             WHERE pg.plan_id = :plan_id
+             GROUP BY ' . $groupBy . '
+             ORDER BY g.name ASC, g.id ASC',
+            [
+                'plan_id' => $planId,
+                'active' => 'active',
+                'degraded' => 'degraded',
+            ]
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function allowedClientGroupsForPlan(int $planId): array
+    {
+        if ($planId <= 0) {
+            return [];
+        }
+
+        return $this->db->fetchAll(
+            'SELECT g.*, COUNT(c.id) AS client_count
+             FROM service_plan_client_groups pg
+             INNER JOIN client_groups g ON g.id = pg.client_group_id
+             LEFT JOIN clients c ON c.group_id = g.id AND c.status = :status
+             WHERE pg.plan_id = :plan_id
+             GROUP BY g.id, g.group_key, g.name, g.description, g.created_at, g.updated_at
+             ORDER BY g.name ASC, g.id ASC',
+            [
+                'plan_id' => $planId,
+                'status' => 'active',
+            ]
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listForwardChains(): array
+    {
+        $chains = $this->db->fetchAll(
+            'SELECT * FROM forward_chains ORDER BY updated_at DESC, id DESC'
+        );
+
+        foreach ($chains as &$chain) {
+            $chain['steps'] = $this->db->fetchAll(
+                'SELECT s.*, g.group_key, g.name AS group_name
+                 FROM forward_chain_steps s
+                 INNER JOIN node_groups g ON g.id = s.node_group_id
+                 WHERE s.forward_chain_id = :chain_id
+                 ORDER BY s.step_order ASC, s.id ASC',
+                ['chain_id' => $chain['id']]
+            );
+        }
+        unset($chain);
+
+        return $chains;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function saveForwardChain(array $payload): array
+    {
+        $id = (int) ($payload['id'] ?? 0);
+        $name = trim((string) ($payload['name'] ?? ''));
+        $description = trim((string) ($payload['description'] ?? ''));
+        $isActive = !empty($payload['is_active']) ? 1 : 0;
+        $stepIds = [];
+        foreach ((array) ($payload['node_group_ids'] ?? []) as $groupId) {
+            $casted = (int) $groupId;
+            if ($casted > 0) {
+                $stepIds[] = $casted;
+            }
+        }
+
+        if ($name === '' || $stepIds === []) {
+            throw new ApiException('invalid_forward_chain_payload', 422, ['payload' => $payload]);
+        }
+
+        return $this->db->transaction(function () use ($id, $name, $description, $isActive, $stepIds): array {
+            if ($id > 0) {
+                $this->db->execute(
+                    'UPDATE forward_chains
+                     SET name = :name,
+                         description = :description,
+                         is_active = :is_active,
+                         updated_at = :updated_at
+                     WHERE id = :id',
+                    [
+                        'id' => $id,
+                        'name' => $name,
+                        'description' => $description !== '' ? $description : null,
+                        'is_active' => $isActive,
+                        'updated_at' => $this->now(),
+                    ]
+                );
+                $chainId = $id;
+            } else {
+                $chainId = $this->db->insert('forward_chains', [
+                    'name' => $name,
+                    'description' => $description !== '' ? $description : null,
+                    'is_active' => $isActive,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+            }
+
+            $this->db->execute('DELETE FROM forward_chain_steps WHERE forward_chain_id = :chain_id', [
+                'chain_id' => $chainId,
+            ]);
+
+            $order = 10;
+            foreach ($stepIds as $nodeGroupId) {
+                $this->db->insert('forward_chain_steps', [
+                    'forward_chain_id' => $chainId,
+                    'node_group_id' => $nodeGroupId,
+                    'step_order' => $order,
+                    'created_at' => $this->now(),
+                ]);
+                $order += 10;
+            }
+
+            $chain = $this->db->fetchOne('SELECT * FROM forward_chains WHERE id = :id LIMIT 1', ['id' => $chainId]) ?? [];
+            $chain['steps'] = $this->db->fetchAll(
+                'SELECT s.*, g.group_key, g.name AS group_name
+                 FROM forward_chain_steps s
+                 INNER JOIN node_groups g ON g.id = s.node_group_id
+                 WHERE s.forward_chain_id = :chain_id
+                 ORDER BY s.step_order ASC, s.id ASC',
+                ['chain_id' => $chainId]
+            );
+            return $chain;
+        });
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function availableNodeGroupsForService(int $serviceId): array
+    {
+        $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+
+        $planId = (int) ($service['plan_id'] ?? 0);
+        $groups = $this->listNodeGroups();
+        if ($planId > 0) {
+            $explicitGroups = $this->allowedNodeGroupsForPlan($planId);
+            if ($explicitGroups !== []) {
+                $groups = $explicitGroups;
+            }
+        }
+        return array_values(array_filter($groups, static fn(array $group): bool => (int) ($group['node_count'] ?? 0) > 0));
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function availableClientsForService(int $serviceId): array
+    {
+        $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+
+        $clients = array_values(array_filter($this->listClients(), static function (array $client) use ($service): bool {
+            $ownerUserId = (int) ($client['owner_user_id'] ?? 0);
+            return $ownerUserId === 0 || $ownerUserId === (int) $service['user_id'];
+        }));
+        $planId = (int) ($service['plan_id'] ?? 0);
+        if ($planId <= 0) {
+            return array_values(array_filter($clients, static fn(array $client): bool => (string) $client['status'] === 'active'));
+        }
+
+        $allowedGroups = $this->allowedClientGroupsForPlan($planId);
+        if ($allowedGroups === []) {
+            return array_values(array_filter($clients, static fn(array $client): bool => (string) $client['status'] === 'active'));
+        }
+
+        $allowedGroupIds = array_map(static fn(array $group): int => (int) $group['id'], $allowedGroups);
+        return array_values(array_filter($clients, static fn(array $client): bool => (string) $client['status'] === 'active' && in_array((int) ($client['group_id'] ?? 0), $allowedGroupIds, true)));
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function availableClientGroupsForUser(int $userId): array
+    {
+        $services = $this->db->fetchAll('SELECT id FROM services WHERE user_id = :user_id', ['user_id' => $userId]);
+        $groups = [];
+        foreach ($services as $service) {
+            foreach ($this->availableClientGroupsForService((int) $service['id']) as $group) {
+                $groups[(int) $group['id']] = $group;
+            }
+        }
+        return array_values($groups);
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function assignedForwardConfigsForClient(int $clientId): array
+    {
+        $client = $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]);
+        if ($client === null) {
+            throw new ApiException('client_not_found', 404);
+        }
+
+        $forwards = $this->db->fetchAll(
+            'SELECT f.id, f.service_id, s.status AS service_status
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.enabled = 1
+             ORDER BY f.id ASC'
+        );
+
+        $matched = [];
+        foreach ($forwards as $forward) {
+            $forwardId = (int) $forward['id'];
+            $row = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
+            if ($row === null) {
+                continue;
+            }
+
+            $match = false;
+            if ((int) ($row['line_client_id'] ?? 0) === $clientId) {
+                $match = true;
+            }
+
+            $clientGroupId = (int) ($client['group_id'] ?? 0);
+            if (!$match && $clientGroupId > 0 && (int) ($row['line_client_group_id'] ?? 0) === $clientGroupId) {
+                $match = true;
+            }
+
+            if (!$match && $clientGroupId > 0 && is_string($row['line_client_group_ids_json'] ?? null) && $row['line_client_group_ids_json'] !== '') {
+                $decoded = json_decode((string) $row['line_client_group_ids_json'], true);
+                if (is_array($decoded)) {
+                    foreach ($decoded as $groupId) {
+                        if ((int) $groupId === $clientGroupId) {
+                            $match = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!$match) {
+                continue;
+            }
+
+            $config = $this->buildClientConfig($forwardId);
+            $config['service_status'] = (string) $forward['service_status'];
+            $config['endpoints'] = array_values(array_filter(
+                is_array($config['endpoints'] ?? null) ? $config['endpoints'] : [],
+                static function (mixed $endpoint): bool {
+                    if (!is_array($endpoint)) {
+                        return false;
+                    }
+
+                    return trim((string) ($endpoint['host'] ?? '')) !== ''
+                        && (int) ($endpoint['port'] ?? 0) > 0;
+                }
+            ));
+            if ($config['endpoints'] === []) {
+                continue;
+            }
+            $matched[] = $config;
+        }
+
+        return $matched;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function availableClientGroupsForService(int $serviceId): array
+    {
+        $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+
+        $planId = (int) ($service['plan_id'] ?? 0);
+        $groups = $this->listClientGroups();
+        if ($planId > 0) {
+            $explicit = $this->allowedClientGroupsForPlan($planId);
+            if ($explicit !== []) {
+                $groups = $explicit;
+            }
+        }
+
+        return array_values(array_filter($groups, static fn(array $group): bool => (int) ($group['client_count'] ?? 0) > 0));
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function availableForwardChainsForService(int $serviceId): array
+    {
+        $chains = $this->listForwardChains();
+        return array_values(array_filter($chains, static fn(array $chain): bool => (int) ($chain['is_active'] ?? 0) === 1));
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function updateForward(int $forwardId, array $payload, string $actor = 'user'): array
+    {
+        $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
+        if ($forward === null) {
+            throw new ApiException('forward_not_found', 404);
+        }
+
+        $this->revokeForwardEndpoints($forwardId, 'update');
+        return $this->saveForward((int) $forward['service_id'], $forwardId, $payload, $actor);
+    }
+
+    public function deleteForward(int $forwardId, string $actor = 'user'): void
+    {
+        $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
+        if ($forward === null) {
+            throw new ApiException('forward_not_found', 404);
+        }
+
+        $this->revokeForwardEndpoints($forwardId, 'delete');
+        $this->db->execute('UPDATE forwards SET enabled = 0, updated_at = :updated_at WHERE id = :id', [
+            'id' => $forwardId,
+            'updated_at' => $this->now(),
+        ]);
+        $this->audit('forward.deleted', ['forward_id' => $forwardId, 'actor' => $actor]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function regenerateClientToken(int $serviceId): array
+    {
+        $token = bin2hex(random_bytes(24));
+        $this->db->execute('UPDATE services SET client_token = :token, updated_at = :updated_at WHERE id = :id', [
+            'id' => $serviceId,
+            'token' => $token,
+            'updated_at' => $this->now(),
+        ]);
+        $this->audit('service.client_token_rotated', ['service_id' => $serviceId]);
+        return [
+            'service_id' => $serviceId,
+            'client_token' => $token,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function buildClientConfig(int $forwardId): array
+    {
+        $forward = $this->db->fetchOne(
+            'SELECT f.*, s.client_token, s.status AS service_status, s.name AS service_name,
+                    s.bandwidth_limit_mbps AS service_bandwidth_limit_mbps,
+                    c.name AS line_client_name, c.display_host AS line_client_host, c.speed_limit_mbps AS line_speed_limit_mbps,
+                    c.agent_config_json AS line_client_agent_config_json,
+                    cg.name AS line_client_group_name,
+                    fc.name AS forward_chain_name,
+                    sp.name AS bond_sidecar_point_name,
+                    sp.sidecar_host AS bond_sidecar_host,
+                    sp.listen_port AS bond_sidecar_port,
+                    sp.token_secret AS bond_sidecar_point_token_secret,
+                    sp.agent_config_json AS bond_sidecar_point_agent_config_json
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             LEFT JOIN clients c ON c.id = f.line_client_id
+             LEFT JOIN client_groups cg ON cg.id = f.line_client_group_id
+             LEFT JOIN forward_chains fc ON fc.id = f.forward_chain_id
+             LEFT JOIN sidecar_points sp ON sp.id = f.bond_sidecar_point_id
+             WHERE f.id = :id LIMIT 1',
+            ['id' => $forwardId]
+        );
+
+        if ($forward === null) {
+            throw new ApiException('forward_not_found', 404);
+        }
+
+        $selectedClientGroupIds = [];
+        if (is_string($forward['line_client_group_ids_json'] ?? null) && $forward['line_client_group_ids_json'] !== '') {
+            $decoded = json_decode((string) $forward['line_client_group_ids_json'], true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $value) {
+                    $casted = (int) $value;
+                    if ($casted > 0) {
+                        $selectedClientGroupIds[] = $casted;
+                    }
+                }
+            }
+        }
+        $selectedClientGroups = [];
+        if ($selectedClientGroupIds !== []) {
+            $selectedClientGroups = $this->db->fetchAll(
+                'SELECT id, group_key, name
+                 FROM client_groups
+                 WHERE id IN (' . implode(',', array_map('intval', $selectedClientGroupIds)) . ')
+                 ORDER BY name ASC, id ASC'
+            );
+        }
+
+        $endpoints = $this->db->fetchAll(
+            'SELECT e.*, n.name AS node_name, n.public_ip AS node_public_ip, n.agent_config_json AS node_agent_config_json
+             FROM service_endpoints e
+             INNER JOIN nodes n ON n.id = e.node_id
+             WHERE e.forward_id = :forward_id
+               AND e.health_status <> :deleted
+               AND e.health_status <> :deleting
+             ORDER BY e.priority ASC, e.id ASC',
+            [
+                'forward_id' => $forwardId,
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+            ]
+        );
+
+        $clientMode = $this->normalizeClientMode((string) $forward['client_mode']);
+        $ingressGroup = $this->nodeGroupByKey((string) ($forward['node_group_key'] ?? ''));
+        $resolvedSniHost = $this->resolveIngressSniHost((string) ($forward['sni_host'] ?? ''), $ingressGroup);
+        $resolvedCdnHost = $this->resolveIngressCdnHost((string) ($forward['cdn_host'] ?? ''), $resolvedSniHost, $ingressGroup);
+        $bondConfig = $clientMode === 'bond' ? $this->buildBondClientConfig($forward, $endpoints) : null;
+        $mptcpConfig = $clientMode === 'mptcp' ? $this->buildMptcpClientConfig($forward, $endpoints) : null;
+        $serviceBandwidthLimitMbps = max(0, (int) ($forward['service_bandwidth_limit_mbps'] ?? 0));
+        $lineSpeedLimitMbps = max(0, (int) ($forward['line_speed_limit_mbps'] ?? 0));
+        $limitCandidates = array_values(array_filter([$serviceBandwidthLimitMbps, $lineSpeedLimitMbps], static fn(int $value): bool => $value > 0));
+        $effectiveSpeedLimitMbps = $limitCandidates !== [] ? min($limitCandidates) : null;
+
+        return [
+            'service_id' => (int) $forward['service_id'],
+            'forward_id' => (int) $forward['id'],
+            'client_token' => (string) $forward['client_token'],
+            'service_name' => (string) $forward['service_name'],
+            'listen_port' => (int) $forward['listen_port'],
+            'target' => $forward['target_host'] . ':' . $forward['target_port'],
+            'bond_sidecar_point_id' => $forward['bond_sidecar_point_id'] !== null ? (int) $forward['bond_sidecar_point_id'] : null,
+            'bond_sidecar_point_name' => (string) ($forward['bond_sidecar_point_name'] ?? ''),
+            'bond_sidecar_host' => (string) ($forward['bond_sidecar_host'] ?? ''),
+            'bond_sidecar_port' => isset($forward['bond_sidecar_port']) && (int) $forward['bond_sidecar_port'] > 0 ? (int) $forward['bond_sidecar_port'] : null,
+            'bond_remote_host' => (string) ($forward['bond_remote_host'] ?? ''),
+            'bond_remote_port' => isset($forward['bond_remote_port']) && (int) $forward['bond_remote_port'] > 0 ? (int) $forward['bond_remote_port'] : null,
+            'line_client_id' => $forward['line_client_id'] !== null ? (int) $forward['line_client_id'] : null,
+            'line_client_name' => $forward['line_client_name'],
+            'line_client_host' => $forward['line_client_host'],
+            'line_client_group_id' => $forward['line_client_group_id'] !== null ? (int) $forward['line_client_group_id'] : null,
+            'line_client_group_name' => $forward['line_client_group_name'],
+            'line_group_mode' => (string) ($forward['line_group_mode'] ?? 'selected'),
+            'line_client_group_ids' => array_values(array_map(static fn(array $group): int => (int) $group['id'], $selectedClientGroups)),
+            'line_client_groups' => array_map(static fn(array $group): array => [
+                'id' => (int) $group['id'],
+                'group_key' => (string) $group['group_key'],
+                'name' => (string) $group['name'],
+            ], $selectedClientGroups),
+            'endpoint_mode' => (string) $forward['endpoint_mode'],
+            'forward_chain_id' => $forward['forward_chain_id'] !== null ? (int) $forward['forward_chain_id'] : null,
+            'forward_chain_name' => $forward['forward_chain_name'],
+            'sni' => $resolvedSniHost,
+            'path_prefix' => (string) $forward['path_prefix'],
+            'mode' => $clientMode,
+            'transport' => (string) $forward['transport_mode'],
+            'service_status' => (string) $forward['service_status'],
+            'speed_limit_mbps' => $effectiveSpeedLimitMbps,
+            'bonding' => $bondConfig,
+            'mptcp' => $mptcpConfig,
+            'connection_policy' => [
+                'idle_pool' => ($clientMode === 'race' || $clientMode === 'bond' || $clientMode === 'mptcp') ? 1 : 5,
+                'tcp_race' => $clientMode === 'race',
+                'tcp_bond' => $clientMode === 'bond',
+                'tcp_mptcp' => $clientMode === 'mptcp',
+                'udp_fanout' => !in_array($clientMode, ['bond', 'mptcp'], true) && ((string) $forward['transport_mode']) === 'tcp+udp',
+                'dup_repeat' => 1,
+            ],
+            'endpoints' => array_map(function (array $endpoint) use ($resolvedSniHost, $resolvedCdnHost, $ingressGroup): array {
+                $nodeConfig = is_string($endpoint['node_agent_config_json'] ?? null) ? json_decode((string) $endpoint['node_agent_config_json'], true) : [];
+                if (!is_array($nodeConfig)) {
+                    $nodeConfig = [];
+                }
+                return [
+                    'endpoint_id' => (int) $endpoint['id'],
+                    'node' => (string) $endpoint['node_name'],
+                    'host' => $this->resolveEndpointPublicHost($endpoint),
+                    'port' => (int) $endpoint['public_port'],
+                    'cdn_host' => $this->resolveIngressCdnHost((string) ($endpoint['cdn_host'] ?? ''), $resolvedSniHost, $ingressGroup) ?: $resolvedCdnHost,
+                    'priority' => (int) $endpoint['priority'],
+                    'weight' => (int) $endpoint['weight'],
+                    'health_status' => (string) $endpoint['health_status'],
+                    'supports_quic_leg' => (bool) ($nodeConfig['supports_quic'] ?? true),
+                ];
+            }, $endpoints),
+        ];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $entries
+     * @return array<string, mixed>
+     */
+    public function applyUsageReport(array $node, array $entries): array
+    {
+        $applied = [];
+        $suspended = [];
+
+        foreach ($entries as $entry) {
+            $serviceId = (int) ($entry['service_id'] ?? 0);
+            $endpointId = (int) ($entry['endpoint_id'] ?? 0);
+            $bytesIn = max(0, (int) ($entry['bytes_in'] ?? 0));
+            $bytesOut = max(0, (int) ($entry['bytes_out'] ?? 0));
+            if ($serviceId <= 0 || $endpointId <= 0) {
+                continue;
+            }
+
+            $endpoint = $this->db->fetchOne(
+                'SELECT * FROM service_endpoints WHERE id = :id AND node_id = :node_id LIMIT 1',
+                ['id' => $endpointId, 'node_id' => $node['id']]
+            );
+            if ($endpoint === null) {
+                continue;
+            }
+
+            $periodStart = gmdate('Y-m-d H:00:00');
+            $existing = $this->db->fetchOne(
+                'SELECT * FROM traffic_usage_hourly WHERE service_id = :service_id AND endpoint_id = :endpoint_id AND period_start = :period_start LIMIT 1',
+                [
+                    'service_id' => $serviceId,
+                    'endpoint_id' => $endpointId,
+                    'period_start' => $periodStart,
+                ]
+            );
+
+            if ($existing === null) {
+                $this->db->insert('traffic_usage_hourly', [
+                    'service_id' => $serviceId,
+                    'endpoint_id' => $endpointId,
+                    'node_id' => $node['id'],
+                    'period_start' => $periodStart,
+                    'bytes_in' => $bytesIn,
+                    'bytes_out' => $bytesOut,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+            } else {
+                $this->db->execute(
+                    'UPDATE traffic_usage_hourly
+                     SET bytes_in = bytes_in + :bytes_in,
+                         bytes_out = bytes_out + :bytes_out,
+                         updated_at = :updated_at
+                     WHERE id = :id',
+                    [
+                        'id' => $existing['id'],
+                        'bytes_in' => $bytesIn,
+                        'bytes_out' => $bytesOut,
+                        'updated_at' => $this->now(),
+                    ]
+                );
+            }
+
+            $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+            if ($service === null) {
+                continue;
+            }
+
+            $service = $this->syncServiceBillingCycle($service);
+            $delta = $bytesIn + $bytesOut;
+
+            $this->db->execute(
+                'UPDATE services
+                 SET traffic_used_bytes = traffic_used_bytes + :delta,
+                     billing_cycle_traffic_used_bytes = billing_cycle_traffic_used_bytes + :delta,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                [
+                    'id' => $serviceId,
+                    'delta' => $delta,
+                    'updated_at' => $this->now(),
+                ]
+            );
+
+            $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+            if ($service !== null && $this->normalizeBillingMode((string) ($service['billing_mode'] ?? 'monthly_bundle')) === 'monthly_bundle') {
+                $includedGb = max(0, (int) ($service['monthly_included_traffic_gb'] ?? $service['traffic_limit_gb'] ?? 0));
+                if ($includedGb > 0) {
+                    $limitBytes = $includedGb * 1024 * 1024 * 1024;
+                    if ((int) ($service['billing_cycle_traffic_used_bytes'] ?? 0) >= $limitBytes && (string) $service['status'] === 'active') {
+                        $this->db->execute(
+                            'UPDATE services
+                             SET status = :status,
+                                 suspend_reason = :reason,
+                                 updated_at = :updated_at
+                             WHERE id = :id',
+                            [
+                                'id' => $serviceId,
+                                'status' => 'traffic_suspended',
+                                'reason' => 'traffic_limit',
+                                'updated_at' => $this->now(),
+                            ]
+                        );
+                        $this->queueLifecycleTasks($serviceId, 'suspend');
+                        $suspended[] = $serviceId;
+                    }
+                }
+            }
+
+            $applied[] = [
+                'service_id' => $serviceId,
+                'endpoint_id' => $endpointId,
+                'bytes_in' => $bytesIn,
+                'bytes_out' => $bytesOut,
+            ];
+        }
+
+        return [
+            'applied' => $applied,
+            'suspended_services' => array_values(array_unique($suspended)),
+        ];
+    }
+
+    public function recordAgentUsage(string $entityType, int $entityId, int $bytesIn, int $bytesOut): void
+    {
+        $entityType = strtolower(trim($entityType));
+        if (!in_array($entityType, ['client', 'sidecar'], true) || $entityId <= 0) {
+            return;
+        }
+
+        $bytesIn = max(0, $bytesIn);
+        $bytesOut = max(0, $bytesOut);
+        if ($bytesIn === 0 && $bytesOut === 0) {
+            return;
+        }
+
+        $periodStart = gmdate('Y-m-d H:00:00');
+        $existing = $this->db->fetchOne(
+            'SELECT id
+             FROM agent_usage_hourly
+             WHERE entity_type = :entity_type
+               AND entity_id = :entity_id
+               AND period_start = :period_start
+             LIMIT 1',
+            [
+                'entity_type' => $entityType,
+                'entity_id' => $entityId,
+                'period_start' => $periodStart,
+            ]
+        );
+
+        if ($existing === null) {
+            $this->db->insert('agent_usage_hourly', [
+                'entity_type' => $entityType,
+                'entity_id' => $entityId,
+                'period_start' => $periodStart,
+                'bytes_in' => $bytesIn,
+                'bytes_out' => $bytesOut,
+                'created_at' => $this->now(),
+                'updated_at' => $this->now(),
+            ]);
+            return;
+        }
+
+        $this->db->execute(
+            'UPDATE agent_usage_hourly
+             SET bytes_in = bytes_in + :bytes_in,
+                 bytes_out = bytes_out + :bytes_out,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $existing['id'],
+                'bytes_in' => $bytesIn,
+                'bytes_out' => $bytesOut,
+                'updated_at' => $this->now(),
+            ]
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function serviceSummary(int $serviceId): array
+    {
+        $service = $this->db->fetchOne(
+            'SELECT s.*, u.email AS user_email, u.feature_flags_json AS user_feature_flags_json,
+                    p.product_code, p.name AS plan_name, p.description AS plan_description, p.feature_flags_json AS plan_feature_flags_json,
+                    p.default_bandwidth_limit_mbps AS plan_default_bandwidth_limit_mbps,
+                    p.traffic_reset_price AS plan_traffic_reset_price, p.billing_currency AS plan_billing_currency,
+                    p.bandwidth_step_mbps AS plan_bandwidth_step_mbps, p.bandwidth_step_price AS plan_bandwidth_step_price,
+                    p.included_client_count AS plan_included_client_count, p.extra_client_price AS plan_extra_client_price,
+                    (SELECT COUNT(DISTINCT f2.line_client_id)
+                     FROM forwards f2
+                     WHERE f2.service_id = s.id
+                       AND f2.enabled = 1
+                       AND f2.line_client_id IS NOT NULL) AS active_client_count
+             FROM services s
+             INNER JOIN users u ON u.id = s.user_id
+             LEFT JOIN service_plans p ON p.id = s.plan_id
+             WHERE s.id = :id LIMIT 1',
+            ['id' => $serviceId]
+        );
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+        $service = $this->syncServiceBillingCycle($service);
+
+        $forwards = $this->db->fetchAll(
+            'SELECT f.*,
+                    c.name AS line_client_name,
+                    cg.name AS line_client_group_name,
+                    fc.name AS forward_chain_name,
+                    sp.name AS bond_sidecar_point_name
+             FROM forwards f
+             LEFT JOIN clients c ON c.id = f.line_client_id
+             LEFT JOIN client_groups cg ON cg.id = f.line_client_group_id
+             LEFT JOIN forward_chains fc ON fc.id = f.forward_chain_id
+             LEFT JOIN sidecar_points sp ON sp.id = f.bond_sidecar_point_id
+             WHERE f.service_id = :service_id
+               AND f.enabled = 1
+             ORDER BY f.id ASC',
+            ['service_id' => $serviceId]
+        );
+
+        foreach ($forwards as &$forward) {
+            $forward['endpoints'] = $this->db->fetchAll(
+                'SELECT e.*, n.name AS node_name, n.public_ip AS node_public_ip, n.agent_config_json AS node_agent_config_json
+                 FROM service_endpoints e
+                 INNER JOIN nodes n ON n.id = e.node_id
+                 WHERE e.forward_id = :forward_id
+                 ORDER BY e.priority ASC, e.id ASC',
+                ['forward_id' => $forward['id']]
+            );
+            foreach ($forward['endpoints'] as &$endpoint) {
+                $endpoint['public_host'] = $this->resolveEndpointPublicHost($endpoint);
+            }
+            unset($endpoint);
+            $forward['line_client_groups'] = [];
+            if (is_string($forward['line_client_group_ids_json'] ?? null) && $forward['line_client_group_ids_json'] !== '') {
+                $decoded = json_decode((string) $forward['line_client_group_ids_json'], true);
+                $groupIds = [];
+                if (is_array($decoded)) {
+                    foreach ($decoded as $value) {
+                        $casted = (int) $value;
+                        if ($casted > 0) {
+                            $groupIds[] = $casted;
+                        }
+                    }
+                }
+                if ($groupIds !== []) {
+                    $forward['line_client_groups'] = $this->db->fetchAll(
+                        'SELECT id, group_key, name
+                         FROM client_groups
+                         WHERE id IN (' . implode(',', array_map('intval', array_values(array_unique($groupIds)))) . ')
+                         ORDER BY name ASC, id ASC'
+                    );
+                }
+            }
+        }
+        unset($forward);
+
+        $service['allowed_node_groups'] = $this->availableNodeGroupsForService($serviceId);
+        $service['allowed_client_groups'] = $this->availableClientGroupsForService($serviceId);
+        $service['available_clients'] = $this->availableClientsForService($serviceId);
+        $service['available_sidecar_points'] = $this->listSidecarPointsForUser((int) ($service['user_id'] ?? 0));
+        $service['available_forward_chains'] = $this->availableForwardChainsForService($serviceId);
+        $service['effective_features'] = $this->effectiveFeatureFlagsForService($service);
+        $service['billing'] = $this->billingOverviewFromService($service);
+        $service['billing_history'] = $this->recentBillingCyclesForService($serviceId);
+        $service['forwards'] = $forwards;
+        return $service;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function serviceBillingOverview(int $serviceId): array
+    {
+        $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+
+        return $this->billingOverviewFromService($this->syncServiceBillingCycle($service));
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function recentBillingCyclesForService(int $serviceId, int $limit = 6): array
+    {
+        $safeLimit = max(1, min(24, $limit));
+        return $this->db->fetchAll(
+            'SELECT *
+             FROM service_billing_cycles
+             WHERE service_id = :service_id
+             ORDER BY cycle_started_at DESC, id DESC
+             LIMIT ' . $safeLimit,
+            ['service_id' => $serviceId]
+        );
+    }
+
+    /**
+     * @param array<int, int|string> $nodeIds
+     * @return array<int, array<string, mixed>>
+     */
+    public function nodeUsageOverviewMap(array $nodeIds): array
+    {
+        return $this->usageOverviewMapFromTable('traffic_usage_hourly', 'node_id', $nodeIds);
+    }
+
+    /**
+     * @param array<int, int|string> $clientIds
+     * @return array<int, array<string, mixed>>
+     */
+    public function clientUsageOverviewMap(array $clientIds): array
+    {
+        return $this->usageOverviewMapFromTable('agent_usage_hourly', 'entity_id', $clientIds, 'client');
+    }
+
+    /**
+     * @param array<int, int|string> $sidecarIds
+     * @return array<int, array<string, mixed>>
+     */
+    public function sidecarUsageOverviewMap(array $sidecarIds): array
+    {
+        return $this->usageOverviewMapFromTable('agent_usage_hourly', 'entity_id', $sidecarIds, 'sidecar');
+    }
+
+    /**
+     * @param array<int, int|string> $entityIds
+     * @return array<int, array<string, mixed>>
+     */
+    private function usageOverviewMapFromTable(string $table, string $entityColumn, array $entityIds, ?string $entityType = null): array
+    {
+        $normalizedIds = array_values(array_unique(array_filter(array_map(
+            static fn(mixed $value): int => max(0, (int) $value),
+            $entityIds
+        ), static fn(int $value): bool => $value > 0)));
+
+        if ($normalizedIds === []) {
+            return [];
+        }
+
+        $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $monthStart = $now->modify('first day of this month')->setTime(0, 0, 0);
+        $monthEnd = $monthStart->modify('first day of next month');
+        $dayStart = $now->setTime(0, 0, 0);
+        $hourStart = $now->setTime((int) $now->format('H'), 0, 0);
+
+        $overview = [];
+        foreach ($normalizedIds as $entityId) {
+            $overview[$entityId] = [
+                'hour_bytes' => 0,
+                'day_bytes' => 0,
+                'month_bytes' => 0,
+                'month_label' => $monthStart->format('F Y'),
+                'month_start' => $monthStart->format('Y-m-d'),
+                'month_end' => $monthEnd->format('Y-m-d'),
+                'today' => $now->format('Y-m-d'),
+                'daily_bytes' => [],
+            ];
+        }
+
+        $params = [
+            'hour_start' => $hourStart->format('Y-m-d H:i:s'),
+            'day_start' => $dayStart->format('Y-m-d H:i:s'),
+            'month_start' => $monthStart->format('Y-m-d H:i:s'),
+            'month_end' => $monthEnd->format('Y-m-d H:i:s'),
+        ];
+        $inPlaceholders = [];
+        foreach ($normalizedIds as $index => $entityId) {
+            $key = 'entity_id_' . $index;
+            $inPlaceholders[] = ':' . $key;
+            $params[$key] = $entityId;
+        }
+        if ($entityType !== null) {
+            $params['entity_type'] = $entityType;
+        }
+        $summaryParams = $params;
+        unset($summaryParams['month_end']);
+
+        $where = [];
+        if ($entityType !== null) {
+            $where[] = 'entity_type = :entity_type';
+        }
+        $where[] = $entityColumn . ' IN (' . implode(', ', $inPlaceholders) . ')';
+        $where[] = 'period_start >= :month_start';
+
+        $summaryRows = $this->db->fetchAll(
+            'SELECT ' . $entityColumn . ' AS entity_id,
+                    SUM(CASE WHEN period_start = :hour_start THEN bytes_in + bytes_out ELSE 0 END) AS hour_bytes,
+                    SUM(CASE WHEN period_start >= :day_start THEN bytes_in + bytes_out ELSE 0 END) AS day_bytes,
+                    SUM(bytes_in + bytes_out) AS month_bytes
+             FROM ' . $table . '
+             WHERE ' . implode(' AND ', $where) . '
+             GROUP BY ' . $entityColumn,
+            $summaryParams
+        );
+        foreach ($summaryRows as $row) {
+            $entityId = (int) ($row['entity_id'] ?? 0);
+            if (!isset($overview[$entityId])) {
+                continue;
+            }
+            $overview[$entityId]['hour_bytes'] = max(0, (int) ($row['hour_bytes'] ?? 0));
+            $overview[$entityId]['day_bytes'] = max(0, (int) ($row['day_bytes'] ?? 0));
+            $overview[$entityId]['month_bytes'] = max(0, (int) ($row['month_bytes'] ?? 0));
+        }
+
+        $dailyRows = $this->db->fetchAll(
+            'SELECT ' . $entityColumn . ' AS entity_id,
+                    DATE(period_start) AS day_key,
+                    SUM(bytes_in + bytes_out) AS total_bytes
+             FROM ' . $table . '
+             WHERE ' . implode(' AND ', $where) . '
+               AND period_start < :month_end
+             GROUP BY ' . $entityColumn . ', DATE(period_start)',
+            $params
+        );
+        foreach ($dailyRows as $row) {
+            $entityId = (int) ($row['entity_id'] ?? 0);
+            $dayKey = (string) ($row['day_key'] ?? '');
+            if ($dayKey === '' || !isset($overview[$entityId])) {
+                continue;
+            }
+            $overview[$entityId]['daily_bytes'][$dayKey] = max(0, (int) ($row['total_bytes'] ?? 0));
+        }
+
+        return $overview;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function saveForward(int $serviceId, ?int $forwardId, array $payload, string $actor): array
+    {
+        unset($payload['endpoint_count']);
+
+        $listenPort = (int) ($payload['listen_port'] ?? 0);
+        $targetHost = (string) ($payload['target_host'] ?? '');
+        $targetPort = (int) ($payload['target_port'] ?? 0);
+        $bondRemoteHost = trim((string) ($payload['bond_remote_host'] ?? $payload['bond_sidecar_host'] ?? ''));
+        $bondRemotePort = (int) ($payload['bond_remote_port'] ?? $payload['bond_sidecar_port'] ?? 0);
+        $bondSidecarPointId = (int) ($payload['bond_sidecar_point_id'] ?? 0);
+        $transportMode = (string) ($payload['transport_mode'] ?? $this->config->get('DEFAULT_TRANSPORT_MODE', 'tcp+udp'));
+        $clientMode = $this->normalizeClientMode((string) ($payload['client_mode'] ?? $this->config->get('DEFAULT_CLIENT_MODE', 'single')));
+        $lineClientId = (int) ($payload['line_client_id'] ?? 0);
+        $lineClientGroupId = (int) ($payload['line_client_group_id'] ?? 0);
+        $lineGroupMode = trim((string) ($payload['line_group_mode'] ?? 'selected'));
+        $endpointMode = trim((string) ($payload['endpoint_mode'] ?? 'slave_group'));
+        $forwardChainId = (int) ($payload['forward_chain_id'] ?? 0);
+        $sniHost = trim((string) ($payload['sni_host'] ?? ''));
+        $pathPrefix = trim((string) ($payload['path_prefix'] ?? ''));
+        $nodeGroup = trim((string) ($payload['node_group'] ?? $this->config->get('DEFAULT_NODE_GROUP', 'default')));
+        $publicPort = (int) ($payload['public_port'] ?? 0);
+        $cdnHost = trim((string) ($payload['cdn_host'] ?? ''));
+        $filterProfile = (string) ($payload['filter_profile'] ?? 'off');
+        $customEndpointIdsJson = $this->normalizeJsonField($payload['custom_endpoint_ids_json'] ?? null);
+        $selectedLineClientGroupIds = [];
+        foreach ((array) ($payload['line_client_group_ids'] ?? $payload['line_client_group_ids_json'] ?? []) as $groupId) {
+            $casted = (int) $groupId;
+            if ($casted > 0) {
+                $selectedLineClientGroupIds[] = $casted;
+            }
+        }
+        $selectedLineClientGroupIds = array_values(array_unique($selectedLineClientGroupIds));
+        if ($lineClientGroupId <= 0 && $selectedLineClientGroupIds !== []) {
+            $lineClientGroupId = $selectedLineClientGroupIds[0];
+        }
+
+        $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+
+        $availableClients = $this->availableClientsForService($serviceId);
+        $availableClientGroups = $this->availableClientGroupsForService($serviceId);
+        if ($lineClientId <= 0 && $lineClientGroupId <= 0 && $selectedLineClientGroupIds === [] && $availableClients !== []) {
+            $lineClientId = (int) $availableClients[0]['id'];
+        }
+        if ($lineGroupMode === 'all_allowed') {
+            $selectedLineClientGroupIds = array_values(array_map(static fn(array $group): int => (int) $group['id'], $availableClientGroups));
+        }
+        if ($availableClientGroups !== [] && $lineClientGroupId > 0) {
+            $allowedClientGroupIds = array_map(static fn(array $group): int => (int) $group['id'], $availableClientGroups);
+            if (!in_array($lineClientGroupId, $allowedClientGroupIds, true)) {
+                throw new ApiException('line_client_group_not_allowed', 422, [
+                    'line_client_group_id' => $lineClientGroupId,
+                    'allowed_line_client_group_ids' => $allowedClientGroupIds,
+                ]);
+            }
+        }
+        if ($availableClientGroups !== [] && $selectedLineClientGroupIds !== []) {
+            $allowedClientGroupIds = array_map(static fn(array $group): int => (int) $group['id'], $availableClientGroups);
+            foreach ($selectedLineClientGroupIds as $groupId) {
+                if (!in_array($groupId, $allowedClientGroupIds, true)) {
+                    throw new ApiException('line_client_group_not_allowed', 422, [
+                        'line_client_group_id' => $groupId,
+                        'allowed_line_client_group_ids' => $allowedClientGroupIds,
+                    ]);
+                }
+            }
+        }
+        if (($availableClients !== [] || $availableClientGroups !== []) && $lineClientId <= 0 && $lineClientGroupId <= 0) {
+            if ($selectedLineClientGroupIds === []) {
+                throw new ApiException('line_client_required', 422, [
+                    'allowed_line_client_ids' => array_map(static fn(array $client): int => (int) $client['id'], $availableClients),
+                ]);
+            }
+        }
+        if ($availableClients !== [] && $lineClientId > 0) {
+            $allowedClientIds = array_map(static fn(array $client): int => (int) $client['id'], $availableClients);
+            if (!in_array($lineClientId, $allowedClientIds, true)) {
+                throw new ApiException('line_client_not_allowed', 422, [
+                    'line_client_id' => $lineClientId,
+                    'allowed_line_client_ids' => $allowedClientIds,
+                ]);
+            }
+        }
+
+        $selectedClient = null;
+        if ($lineClientId > 0) {
+            foreach ($availableClients as $client) {
+                if ((int) $client['id'] === $lineClientId) {
+                    $selectedClient = $client;
+                    break;
+                }
+            }
+        }
+
+        $candidateClients = [];
+        if ($lineClientId > 0 && $selectedClient !== null) {
+            $candidateClients[] = $selectedClient;
+        }
+        if ($selectedLineClientGroupIds !== []) {
+            foreach ($availableClients as $client) {
+                $groupId = (int) ($client['group_id'] ?? 0);
+                if ($groupId > 0 && in_array($groupId, $selectedLineClientGroupIds, true)) {
+                    $candidateClients[(int) $client['id']] = $client;
+                }
+            }
+        }
+        $candidateClients = array_values($candidateClients);
+
+        if ($selectedClient !== null) {
+            if (($payload['endpoint_mode'] ?? '') === '' && !empty($selectedClient['default_endpoint_mode'])) {
+                $endpointMode = (string) $selectedClient['default_endpoint_mode'];
+            }
+            if (($payload['node_group'] ?? '') === '' && !empty($selectedClient['default_node_group_key'])) {
+                $nodeGroup = (string) $selectedClient['default_node_group_key'];
+            }
+            if ((int) ($payload['forward_chain_id'] ?? 0) <= 0 && !empty($selectedClient['default_forward_chain_id'])) {
+                $forwardChainId = (int) $selectedClient['default_forward_chain_id'];
+            }
+        }
+
+        $allowedGroups = $this->allowedNodeGroupsForPlan((int) ($service['plan_id'] ?? 0));
+        $endpointGroupKeys = [];
+
+        if ($forwardChainId > 0) {
+            $chain = $this->db->fetchOne('SELECT * FROM forward_chains WHERE id = :id LIMIT 1', ['id' => $forwardChainId]);
+            if ($chain === null || (int) ($chain['is_active'] ?? 0) !== 1) {
+                throw new ApiException('forward_chain_not_found', 404, ['forward_chain_id' => $forwardChainId]);
+            }
+            $chainSteps = $this->db->fetchAll(
+                'SELECT s.*, g.group_key
+                 FROM forward_chain_steps s
+                 INNER JOIN node_groups g ON g.id = s.node_group_id
+                 WHERE s.forward_chain_id = :chain_id
+                 ORDER BY s.step_order ASC, s.id ASC',
+                ['chain_id' => $forwardChainId]
+            );
+            if ($chainSteps === []) {
+                throw new ApiException('forward_chain_empty', 422, ['forward_chain_id' => $forwardChainId]);
+            }
+            $endpointGroupKeys = array_values(array_unique(array_map(static fn(array $step): string => (string) $step['group_key'], $chainSteps)));
+            $nodeGroup = $endpointGroupKeys[0];
+            $endpointMode = 'forward_chain';
+        } elseif ($nodeGroup !== '') {
+            $endpointGroupKeys = [$nodeGroup];
+        }
+
+        if ($endpointGroupKeys === [] && $candidateClients !== []) {
+            foreach ($candidateClients as $client) {
+                $clientChainId = (int) ($client['default_forward_chain_id'] ?? 0);
+                if ($clientChainId > 0) {
+                    $chainSteps = $this->db->fetchAll(
+                        'SELECT s.*, g.group_key
+                         FROM forward_chain_steps s
+                         INNER JOIN node_groups g ON g.id = s.node_group_id
+                         WHERE s.forward_chain_id = :chain_id
+                         ORDER BY s.step_order ASC, s.id ASC',
+                        ['chain_id' => $clientChainId]
+                    );
+                    foreach ($chainSteps as $step) {
+                        $endpointGroupKeys[] = (string) $step['group_key'];
+                    }
+                    if ($forwardChainId <= 0) {
+                        $forwardChainId = $clientChainId;
+                        $endpointMode = 'forward_chain';
+                    }
+                    continue;
+                }
+
+                $clientNodeGroup = trim((string) ($client['default_node_group_key'] ?? ''));
+                if ($clientNodeGroup !== '') {
+                    $endpointGroupKeys[] = $clientNodeGroup;
+                    if ($nodeGroup === '') {
+                        $nodeGroup = $clientNodeGroup;
+                    }
+                }
+            }
+            $endpointGroupKeys = array_values(array_unique(array_filter($endpointGroupKeys, static fn(string $value): bool => $value !== '')));
+        }
+
+        $defaultClient = $selectedClient ?? ($candidateClients[0] ?? null);
+        $ingressGroupKey = $nodeGroup !== '' ? $nodeGroup : ($endpointGroupKeys[0] ?? '');
+        $ingressGroup = null;
+        if ($ingressGroupKey !== '') {
+            $ingressGroup = $this->db->fetchOne('SELECT * FROM node_groups WHERE group_key = :group_key LIMIT 1', [
+                'group_key' => $ingressGroupKey,
+            ]);
+        }
+        $autoPort = 0;
+        if ($listenPort <= 0 || $publicPort <= 0) {
+            $autoPort = $this->pickClientPort(
+                $defaultClient,
+                $forwardId,
+                $targetPort,
+                'target_port_then_client_range'
+            );
+        }
+        $preferredPublicPort = (int) (($ingressGroup['ingress_preferred_public_port'] ?? 0) ?: $this->config->getInt('DEFAULT_EDGE_PUBLIC_PORT', 443));
+        $portStrategy = (string) (($ingressGroup['ingress_port_strategy'] ?? '') ?: $this->config->get('EDGE_PORT_STRATEGY', 'shared_preferred_port'));
+        if ($listenPort <= 0) {
+            $listenPort = $autoPort > 0 ? $autoPort : ($targetPort > 0 ? $targetPort : $preferredPublicPort);
+        }
+        if ($publicPort <= 0) {
+            $publicPort = $this->pickPublicPort(
+                $defaultClient,
+                $forwardId,
+                $preferredPublicPort,
+                $targetPort,
+                $portStrategy
+            );
+        }
+        if ($pathPrefix === '') {
+            $pathPrefix = $this->generatePathPrefix((string) (($ingressGroup['ingress_path_strategy'] ?? '') ?: $this->config->get('EDGE_PATH_STRATEGY', 'random')));
+        }
+        if ($sniHost === '') {
+            $sniHost = $this->resolveIngressSniHost('', is_array($ingressGroup) ? $ingressGroup : null);
+        }
+        if ($cdnHost === '') {
+            $cdnHost = $this->resolveIngressCdnHost('', $sniHost, is_array($ingressGroup) ? $ingressGroup : null);
+        }
+
+        if ($listenPort <= 0 || $publicPort <= 0 || $targetHost === '' || $targetPort <= 0) {
+            throw new ApiException('invalid_forward_payload', 422, ['payload' => $payload]);
+        }
+
+        if (in_array($clientMode, ['bond', 'mptcp'], true)) {
+            if ($bondSidecarPointId > 0) {
+                $sidecarPoint = $this->visibleSidecarPointForUser($bondSidecarPointId, (int) ($service['user_id'] ?? 0));
+                if ($sidecarPoint === null || (int) ($sidecarPoint['is_active'] ?? 0) !== 1) {
+                    throw new ApiException('bond_sidecar_point_not_allowed', 422, ['bond_sidecar_point_id' => $bondSidecarPointId]);
+                }
+                if ($bondRemoteHost === '') {
+                    $bondRemoteHost = trim((string) ($sidecarPoint['sidecar_host'] ?? ''));
+                }
+                if ($bondRemotePort <= 0) {
+                    $bondRemotePort = (int) ($sidecarPoint['listen_port'] ?? 0);
+                }
+            }
+            $bondRemote = $this->resolveBondRemoteTarget([
+                'bond_remote_host' => $bondRemoteHost,
+                'bond_remote_port' => $bondRemotePort,
+            ]);
+            $bondRemoteHost = $bondRemote['host'];
+            $bondRemotePort = $bondRemote['port'];
+            $this->bondTokenSecret($service);
+        } else {
+            $bondSidecarPointId = 0;
+        }
+
+        if ($allowedGroups !== [] && $endpointGroupKeys !== []) {
+            $allowedGroupKeys = array_map(static fn(array $group): string => (string) $group['group_key'], $allowedGroups);
+            if (($nodeGroup === '' || $nodeGroup === 'default') && $endpointMode !== 'forward_chain') {
+                $nodeGroup = $allowedGroupKeys[0];
+                $endpointGroupKeys = [$nodeGroup];
+            }
+            foreach ($endpointGroupKeys as $groupKey) {
+                if (!in_array($groupKey, $allowedGroupKeys, true)) {
+                    throw new ApiException('node_group_not_allowed', 422, [
+                        'requested_node_group' => $groupKey,
+                        'allowed_node_groups' => $allowedGroupKeys,
+                    ]);
+                }
+            }
+        }
+
+        if ($endpointMode === 'direct') {
+            throw new ApiException('endpoint_mode_not_supported_yet', 422, [
+                'endpoint_mode' => 'direct',
+                'supported_modes' => ['slave_group', 'forward_chain'],
+            ]);
+        }
+
+        if ($endpointMode === 'slave_group' && $endpointGroupKeys === []) {
+            throw new ApiException('node_group_required', 422, ['endpoint_mode' => 'slave_group']);
+        }
+
+        if ($endpointMode === 'forward_chain' && $forwardChainId <= 0) {
+            throw new ApiException('forward_chain_required', 422, ['endpoint_mode' => 'forward_chain']);
+        }
+
+        if ($endpointMode !== 'forward_chain' && $nodeGroup !== '' && $endpointGroupKeys === []) {
+            $endpointGroupKeys = [$nodeGroup];
+        }
+
+        if ($endpointMode === 'forward_chain' && $forwardChainId > 0 && $endpointGroupKeys === []) {
+            throw new ApiException('forward_chain_empty', 422, ['forward_chain_id' => $forwardChainId]);
+        }
+
+        if ($endpointMode === 'forward_chain' && $forwardChainId > 0 && $nodeGroup === '') {
+            $nodeGroup = $endpointGroupKeys[0];
+        }
+
+        if ($endpointMode === 'slave_group' && $nodeGroup === '') {
+            $availableGroups = $this->availableNodeGroupsForService($serviceId);
+            if ($availableGroups !== []) {
+                $nodeGroup = (string) $availableGroups[0]['group_key'];
+                $endpointGroupKeys = [$nodeGroup];
+            }
+        }
+
+        if ($allowedGroups !== [] && $nodeGroup !== '' && !in_array($nodeGroup, array_map(static fn(array $group): string => (string) $group['group_key'], $allowedGroups), true)) {
+                throw new ApiException('node_group_not_allowed', 422, [
+                    'requested_node_group' => $nodeGroup,
+                    'allowed_node_groups' => array_map(static fn(array $group): string => (string) $group['group_key'], $allowedGroups),
+                ]);
+        }
+
+        $endpointCount = $this->panelManagedEndpointCount($clientMode, $endpointGroupKeys);
+
+        if ($forwardId === null) {
+            $forwardId = $this->db->insert('forwards', [
+                'service_id' => $serviceId,
+                'listen_port' => $listenPort,
+                'target_host' => $targetHost,
+                'target_port' => $targetPort,
+                'bond_remote_host' => $bondRemoteHost !== '' ? $bondRemoteHost : null,
+                'bond_remote_port' => $bondRemotePort > 0 ? $bondRemotePort : null,
+                'bond_sidecar_point_id' => $bondSidecarPointId > 0 ? $bondSidecarPointId : null,
+                'line_client_id' => $lineClientId > 0 ? $lineClientId : null,
+                'line_client_group_id' => $lineClientGroupId > 0 ? $lineClientGroupId : null,
+                'line_group_mode' => $lineGroupMode !== '' ? $lineGroupMode : 'selected',
+                'line_client_group_ids_json' => $this->normalizeJsonField($selectedLineClientGroupIds),
+                'endpoint_mode' => $endpointMode,
+                'forward_chain_id' => $forwardChainId > 0 ? $forwardChainId : null,
+                'custom_endpoint_ids_json' => $customEndpointIdsJson,
+                'transport_mode' => $transportMode,
+                'client_mode' => $clientMode,
+                'sni_host' => $sniHost,
+                'path_prefix' => $pathPrefix,
+                'node_group_key' => $nodeGroup,
+                'endpoint_count' => $endpointCount,
+                'public_port' => $publicPort > 0 ? $publicPort : $listenPort,
+                'cdn_host' => $cdnHost,
+                'filter_profile' => $filterProfile,
+                'enabled' => 1,
+                'created_at' => $this->now(),
+                'updated_at' => $this->now(),
+            ]);
+            $this->audit('forward.created', ['forward_id' => $forwardId, 'service_id' => $serviceId, 'actor' => $actor]);
+        } else {
+            $this->db->execute(
+                'UPDATE forwards
+                 SET listen_port = :listen_port,
+                     target_host = :target_host,
+                     target_port = :target_port,
+                     bond_remote_host = :bond_remote_host,
+                     bond_remote_port = :bond_remote_port,
+                     bond_sidecar_point_id = :bond_sidecar_point_id,
+                     line_client_id = :line_client_id,
+                     line_client_group_id = :line_client_group_id,
+                     line_group_mode = :line_group_mode,
+                     line_client_group_ids_json = :line_client_group_ids_json,
+                     endpoint_mode = :endpoint_mode,
+                     forward_chain_id = :forward_chain_id,
+                     custom_endpoint_ids_json = :custom_endpoint_ids_json,
+                     transport_mode = :transport_mode,
+                     client_mode = :client_mode,
+                     sni_host = :sni_host,
+                     path_prefix = :path_prefix,
+                     node_group_key = :node_group_key,
+                     endpoint_count = :endpoint_count,
+                     public_port = :public_port,
+                     cdn_host = :cdn_host,
+                     filter_profile = :filter_profile,
+                     enabled = 1,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                [
+                    'id' => $forwardId,
+                    'listen_port' => $listenPort,
+                    'target_host' => $targetHost,
+                    'target_port' => $targetPort,
+                    'bond_remote_host' => $bondRemoteHost !== '' ? $bondRemoteHost : null,
+                    'bond_remote_port' => $bondRemotePort > 0 ? $bondRemotePort : null,
+                    'bond_sidecar_point_id' => $bondSidecarPointId > 0 ? $bondSidecarPointId : null,
+                    'line_client_id' => $lineClientId > 0 ? $lineClientId : null,
+                    'line_client_group_id' => $lineClientGroupId > 0 ? $lineClientGroupId : null,
+                    'line_group_mode' => $lineGroupMode !== '' ? $lineGroupMode : 'selected',
+                    'line_client_group_ids_json' => $this->normalizeJsonField($selectedLineClientGroupIds),
+                    'endpoint_mode' => $endpointMode,
+                    'forward_chain_id' => $forwardChainId > 0 ? $forwardChainId : null,
+                    'custom_endpoint_ids_json' => $customEndpointIdsJson,
+                    'transport_mode' => $transportMode,
+                    'client_mode' => $clientMode,
+                    'sni_host' => $sniHost,
+                    'path_prefix' => $pathPrefix,
+                    'node_group_key' => $nodeGroup,
+                    'endpoint_count' => $endpointCount,
+                    'public_port' => $publicPort > 0 ? $publicPort : $listenPort,
+                    'cdn_host' => $cdnHost,
+                    'filter_profile' => $filterProfile,
+                    'updated_at' => $this->now(),
+                ]
+            );
+            $this->audit('forward.updated', ['forward_id' => $forwardId, 'service_id' => $serviceId, 'actor' => $actor]);
+        }
+
+        $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
+        $desiredEndpointCount = max((int) $forward['endpoint_count'], count($endpointGroupKeys));
+        $nodes = $this->pickNodesForGroups($endpointGroupKeys, $desiredEndpointCount);
+        $reachableNodes = [];
+        $skippedNodes = [];
+        foreach ($nodes as $node) {
+            $publicHost = $this->resolveNodePublicHost($node);
+            if ($publicHost === '') {
+                $skippedNodes[] = [
+                    'id' => (int) ($node['id'] ?? 0),
+                    'name' => (string) ($node['name'] ?? ''),
+                ];
+                continue;
+            }
+            $node['resolved_public_host'] = $publicHost;
+            $reachableNodes[] = $node;
+        }
+        $nodes = $reachableNodes;
+        if ($nodes === []) {
+            throw new ApiException('no_available_nodes', 409, [
+                'requested_node_group' => $forward['node_group_key'],
+                'allowed_node_groups' => array_map(static fn(array $group): string => (string) $group['group_key'], $allowedGroups),
+                'available_node_groups' => array_map(static fn(array $group): string => (string) $group['group_key'], $this->availableNodeGroupsForService($serviceId)),
+                'nodes_missing_public_host' => $skippedNodes,
+            ]);
+        }
+
+        $publishTarget = in_array($clientMode, ['bond', 'mptcp'], true)
+            ? $this->bondRemoteTarget($forward)
+            : $forward['target_host'] . ':' . $forward['target_port'];
+
+        $priority = 10;
+        foreach ($nodes as $node) {
+            $endpointId = $this->db->insert('service_endpoints', [
+                'forward_id' => $forwardId,
+                'node_id' => $node['id'],
+                'public_host' => (string) ($node['resolved_public_host'] ?? $this->resolveNodePublicHost($node)),
+                'public_ip' => $node['public_ip'],
+                'public_port' => $forward['public_port'],
+                'cdn_host' => $forward['cdn_host'],
+                'priority' => $priority,
+                'weight' => 100,
+                'health_status' => 'pending',
+                'last_error' => null,
+                'created_at' => $this->now(),
+                'updated_at' => $this->now(),
+            ]);
+
+            $this->queueTask((int) $node['id'], 'publish', $serviceId, $forwardId, $endpointId, [
+                'listen_port' => (int) $forward['public_port'],
+                'target' => $publishTarget,
+                'path_prefix' => (string) $forward['path_prefix'],
+                'sni_host' => (string) $forward['sni_host'],
+                'cdn_host' => (string) $forward['cdn_host'],
+                'tls_cert_ref' => (string) $this->config->get('DEFAULT_TLS_CERT_REF', 'default-edge-cert'),
+                'filter_profile' => (string) $forward['filter_profile'],
+                'transport_mode' => (string) $forward['transport_mode'],
+                'leg_relay_protocols' => $clientMode === 'bond' ? ['quic'] : [],
+                'mptcp_underlay' => $clientMode === 'mptcp' ? $this->buildMptcpSlaveUnderlayPayload($forward, $node, [
+                    'id' => $endpointId,
+                    'public_port' => $forward['public_port'],
+                ]) : null,
+            ]);
+            $priority += 10;
+        }
+
+        return $this->buildClientConfig($forwardId);
+    }
+
+    private function revokeForwardEndpoints(int $forwardId, string $reason): void
+    {
+        $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
+        if ($forward === null) {
+            return;
+        }
+
+        $existing = $this->db->fetchAll(
+            'SELECT * FROM service_endpoints
+             WHERE forward_id = :forward_id
+               AND health_status <> :deleted
+               AND health_status <> :deleting',
+            [
+                'forward_id' => $forwardId,
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+            ]
+        );
+
+        foreach ($existing as $endpoint) {
+            $this->queueTask((int) $endpoint['node_id'], 'destroy', (int) $forward['service_id'], $forwardId, (int) $endpoint['id'], [
+                'listen_port' => (int) $endpoint['public_port'],
+                'path_prefix' => (string) $forward['path_prefix'],
+                'reason' => $reason,
+            ]);
+            $this->db->execute('UPDATE service_endpoints SET health_status = :status, updated_at = :updated_at WHERE id = :id', [
+                'id' => $endpoint['id'],
+                'status' => 'deleting',
+                'updated_at' => $this->now(),
+            ]);
+        }
+    }
+
+    private function queueLifecycleTasks(int $serviceId, string $action): void
+    {
+        $rows = $this->db->fetchAll(
+            'SELECT e.*, f.path_prefix
+             FROM service_endpoints e
+             INNER JOIN forwards f ON f.id = e.forward_id
+             WHERE f.service_id = :service_id
+               AND e.health_status <> :deleted
+               AND e.health_status <> :deleting',
+            [
+                'service_id' => $serviceId,
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+            ]
+        );
+
+        foreach ($rows as $row) {
+            $this->queueTask((int) $row['node_id'], $action, $serviceId, (int) $row['forward_id'], (int) $row['id'], [
+                'listen_port' => (int) $row['public_port'],
+                'path_prefix' => (string) $row['path_prefix'],
+            ]);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function queueTask(int $nodeId, string $action, int $serviceId, int $forwardId, int $endpointId, array $payload): void
+    {
+        $this->db->insert('provision_tasks', [
+            'node_id' => $nodeId,
+            'action' => $action,
+            'service_id' => $serviceId,
+            'forward_id' => $forwardId,
+            'endpoint_id' => $endpointId,
+            'status' => 'pending',
+            'payload_json' => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'lease_expires_at' => null,
+            'attempt_count' => 0,
+            'result_json' => null,
+            'error_message' => null,
+            'created_at' => $this->now(),
+            'updated_at' => $this->now(),
+        ]);
+    }
+
+    public function reconcileActiveForwardsForGroup(string $groupKey): void
+    {
+        $normalizedGroup = trim($groupKey);
+        if ($normalizedGroup === '') {
+            return;
+        }
+        $forwards = $this->db->fetchAll(
+            'SELECT f.*, s.status AS service_status
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.enabled = 1
+               AND f.endpoint_mode = :endpoint_mode
+               AND f.node_group_key = :group_key
+               AND s.status = :service_status',
+            [
+                'endpoint_mode' => 'slave_group',
+                'group_key' => $normalizedGroup,
+                'service_status' => 'active',
+            ]
+        );
+        foreach ($forwards as $forward) {
+            $this->reconcileForwardEndpoints((int) ($forward['id'] ?? 0));
+        }
+    }
+
+    public function republishActiveEndpointsForNode(int $nodeId): void
+    {
+        if ($nodeId <= 0) {
+            return;
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT e.*, f.*, s.status AS service_status
+             FROM service_endpoints e
+             INNER JOIN forwards f ON f.id = e.forward_id
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE e.node_id = :node_id
+               AND e.health_status <> :deleted
+               AND e.health_status <> :deleting
+               AND f.enabled = 1
+               AND s.status = :service_status',
+            [
+                'node_id' => $nodeId,
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+                'service_status' => 'active',
+            ]
+        );
+        foreach ($rows as $row) {
+            $node = $this->db->fetchOne('SELECT * FROM nodes WHERE id = :id LIMIT 1', ['id' => $nodeId]);
+            if (!is_array($node)) {
+                continue;
+            }
+            $publicHost = $this->resolveNodePublicHost($node);
+            if ($publicHost === '') {
+                continue;
+            }
+            $node['resolved_public_host'] = $publicHost;
+            $payload = $this->publishTaskPayloadForForward($row, $node, (int) ($row['id'] ?? 0));
+            $this->queueTask($nodeId, 'publish', (int) ($row['service_id'] ?? 0), (int) ($row['forward_id'] ?? $row['id'] ?? 0), (int) ($row['id'] ?? 0), $payload);
+        }
+    }
+
+    public function republishActiveForwardsForSidecarPoint(int $pointId): void
+    {
+        if ($pointId <= 0) {
+            return;
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT f.id AS forward_id
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.enabled = 1
+               AND f.client_mode = :client_mode
+               AND f.bond_sidecar_point_id = :point_id
+               AND s.status = :service_status',
+            [
+                'client_mode' => 'mptcp',
+                'point_id' => $pointId,
+                'service_status' => 'active',
+            ]
+        );
+        foreach ($rows as $row) {
+            $this->reconcileForwardEndpoints((int) ($row['forward_id'] ?? 0));
+        }
+    }
+
+    private function reconcileForwardEndpoints(int $forwardId): void
+    {
+        if ($forwardId <= 0) {
+            return;
+        }
+        $forward = $this->db->fetchOne(
+            'SELECT f.*, s.status AS service_status
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.id = :id LIMIT 1',
+            ['id' => $forwardId]
+        );
+        if ($forward === null || (int) ($forward['enabled'] ?? 0) !== 1 || (string) ($forward['service_status'] ?? '') !== 'active') {
+            return;
+        }
+        $groupKeys = [(string) ($forward['node_group_key'] ?? '')];
+        $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
+        $desiredCount = $this->panelManagedEndpointCount($clientMode, $groupKeys);
+        $desiredNodes = $this->pickNodesForGroups($groupKeys, $desiredCount);
+        $reachableNodes = [];
+        foreach ($desiredNodes as $node) {
+            $publicHost = $this->resolveNodePublicHost($node);
+            if ($publicHost === '') {
+                continue;
+            }
+            $node['resolved_public_host'] = $publicHost;
+            $reachableNodes[(int) $node['id']] = $node;
+        }
+        $existing = $this->db->fetchAll(
+            'SELECT * FROM service_endpoints
+             WHERE forward_id = :forward_id
+               AND health_status <> :deleted
+               AND health_status <> :deleting
+             ORDER BY priority ASC, id ASC',
+            [
+                'forward_id' => $forwardId,
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+            ]
+        );
+        $existingByNode = [];
+        foreach ($existing as $endpoint) {
+            $nodeId = (int) ($endpoint['node_id'] ?? 0);
+            if ($nodeId > 0 && !isset($existingByNode[$nodeId])) {
+                $existingByNode[$nodeId] = $endpoint;
+            }
+        }
+
+        foreach ($reachableNodes as $nodeId => $node) {
+            if (!isset($existingByNode[$nodeId])) {
+                $priority = 10 + (count($existingByNode) * 10);
+                $endpointId = $this->db->insert('service_endpoints', [
+                    'forward_id' => $forwardId,
+                    'node_id' => $nodeId,
+                    'public_host' => (string) $node['resolved_public_host'],
+                    'public_ip' => (string) ($node['public_ip'] ?? ''),
+                    'public_port' => (int) ($forward['public_port'] ?? 0),
+                    'cdn_host' => (string) ($forward['cdn_host'] ?? ''),
+                    'priority' => $priority,
+                    'weight' => 100,
+                    'health_status' => 'pending',
+                    'last_error' => null,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+                $payload = $this->publishTaskPayloadForForward($forward, $node, $endpointId);
+                $this->queueTask($nodeId, 'publish', (int) ($forward['service_id'] ?? 0), $forwardId, $endpointId, $payload);
+                continue;
+            }
+            $endpoint = $existingByNode[$nodeId];
+            if (in_array((string) ($endpoint['health_status'] ?? ''), ['pending', 'error', 'degraded'], true)) {
+                $payload = $this->publishTaskPayloadForForward($forward, $node, (int) ($endpoint['id'] ?? 0));
+                $this->queueTask($nodeId, 'publish', (int) ($forward['service_id'] ?? 0), $forwardId, (int) ($endpoint['id'] ?? 0), $payload);
+            }
+        }
+
+        foreach ($existingByNode as $nodeId => $endpoint) {
+            if (isset($reachableNodes[$nodeId])) {
+                continue;
+            }
+            $this->queueTask((int) $nodeId, 'destroy', (int) ($forward['service_id'] ?? 0), $forwardId, (int) ($endpoint['id'] ?? 0), [
+                'listen_port' => (int) ($endpoint['public_port'] ?? 0),
+                'path_prefix' => (string) ($forward['path_prefix'] ?? ''),
+                'reason' => 'reconcile',
+            ]);
+            $this->db->execute(
+                'UPDATE service_endpoints SET health_status = :status, updated_at = :updated_at WHERE id = :id',
+                [
+                    'id' => (int) ($endpoint['id'] ?? 0),
+                    'status' => 'deleting',
+                    'updated_at' => $this->now(),
+                ]
+            );
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @param array<string, mixed> $node
+     * @return array<string, mixed>
+     */
+    private function publishTaskPayloadForForward(array $forward, array $node, int $endpointId): array
+    {
+        $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
+        $publishTarget = in_array($clientMode, ['bond', 'mptcp'], true)
+            ? $this->bondRemoteTarget($forward)
+            : ((string) ($forward['target_host'] ?? '') . ':' . (int) ($forward['target_port'] ?? 0));
+        return [
+            'listen_port' => (int) ($forward['public_port'] ?? 0),
+            'target' => $publishTarget,
+            'path_prefix' => (string) ($forward['path_prefix'] ?? ''),
+            'sni_host' => (string) ($forward['sni_host'] ?? ''),
+            'cdn_host' => (string) ($forward['cdn_host'] ?? ''),
+            'tls_cert_ref' => (string) $this->config->get('DEFAULT_TLS_CERT_REF', 'default-edge-cert'),
+            'filter_profile' => (string) ($forward['filter_profile'] ?? 'off'),
+            'transport_mode' => (string) ($forward['transport_mode'] ?? 'tcp+udp'),
+            'leg_relay_protocols' => $clientMode === 'bond' ? ['quic'] : [],
+            'mptcp_underlay' => $clientMode === 'mptcp' ? $this->buildMptcpSlaveUnderlayPayload($forward, $node, [
+                'id' => $endpointId,
+                'node_id' => (int) ($node['id'] ?? 0),
+                'public_port' => (int) ($forward['public_port'] ?? 0),
+            ]) : null,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function ensureUser(string $email, string $name): array
+    {
+        $user = $this->db->fetchOne('SELECT * FROM users WHERE email = :email LIMIT 1', ['email' => $email]);
+        if ($user !== null) {
+            return $user;
+        }
+
+        $userId = $this->db->insert('users', [
+            'name' => $name,
+            'email' => $email,
+            'api_token' => bin2hex(random_bytes(24)),
+            'password_hash' => null,
+            'role' => 'tenant',
+            'feature_flags_json' => null,
+            'status' => 'active',
+            'email_verified_at' => $this->now(),
+            'email_verification_token' => null,
+            'verification_sent_at' => null,
+            'created_at' => $this->now(),
+            'updated_at' => $this->now(),
+        ]);
+        return $this->db->fetchOne('SELECT * FROM users WHERE id = :id', ['id' => $userId]) ?? [];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function ensurePlan(string $productCode, int $bandwidthLimit, int $trafficLimit): array
+    {
+        $plan = $this->db->fetchOne('SELECT * FROM service_plans WHERE product_code = :code LIMIT 1', ['code' => $productCode]);
+        if ($plan !== null) {
+            return $plan;
+        }
+
+        $planId = $this->db->insert('service_plans', [
+            'name' => $productCode,
+            'product_code' => $productCode,
+            'description' => null,
+            'default_bandwidth_limit_mbps' => $bandwidthLimit,
+            'default_traffic_limit_gb' => $trafficLimit,
+            'billing_mode' => 'monthly_bundle',
+            'billing_currency' => 'CNY',
+            'monthly_base_fee' => 0,
+            'monthly_included_traffic_gb' => $trafficLimit,
+            'traffic_price_per_gb' => 0,
+            'traffic_reset_price' => 0,
+            'bandwidth_step_mbps' => 0,
+            'bandwidth_step_price' => 0,
+            'included_client_count' => 0,
+            'extra_client_price' => 0,
+            'is_active' => 1,
+            'feature_flags_json' => null,
+            'created_at' => $this->now(),
+            'updated_at' => $this->now(),
+        ]);
+        return $this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id', ['id' => $planId]) ?? [];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function pickNodes(string $groupKey, int $count): array
+    {
+        $params = [
+            'active' => 'active',
+            'degraded' => 'degraded',
+        ];
+        $sql = 'SELECT n.*
+                FROM nodes n
+                LEFT JOIN node_groups g ON g.id = n.group_id
+                WHERE (n.status = :active OR n.status = :degraded)';
+
+        if ($groupKey !== '' && $groupKey !== 'default') {
+            $sql .= ' AND g.group_key = :group_key';
+            $params['group_key'] = $groupKey;
+        }
+
+        $sql .= ' ORDER BY n.current_load ASC, n.last_heartbeat_at DESC, n.id ASC LIMIT ' . max(1, $count);
+        return $this->db->fetchAll($sql, $params);
+    }
+
+    /**
+     * @param array<int, string> $groupKeys
+     * @return array<int, array<string, mixed>>
+     */
+    private function pickNodesForGroups(array $groupKeys, int $count): array
+    {
+        $normalized = array_values(array_unique(array_filter(array_map(static fn(string $item): string => trim($item), $groupKeys), static fn(string $item): bool => $item !== '')));
+        if ($normalized === []) {
+            return [];
+        }
+
+        $primary = [];
+        $secondary = [];
+        foreach ($normalized as $groupKey) {
+            $groupNodes = $this->pickNodes($groupKey, max(1, $count));
+            if ($groupNodes === []) {
+                continue;
+            }
+            $first = array_shift($groupNodes);
+            if (is_array($first)) {
+                $primary[(int) $first['id']] = $first;
+            }
+            foreach ($groupNodes as $node) {
+                $secondary[(int) $node['id']] = $node;
+            }
+        }
+
+        $sorter = static function (array $left, array $right): int {
+            $loadCmp = ((int) $left['current_load']) <=> ((int) $right['current_load']);
+            if ($loadCmp !== 0) {
+                return $loadCmp;
+            }
+            return strcmp((string) ($right['last_heartbeat_at'] ?? ''), (string) ($left['last_heartbeat_at'] ?? ''));
+        };
+
+        $orderedPrimary = array_values($primary);
+        usort($orderedPrimary, $sorter);
+        $orderedSecondary = array_values(array_filter($secondary, static fn(array $node): bool => !isset($primary[(int) $node['id']])));
+        usort($orderedSecondary, $sorter);
+
+        return array_slice(array_merge($orderedPrimary, $orderedSecondary), 0, max(1, $count));
+    }
+
+    /**
+     * @param array<int, string> $groupKeys
+     */
+    private function availableNodeCountForGroups(array $groupKeys): int
+    {
+        $normalized = array_values(array_unique(array_filter(array_map(static fn(string $item): string => trim($item), $groupKeys), static fn(string $item): bool => $item !== '')));
+        if ($normalized === []) {
+            return 0;
+        }
+
+        $params = [
+            'active' => 'active',
+            'degraded' => 'degraded',
+        ];
+        $placeholders = [];
+        foreach ($normalized as $index => $groupKey) {
+            $placeholder = 'group_key_' . $index;
+            $placeholders[] = ':' . $placeholder;
+            $params[$placeholder] = $groupKey;
+        }
+
+        $row = $this->db->fetchOne(
+            'SELECT COUNT(*) AS total
+             FROM nodes n
+             LEFT JOIN node_groups g ON g.id = n.group_id
+             WHERE (n.status = :active OR n.status = :degraded)
+               AND g.group_key IN (' . implode(', ', $placeholders) . ')',
+            $params
+        );
+
+        return max(0, (int) ($row['total'] ?? 0));
+    }
+
+    /**
+     * @param array<int, string> $groupKeys
+     */
+    private function panelManagedEndpointCount(string $clientMode, array $groupKeys): int
+    {
+        $availableCount = $this->availableNodeCountForGroups($groupKeys);
+        $groupCount = count(array_filter(array_map(static fn(string $item): string => trim($item), $groupKeys), static fn(string $item): bool => $item !== ''));
+
+        if ($clientMode === 'single') {
+            return 1;
+        }
+
+        if (in_array($clientMode, ['bond', 'mptcp'], true)) {
+            if ($availableCount > 0) {
+                return max(2, $availableCount);
+            }
+
+            return max(2, $groupCount);
+        }
+
+        if ($availableCount > 0) {
+            return $availableCount;
+        }
+
+        return max(1, $groupCount);
+    }
+
+    private function resolveEndpointPublicHost(array $endpoint): string
+    {
+        $storedHost = trim((string) ($endpoint['public_host'] ?? ''));
+        if ($this->isUsablePublicHost($storedHost)) {
+            return $storedHost;
+        }
+
+        $nodePublicIp = trim((string) ($endpoint['node_public_ip'] ?? ''));
+        if ($this->isUsablePublicHost($nodePublicIp)) {
+            return $nodePublicIp;
+        }
+
+        $nodeName = trim((string) ($endpoint['node_name'] ?? ''));
+        if ($this->isUsablePublicHost($nodeName)) {
+            return $nodeName;
+        }
+
+        return $storedHost;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function nodeGroupByKey(string $groupKey): ?array
+    {
+        $normalized = trim($groupKey);
+        if ($normalized === '') {
+            return null;
+        }
+
+        $group = $this->db->fetchOne('SELECT * FROM node_groups WHERE group_key = :group_key LIMIT 1', [
+            'group_key' => $normalized,
+        ]);
+
+        return is_array($group) ? $group : null;
+    }
+
+    /**
+     * @param array<string, mixed>|null $ingressGroup
+     */
+    private function resolveIngressSniHost(string $forwardSniHost, ?array $ingressGroup = null): string
+    {
+        $groupSni = trim((string) (($ingressGroup['ingress_sni_host'] ?? '') ?: ''));
+        if ($this->isUsableIngressHost($groupSni)) {
+            return $groupSni;
+        }
+
+        $explicit = trim($forwardSniHost);
+        if ($this->isUsableIngressHost($explicit)) {
+            return $explicit;
+        }
+
+        $default = trim((string) ($this->config->get('DEFAULT_CDN_HOST', 'edge.example.com') ?? 'edge.example.com'));
+        return $default !== '' ? $default : 'edge.example.com';
+    }
+
+    /**
+     * @param array<string, mixed>|null $ingressGroup
+     */
+    private function resolveIngressCdnHost(string $forwardCdnHost, string $resolvedSniHost, ?array $ingressGroup = null): string
+    {
+        $groupCdn = trim((string) (($ingressGroup['ingress_cdn_host'] ?? '') ?: ''));
+        if ($this->isUsableIngressHost($groupCdn)) {
+            return $groupCdn;
+        }
+
+        $explicit = trim($forwardCdnHost);
+        if ($this->isUsableIngressHost($explicit)) {
+            return $explicit;
+        }
+
+        if ($this->isUsableIngressHost($resolvedSniHost)) {
+            return $resolvedSniHost;
+        }
+
+        $default = trim((string) ($this->config->get('DEFAULT_CDN_HOST', 'edge.example.com') ?? 'edge.example.com'));
+        return $default !== '' ? $default : 'edge.example.com';
+    }
+
+    private function isUsableIngressHost(string $value): bool
+    {
+        $normalized = trim($value);
+        if ($normalized === '') {
+            return false;
+        }
+
+        if (filter_var($normalized, FILTER_VALIDATE_IP) !== false) {
+            return false;
+        }
+
+        if (strtolower($normalized) === 'localhost') {
+            return false;
+        }
+
+        return preg_match('/^[A-Za-z0-9.-]+$/', $normalized) === 1;
+    }
+
+    private function resolveNodePublicHost(array $node): string
+    {
+        $publicIp = trim((string) ($node['public_ip'] ?? ''));
+        if ($this->isUsablePublicHost($publicIp)) {
+            return $publicIp;
+        }
+
+        $agentConfig = [];
+        if (is_string($node['agent_config_json'] ?? null) && $node['agent_config_json'] !== '') {
+            $decoded = json_decode((string) $node['agent_config_json'], true);
+            if (is_array($decoded)) {
+                $agentConfig = $decoded;
+            }
+        }
+
+        foreach (['public_host', 'public_hostname', 'endpoint_host'] as $key) {
+            $candidate = trim((string) ($agentConfig[$key] ?? ''));
+            if ($this->isUsablePublicHost($candidate)) {
+                return $candidate;
+            }
+        }
+
+        $name = trim((string) ($node['name'] ?? ''));
+        if ($this->isUsablePublicHost($name)) {
+            return $name;
+        }
+
+        return '';
+    }
+
+    private function isUsablePublicHost(string $value): bool
+    {
+        $candidate = trim($value);
+        if ($candidate === '') {
+            return false;
+        }
+
+        if (filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false) {
+            return true;
+        }
+
+        if (filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
+            return true;
+        }
+
+        if (!str_contains($candidate, '.')) {
+            return false;
+        }
+
+        return preg_match('/^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/', $candidate) === 1;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function getServiceByWhmcsId(int $whmcsServiceId): array
+    {
+        $service = $this->db->fetchOne('SELECT * FROM services WHERE whmcs_service_id = :id LIMIT 1', ['id' => $whmcsServiceId]);
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404, ['whmcs_service_id' => $whmcsServiceId]);
+        }
+        return $service;
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    /**
+     * @param array<string, mixed>|null $existingService
+     * @return array<string, mixed>
+     */
+    private function serviceBillingSnapshot(array $plan, int $trafficLimit, ?array $existingService = null): array
+    {
+        $billingMode = $this->normalizeBillingMode((string) ($plan['billing_mode'] ?? 'monthly_bundle'));
+        $billingCurrency = strtoupper(trim((string) ($plan['billing_currency'] ?? 'CNY')));
+        if ($billingCurrency === '') {
+            $billingCurrency = 'CNY';
+        }
+
+        $includedTraffic = max(0, (int) ($plan['monthly_included_traffic_gb'] ?? $trafficLimit));
+        if ($billingMode === 'monthly_bundle' && $includedTraffic <= 0) {
+            $includedTraffic = max(0, $trafficLimit);
+        }
+
+        return [
+            'billing_mode' => $billingMode,
+            'billing_currency' => $billingCurrency,
+            'monthly_base_fee' => $this->normalizeMoney($plan['monthly_base_fee'] ?? 0),
+            'monthly_included_traffic_gb' => $includedTraffic,
+            'traffic_price_per_gb' => $this->normalizeRate($plan['traffic_price_per_gb'] ?? 0),
+            'billing_cycle_started_at' => (string) (($existingService['billing_cycle_started_at'] ?? '') ?: $this->now()),
+            'billing_cycle_traffic_used_bytes' => max(0, (int) ($existingService['billing_cycle_traffic_used_bytes'] ?? 0)),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $service
+     * @return array<string, mixed>
+     */
+    private function billingOverviewFromService(array $service): array
+    {
+        $service = $this->hydrateServicePricingContext($service);
+        $mode = $this->normalizeBillingMode((string) ($service['billing_mode'] ?? 'monthly_bundle'));
+        $currency = strtoupper(trim((string) ($service['billing_currency'] ?? 'CNY')));
+        if ($currency === '') {
+            $currency = 'CNY';
+        }
+
+        $baseFee = (float) ($service['monthly_base_fee'] ?? 0);
+        $includedGb = max(0, (int) ($service['monthly_included_traffic_gb'] ?? $service['traffic_limit_gb'] ?? 0));
+        $pricePerGb = (float) ($service['traffic_price_per_gb'] ?? 0);
+        $usageBytes = max(0, (int) ($service['billing_cycle_traffic_used_bytes'] ?? 0));
+        $cycleStart = $this->asUtcDateTime((string) (($service['billing_cycle_started_at'] ?? '') ?: ($service['created_at'] ?? $this->now())));
+        $cycleEnd = $this->nextBillingCycleStart($cycleStart);
+        $includedBytes = $includedGb * 1024 * 1024 * 1024;
+        $billableBytes = $mode === 'metered' ? max(0, $usageBytes - $includedBytes) : 0;
+        $trafficCharge = $mode === 'metered'
+            ? (($billableBytes / 1024 / 1024 / 1024) * $pricePerGb)
+            : 0.0;
+
+        $baseBandwidth = max(0, (int) ($service['plan_default_bandwidth_limit_mbps'] ?? $service['bandwidth_limit_mbps'] ?? 0));
+        $currentBandwidth = max(0, (int) ($service['bandwidth_limit_mbps'] ?? 0));
+        $bandwidthStepMbps = max(0, (int) ($service['plan_bandwidth_step_mbps'] ?? 0));
+        $bandwidthStepPrice = (float) ($service['plan_bandwidth_step_price'] ?? 0);
+        $extraBandwidthMbps = max(0, $currentBandwidth - $baseBandwidth);
+        $extraBandwidthSteps = ($bandwidthStepMbps > 0 && $bandwidthStepPrice > 0 && $extraBandwidthMbps > 0)
+            ? (int) ceil($extraBandwidthMbps / $bandwidthStepMbps)
+            : 0;
+        $bandwidthAddon = $extraBandwidthSteps * $bandwidthStepPrice;
+
+        $includedClientCount = max(0, (int) ($service['plan_included_client_count'] ?? 0));
+        $activeClientCount = max(0, (int) ($service['active_client_count'] ?? 0));
+        $extraClientPrice = (float) ($service['plan_extra_client_price'] ?? 0);
+        $extraClientCount = max(0, $activeClientCount - $includedClientCount);
+        $clientAddon = $extraClientCount * $extraClientPrice;
+
+        $estimatedTotal = $baseFee + $trafficCharge + $bandwidthAddon + $clientAddon;
+
+        return [
+            'mode' => $mode,
+            'mode_label' => $mode === 'metered' ? 'Metered' : 'Monthly Bundle',
+            'currency' => $currency,
+            'base_fee' => number_format($baseFee, 2, '.', ''),
+            'base_fee_formatted' => $currency . ' ' . number_format($baseFee, 2),
+            'included_traffic_gb' => $includedGb,
+            'included_bytes' => $includedBytes,
+            'included_traffic_bytes' => $includedBytes,
+            'traffic_price_per_gb' => number_format($pricePerGb, 4, '.', ''),
+            'traffic_price_per_gb_formatted' => $currency . ' ' . number_format($pricePerGb, 4) . ' / GB',
+            'cycle_started_at' => $cycleStart->format('Y-m-d H:i:s'),
+            'cycle_ends_at' => $cycleEnd->format('Y-m-d H:i:s'),
+            'current_cycle_used_bytes' => $usageBytes,
+            'current_cycle_used_gb' => round($usageBytes / 1024 / 1024 / 1024, 2),
+            'remaining_included_bytes' => max(0, $includedBytes - min($includedBytes, $usageBytes)),
+            'remaining_included_gb' => $mode === 'monthly_bundle' ? max(0, round(($includedBytes - min($includedBytes, $usageBytes)) / 1024 / 1024 / 1024, 2)) : null,
+            'billable_bytes' => $billableBytes,
+            'billable_gb' => round($billableBytes / 1024 / 1024 / 1024, 2),
+            'traffic_charge_amount' => number_format($trafficCharge, 2, '.', ''),
+            'traffic_charge_formatted' => $currency . ' ' . number_format($trafficCharge, 2),
+            'base_bandwidth_mbps' => $baseBandwidth,
+            'current_bandwidth_mbps' => $currentBandwidth,
+            'bandwidth_step_mbps' => $bandwidthStepMbps,
+            'bandwidth_step_price' => number_format($bandwidthStepPrice, 2, '.', ''),
+            'bandwidth_step_price_formatted' => $currency . ' ' . number_format($bandwidthStepPrice, 2),
+            'extra_bandwidth_mbps' => $extraBandwidthMbps,
+            'extra_bandwidth_steps' => $extraBandwidthSteps,
+            'bandwidth_addon_amount' => number_format($bandwidthAddon, 2, '.', ''),
+            'bandwidth_addon_formatted' => $currency . ' ' . number_format($bandwidthAddon, 2),
+            'included_client_count' => $includedClientCount,
+            'active_client_count' => $activeClientCount,
+            'extra_client_count' => $extraClientCount,
+            'extra_client_price' => number_format($extraClientPrice, 2, '.', ''),
+            'extra_client_price_formatted' => $currency . ' ' . number_format($extraClientPrice, 2),
+            'client_addon_amount' => number_format($clientAddon, 2, '.', ''),
+            'client_addon_formatted' => $currency . ' ' . number_format($clientAddon, 2),
+            'estimated_total_amount' => number_format($estimatedTotal, 2, '.', ''),
+            'estimated_total_formatted' => $currency . ' ' . number_format($estimatedTotal, 2),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $service
+     * @return array<string, mixed>
+     */
+    private function hydrateServicePricingContext(array $service): array
+    {
+        $needsPlanPricing = !array_key_exists('plan_default_bandwidth_limit_mbps', $service)
+            || !array_key_exists('plan_bandwidth_step_mbps', $service)
+            || !array_key_exists('plan_bandwidth_step_price', $service)
+            || !array_key_exists('plan_included_client_count', $service)
+            || !array_key_exists('plan_extra_client_price', $service)
+            || !array_key_exists('plan_traffic_reset_price', $service)
+            || !array_key_exists('plan_billing_currency', $service);
+
+        if ($needsPlanPricing && !empty($service['plan_id'])) {
+            $plan = $this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id LIMIT 1', ['id' => $service['plan_id']]);
+            if ($plan !== null) {
+                $service['plan_default_bandwidth_limit_mbps'] = (int) ($plan['default_bandwidth_limit_mbps'] ?? 0);
+                $service['plan_bandwidth_step_mbps'] = (int) ($plan['bandwidth_step_mbps'] ?? 0);
+                $service['plan_bandwidth_step_price'] = $plan['bandwidth_step_price'] ?? 0;
+                $service['plan_included_client_count'] = (int) ($plan['included_client_count'] ?? 0);
+                $service['plan_extra_client_price'] = $plan['extra_client_price'] ?? 0;
+                $service['plan_traffic_reset_price'] = $plan['traffic_reset_price'] ?? 0;
+                $service['plan_billing_currency'] = (string) ($plan['billing_currency'] ?? 'CNY');
+            }
+        }
+
+        if (!array_key_exists('active_client_count', $service) && !empty($service['id'])) {
+            $row = $this->db->fetchOne(
+                'SELECT COUNT(DISTINCT line_client_id) AS total
+                 FROM forwards
+                 WHERE service_id = :service_id
+                   AND enabled = 1
+                   AND line_client_id IS NOT NULL',
+                ['service_id' => $service['id']]
+            );
+            $service['active_client_count'] = (int) ($row['total'] ?? 0);
+        }
+
+        return $service;
+    }
+
+    /**
+     * @param array<string, mixed> $service
+     * @return array<string, mixed>
+     */
+    private function syncServiceBillingCycle(array $service): array
+    {
+        $cycleStart = $this->asUtcDateTime((string) (($service['billing_cycle_started_at'] ?? '') ?: ($service['created_at'] ?? $this->now())));
+        $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $cycleUsageBytes = max(0, (int) ($service['billing_cycle_traffic_used_bytes'] ?? 0));
+        $rolled = false;
+        $resumeTrafficSuspendedService = false;
+
+        while ($this->nextBillingCycleStart($cycleStart) <= $now) {
+            $cycleEnd = $this->nextBillingCycleStart($cycleStart);
+            $this->recordBillingCycle($service, $cycleStart, $cycleEnd, $cycleUsageBytes);
+            $cycleStart = $cycleEnd;
+            $cycleUsageBytes = 0;
+            $rolled = true;
+            if ((string) ($service['status'] ?? '') === 'traffic_suspended' && (string) ($service['suspend_reason'] ?? '') === 'traffic_limit') {
+                $resumeTrafficSuspendedService = true;
+            }
+        }
+
+        if (!$rolled) {
+            return $service;
+        }
+
+        $params = [
+            'id' => $service['id'],
+            'billing_cycle_started_at' => $cycleStart->format('Y-m-d H:i:s'),
+            'billing_cycle_traffic_used_bytes' => $cycleUsageBytes,
+            'updated_at' => $this->now(),
+        ];
+        $sql = 'UPDATE services
+                SET billing_cycle_started_at = :billing_cycle_started_at,
+                    billing_cycle_traffic_used_bytes = :billing_cycle_traffic_used_bytes,
+                    updated_at = :updated_at';
+        if ($resumeTrafficSuspendedService) {
+            $sql .= ',
+                    status = :status,
+                    suspend_reason = :suspend_reason';
+            $params['status'] = 'active';
+            $params['suspend_reason'] = null;
+        }
+        $sql .= ' WHERE id = :id';
+        $this->db->execute($sql, $params);
+
+        if ($resumeTrafficSuspendedService) {
+            $this->queueLifecycleTasks((int) $service['id'], 'resume');
+        }
+
+        return $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $service['id']]) ?? $service;
+    }
+
+    /**
+     * @param array<string, mixed> $service
+     */
+    private function recordBillingCycle(array $service, DateTimeImmutable $cycleStart, DateTimeImmutable $cycleEnd, int $usageBytes): void
+    {
+        $existing = $this->db->fetchOne(
+            'SELECT id FROM service_billing_cycles WHERE service_id = :service_id AND cycle_started_at = :cycle_started_at LIMIT 1',
+            [
+                'service_id' => $service['id'],
+                'cycle_started_at' => $cycleStart->format('Y-m-d H:i:s'),
+            ]
+        );
+        if ($existing !== null) {
+            return;
+        }
+
+        $cycleService = $service;
+        $cycleService['billing_cycle_started_at'] = $cycleStart->format('Y-m-d H:i:s');
+        $cycleService['billing_cycle_traffic_used_bytes'] = $usageBytes;
+        $overview = $this->billingOverviewFromService($cycleService);
+        $this->db->insert('service_billing_cycles', [
+            'service_id' => $service['id'],
+            'cycle_started_at' => $cycleStart->format('Y-m-d H:i:s'),
+            'cycle_ended_at' => $cycleEnd->format('Y-m-d H:i:s'),
+            'billing_mode' => $overview['mode'],
+            'billing_currency' => $overview['currency'],
+            'monthly_base_fee' => $overview['base_fee'],
+            'monthly_included_traffic_gb' => $overview['included_traffic_gb'],
+            'traffic_price_per_gb' => $overview['traffic_price_per_gb'],
+            'usage_bytes' => $usageBytes,
+            'billable_bytes' => (int) ($overview['billable_bytes'] ?? 0),
+            'estimated_total_amount' => $overview['estimated_total_amount'],
+            'created_at' => $this->now(),
+        ]);
+    }
+
+    private function normalizeBillingMode(string $value): string
+    {
+        return strtolower(trim($value)) === 'metered' ? 'metered' : 'monthly_bundle';
+    }
+
+    private function normalizeMoney(mixed $value): string
+    {
+        return number_format(max(0, (float) $value), 2, '.', '');
+    }
+
+    private function normalizeRate(mixed $value): string
+    {
+        return number_format(max(0, (float) $value), 4, '.', '');
+    }
+
+    private function nextBillingCycleStart(DateTimeImmutable $cycleStart): DateTimeImmutable
+    {
+        return $cycleStart->modify('+1 month');
+    }
+
+    private function asUtcDateTime(string $value): DateTimeImmutable
+    {
+        $timezone = new DateTimeZone('UTC');
+        $parsed = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $value, $timezone);
+        if ($parsed instanceof DateTimeImmutable) {
+            return $parsed;
+        }
+
+        try {
+            return new DateTimeImmutable($value, $timezone);
+        } catch (\Throwable) {
+            return new DateTimeImmutable('now', $timezone);
+        }
+    }
+
+    private function audit(string $action, array $context): void
+    {
+        $this->db->insert('audit_logs', [
+            'action' => $action,
+            'context_json' => json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'created_at' => $this->now(),
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function requiredString(array $payload, string $key): string
+    {
+        $value = (string) ($payload[$key] ?? '');
+        if ($value === '') {
+            throw new ApiException('missing_required_field', 422, ['field' => $key]);
+        }
+        return $value;
+    }
+
+    private function normalizeJsonField(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_string($value)) {
+            $trimmed = trim($value);
+            if ($trimmed === '') {
+                return null;
+            }
+            json_decode($trimmed, true);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                return $trimmed;
+            }
+            return json_encode($trimmed, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+
+        if (is_array($value)) {
+            return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+
+        return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    private function normalizeClientMode(string $mode): string
+    {
+        return match (strtolower(trim($mode))) {
+            '', 'single' => 'single',
+            'race', 'failover', 'multi-path', 'lb' => 'race',
+            'bond', 'bonding', 'aggregate', 'aggregated' => 'bond',
+            'mptcp', 'mptcp-wireguard', 'mptcp-ipsec', 'multipath-tcp' => 'mptcp',
+            default => 'single',
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    private function bondTokenSecret(array $context = []): string
+    {
+        $sidecarPointSecret = trim((string) ($context['bond_sidecar_point_token_secret'] ?? $context['sidecar_point_token_secret'] ?? ''));
+        if ($sidecarPointSecret !== '') {
+            return $sidecarPointSecret;
+        }
+
+        $serviceToken = trim((string) ($context['client_token'] ?? ''));
+        if ($serviceToken !== '') {
+            return $serviceToken;
+        }
+
+        $tokenSecret = trim((string) ($this->config->get('BOND_TOKEN_SECRET', '') ?? ''));
+        if ($tokenSecret === '') {
+            throw new ApiException('bond_not_configured', 422, [
+                'required_env' => ['BOND_TOKEN_SECRET'],
+                'accepted_sources' => ['services.client_token', 'BOND_TOKEN_SECRET'],
+            ]);
+        }
+
+        return $tokenSecret;
+    }
+
+    private function bondDefaultRemotePort(): int
+    {
+        $legacyPort = (int) ($this->config->getInt('BOND_AGGREGATOR_PORT', 0) ?? 0);
+        if ($legacyPort > 0) {
+            return $legacyPort;
+        }
+
+        $defaultPort = (int) ($this->config->getInt('BOND_DEFAULT_REMOTE_PORT', 9000) ?? 9000);
+        return $defaultPort > 0 ? $defaultPort : 9000;
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @return array{host: string, port: int}
+     */
+    private function resolveBondRemoteTarget(array $forward): array
+    {
+        $host = trim((string) ($forward['bond_remote_host'] ?? $forward['bond_sidecar_host'] ?? ''));
+        $port = (int) ($forward['bond_remote_port'] ?? $forward['bond_sidecar_port'] ?? 0);
+
+        if ($host === '') {
+            $host = trim((string) ($this->config->get('BOND_AGGREGATOR_HOST', '') ?? ''));
+        }
+        if ($port <= 0) {
+            $port = $this->bondDefaultRemotePort();
+        }
+
+        if ($host === '' || $port <= 0) {
+            throw new ApiException('bond_remote_target_required', 422, [
+                'required_fields' => ['bond_remote_host', 'bond_remote_port'],
+                'legacy_env_fallbacks' => ['BOND_AGGREGATOR_HOST', 'BOND_AGGREGATOR_PORT'],
+            ]);
+        }
+
+        return [
+            'host' => $host,
+            'port' => $port,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     */
+    private function bondRemoteTarget(array $forward): string
+    {
+        $settings = $this->resolveBondRemoteTarget($forward);
+        return $settings['host'] . ':' . $settings['port'];
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @return array<string, mixed>
+     */
+    private function buildBondClientConfig(array $forward, array $endpoints = []): array
+    {
+        $remote = $this->resolveBondRemoteTarget($forward);
+        $direct = $this->resolveBondDirectTarget($forward);
+        $tokenSecret = $this->bondTokenSecret($forward);
+        $clientDirectQuicEnabled = $this->config->getBool('BOND_CLIENT_DIRECT_QUIC_ENABLED', false);
+        [
+            'join_timeout_ms' => $adaptiveJoinTimeoutMs,
+            'join_timeout_floor_ms' => $joinTimeoutFloorMs,
+            'join_timeout_ceiling_ms' => $joinTimeoutCeilingMs,
+            'join_timeout_per_leg_ms' => $joinTimeoutPerLegMs,
+        ] = $this->adaptiveBondJoinTimeoutConfig($endpoints);
+        ['issued_at' => $issuedAt, 'expires_at' => $expiresAt] = $this->bondTokenTimestamps();
+        return [
+            'enabled' => true,
+            'hybrid_mode' => 'quic_ws',
+            'sidecar_host' => $direct['host'],
+            'sidecar_port' => $direct['port'],
+            'aggregator_host' => $direct['host'],
+            'aggregator_port' => $direct['port'],
+            'relay_host' => $remote['host'],
+            'relay_port' => $remote['port'],
+            'remote_target' => $remote['host'] . ':' . $remote['port'],
+            'session_token' => $this->buildBondSessionToken($forward, $tokenSecret, $issuedAt, $expiresAt, 'tcp'),
+            'udp_session_token' => $this->buildBondSessionToken($forward, $tokenSecret, $issuedAt, $expiresAt, 'udp'),
+            'chunk_size' => max(4096, (int) ($this->config->getInt('BOND_CHUNK_SIZE', 128 * 1024) ?? (128 * 1024))),
+            'max_window_bytes' => max(65536, (int) ($this->config->getInt('BOND_MAX_WINDOW_BYTES', 16 * 1024 * 1024) ?? (16 * 1024 * 1024))),
+            'retransmit_ms' => max(100, (int) ($this->config->getInt('BOND_RETRANSMIT_MS', 300) ?? 300)),
+            'connect_timeout_ms' => max(100, (int) ($this->config->getInt('BOND_CONNECT_TIMEOUT_MS', 3000) ?? 3000)),
+            'join_timeout_ms' => $adaptiveJoinTimeoutMs,
+            'adaptive_join_timeout' => true,
+            'join_timeout_floor_ms' => $joinTimeoutFloorMs,
+            'join_timeout_ceiling_ms' => $joinTimeoutCeilingMs,
+            'join_timeout_per_leg_ms' => $joinTimeoutPerLegMs,
+            'interactive_chunk_bytes' => max(1024, (int) ($this->config->getInt('BOND_INTERACTIVE_CHUNK_BYTES', 16 * 1024) ?? (16 * 1024))),
+            'latency_guard_bytes' => max(16 * 1024, (int) ($this->config->getInt('BOND_LATENCY_GUARD_BYTES', 256 * 1024) ?? (256 * 1024))),
+            'interactive_rtt_slack_ms' => max(5, (int) ($this->config->getInt('BOND_INTERACTIVE_RTT_SLACK_MS', 30) ?? 30)),
+            // In the CNIX topology the client reaches sidecar through slave endpoints,
+            // so QUIC legs must stay enabled while direct-to-sidecar experiments remain opt-in.
+            'quic_enabled' => true,
+            'quic_via_slave' => true,
+            'quic_direct_enabled' => $clientDirectQuicEnabled,
+            'active_leg_limit' => max(0, (int) ($this->config->getInt('BOND_ACTIVE_LEG_LIMIT', 0) ?? 0)),
+            'quic_active_leg_limit' => max(0, (int) ($this->config->getInt('BOND_QUIC_ACTIVE_LEG_LIMIT', 0) ?? 0)),
+            'wss_standby_enabled' => $this->config->getBool('BOND_WSS_STANDBY_ENABLED', true),
+            'wss_standby_mode' => 'warm-passive',
+            'disable_local_rate_limit' => true,
+            'quic_server_name' => $direct['host'],
+            'quic_insecure' => true,
+            'quic_priority' => 0,
+            'ws_priority' => 10,
+            'token_expires_at' => $expiresAt,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @return array<string, mixed>
+     */
+    private function buildMptcpClientConfig(array $forward, array $endpoints = []): array
+    {
+        $direct = $this->resolveBondDirectTarget($forward);
+        $tokenSecret = $this->bondTokenSecret($forward);
+        ['issued_at' => $issuedAt, 'expires_at' => $expiresAt] = $this->bondTokenTimestamps();
+        $subflowLimitDefault = max(2, count($endpoints) > 0 ? count($endpoints) : 2);
+        $underlayLegs = $this->mptcpUnderlayLegs($forward, $endpoints);
+        $pathManager = (string) ($this->config->get('MPTCP_PATH_MANAGER', 'fullmesh') ?? 'fullmesh');
+        $defaultRemoteHost = $direct['host'];
+        if ($underlayLegs !== []) {
+            $defaultRemoteHost = (string) ($underlayLegs[0]['sidecar_address'] ?? $defaultRemoteHost);
+        }
+
+        return [
+            'enabled' => true,
+            'sidecar_host' => $defaultRemoteHost,
+            'sidecar_port' => $direct['port'],
+            'relay_host' => $direct['host'],
+            'relay_port' => $direct['port'],
+            'remote_host' => $defaultRemoteHost,
+            'remote_port' => $direct['port'],
+            'tcp_session_token' => $this->buildBondSessionToken($forward, $tokenSecret, $issuedAt, $expiresAt, 'tcp'),
+            'udp_session_token' => $this->buildBondSessionToken($forward, $tokenSecret, $issuedAt, $expiresAt, 'udp'),
+            'udp_mode' => (string) ($this->config->get('MPTCP_UDP_MODE', 'stream_compat') ?? 'stream_compat'),
+            'path_manager' => $pathManager,
+            'scheduler' => (string) ($this->config->get('MPTCP_SCHEDULER', 'default') ?? 'default'),
+            'subflow_limit' => max(1, (int) ($this->config->getInt('MPTCP_SUBFLOW_LIMIT', $subflowLimitDefault) ?? $subflowLimitDefault)),
+            'connect_timeout_ms' => max(100, (int) ($this->config->getInt('MPTCP_CONNECT_TIMEOUT_MS', 3000) ?? 3000)),
+            'relay_idle_timeout_seconds' => max(15, (int) ($this->config->getInt('MPTCP_RELAY_IDLE_TIMEOUT_SECONDS', 120) ?? 120)),
+            'allow_tcp_fallback' => $this->config->getBool('MPTCP_ALLOW_TCP_FALLBACK', false),
+            'tcp_congestion_control' => (string) ($this->config->get('MPTCP_TCP_CONGESTION_CONTROL', 'bbr') ?? 'bbr'),
+            'socket_buffer_bytes' => max(1048576, (int) ($this->config->getInt('MPTCP_SOCKET_BUFFER_BYTES', 8388608) ?? 8388608)),
+            'initcwnd' => max(10, (int) ($this->config->getInt('MPTCP_INITCWND', 80) ?? 80)),
+            'initrwnd' => max(10, (int) ($this->config->getInt('MPTCP_INITRWND', 80) ?? 80)),
+            'add_addr_timeout' => max(1, (int) ($this->config->getInt('MPTCP_ADD_ADDR_TIMEOUT', 5) ?? 5)),
+            'tcp_wmem_max' => max(1048576, (int) ($this->config->getInt('MPTCP_TCP_WMEM_MAX', 16777216) ?? 16777216)),
+            'tcp_rmem_max' => max(1048576, (int) ($this->config->getInt('MPTCP_TCP_RMEM_MAX', 16777216) ?? 16777216)),
+            'manage_mptcp_endpoints' => $underlayLegs !== [],
+            'mptcp_endpoint_id_base' => ((int) ($forward['id'] ?? 0) % 25) * 10,
+            'mptcp_endpoints' => array_values(array_map(function ($leg, $idx) use ($forward) {
+                return [
+                    'address' => $leg['local_address'],
+                    'dev' => 'lw-mptcp-' . (int) ($forward['id'] ?? 0) . '-' . $idx,
+                    'subflow' => true,
+                    'signal' => false,
+                    'backup_only' => $leg['backup_only'] ?? false,
+                ];
+            }, $underlayLegs, array_keys($underlayLegs))),
+            'underlays' => array_values(array_map(function ($leg, $idx) use ($forward) {
+                return [
+                    'type' => (string) ($this->config->get('MPTCP_UNDERLAY_TYPE', 'wireguard') ?? 'wireguard'),
+                    'mode' => 'slave_transit',
+                    'interface_name' => 'lw-mptcp-' . (int) ($forward['id'] ?? 0) . '-' . $idx,
+                    'peer_keepalive_seconds' => max(0, (int) ($this->config->getInt('MPTCP_PEER_KEEPALIVE_SECONDS', 25) ?? 25)),
+                    'legs' => [$leg],
+                ];
+            }, $underlayLegs, array_keys($underlayLegs))),
+            'token_expires_at' => $expiresAt,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @param array<int, array<string, mixed>> $endpoints
+     * @return array<int, array<string, mixed>>
+     */
+    private function mptcpUnderlayLegs(array $forward, array $endpoints): array
+    {
+        $sidecarConfig = $this->decodeJsonAssoc($forward['bond_sidecar_point_agent_config_json'] ?? null);
+        $legs = [];
+        foreach ($endpoints as $endpoint) {
+            $nodeConfig = $this->decodeJsonAssoc($endpoint['node_agent_config_json'] ?? null);
+            $slavePublicKey = trim((string) ($nodeConfig['wireguard_public_key'] ?? ''));
+            if ($slavePublicKey === '') {
+                continue;
+            }
+            $addresses = $this->stableMptcpLegAddressing((int) ($forward['id'] ?? 0), (int) ($endpoint['node_id'] ?? 0));
+            $publicHost = $this->resolveEndpointPublicHost($endpoint);
+            if ($publicHost === '') {
+                continue;
+            }
+            $nodeBasePort = isset($nodeConfig['wireguard_listen_port']) && (int) $nodeConfig['wireguard_listen_port'] > 0
+                ? (int) $nodeConfig['wireguard_listen_port']
+                : (int) ($endpoint['public_port'] ?? 0);
+            $peerPort = $this->stableMptcpSlavePort($nodeBasePort, (int) ($forward['id'] ?? 0));
+            $nodeBaseFallback = isset($nodeConfig['wireguard_fallback_tcp_port']) && (int) $nodeConfig['wireguard_fallback_tcp_port'] > 0
+                ? (int) $nodeConfig['wireguard_fallback_tcp_port']
+                : ($nodeBasePort > 0 ? $nodeBasePort + 10000 : 0);
+            $fallbackTcpPort = $this->stableMptcpSlavePort($nodeBaseFallback, (int) ($forward['id'] ?? 0));
+            $outerTransport = strtolower(trim((string) ($nodeConfig['wireguard_outer_transport'] ?? 'udp')));
+            if ($outerTransport === '') {
+                $outerTransport = 'udp';
+            }
+            $legs[] = [
+                'endpoint_id' => (int) ($endpoint['id'] ?? 0),
+                'node_id' => (int) ($endpoint['node_id'] ?? 0),
+                'node_name' => (string) ($endpoint['node_name'] ?? ''),
+                'outer_transport' => $outerTransport,
+                'peer_public_host' => $publicHost,
+                'peer_udp_port' => $peerPort,
+                'peer_tcp_fallback_port' => $fallbackTcpPort,
+                'peer_public_key' => $slavePublicKey,
+                'client_address' => $addresses['client_address'],
+                'slave_address' => $addresses['slave_address'],
+                'sidecar_address' => $addresses['sidecar_address'],
+                'local_address' => $addresses['client_address'],
+                'peer_address' => $addresses['slave_address'],
+                'mptcp_remote_address' => $addresses['sidecar_address'],
+                'subnet' => $addresses['subnet'],
+                'sidecar_public_key' => trim((string) ($sidecarConfig['wireguard_public_key'] ?? '')),
+                'backup_only' => false,
+            ];
+        }
+        return $legs;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function decodeJsonAssoc(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+        if (!is_string($value) || trim($value) === '') {
+            return [];
+        }
+        $decoded = json_decode($value, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * @return array{subnet:string,client_address:string,slave_address:string,sidecar_address:string}
+     */
+    private function mptcpLegAddressing(int $endpointId): array
+    {
+        $index = max(1, $endpointId);
+        $bucket = intdiv($index - 1, 60);
+        $networkBase = (($index - 1) % 60) * 4;
+        $octet3 = 1 + ($bucket % 250);
+        $subnet = '10.203.' . $octet3 . '.' . $networkBase . '/30';
+        return [
+            'subnet' => $subnet,
+            'client_address' => '10.203.' . $octet3 . '.' . ($networkBase + 1),
+            'slave_address' => '10.203.' . $octet3 . '.' . ($networkBase + 2),
+            'sidecar_address' => '10.203.' . $octet3 . '.' . ($networkBase + 3),
+        ];
+    }
+
+    /**
+     * @return array{subnet:string,client_address:string,slave_address:string,sidecar_address:string}
+     */
+    private function stableMptcpLegAddressing(int $forwardId, int $nodeId): array
+    {
+        $stableId = max(1, ($forwardId * 256) + $nodeId);
+        return $this->mptcpLegAddressing($stableId);
+    }
+
+    private function stableMptcpSlavePort(int $basePort, int $forwardId): int
+    {
+        return $basePort + (($forwardId * 7) % 200);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function mptcpSidecarManagementForPoint(int $pointId): array
+    {
+        $point = $this->sidecarPointById($pointId);
+        if ($point === null) {
+            return [];
+        }
+        $pointConfig = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
+        $forwards = $this->db->fetchAll(
+            'SELECT f.*, s.status AS service_status
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.bond_sidecar_point_id = :point_id
+               AND f.enabled = 1
+               AND f.client_mode = :client_mode
+               AND s.status = :service_status
+             ORDER BY f.id ASC',
+            [
+                'point_id' => $pointId,
+                'client_mode' => 'mptcp',
+                'service_status' => 'active',
+            ]
+        );
+        $legs = [];
+        foreach ($forwards as $forward) {
+            $endpoints = $this->db->fetchAll(
+                'SELECT e.*, n.name AS node_name, n.public_ip AS node_public_ip, n.agent_config_json AS node_agent_config_json
+                 FROM service_endpoints e
+                 INNER JOIN nodes n ON n.id = e.node_id
+                 WHERE e.forward_id = :forward_id
+                   AND e.health_status <> :deleted
+                   AND e.health_status <> :deleting
+                 ORDER BY e.priority ASC, e.id ASC',
+                [
+                    'forward_id' => (int) $forward['id'],
+                    'deleted' => 'deleted',
+                    'deleting' => 'deleting',
+                ]
+            );
+            foreach ($endpoints as $endpoint) {
+                $nodeConfig = $this->decodeJsonAssoc($endpoint['node_agent_config_json'] ?? null);
+                $slavePublicKey = trim((string) ($nodeConfig['wireguard_public_key'] ?? ''));
+                if ($slavePublicKey === '') {
+                    continue;
+                }
+                $addresses = $this->stableMptcpLegAddressing((int) ($forward['id'] ?? 0), (int) ($endpoint['node_id'] ?? 0));
+                $publicHost = $this->resolveEndpointPublicHost($endpoint);
+                if ($publicHost === '') {
+                    continue;
+                }
+                $nodeBasePort = isset($nodeConfig['wireguard_listen_port']) && (int) $nodeConfig['wireguard_listen_port'] > 0
+                    ? (int) $nodeConfig['wireguard_listen_port']
+                    : (int) ($endpoint['public_port'] ?? 0);
+                $peerPort = $this->stableMptcpSlavePort($nodeBasePort, (int) ($forward['id'] ?? 0));
+                $nodeBaseFallback = isset($nodeConfig['wireguard_fallback_tcp_port']) && (int) $nodeConfig['wireguard_fallback_tcp_port'] > 0
+                    ? (int) $nodeConfig['wireguard_fallback_tcp_port']
+                    : ($nodeBasePort > 0 ? $nodeBasePort + 10000 : 0);
+                $fallbackTcpPort = $this->stableMptcpSlavePort($nodeBaseFallback, (int) ($forward['id'] ?? 0));
+                $outerTransport = strtolower(trim((string) ($nodeConfig['wireguard_outer_transport'] ?? 'udp')));
+                if ($outerTransport === '') {
+                    $outerTransport = 'udp';
+                }
+                $legs[] = [
+                    'forward_id' => (int) ($forward['id'] ?? 0),
+                    'service_id' => (int) ($forward['service_id'] ?? 0),
+                    'endpoint_id' => (int) ($endpoint['id'] ?? 0),
+                    'node_id' => (int) ($endpoint['node_id'] ?? 0),
+                    'node_name' => (string) ($endpoint['node_name'] ?? ''),
+                    'outer_transport' => $outerTransport,
+                    'peer_public_host' => $publicHost,
+                    'peer_udp_port' => $peerPort,
+                    'peer_tcp_fallback_port' => $fallbackTcpPort,
+                    'peer_public_key' => $slavePublicKey,
+                    'client_address' => $addresses['client_address'],
+                    'slave_address' => $addresses['slave_address'],
+                    'sidecar_address' => $addresses['sidecar_address'],
+                    'local_address' => $addresses['sidecar_address'],
+                    'peer_address' => $addresses['slave_address'],
+                    'mptcp_remote_address' => $addresses['client_address'],
+                    'subnet' => $addresses['subnet'],
+                ];
+            }
+        }
+
+        return [
+            'underlay' => [
+                'type' => (string) ($this->config->get('MPTCP_UNDERLAY_TYPE', 'wireguard') ?? 'wireguard'),
+                'mode' => 'slave_transit',
+                'interface_name' => 'lw-sidecar-' . $pointId,
+                'peer_keepalive_seconds' => max(0, (int) ($this->config->getInt('MPTCP_PEER_KEEPALIVE_SECONDS', 25) ?? 25)),
+                'legs' => $legs,
+            ],
+            'mptcp_policy' => [
+                'endpoint_device' => 'lw-sidecar-' . $pointId,
+                'endpoint_id_base' => ($pointId % 25) * 10,
+                'endpoints' => array_map(
+                    static fn(array $leg): array => [
+                        'address' => (string) ($leg['sidecar_address'] ?? ''),
+                        'signal' => true,
+                    ],
+                    $legs
+                ),
+            ],
+            'wireguard_public_key' => trim((string) ($pointConfig['wireguard_public_key'] ?? '')),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @param array<string, mixed> $node
+     * @param array<string, mixed> $endpoint
+     * @return array<string, mixed>|null
+     */
+    private function buildMptcpSlaveUnderlayPayload(array $forward, array $node, array $endpoint): ?array
+    {
+        $nodeConfig = $this->decodeJsonAssoc($node['agent_config_json'] ?? null);
+        $client = (int) ($forward['line_client_id'] ?? 0) > 0
+            ? $this->db->fetchOne('SELECT agent_config_json FROM clients WHERE id = :id LIMIT 1', ['id' => (int) $forward['line_client_id']])
+            : null;
+        $clientConfig = $this->decodeJsonAssoc($client['agent_config_json'] ?? null);
+        $point = (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0
+            ? $this->db->fetchOne('SELECT agent_config_json, sidecar_host, listen_port FROM sidecar_points WHERE id = :id LIMIT 1', ['id' => (int) $forward['bond_sidecar_point_id']])
+            : null;
+        $sidecarConfig = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
+
+        $clientPublicKey = trim((string) ($clientConfig['wireguard_public_key'] ?? ''));
+        $sidecarPublicKey = trim((string) ($sidecarConfig['wireguard_public_key'] ?? ''));
+        if ($clientPublicKey === '' || $sidecarPublicKey === '') {
+            return null;
+        }
+
+        $addresses = $this->stableMptcpLegAddressing((int) ($forward['id'] ?? 0), (int) ($node['id'] ?? 0));
+        $publicPort = (int) ($endpoint['public_port'] ?? 0);
+        $outerTransport = strtolower(trim((string) ($nodeConfig['wireguard_outer_transport'] ?? 'udp')));
+        if ($outerTransport === '') {
+            $outerTransport = 'udp';
+        }
+
+        $forwardId = (int) ($forward['id'] ?? 0);
+        $nodeBasePort = isset($nodeConfig['wireguard_listen_port']) && (int) $nodeConfig['wireguard_listen_port'] > 0
+            ? (int) $nodeConfig['wireguard_listen_port']
+            : $publicPort;
+        $nodeBaseFallback = isset($nodeConfig['wireguard_fallback_tcp_port']) && (int) $nodeConfig['wireguard_fallback_tcp_port'] > 0
+            ? (int) $nodeConfig['wireguard_fallback_tcp_port']
+            : ($nodeBasePort > 0 ? $nodeBasePort + 10000 : 0);
+
+        return [
+            'enabled' => true,
+            'interface_name' => 'lwf' . $forwardId . 'n' . (int) ($node['id'] ?? 0),
+            'listen_port' => $this->stableMptcpSlavePort($nodeBasePort, $forwardId),
+            'fallback_tcp_port' => $this->stableMptcpSlavePort($nodeBaseFallback, $forwardId),
+            'outer_transport' => $outerTransport,
+            'sidecar_endpoint_host' => trim((string) ($point['sidecar_host'] ?? '')),
+            'sidecar_endpoint_port' => (int) ($point['listen_port'] ?? 0),
+            'peer_keepalive_seconds' => max(0, (int) ($this->config->getInt('MPTCP_PEER_KEEPALIVE_SECONDS', 25) ?? 25)),
+            'client_public_key' => $clientPublicKey,
+            'sidecar_public_key' => $sidecarPublicKey,
+            'client_address' => $addresses['client_address'],
+            'slave_address' => $addresses['slave_address'],
+            'sidecar_address' => $addresses['sidecar_address'],
+            'subnet' => $addresses['subnet'],
+        ];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $endpoints
+     * @return array{join_timeout_ms:int,join_timeout_floor_ms:int,join_timeout_ceiling_ms:int,join_timeout_per_leg_ms:int}
+     */
+    private function adaptiveBondJoinTimeoutConfig(array $endpoints): array
+    {
+        $configuredJoinTimeout = max(40, (int) ($this->config->getInt('BOND_JOIN_TIMEOUT_MS', 400) ?? 400));
+        $adaptiveEnabled = $this->config->getBool('BOND_ADAPTIVE_JOIN_TIMEOUT', true);
+        $floor = max(20, (int) ($this->config->getInt('BOND_JOIN_TIMEOUT_FLOOR_MS', 35) ?? 35));
+        $perLeg = max(0, (int) ($this->config->getInt('BOND_JOIN_TIMEOUT_PER_LEG_MS', 20) ?? 20));
+        $ceilingDefault = min($configuredJoinTimeout, max($floor, 220));
+        $ceiling = max($floor, (int) ($this->config->getInt('BOND_JOIN_TIMEOUT_CEILING_MS', $ceilingDefault) ?? $ceilingDefault));
+
+        if (!$adaptiveEnabled) {
+            return [
+                'join_timeout_ms' => max($floor, min($ceiling, $configuredJoinTimeout)),
+                'join_timeout_floor_ms' => $floor,
+                'join_timeout_ceiling_ms' => $ceiling,
+                'join_timeout_per_leg_ms' => $perLeg,
+            ];
+        }
+
+        $wssLegs = max(1, count($endpoints));
+        $quicLegs = 0;
+        foreach ($endpoints as $endpoint) {
+            $nodeConfig = is_string($endpoint['node_agent_config_json'] ?? null)
+                ? json_decode((string) $endpoint['node_agent_config_json'], true)
+                : [];
+            if (!is_array($nodeConfig) || (bool) ($nodeConfig['supports_quic'] ?? true)) {
+                $quicLegs++;
+            }
+        }
+        $totalLegs = max(1, $wssLegs + $quicLegs);
+        $adaptive = $floor + max(0, $totalLegs - 1) * $perLeg;
+
+        return [
+            'join_timeout_ms' => max($floor, min($ceiling, $adaptive)),
+            'join_timeout_floor_ms' => $floor,
+            'join_timeout_ceiling_ms' => $ceiling,
+            'join_timeout_per_leg_ms' => $perLeg,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @return array{host: string, port: int}
+     */
+    private function resolveBondDirectTarget(array $forward): array
+    {
+        $host = trim((string) ($forward['bond_sidecar_host'] ?? ''));
+        $port = (int) ($forward['bond_sidecar_port'] ?? 0);
+
+        if (($host === '' || $port <= 0) && (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0) {
+            $point = $this->db->fetchOne(
+                'SELECT sidecar_host, listen_port FROM sidecar_points WHERE id = :id LIMIT 1',
+                ['id' => (int) $forward['bond_sidecar_point_id']]
+            );
+            if (is_array($point)) {
+                $host = trim((string) ($point['sidecar_host'] ?? $host));
+                $pointPort = (int) ($point['listen_port'] ?? 0);
+                if ($pointPort > 0) {
+                    $port = $pointPort;
+                }
+            }
+        }
+
+        if ($host !== '' && $port > 0) {
+            return [
+                'host' => $host,
+                'port' => $port,
+            ];
+        }
+
+        return $this->resolveBondRemoteTarget($forward);
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     */
+    private function buildBondSessionToken(array $forward, string $tokenSecret, int $issuedAt, int $expiresAt, string $targetProtocol): string
+    {
+        $payload = json_encode([
+            'target_host' => (string) ($forward['target_host'] ?? ''),
+            'target_port' => (int) ($forward['target_port'] ?? 0),
+            'target_protocol' => $targetProtocol,
+            'service_id' => isset($forward['service_id']) ? (int) $forward['service_id'] : null,
+            'forward_id' => isset($forward['id']) ? (int) $forward['id'] : (isset($forward['forward_id']) ? (int) $forward['forward_id'] : null),
+            'issued_at' => $issuedAt,
+            'expires_at' => $expiresAt,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        if (!is_string($payload) || $payload === '') {
+            throw new ApiException('bond_token_generation_failed', 500);
+        }
+
+        $signature = hash_hmac('sha256', $payload, $tokenSecret, true);
+        return $this->base64UrlEncode($payload) . '.' . $this->base64UrlEncode($signature);
+    }
+
+    /**
+     * Keep bond session tokens stable across normal client-agent polling so the
+     * rendered startup script does not change every sync and force needless restarts.
+     *
+     * @return array{issued_at:int, expires_at:int}
+     */
+    private function bondTokenTimestamps(): array
+    {
+        $ttl = max(300, (int) ($this->config->getInt('BOND_TOKEN_TTL_SECONDS', 7 * 24 * 3600) ?? (7 * 24 * 3600)));
+        $defaultRotation = max(60, min(86400, intdiv($ttl, 2)));
+        $configuredRotation = (int) ($this->config->getInt('BOND_TOKEN_ROTATION_SECONDS', $defaultRotation) ?? $defaultRotation);
+        $rotation = max(60, min($ttl - 60, $configuredRotation > 0 ? $configuredRotation : $defaultRotation));
+
+        $now = time();
+        $issuedAt = intdiv($now, $rotation) * $rotation;
+        return [
+            'issued_at' => $issuedAt,
+            'expires_at' => $issuedAt + $ttl,
+        ];
+    }
+
+    private function base64UrlEncode(string $value): string
+    {
+        return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+    }
+
+    /**
+     * @param array<string, mixed>|null $client
+     */
+    private function pickClientPort(?array $client, ?int $excludeForwardId, int $preferredPort = 0, string $strategy = 'client_range_then_target'): int
+    {
+        if (!is_array($client)) {
+            return $preferredPort;
+        }
+
+        $start = (int) ($client['port_range_start'] ?? 0);
+        $end = (int) ($client['port_range_end'] ?? 0);
+        if ($start <= 0 || $end <= 0 || $end < $start) {
+            return $preferredPort;
+        }
+
+        $sql = 'SELECT listen_port, public_port FROM forwards WHERE line_client_id = :client_id';
+        $sql .= ' AND enabled = 1';
+        $params = ['client_id' => (int) $client['id']];
+        if (($excludeForwardId ?? 0) > 0) {
+            $sql .= ' AND id <> :exclude_id';
+            $params['exclude_id'] = $excludeForwardId;
+        }
+        $rows = $this->db->fetchAll($sql, $params);
+        $used = [];
+        foreach ($rows as $row) {
+            $listen = (int) ($row['listen_port'] ?? 0);
+            $public = (int) ($row['public_port'] ?? 0);
+            if ($listen > 0) {
+                $used[$listen] = true;
+            }
+            if ($public > 0) {
+                $used[$public] = true;
+            }
+        }
+
+        $strategy = strtolower(trim($strategy));
+        if ($strategy === 'target_port_then_client_range') {
+            if ($preferredPort >= $start && $preferredPort <= $end && !isset($used[$preferredPort])) {
+                return $preferredPort;
+            }
+        }
+
+        for ($port = $start; $port <= $end; $port++) {
+            if (!isset($used[$port])) {
+                return $port;
+            }
+        }
+
+        if ($strategy !== 'target_port_then_client_range' && $preferredPort >= $start && $preferredPort <= $end && !isset($used[$preferredPort])) {
+            return $preferredPort;
+        }
+
+        return $preferredPort > 0 ? $preferredPort : $start;
+    }
+
+    /**
+     * @param array<string, mixed>|null $client
+     */
+    private function pickPublicPort(?array $client, ?int $excludeForwardId, int $preferredPort = 0, int $fallbackPort = 0, string $strategy = 'shared_preferred_port'): int
+    {
+        $strategy = strtolower(trim($strategy));
+        if ($strategy === 'shared_preferred_port') {
+            if ($preferredPort > 0) {
+                return $preferredPort;
+            }
+            if ($fallbackPort > 0) {
+                return $fallbackPort;
+            }
+            return $this->config->getInt('DEFAULT_EDGE_PUBLIC_PORT', 443);
+        }
+
+        $legacyPreferredPort = $preferredPort > 0 ? $preferredPort : $fallbackPort;
+        return $this->pickClientPort($client, $excludeForwardId, $legacyPreferredPort, $strategy);
+    }
+
+    private function generatePathPrefix(string $strategy): string
+    {
+        return match (strtolower(trim($strategy))) {
+            'date-random' => gmdate('ymd') . '-' . bin2hex(random_bytes(4)),
+            default => bin2hex(random_bytes(8)),
+        };
+    }
+
+    private function nodeGroupDescriptionColumnAvailable(): bool
+    {
+        if ($this->nodeGroupDescriptionColumnAvailable !== null) {
+            return $this->nodeGroupDescriptionColumnAvailable;
+        }
+
+        $this->nodeGroupDescriptionColumnAvailable = $this->columnExists('node_groups', 'description');
+        return $this->nodeGroupDescriptionColumnAvailable;
+    }
+
+    private function nodeGroupIngressColumnsAvailable(): bool
+    {
+        if ($this->nodeGroupIngressColumnsAvailable !== null) {
+            return $this->nodeGroupIngressColumnsAvailable;
+        }
+
+        $this->nodeGroupIngressColumnsAvailable =
+            $this->columnExists('node_groups', 'ingress_cdn_host')
+            && $this->columnExists('node_groups', 'ingress_sni_host')
+            && $this->columnExists('node_groups', 'ingress_path_strategy')
+            && $this->columnExists('node_groups', 'ingress_port_strategy')
+            && $this->columnExists('node_groups', 'ingress_preferred_public_port');
+
+        return $this->nodeGroupIngressColumnsAvailable;
+    }
+
+    private function nodeGroupIngressSelectSql(): string
+    {
+        if ($this->nodeGroupIngressColumnsAvailable()) {
+            return 'g.ingress_cdn_host, g.ingress_sni_host, g.ingress_path_strategy, g.ingress_port_strategy, g.ingress_preferred_public_port';
+        }
+
+        return "NULL AS ingress_cdn_host, NULL AS ingress_sni_host, 'random' AS ingress_path_strategy, 'shared_preferred_port' AS ingress_port_strategy, NULL AS ingress_preferred_public_port";
+    }
+
+    private function columnExists(string $table, string $column): bool
+    {
+        $driver = (string) $this->config->get('DB_DRIVER', 'mysql');
+        if ($driver === 'sqlite') {
+            $rows = $this->db->fetchAll('PRAGMA table_info(' . $table . ')');
+            foreach ($rows as $row) {
+                if ((string) ($row['name'] ?? '') === $column) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        $row = $this->db->fetchOne(
+            'SELECT COUNT(*) AS total
+             FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = :table_name
+               AND COLUMN_NAME = :column_name',
+            [
+                'table_name' => $table,
+                'column_name' => $column,
+            ]
+        );
+
+        return (int) ($row['total'] ?? 0) > 0;
+    }
+
+    /**
+     * @return array<string, bool>
+     */
+    public function defaultFeatureFlags(): array
+    {
+        return [
+            'allow_manage_forwards' => true,
+            'allow_delete_forwards' => true,
+            'allow_view_client_config' => true,
+            'allow_rotate_client_token' => true,
+            'allow_manage_clients' => false,
+            'allow_delete_clients' => false,
+            'allow_select_multiple_line_groups' => false,
+            'allow_use_all_line_groups' => false,
+            'allow_select_specific_line_client' => true,
+            'allow_forward_chain' => false,
+            'allow_custom_slaves' => false,
+            'allow_inbound_proxy' => false,
+            'allow_latency_test' => false,
+        ];
+    }
+
+    /**
+     * @return array<string, bool>
+     */
+    public function decodeFeatureFlags(string $json): array
+    {
+        $defaults = $this->defaultFeatureFlags();
+        if ($json === '') {
+            return $defaults;
+        }
+        $decoded = json_decode($json, true);
+        if (!is_array($decoded)) {
+            return $defaults;
+        }
+        foreach ($defaults as $key => $value) {
+            if (array_key_exists($key, $decoded)) {
+                $defaults[$key] = (bool) $decoded[$key];
+            }
+        }
+        return $defaults;
+    }
+
+    /**
+     * @param array<string, mixed> $service
+     * @return array<string, bool>
+     */
+    public function effectiveFeatureFlagsForService(array $service): array
+    {
+        $flags = $this->defaultFeatureFlags();
+        foreach ($this->decodeFeatureFlags((string) ($service['plan_feature_flags_json'] ?? '')) as $key => $value) {
+            $flags[$key] = $value;
+        }
+        foreach ($this->decodeFeatureFlags((string) ($service['user_feature_flags_json'] ?? '')) as $key => $value) {
+            $flags[$key] = $value;
+        }
+        return $flags;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function tenantUserById(int $userId): array
+    {
+        $user = $this->db->fetchOne('SELECT * FROM users WHERE id = :id LIMIT 1', ['id' => $userId]);
+        if ($user === null || (string) ($user['role'] ?? '') !== 'tenant') {
+            throw new ApiException('tenant_not_found', 404);
+        }
+        if ((string) ($user['status'] ?? '') !== 'active') {
+            throw new ApiException('tenant_not_active', 422, ['message' => 'This tenant account is not active right now.']);
+        }
+        return $user;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function activePlanById(int $planId): array
+    {
+        $plan = $this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id LIMIT 1', ['id' => $planId]);
+        if ($plan === null) {
+            throw new ApiException('plan_not_found', 404);
+        }
+        if ((int) ($plan['is_active'] ?? 0) !== 1) {
+            throw new ApiException('plan_not_active', 422, ['message' => 'This package is not available for purchase right now.']);
+        }
+        return $plan;
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    private function chargeWallet(int $userId, string $currency, float $amount, string $direction, array $context = []): void
+    {
+        $user = $this->tenantUserById($userId);
+        $walletBalance = (float) ($user['wallet_balance'] ?? 0);
+        $walletCurrency = strtoupper(trim((string) ($user['wallet_currency'] ?? '')));
+        $targetCurrency = strtoupper(trim($currency)) !== '' ? strtoupper(trim($currency)) : 'CNY';
+
+        if ($walletBalance > 0 && $walletCurrency !== '' && $walletCurrency !== $targetCurrency) {
+            throw new ApiException('wallet_currency_mismatch', 422, [
+                'message' => 'Your wallet balance is in ' . $walletCurrency . ', but this action uses ' . $targetCurrency . '. Please reconcile the balance currency first.',
+            ]);
+        }
+        if ($walletBalance < $amount) {
+            throw new ApiException('wallet_balance_insufficient', 422, ['message' => 'Your wallet balance is not enough for this action.']);
+        }
+
+        $after = $walletBalance - $amount;
+        $now = $this->now();
+        $this->db->execute(
+            'UPDATE users
+             SET wallet_balance = :wallet_balance,
+                 wallet_currency = :wallet_currency,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $userId,
+                'wallet_balance' => $this->normalizeMoney($after),
+                'wallet_currency' => $targetCurrency,
+                'updated_at' => $now,
+            ]
+        );
+
+        $this->db->insert('wallet_transactions', [
+            'user_id' => $userId,
+            'direction' => $direction,
+            'amount' => $this->normalizeMoney($amount),
+            'currency' => $targetCurrency,
+            'panel_balance_before' => $this->normalizeMoney($walletBalance),
+            'panel_balance_after' => $this->normalizeMoney($after),
+            'whmcs_balance_before' => null,
+            'whmcs_balance_after' => null,
+            'context_json' => json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'created_at' => $now,
+        ]);
+    }
+
+    private function generateSyntheticWhmcsServiceId(): int
+    {
+        do {
+            $candidate = (int) (time() . random_int(100, 999));
+            $existing = $this->db->fetchOne(
+                'SELECT id FROM services WHERE whmcs_service_id = :whmcs_service_id LIMIT 1',
+                ['whmcs_service_id' => $candidate]
+            );
+        } while ($existing !== null);
+
+        return $candidate;
+    }
+
+    /**
+     * @param array<string, mixed> $plan
+     * @param array<string, mixed> $billingSnapshot
+     * @return array<string, mixed>
+     */
+    private function buildFlexibleBillingPreview(array $plan, int $bandwidthLimitMbps, int $trafficLimitGb, int $activeClientCount, array $billingSnapshot): array
+    {
+        return [
+            'billing_mode' => $billingSnapshot['billing_mode'],
+            'billing_currency' => $billingSnapshot['billing_currency'],
+            'monthly_base_fee' => $billingSnapshot['monthly_base_fee'],
+            'monthly_included_traffic_gb' => $billingSnapshot['monthly_included_traffic_gb'],
+            'traffic_price_per_gb' => $billingSnapshot['traffic_price_per_gb'],
+            'billing_cycle_started_at' => $billingSnapshot['billing_cycle_started_at'],
+            'billing_cycle_traffic_used_bytes' => 0,
+            'traffic_limit_gb' => $trafficLimitGb,
+            'bandwidth_limit_mbps' => $bandwidthLimitMbps,
+            'plan_default_bandwidth_limit_mbps' => (int) ($plan['default_bandwidth_limit_mbps'] ?? $bandwidthLimitMbps),
+            'plan_bandwidth_step_mbps' => (int) ($plan['bandwidth_step_mbps'] ?? 0),
+            'plan_bandwidth_step_price' => $plan['bandwidth_step_price'] ?? 0,
+            'plan_included_client_count' => (int) ($plan['included_client_count'] ?? 0),
+            'plan_extra_client_price' => $plan['extra_client_price'] ?? 0,
+            'active_client_count' => $activeClientCount,
+            'created_at' => $this->now(),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $plan
+     */
+    private function normalizePurchasedBandwidth(array $plan, int $requestedBandwidthMbps): int
+    {
+        $baseBandwidth = max(1, (int) ($plan['default_bandwidth_limit_mbps'] ?? 100));
+        $requested = $requestedBandwidthMbps > 0 ? $requestedBandwidthMbps : $baseBandwidth;
+        if ($requested < $baseBandwidth) {
+            $requested = $baseBandwidth;
+        }
+
+        $stepMbps = max(0, (int) ($plan['bandwidth_step_mbps'] ?? 0));
+        $stepPrice = (float) ($plan['bandwidth_step_price'] ?? 0);
+        if ($requested > $baseBandwidth && $stepMbps > 0 && $stepPrice > 0) {
+            $diff = $requested - $baseBandwidth;
+            if ($diff % $stepMbps !== 0) {
+                throw new ApiException('invalid_bandwidth_step', 422, [
+                    'message' => 'Bandwidth must increase in steps of ' . $stepMbps . ' Mbps for this package.',
+                ]);
+            }
+        }
+
+        return $requested;
+    }
+
+    private function now(): string
+    {
+        return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+    }
+}
