@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod bond;
 mod commands;
 
 use commands::AppState;
@@ -16,6 +17,7 @@ fn main() {
             api: Mutex::new(api::PanelApi::new("")),
             forwards: Mutex::new(vec![]),
             connected_forwards: Mutex::new(vec![]),
+            bond: bond::BondManager::new(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::login,

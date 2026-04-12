@@ -1,4 +1,5 @@
 use crate::api::{ForwardInfo, PanelApi};
+use crate::bond;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::State;
@@ -7,6 +8,7 @@ pub struct AppState {
     pub api: Mutex<PanelApi>,
     pub forwards: Mutex<Vec<ForwardInfo>>,
     pub connected_forwards: Mutex<Vec<u64>>,
+    pub bond: bond::BondManager,
 }
 
 #[derive(Serialize)]
