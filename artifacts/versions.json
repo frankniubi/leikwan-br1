@@ -1,0 +1,80 @@
+{
+  "slave_agent": {
+    "version": "2026.04.08.1",
+    "path": "slave-agent/slave_agent.py",
+    "artifact_url": "/artifacts/slave-agent.py"
+  },
+  "slave_installer": {
+    "version": "2026.04.08.1",
+    "path": "install/install-slave.sh",
+    "install_url": "/artifacts/install-slave.sh",
+    "remote_install_url": "/artifacts/remote-install-slave.sh"
+  },
+  "client_installer": {
+    "version": "2026.04.08.1",
+    "path": "install/install-client.sh",
+    "install_url": "/artifacts/install-client.sh",
+    "remote_install_url": "/artifacts/remote-install-client.sh"
+  },
+  "client_installer_windows": {
+    "version": "2026.04.08.1",
+    "path": "install/install-client.ps1",
+    "install_url": "/artifacts/install-client.ps1"
+  },
+  "client_manager_windows": {
+    "version": "2026.04.08.1",
+    "path": "install/manage-client.ps1",
+    "install_url": "/artifacts/manage-client.ps1"
+  },
+  "bond_sidecar_installer": {
+    "version": "2026.04.12.1",
+    "path": "install/install-bond-sidecar.sh",
+    "install_url": "/artifacts/install-bond-sidecar.sh"
+  },
+  "bond_sidecar_uninstaller": {
+    "version": "2026.04.08.1",
+    "path": "install/uninstall-bond-sidecar.sh",
+    "install_url": "/artifacts/uninstall-bond-sidecar.sh"
+  },
+  "client_agent": {
+    "version": "2026.04.12.1",
+    "path": "client-agent/client_agent.py",
+    "artifact_url": "/artifacts/client-agent.py"
+  },
+  "client_agent_installer": {
+    "version": "2026.04.08.1",
+    "path": "install/install-client-agent.sh",
+    "install_url": "/artifacts/install-client-agent.sh",
+    "remote_install_url": "/artifacts/remote-install-client-agent.sh"
+  },
+  "sidecar_agent": {
+    "version": "2026.04.12.1",
+    "path": "sidecar-agent/sidecar_agent.py",
+    "artifact_url": "/artifacts/sidecar-agent.py"
+  },
+  "mptcp_client_runtime": {
+    "version": "2026.04.12.1",
+    "path": "client-agent/leikwan_mptcp_client.py",
+    "artifact_url": "/artifacts/leikwan-mptcp-client.py"
+  },
+  "uot_runtime": {
+    "version": "2026.04.08.1",
+    "path": "client-agent/leikwan_uot.py",
+    "artifact_url": "/artifacts/leikwan-uot.py"
+  },
+  "mptcp_sidecar_runtime": {
+    "version": "2026.04.12.1",
+    "path": "sidecar-agent/leikwan_mptcp_sidecar.py",
+    "artifact_url": "/artifacts/leikwan-mptcp-sidecar.py"
+  },
+  "mptcp_relay": {
+    "version": "0.1.0",
+    "file": "leikwan-mptcp-relay",
+    "platform": "linux-amd64"
+  },
+  "windows_client_app": {
+    "version": "0.1.0",
+    "path": "artifacts/windows/leikwan-bridge-setup.exe",
+    "artifact_url": "/artifacts/leikwan-bridge-setup.exe"
+  }
+}

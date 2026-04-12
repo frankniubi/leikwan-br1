@@ -223,6 +223,7 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/install-client-agent.sh', [$artifacts, 'installClientAgent']);
         $this->router->add('GET', '/artifacts/uninstall-client-agent.sh', [$artifacts, 'uninstallClientAgent']);
         $this->router->add('GET', '/artifacts/leikwan-android-client.apk', [$artifacts, 'androidClientApk']);
+        $this->router->add('GET', '/artifacts/leikwan-bridge-setup.exe', [$artifacts, 'windowsClientApp']);
         $this->router->add('GET', '/artifacts/remote-install-slave.sh', [$artifacts, 'remoteInstallSlave']);
         $this->router->add('GET', '/artifacts/remote-install-client.sh', [$artifacts, 'remoteInstallClient']);
         $this->router->add('GET', '/artifacts/remote-install-client-agent.sh', [$artifacts, 'remoteInstallClientAgent']);
