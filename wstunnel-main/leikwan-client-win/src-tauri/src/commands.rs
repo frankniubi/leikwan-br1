@@ -23,6 +23,79 @@ pub struct LoginResult {
     pub error: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct SystemStatus {
+    pub wireguard_installed: bool,
+    pub wireguard_path: String,
+    pub bond_installed: bool,
+    pub bond_path: String,
+}
+
+#[tauri::command]
+pub async fn check_system() -> Result<SystemStatus, String> {
+    let wg_paths = [
+        r"C:\Program Files\WireGuard\wireguard.exe",
+        r"C:\Program Files (x86)\WireGuard\wireguard.exe",
+    ];
+
+    let mut wg_found = false;
+    let mut wg_path = String::new();
+
+    // Check PATH first
+    if let Ok(output) = std::process::Command::new("where").arg("wireguard.exe").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().lines().next().unwrap_or("").to_string();
+            if !path.is_empty() {
+                wg_found = true;
+                wg_path = path;
+            }
+        }
+    }
+
+    // Check known locations
+    if !wg_found {
+        for p in &wg_paths {
+            if std::path::Path::new(p).exists() {
+                wg_found = true;
+                wg_path = p.to_string();
+                break;
+            }
+        }
+    }
+
+    // Check leikwan-bond
+    let mut bond_found = false;
+    let mut bond_path = String::new();
+    if let Ok(output) = std::process::Command::new("where").arg("leikwan-bond").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().lines().next().unwrap_or("").to_string();
+            if !path.is_empty() {
+                bond_found = true;
+                bond_path = path;
+            }
+        }
+    }
+    // Also check in the same directory as the running executable
+    if !bond_found {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let bond_exe = dir.join("leikwan-bond.exe");
+                if bond_exe.exists() {
+                    bond_found = true;
+                    bond_path = bond_exe.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+
+    Ok(SystemStatus {
+        wireguard_installed: wg_found,
+        wireguard_path: wg_path,
+        bond_installed: bond_found,
+        bond_path: bond_path,
+    })
+}
+
 #[tauri::command]
 pub async fn login(
     state: State<'_, AppState>,
@@ -55,19 +128,17 @@ pub async fn get_forwards(state: State<'_, AppState>) -> Result<Vec<ForwardInfo>
                 match serde_json::from_value(v.clone()) {
                     Ok(f) => Some(f),
                     Err(e) => {
-                        log::warn!("failed to parse forward: {e}");
+                        log::warn!("failed to parse forward: {e}  raw: {v}");
                         None
                     }
                 }
             }).collect();
-            // Cache raw forward configs
+            // Cache raw forward configs keyed by forward_id
             {
                 let mut configs = state.forward_configs.lock().await;
                 configs.clear();
                 for v in &resp.forwards {
-                    if let Some(id) = v.get("forward_id").and_then(|x| x.as_u64())
-                        .or_else(|| v.get("id").and_then(|x| x.as_u64()))
-                    {
+                    if let Some(id) = v.get("forward_id").and_then(|x| x.as_u64()) {
                         configs.insert(id, v.clone());
                     }
                 }
@@ -114,6 +185,7 @@ pub async fn connect_forward(
 
     let protocol = config.get("target_protocol")
         .and_then(|v| v.as_str())
+        .or_else(|| config.get("transport").and_then(|v| v.as_str()))
         .unwrap_or("tcp")
         .to_string();
 
