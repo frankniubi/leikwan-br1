@@ -30,6 +30,7 @@ fn main() {
             forward_configs: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
+            commands::check_system,
             commands::login,
             commands::get_forwards,
             commands::connect_forward,

@@ -31,17 +31,28 @@ pub struct ClientInfo {
     pub name: String,
 }
 
+/// Matches the JSON shape returned by /api/client/configs/pull → forwards[]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ForwardInfo {
-    pub id: u64,
-    pub name: String,
-    pub target_host: String,
-    pub target_port: u16,
+    pub forward_id: u64,
+    #[serde(default)]
+    pub service_name: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
     pub listen_port: u16,
-    pub client_mode: String,
-    pub transport_mode: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub transport: String,
+    #[serde(default)]
     pub service_status: String,
-    pub enabled: bool,
+    #[serde(default)]
+    pub endpoint_mode: String,
+    #[serde(default)]
+    pub endpoints: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub speed_limit_mbps: Option<u32>,
 }
 
 #[derive(Deserialize, Debug)]
