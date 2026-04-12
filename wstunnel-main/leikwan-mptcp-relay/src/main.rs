@@ -105,6 +105,10 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Parse endpoint JSON entries into EndpointEntry structs.
+///
+/// Supports two field-naming conventions:
+///   - Panel format: `"dev"` for device, individual booleans (`"subflow"`, `"signal"`, `"backup_only"`, `"fullmesh"`)
+///   - Legacy/explicit: `"device"` for device, `"flags"` as a string array
 fn parse_endpoint_entries(
     entries: &[serde_json::Value],
     default_device: &str,
@@ -115,6 +119,8 @@ fn parse_endpoint_entries(
         .enumerate()
         .filter_map(|(i, v)| {
             let address = v.get("address")?.as_str()?.to_string();
+
+            // Parse flags: try "flags" array first, then individual boolean fields
             let flags: Vec<String> = v
                 .get("flags")
                 .and_then(|f| f.as_array())
@@ -123,12 +129,24 @@ fn parse_endpoint_entries(
                         .filter_map(|x| x.as_str().map(String::from))
                         .collect()
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(|| {
+                    let mut f = Vec::new();
+                    for (key, flag) in &[("subflow", "subflow"), ("signal", "signal"), ("backup_only", "backup"), ("fullmesh", "fullmesh")] {
+                        if v.get(key).and_then(|b| b.as_bool()).unwrap_or(false) {
+                            f.push(flag.to_string());
+                        }
+                    }
+                    f
+                });
+
+            // Parse device: try "dev" first (Panel format), then "device" (legacy)
             let device = v
-                .get("device")
+                .get("dev")
+                .or_else(|| v.get("device"))
                 .and_then(|d| d.as_str())
                 .unwrap_or(default_device)
                 .to_string();
+
             let id = v
                 .get("id")
                 .and_then(|d| d.as_u64())
