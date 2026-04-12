@@ -14,17 +14,20 @@ use tauri::{
 };
 
 fn main() {
+    env_logger::init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .manage(AppState {
-            api: Mutex::new(api::PanelApi::new("")),
+            api: tokio::sync::Mutex::new(api::PanelApi::new("")),
             forwards: Mutex::new(vec![]),
             connected_forwards: Mutex::new(vec![]),
             bond: bond::BondManager::new(),
             wg: Mutex::new(wireguard::WgManager::new()),
+            forward_configs: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::login,
@@ -48,6 +51,13 @@ fn main() {
                             }
                         }
                         "quit" => {
+                            // Graceful cleanup: stop all bonds and remove WG tunnels
+                            if let Some(state) = app.try_state::<AppState>() {
+                                state.bond.stop_all();
+                                if let Ok(mut wg) = state.wg.lock() {
+                                    wg.remove_all();
+                                }
+                            }
                             app.exit(0);
                         }
                         _ => {}
