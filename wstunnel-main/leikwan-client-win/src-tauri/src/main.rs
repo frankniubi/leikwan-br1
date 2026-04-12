@@ -3,6 +3,7 @@
 mod api;
 mod bond;
 mod commands;
+mod wireguard;
 
 use commands::AppState;
 use std::sync::Mutex;
@@ -18,6 +19,7 @@ fn main() {
             forwards: Mutex::new(vec![]),
             connected_forwards: Mutex::new(vec![]),
             bond: bond::BondManager::new(),
+            wg: Mutex::new(wireguard::WgManager::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::login,
