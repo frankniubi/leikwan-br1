@@ -1,0 +1,20 @@
+[package]
+name = "leikwan-client-win"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+keyring = "3"
+wintun = "0.5"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
