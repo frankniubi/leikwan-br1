@@ -1337,6 +1337,13 @@ CSS;
             $flashHtml = '<div class="flash ' . $flashClass . '">' . $this->escape($flash['message']) . '</div>';
         }
 
+        $lowBalanceHtml = '';
+        if ($viewer !== null && (int) ($viewer['wallet_warning_sent'] ?? 0) === 1) {
+            $balance = number_format((float) ($viewer['wallet_balance'] ?? 0), 2);
+            $curr = strtoupper(trim((string) ($viewer['wallet_currency'] ?? 'CNY')));
+            $lowBalanceHtml = '<div class="flash danger" style="margin-bottom:18px;">Your balance is low (' . $this->escape($curr) . ' ' . $this->escape($balance) . '). <a href="/tenant/account" style="text-decoration:underline;">Top up</a> to avoid service interruption.</div>';
+        }
+
         $navHtml = '';
         foreach ($nav as $item) {
             $class = !empty($item['active']) ? 'nav-link active' : 'nav-link';
@@ -1895,6 +1902,7 @@ CSS;
       </aside>
       <main class="content-card">
         {$flashHtml}
+        {$lowBalanceHtml}
         {$body}
       </main>
     </div>
