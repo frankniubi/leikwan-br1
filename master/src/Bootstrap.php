@@ -159,8 +159,10 @@ final class Bootstrap
         $this->router->add('POST', '/tenant/clients/{id}/diagnose', [$tenant, 'requestClientDiagnostics']);
         $this->router->add('POST', '/tenant/clients/{id}/request-update', [$tenant, 'requestClientUpdate']);
         $this->router->add('GET', '/tenant/services/{id}', [$tenant, 'serviceDetail']);
-        $this->router->add('GET', '/tenant/services/{id}/forward-wizard', [$tenant, 'forwardWizard']);
-        $this->router->add('POST', '/tenant/services/{id}/forward-wizard', [$tenant, 'forwardWizard']);
+        $this->router->add('GET', '/tenant/services/{id}/create-forward', [$tenant, 'quickCreateForward']);
+        $this->router->add('POST', '/tenant/services/{id}/create-forward', [$tenant, 'quickCreateForward']);
+        $this->router->add('GET', '/tenant/services/{id}/forward-wizard', [$tenant, 'forwardWizardRedirect']);
+        $this->router->add('POST', '/tenant/services/{id}/forward-wizard', [$tenant, 'forwardWizardRedirect']);
         $this->router->add('POST', '/tenant/services/{id}/forwards', [$tenant, 'createForward']);
         $this->router->add('POST', '/tenant/services/{id}/enrollment-token', [$tenant, 'generateEnrollmentToken']);
         $this->router->add('POST', '/tenant/nodes/{id}/remove', [$tenant, 'removeUserNode']);
