@@ -2703,7 +2703,8 @@ final class TenantController extends BaseController
                 throw new \Leikwan\Master\Exceptions\ApiException('group_required', 422);
             }
             $this->provisioning->updateNodeSharing($nodeId, (int) $user['id'], $mode, $mode === 'group_shared' ? $groupId : null);
-            SessionAuth::flash('success', 'Sharing updated.');
+            $modeLabel = $mode === 'group_shared' ? 'shared to group' : 'private';
+            SessionAuth::flash('success', 'Sharing updated: node set to ' . $modeLabel . '.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed: ' . $throwable->getMessage());
         }
