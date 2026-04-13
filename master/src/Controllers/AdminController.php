@@ -236,6 +236,7 @@ final class AdminController extends BaseController
         $plans = $this->provisioning?->listPlans() ?? [];
         $nodeGroups = $this->provisioning?->listNodeGroups() ?? [];
         $clientGroups = $this->provisioning?->listClientGroups() ?? [];
+        $sidecarPoints = $this->provisioning?->listSidecarPoints() ?? [];
         $defaults = $this->provisioning?->defaultFeatureFlags() ?? [];
         $editId = (int) $request->input('edit', 0);
         $editing = null;
@@ -245,10 +246,18 @@ final class AdminController extends BaseController
                 break;
             }
         }
+        $editingAllowedSidecarPointIds = [];
+        if ($editing !== null && $this->provisioning !== null) {
+            $editingAllowedSidecarPointIds = array_map(
+                static fn(array $sp): int => (int) $sp['id'],
+                $this->provisioning->allowedSidecarPointsForPlan((int) $editing['id'])
+            );
+        }
         $rows = '';
         foreach ($plans as $plan) {
             $allowed = array_map(static fn(array $group): string => (string) $group['name'], $plan['allowed_node_groups'] ?? []);
             $allowedClients = array_map(static fn(array $group): string => (string) $group['name'], $plan['allowed_client_groups'] ?? []);
+            $allowedSidecars = array_map(static fn(array $sp): string => (string) $sp['name'], $plan['allowed_sidecar_points'] ?? []);
             $billingSummary = ((string) ($plan['billing_mode'] ?? 'monthly_bundle') === 'metered')
                 ? 'Metered / ' . $this->escape((string) ($plan['billing_currency'] ?? 'CNY')) . ' ' . $this->escape((string) ($plan['monthly_base_fee'] ?? '0.00')) . ' base + ' . $this->escape((string) ($plan['traffic_price_per_gb'] ?? '0.0000')) . ' / GB'
                 : 'Bundle / ' . $this->escape((string) ($plan['billing_currency'] ?? 'CNY')) . ' ' . $this->escape((string) ($plan['monthly_base_fee'] ?? '0.00')) . ' + ' . (int) ($plan['monthly_included_traffic_gb'] ?? 0) . ' GB / month';
@@ -267,6 +276,7 @@ final class AdminController extends BaseController
                 <td>' . $billingSummary . '</td>
                 <td>' . $this->escape(implode(', ', $allowed)) . '</td>
                 <td>' . $this->escape(implode(', ', $allowedClients)) . '</td>
+                <td>' . $this->escape(implode(', ', $allowedSidecars)) . '</td>
                 <td>' . ((int) $plan['is_active'] === 1 ? '<span class="badge success">active</span>' : '<span class="badge danger">inactive</span>') . '</td>
                 <td>
                     <div class="actions">
@@ -323,6 +333,10 @@ final class AdminController extends BaseController
                     <div class="stack">' . $this->renderClientGroupCheckboxes($clientGroups, 'allowed_client_group_ids[]', array_map(static fn(array $group): int => (int) $group['id'], $editing['allowed_client_groups'] ?? [])) . '</div>
                   </div>
                   <div class="field" style="margin-top:14px;">
+                    <label>Allowed Sidecar Points</label>
+                    <div class="stack">' . $this->renderSidecarPointCheckboxes($sidecarPoints, 'allowed_sidecar_point_ids[]', $editingAllowedSidecarPointIds) . '</div>
+                  </div>
+                  <div class="field" style="margin-top:14px;">
                     <label>Plan Feature Flags</label>
                     <div class="stack">' . $this->renderFeatureCheckboxes($defaults, 'feature_flags', $editing['feature_flags'] ?? $defaults) . '</div>
                   </div>
@@ -335,7 +349,7 @@ final class AdminController extends BaseController
                 <h3>Plan List</h3>
                 <div class="table-wrap">
                   <table>
-                    <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>Bandwidth</th><th>Traffic</th><th>Billing</th><th>Allowed Slave Groups</th><th>Allowed Client Groups</th><th>Status</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>Bandwidth</th><th>Traffic</th><th>Billing</th><th>Allowed Slave Groups</th><th>Allowed Client Groups</th><th>Allowed Sidecars</th><th>Status</th><th>Actions</th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
@@ -1993,6 +2007,7 @@ final class AdminController extends BaseController
                 'is_active' => $request->input('is_active', '1'),
                 'allowed_node_group_ids' => $request->body()['allowed_node_group_ids'] ?? [],
                 'allowed_client_group_ids' => $request->body()['allowed_client_group_ids'] ?? [],
+                'allowed_sidecar_point_ids' => $request->body()['allowed_sidecar_point_ids'] ?? [],
                 'feature_flags' => $this->extractFeatureFlagsFromRequest($request),
             ]);
             SessionAuth::flash('success', 'Plan saved.');
@@ -2937,6 +2952,22 @@ final class AdminController extends BaseController
                 <input type="checkbox" name="' . $this->escape($inputName) . '" value="' . (int) $group['id'] . '"' . (in_array((int) $group['id'], $selectedIds, true) ? ' checked' : '') . '>
                 <span><strong>' . $this->escape((string) $group['name']) . '</strong> <span class="muted">(' . $this->escape((string) $group['group_key']) . ')</span></span>
             </label>';
+        }
+        return $html;
+    }
+
+    private function renderSidecarPointCheckboxes(array $points, string $name, array $selectedIds): string
+    {
+        if ($points === []) {
+            return '<span class="muted">No sidecar points available.</span>';
+        }
+
+        $html = '';
+        foreach ($points as $point) {
+            $id = (int) ($point['id'] ?? 0);
+            $checked = in_array($id, $selectedIds, true) ? ' checked' : '';
+            $label = $this->escape((string) ($point['name'] ?? '')) . ' (' . $this->escape((string) ($point['sidecar_host'] ?? '')) . ':' . (int) ($point['listen_port'] ?? 0) . ')';
+            $html .= '<label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" name="' . $this->escape($name) . '" value="' . $id . '"' . $checked . '> ' . $label . '</label>';
         }
         return $html;
     }
