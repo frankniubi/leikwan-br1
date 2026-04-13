@@ -162,6 +162,8 @@ final class Bootstrap
         $this->router->add('GET', '/tenant/services/{id}/forward-wizard', [$tenant, 'forwardWizard']);
         $this->router->add('POST', '/tenant/services/{id}/forward-wizard', [$tenant, 'forwardWizard']);
         $this->router->add('POST', '/tenant/services/{id}/forwards', [$tenant, 'createForward']);
+        $this->router->add('POST', '/tenant/services/{id}/enrollment-token', [$tenant, 'generateEnrollmentToken']);
+        $this->router->add('POST', '/tenant/nodes/{id}/remove', [$tenant, 'removeUserNode']);
         $this->router->add('POST', '/tenant/services/{id}/flexible-options', [$tenant, 'updateFlexibleOptions']);
         $this->router->add('POST', '/tenant/services/{id}/reset-traffic', [$tenant, 'resetTraffic']);
         $this->router->add('POST', '/tenant/forwards/{id}/delete', [$tenant, 'deleteForward']);
