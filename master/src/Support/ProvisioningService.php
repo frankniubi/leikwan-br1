@@ -2402,6 +2402,11 @@ final class ProvisioningService
         $sniHost = trim((string) ($payload['sni_host'] ?? ''));
         $pathPrefix = trim((string) ($payload['path_prefix'] ?? ''));
         $nodeGroup = trim((string) ($payload['node_group'] ?? $this->config->get('DEFAULT_NODE_GROUP', 'default')));
+        $specificNodeId = null;
+        if (str_starts_with($nodeGroup, '_user_node_')) {
+            $specificNodeId = (int) substr($nodeGroup, strlen('_user_node_'));
+            $nodeGroup = '';
+        }
         $publicPort = (int) ($payload['public_port'] ?? 0);
         $cdnHost = trim((string) ($payload['cdn_host'] ?? ''));
         $filterProfile = (string) ($payload['filter_profile'] ?? 'off');
@@ -2655,7 +2660,7 @@ final class ProvisioningService
             ]);
         }
 
-        if ($endpointMode === 'slave_group' && $endpointGroupKeys === []) {
+        if ($endpointMode === 'slave_group' && $endpointGroupKeys === [] && $specificNodeId === null) {
             throw new ApiException('node_group_required', 422, ['endpoint_mode' => 'slave_group']);
         }
 
@@ -2690,7 +2695,7 @@ final class ProvisioningService
                 ]);
         }
 
-        $endpointCount = $this->panelManagedEndpointCount($clientMode, $endpointGroupKeys, $serviceId);
+        $endpointCount = $specificNodeId !== null ? 1 : $this->panelManagedEndpointCount($clientMode, $endpointGroupKeys, $serviceId);
 
         if ($forwardId === null) {
             $forwardId = $this->db->insert('forwards', [
@@ -2781,6 +2786,53 @@ final class ProvisioningService
         }
 
         $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
+
+        // Specific user-node bypass: publish directly to the requested node
+        if ($specificNodeId !== null) {
+            $specificNode = $this->db->fetchOne('SELECT * FROM nodes WHERE id = :id LIMIT 1', ['id' => $specificNodeId]);
+            if ($specificNode === null) {
+                throw new ApiException('specific_node_not_found', 404, ['node_id' => $specificNodeId]);
+            }
+            $specificPublicHost = $this->resolveNodePublicHost($specificNode);
+            if ($specificPublicHost === '') {
+                throw new ApiException('specific_node_no_public_host', 409, ['node_id' => $specificNodeId]);
+            }
+            $specificNode['resolved_public_host'] = $specificPublicHost;
+            $publishTarget = in_array($clientMode, ['bond', 'mptcp'], true)
+                ? $this->bondRemoteTarget($forward)
+                : $forward['target_host'] . ':' . $forward['target_port'];
+            $endpointId = $this->db->insert('service_endpoints', [
+                'forward_id' => $forwardId,
+                'node_id' => $specificNodeId,
+                'public_host' => $specificPublicHost,
+                'public_ip' => (string) ($specificNode['public_ip'] ?? ''),
+                'public_port' => (int) $forward['public_port'],
+                'cdn_host' => (string) ($forward['cdn_host'] ?? ''),
+                'priority' => 10,
+                'weight' => 100,
+                'health_status' => 'pending',
+                'last_error' => null,
+                'created_at' => $this->now(),
+                'updated_at' => $this->now(),
+            ]);
+            $this->queueTask($specificNodeId, 'publish', $serviceId, $forwardId, $endpointId, [
+                'listen_port' => (int) $forward['public_port'],
+                'target' => $publishTarget,
+                'path_prefix' => (string) $forward['path_prefix'],
+                'sni_host' => (string) $forward['sni_host'],
+                'cdn_host' => (string) ($forward['cdn_host'] ?? ''),
+                'tls_cert_ref' => (string) $this->config->get('DEFAULT_TLS_CERT_REF', 'default-edge-cert'),
+                'filter_profile' => (string) $forward['filter_profile'],
+                'transport_mode' => (string) $forward['transport_mode'],
+                'leg_relay_protocols' => $clientMode === 'bond' ? ['quic'] : [],
+                'mptcp_underlay' => $clientMode === 'mptcp' ? $this->buildMptcpSlaveUnderlayPayload($forward, $specificNode, [
+                    'id' => $endpointId,
+                    'public_port' => $forward['public_port'],
+                ]) : null,
+            ]);
+            return $this->buildClientConfig($forwardId);
+        }
+
         $desiredEndpointCount = max((int) $forward['endpoint_count'], count($endpointGroupKeys));
         $nodes = $this->pickNodesForGroups($endpointGroupKeys, $desiredEndpointCount, $serviceId);
         $reachableNodes = [];
