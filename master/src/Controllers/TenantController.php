@@ -1696,6 +1696,11 @@ final class TenantController extends BaseController
                 </div>';
         }
 
+        $mptcpWarning = '
+                <p id="qcf-mptcp-warning" class="field-note" style="display:none;color:var(--danger);">
+                  ⚠ MPTCP requires the client machine to run Linux with kernel 6.0 or above.
+                </p>';
+
         $body = '
             <div class="hero">
               <div>
@@ -1715,6 +1720,7 @@ final class TenantController extends BaseController
                     <p class="field-note">Single = simplest. Race = failover.' . ($bondReady ? ' Bond = aggregation. MPTCP = kernel multipath.' : '') . '</p>
                   </div>
                   ' . $sidecarField . '
+                  ' . $mptcpWarning . '
                 </div>
 
                 <details style="margin-top:20px;">
@@ -1732,15 +1738,13 @@ final class TenantController extends BaseController
                     <div class="field"><label>Forward Chain</label><select name="forward_chain_id" ' . (empty($features['allow_forward_chain']) ? 'disabled' : '') . '>' . $chainOptions . '</select></div>
                     <div class="field"><label>Transport</label>
                       <select name="transport_mode">
-                        <option value="tcp" selected>TCP</option>
-                        <option value="tcp+udp">TCP + UDP</option>
+                        <option value="tcp">TCP</option>
+                        <option value="tcp+udp" selected>TCP + UDP</option>
                         <option value="udp">UDP</option>
                       </select>
                     </div>
                     <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" placeholder="auto from line range"><p class="field-note">Leave empty for auto.</p></div>
                     <div class="field"><label>Public Port</label><input type="number" name="public_port" placeholder="auto"><p class="field-note">Leave empty for auto.</p></div>
-                    <div class="field"><label>SNI Host</label><input type="text" name="sni_host" value="' . $this->escape((string) $this->config->get('DEFAULT_CDN_HOST', 'edge.example.com')) . '"><p class="field-note">From config default.</p></div>
-                    <div class="field"><label>CDN Host</label><input type="text" name="cdn_host" value="' . $this->escape((string) $this->config->get('DEFAULT_CDN_HOST', 'edge.example.com')) . '"><p class="field-note">From config default.</p></div>
                     <div class="field"><label>Route Mode</label><select name="endpoint_mode">' . $this->renderEndpointModeOptions('slave_group', !empty($features['allow_forward_chain'])) . '</select></div>
                     <div class="field"><label>Sidecar Host</label><input type="text" name="bond_remote_host" placeholder="manual override"><p class="field-note">Only for Bond/MPTCP without a saved sidecar point.</p></div>
                     <div class="field"><label>Sidecar Port</label><input type="number" name="bond_remote_port" value="' . $defaultBondRemotePort . '" placeholder="' . $defaultBondRemotePort . '"></div>
@@ -1764,10 +1768,13 @@ final class TenantController extends BaseController
             (function(){
               var mode = document.getElementById("qcf-client-mode");
               var sidecar = document.getElementById("qcf-sidecar-field");
-              if (mode && sidecar) {
-                function toggle() {
-                  sidecar.style.display = (mode.value === "bond" || mode.value === "mptcp") ? "" : "none";
-                }
+              var mptcpWarn = document.getElementById("qcf-mptcp-warning");
+              function toggle() {
+                var isBondOrMptcp = (mode.value === "bond" || mode.value === "mptcp");
+                if (sidecar) { sidecar.style.display = isBondOrMptcp ? "" : "none"; }
+                if (mptcpWarn) { mptcpWarn.style.display = (mode.value === "mptcp") ? "" : "none"; }
+              }
+              if (mode) {
                 mode.addEventListener("change", toggle);
                 toggle();
               }
@@ -1811,10 +1818,8 @@ final class TenantController extends BaseController
             'bond_sidecar_point_id' => (string) $request->input('bond_sidecar_point_id', ''),
             'bond_remote_host' => (string) $request->input('bond_remote_host', ''),
             'bond_remote_port' => (string) $request->input('bond_remote_port', (string) $this->defaultBondRemotePort()),
-            'transport_mode' => (string) $request->input('transport_mode', 'tcp'),
+            'transport_mode' => (string) $request->input('transport_mode', 'tcp+udp'),
             'client_mode' => $this->canonicalClientMode((string) $request->input('client_mode', 'single')),
-            'sni_host' => (string) $request->input('sni_host', $this->config->get('DEFAULT_CDN_HOST', 'edge.example.com')),
-            'cdn_host' => (string) $request->input('cdn_host', $this->config->get('DEFAULT_CDN_HOST', 'edge.example.com')),
             'node_group' => (string) $request->input('node_group', ''),
             'filter_profile' => (string) $request->input('filter_profile', 'off'),
         ];
