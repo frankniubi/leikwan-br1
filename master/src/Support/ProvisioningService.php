@@ -3264,8 +3264,20 @@ final class ProvisioningService
         }
 
         if ($serviceId !== null) {
-            $sql .= ' AND (n.owner_service_id IS NULL OR n.owner_service_id = :owner_service_id)';
+            // Platform nodes (no owner) + user-owned nodes + group-shared nodes visible to this service's user
+            $sql .= ' AND (n.owner_service_id IS NULL OR n.owner_service_id = :owner_service_id';
             $params['owner_service_id'] = $serviceId;
+
+            // Group-shared: visible if service owner is in the node's sharing group
+            $sql .= ' OR (n.sharing_mode = :shared AND n.user_slave_group_id IN (
+                SELECT m.group_id FROM user_slave_group_members m
+                INNER JOIN services s ON s.user_id = m.user_id
+                WHERE s.id = :svc_id_for_group
+            ))';
+            $params['shared'] = 'group_shared';
+            $params['svc_id_for_group'] = $serviceId;
+
+            $sql .= ')';
         }
 
         $sql .= ' ORDER BY n.current_load ASC, n.last_heartbeat_at DESC, n.id ASC LIMIT ' . max(1, $count);
