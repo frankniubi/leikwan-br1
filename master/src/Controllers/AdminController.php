@@ -2914,6 +2914,7 @@ final class AdminController extends BaseController
             ['href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],
             ['href' => '/admin/chains', 'label' => 'Chains', 'active' => $active === 'chains'],
             ['href' => '/admin/nodes', 'label' => 'Slave Nodes', 'active' => $active === 'nodes'],
+            ['href' => '/admin/user-groups', 'label' => 'User Groups', 'active' => $active === 'user-groups'],
             ['href' => '/tenant', 'label' => 'Tenant Area'],
         ]);
     }
@@ -3750,6 +3751,85 @@ final class AdminController extends BaseController
         }
 
         file_put_contents($envPath, implode(PHP_EOL, $lines) . PHP_EOL);
+    }
+
+    public function userSlaveGroupsPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $groups = $this->db->fetchAll(
+            'SELECT g.*, u.email AS owner_email,
+                    (SELECT COUNT(*) FROM user_slave_group_members m WHERE m.group_id = g.id) AS member_count,
+                    (SELECT COUNT(*) FROM nodes n WHERE n.user_slave_group_id = g.id AND n.sharing_mode = :shared) AS shared_node_count
+             FROM user_slave_groups g
+             LEFT JOIN users u ON u.id = g.owner_user_id
+             ORDER BY g.created_at DESC, g.id DESC',
+            ['shared' => 'group_shared']
+        );
+
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $rows = '';
+        foreach ($groups as $group) {
+            $rows .= '<tr>
+                <td>' . (int) $group['id'] . '</td>
+                <td>' . $this->escape((string) $group['name']) . '</td>
+                <td>' . $this->escape((string) ($group['owner_email'] ?? '')) . '</td>
+                <td>' . $this->escape((string) $group['invite_code']) . '</td>
+                <td>' . (int) ($group['member_count'] ?? 0) . '</td>
+                <td>' . (int) ($group['shared_node_count'] ?? 0) . '</td>
+                <td>' . $this->escape((string) $group['created_at']) . '</td>
+                <td>
+                    <form class="inline" method="post" action="/admin/user-groups/' . (int) $group['id'] . '/delete">
+                        <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                        <button type="submit" class="button danger">Delete</button>
+                    </form>
+                </td>
+            </tr>';
+        }
+
+        $body = '
+            <div class="hero">
+              <div>
+                <h2>User Slave Groups</h2>
+                <p class="muted">View and manage all tenant-created slave sharing groups.</p>
+              </div>
+            </div>
+            <section class="card">
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Invite Code</th><th>Members</th><th>Shared Nodes</th><th>Created</th><th>Actions</th></tr></thead>
+                  <tbody>' . $rows . '</tbody>
+                </table>
+              </div>
+            </section>';
+
+        return $this->adminPage('User Slave Groups', $body, $viewer, 'user-groups');
+    }
+
+    public function deleteUserSlaveGroup(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $groupId = $this->idParam($params);
+            // Reset sharing on nodes in this group
+            $this->db->execute(
+                'UPDATE nodes SET sharing_mode = :private, user_slave_group_id = NULL WHERE user_slave_group_id = :gid',
+                ['private' => 'private', 'gid' => $groupId]
+            );
+            $this->db->execute('DELETE FROM user_slave_group_members WHERE group_id = :gid', ['gid' => $groupId]);
+            $this->db->execute('DELETE FROM user_slave_groups WHERE id = :id', ['id' => $groupId]);
+            SessionAuth::flash('success', 'Group deleted.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed: ' . $throwable->getMessage());
+        }
+        return Response::redirect('/admin/user-groups');
     }
 
     /**

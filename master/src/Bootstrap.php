@@ -139,6 +139,8 @@ final class Bootstrap
         $this->router->add('POST', '/admin/nodes/request-update-selected', [$admin, 'requestSelectedNodeUpdates']);
         $this->router->add('POST', '/admin/nodes/request-update-group', [$admin, 'requestNodeGroupUpdate']);
         $this->router->add('POST', '/admin/edge-defaults', [$admin, 'saveEdgeDefaults']);
+        $this->router->add('GET', '/admin/user-groups', [$admin, 'userSlaveGroupsPage']);
+        $this->router->add('POST', '/admin/user-groups/{id}/delete', [$admin, 'deleteUserSlaveGroup']);
         $this->router->add('GET', '/tenant', [$tenant, 'introPage']);
         $this->router->add('GET', '/tenant/account', [$tenant, 'billingPage']);
         $this->router->add('GET', '/tenant/billing', [$tenant, 'billingPage']);
