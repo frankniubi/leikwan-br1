@@ -1738,6 +1738,9 @@ final class TenantController extends BaseController
                       </select>
                     </div>
                     <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" placeholder="auto from line range"><p class="field-note">Leave empty for auto.</p></div>
+                    <div class="field"><label>Public Port</label><input type="number" name="public_port" placeholder="auto"><p class="field-note">Leave empty for auto.</p></div>
+                    <div class="field"><label>SNI Host</label><input type="text" name="sni_host" value="' . $this->escape((string) $this->config->get('DEFAULT_CDN_HOST', 'edge.example.com')) . '"><p class="field-note">From config default.</p></div>
+                    <div class="field"><label>CDN Host</label><input type="text" name="cdn_host" value="' . $this->escape((string) $this->config->get('DEFAULT_CDN_HOST', 'edge.example.com')) . '"><p class="field-note">From config default.</p></div>
                     <div class="field"><label>Route Mode</label><select name="endpoint_mode">' . $this->renderEndpointModeOptions('slave_group', !empty($features['allow_forward_chain'])) . '</select></div>
                     <div class="field"><label>Sidecar Host</label><input type="text" name="bond_remote_host" placeholder="manual override"><p class="field-note">Only for Bond/MPTCP without a saved sidecar point.</p></div>
                     <div class="field"><label>Sidecar Port</label><input type="number" name="bond_remote_port" value="' . $defaultBondRemotePort . '" placeholder="' . $defaultBondRemotePort . '"></div>

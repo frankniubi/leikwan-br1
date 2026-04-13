@@ -48,6 +48,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('install/install-bond-sidecar.sh');
     }
 
+    public function wgWatchdog(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/leikwan-wg-watchdog.sh');
+    }
+
     public function uninstallBondSidecar(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/uninstall-bond-sidecar.sh');
