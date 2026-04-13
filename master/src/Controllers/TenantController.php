@@ -1729,8 +1729,47 @@ final class TenantController extends BaseController
             $clientGroupOptions .= '<option value="' . (int) $group['id'] . '">' . $this->escape((string) $group['name']) . '</option>';
         }
         $groupOptions = '<option value="">Auto choose</option>';
-        foreach ($allowedGroups as $group) {
-            $groupOptions .= '<option value="' . $this->escape((string) $group['group_key']) . '">' . $this->escape((string) $group['name']) . '</option>';
+
+        // Platform node groups
+        if ($allowedGroups !== []) {
+            $groupOptions .= '<optgroup label="Platform Nodes">';
+            foreach ($allowedGroups as $group) {
+                $groupOptions .= '<option value="' . $this->escape((string) $group['group_key']) . '">' . $this->escape((string) $group['name']) . '</option>';
+            }
+            $groupOptions .= '</optgroup>';
+        }
+
+        // User-owned nodes
+        $userNodes = $this->db->fetchAll(
+            'SELECT n.id, n.name, n.public_ip, n.sharing_mode
+             FROM nodes n
+             INNER JOIN services s ON s.id = n.owner_service_id
+             WHERE s.user_id = :uid AND (n.status = :active OR n.status = :degraded)
+             ORDER BY n.name ASC',
+            ['uid' => $user['id'], 'active' => 'active', 'degraded' => 'degraded']
+        );
+        if ($userNodes !== []) {
+            $groupOptions .= '<optgroup label="My Slaves">';
+            foreach ($userNodes as $uNode) {
+                $label = $this->escape((string) $uNode['name']) . ' (' . $this->escape((string) $uNode['public_ip']) . ')';
+                $groupOptions .= '<option value="_user_node_' . (int) $uNode['id'] . '">' . $label . '</option>';
+            }
+            $groupOptions .= '</optgroup>';
+        }
+
+        // Group-shared nodes
+        $sharedGroups = $this->provisioning->listUserSlaveGroups((int) $user['id']);
+        foreach ($sharedGroups as $sg) {
+            $sharedNodes = $sg['shared_nodes'] ?? [];
+            if ($sharedNodes === []) {
+                continue;
+            }
+            $groupOptions .= '<optgroup label="Shared — ' . $this->escape((string) $sg['name']) . '">';
+            foreach ($sharedNodes as $sNode) {
+                $label = $this->escape((string) $sNode['name']) . ' (' . $this->escape((string) $sNode['public_ip']) . ')';
+                $groupOptions .= '<option value="_user_node_' . (int) $sNode['id'] . '">' . $label . '</option>';
+            }
+            $groupOptions .= '</optgroup>';
         }
         $chainOptions = '<option value="">No chain</option>';
         foreach ($availableChains as $chain) {
