@@ -1526,7 +1526,7 @@ final class TenantController extends BaseController
                   5. Fill target host and target port, then save.
                 </div>
                 <div class="actions">
-                  <a class="button" href="/tenant/services/' . (int) $service['id'] . '/forward-wizard">Open Guided Setup</a>
+                  <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Create New Forward</a>
                   <a class="button ghost" href="/knowledgebase#quick-start">Knowledgebase</a>
                   <form class="inline" method="post" action="/tenant/services/' . (int) $service['id'] . '/regenerate-client-token">
                     <input type="hidden" name="csrf_token" value="' . $csrf . '">
@@ -1604,6 +1604,174 @@ final class TenantController extends BaseController
             . $mySlavesSection;
 
         return $this->page('服务详情', $body, $user, $this->tenantNav('service', $serviceId));
+    }
+
+    public function forwardWizardRedirect(Request $request, array $params): Response
+    {
+        $serviceId = $this->idParam($params);
+        return Response::redirect('/tenant/services/' . $serviceId . '/create-forward');
+    }
+
+    public function quickCreateForward(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+
+        $serviceId = $this->idParam($params);
+        $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id AND user_id = :user_id LIMIT 1', [
+            'id' => $serviceId,
+            'user_id' => $user['id'],
+        ]);
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+
+        $summary = $this->provisioning->serviceSummary($serviceId);
+        $features = $summary['effective_features'] ?? [];
+        $bondReady = $this->isBondReady($service);
+        $availableSidecarPoints = is_array($summary['available_sidecar_points'] ?? null) ? $summary['available_sidecar_points'] : [];
+        $hasSidecarPoints = $availableSidecarPoints !== [];
+
+        // Handle POST — create the forward
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            try {
+                SessionAuth::validateCsrf($request);
+                if (empty($features['allow_manage_forwards'])) {
+                    throw new ApiException('feature_denied_manage_forwards', 403);
+                }
+                $payload = $this->normalizeTenantForwardPayload($request->body());
+                $this->provisioning->createForward($serviceId, $payload, 'tenant');
+                SessionAuth::flash('success', 'Forward created.');
+                return Response::redirect('/tenant/services/' . $serviceId);
+            } catch (\Throwable $throwable) {
+                SessionAuth::flash('error', $this->forwardCreateFlashMessage($throwable));
+            }
+        }
+
+        // Build option lists
+        $allowedGroups = $summary['allowed_node_groups'] ?? [];
+        $availableClients = $summary['available_clients'] ?? [];
+        $availableChains = $summary['available_forward_chains'] ?? [];
+        $allowedClientGroups = $summary['allowed_client_groups'] ?? [];
+
+        $clientOptions = '<option value="">Auto choose</option>';
+        foreach ($availableClients as $client) {
+            $clientOptions .= '<option value="' . (int) $client['id'] . '">' . $this->escape((string) $client['name']) . ' - ' . $this->escape((string) $client['display_host']) . '</option>';
+        }
+        $clientGroupOptions = '';
+        foreach ($allowedClientGroups as $group) {
+            $clientGroupOptions .= '<option value="' . (int) $group['id'] . '">' . $this->escape((string) $group['name']) . '</option>';
+        }
+        $groupOptions = '<option value="">Auto choose</option>';
+        foreach ($allowedGroups as $group) {
+            $groupOptions .= '<option value="' . $this->escape((string) $group['group_key']) . '">' . $this->escape((string) $group['name']) . '</option>';
+        }
+        $chainOptions = '<option value="">No chain</option>';
+        foreach ($availableChains as $chain) {
+            $chainOptions .= '<option value="' . (int) $chain['id'] . '">' . $this->escape((string) $chain['name']) . '</option>';
+        }
+        $sidecarPointOptions = $this->renderSidecarPointOptions($availableSidecarPoints);
+
+        // Determine available connection modes
+        $modeOptions = '<option value="single">Single (Direct)</option><option value="race">Race (Failover)</option>';
+        if ($bondReady) {
+            $modeOptions .= '<option value="bond">Bond (Aggregation)</option>';
+            if ($hasSidecarPoints) {
+                $modeOptions .= '<option value="mptcp">MPTCP (Kernel Multipath)</option>';
+            }
+        }
+
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $defaultBondRemotePort = $this->defaultBondRemotePort();
+
+        $sidecarField = '';
+        if ($bondReady && $hasSidecarPoints) {
+            $sidecarField = '
+                <div class="field" id="qcf-sidecar-field" style="display:none;">
+                  <label>Sidecar Point</label>
+                  <select id="qcf-sidecar-point" name="bond_sidecar_point_id">' . $sidecarPointOptions . '</select>
+                  <p class="field-note">Required for Bond/MPTCP modes.</p>
+                </div>';
+        }
+
+        $body = '
+            <div class="hero">
+              <div>
+                <h2>Create Forward</h2>
+                <p class="muted">Specify your target and create a forward rule. Advanced options are auto-filled with safe defaults.</p>
+              </div>
+            </div>
+            <div class="card">
+              ' . (empty($features['allow_manage_forwards']) ? '<div class="flash danger">Forward creation is disabled for your plan/account.</div>' : '') . '
+              <form method="post" action="/tenant/services/' . $serviceId . '/create-forward">
+                <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                <div class="form-grid">
+                  <div class="field"><label>Target Host <span style="color:var(--danger)">*</span></label><input type="text" name="target_host" placeholder="10.0.0.5 or example.com" required></div>
+                  <div class="field"><label>Target Port <span style="color:var(--danger)">*</span></label><input type="number" name="target_port" placeholder="443" required></div>
+                  <div class="field"><label>Connection Mode</label>
+                    <select id="qcf-client-mode" name="client_mode">' . $modeOptions . '</select>
+                    <p class="field-note">Single = simplest. Race = failover.' . ($bondReady ? ' Bond = aggregation. MPTCP = kernel multipath.' : '') . '</p>
+                  </div>
+                  ' . $sidecarField . '
+                </div>
+
+                <details style="margin-top:20px;">
+                  <summary style="cursor:pointer;font-weight:600;color:var(--text-muted);">Advanced Options</summary>
+                  <div class="form-grid" style="margin-top:12px;">
+                    <div class="field"><label>Line Client</label><select name="line_client_id" ' . ($availableClients === [] || empty($features['allow_select_specific_line_client']) ? 'disabled' : '') . '>' . $clientOptions . '</select></div>
+                    <div class="field"><label>Line Client Groups</label><select name="line_client_group_ids[]" ' . (!empty($features['allow_select_multiple_line_groups']) ? 'multiple size="4"' : '') . '>' . $clientGroupOptions . '</select></div>
+                    <div class="field"><label>Line Group Mode</label>
+                      <select name="line_group_mode">
+                        <option value="selected">selected groups only</option>
+                        ' . (!empty($features['allow_use_all_line_groups']) ? '<option value="all_allowed">all allowed groups</option>' : '') . '
+                      </select>
+                    </div>
+                    <div class="field"><label>Slave Group</label><select name="node_group">' . $groupOptions . '</select></div>
+                    <div class="field"><label>Forward Chain</label><select name="forward_chain_id" ' . (empty($features['allow_forward_chain']) ? 'disabled' : '') . '>' . $chainOptions . '</select></div>
+                    <div class="field"><label>Transport</label>
+                      <select name="transport_mode">
+                        <option value="tcp" selected>TCP</option>
+                        <option value="tcp+udp">TCP + UDP</option>
+                        <option value="udp">UDP</option>
+                      </select>
+                    </div>
+                    <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" placeholder="auto from line range"><p class="field-note">Leave empty for auto.</p></div>
+                    <div class="field"><label>Route Mode</label><select name="endpoint_mode">' . $this->renderEndpointModeOptions('slave_group', !empty($features['allow_forward_chain'])) . '</select></div>
+                    <div class="field"><label>Sidecar Host</label><input type="text" name="bond_remote_host" placeholder="manual override"><p class="field-note">Only for Bond/MPTCP without a saved sidecar point.</p></div>
+                    <div class="field"><label>Sidecar Port</label><input type="number" name="bond_remote_port" value="' . $defaultBondRemotePort . '" placeholder="' . $defaultBondRemotePort . '"></div>
+                    <div class="field"><label>Filter Profile</label>
+                      <select name="filter_profile">
+                        <option value="off">off</option>
+                        <option value="log-only">log-only</option>
+                        <option value="drop-suspicious">drop-suspicious</option>
+                      </select>
+                    </div>
+                  </div>
+                </details>
+
+                <div class="actions" style="margin-top:20px;">
+                  <button class="button" type="submit" ' . (empty($features['allow_manage_forwards']) ? 'disabled' : '') . '>Create Forward</button>
+                  <a class="button ghost" href="/tenant/services/' . $serviceId . '">Cancel</a>
+                </div>
+              </form>
+            </div>
+            <script>
+            (function(){
+              var mode = document.getElementById("qcf-client-mode");
+              var sidecar = document.getElementById("qcf-sidecar-field");
+              if (mode && sidecar) {
+                function toggle() {
+                  sidecar.style.display = (mode.value === "bond" || mode.value === "mptcp") ? "" : "none";
+                }
+                mode.addEventListener("change", toggle);
+                toggle();
+              }
+            })();
+            </script>';
+
+        return $this->page('Create Forward', $body, $user, $this->tenantNav('wizard', $serviceId));
     }
 
     public function forwardWizard(Request $request, array $params): Response
