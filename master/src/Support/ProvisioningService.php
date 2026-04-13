@@ -136,6 +136,8 @@ final class ProvisioningService
                 $this->createForward($serviceId, $forwardPayload, 'whmcs');
             }
 
+            $this->republishActiveForwardsForService($serviceId);
+
             return $this->serviceSummary($serviceId);
         });
     }
@@ -563,6 +565,8 @@ final class ProvisioningService
             ]));
         }
 
+        $this->republishActiveForwardsForSidecarPoint($id);
+
         return $this->sidecarPointById($id) ?? [];
     }
 
@@ -696,6 +700,8 @@ final class ProvisioningService
                 'created_at' => $this->now(),
             ]);
         }
+
+        $this->republishActiveForwardsForClient($id);
 
         return $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $id]) ?? [];
     }
@@ -992,6 +998,8 @@ final class ProvisioningService
             'user_id' => $userId,
             'bandwidth_limit_mbps' => $bandwidth,
         ]);
+
+        $this->republishActiveForwardsForService($serviceId);
 
         return $this->serviceSummary($serviceId);
     }
@@ -2413,7 +2421,7 @@ final class ProvisioningService
                 ]);
         }
 
-        $endpointCount = $this->panelManagedEndpointCount($clientMode, $endpointGroupKeys);
+        $endpointCount = $this->panelManagedEndpointCount($clientMode, $endpointGroupKeys, $serviceId);
 
         if ($forwardId === null) {
             $forwardId = $this->db->insert('forwards', [
@@ -2505,7 +2513,7 @@ final class ProvisioningService
 
         $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
         $desiredEndpointCount = max((int) $forward['endpoint_count'], count($endpointGroupKeys));
-        $nodes = $this->pickNodesForGroups($endpointGroupKeys, $desiredEndpointCount);
+        $nodes = $this->pickNodesForGroups($endpointGroupKeys, $desiredEndpointCount, $serviceId);
         $reachableNodes = [];
         $skippedNodes = [];
         foreach ($nodes as $node) {
@@ -2737,6 +2745,50 @@ final class ProvisioningService
         }
     }
 
+    public function republishActiveForwardsForClient(int $clientId): void
+    {
+        if ($clientId <= 0) {
+            return;
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT f.id AS forward_id
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.enabled = 1
+               AND f.line_client_id = :client_id
+               AND s.status = :service_status',
+            [
+                'client_id' => $clientId,
+                'service_status' => 'active',
+            ]
+        );
+        foreach ($rows as $row) {
+            $this->reconcileForwardEndpoints((int) ($row['forward_id'] ?? 0));
+        }
+    }
+
+    public function republishActiveForwardsForService(int $serviceId): void
+    {
+        if ($serviceId <= 0) {
+            return;
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT f.id AS forward_id
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.enabled = 1
+               AND f.service_id = :service_id
+               AND s.status = :service_status',
+            [
+                'service_id' => $serviceId,
+                'service_status' => 'active',
+            ]
+        );
+        foreach ($rows as $row) {
+            $this->reconcileForwardEndpoints((int) ($row['forward_id'] ?? 0));
+        }
+    }
+
     private function reconcileForwardEndpoints(int $forwardId): void
     {
         if ($forwardId <= 0) {
@@ -2754,8 +2806,8 @@ final class ProvisioningService
         }
         $groupKeys = [(string) ($forward['node_group_key'] ?? '')];
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
-        $desiredCount = $this->panelManagedEndpointCount($clientMode, $groupKeys);
-        $desiredNodes = $this->pickNodesForGroups($groupKeys, $desiredCount);
+        $desiredCount = $this->panelManagedEndpointCount($clientMode, $groupKeys, (int) ($forward['service_id'] ?? 0) ?: null);
+        $desiredNodes = $this->pickNodesForGroups($groupKeys, $desiredCount, (int) ($forward['service_id'] ?? 0) ?: null);
         $reachableNodes = [];
         foreach ($desiredNodes as $node) {
             $publicHost = $this->resolveNodePublicHost($node);
@@ -2926,7 +2978,7 @@ final class ProvisioningService
     /**
      * @return array<int, array<string, mixed>>
      */
-    private function pickNodes(string $groupKey, int $count): array
+    private function pickNodes(string $groupKey, int $count, ?int $serviceId = null): array
     {
         $params = [
             'active' => 'active',
@@ -2942,6 +2994,11 @@ final class ProvisioningService
             $params['group_key'] = $groupKey;
         }
 
+        if ($serviceId !== null) {
+            $sql .= ' AND (n.owner_service_id IS NULL OR n.owner_service_id = :owner_service_id)';
+            $params['owner_service_id'] = $serviceId;
+        }
+
         $sql .= ' ORDER BY n.current_load ASC, n.last_heartbeat_at DESC, n.id ASC LIMIT ' . max(1, $count);
         return $this->db->fetchAll($sql, $params);
     }
@@ -2950,7 +3007,7 @@ final class ProvisioningService
      * @param array<int, string> $groupKeys
      * @return array<int, array<string, mixed>>
      */
-    private function pickNodesForGroups(array $groupKeys, int $count): array
+    private function pickNodesForGroups(array $groupKeys, int $count, ?int $serviceId = null): array
     {
         $normalized = array_values(array_unique(array_filter(array_map(static fn(string $item): string => trim($item), $groupKeys), static fn(string $item): bool => $item !== '')));
         if ($normalized === []) {
@@ -2960,7 +3017,7 @@ final class ProvisioningService
         $primary = [];
         $secondary = [];
         foreach ($normalized as $groupKey) {
-            $groupNodes = $this->pickNodes($groupKey, max(1, $count));
+            $groupNodes = $this->pickNodes($groupKey, max(1, $count), $serviceId);
             if ($groupNodes === []) {
                 continue;
             }
@@ -2992,7 +3049,7 @@ final class ProvisioningService
     /**
      * @param array<int, string> $groupKeys
      */
-    private function availableNodeCountForGroups(array $groupKeys): int
+    private function availableNodeCountForGroups(array $groupKeys, ?int $serviceId = null): int
     {
         $normalized = array_values(array_unique(array_filter(array_map(static fn(string $item): string => trim($item), $groupKeys), static fn(string $item): bool => $item !== '')));
         if ($normalized === []) {
@@ -3010,12 +3067,18 @@ final class ProvisioningService
             $params[$placeholder] = $groupKey;
         }
 
+        $ownerClause = '';
+        if ($serviceId !== null) {
+            $ownerClause = ' AND (n.owner_service_id IS NULL OR n.owner_service_id = :owner_service_id)';
+            $params['owner_service_id'] = $serviceId;
+        }
+
         $row = $this->db->fetchOne(
             'SELECT COUNT(*) AS total
              FROM nodes n
              LEFT JOIN node_groups g ON g.id = n.group_id
              WHERE (n.status = :active OR n.status = :degraded)
-               AND g.group_key IN (' . implode(', ', $placeholders) . ')',
+               AND g.group_key IN (' . implode(', ', $placeholders) . ')' . $ownerClause,
             $params
         );
 
@@ -3025,9 +3088,9 @@ final class ProvisioningService
     /**
      * @param array<int, string> $groupKeys
      */
-    private function panelManagedEndpointCount(string $clientMode, array $groupKeys): int
+    private function panelManagedEndpointCount(string $clientMode, array $groupKeys, ?int $serviceId = null): int
     {
-        $availableCount = $this->availableNodeCountForGroups($groupKeys);
+        $availableCount = $this->availableNodeCountForGroups($groupKeys, $serviceId);
         $groupCount = count(array_filter(array_map(static fn(string $item): string => trim($item), $groupKeys), static fn(string $item): bool => $item !== ''));
 
         if ($clientMode === 'single') {
@@ -3852,6 +3915,20 @@ final class ProvisioningService
     }
 
     /**
+     * Compute a stable per-leg listen port for the sidecar WG transit interface.
+     * Returns 0 if the sidecar has no declared port range.
+     */
+    private function stableSidecarLegPort(int $sidecarListenPort, int $portRangeEnd, int $forwardId, int $nodeId): int
+    {
+        if ($sidecarListenPort <= 0 || $portRangeEnd <= $sidecarListenPort) {
+            return 0;
+        }
+        $rangeSize = $portRangeEnd - $sidecarListenPort; // e.g. 14999-14969 = 30
+        $stableIndex = abs(($forwardId * 256 + $nodeId) % $rangeSize);
+        return $sidecarListenPort + 1 + $stableIndex;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function mptcpSidecarManagementForPoint(int $pointId): array
@@ -3937,13 +4014,20 @@ final class ProvisioningService
             }
         }
 
+        $sidecarListenPort = (int) ($point['listen_port'] ?? 0);
+        $sidecarPortRangeEnd = (int) ($pointConfig['wireguard_port_range_end'] ?? 0);
+
         return [
-            'underlays' => array_values(array_map(function ($leg, $idx) use ($pointId) {
+            'underlays' => array_values(array_map(function ($leg, $idx) use ($pointId, $sidecarListenPort, $sidecarPortRangeEnd) {
+                $fid = (int) ($leg['forward_id'] ?? 0);
+                $nid = (int) ($leg['node_id'] ?? 0);
+                $fixedPort = $this->stableSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $fid, $nid);
                 return [
                     'type' => (string) ($this->config->get('MPTCP_UNDERLAY_TYPE', 'wireguard') ?? 'wireguard'),
                     'mode' => 'slave_transit',
                     'interface_name' => 'lw-sc-' . $pointId . '-' . $idx,
-                    'peer_keepalive_seconds' => max(0, (int) ($this->config->getInt('MPTCP_PEER_KEEPALIVE_SECONDS', 25) ?? 25)),
+                    'listen_port' => $fixedPort,
+                    'peer_keepalive_seconds' => 0,
                     'legs' => [$leg],
                 ];
             }, $legs, array_keys($legs))),
@@ -3993,6 +4077,7 @@ final class ProvisioningService
         }
 
         $forwardId = (int) ($forward['id'] ?? 0);
+        $nodeId = (int) ($node['id'] ?? 0);
         $nodeBasePort = isset($nodeConfig['wireguard_listen_port']) && (int) $nodeConfig['wireguard_listen_port'] > 0
             ? (int) $nodeConfig['wireguard_listen_port']
             : $publicPort;
@@ -4000,14 +4085,18 @@ final class ProvisioningService
             ? (int) $nodeConfig['wireguard_fallback_tcp_port']
             : ($nodeBasePort > 0 ? $nodeBasePort + 10000 : 0);
 
+        $sidecarListenPort = (int) ($point['listen_port'] ?? 0);
+        $sidecarPortRangeEnd = (int) ($sidecarConfig['wireguard_port_range_end'] ?? 0);
+        $sidecarLegPort = $this->stableSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $forwardId, $nodeId);
+
         return [
             'enabled' => true,
-            'interface_name' => 'lwf' . $forwardId . 'n' . (int) ($node['id'] ?? 0),
+            'interface_name' => 'lwf' . $forwardId . 'n' . $nodeId,
             'listen_port' => $this->stableMptcpSlavePort($nodeBasePort, $forwardId),
             'fallback_tcp_port' => $this->stableMptcpSlavePort($nodeBaseFallback, $forwardId),
             'outer_transport' => $outerTransport,
             'sidecar_endpoint_host' => trim((string) ($point['sidecar_host'] ?? '')),
-            'sidecar_endpoint_port' => (int) ($point['listen_port'] ?? 0),
+            'sidecar_endpoint_port' => $sidecarLegPort > 0 ? $sidecarLegPort : $sidecarListenPort,
             'peer_keepalive_seconds' => max(0, (int) ($this->config->getInt('MPTCP_PEER_KEEPALIVE_SECONDS', 25) ?? 25)),
             'client_public_key' => $clientPublicKey,
             'sidecar_public_key' => $sidecarPublicKey,
