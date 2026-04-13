@@ -144,6 +144,7 @@ final class Bootstrap
         $this->router->add('GET', '/tenant/billing', [$tenant, 'billingPage']);
         $this->router->add('POST', '/tenant/account/transfer', [$tenant, 'transferBalance']);
         $this->router->add('POST', '/tenant/billing/transfer', [$tenant, 'transferBalance']);
+        $this->router->add('POST', '/tenant/account/reactivate', [$tenant, 'reactivateForwards']);
         $this->router->add('POST', '/tenant/account/bind', [$auth, 'requestBuyBinding']);
         $this->router->add('GET', '/tenant/plans', [$tenant, 'plansPage']);
         $this->router->add('POST', '/tenant/plans/purchase', [$tenant, 'purchasePackage']);
