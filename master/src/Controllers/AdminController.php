@@ -1405,6 +1405,9 @@ final class AdminController extends BaseController
         $editingAgentConfig = $editing !== null ? $this->decodeJsonList($editing['agent_config_json'] ?? null) : [];
         $editingCredentialProfileId = $editing !== null ? (int) ($editing['credential_profile_id'] ?? 0) : 0;
         $editingSslCertificateId = $editing !== null ? (int) ($editing['ssl_certificate_id'] ?? 0) : 0;
+        $editingNodePrice = ($editing !== null && $this->provisioning !== null)
+            ? $this->provisioning->getTrafficPriceFor('slave', (int) $editing['id'], null)
+            : null;
         $editingTlsMode = (string) ($editingAgentConfig['tls_mode'] ?? 'self-signed');
         $editingMuxHosts = $editingAgentConfig['mux_listen_hosts'] ?? ['::', '0.0.0.0'];
         if (is_array($editingMuxHosts)) {
@@ -1623,6 +1626,9 @@ final class AdminController extends BaseController
                   <div class="field"><label>Backend Port Range Start</label><input type="number" name="backend_port_range_start" value="' . $this->escape((string) ($editingAgentConfig['backend_port_range_start'] ?? 20000)) . '"' . ($editing === null ? ' disabled' : '') . '></div>
                   <div class="field"><label>Backend Port Range End</label><input type="number" name="backend_port_range_end" value="' . $this->escape((string) ($editingAgentConfig['backend_port_range_end'] ?? 40000)) . '"' . ($editing === null ? ' disabled' : '') . '></div>
                   <div class="field"><label>Mux Listen Hosts</label><input type="text" name="mux_listen_hosts" value="' . $this->escape((string) $editingMuxHosts) . '"' . ($editing === null ? ' disabled' : '') . '><p class="muted">Comma-separated, for example <code>::,0.0.0.0</code>.</p></div>
+                </div>
+                <div class="form-grid" style="margin-top:18px;">
+                  <div class="field"><label>Traffic Price Override / GB</label><input type="number" step="0.0001" min="0" name="traffic_price_per_gb" value="' . $this->escape((string) ($editingNodePrice['price_per_gb'] ?? '')) . '" placeholder="use group default"' . ($editing === null ? ' disabled' : '') . '><p class="muted">Leave empty to use the group default price. Set a value to override.</p></div>
                 </div>
                 <div class="field" style="margin-top:14px;"><label>Additional Agent Config JSON</label><textarea name="agent_config_json" placeholder="{&quot;backend_host&quot;:&quot;127.0.0.1&quot;}"' . ($editing === null ? ' disabled' : '') . '>' . $this->escape((string) ($editing['agent_config_json'] ?? '')) . '</textarea></div>
                 <div class="actions"><button class="button" type="submit"' . ($editing === null ? ' disabled' : '') . '>Save Node Config</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/nodes">Cancel</a>' : '') . '</div>
@@ -2385,6 +2391,10 @@ final class AdminController extends BaseController
                     'updated_at' => gmdate('Y-m-d H:i:s'),
                 ]
             );
+            $trafficPrice = trim((string) $request->input('traffic_price_per_gb', ''));
+            if ($trafficPrice !== '' && $this->provisioning !== null) {
+                $this->provisioning->upsertTrafficPrice('slave', $nodeId, null, $trafficPrice);
+            }
             SessionAuth::flash('success', 'Node management config saved. The slave agent will refresh to the latest full panel-managed config on its next poll.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to save node management config: ' . $throwable->getMessage());
