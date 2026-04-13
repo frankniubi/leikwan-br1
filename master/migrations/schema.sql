@@ -397,6 +397,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     last_heartbeat_at DATETIME NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
+    sharing_mode ENUM('private', 'group_shared') NOT NULL DEFAULT 'private',
+    user_slave_group_id INT NULL,
     CONSTRAINT fk_nodes_group FOREIGN KEY (group_id) REFERENCES node_groups(id),
     CONSTRAINT fk_nodes_credential_profile FOREIGN KEY (credential_profile_id) REFERENCES credential_profiles(id),
     CONSTRAINT fk_nodes_ssl_certificate FOREIGN KEY (ssl_certificate_id) REFERENCES ssl_certificates(id),
@@ -514,4 +516,22 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     context_json JSON NULL,
     created_at DATETIME NOT NULL,
     INDEX idx_audit_action_created (action, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS user_slave_groups (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    owner_user_id INT NOT NULL,
+    invite_code VARCHAR(64) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_invite_code (invite_code)
+);
+
+CREATE TABLE IF NOT EXISTS user_slave_group_members (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    group_id INT NOT NULL,
+    user_id INT NOT NULL,
+    role ENUM('owner', 'member') NOT NULL DEFAULT 'member',
+    joined_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_group_user (group_id, user_id)
 );
