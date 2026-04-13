@@ -2473,6 +2473,243 @@ final class TenantController extends BaseController
         return Response::redirect('/tenant/services/' . $serviceId);
     }
 
+    public function slaveGroupsPage(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+
+        $groups = $this->provisioning->listUserSlaveGroups((int) $user['id']);
+        $csrf = $this->escape(SessionAuth::csrfToken());
+
+        $groupCards = '';
+        foreach ($groups as $group) {
+            $isOwner = (string) ($group['my_role'] ?? '') === 'owner';
+            $memberList = '';
+            foreach ($group['members'] as $member) {
+                $memberList .= '<span class="badge info">' . $this->escape((string) $member['email']);
+                if ($isOwner && (int) $member['user_id'] !== (int) $user['id']) {
+                    $memberList .= ' <form class="inline" method="post" action="/tenant/slave-groups/' . (int) $group['id'] . '/kick">
+                        <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                        <input type="hidden" name="target_user_id" value="' . (int) $member['user_id'] . '">
+                        <button type="submit" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:12px;">x</button>
+                    </form>';
+                }
+                $memberList .= '</span> ';
+            }
+
+            $nodeList = '';
+            foreach ($group['shared_nodes'] as $node) {
+                $nodeList .= $this->escape((string) $node['name']) . ' (' . $this->escape((string) $node['public_ip']) . '), ';
+            }
+            $nodeList = rtrim($nodeList, ', ') ?: 'None';
+
+            $actions = '';
+            if ($isOwner) {
+                $actions = '<div class="muted" style="margin-top:10px;">Invite Code: <strong>' . $this->escape((string) $group['invite_code']) . '</strong> '
+                    . $this->renderCopyButton('Copy', (string) $group['invite_code']) . '</div>';
+            } else {
+                $actions = '<form class="inline" method="post" action="/tenant/slave-groups/' . (int) $group['id'] . '/leave" style="margin-top:10px;">
+                    <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                    <button type="submit" class="button danger">Leave Group</button>
+                </form>';
+            }
+
+            $roleLabel = $isOwner ? 'Owner' : 'Member';
+            $groupCards .= '<section class="card" style="margin-bottom:14px;">
+                <h3>' . $this->escape((string) $group['name']) . ' <span class="badge info">' . $roleLabel . '</span></h3>
+                <div class="muted">Members: ' . $memberList . '</div>
+                <div class="muted" style="margin-top:8px;">Shared Slaves: ' . $this->escape($nodeList) . '</div>
+                ' . $actions . '
+            </section>';
+        }
+
+        if ($groupCards === '') {
+            $groupCards = '<div class="muted">You have not created or joined any slave groups yet.</div>';
+        }
+
+        // User-owned nodes with sharing controls
+        $ownedNodes = $this->db->fetchAll(
+            'SELECT n.id, n.name, n.public_ip, n.status, n.sharing_mode, n.user_slave_group_id
+             FROM nodes n
+             INNER JOIN services s ON s.id = n.owner_service_id
+             WHERE s.user_id = :uid
+             ORDER BY n.name ASC',
+            ['uid' => (int) $user['id']]
+        );
+
+        $ownedGroupOptions = [];
+        foreach ($groups as $g) {
+            if ((string) ($g['my_role'] ?? '') === 'owner') {
+                $ownedGroupOptions[] = $g;
+            }
+        }
+
+        $nodeRows = '';
+        foreach ($ownedNodes as $oNode) {
+            $sharingTd = '<form method="post" action="/tenant/nodes/' . (int) $oNode['id'] . '/sharing" class="inline">
+                <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                <input type="hidden" name="sharing_mode" value="private">
+                <input type="hidden" name="user_slave_group_id" value="0">
+                <select onchange="var v=this.value.split(\':\');this.form.sharing_mode.value=v[0];this.form.user_slave_group_id.value=v[1]||0;this.form.submit();">
+                    <option value="private:0"' . ((string) ($oNode['sharing_mode'] ?? 'private') === 'private' ? ' selected' : '') . '>Private</option>';
+            foreach ($ownedGroupOptions as $og) {
+                $val = 'group_shared:' . (int) $og['id'];
+                $isSelected = (string) ($oNode['sharing_mode'] ?? '') === 'group_shared' && (int) ($oNode['user_slave_group_id'] ?? 0) === (int) $og['id'];
+                $sharingTd .= '<option value="' . $this->escape($val) . '"' . ($isSelected ? ' selected' : '') . '>Share to: ' . $this->escape((string) $og['name']) . '</option>';
+            }
+            $sharingTd .= '</select>
+            </form>';
+
+            $nodeRows .= '<tr>
+                <td>' . $this->escape((string) $oNode['name']) . '</td>
+                <td>' . $this->escape((string) $oNode['public_ip']) . '</td>
+                <td><span class="badge ' . ((string) $oNode['status'] === 'active' ? 'success' : 'danger') . '">' . $this->escape((string) $oNode['status']) . '</span></td>
+                <td>' . $sharingTd . '</td>
+            </tr>';
+        }
+
+        $ownedNodesSection = '';
+        if ($nodeRows !== '') {
+            $ownedNodesSection = '<section class="card" style="margin-top:18px;">
+                <h3>My Slaves — Sharing Controls</h3>
+                <p class="muted">Change sharing mode for your owned slaves. Private = only you can use. Share to a group = all group members can use.</p>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Name</th><th>IP</th><th>Status</th><th>Sharing</th></tr></thead>
+                    <tbody>' . $nodeRows . '</tbody>
+                  </table>
+                </div>
+            </section>';
+        }
+
+        $body = '
+            <div class="hero">
+              <div>
+                <h2>Slave Groups</h2>
+                <p class="muted">Create sharing groups, invite others, and share your slaves with group members.</p>
+              </div>
+            </div>
+            <div class="grid two">
+              <section class="card">
+                <h3>Create New Group</h3>
+                <form method="post" action="/tenant/slave-groups">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  <input type="hidden" name="action" value="create">
+                  <div class="field"><label>Group Name</label><input type="text" name="name" placeholder="My Team" required></div>
+                  <div class="actions"><button class="button" type="submit">Create Group</button></div>
+                </form>
+              </section>
+              <section class="card">
+                <h3>Join Group by Invite Code</h3>
+                <form method="post" action="/tenant/slave-groups/join">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  <div class="field"><label>Invite Code</label><input type="text" name="invite_code" placeholder="abc123def456" required></div>
+                  <div class="actions"><button class="button" type="submit">Join Group</button></div>
+                </form>
+              </section>
+            </div>
+            <div style="margin-top:18px;">' . $groupCards . '</div>
+            ' . $ownedNodesSection;
+
+        return $this->page('Slave Groups', $body, $user, $this->tenantNav('slave-groups'));
+    }
+
+    public function saveSlaveGroup(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $name = trim((string) $request->input('name', ''));
+            if ($name === '') {
+                throw new \Leikwan\Master\Exceptions\ApiException('name_required', 422);
+            }
+            $this->provisioning->createUserSlaveGroup((int) $user['id'], $name);
+            SessionAuth::flash('success', 'Group created.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed: ' . $throwable->getMessage());
+        }
+        return Response::redirect('/tenant/slave-groups');
+    }
+
+    public function joinSlaveGroup(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $code = trim((string) $request->input('invite_code', ''));
+            $this->provisioning->joinUserSlaveGroup((int) $user['id'], $code);
+            SessionAuth::flash('success', 'Joined group successfully.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed: ' . $throwable->getMessage());
+        }
+        return Response::redirect('/tenant/slave-groups');
+    }
+
+    public function leaveSlaveGroup(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $groupId = $this->idParam($params);
+            $this->provisioning->leaveUserSlaveGroup((int) $user['id'], $groupId);
+            SessionAuth::flash('success', 'Left group.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed: ' . $throwable->getMessage());
+        }
+        return Response::redirect('/tenant/slave-groups');
+    }
+
+    public function kickSlaveGroupMember(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $groupId = $this->idParam($params);
+            $targetUserId = (int) $request->input('target_user_id', 0);
+            $this->provisioning->kickUserSlaveGroupMember((int) $user['id'], $groupId, $targetUserId);
+            SessionAuth::flash('success', 'Member removed.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed: ' . $throwable->getMessage());
+        }
+        return Response::redirect('/tenant/slave-groups');
+    }
+
+    public function updateNodeSharing(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $nodeId = $this->idParam($params);
+            $mode = trim((string) $request->input('sharing_mode', 'private'));
+            $groupId = (int) $request->input('user_slave_group_id', 0);
+            if ($mode === 'group_shared' && $groupId <= 0) {
+                throw new \Leikwan\Master\Exceptions\ApiException('group_required', 422);
+            }
+            $this->provisioning->updateNodeSharing($nodeId, (int) $user['id'], $mode, $mode === 'group_shared' ? $groupId : null);
+            SessionAuth::flash('success', 'Sharing updated.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed: ' . $throwable->getMessage());
+        }
+        return Response::redirect('/tenant/slave-groups');
+    }
+
     /**
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
@@ -2809,6 +3046,7 @@ final class TenantController extends BaseController
             ['href' => '/tenant/forwards', 'label' => '转发配置', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
             ['href' => '/tenant/clients', 'label' => '接入点 (Client)', 'active' => $active === 'clients'],
             ['href' => '/tenant/sidecars', 'label' => '边车 (Sidecar)', 'active' => $active === 'sidecars'],
+            ['href' => '/tenant/slave-groups', 'label' => 'Slave 群组', 'active' => $active === 'slave-groups'],
             ['href' => '/knowledgebase', 'label' => '知识库', 'active' => $active === 'knowledgebase'],
         ];
 
