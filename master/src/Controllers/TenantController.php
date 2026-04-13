@@ -264,6 +264,15 @@ final class TenantController extends BaseController
         $linked = !empty($snapshot['linked']);
         $localCurrency = strtoupper(trim((string) ($user['wallet_currency'] ?? 'CNY')));
         $localBalance = (float) ($user['wallet_balance'] ?? 0);
+        $balanceColor = 'var(--success)';
+        $balanceLabel = 'Active';
+        if ($localBalance <= 0) {
+            $balanceColor = 'var(--danger)';
+            $balanceLabel = 'Suspended';
+        } elseif ($localBalance <= (float) ($user['wallet_low_balance_threshold'] ?? 5.00)) {
+            $balanceColor = '#c96b32';
+            $balanceLabel = 'Low';
+        }
         $remoteBalance = $remote !== null ? (float) ($remote['credit'] ?? 0) : 0.0;
         $remoteCurrency = $remote !== null
             ? strtoupper(trim((string) ($remote['currency_code'] ?? $localCurrency)))
@@ -439,6 +448,28 @@ final class TenantController extends BaseController
             $transactionRows = '<tr><td colspan="5" class="muted">No balance transfer record yet.</td></tr>';
         }
 
+        $usageBreakdown = $this->buildBillingUsageBreakdown((int) $user['id']);
+        $usageRows = '';
+        foreach ($usageBreakdown as $row) {
+            $usageRows .= '<tr>
+                <td>' . $this->escape((string) $row['name']) . '</td>
+                <td>' . $this->escape((string) $row['region']) . '</td>
+                <td>' . $this->escape($this->formatTrafficBytes((int) $row['bytes'])) . '</td>
+                <td>' . $this->escape((string) $row['price_per_gb']) . '/GB</td>
+                <td>' . $this->escape((string) $row['currency']) . ' ' . $this->escape(number_format((float) $row['cost'], 2)) . '</td>
+            </tr>';
+        }
+        $usageTable = $usageRows !== '' ? '
+            <section class="card" style="margin-top:20px;">
+              <h3>This Cycle Usage Breakdown</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Node</th><th>Region</th><th>Traffic</th><th>Unit Price</th><th>Cost</th></tr></thead>
+                  <tbody>' . $usageRows . '</tbody>
+                </table>
+              </div>
+            </section>' : '';
+
         $body = '
             <div class="hero">
               <div>
@@ -451,7 +482,8 @@ final class TenantController extends BaseController
             </div>
             ' . $syncNotice . '
             <div class="grid three">
-              <section class="card"><div class="muted">Panel Balance</div><div class="stats">' . $this->escape($localCurrency) . ' ' . $this->escape(number_format($localBalance, 2)) . '</div></section>
+              <section class="card"><div class="muted">Panel Balance</div><div class="stats" style="color:' . $balanceColor . ';">' . $this->escape($localCurrency) . ' ' . $this->escape(number_format($localBalance, 2)) . '</div><span class="badge" style="background:' . $balanceColor . ';color:#fff;margin-top:10px;display:inline-block;">' . $this->escape($balanceLabel) . '</span>'
+            . ($localBalance > 0 && $this->hasSuspendedForwards($user) ? '<form method="post" action="/tenant/account/reactivate" style="margin-top:10px;"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button class="button" type="submit" style="width:100%;">Reactivate All Forwards</button></form>' : '') . '</section>
               <section class="card"><div class="muted">Buy Balance</div><div class="stats">' . ($remote !== null ? $this->escape($remoteCurrency) . ' ' . $this->escape(number_format($remoteBalance, 2)) : '-') . '</div></section>
               <section class="card"><div class="muted">Binding Status</div><div class="stats">' . ($linked ? 'Bound' : 'Not Bound') . '</div></section>
               <section class="card"><div class="muted">Active Products</div><div class="stats">' . (int) ($stats['productsnumactive'] ?? 0) . '</div></section>
@@ -462,6 +494,7 @@ final class TenantController extends BaseController
               ' . $bindSection . '
               ' . $transferSection . '
             </div>
+            ' . $usageTable . '
             <section class="card" style="margin-top:20px;">
               <h3>Buy Station Products</h3>
               <div class="table-wrap">
@@ -647,6 +680,37 @@ final class TenantController extends BaseController
             SessionAuth::flash('success', 'Balance transfer completed successfully.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Balance transfer failed: ' . $throwable->getMessage());
+        }
+
+        return Response::redirect('/tenant/account');
+    }
+
+    public function reactivateForwards(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $balance = (float) ($user['wallet_balance'] ?? 0);
+            if ($balance <= 0) {
+                throw new \Leikwan\Master\Exceptions\ApiException('insufficient_balance', 400);
+            }
+
+            $this->db->execute(
+                'UPDATE forwards SET enabled = 1
+                 WHERE service_id IN (SELECT id FROM services WHERE user_id = :user_id AND status = :status)',
+                ['user_id' => (int) $user['id'], 'status' => 'active']
+            );
+            $this->db->execute(
+                'UPDATE users SET wallet_warning_sent = 0 WHERE id = :id',
+                ['id' => (int) $user['id']]
+            );
+            SessionAuth::flash('success', 'All forwards have been reactivated.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Reactivation failed: ' . $throwable->getMessage());
         }
 
         return Response::redirect('/tenant/account');
@@ -2792,5 +2856,55 @@ final class TenantController extends BaseController
             return '-';
         }
         return round(min(100, ($usedBytes / $limitBytes) * 100), 2) . '%';
+    }
+
+    private function hasSuspendedForwards(array $user): bool
+    {
+        $count = (int) ($this->db->fetchOne(
+            'SELECT COUNT(*) AS total FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE s.user_id = :user_id AND f.enabled = 0',
+            ['user_id' => (int) $user['id']]
+        )['total'] ?? 0);
+        return $count > 0;
+    }
+
+    private function buildBillingUsageBreakdown(int $userId): array
+    {
+        $rows = $this->db->fetchAll(
+            'SELECT n.id AS node_id, n.name, n.region, SUM(t.bytes_in + t.bytes_out) AS total_bytes
+             FROM traffic_usage_hourly t
+             INNER JOIN service_endpoints e ON e.id = t.endpoint_id
+             INNER JOIN forwards f ON f.id = e.forward_id
+             INNER JOIN services s ON s.id = f.service_id
+             INNER JOIN nodes n ON n.id = t.node_id
+             WHERE s.user_id = :user_id
+               AND t.period_start >= :cycle_start
+             GROUP BY n.id, n.name, n.region
+             ORDER BY total_bytes DESC',
+            [
+                'user_id' => $userId,
+                'cycle_start' => (new \DateTimeImmutable('first day of this month', new \DateTimeZone('UTC')))->format('Y-m-d 00:00:00'),
+            ]
+        );
+
+        $result = [];
+        foreach ($rows as $row) {
+            $nodeId = (int) ($row['node_id'] ?? 0);
+            $bytes = (int) ($row['total_bytes'] ?? 0);
+            $price = $this->provisioning->resolveTrafficPrice($nodeId, 'slave');
+            $pricePerGb = $price !== null ? (float) $price['price_per_gb'] : 0;
+            $currency = $price !== null ? $price['currency'] : 'CNY';
+            $gb = $bytes / (1024 * 1024 * 1024);
+            $result[] = [
+                'name' => $row['name'] ?? '',
+                'region' => $row['region'] ?? '',
+                'bytes' => $bytes,
+                'price_per_gb' => $pricePerGb > 0 ? number_format($pricePerGb, 4) : 'Free',
+                'currency' => $currency,
+                'cost' => $gb * $pricePerGb,
+            ];
+        }
+        return $result;
     }
 }
