@@ -1072,6 +1072,9 @@ final class AdminController extends BaseController
                 break;
             }
         }
+        $editingSidecarPrice = ($editing !== null && $this->provisioning !== null)
+            ? $this->provisioning->getTrafficPriceFor('sidecar', (int) $editing['id'], null)
+            : null;
 
         $ownerOptions = '<option value="">Shared / admin-managed</option>';
         foreach ($tenants as $tenant) {
@@ -1151,6 +1154,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Bind Host</label><input type="text" name="bind_host" value="' . $this->escape((string) ($editing['bind_host'] ?? '0.0.0.0')) . '"></div>
                     <div class="field"><label>Total Limit Mbps</label><input type="number" name="total_speed_limit_mbps" value="' . $this->escape((string) ($editing['total_speed_limit_mbps'] ?? '')) . '" min="1" placeholder="optional"></div>
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>disabled</option></select></div>
+                    <div class="field"><label>Traffic Price / GB</label><input type="number" step="0.0001" min="0" name="traffic_price_per_gb" value="' . $this->escape((string) ($editingSidecarPrice['price_per_gb'] ?? '0')) . '" placeholder="0.0000"><p class="muted">Per-GB price for traffic through this sidecar. 0 = free.</p></div>
                   </div>
                   <div class="actions"><button class="button" type="submit">Save Sidecar Point</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/sidecars">Cancel</a>' : '') . '</div>
                 </form>
@@ -1179,6 +1183,15 @@ final class AdminController extends BaseController
         try {
             SessionAuth::validateCsrf($request);
             $this->provisioning?->saveSidecarPoint($request->body());
+            $savedId = (int) ($request->input('id', 0));
+            if ($savedId <= 0) {
+                $last = $this->db->fetchOne('SELECT id FROM sidecar_points ORDER BY id DESC LIMIT 1');
+                $savedId = (int) ($last['id'] ?? 0);
+            }
+            $trafficPrice = trim((string) $request->input('traffic_price_per_gb', '0'));
+            if ($savedId > 0 && $this->provisioning !== null) {
+                $this->provisioning->upsertTrafficPrice('sidecar', $savedId, null, $trafficPrice);
+            }
             SessionAuth::flash('success', 'Sidecar point saved.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to save sidecar point: ' . $this->displayThrowableMessage($throwable));
