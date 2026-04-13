@@ -231,6 +231,7 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/remote-install-slave.sh', [$artifacts, 'remoteInstallSlave']);
         $this->router->add('GET', '/artifacts/remote-install-client.sh', [$artifacts, 'remoteInstallClient']);
         $this->router->add('GET', '/artifacts/remote-install-client-agent.sh', [$artifacts, 'remoteInstallClientAgent']);
+        $this->router->add('GET', '/artifacts/leikwan-wg-watchdog.sh', [$artifacts, 'wgWatchdog']);
         $this->router->add('GET', '/artifacts/wstunnel/{filename}', [$artifacts, 'wstunnelPackage']);
         $this->router->add('GET', '/artifacts/client.sh', [$artifacts, 'legacyClient']);
     }
