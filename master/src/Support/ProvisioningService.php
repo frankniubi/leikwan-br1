@@ -465,6 +465,104 @@ final class ProvisioningService
     }
 
     /**
+     * Resolve the traffic price for a resource. Node-level price takes priority; falls back to group-level.
+     * Returns null if no pricing is configured (free / user-owned node).
+     *
+     * @return array{price_per_gb: string, currency: string}|null
+     */
+    public function resolveTrafficPrice(int $resourceId, string $resourceType): ?array
+    {
+        // 1. Check node-level price
+        $nodePrice = $this->db->fetchOne(
+            'SELECT price_per_gb, currency FROM traffic_prices
+             WHERE node_id = :node_id AND resource_type = :resource_type LIMIT 1',
+            ['node_id' => $resourceId, 'resource_type' => $resourceType]
+        );
+        if ($nodePrice !== null) {
+            return $nodePrice;
+        }
+
+        // 2. For slaves, fall back to group-level price
+        if ($resourceType === 'slave') {
+            $node = $this->db->fetchOne(
+                'SELECT group_id FROM nodes WHERE id = :id LIMIT 1',
+                ['id' => $resourceId]
+            );
+            if ($node !== null && (int) ($node['group_id'] ?? 0) > 0) {
+                $groupPrice = $this->db->fetchOne(
+                    'SELECT price_per_gb, currency FROM traffic_prices
+                     WHERE node_group_id = :group_id AND resource_type = :resource_type LIMIT 1',
+                    ['group_id' => (int) $node['group_id'], 'resource_type' => $resourceType]
+                );
+                if ($groupPrice !== null) {
+                    return $groupPrice;
+                }
+            }
+        }
+
+        // 3. No price configured
+        return null;
+    }
+
+    /**
+     * Insert or update a traffic price row. Enforces application-level uniqueness.
+     */
+    public function upsertTrafficPrice(string $resourceType, ?int $nodeId, ?int $nodeGroupId, string $pricePerGb, string $currency = 'CNY'): void
+    {
+        if ($nodeId !== null) {
+            $existing = $this->db->fetchOne(
+                'SELECT id FROM traffic_prices WHERE resource_type = :type AND node_id = :node_id LIMIT 1',
+                ['type' => $resourceType, 'node_id' => $nodeId]
+            );
+        } else {
+            $existing = $this->db->fetchOne(
+                'SELECT id FROM traffic_prices WHERE resource_type = :type AND node_group_id = :group_id LIMIT 1',
+                ['type' => $resourceType, 'group_id' => $nodeGroupId]
+            );
+        }
+
+        $price = number_format((float) $pricePerGb, 4, '.', '');
+
+        if ($existing !== null) {
+            $this->db->execute(
+                'UPDATE traffic_prices SET price_per_gb = :price, currency = :currency WHERE id = :id',
+                ['price' => $price, 'currency' => $currency, 'id' => (int) $existing['id']]
+            );
+        } elseif ((float) $price > 0) {
+            $this->db->insert('traffic_prices', [
+                'resource_type' => $resourceType,
+                'node_id' => $nodeId,
+                'node_group_id' => $nodeGroupId,
+                'price_per_gb' => $price,
+                'currency' => $currency,
+            ]);
+        }
+    }
+
+    /**
+     * Get the traffic price row for a specific node or group.
+     * @return array{price_per_gb: string, currency: string}|null
+     */
+    public function getTrafficPriceFor(string $resourceType, ?int $nodeId, ?int $nodeGroupId): ?array
+    {
+        if ($nodeId !== null) {
+            return $this->db->fetchOne(
+                'SELECT price_per_gb, currency FROM traffic_prices
+                 WHERE resource_type = :type AND node_id = :node_id LIMIT 1',
+                ['type' => $resourceType, 'node_id' => $nodeId]
+            );
+        }
+        if ($nodeGroupId !== null) {
+            return $this->db->fetchOne(
+                'SELECT price_per_gb, currency FROM traffic_prices
+                 WHERE resource_type = :type AND node_group_id = :group_id LIMIT 1',
+                ['type' => $resourceType, 'group_id' => $nodeGroupId]
+            );
+        }
+        return null;
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function visibleSidecarPointForUser(int $pointId, int $userId): ?array
@@ -1042,6 +1140,13 @@ final class ProvisioningService
                 $clientGroupIds[] = $casted;
             }
         }
+        $sidecarPointIds = [];
+        foreach ((array) ($payload['allowed_sidecar_point_ids'] ?? []) as $sidecarId) {
+            $casted = (int) $sidecarId;
+            if ($casted > 0) {
+                $sidecarPointIds[] = $casted;
+            }
+        }
 
         if ($name === '' || $productCode === '') {
             throw new ApiException('invalid_plan_payload', 422, ['payload' => $payload]);
@@ -1054,7 +1159,7 @@ final class ProvisioningService
             $monthlyIncludedTraffic = $traffic;
         }
 
-        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds): array {
+        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds): array {
             if ($id > 0) {
                 $this->db->execute(
                     'UPDATE service_plans
@@ -1145,9 +1250,20 @@ final class ProvisioningService
                 ]);
             }
 
+            $this->db->execute('DELETE FROM service_plan_sidecar_points WHERE plan_id = :plan_id', [
+                'plan_id' => $id,
+            ]);
+            foreach (array_values(array_unique($sidecarPointIds)) as $sidecarId) {
+                $this->db->insert('service_plan_sidecar_points', [
+                    'plan_id' => $id,
+                    'sidecar_point_id' => $sidecarId,
+                ]);
+            }
+
             $plan = $this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id LIMIT 1', ['id' => $id]) ?? [];
             $plan['allowed_node_groups'] = $this->allowedNodeGroupsForPlan($id);
             $plan['allowed_client_groups'] = $this->allowedClientGroupsForPlan($id);
+            $plan['allowed_sidecar_points'] = $this->allowedSidecarPointsForPlan($id);
             $plan['feature_flags'] = $this->decodeFeatureFlags((string) ($plan['feature_flags_json'] ?? ''));
             return $plan;
         });
@@ -1213,6 +1329,21 @@ final class ProvisioningService
                 'plan_id' => $planId,
                 'status' => 'active',
             ]
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function allowedSidecarPointsForPlan(int $planId): array
+    {
+        return $this->db->fetchAll(
+            'SELECT sp.id, sp.name, sp.sidecar_host, sp.listen_port
+             FROM service_plan_sidecar_points spsp
+             INNER JOIN sidecar_points sp ON sp.id = spsp.sidecar_point_id
+             WHERE spsp.plan_id = :plan_id
+             ORDER BY sp.name ASC, sp.id ASC',
+            ['plan_id' => $planId]
         );
     }
 
