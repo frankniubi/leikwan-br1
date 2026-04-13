@@ -167,6 +167,12 @@ final class Bootstrap
         $this->router->add('POST', '/tenant/services/{id}/forwards', [$tenant, 'createForward']);
         $this->router->add('POST', '/tenant/services/{id}/enrollment-token', [$tenant, 'generateEnrollmentToken']);
         $this->router->add('POST', '/tenant/nodes/{id}/remove', [$tenant, 'removeUserNode']);
+        $this->router->add('GET', '/tenant/slave-groups', [$tenant, 'slaveGroupsPage']);
+        $this->router->add('POST', '/tenant/slave-groups', [$tenant, 'saveSlaveGroup']);
+        $this->router->add('POST', '/tenant/slave-groups/join', [$tenant, 'joinSlaveGroup']);
+        $this->router->add('POST', '/tenant/slave-groups/{id}/leave', [$tenant, 'leaveSlaveGroup']);
+        $this->router->add('POST', '/tenant/slave-groups/{id}/kick', [$tenant, 'kickSlaveGroupMember']);
+        $this->router->add('POST', '/tenant/nodes/{id}/sharing', [$tenant, 'updateNodeSharing']);
         $this->router->add('POST', '/tenant/services/{id}/flexible-options', [$tenant, 'updateFlexibleOptions']);
         $this->router->add('POST', '/tenant/services/{id}/reset-traffic', [$tenant, 'resetTraffic']);
         $this->router->add('POST', '/tenant/forwards/{id}/delete', [$tenant, 'deleteForward']);
