@@ -7,6 +7,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
+use Leikwan\Master\Exceptions\ApiException;
 
 final class ProvisioningService
 {
@@ -1344,6 +1345,143 @@ final class ProvisioningService
              WHERE spsp.plan_id = :plan_id
              ORDER BY sp.name ASC, sp.id ASC',
             ['plan_id' => $planId]
+        );
+    }
+
+    public function createUserSlaveGroup(int $ownerUserId, string $name): array
+    {
+        $inviteCode = bin2hex(random_bytes(6)); // 12-char hex code
+        $id = $this->db->insert('user_slave_groups', [
+            'name' => trim($name),
+            'owner_user_id' => $ownerUserId,
+            'invite_code' => $inviteCode,
+            'created_at' => $this->now(),
+        ]);
+
+        $this->db->insert('user_slave_group_members', [
+            'group_id' => $id,
+            'user_id' => $ownerUserId,
+            'role' => 'owner',
+            'joined_at' => $this->now(),
+        ]);
+
+        return $this->db->fetchOne('SELECT * FROM user_slave_groups WHERE id = :id LIMIT 1', ['id' => $id]) ?? [];
+    }
+
+    public function joinUserSlaveGroup(int $userId, string $inviteCode): array
+    {
+        $group = $this->db->fetchOne(
+            'SELECT * FROM user_slave_groups WHERE invite_code = :code LIMIT 1',
+            ['code' => trim($inviteCode)]
+        );
+        if ($group === null) {
+            throw new ApiException('invalid_invite_code', 404);
+        }
+
+        $existing = $this->db->fetchOne(
+            'SELECT id FROM user_slave_group_members WHERE group_id = :gid AND user_id = :uid LIMIT 1',
+            ['gid' => (int) $group['id'], 'uid' => $userId]
+        );
+        if ($existing !== null) {
+            throw new ApiException('already_member', 409);
+        }
+
+        $this->db->insert('user_slave_group_members', [
+            'group_id' => (int) $group['id'],
+            'user_id' => $userId,
+            'role' => 'member',
+            'joined_at' => $this->now(),
+        ]);
+
+        return $group;
+    }
+
+    public function leaveUserSlaveGroup(int $userId, int $groupId): void
+    {
+        $member = $this->db->fetchOne(
+            'SELECT role FROM user_slave_group_members WHERE group_id = :gid AND user_id = :uid LIMIT 1',
+            ['gid' => $groupId, 'uid' => $userId]
+        );
+        if ($member === null) {
+            return;
+        }
+        if ((string) ($member['role'] ?? '') === 'owner') {
+            throw new ApiException('owner_cannot_leave', 400);
+        }
+
+        $this->db->execute(
+            'DELETE FROM user_slave_group_members WHERE group_id = :gid AND user_id = :uid',
+            ['gid' => $groupId, 'uid' => $userId]
+        );
+    }
+
+    public function kickUserSlaveGroupMember(int $ownerUserId, int $groupId, int $targetUserId): void
+    {
+        $group = $this->db->fetchOne(
+            'SELECT owner_user_id FROM user_slave_groups WHERE id = :id LIMIT 1',
+            ['id' => $groupId]
+        );
+        if ($group === null || (int) $group['owner_user_id'] !== $ownerUserId) {
+            throw new ApiException('not_group_owner', 403);
+        }
+
+        $this->db->execute(
+            'DELETE FROM user_slave_group_members WHERE group_id = :gid AND user_id = :uid AND role != :owner_role',
+            ['gid' => $groupId, 'uid' => $targetUserId, 'owner_role' => 'owner']
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listUserSlaveGroups(int $userId): array
+    {
+        $groups = $this->db->fetchAll(
+            'SELECT g.*, m.role AS my_role, u.email AS owner_email
+             FROM user_slave_groups g
+             INNER JOIN user_slave_group_members m ON m.group_id = g.id AND m.user_id = :uid
+             LEFT JOIN users u ON u.id = g.owner_user_id
+             ORDER BY g.name ASC, g.id ASC',
+            ['uid' => $userId]
+        );
+
+        foreach ($groups as &$group) {
+            $group['members'] = $this->db->fetchAll(
+                'SELECT m.user_id, m.role, u.email
+                 FROM user_slave_group_members m
+                 INNER JOIN users u ON u.id = m.user_id
+                 WHERE m.group_id = :gid
+                 ORDER BY m.role ASC, u.email ASC',
+                ['gid' => (int) $group['id']]
+            );
+            $group['shared_nodes'] = $this->db->fetchAll(
+                'SELECT n.id, n.name, n.public_ip, n.status
+                 FROM nodes n
+                 WHERE n.sharing_mode = :shared AND n.user_slave_group_id = :gid
+                 ORDER BY n.name ASC',
+                ['shared' => 'group_shared', 'gid' => (int) $group['id']]
+            );
+        }
+        unset($group);
+
+        return $groups;
+    }
+
+    public function updateNodeSharing(int $nodeId, int $ownerUserId, string $sharingMode, ?int $userSlaveGroupId): void
+    {
+        $node = $this->db->fetchOne(
+            'SELECT n.id FROM nodes n
+             INNER JOIN services s ON s.id = n.owner_service_id
+             WHERE n.id = :nid AND s.user_id = :uid LIMIT 1',
+            ['nid' => $nodeId, 'uid' => $ownerUserId]
+        );
+        if ($node === null) {
+            throw new ApiException('node_not_owned', 403);
+        }
+
+        $this->db->execute(
+            'UPDATE nodes SET sharing_mode = :mode, user_slave_group_id = :gid WHERE id = :id',
+            ['mode' => $sharingMode, 'gid' => $userSlaveGroupId, 'id' => $nodeId]
         );
     }
 
