@@ -51,6 +51,7 @@ This is not the blank-page root cause, but it directly hurts the user experience
   - hide to tray when tray mode is enabled and tray support is active
   - fully exit when tray mode is disabled or tray setup fails
 - Replace the current sparse shell with a clearer control page for day-to-day use.
+- Add an automatic `MPTCP` filter state when forward rules are retrieved, so MPTCP-tagged rules are immediately easy to inspect and control.
 - Reduce visible restart flapping when a critical bond subprocess exits.
 
 ## Non-Goals
@@ -122,6 +123,7 @@ The new main surface should emphasize:
 - transport health summary
 - quick actions
 - forward list with obvious status and controls
+- mode filter controls, including `All`, `MPTCP`, `Bond`, `Race`, and `Single`
 - log access without making logs the primary surface
 
 Visual direction:
@@ -135,9 +137,30 @@ Practical layout target:
 
 - top status band
 - quick action row
+- forward filter row
 - primary forward table/card section
 - secondary diagnostics/log panel
 - settings remain accessible, but not the first thing the user falls into
+
+### 3.1 Add MPTCP Auto Filter On Forward Retrieval
+
+When the app retrieves forward rules from panel, it should automatically derive the available mode filters from the raw forward list.
+
+Expected behavior:
+
+- if any retrieved forward has canonical mode `mptcp`
+  - show an `MPTCP` quick filter in the control surface
+  - auto-select that `MPTCP` filter after the retrieval completes
+- if no `mptcp` forwards are present
+  - fall back to the default `All` filter
+
+Important boundary:
+
+- this is a control-surface filter, not a sync-layer delete
+- the app must still pull and retain the full forward set
+- non-`mptcp` forwards remain available when the user switches back to `All`, `Bond`, `Race`, or `Single`
+
+This keeps the UX aligned with the request for automatic `MPTCP` filtering without silently suppressing other rules from the local model or runtime pipeline.
 
 ### 4. Smooth Restart Recovery
 
@@ -159,6 +182,7 @@ This is a small stability pass, not a new scheduler.
 - `LeikwanBridge.Desktop/src/LeikwanBridge.App/Views/MainWindow.xaml`
 - `LeikwanBridge.Desktop/src/LeikwanBridge.App/Views/MainWindow.xaml.cs`
 - `LeikwanBridge.Desktop/src/LeikwanBridge.App/ViewModels/MainViewModel.cs`
+- `LeikwanBridge.Desktop/src/LeikwanBridge.App/ViewModels/ForwardViewModel.cs`
 - `LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/HealthCheckService.cs`
 - `LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/ForwardRuntimeManager.cs`
 
@@ -174,6 +198,8 @@ This is a small stability pass, not a new scheduler.
 - prove the main shell becomes visible after setup completes
 - prove tray-enabled close no longer strands the user without a restore path
 - prove tray-disabled close exits normally
+- prove `MPTCP` auto-filter becomes selected after retrieving a rule set containing MPTCP forwards
+- prove the full forward set is still retained when the auto-filter is active
 - prove a critical process exit still rebuilds the forward, but with less bind thrash
 
 ### Manual
@@ -183,8 +209,10 @@ Manual verification on Windows should cover:
 1. Launch app with no config, complete setup, confirm dashboard appears instead of a white window
 2. Click `X`, confirm tray icon appears and restore works
 3. Use tray `Exit`, confirm the process actually ends
-4. Re-launch app, confirm no false "already running" trap remains after a real exit
-5. Trigger or simulate a forward restart path and confirm the app no longer visibly flaps as hard on port reuse
+4. Retrieve a mixed rule set, confirm the view auto-switches to `MPTCP` when MPTCP forwards exist
+5. Switch back to `All`, confirm non-MPTCP forwards are still present
+6. Re-launch app, confirm no false "already running" trap remains after a real exit
+7. Trigger or simulate a forward restart path and confirm the app no longer visibly flaps as hard on port reuse
 
 ## Summary
 
@@ -195,6 +223,7 @@ The app must:
 - stop going blank after setup
 - stop hiding without a tray affordance
 - give the user a real place to control forwards
+- automatically focus the operator on `MPTCP` rules when those rules are present in the latest pull
 - behave more calmly when bond subprocesses fail
 
 That is the smallest meaningful UX release after the backend parity work.
