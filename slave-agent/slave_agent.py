@@ -253,6 +253,14 @@ def udp_uot_shadow_service_name(service_name: str) -> str:
     return service_name + "-udp-uot"
 
 
+def udp_uot_base_service_name(service_name: str) -> str:
+    suffix = "-udp-uot"
+    value = str(service_name).strip()
+    if value.endswith(suffix):
+        return value[: -len(suffix)]
+    return value
+
+
 def replace_target_port(target: str, new_port: int) -> str:
     host, _, port_text = str(target).rpartition(":")
     if host.strip() == "" or port_text.strip() == "":
@@ -1854,6 +1862,8 @@ class SlaveAgent:
             shadow_unit_changed = self.write_text_if_changed(self.service_unit_path(shadow_service), shadow_unit)
             self.ensure_backend_service(shadow_service, shadow_unit_changed)
             self.save_service_metadata(shadow_service, shadow_metadata)
+        else:
+            self.remove_udp_uot_shadow_service(task, payload, service_name)
 
         if mptcp_underlay:
             self.apply_mptcp_underlay(service_name, mptcp_underlay)
@@ -1894,15 +1904,18 @@ class SlaveAgent:
                 metadata["status"] = "suspended"
                 self.write_json(self.metadata_path(service_name), metadata)
 
+        base_targeted = base_service_name in service_names
         if shutil.which("systemctl"):
             for service_name in service_names:
                 run_command(f"systemctl stop {service_name}.service", check=False)
                 run_command(f"systemctl disable {service_name}.service", check=False)
-            run_command(f"systemctl stop {relay_name}.service", check=False)
-            run_command(f"systemctl disable {relay_name}.service", check=False)
-            run_command(f"systemctl stop {relay_client_name}.service", check=False)
-            run_command(f"systemctl disable {relay_client_name}.service", check=False)
-        self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
+            if base_targeted:
+                run_command(f"systemctl stop {relay_name}.service", check=False)
+                run_command(f"systemctl disable {relay_name}.service", check=False)
+                run_command(f"systemctl stop {relay_client_name}.service", check=False)
+                run_command(f"systemctl disable {relay_client_name}.service", check=False)
+        if base_targeted:
+            self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
 
         if not keep_files:
             relay_unit_path = self.service_unit_path(relay_name)
@@ -1914,9 +1927,9 @@ class SlaveAgent:
                     unit_path.unlink()
                 if metadata_path.exists():
                     metadata_path.unlink()
-            if relay_unit_path.exists():
+            if base_targeted and relay_unit_path.exists():
                 relay_unit_path.unlink()
-            if relay_client_unit_path.exists():
+            if base_targeted and relay_client_unit_path.exists():
                 relay_client_unit_path.unlink()
             if shutil.which("systemctl"):
                 run_command("systemctl daemon-reload", check=False)
@@ -1948,24 +1961,27 @@ class SlaveAgent:
         relay_unit_path = self.service_unit_path(relay_name)
         relay_client_unit_path = self.service_unit_path(relay_client_name)
 
+        base_targeted = base_service_name in service_names
         if shutil.which("systemctl"):
             for service_name in service_names:
                 run_command(f"systemctl stop {service_name}.service", check=False)
                 run_command(f"systemctl disable {service_name}.service", check=False)
-            run_command(f"systemctl stop {relay_name}.service", check=False)
-            run_command(f"systemctl disable {relay_name}.service", check=False)
-            run_command(f"systemctl stop {relay_client_name}.service", check=False)
-            run_command(f"systemctl disable {relay_client_name}.service", check=False)
-        self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
+            if base_targeted:
+                run_command(f"systemctl stop {relay_name}.service", check=False)
+                run_command(f"systemctl disable {relay_name}.service", check=False)
+                run_command(f"systemctl stop {relay_client_name}.service", check=False)
+                run_command(f"systemctl disable {relay_client_name}.service", check=False)
+        if base_targeted:
+            self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
         for service_name in service_names:
             unit_path = self.service_unit_path(service_name)
             if unit_path.exists():
                 unit_path.unlink()
-        if relay_unit_path.exists():
+        if base_targeted and relay_unit_path.exists():
             relay_unit_path.unlink()
-        if relay_client_unit_path.exists():
+        if base_targeted and relay_client_unit_path.exists():
             relay_client_unit_path.unlink()
-        if base_service_name in service_names:
+        if base_targeted:
             self.delete_nft_rules(int(task["endpoint_id"]))
             self.delete_filter_marker(base_service_name)
         for public_port in sorted(public_ports):
@@ -2056,7 +2072,9 @@ class SlaveAgent:
         if forward_id <= 0 or keep_service_name.strip() == "":
             return
 
-        keep_shadow_service_name = udp_uot_shadow_service_name(keep_service_name)
+        keep_base_service_name = udp_uot_base_service_name(keep_service_name)
+        keep_shadow_service_name = udp_uot_shadow_service_name(keep_base_service_name)
+        keep_service_names = {keep_base_service_name, keep_shadow_service_name}
         stale_metadata: list[dict[str, Any]] = []
         for metadata in self.load_all_service_metadata():
             if not self.metadata_is_active(metadata):
@@ -2064,7 +2082,7 @@ class SlaveAgent:
             if int(metadata.get("forward_id", 0) or 0) != forward_id:
                 continue
             service_name = str(metadata.get("service_name", "")).strip()
-            if service_name in {keep_service_name, keep_shadow_service_name}:
+            if service_name in keep_service_names:
                 continue
             stale_metadata.append(metadata)
 
@@ -2081,7 +2099,7 @@ class SlaveAgent:
 
     def cleanup_superseded_forward_services(self) -> None:
         keepers: dict[int, tuple[int, str]] = {}
-        candidates: list[dict[str, Any]] = []
+        candidates: list[tuple[dict[str, Any], str]] = []
 
         for metadata in self.load_all_service_metadata():
             if not self.metadata_is_active(metadata):
@@ -2091,18 +2109,23 @@ class SlaveAgent:
             service_name = str(metadata.get("service_name", "")).strip()
             if forward_id <= 0 or endpoint_id <= 0 or service_name == "":
                 continue
-            candidates.append(metadata)
+            family_base_service_name = udp_uot_base_service_name(service_name)
+            candidates.append((metadata, family_base_service_name))
             current = keepers.get(forward_id)
             if current is None or endpoint_id > current[0]:
-                keepers[forward_id] = (endpoint_id, service_name)
+                keepers[forward_id] = (endpoint_id, family_base_service_name)
 
-        for metadata in candidates:
+        for metadata, family_base_service_name in candidates:
             forward_id = int(metadata.get("forward_id", 0) or 0)
             service_name = str(metadata.get("service_name", "")).strip()
             keeper = keepers.get(forward_id)
             if keeper is None:
                 continue
-            if service_name == keeper[1]:
+            keeper_base_service_name = keeper[1]
+            keeper_shadow_service_name = udp_uot_shadow_service_name(keeper_base_service_name)
+            if service_name in {keeper_base_service_name, keeper_shadow_service_name}:
+                continue
+            if family_base_service_name == keeper_base_service_name:
                 continue
             logging.info(
                 "removing stale duplicate service for forward_id=%s old_service=%s keep_service=%s",
@@ -2139,6 +2162,23 @@ class SlaveAgent:
         if self.load_service_metadata(shadow_service_name) is not None or self.udp_uot_sidepath_enabled(task, payload):
             names.append(shadow_service_name)
         return names
+
+    def remove_udp_uot_shadow_service(self, task: dict[str, Any], payload: dict[str, Any], base_service_name: str) -> None:
+        shadow_service_name = udp_uot_shadow_service_name(base_service_name)
+        shadow_metadata = self.load_service_metadata(shadow_service_name)
+        if shadow_metadata is None:
+            return
+        shadow_payload = dict(payload)
+        shadow_payload["listen_port"] = int(shadow_metadata.get("listen_port", payload.get("listen_port", 0)) or 0)
+        self.destroy_service(
+            {
+                "service_name": shadow_service_name,
+                "service_id": int(task.get("service_id", 0) or 0),
+                "forward_id": int(task.get("forward_id", 0) or 0),
+                "endpoint_id": int(task.get("endpoint_id", 0) or 0),
+                "payload": shadow_payload,
+            }
+        )
 
     def ensure_listener_route_available(self, public_port: int, path_prefix: str, service_name: str) -> None:
         desired_route = normalized_route_path(path_prefix)
