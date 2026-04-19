@@ -466,8 +466,6 @@ class SidecarAgent:
                 raise
             return
 
-        self.ensure_relay_binary()
-
         bond_runtime = management.get("bond_runtime") if isinstance(management.get("bond_runtime"), dict) else None
         mptcp_runtime = management.get("mptcp_runtime") if isinstance(management.get("mptcp_runtime"), dict) else None
         if bond_runtime is None and mptcp_runtime is None:
@@ -586,6 +584,7 @@ WantedBy=multi-user.target
             self.disable_runtime(udp_service_name, udp_unit_path, udp_start_script, udp_runtime_path)
 
         if mptcp_runtime is not None:
+            self.ensure_relay_binary()
             underlay = dict(mptcp_runtime.get("underlay", {})) if isinstance(mptcp_runtime.get("underlay", {}), dict) else {}
             if underlay != {}:
                 underlay["local_private_key_path"] = str(self.wireguard_private_key_path())
