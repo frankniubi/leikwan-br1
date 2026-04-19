@@ -1238,7 +1238,10 @@ class SlaveAgent:
                     metadata["backend_port"] = backend_port
                     metadata_changed = True
 
-                unit_body = self.render_backend_unit(service_name, backend_port, target, path_prefix)
+                if self.is_udp_uot_shadow_metadata(metadata):
+                    unit_body = self.render_plain_tcp_backend_unit(service_name, backend_port, target)
+                else:
+                    unit_body = self.render_backend_unit(service_name, backend_port, target, path_prefix)
                 unit_changed = self.write_text_if_changed(self.service_unit_path(service_name), unit_body)
                 self.ensure_backend_service(service_name, unit_changed)
 
@@ -2162,6 +2165,14 @@ class SlaveAgent:
         if self.load_service_metadata(shadow_service_name) is not None or self.udp_uot_sidepath_enabled(task, payload):
             names.append(shadow_service_name)
         return names
+
+    def is_udp_uot_shadow_metadata(self, metadata: dict[str, Any]) -> bool:
+        service_name = str(metadata.get("service_name", "")).strip()
+        if not service_name.endswith("-udp-uot"):
+            return False
+        shadow_suffix = str(self.udp_uot_sidepath_settings().get("shadow_route_suffix", ".uot") or ".uot")
+        route_key = str(metadata.get("route_key", metadata.get("path_prefix", "")) or "").strip()
+        return route_key.endswith(shadow_suffix)
 
     def remove_udp_uot_shadow_service(self, task: dict[str, Any], payload: dict[str, Any], base_service_name: str) -> None:
         shadow_service_name = udp_uot_shadow_service_name(base_service_name)
