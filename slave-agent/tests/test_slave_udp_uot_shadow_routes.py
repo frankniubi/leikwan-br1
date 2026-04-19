@@ -193,6 +193,9 @@ class SlaveUdpUotShadowRouteTests(unittest.TestCase):
         route_keys = [item["route_key"] for item in agent.listener_routes(7001)]
         self.assertIn("a43547b6350f72cd", route_keys)
         self.assertIn("a43547b6350f72cd.uot", route_keys)
+        shadow_unit = agent.service_unit_path(shadow_name).read_text(encoding="utf-8")
+        self.assertIn("Leikwan Plain TCP Backend", shadow_unit)
+        self.assertIn(" backend --listen ", shadow_unit)
 
     def test_republish_non_shadow_eligible_removes_shadow_metadata_and_route(self) -> None:
         agent = self.make_agent()
