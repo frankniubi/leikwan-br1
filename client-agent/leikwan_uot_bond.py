@@ -76,6 +76,7 @@ class RuntimeConfig:
     reorder_timeout_ms: int
     legs: list[LegConfig]
     stats_path: str
+    session_idle_timeout_ms: int = 120000
 
 
 def encode_frame(frame: DataFrame) -> bytes:
@@ -90,6 +91,8 @@ def decode_frame(payload: bytes) -> DataFrame:
     version, msg_type, flags, session_id, seq, payload_len = FRAME_HEADER.unpack(payload[: FRAME_HEADER.size])
     if len(payload) < FRAME_HEADER.size + payload_len:
         raise ValueError("truncated frame payload")
+    if len(payload) != FRAME_HEADER.size + payload_len:
+        raise ValueError("frame has trailing bytes")
     body = payload[FRAME_HEADER.size : FRAME_HEADER.size + payload_len]
     return DataFrame(version=version, msg_type=msg_type, flags=flags, session_id=session_id, seq=seq, payload=body)
 
@@ -225,6 +228,7 @@ def load_config(path: str) -> RuntimeConfig:
         reorder_timeout_ms=int(raw.get("reorder_timeout_ms", 25) or 25),
         legs=legs,
         stats_path=stats_path,
+        session_idle_timeout_ms=int(raw.get("session_idle_timeout_ms", 120000) or 120000),
     )
 
 
@@ -242,6 +246,7 @@ class Runtime:
         self.peer_to_session: dict[tuple[str, int], int] = {}
         self.session_to_peer: dict[int, tuple[str, int]] = {}
         self.session_next_seq: dict[int, int] = {}
+        self.session_last_seen_ms: dict[int, int] = {}
         self.next_session_id = 1
         self.log_samples: dict[str, int] = {}
         self.stats: dict[str, int] = {
@@ -262,14 +267,39 @@ class Runtime:
     def alloc_session(self, peer: tuple[str, int]) -> int:
         existing = self.peer_to_session.get(peer)
         if existing is not None:
+            self.session_last_seen_ms[existing] = int(time.time() * 1000)
             return existing
         session_id = self.next_session_id
         self.next_session_id += 1
         self.peer_to_session[peer] = session_id
         self.session_to_peer[session_id] = peer
         self.session_next_seq[session_id] = 1
+        self.session_last_seen_ms[session_id] = int(time.time() * 1000)
         self.stats["sessions_active"] = len(self.session_to_peer)
         return session_id
+
+    def close_session(self, session_id: int) -> bool:
+        peer = self.session_to_peer.pop(session_id, None)
+        if peer is None:
+            return False
+        self.peer_to_session.pop(peer, None)
+        self.session_next_seq.pop(session_id, None)
+        self.session_last_seen_ms.pop(session_id, None)
+        self.merge.session_state.pop(session_id, None)
+        self.stats["sessions_active"] = len(self.session_to_peer)
+        return True
+
+    def cleanup_idle_sessions(self, now_ms: int | None = None, idle_timeout_ms: int | None = None) -> int:
+        now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+        idle_timeout_ms = self.config.session_idle_timeout_ms if idle_timeout_ms is None else idle_timeout_ms
+        stale = [
+            session_id
+            for session_id, seen_ms in self.session_last_seen_ms.items()
+            if now_ms - seen_ms >= idle_timeout_ms
+        ]
+        for session_id in stale:
+            self.close_session(session_id)
+        return len(stale)
 
     async def enqueue_outbound(self, payload: bytes, peer: tuple[str, int]) -> None:
         self.stats["datagrams_in"] += 1
@@ -356,9 +386,11 @@ class Runtime:
     def emit_udp(self, payload: bytes, session_id: int) -> None:
         if self.transport is None:
             return
-        peer = self.session_to_peer.get(session_id) or self.last_peer
+        peer = self.session_to_peer.get(session_id)
         if peer is None:
+            self.sampled_log("unknown-session", logging.WARNING, "udp-uot drop unknown session_id=%s", session_id)
             return
+        self.session_last_seen_ms[session_id] = int(time.time() * 1000)
         self.transport.sendto(payload, peer)
         self.stats["datagrams_out"] += 1
 
@@ -371,9 +403,23 @@ class Runtime:
                 frame = await asyncio.wait_for(self.inbound_queue.get(), timeout=timeout)
             except asyncio.TimeoutError:
                 pass
-            if frame is not None and frame.msg_type == MSG_DATA:
-                for item in self.merge.push(frame.session_id, frame.seq, frame.payload):
-                    self.emit_udp(item.payload, item.session_id)
+            if frame is not None:
+                if frame.msg_type == MSG_DATA:
+                    if frame.session_id not in self.session_to_peer:
+                        self.sampled_log(
+                            "unknown-session",
+                            logging.WARNING,
+                            "udp-uot drop unknown session_id=%s",
+                            frame.session_id,
+                        )
+                    else:
+                        self.session_last_seen_ms[frame.session_id] = int(time.time() * 1000)
+                        for item in self.merge.push(frame.session_id, frame.seq, frame.payload):
+                            self.emit_udp(item.payload, item.session_id)
+                elif frame.msg_type == MSG_CLOSE:
+                    self.close_session(frame.session_id)
+                elif frame.msg_type == MSG_KEEPALIVE and frame.session_id in self.session_to_peer:
+                    self.session_last_seen_ms[frame.session_id] = int(time.time() * 1000)
             skipped = self.merge.flush_timeouts()
             if self.merge.skipped_gap_packets > 0:
                 self.stats["datagrams_dropped_gap"] += self.merge.skipped_gap_packets
@@ -385,6 +431,9 @@ class Runtime:
                 )
             for item in skipped:
                 self.emit_udp(item.payload, item.session_id)
+            removed = self.cleanup_idle_sessions()
+            if removed > 0:
+                self.sampled_log("session-cleanup", logging.INFO, "udp-uot cleaned idle sessions=%s", removed)
             self.stats["reorder_buffer_bytes"] = self.merge.total_buffered_bytes()
 
     async def stats_writer_loop(self) -> None:

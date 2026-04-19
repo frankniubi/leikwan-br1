@@ -99,3 +99,87 @@ class UotBondRuntimeTests(unittest.TestCase):
             self.assertEqual(decoded.payload, b"udp-token")
 
         asyncio.run(scenario())
+
+    def test_decode_frame_rejects_trailing_bytes(self) -> None:
+        frame = uot_bond.DataFrame(
+            version=1,
+            msg_type=uot_bond.MSG_DATA,
+            flags=0,
+            session_id=5,
+            seq=9,
+            payload=b"abc",
+        )
+        encoded = uot_bond.encode_frame(frame)
+        with self.assertRaises(ValueError):
+            uot_bond.decode_frame(encoded + b"trailing")
+
+    def test_weighted_round_robin_honors_weight_and_skips_inactive(self) -> None:
+        selector = uot_bond.WeightedLegSelector(
+            [
+                uot_bond.LegState(endpoint_id=184, weight=2, active=True),
+                uot_bond.LegState(endpoint_id=185, weight=1, active=False),
+                uot_bond.LegState(endpoint_id=186, weight=1, active=True),
+            ]
+        )
+        picks = [selector.pick_leg().endpoint_id for _ in range(6)]
+        self.assertEqual(picks, [184, 184, 186, 184, 184, 186])
+
+    def test_merge_buffer_packet_limit_evicts_newest_buffered_packet(self) -> None:
+        buffer = uot_bond.MergeBuffer(packet_limit=2, byte_limit=0, timeout_ms=1)
+        self.assertEqual(buffer.push(8, 3, b"three"), [])
+        self.assertEqual(buffer.push(8, 4, b"four"), [])
+        self.assertEqual(buffer.push(8, 5, b"five"), [])
+        self.assertEqual(sorted(buffer.session_state[8].buffered.keys()), [3, 4])
+
+    def test_merge_buffer_byte_limit_evicts_newest_buffered_packet(self) -> None:
+        buffer = uot_bond.MergeBuffer(packet_limit=0, byte_limit=7, timeout_ms=1)
+        self.assertEqual(buffer.push(9, 2, b"1111"), [])
+        self.assertEqual(buffer.push(9, 3, b"2222"), [])
+        self.assertEqual(sorted(buffer.session_state[9].buffered.keys()), [2])
+
+    def test_emit_udp_drops_unknown_session_without_last_peer_fallback(self) -> None:
+        config = uot_bond.RuntimeConfig(
+            forward_id=26,
+            listen_udp="127.0.0.1:26026",
+            route_key="rk",
+            session_token="st",
+            reorder_window_packets=16,
+            reorder_window_bytes=4096,
+            reorder_timeout_ms=10,
+            legs=[],
+            stats_path="NUL",
+        )
+        runtime = uot_bond.Runtime(config)
+
+        class FakeTransport:
+            def __init__(self) -> None:
+                self.sent: list[tuple[bytes, tuple[str, int]]] = []
+
+            def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
+                self.sent.append((data, addr))
+
+        fake_transport = FakeTransport()
+        runtime.transport = fake_transport
+        runtime.last_peer = ("127.0.0.1", 49000)
+        runtime.emit_udp(b"payload", session_id=999)
+        self.assertEqual(fake_transport.sent, [])
+
+    def test_cleanup_idle_sessions_removes_expired_sessions(self) -> None:
+        config = uot_bond.RuntimeConfig(
+            forward_id=26,
+            listen_udp="127.0.0.1:26026",
+            route_key="rk",
+            session_token="st",
+            reorder_window_packets=16,
+            reorder_window_bytes=4096,
+            reorder_timeout_ms=10,
+            legs=[],
+            stats_path="NUL",
+        )
+        runtime = uot_bond.Runtime(config)
+        sid = runtime.alloc_session(("127.0.0.1", 30000))
+        runtime.session_last_seen_ms[sid] = 1000
+        removed = runtime.cleanup_idle_sessions(now_ms=3000, idle_timeout_ms=1000)
+        self.assertEqual(removed, 1)
+        self.assertEqual(runtime.stats["sessions_active"], 0)
+        self.assertEqual(runtime.session_to_peer, {})
