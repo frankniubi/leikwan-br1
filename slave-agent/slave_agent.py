@@ -1876,82 +1876,103 @@ class SlaveAgent:
         }
 
     def stop_service(self, task: dict[str, Any], keep_files: bool) -> dict[str, Any]:
-        service_name = safe_name(int(task["service_id"]), int(task["endpoint_id"]))
+        base_service_name = safe_name(int(task["service_id"]), int(task["endpoint_id"]))
         relay_name = relay_service_name(int(task["service_id"]), int(task["endpoint_id"]))
         relay_client_name = relay_client_service_name(int(task["service_id"]), int(task["endpoint_id"]))
         payload = dict(task.get("payload", {}))
-        metadata = self.load_service_metadata(service_name) or {}
-        public_port = int(metadata.get("listen_port", payload.get("listen_port", 0)) or 0)
-        metadata_path = self.metadata_path(service_name)
-
-        if metadata:
-            metadata["status"] = "suspended"
-            self.write_json(metadata_path, metadata)
-        if public_port > 0:
-            self.sync_listener(public_port)
+        service_names = self.lifecycle_service_names(task, payload)
+        public_ports: set[int] = set()
+        base_metadata: dict[str, Any] = {}
+        for service_name in service_names:
+            metadata = self.load_service_metadata(service_name) or {}
+            if service_name == base_service_name:
+                base_metadata = metadata
+            public_port = int(metadata.get("listen_port", payload.get("listen_port", 0)) or 0)
+            if public_port > 0:
+                public_ports.add(public_port)
+            if metadata:
+                metadata["status"] = "suspended"
+                self.write_json(self.metadata_path(service_name), metadata)
 
         if shutil.which("systemctl"):
-            run_command(f"systemctl stop {service_name}.service", check=False)
-            run_command(f"systemctl disable {service_name}.service", check=False)
+            for service_name in service_names:
+                run_command(f"systemctl stop {service_name}.service", check=False)
+                run_command(f"systemctl disable {service_name}.service", check=False)
             run_command(f"systemctl stop {relay_name}.service", check=False)
             run_command(f"systemctl disable {relay_name}.service", check=False)
             run_command(f"systemctl stop {relay_client_name}.service", check=False)
             run_command(f"systemctl disable {relay_client_name}.service", check=False)
-        self.remove_mptcp_underlay(service_name, metadata.get("mptcp_underlay") if isinstance(metadata, dict) else None)
+        self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
 
         if not keep_files:
-            unit_path = self.service_unit_path(service_name)
             relay_unit_path = self.service_unit_path(relay_name)
             relay_client_unit_path = self.service_unit_path(relay_client_name)
-            if unit_path.exists():
-                unit_path.unlink()
+            for service_name in service_names:
+                unit_path = self.service_unit_path(service_name)
+                metadata_path = self.metadata_path(service_name)
+                if unit_path.exists():
+                    unit_path.unlink()
+                if metadata_path.exists():
+                    metadata_path.unlink()
             if relay_unit_path.exists():
                 relay_unit_path.unlink()
             if relay_client_unit_path.exists():
                 relay_client_unit_path.unlink()
-            if metadata_path.exists():
-                metadata_path.unlink()
             if shutil.which("systemctl"):
                 run_command("systemctl daemon-reload", check=False)
 
-        return {"service_name": service_name, "stopped": True, "public_port": public_port}
+        for public_port in sorted(public_ports):
+            self.sync_listener(public_port)
+
+        return {"service_name": base_service_name, "stopped": True, "public_port": next(iter(public_ports), 0)}
 
     def destroy_service(self, task: dict[str, Any]) -> dict[str, Any]:
-        service_name = safe_name(int(task["service_id"]), int(task["endpoint_id"]))
+        base_service_name = safe_name(int(task["service_id"]), int(task["endpoint_id"]))
         relay_name = relay_service_name(int(task["service_id"]), int(task["endpoint_id"]))
         relay_client_name = relay_client_service_name(int(task["service_id"]), int(task["endpoint_id"]))
         payload = dict(task.get("payload", {}))
-        metadata = self.load_service_metadata(service_name) or {}
-        public_port = int(metadata.get("listen_port", payload.get("listen_port", 0)) or 0)
-        unit_path = self.service_unit_path(service_name)
+        service_names = self.lifecycle_service_names(task, payload)
+        public_ports: set[int] = set()
+        base_metadata: dict[str, Any] = {}
+        for service_name in service_names:
+            metadata = self.load_service_metadata(service_name) or {}
+            if service_name == base_service_name:
+                base_metadata = metadata
+            public_port = int(metadata.get("listen_port", payload.get("listen_port", 0)) or 0)
+            if public_port > 0:
+                public_ports.add(public_port)
+            metadata_path = self.metadata_path(service_name)
+            if metadata_path.exists():
+                metadata_path.unlink()
+
         relay_unit_path = self.service_unit_path(relay_name)
         relay_client_unit_path = self.service_unit_path(relay_client_name)
-        metadata_path = self.metadata_path(service_name)
-
-        if metadata_path.exists():
-            metadata_path.unlink()
-        if public_port > 0:
-            self.sync_listener(public_port)
 
         if shutil.which("systemctl"):
-            run_command(f"systemctl stop {service_name}.service", check=False)
-            run_command(f"systemctl disable {service_name}.service", check=False)
+            for service_name in service_names:
+                run_command(f"systemctl stop {service_name}.service", check=False)
+                run_command(f"systemctl disable {service_name}.service", check=False)
             run_command(f"systemctl stop {relay_name}.service", check=False)
             run_command(f"systemctl disable {relay_name}.service", check=False)
             run_command(f"systemctl stop {relay_client_name}.service", check=False)
             run_command(f"systemctl disable {relay_client_name}.service", check=False)
-        self.remove_mptcp_underlay(service_name, metadata.get("mptcp_underlay") if isinstance(metadata, dict) else None)
-        if unit_path.exists():
-            unit_path.unlink()
+        self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
+        for service_name in service_names:
+            unit_path = self.service_unit_path(service_name)
+            if unit_path.exists():
+                unit_path.unlink()
         if relay_unit_path.exists():
             relay_unit_path.unlink()
         if relay_client_unit_path.exists():
             relay_client_unit_path.unlink()
-        self.delete_nft_rules(int(task["endpoint_id"]))
-        self.delete_filter_marker(service_name)
+        if base_service_name in service_names:
+            self.delete_nft_rules(int(task["endpoint_id"]))
+            self.delete_filter_marker(base_service_name)
+        for public_port in sorted(public_ports):
+            self.sync_listener(public_port)
         if shutil.which("systemctl"):
             run_command("systemctl daemon-reload", check=False)
-        return {"service_name": service_name, "deleted": True, "public_port": public_port}
+        return {"service_name": base_service_name, "deleted": True, "public_port": next(iter(public_ports), 0)}
 
     def write_filter_marker(self, task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         self.filters_dir.mkdir(parents=True, exist_ok=True)
@@ -2022,6 +2043,7 @@ class SlaveAgent:
     @staticmethod
     def destroy_task_for_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         return {
+            "service_name": str(metadata.get("service_name", "")).strip(),
             "service_id": int(metadata.get("service_id", 0) or 0),
             "forward_id": int(metadata.get("forward_id", 0) or 0),
             "endpoint_id": int(metadata.get("endpoint_id", 0) or 0),
@@ -2034,13 +2056,15 @@ class SlaveAgent:
         if forward_id <= 0 or keep_service_name.strip() == "":
             return
 
+        keep_shadow_service_name = udp_uot_shadow_service_name(keep_service_name)
         stale_metadata: list[dict[str, Any]] = []
         for metadata in self.load_all_service_metadata():
             if not self.metadata_is_active(metadata):
                 continue
             if int(metadata.get("forward_id", 0) or 0) != forward_id:
                 continue
-            if str(metadata.get("service_name", "")).strip() == keep_service_name:
+            service_name = str(metadata.get("service_name", "")).strip()
+            if service_name in {keep_service_name, keep_shadow_service_name}:
                 continue
             stale_metadata.append(metadata)
 
@@ -2103,6 +2127,18 @@ class SlaveAgent:
         transport_mode = str(payload.get("transport_mode", "tcp+udp") or "tcp+udp").strip().lower()
         ingress_protocol = str(payload.get("ingress_protocol", "") or "").strip().lower()
         return forward_id in enabled and "udp" in transport_mode and ingress_protocol == "plain_tcp_mux"
+
+    def lifecycle_service_names(self, task: dict[str, Any], payload: dict[str, Any]) -> list[str]:
+        explicit_service_name = str(task.get("service_name", payload.get("service_name", "")) or "").strip()
+        if explicit_service_name != "":
+            return [explicit_service_name]
+
+        base_service_name = safe_name(int(task["service_id"]), int(task["endpoint_id"]))
+        shadow_service_name = udp_uot_shadow_service_name(base_service_name)
+        names = [base_service_name]
+        if self.load_service_metadata(shadow_service_name) is not None or self.udp_uot_sidepath_enabled(task, payload):
+            names.append(shadow_service_name)
+        return names
 
     def ensure_listener_route_available(self, public_port: int, path_prefix: str, service_name: str) -> None:
         desired_route = normalized_route_path(path_prefix)
