@@ -916,8 +916,28 @@ class ClientAgent:
         self.delete_nft_rules(forward_id)
         self.add_nft_rules(forward_id, int(forward.get("listen_port", 0) or 0), transport)
         applied = self.load_applied()
+        previous = applied.get(str(forward_id), {})
+        previous_units: list[dict] = []
+        previous_managed_paths: list[str] = []
+        if isinstance(previous, dict):
+            raw_units = previous.get("units", [])
+            if isinstance(raw_units, list):
+                previous_units = [item for item in raw_units if isinstance(item, dict)]
+            previous_managed_paths = [
+                str(path)
+                for path in previous.get("managed_paths", [])
+                if str(path).strip() != ""
+            ]
+
         units = [rendered] + [item for item in rendered.get("extra_units", []) if isinstance(item, dict)]
         persisted_units: list[dict] = []
+        current_service_names = {str(unit.get("service_name", "") or "") for unit in units}
+        for previous_unit in previous_units:
+            previous_service_name = str(previous_unit.get("service_name", "") or "")
+            if previous_service_name == "" or previous_service_name in current_service_names:
+                continue
+            subprocess.run(f"systemctl stop {previous_service_name}.service", shell=True, check=False)
+            subprocess.run(f"systemctl disable {previous_service_name}.service", shell=True, check=False)
 
         for unit in units:
             service_name = str(unit["service_name"])
@@ -927,6 +947,7 @@ class ClientAgent:
             script_changed = False
             if start_script_path is not None and str(unit.get("start_script", "")) != "":
                 script_changed = self.write_text_if_changed(start_script_path, str(unit["start_script"]), mode=0o700)
+            files_changed = False
 
             managed_paths = [str(service_path)]
             if start_script_path is not None:
@@ -934,14 +955,15 @@ class ClientAgent:
 
             for file_entry in unit.get("files", []):
                 extra_path = pathlib.Path(str(file_entry["path"]))
-                self.write_text_if_changed(
+                file_changed = self.write_text_if_changed(
                     extra_path,
                     str(file_entry.get("content", "")),
                     int(file_entry["mode"]) if "mode" in file_entry and file_entry.get("mode") is not None else None,
                 )
+                files_changed = files_changed or file_changed
                 managed_paths.append(str(extra_path))
 
-            if unit_changed or script_changed or not self.systemd_is_active(service_name):
+            if unit_changed or script_changed or files_changed or not self.systemd_is_active(service_name):
                 subprocess.run("systemctl daemon-reload", shell=True, check=False)
                 subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
                 subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
@@ -961,9 +983,21 @@ class ClientAgent:
                 script_changed,
             )
 
+        current_managed_paths = {path for unit in persisted_units for path in unit["managed_paths"]}
+        stale_path_removed = False
+        for previous_path_raw in previous_managed_paths:
+            if previous_path_raw in current_managed_paths:
+                continue
+            previous_path = pathlib.Path(previous_path_raw)
+            if previous_path.exists():
+                previous_path.unlink()
+                stale_path_removed = True
+        if stale_path_removed:
+            subprocess.run("systemctl daemon-reload", shell=True, check=False)
+
         applied[str(forward_id)] = {
             "units": persisted_units,
-            "managed_paths": sorted({path for unit in persisted_units for path in unit["managed_paths"]}),
+            "managed_paths": sorted(current_managed_paths),
             "updated_at": int(time.time()),
         }
         self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
