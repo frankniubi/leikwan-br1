@@ -543,7 +543,7 @@ Required values:
 
 Restart sequence:
 
-    systemctl restart leikwan-bond-sidecar-4
+    systemctl restart leikwan-bond-sidecar-4-agent
     systemctl restart leikwan-slave-agent
     systemctl restart leikwan-client-agent
     systemctl restart leikwan-client-26
@@ -551,6 +551,13 @@ Restart sequence:
 
 Rollback:
 
+    # Remove 26 from udp_uot_sidepath.enabled_forward_ids in:
+    # /etc/leikwan-client-agent/config.json
+    # /etc/leikwan-slave-agent/config.json
+    # /etc/leikwan-sidecar/config.json
+    systemctl restart leikwan-bond-sidecar-4-agent
+    systemctl restart leikwan-slave-agent
+    systemctl restart leikwan-client-agent
     systemctl stop leikwan-client-26-udp-uot
     systemctl disable leikwan-client-26-udp-uot
     systemctl stop leikwan-bond-sidecar-4-udp-uot
