@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import email.utils
 import json
 import logging
 import os
@@ -16,7 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.04.12.1"
+AGENT_VERSION = "2026.04.17.4"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 INVALID_FORWARD_LOG_INTERVAL_SECONDS = 600
@@ -47,6 +48,27 @@ def http_json(method: str, url: str, token: str, payload: dict | None = None) ->
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"http {exc.code} {url}: {body}") from exc
+
+
+def http_json_with_headers(method: str, url: str, token: str, payload: dict | None = None) -> tuple[dict, dict[str, str]]:
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": f"Leikwan-Client-Agent/{AGENT_VERSION}",
+    }
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content = resp.read().decode("utf-8")
+            response_headers = {key.lower(): value for key, value in resp.headers.items()}
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"http {exc.code} {url}: {body}") from exc
+    return json.loads(content), response_headers
 
 
 def file_sha256(path: pathlib.Path) -> str:
@@ -103,6 +125,79 @@ class ClientAgent:
                 changed = True
 
         return changed
+
+    @staticmethod
+    def detect_time_service() -> str:
+        services = [
+            ("ntp.service", "ntp"),
+            ("ntpd.service", "ntpd"),
+            ("chronyd.service", "chronyd"),
+            ("systemd-timesyncd.service", "systemd-timesyncd"),
+        ]
+        if not shutil.which("systemctl"):
+            return ""
+        for unit, name in services:
+            result = subprocess.run(
+                f"systemctl is-active {unit}",
+                shell=True,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if result.stdout.strip() == "active":
+                return name
+        return ""
+
+    def time_sync_state(self) -> dict:
+        if not shutil.which("timedatectl"):
+            return {"synchronized": None, "service": self.detect_time_service(), "status": "unknown"}
+        result = subprocess.run(
+            "timedatectl show -p NTPSynchronized --value",
+            shell=True,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        value = result.stdout.strip().lower()
+        synchronized = True if value == "yes" else False if value == "no" else None
+        status = "ok" if synchronized is True else "warning" if synchronized is False else "unknown"
+        return {
+            "synchronized": synchronized,
+            "service": self.detect_time_service(),
+            "status": status,
+        }
+
+    def panel_clock_state_from_headers(self, headers: dict[str, str]) -> dict:
+        local_state = self.time_sync_state()
+        date_header = str(headers.get("date", "") or "").strip()
+        if date_header == "":
+            return {
+                "status": "unknown",
+                "offset_seconds": None,
+                "panel_time": "",
+                "service": local_state.get("service", ""),
+                "synchronized": local_state.get("synchronized"),
+            }
+        try:
+            panel_dt = email.utils.parsedate_to_datetime(date_header)
+            offset_seconds = round(time.time() - panel_dt.timestamp(), 3)
+        except Exception:  # noqa: BLE001
+            return {
+                "status": "unknown",
+                "offset_seconds": None,
+                "panel_time": date_header,
+                "service": local_state.get("service", ""),
+                "synchronized": local_state.get("synchronized"),
+            }
+        absolute_offset = abs(offset_seconds)
+        status = "ok" if absolute_offset <= 3 else "warning" if absolute_offset <= 10 else "error"
+        return {
+            "status": status,
+            "offset_seconds": offset_seconds,
+            "panel_time": panel_dt.isoformat(),
+            "service": local_state.get("service", ""),
+            "synchronized": local_state.get("synchronized"),
+        }
 
     @staticmethod
     def normalize_mode(value: object) -> str:
@@ -230,6 +325,90 @@ class ClientAgent:
                 check=False,
             )
 
+    @staticmethod
+    def parse_host_port(value: str) -> tuple[str, int] | None:
+        candidate = str(value or "").strip()
+        if candidate == "":
+            return None
+        if candidate.startswith("["):
+            match = re.fullmatch(r"\[(.+)\]:(\d+)", candidate)
+            if not match:
+                return None
+            return match.group(1), int(match.group(2))
+        host, separator, port_text = candidate.rpartition(":")
+        if separator == "" or host.strip() == "" or port_text.strip() == "":
+            return None
+        try:
+            return host.strip(), int(port_text.strip())
+        except ValueError:
+            return None
+
+    def expected_bond_leg_ports(self, forward: dict) -> set[int]:
+        forward_id = int(forward.get("forward_id", 0) or 0)
+        endpoints = [endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
+        base = 20000 + ((forward_id * 37) % 15000)
+        ports: set[int] = set()
+        protocols = self.transport_protocols(str(forward.get("transport", "tcp+udp") or "tcp+udp"))
+        if "tcp" in protocols:
+            for index, _endpoint in enumerate(endpoints):
+                ports.add(base + index)
+        if "udp" in protocols:
+            for index, _endpoint in enumerate(endpoints):
+                ports.add(base + 200 + index)
+        return ports
+
+    def collect_live_bond_slave_connections(self, forward: dict) -> list[dict] | None:
+        endpoints = [dict(endpoint) for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
+        if endpoints == []:
+            return []
+        if not shutil.which("ss"):
+            return None
+
+        endpoint_map: dict[tuple[str, int], dict] = {}
+        for endpoint in endpoints:
+            host = str(endpoint.get("host", "")).strip()
+            port = int(endpoint.get("port", 0) or 0)
+            if host == "" or port <= 0:
+                continue
+            endpoint_map[(host, port)] = endpoint
+
+        result = subprocess.run(
+            "ss -tnp state established",
+            shell=True,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        matches_by_endpoint: dict[int, dict] = {}
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+            parsed_addrs = [parsed for parsed in (self.parse_host_port(token) for token in parts) if parsed is not None]
+            if len(parsed_addrs) < 2:
+                continue
+            local_addr, remote_addr = parsed_addrs[-2], parsed_addrs[-1]
+            _local_host, _local_port = local_addr
+            remote_host, remote_port = remote_addr
+            endpoint = endpoint_map.get((remote_host, remote_port))
+            if endpoint is None:
+                continue
+            endpoint_id = int(endpoint.get("endpoint_id", 0) or 0)
+            match = dict(endpoint)
+            match["live_remote"] = f"{remote_host}:{remote_port}"
+            if endpoint_id > 0:
+                matches_by_endpoint[endpoint_id] = match
+
+        ordered_matches: list[dict] = []
+        for endpoint in endpoints:
+            endpoint_id = int(endpoint.get("endpoint_id", 0) or 0)
+            match = matches_by_endpoint.get(endpoint_id)
+            if match is not None:
+                ordered_matches.append(match)
+        return ordered_matches
+
     def delete_nft_rules(self, forward_id: int) -> None:
         if not shutil.which("nft"):
             return
@@ -339,7 +518,7 @@ class ClientAgent:
     def sync_once(self) -> None:
         master = self.config["master_url"].rstrip("/")
         token = self.config["agent_token"]
-        payload = http_json("GET", f"{master}/api/client/configs/pull", token)
+        payload, response_headers = http_json_with_headers("GET", f"{master}/api/client/configs/pull", token)
         forwards = payload.get("forwards", [])
         self.latest_forwards = [forward for forward in forwards if isinstance(forward, dict)]
         client_meta = payload.get("client", {})
@@ -441,6 +620,7 @@ class ClientAgent:
         self.run_diagnostics_if_requested(master, token, client_meta, forwards)
         usage_totals = self.collect_usage_totals()
         wireguard_public_key = self.ensure_wireguard_identity()
+        local_clock = self.time_sync_state()
         http_json(
             "POST",
             f"{master}/api/client/heartbeat",
@@ -453,6 +633,7 @@ class ClientAgent:
                 "wireguard_public_key": wireguard_public_key,
                 "wireguard_listen_port": self.wireguard_listen_port(),
                 "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
+                "clock_sync": local_clock,
             },
         )
         now = time.time()
@@ -471,6 +652,7 @@ class ClientAgent:
                 "inactive_forward_ids": inactive_forward_ids,
                 "agent_update_request_token": str(client_meta.get("agent_update_request_token", "") or ""),
                 "diag_request_token": str(client_meta.get("diag_request_token", "") or ""),
+                "clock": self.panel_clock_state_from_headers(response_headers),
             }
         )
 
@@ -726,113 +908,92 @@ class ClientAgent:
         if mode == "mptcp" and not mptcp_client.is_file():
             logging.warning("forward %s requested mptcp mode but helper is missing at %s", forward_id, mptcp_client)
 
-        rendered = render_forward_runtime(forward, self.config)
+        render_forward = dict(forward)
+        if mode == "bond":
+            render_forward["endpoints"] = self.select_bond_runtime_endpoints(render_forward)
+
+        rendered = render_forward_runtime(render_forward, self.config)
         self.delete_nft_rules(forward_id)
         self.add_nft_rules(forward_id, int(forward.get("listen_port", 0) or 0), transport)
         applied = self.load_applied()
-        previous = applied.get(str(forward_id), {})
-        previous_start_script_raw = ""
-        previous_managed_paths: list[str] = []
-        if isinstance(previous, dict):
-            previous_start_script_raw = str(previous.get("start_script_path", "") or "")
-            previous_managed_paths = [
-                str(path)
-                for path in previous.get("managed_paths", [])
-                if str(path).strip() != "" and str(path) != previous_start_script_raw
-            ]
+        units = [rendered] + [item for item in rendered.get("extra_units", []) if isinstance(item, dict)]
+        persisted_units: list[dict] = []
 
-        service_path = pathlib.Path(rendered["service_path"])
-        unit_changed = self.write_text_if_changed(service_path, rendered["service_unit"])
+        for unit in units:
+            service_name = str(unit["service_name"])
+            service_path = pathlib.Path(str(unit["service_path"]))
+            unit_changed = self.write_text_if_changed(service_path, str(unit["service_unit"]))
+            start_script_path = pathlib.Path(str(unit["start_script_path"])) if str(unit.get("start_script_path", "")).strip() != "" else None
+            script_changed = False
+            if start_script_path is not None and str(unit.get("start_script", "")) != "":
+                script_changed = self.write_text_if_changed(start_script_path, str(unit["start_script"]), mode=0o700)
 
-        current_start_script_path = None
-        script_changed = False
-        if rendered.get("start_script_path") and rendered.get("start_script"):
-            current_start_script_path = pathlib.Path(rendered["start_script_path"])
-            script_changed = self.write_text_if_changed(current_start_script_path, rendered["start_script"], mode=0o700)
+            managed_paths = [str(service_path)]
+            if start_script_path is not None:
+                managed_paths.append(str(start_script_path))
 
-        managed_paths: list[str] = []
-        if current_start_script_path is not None:
-            managed_paths.append(str(current_start_script_path))
+            for file_entry in unit.get("files", []):
+                extra_path = pathlib.Path(str(file_entry["path"]))
+                self.write_text_if_changed(
+                    extra_path,
+                    str(file_entry.get("content", "")),
+                    int(file_entry["mode"]) if "mode" in file_entry and file_entry.get("mode") is not None else None,
+                )
+                managed_paths.append(str(extra_path))
 
-        rendered_files = rendered.get("files", [])
-        if not isinstance(rendered_files, list):
-            rendered_files = []
-        for file_entry in rendered_files:
-            if not isinstance(file_entry, dict):
-                continue
-            raw_path = str(file_entry.get("path", "") or "").strip()
-            if raw_path == "":
-                continue
-            extra_path = pathlib.Path(raw_path)
-            changed = self.write_text_if_changed(
-                extra_path,
-                str(file_entry.get("content", "")),
-                int(file_entry["mode"]) if "mode" in file_entry and file_entry.get("mode") is not None else None,
+            if unit_changed or script_changed or not self.systemd_is_active(service_name):
+                subprocess.run("systemctl daemon-reload", shell=True, check=False)
+                subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
+                subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
+
+            persisted_units.append(
+                {
+                    "service_name": service_name,
+                    "managed_paths": managed_paths,
+                }
             )
-            script_changed = script_changed or changed
-            managed_paths.append(str(extra_path))
 
-        if previous_start_script_raw != "":
-            previous_start_script_path = pathlib.Path(previous_start_script_raw)
-            if current_start_script_path is None or previous_start_script_path != current_start_script_path:
-                if previous_start_script_path.exists():
-                    previous_start_script_path.unlink()
-                    script_changed = True
-
-        for previous_path_raw in previous_managed_paths:
-            if previous_path_raw in managed_paths:
-                continue
-            previous_path = pathlib.Path(previous_path_raw)
-            if previous_path.exists():
-                previous_path.unlink()
-                script_changed = True
-
-        if unit_changed or script_changed:
-            subprocess.run("systemctl daemon-reload", shell=True, check=False)
-
-        service_name = rendered["service_name"]
-        service_active = self.systemd_is_active(service_name)
-        should_restart = unit_changed or script_changed or not service_active
-        if should_restart:
-            subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
-            subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
             logging.info(
-                "applied forward %s service=%s restart=%s unit_changed=%s script_changed=%s",
+                "applied forward %s service=%s unit_changed=%s script_changed=%s",
                 forward_id,
                 service_name,
-                True,
                 unit_changed,
                 script_changed,
             )
-        else:
-            logging.info("forward %s unchanged, leaving %s running", forward_id, service_name)
 
         applied[str(forward_id)] = {
-            "service_name": service_name,
-            "start_script_path": str(current_start_script_path) if current_start_script_path is not None else "",
-            "managed_paths": managed_paths,
+            "units": persisted_units,
+            "managed_paths": sorted({path for unit in persisted_units for path in unit["managed_paths"]}),
             "updated_at": int(time.time()),
         }
         self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def stop_forward(self, forward_id: int, delete_files: bool = False) -> None:
-        service_name = f"leikwan-client-{forward_id}"
-        subprocess.run(f"systemctl stop {service_name}.service", shell=True, check=False)
-        subprocess.run(f"systemctl disable {service_name}.service", shell=True, check=False)
+        applied = self.load_applied()
+        previous = applied.get(str(forward_id), {})
+        units = previous.get("units", []) if isinstance(previous, dict) else []
+        if not units:
+            units = [{"service_name": f"leikwan-client-{forward_id}", "managed_paths": []}]
+
+        for unit in units:
+            service_name = str(unit.get("service_name", "") or "")
+            if service_name == "":
+                continue
+            subprocess.run(f"systemctl stop {service_name}.service", shell=True, check=False)
+            subprocess.run(f"systemctl disable {service_name}.service", shell=True, check=False)
+            service_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
+            if delete_files and service_path.exists():
+                service_path.unlink()
+
         self.delete_nft_rules(forward_id)
         if delete_files:
-            applied = self.load_applied()
-            previous = applied.get(str(forward_id), {})
-            service_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
-            start_path = pathlib.Path(f"/usr/local/bin/leikwan-client-start-{forward_id}.sh")
-            if service_path.exists():
-                service_path.unlink()
-            if start_path.exists():
-                start_path.unlink()
             if isinstance(previous, dict):
                 for managed_path_raw in previous.get("managed_paths", []):
                     managed_path = pathlib.Path(str(managed_path_raw))
-                    if managed_path in {service_path, start_path}:
+                    if (
+                        managed_path == pathlib.Path(f"/etc/systemd/system/leikwan-client-{forward_id}.service")
+                        or managed_path == pathlib.Path(f"/usr/local/bin/leikwan-client-start-{forward_id}.sh")
+                    ):
                         continue
                     if managed_path.exists():
                         managed_path.unlink()
@@ -857,7 +1018,13 @@ class ClientAgent:
 
             endpoints = [endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
             mode = self.normalize_mode(forward.get("mode", "single"))
+            if mode == "bond" and self.service_status_matches_bond_restart_rule(service_name):
+                self.restart_forward_service(forward_id, service_name, "bond status matched reset warning rule")
+                continue
             if mode == "mptcp":
+                if self.mptcp_setup_in_progress(forward_id):
+                    logging.info("forward %s mptcp setup-underlays still in progress; skipping health probe", forward_id)
+                    continue
                 listen_port = int(forward.get("listen_port", 0) or 0)
                 local_ok, _, local_error = self.local_listener_present(listen_port, "tcp")
                 if not local_ok:
@@ -873,7 +1040,10 @@ class ClientAgent:
                     self.restart_forward_service(forward_id, service_name, f"mptcp sidecar probe failed: {remote_error}")
                 continue
             listen_port = int(forward.get("listen_port", 0) or 0)
-            local_ok, _, local_error = self.local_forward_probe(listen_port)
+            local_ok, _, local_error = self.local_runtime_probe(
+                listen_port,
+                str(forward.get("transport", "tcp+udp") or "tcp+udp"),
+            )
             if not local_ok:
                 self.restart_forward_service(forward_id, service_name, f"local listen probe failed: {local_error}")
                 continue
@@ -881,19 +1051,58 @@ class ClientAgent:
                 continue
 
             ready_results = []
+            bonding = forward.get("bonding", {})
+            if not isinstance(bonding, dict):
+                bonding = {}
+            plain_tcp_ingress = mode == "bond" and str(bonding.get("ingress_mode", "wss_path_mux")) == "plain_tcp_mux"
             for endpoint in endpoints:
-                ready, _, _ = self.remote_ready_probe(
-                    str(endpoint.get("host", "")),
-                    int(endpoint.get("port", 0) or 0),
-                    str(forward.get("sni", "") or endpoint.get("cdn_host", "") or endpoint.get("host", "")),
-                    str(forward.get("path_prefix", "")),
-                )
+                if plain_tcp_ingress:
+                    ready, latency_ms, error = self.remote_plain_tcp_ready_probe(
+                        str(endpoint.get("host", "")),
+                        int(endpoint.get("port", 0) or 0),
+                        str(bonding.get("route_key", "") or forward.get("path_prefix", "")),
+                        str(endpoint.get("ingress_auth_token", "") or bonding.get("ingress_auth_token", "")),
+                    )
+                else:
+                    ready, latency_ms, error = self.remote_ready_probe(
+                        str(endpoint.get("host", "")),
+                        int(endpoint.get("port", 0) or 0),
+                        str(forward.get("sni", "") or endpoint.get("cdn_host", "") or endpoint.get("host", "")),
+                        str(forward.get("path_prefix", "")),
+                    )
                 ready_results.append(ready)
+                if mode == "bond":
+                    endpoint_id = int(endpoint.get("endpoint_id", 0) or 0)
+                    previous_role = (
+                        self.load_bond_endpoint_health()
+                        .get(str(forward_id), {})
+                        .get(str(endpoint_id), {})
+                        .get("role", "healthy")
+                    )
+                    updated = self.record_bond_endpoint_probe_result(
+                        forward_id,
+                        endpoint_id,
+                        ready,
+                        latency_ms,
+                        error,
+                    )
+                    if str(previous_role or "healthy") != str(updated.get("role", "healthy") or "healthy"):
+                        self.refresh_bond_runtime_endpoints(forward_id, dict(forward), service_name)
 
             if mode in {"race", "bond"}:
                 if not any(ready_results):
                     self.restart_forward_service(forward_id, service_name, "all slave endpoints failed ready probe")
                     continue
+
+                if mode == "bond" and plain_tcp_ingress:
+                    live_matches = self.collect_live_bond_slave_connections(forward)
+                    if live_matches is not None and live_matches == []:
+                        self.restart_forward_service(
+                            forward_id,
+                            service_name,
+                            "published runtime mismatch: no live slave connections matched panel endpoints",
+                        )
+                        continue
 
                 healthy_endpoints = [endpoint for endpoint, ready in zip(endpoints, ready_results) if ready]
                 unhealthy_endpoints = [endpoint for endpoint, ready in zip(endpoints, ready_results) if not ready]
@@ -909,6 +1118,47 @@ class ClientAgent:
     def systemd_is_active(service_name: str) -> bool:
         result = subprocess.run(f"systemctl is-active {service_name}.service", shell=True, text=True, capture_output=True)
         return result.stdout.strip() == "active"
+
+    @staticmethod
+    def service_status_matches_bond_restart_rule(service_name: str) -> bool:
+        commands = [
+            f"journalctl -u {service_name}.service --no-pager -n 200 --since '-2 min'",
+            f"systemctl status {service_name}.service --no-pager -n 120",
+        ]
+
+        output = ""
+        for command in commands:
+            result = subprocess.run(
+                command,
+                shell=True,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            candidate = f"{getattr(result, 'stdout', '')}\n{getattr(result, 'stderr', '')}".lower()
+            if candidate.strip() != "":
+                output = candidate
+                break
+
+        if "bond tcp stream" not in output:
+            return False
+        return (
+            "connection reset by peer (os error 104)" in output
+            or "broken pipe (os error 32)" in output
+        )
+
+    @staticmethod
+    def mptcp_setup_in_progress(forward_id: int) -> bool:
+        if forward_id <= 0:
+            return False
+        pattern = f"leikwan-mptcp-client.py --config /etc/leikwan/mptcp-forward-{forward_id}.json --setup-underlays"
+        result = subprocess.run(
+            ["pgrep", "-f", pattern],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode == 0 and result.stdout.strip() != ""
 
     def restart_forward_service(self, forward_id: int, service_name: str, reason: str) -> None:
         now = time.time()
@@ -937,6 +1187,21 @@ class ClientAgent:
             break
         logging.info("reordered %s endpoints to prefer healthy slave routes", service_name)
 
+    def refresh_bond_runtime_endpoints(self, forward_id: int, forward: dict, service_name: str) -> None:
+        now = time.time()
+        next_allowed = self.health_reorder_after.get(forward_id, 0.0)
+        if now < next_allowed:
+            return
+
+        self.apply_forward(forward)
+        self.health_reorder_after[forward_id] = now + 30
+        for index, latest_forward in enumerate(self.latest_forwards):
+            if int(latest_forward.get("forward_id", 0) or 0) != forward_id:
+                continue
+            self.latest_forwards[index] = forward
+            break
+        logging.info("refreshed %s to apply bond endpoint health policy", service_name)
+
     def load_applied(self) -> dict:
         if not self.applied_path.exists():
             return {}
@@ -944,6 +1209,114 @@ class ClientAgent:
             return json.loads(self.applied_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return {}
+
+    def bond_endpoint_health_path(self) -> pathlib.Path:
+        return self.state_dir / "bond-endpoint-health.json"
+
+    def load_bond_endpoint_health(self) -> dict:
+        path = self.bond_endpoint_health_path()
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+
+    def save_bond_endpoint_health(self, payload: dict) -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.write_text_if_changed(
+            self.bond_endpoint_health_path(),
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        )
+
+    def record_bond_endpoint_probe_result(
+        self,
+        forward_id: int,
+        endpoint_id: int,
+        ok: bool,
+        latency_ms: float | None,
+        error: str | None,
+        now: float | None = None,
+    ) -> dict:
+        now = time.time() if now is None else now
+        health = self.load_bond_endpoint_health()
+        entry = health.setdefault(str(forward_id), {}).setdefault(
+            str(endpoint_id),
+            {
+                "role": "healthy",
+                "consecutive_failures": 0,
+                "consecutive_successes": 0,
+                "quarantine_until": 0.0,
+                "probation_until": 0.0,
+                "last_error": "",
+                "last_latency_ms": None,
+            },
+        )
+
+        if ok:
+            entry["consecutive_successes"] = int(entry.get("consecutive_successes", 0) or 0) + 1
+            entry["consecutive_failures"] = 0
+            entry["last_error"] = ""
+            entry["last_latency_ms"] = latency_ms
+            if float(entry.get("quarantine_until", 0.0) or 0.0) > 0:
+                entry["role"] = "probation"
+                entry["probation_until"] = max(float(entry.get("probation_until", 0.0) or 0.0), now + 60.0)
+                entry["quarantine_until"] = 0.0
+            elif int(entry["consecutive_successes"]) >= 3:
+                entry["role"] = "healthy"
+                entry["probation_until"] = 0.0
+        else:
+            entry["consecutive_failures"] = int(entry.get("consecutive_failures", 0) or 0) + 1
+            entry["consecutive_successes"] = 0
+            entry["last_error"] = error or "probe_failed"
+            if int(entry["consecutive_failures"]) >= 3:
+                entry["role"] = "quarantined"
+                entry["quarantine_until"] = now + 90.0
+                entry["probation_until"] = 0.0
+            elif int(entry["consecutive_failures"]) >= 2:
+                entry["role"] = "probation"
+                entry["probation_until"] = max(float(entry.get("probation_until", 0.0) or 0.0), now + 60.0)
+
+        self.save_bond_endpoint_health(health)
+        return entry
+
+    def select_bond_runtime_endpoints(self, forward: dict, now: float | None = None) -> list[dict]:
+        now = time.time() if now is None else now
+        endpoints = [dict(endpoint) for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
+        bonding = forward.get("bonding", {})
+        if not isinstance(bonding, dict):
+            bonding = {}
+        base_priority = int(bonding.get("ws_priority", 10) or 10)
+        health = self.load_bond_endpoint_health().get(str(int(forward.get("forward_id", 0) or 0)), {})
+
+        decorated = []
+        for endpoint in endpoints:
+            endpoint_id = str(int(endpoint.get("endpoint_id", 0) or 0))
+            entry = dict(health.get(endpoint_id, {}))
+            role = str(entry.get("role", "healthy") or "healthy")
+            quarantine_until = float(entry.get("quarantine_until", 0.0) or 0.0)
+            probation_until = float(entry.get("probation_until", 0.0) or 0.0)
+            if role == "quarantined" and quarantine_until <= now:
+                role = "probation"
+            if role == "probation" and probation_until <= now and int(entry.get("consecutive_successes", 0) or 0) >= 3:
+                role = "healthy"
+
+            endpoint["health_role"] = role
+            if role == "healthy":
+                endpoint["dynamic_priority"] = base_priority
+            elif role == "probation":
+                endpoint["dynamic_priority"] = base_priority + 15
+            else:
+                endpoint["dynamic_priority"] = base_priority + 30
+            decorated.append(endpoint)
+
+        preferred = [item for item in decorated if item["health_role"] != "quarantined"]
+        if preferred:
+            preferred.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+            return preferred
+
+        decorated.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+        return decorated[:1]
 
     def run_diagnostics_if_requested(self, master: str, token: str, client_meta: dict, forwards: list[dict]) -> None:
         request_token = str(client_meta.get("diag_request_token", "") or "")
@@ -968,7 +1341,10 @@ class ClientAgent:
                     if mode == "mptcp":
                         e2e_reachable, e2e_latency_ms, e2e_error = self.local_listener_present(int(forward.get("listen_port", 0)), "tcp")
                     else:
-                        e2e_reachable, e2e_latency_ms, e2e_error = self.local_forward_probe(int(forward.get("listen_port", 0)))
+                        e2e_reachable, e2e_latency_ms, e2e_error = self.local_runtime_probe(
+                            int(forward.get("listen_port", 0)),
+                            str(forward.get("transport", "tcp+udp") or "tcp+udp"),
+                        )
                 endpoint_results = []
                 if mode == "mptcp":
                     mptcp = forward.get("mptcp", {})
@@ -987,15 +1363,27 @@ class ClientAgent:
                             "segment": "client_sidecar",
                         })
                 else:
+                    bonding = forward.get("bonding", {})
+                    if not isinstance(bonding, dict):
+                        bonding = {}
+                    plain_tcp_ingress = self.normalize_mode(forward.get("mode", "single")) == "bond" and str(bonding.get("ingress_mode", "wss_path_mux")) == "plain_tcp_mux"
                     for endpoint in forward.get("endpoints", []):
                         host = str(endpoint.get("host", ""))
                         port = int(endpoint.get("port", 0))
-                        reachable, latency_ms, err = self.remote_ready_probe(
-                            host,
-                            port,
-                            str(forward.get("sni", "") or endpoint.get("cdn_host", "") or host),
-                            str(forward.get("path_prefix", "")),
-                        )
+                        if plain_tcp_ingress:
+                            reachable, latency_ms, err = self.remote_plain_tcp_ready_probe(
+                                host,
+                                port,
+                                str(bonding.get("route_key", "") or forward.get("path_prefix", "")),
+                                str(endpoint.get("ingress_auth_token", "") or bonding.get("ingress_auth_token", "")),
+                            )
+                        else:
+                            reachable, latency_ms, err = self.remote_ready_probe(
+                                host,
+                                port,
+                                str(forward.get("sni", "") or endpoint.get("cdn_host", "") or host),
+                                str(forward.get("path_prefix", "")),
+                            )
                         endpoint_results.append({
                             "endpoint_id": int(endpoint.get("endpoint_id", 0)),
                             "host": host,
@@ -1126,6 +1514,40 @@ class ClientAgent:
             return False, None, str(exc)
 
     @classmethod
+    def remote_plain_tcp_ready_probe(
+        cls,
+        host: str,
+        port: int,
+        route_key: str,
+        ingress_auth_token: str,
+        timeout: float = 3.0,
+    ) -> tuple[bool, float | None, str | None]:
+        if host == "" or port <= 0:
+            return False, None, "endpoint missing host or port"
+        normalized_route_key = str(route_key or "").strip().strip("/")
+        if normalized_route_key == "":
+            return False, None, "route_key missing"
+        auth_token = str(ingress_auth_token or "").strip()
+        if auth_token == "":
+            return False, None, "ingress_auth_token missing"
+
+        started = time.time()
+        try:
+            with socket.create_connection((host, port), timeout=timeout) as sock:
+                sock.settimeout(timeout)
+                payload = f"LEIKWAN-INGRESS 1 PING {normalized_route_key} {auth_token}\n"
+                sock.sendall(payload.encode("utf-8"))
+                response = sock.recv(64)
+            first_line = response.decode("utf-8", errors="ignore").strip()
+            if first_line == "OK":
+                return True, round((time.time() - started) * 1000, 1), None
+            if first_line == "":
+                return False, None, "empty_plain_tcp_probe_response"
+            return False, None, first_line
+        except Exception as exc:  # noqa: BLE001
+            return False, None, str(exc)
+
+    @classmethod
     def local_forward_probe(cls, listen_port: int, timeout: float = 2.5) -> tuple[bool, float | None, str | None]:
         if listen_port <= 0:
             return False, None, "listen_port missing"
@@ -1173,6 +1595,29 @@ class ClientAgent:
 
         return cls.local_forward_probe(listen_port, timeout=timeout)
 
+    def local_runtime_probe(self, listen_port: int, transport: object) -> tuple[bool, float | None, str | None]:
+        protocols = self.transport_protocols(transport)
+        max_latency_ms: float | None = None
+
+        if "tcp" in protocols:
+            ok, latency_ms, error = self.local_forward_probe(listen_port)
+            if not ok:
+                return False, latency_ms, error
+            if latency_ms is not None:
+                max_latency_ms = latency_ms
+
+        if "udp" in protocols:
+            ok, latency_ms, error = self.local_listener_present(listen_port, "udp")
+            if not ok:
+                message = error or "listener_not_found"
+                if "tcp" in protocols:
+                    message = f"udp listener probe failed: {message}"
+                return False, latency_ms, message
+            if latency_ms is not None:
+                max_latency_ms = latency_ms if max_latency_ms is None else max(max_latency_ms, latency_ms)
+
+        return True, max_latency_ms, None
+
     def reconcile_global_mptcp_state(self, forwards: list[dict]) -> None:
         """Reconcile global MPTCP state.
 
@@ -1192,7 +1637,7 @@ class ClientAgent:
             mptcp = forward.get("mptcp", {})
             if not isinstance(mptcp, dict):
                 continue
-            total_subflow_limit += max(1, int(mptcp.get("subflow_limit", 0) or 0))
+            total_subflow_limit = max(total_subflow_limit, max(1, int(mptcp.get("subflow_limit", 0) or 0)))
 
         if total_subflow_limit > 0:
             subprocess.run(

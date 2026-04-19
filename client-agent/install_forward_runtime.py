@@ -93,6 +93,9 @@ def adaptive_join_timeout_ms(bond: dict, endpoints: list[dict]) -> int:
 
     wss_legs = max(1, len(endpoints))
     quic_legs = sum(1 for endpoint in endpoints if render_quic_leg_for_endpoint(endpoint, bond) is not None)
+    if quic_legs == 0:
+        wss_only_ceiling = max(ceiling, configured)
+        return max(floor, min(wss_only_ceiling, configured))
     total_legs = max(1, wss_legs + quic_legs)
     adaptive = floor + max(0, total_legs - 1) * per_leg
     return max(floor, min(ceiling, adaptive))
@@ -120,6 +123,109 @@ def select_active_quic_legs(endpoints: list[dict], bond: dict) -> list[str]:
     return selected
 
 
+def append_wait_for_local_listener(lines: list[str], ports: list[int]) -> None:
+    if not ports:
+        return
+    lines.extend([
+        "wait_for_local_listener() {",
+        "  local port=\"$1\"",
+        "  local deadline=$((SECONDS + 15))",
+        "  while (( SECONDS < deadline )); do",
+        "    if ss -ltn \"sport = :$port\" | grep -q \":$port\"; then",
+        "      return 0",
+        "    fi",
+        "    sleep 0.2",
+        "  done",
+        "  return 1",
+        "}",
+    ])
+    for port in ports:
+        lines.append(f"wait_for_local_listener {port}")
+
+
+def udp_uot_sidepath_settings(forward: dict, agent_config: dict) -> dict | None:
+    raw = agent_config.get("udp_uot_sidepath", {})
+    if not isinstance(raw, dict):
+        return None
+    enabled_ids = {
+        int(value)
+        for value in raw.get("enabled_forward_ids", [])
+        if str(value).strip().isdigit()
+    }
+    forward_id = int(forward.get("forward_id", 0) or 0)
+    if forward_id not in enabled_ids:
+        return None
+    return {
+        "shadow_route_suffix": str(raw.get("shadow_route_suffix", ".uot") or ".uot"),
+        "sidecar_port": int(raw.get("sidecar_port", 8999) or 8999),
+        "reorder_window_packets": int(raw.get("reorder_window_packets", 4096) or 4096),
+        "reorder_window_bytes": int(raw.get("reorder_window_bytes", 16777216) or 16777216),
+        "reorder_timeout_ms": int(raw.get("reorder_timeout_ms", 25) or 25),
+    }
+
+
+def render_udp_uot_aux_unit(
+    forward: dict,
+    bond: dict,
+    endpoints: list[dict],
+    agent_config: dict,
+    settings: dict,
+) -> dict:
+    forward_id = int(forward["forward_id"])
+    route_key = str(bond.get("route_key", forward.get("path_prefix", ""))).strip()
+    shadow_route_key = route_key + str(settings["shadow_route_suffix"])
+    config_path = f"/etc/leikwan/uot-bond-forward-{forward_id}.json"
+    service_name = f"leikwan-client-{forward_id}-udp-uot"
+    service_path = f"/etc/systemd/system/{service_name}.service"
+    runtime_bin = str(agent_config.get("uot_bond_bin", "/usr/local/bin/leikwan-uot-bond.py") or "/usr/local/bin/leikwan-uot-bond.py")
+    config_payload = {
+        "forward_id": forward_id,
+        "listen_udp": f"0.0.0.0:{int(forward['listen_port'])}",
+        "route_key": shadow_route_key,
+        "session_token": str(bond.get("udp_session_token", "") or ""),
+        "reorder_window_packets": int(settings["reorder_window_packets"]),
+        "reorder_window_bytes": int(settings["reorder_window_bytes"]),
+        "reorder_timeout_ms": int(settings["reorder_timeout_ms"]),
+        "legs": [
+            {
+                "endpoint_id": int(endpoint.get("endpoint_id", 0) or 0),
+                "host": str(endpoint["host"]),
+                "port": int(endpoint["port"]),
+                "auth_token": str(endpoint.get("ingress_auth_token", "") or bond.get("ingress_auth_token", "")),
+            }
+            for endpoint in endpoints
+        ],
+    }
+    service_unit = f"""[Unit]
+Description=Leikwan Client {forward_id} UDP UoT
+After=network.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 {runtime_bin} --config {config_path}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+    return {
+        "service_name": service_name,
+        "service_path": service_path,
+        "service_unit": service_unit,
+        "start_script_path": "",
+        "start_script": "",
+        "files": [
+            {
+                "path": config_path,
+                "content": json.dumps(config_payload, ensure_ascii=False, indent=2) + "\n",
+                "mode": 0o600,
+            }
+        ],
+    }
+
+
 def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     forward_id = int(forward["forward_id"])
     listen_port = int(forward["listen_port"])
@@ -138,6 +244,7 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     bond_session_token = str(bond.get("session_token", "")).strip()
     bond_udp_session_token = str(bond.get("udp_session_token", "")).strip()
     bond_bin = str(agent_config.get("bond_bin", "/usr/local/bin/leikwan-bond")).strip() or "/usr/local/bin/leikwan-bond"
+    bond_ingress_bin = str(agent_config.get("bond_ingress_bin", "/usr/local/bin/leikwan-ingress")).strip() or "/usr/local/bin/leikwan-ingress"
 
     usable_endpoints = []
     for endpoint in endpoints:
@@ -212,6 +319,12 @@ WantedBy=multi-user.target
             raise RuntimeError("bond mode missing bonding.remote_target")
         if endpoints == []:
             raise RuntimeError("bond mode requires at least one endpoint")
+        sidepath = udp_uot_sidepath_settings(forward, agent_config)
+        primary_transport = transport
+        extra_units: list[dict] = []
+        if sidepath is not None and transport in ("udp", "tcp+udp"):
+            primary_transport = "tcp" if transport == "tcp+udp" else "tcp"
+            extra_units.append(render_udp_uot_aux_unit(forward, bond, endpoints, agent_config, sidepath))
 
         base = 20000 + ((forward_id * 37) % 15000)
         rate_base = rate_limit_base_port(forward_id)
@@ -225,7 +338,16 @@ WantedBy=multi-user.target
         interactive_chunk_bytes = int_or_default(bond.get("interactive_chunk_bytes"), 16 * 1024)
         latency_guard_bytes = int_or_default(bond.get("latency_guard_bytes"), 256 * 1024)
         interactive_rtt_slack_ms = int_or_default(bond.get("interactive_rtt_slack_ms"), 30)
-        if transport in ("tcp", "tcp+udp"):
+        warmup_trigger_bytes = int_or_default(bond.get("warmup_trigger_bytes"), 65536)
+        warmup_slice_bytes = int_or_default(bond.get("warmup_slice_bytes"), 65536)
+        warmup_leg_delay_ms = int_or_default(bond.get("warmup_leg_delay_ms"), 20)
+        bulk_promote_bytes = int_or_default(bond.get("bulk_promote_bytes"), 262144)
+        leg_cooldown_ms = int_or_default(bond.get("leg_cooldown_ms"), 3000)
+        ingress_mode = str(bond.get("ingress_mode", "wss_path_mux")).strip() or "wss_path_mux"
+        route_key = str(bond.get("route_key", path_prefix)).strip() or path_prefix
+        tcp_ready_ports: list[int] = []
+        udp_ready_ports: list[int] = []
+        if primary_transport in ("tcp", "tcp+udp"):
             if bond_session_token == "":
                 raise RuntimeError("bond mode missing bonding.session_token for tcp transport")
             tcp_leg_targets = list(selected_quic_legs) if quic_via_slave else []
@@ -235,13 +357,25 @@ WantedBy=multi-user.target
                 host = endpoint["host"]
                 port = endpoint["port"]
                 tcp_back = base + index
-                lines.append(
-                    f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{bond_remote_target} "
-                    f"--tls-sni-override {sni} --http-headers \"Host: {sni}\" "
-                    f"--http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &"
-                )
+                ingress_auth_token = str(endpoint.get("ingress_auth_token", "") or bond.get("ingress_auth_token", "")).strip()
+                if ingress_mode == "plain_tcp_mux":
+                    if ingress_auth_token == "":
+                        raise RuntimeError("bond mode plain_tcp_mux requires ingress_auth_token")
+                    lines.append(
+                        f"{bond_ingress_bin} client --listen 127.0.0.1:{tcp_back} "
+                        f"--remote {host}:{port} --route-key {route_key} --auth-token {ingress_auth_token} &"
+                    )
+                else:
+                    lines.append(
+                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{bond_remote_target} "
+                        f"--tls-sni-override {sni} --http-headers \"Host: {sni}\" "
+                        f"--http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &"
+                    )
+                tcp_ready_ports.append(tcp_back)
+                endpoint_priority = int_or_default(endpoint.get("dynamic_priority"), ws_priority)
                 if use_wss_as_active_legs or not standby_wss_enabled(bond):
-                    tcp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{tcp_back}", ws_priority))
+                    tcp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{tcp_back}", endpoint_priority))
+            append_wait_for_local_listener(lines, tcp_ready_ports)
             lines.append(
                 f"{bond_bin} client --protocol tcp --listen {tcp_listen_host}:{tcp_listen_port} "
                 f"--legs '{','.join(tcp_leg_targets)}' --session-token '{bond_session_token}' "
@@ -252,14 +386,19 @@ WantedBy=multi-user.target
                 f"--join-timeout-ms {join_timeout_ms} "
                 f"--interactive-chunk-bytes {interactive_chunk_bytes} "
                 f"--latency-guard-bytes {latency_guard_bytes} "
-                f"--interactive-rtt-slack-ms {interactive_rtt_slack_ms} &"
+                f"--interactive-rtt-slack-ms {interactive_rtt_slack_ms} "
+                f"--warmup-trigger-bytes {warmup_trigger_bytes} "
+                f"--warmup-slice-bytes {warmup_slice_bytes} "
+                f"--warmup-leg-delay-ms {warmup_leg_delay_ms} "
+                f"--bulk-promote-bytes {bulk_promote_bytes} "
+                f"--leg-cooldown-ms {leg_cooldown_ms} &"
             )
             if use_local_rate_limit:
                 lines.append(
                     f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py tcp "
                     f"--listen 0.0.0.0:{listen_port} --target 127.0.0.1:{tcp_listen_port} --mbps {use_local_rate_limit} &"
                 )
-        if transport in ("udp", "tcp+udp"):
+        if primary_transport in ("udp", "tcp+udp"):
             udp_token = bond_udp_session_token or bond_session_token
             if udp_token == "":
                 raise RuntimeError("bond mode missing bonding.udp_session_token for udp transport")
@@ -270,13 +409,25 @@ WantedBy=multi-user.target
                 host = endpoint["host"]
                 port = endpoint["port"]
                 udp_back = base + 200 + index
-                lines.append(
-                    f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{udp_back}:{bond_remote_target} "
-                    f"--tls-sni-override {sni} --http-headers \"Host: {sni}\" "
-                    f"--http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &"
-                )
+                ingress_auth_token = str(endpoint.get("ingress_auth_token", "") or bond.get("ingress_auth_token", "")).strip()
+                if ingress_mode == "plain_tcp_mux":
+                    if ingress_auth_token == "":
+                        raise RuntimeError("bond mode plain_tcp_mux requires ingress_auth_token")
+                    lines.append(
+                        f"{bond_ingress_bin} client --listen 127.0.0.1:{udp_back} "
+                        f"--remote {host}:{port} --route-key {route_key} --auth-token {ingress_auth_token} &"
+                    )
+                else:
+                    lines.append(
+                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{udp_back}:{bond_remote_target} "
+                        f"--tls-sni-override {sni} --http-headers \"Host: {sni}\" "
+                        f"--http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &"
+                    )
+                udp_ready_ports.append(udp_back)
+                endpoint_priority = int_or_default(endpoint.get("dynamic_priority"), ws_priority)
                 if use_wss_as_active_legs or not standby_wss_enabled(bond):
-                    udp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{udp_back}", ws_priority))
+                    udp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{udp_back}", endpoint_priority))
+            append_wait_for_local_listener(lines, udp_ready_ports)
             lines.append(
                 f"{bond_bin} client --protocol udp --listen {udp_listen_host}:{udp_listen_port} "
                 f"--legs '{','.join(udp_leg_targets)}' --session-token '{udp_token}' "
@@ -287,7 +438,12 @@ WantedBy=multi-user.target
                 f"--join-timeout-ms {join_timeout_ms} "
                 f"--interactive-chunk-bytes {interactive_chunk_bytes} "
                 f"--latency-guard-bytes {latency_guard_bytes} "
-                f"--interactive-rtt-slack-ms {interactive_rtt_slack_ms} &"
+                f"--interactive-rtt-slack-ms {interactive_rtt_slack_ms} "
+                f"--warmup-trigger-bytes {warmup_trigger_bytes} "
+                f"--warmup-slice-bytes {warmup_slice_bytes} "
+                f"--warmup-leg-delay-ms {warmup_leg_delay_ms} "
+                f"--bulk-promote-bytes {bulk_promote_bytes} "
+                f"--leg-cooldown-ms {leg_cooldown_ms} &"
             )
             if use_local_rate_limit:
                 lines.append(
@@ -315,6 +471,7 @@ WantedBy=multi-user.target
             "service_unit": service_unit,
             "start_script_path": start_script_path,
             "start_script": "\n".join(lines) + "\n",
+            "extra_units": extra_units,
         }
 
     if mode == "mptcp":
@@ -395,6 +552,10 @@ WantedBy=multi-user.target
         # Check for Rust MPTCP relay binary
         rust_relay_path = "/var/lib/leikwan-client-agent/leikwan-mptcp-relay"
         lines = ["#!/usr/bin/env bash", "set -euo pipefail"]
+        lines.append("unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy")
+        lines.append("export NO_PROXY='*'")
+        lines.append("export no_proxy='*'")
+        lines.append(f"/usr/bin/python3 {helper_path} --config {config_path} --setup-underlays")
         lines.append(f'RUST_RELAY="{rust_relay_path}"')
         lines.append(f'if [ -x "$RUST_RELAY" ]; then')
         lines.append(f'    exec "$RUST_RELAY" client --config {config_path}')
