@@ -53,6 +53,13 @@ It is suffering from "bad legs are still treated as first-class participants".
 2. Admin index must include a stale pending-task purge path.
 3. Admin index must include recent task error details.
 
+### Experience requirements
+
+1. Admin should understand the current operational problem within 5 seconds of opening `/admin`.
+2. Tenant / tenantor should only see reputation data that is relevant to their own client / forward.
+3. Tenant-facing wording must explain that reputation is reference-only and that runtime already adapts automatically.
+4. New operational UI must reuse the existing panel design language instead of creating a new dashboard style.
+
 ## Non-goals
 
 - No panel-driven routing decisions in phase 1
@@ -365,6 +372,91 @@ Can only see:
 
 No fleet-global visibility.
 
+## 9.5 Information architecture and surface ownership
+
+The runtime design is clear. The human-facing surfaces also need to be explicit.
+
+### Admin surface ownership
+
+#### `/admin`
+
+This remains the fast triage page.
+
+Show, in order:
+
+1. existing hero and action row
+2. KPI strip
+3. `Task Queue Health`
+4. `Recent Failed Tasks`
+5. `Worst Legs Right Now`
+6. link to deeper diagnostics
+
+ASCII structure:
+
+```text
+/admin
+  Hero
+    - Republish All Forwards
+    - Diagnostics
+  KPI Strip
+    - existing counters
+  Task Queue Health
+    - pending / running / failed
+    - oldest pending / oldest running
+    - stale pending purge action
+  Recent Failed Tasks
+    - compact table
+    - inline expandable details
+  Worst Legs Right Now
+    - top degraded / quarantined legs
+    - link to full diagnostics
+```
+
+#### `/admin/diagnostics`
+
+This becomes the deep operational page.
+
+Add a `Bond Leg Reputation` section with:
+
+1. filter row
+2. current reputation table
+3. recent reputation events table
+
+ASCII structure:
+
+```text
+/admin/diagnostics
+  Existing diagnostics sections
+  Bond Leg Reputation
+    - filters
+    - current rows
+    - recent events
+```
+
+### Tenant surface ownership
+
+Do not create a new tenant page in phase 1.
+
+Reuse the existing diagnostics affordance already present on `/tenant/clients`:
+
+- the existing `View Diagnostics` action
+
+That view should gain a new scoped `Leg Reputation` section.
+
+ASCII structure:
+
+```text
+/tenant/clients
+  Client card
+    - Run Diagnostics
+    - View Diagnostics
+      -> diagnostics dialog / details surface
+         - current tunnel health
+         - scoped leg reputation
+         - recent reputation changes
+         - calm reference-only explanation
+```
+
 ## 10. Admin index task board
 
 Add a new `Task Queue Health` area on `/admin`.
@@ -386,6 +478,21 @@ Add purge action:
 - never purge running tasks
 - require confirmation
 
+Locked decisions:
+
+- purge action lives on `/admin`
+- thresholds offered in UI:
+  - 15 min
+  - 30 min
+  - 60 min
+- purge flow shows a count preview before deletion
+- purge is admin-only
+- purge result must return:
+  - deleted count
+  - skipped count
+  - oldest affected timestamp
+- purge never silently touches `running`
+
 ### Board B: task error detail board
 
 Show recent failed tasks with:
@@ -405,7 +512,114 @@ Details should include:
 - compact `result_json`
 - compact task context from `payload_json`
 
+Locked decisions:
+
+- details render inline as expandable rows, not a modal
+- newest failures first
+- default visible limit is the 20 most recent failed tasks
+- if a natural action hint exists, show it next to the row:
+  - republish
+  - inspect node heartbeat
+  - purge stale pending
+  
+
 This gives operators a fast "what is broken, why, and can I safely clear it?" board.
+
+## 10.5 Interaction state coverage
+
+These states are part of phase 1, not polish.
+
+```text
+FEATURE                    | LOADING | EMPTY | ERROR | SUCCESS | PARTIAL
+---------------------------|---------|-------|-------|---------|--------
+Task Queue Health          | skeleton summary + muted placeholders | "No queued tasks right now." | query failed, show retry copy and preserve last known counts if possible | counts + oldest ages + purge controls visible | counts visible but oldest age unavailable
+Stale Pending Purge        | button busy state, controls disabled | preview shows 0 stale tasks | purge rejected with exact reason | success flash with deleted/skipped counts | some tasks deleted, some skipped due to race
+Recent Failed Tasks        | skeleton rows | "No failed tasks recently." | task detail query failed | table rows + inline expanders | summary available but result/payload detail missing
+Admin Reputation Overview  | skeleton table | "No reputation data yet." | query failed | worst-leg summary visible | current rows exist but no recent events
+Admin Reputation Diagnostics | filters + skeleton table | "No legs match these filters." | malformed/stale payload query failure | full current + recent events tables | TCP present but UDP missing, or stale observer snapshots
+Tenant Reputation View     | diagnostics dialog skeleton | "No reputation data yet for this client." | scoped diagnostics fetch failed | current scoped states + recent changes | snapshot stale or only one protocol available
+```
+
+For every state, the spec must describe what the user sees, not just backend conditions.
+
+## 10.6 Trust semantics and wording
+
+Tenant-facing wording must stay calm.
+
+Do not present reputation as an outage meter.
+
+Required intent:
+
+- "Reference only"
+- "Runtime already adapts automatically"
+- "No action required" unless the user truly needs to intervene
+
+Avoid wording that implies:
+
+- "your node is bad"
+- "your route is broken"
+- "you must act now"
+
+Admin wording can be more direct.
+
+## 10.7 Responsive and accessibility rules
+
+These are required in phase 1.
+
+### Responsive
+
+- admin summary cards remain usable at small widths
+- wide admin tables may horizontally scroll, but controls must remain discoverable
+- failed-task inline expansion must remain usable on narrow screens
+- tenant diagnostics must avoid unreadable multi-column overflow
+- `/admin/diagnostics` filters wrap instead of overflowing
+
+### Accessibility
+
+- status must never be color-only
+- inline task detail expansion must be keyboard reachable
+- purge confirmation must preserve and restore focus correctly
+- destructive actions must use explicit confirmation copy
+- minimum touch target: 44px
+- timestamps, status, and reasons must remain readable without hover
+
+## 10.8 Design-system alignment
+
+Follow the existing panel UI language already visible in:
+
+- `master/src/Controllers/AdminController.php`
+- `master/src/Controllers/TenantController.php`
+
+Hard rules:
+
+- reuse current hero/card/table/button vocabulary
+- do not create a second ornamental dashboard shell
+- cards summarize, tables explain
+- reputation details are table-first, not card-mosaic-first
+- tenant diagnostics should feel like a natural extension of the existing diagnostics UI
+
+## 10.9 User journey storyboard
+
+### Admin journey
+
+```text
+STEP | USER DOES                | USER FEELS                    | SPEC SUPPORT
+-----|--------------------------|-------------------------------|-------------
+1    | Opens /admin             | "What is burning?"            | Task Queue Health high on page
+2    | Sees stale/failed counts | "Is the queue stuck?"         | counts + oldest ages + purge preview
+3    | Expands failed task row  | "Why did this fail?"          | inline error details + context
+4    | Opens diagnostics        | "Bad queue or bad leg?"       | reputation tables + recent events
+```
+
+### Tenant journey
+
+```text
+STEP | USER DOES                 | USER FEELS                        | SPEC SUPPORT
+-----|---------------------------|-----------------------------------|-------------
+1    | Opens View Diagnostics    | "Is my line okay?"                | scoped diagnostics reuse
+2    | Reads leg reputation      | "Am I affected?"                  | scoped current states + recent changes
+3    | Reads helper copy         | "Do I need to do anything?"       | reference-only, runtime adapts automatically
+```
 
 ## 11. Security and tenancy boundaries
 
@@ -517,6 +731,8 @@ Phase 1 target:
 - panel reputation tables
 - admin task queue board
 - tenant-scoped reputation visibility
+- explicit interaction-state coverage for admin and tenant operations UI
+- responsive and accessibility coverage for those same surfaces
 
 ### Phase 2
 
