@@ -263,6 +263,45 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
         self.assertIn('"route_key": "a43547b6350f72cd.uot"', config_file["content"])
         self.assertIn('"session_token": "udp-token"', config_file["content"])
 
+    def test_bond_udp_uot_sidepath_does_not_split_pure_udp_transport(self) -> None:
+        rendered = install_forward_runtime.render_forward_runtime(
+            {
+                "forward_id": 26,
+                "listen_port": 11024,
+                "target": "193.227.109.82:5201",
+                "sni": "br1.nbwly.com",
+                "path_prefix": "a43547b6350f72cd",
+                "transport": "udp",
+                "mode": "bond",
+                "endpoints": [
+                    {"endpoint_id": 184, "host": "8.163.90.132", "port": 7001, "ingress_auth_token": "token-1"},
+                    {"endpoint_id": 185, "host": "8.163.90.235", "port": 7001, "ingress_auth_token": "token-2"},
+                ],
+                "bonding": {
+                    "ingress_mode": "plain_tcp_mux",
+                    "route_key": "a43547b6350f72cd",
+                    "remote_target": "138.252.162.120:9000",
+                    "session_token": "tcp-token",
+                    "udp_session_token": "udp-token",
+                },
+            },
+            {
+                "bond_bin": "/usr/local/bin/leikwan-bond",
+                "udp_uot_sidepath": {
+                    "enabled_forward_ids": [26],
+                    "shadow_route_suffix": ".uot",
+                    "sidecar_port": 8999,
+                    "reorder_window_packets": 4096,
+                    "reorder_window_bytes": 16777216,
+                    "reorder_timeout_ms": 25,
+                },
+            },
+        )
+
+        self.assertIn("--protocol udp --listen 0.0.0.0:11024", rendered["start_script"])
+        self.assertNotIn("--protocol tcp --listen 0.0.0.0:11024", rendered["start_script"])
+        self.assertEqual(rendered.get("extra_units", []), [])
+
     def test_bond_runtime_uses_endpoint_dynamic_priority(self) -> None:
         rendered = install_forward_runtime.render_forward_runtime(
             {
