@@ -322,8 +322,8 @@ WantedBy=multi-user.target
         sidepath = udp_uot_sidepath_settings(forward, agent_config)
         primary_transport = transport
         extra_units: list[dict] = []
-        if sidepath is not None and transport in ("udp", "tcp+udp"):
-            primary_transport = "tcp" if transport == "tcp+udp" else "tcp"
+        if sidepath is not None and transport == "tcp+udp":
+            primary_transport = "tcp"
             extra_units.append(render_udp_uot_aux_unit(forward, bond, endpoints, agent_config, sidepath))
 
         base = 20000 + ((forward_id * 37) % 15000)
