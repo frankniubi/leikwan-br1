@@ -143,6 +143,7 @@ class SidecarDualRuntimeRegressionTests(unittest.TestCase):
                 encoding="utf-8",
             )
             agent = sidecar_agent_module.SidecarAgent(config_path)
+            writes: dict[str, str] = {}
             management = {
                 "bond_runtime": {
                     "bind_host": "0.0.0.0",
@@ -151,12 +152,29 @@ class SidecarDualRuntimeRegressionTests(unittest.TestCase):
                 }
             }
 
-            with mock.patch.object(sidecar_agent_module.subprocess, "run"):
-                agent.apply_management_config(management, {})
+            def fake_write(path: pathlib.Path, content: str, mode=None):  # noqa: ANN001
+                writes[str(path).replace("\\", "/")] = content
+                return True
 
-            runtime_path = state_dir / "udp-uot-runtime.json"
-            self.assertTrue(runtime_path.exists())
-            payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+            with mock.patch.object(agent, "ensure_relay_binary") as relay_mock:
+                with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                    with mock.patch.object(sidecar_agent_module, "write_text_if_changed", side_effect=fake_write):
+                        with mock.patch.object(sidecar_agent_module.subprocess, "run") as run_mock:
+                            agent.apply_management_config(management, {})
+
+            relay_mock.assert_not_called()
+            runtime_path = str(state_dir / "udp-uot-runtime.json").replace("\\", "/")
+            start_script_path = str(state_dir / "start-sidecar-udp-uot.sh").replace("\\", "/")
+            unit_path = "/etc/systemd/system/leikwan-bond-sidecar-4-udp-uot.service"
+            self.assertIn(runtime_path, writes)
+            self.assertIn(start_script_path, writes)
+            self.assertIn(unit_path, writes)
+            self.assertIn("leikwan-udp-uot-merge.py", writes[start_script_path])
+            self.assertIn("ExecStart=/bin/bash", writes[unit_path])
+            commands = [" ".join(call.args[0]) if isinstance(call.args[0], list) else str(call.args[0]) for call in run_mock.call_args_list]
+            self.assertTrue(any("leikwan-bond-sidecar-4-udp-uot.service" in command for command in commands))
+
+            payload = json.loads(writes[runtime_path])
             self.assertEqual(payload["listen_port"], 8999)
             self.assertEqual(payload["token_secret"], "secret-123")
             self.assertEqual(payload["allowed_forward_ids"], [26])

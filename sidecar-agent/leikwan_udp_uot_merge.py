@@ -38,6 +38,7 @@ class DataFrame:
 
 @dataclasses.dataclass
 class MergeItem:
+    session_key: object
     session_id: int
     seq: int
     payload: bytes
@@ -66,7 +67,9 @@ class RuntimeConfig:
 
 @dataclasses.dataclass
 class SessionState:
+    session_key: object
     session_id: int
+    scope_key: object
     forward_id: int
     target_host: str
     target_port: int
@@ -79,6 +82,7 @@ class SessionState:
 @dataclasses.dataclass
 class LegState:
     leg_id: int
+    scope_key: object
     writer: asyncio.StreamWriter
     claims: dict[str, Any]
     write_lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
@@ -129,12 +133,24 @@ def build_test_token(payload: dict[str, Any], secret: str) -> str:
     return payload_b64 + "." + sig_b64
 
 
+def build_scope_key(claims: dict[str, Any], token: str = "") -> tuple[int, str, int, str]:
+    forward_id = int(claims.get("forward_id", 0) or 0)
+    target_host = str(claims.get("target_host", "") or "").strip()
+    target_port = int(claims.get("target_port", 0) or 0)
+    token_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16] if token != "" else ""
+    return (forward_id, target_host, target_port, token_fingerprint)
+
+
+def build_session_key(scope_key: object, session_id: int) -> tuple[object, int]:
+    return (scope_key, int(session_id))
+
+
 class MergeBuffer:
     def __init__(self, packet_limit: int, byte_limit: int, timeout_ms: int) -> None:
         self.packet_limit = packet_limit
         self.byte_limit = byte_limit
         self.timeout_ms = timeout_ms
-        self.session_state: dict[int, SessionMergeState] = {}
+        self.session_state: dict[object, SessionMergeState] = {}
         self.skipped_gap_packets = 0
 
     def _enforce_limits(self, state: SessionMergeState) -> None:
@@ -150,17 +166,18 @@ class MergeBuffer:
             dropped = state.buffered.pop(seq)
             state.buffered_bytes -= len(dropped)
 
-    def push(self, session_id: int, seq: int, payload: bytes) -> list[MergeItem]:
-        state = self.session_state.setdefault(session_id, SessionMergeState())
+    def push(self, session_key: object, seq: int, payload: bytes, session_id: int | None = None) -> list[MergeItem]:
+        state = self.session_state.setdefault(session_key, SessionMergeState())
+        merge_session_id = session_id if session_id is not None else int(session_key) if isinstance(session_key, int) else 0
         if seq < state.next_expected_seq:
             return []
         if seq == state.next_expected_seq:
-            ready = [MergeItem(session_id=session_id, seq=seq, payload=payload)]
+            ready = [MergeItem(session_key=session_key, session_id=merge_session_id, seq=seq, payload=payload)]
             state.next_expected_seq += 1
             while state.next_expected_seq in state.buffered:
                 body = state.buffered.pop(state.next_expected_seq)
                 state.buffered_bytes -= len(body)
-                ready.append(MergeItem(session_id=session_id, seq=state.next_expected_seq, payload=body))
+                ready.append(MergeItem(session_key=session_key, session_id=merge_session_id, seq=state.next_expected_seq, payload=body))
                 state.next_expected_seq += 1
             state.gap_started_at = None
             return ready
@@ -176,7 +193,7 @@ class MergeBuffer:
         now_ms = int(time.time() * 1000) if now_ms is None else now_ms
         released: list[MergeItem] = []
         self.skipped_gap_packets = 0
-        for session_id, state in self.session_state.items():
+        for session_key, state in self.session_state.items():
             if state.gap_started_at is None:
                 continue
             if now_ms - state.gap_started_at < self.timeout_ms:
@@ -191,7 +208,8 @@ class MergeBuffer:
             while state.next_expected_seq in state.buffered:
                 body = state.buffered.pop(state.next_expected_seq)
                 state.buffered_bytes -= len(body)
-                released.append(MergeItem(session_id=session_id, seq=state.next_expected_seq, payload=body))
+                merge_session_id = session_key if isinstance(session_key, int) else int(session_key[1]) if isinstance(session_key, tuple) and len(session_key) > 1 else 0
+                released.append(MergeItem(session_key=session_key, session_id=merge_session_id, seq=state.next_expected_seq, payload=body))
                 state.next_expected_seq += 1
             state.gap_started_at = None
         return released
@@ -234,8 +252,9 @@ class Runtime:
         self.config = config
         self.merge = MergeBuffer(config.reorder_window_packets, config.reorder_window_bytes, config.reorder_timeout_ms)
         self.active_legs: dict[int, LegState] = {}
-        self.leg_order: deque[int] = deque()
-        self.sessions: dict[int, SessionState] = {}
+        self.scope_leg_order: dict[object, deque[int]] = {}
+        self.scope_claims: dict[object, dict[str, Any]] = {}
+        self.sessions: dict[object, SessionState] = {}
         self.inbound_queue: asyncio.Queue[tuple[int, DataFrame]] = asyncio.Queue()
         self.next_leg_id = 1
         self.log_samples: dict[str, int] = {}
@@ -259,21 +278,30 @@ class Runtime:
 
     def _register_leg(self, leg_state: LegState) -> None:
         self.active_legs[leg_state.leg_id] = leg_state
-        if leg_state.leg_id not in self.leg_order:
-            self.leg_order.append(leg_state.leg_id)
+        leg_order = self.scope_leg_order.setdefault(leg_state.scope_key, deque())
+        if leg_state.leg_id not in leg_order:
+            leg_order.append(leg_state.leg_id)
+        self.scope_claims[leg_state.scope_key] = dict(leg_state.claims)
         self.stats["live_legs"] = len(self.active_legs)
 
     def _remove_leg(self, leg_id: int) -> None:
-        self.active_legs.pop(leg_id, None)
-        self.leg_order = deque(item for item in self.leg_order if item != leg_id)
+        leg_state = self.active_legs.pop(leg_id, None)
+        if leg_state is not None:
+            leg_order = self.scope_leg_order.get(leg_state.scope_key)
+            if leg_order is not None:
+                self.scope_leg_order[leg_state.scope_key] = deque(item for item in leg_order if item != leg_id)
+                if not self.scope_leg_order[leg_state.scope_key]:
+                    self.scope_leg_order.pop(leg_state.scope_key, None)
+                    self.scope_claims.pop(leg_state.scope_key, None)
         self.stats["live_legs"] = len(self.active_legs)
 
-    def pick_leg(self) -> LegState | None:
-        if not self.leg_order:
+    def pick_leg(self, scope_key: object) -> LegState | None:
+        leg_order = self.scope_leg_order.get(scope_key)
+        if not leg_order:
             return None
-        for _ in range(len(self.leg_order)):
-            leg_id = self.leg_order[0]
-            self.leg_order.rotate(-1)
+        for _ in range(len(leg_order)):
+            leg_id = leg_order[0]
+            leg_order.rotate(-1)
             leg_state = self.active_legs.get(leg_id)
             if leg_state is not None:
                 return leg_state
@@ -295,8 +323,8 @@ class Runtime:
         async with leg_state.write_lock:
             await write_leg_frame(leg_state.writer, frame)
 
-    async def open_session(self, session_id: int, claims: dict[str, Any]) -> SessionState:
-        existing = self.sessions.get(session_id)
+    async def open_session(self, session_key: object, session_id: int, scope_key: object, claims: dict[str, Any]) -> SessionState:
+        existing = self.sessions.get(session_key)
         if existing is not None:
             existing.last_seen_ms = int(time.time() * 1000)
             return existing
@@ -310,15 +338,17 @@ class Runtime:
         udp_sock.setblocking(False)
         await asyncio.get_running_loop().sock_connect(udp_sock, sockaddr)
         session = SessionState(
+            session_key=session_key,
             session_id=session_id,
+            scope_key=scope_key,
             forward_id=forward_id,
             target_host=target_host,
             target_port=target_port,
             udp_sock=udp_sock,
-            upstream_reader_task=asyncio.create_task(self.upstream_reader_loop(session_id, udp_sock)),
+            upstream_reader_task=asyncio.create_task(self.upstream_reader_loop(session_key, udp_sock)),
             last_seen_ms=int(time.time() * 1000),
         )
-        self.sessions[session_id] = session
+        self.sessions[session_key] = session
         self.stats["sessions_active"] = len(self.sessions)
         self.sampled_log(
             "session-opened",
@@ -331,9 +361,9 @@ class Runtime:
         )
         return session
 
-    async def close_session(self, session_id: int) -> None:
-        session = self.sessions.pop(session_id, None)
-        self.merge.session_state.pop(session_id, None)
+    async def close_session(self, session_key: object) -> None:
+        session = self.sessions.pop(session_key, None)
+        self.merge.session_state.pop(session_key, None)
         self.stats["sessions_active"] = len(self.sessions)
         if session is None:
             return
@@ -347,24 +377,25 @@ class Runtime:
         session.udp_sock.close()
 
     async def emit_to_target(self, item: MergeItem, claims: dict[str, Any]) -> None:
-        session = await self.open_session(item.session_id, claims)
+        scope_key = item.session_key[0] if isinstance(item.session_key, tuple) and len(item.session_key) > 0 else build_scope_key(claims)
+        session = await self.open_session(item.session_key, item.session_id, scope_key, claims)
         session.last_seen_ms = int(time.time() * 1000)
         await asyncio.get_running_loop().sock_sendall(session.udp_sock, item.payload)
         self.stats["datagrams_in"] += 1
         self.stats["bytes_in"] += len(item.payload)
 
-    async def upstream_reader_loop(self, session_id: int, udp_sock: socket.socket) -> None:
+    async def upstream_reader_loop(self, session_key: object, udp_sock: socket.socket) -> None:
         loop = asyncio.get_running_loop()
         try:
             while True:
                 payload = await loop.sock_recv(udp_sock, 65535)
                 if not payload:
                     continue
-                session = self.sessions.get(session_id)
+                session = self.sessions.get(session_key)
                 if session is None:
                     return
                 session.last_seen_ms = int(time.time() * 1000)
-                leg_state = self.pick_leg()
+                leg_state = self.pick_leg(session.scope_key)
                 if leg_state is None:
                     self.stats["datagrams_dropped_no_leg"] += 1
                     continue
@@ -372,7 +403,7 @@ class Runtime:
                     version=1,
                     msg_type=MSG_DATA,
                     flags=0,
-                    session_id=session_id,
+                    session_id=session.session_id,
                     seq=session.reverse_seq,
                     payload=payload,
                 )
@@ -383,6 +414,7 @@ class Runtime:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            session_id = self.sessions.get(session_key).session_id if session_key in self.sessions else 0
             self.sampled_log("upstream-reader", logging.WARNING, "udp-uot upstream reader ended session_id=%s error=%s", session_id, exc)
 
     async def dispatch_loop(self) -> None:
@@ -400,12 +432,13 @@ class Runtime:
                 leg_state = self.active_legs.get(leg_id)
                 if leg_state is not None:
                     if frame.msg_type == MSG_DATA:
-                        for item in self.merge.push(frame.session_id, frame.seq, frame.payload):
+                        session_key = build_session_key(leg_state.scope_key, frame.session_id)
+                        for item in self.merge.push(session_key, frame.seq, frame.payload, session_id=frame.session_id):
                             await self.emit_to_target(item, leg_state.claims)
                     elif frame.msg_type == MSG_CLOSE:
-                        await self.close_session(frame.session_id)
+                        await self.close_session(build_session_key(leg_state.scope_key, frame.session_id))
                     elif frame.msg_type == MSG_KEEPALIVE:
-                        session = self.sessions.get(frame.session_id)
+                        session = self.sessions.get(build_session_key(leg_state.scope_key, frame.session_id))
                         if session is not None:
                             session.last_seen_ms = int(time.time() * 1000)
 
@@ -419,7 +452,7 @@ class Runtime:
                     self.merge.skipped_gap_packets,
                 )
             for item in skipped:
-                claims = self.claims_for_session(item.session_id)
+                claims = self.claims_for_session(item.session_key)
                 if claims is None:
                     continue
                 await self.emit_to_target(item, claims)
@@ -429,8 +462,8 @@ class Runtime:
                 self.sampled_log("session-cleanup", logging.INFO, "udp-uot cleaned idle sessions=%s", removed)
             self.stats["reorder_buffer_bytes"] = self.merge.total_buffered_bytes()
 
-    def claims_for_session(self, session_id: int) -> dict[str, Any] | None:
-        session = self.sessions.get(session_id)
+    def claims_for_session(self, session_key: object) -> dict[str, Any] | None:
+        session = self.sessions.get(session_key)
         if session is not None:
             return {
                 "target_host": session.target_host,
@@ -438,19 +471,18 @@ class Runtime:
                 "target_protocol": "udp",
                 "forward_id": session.forward_id,
             }
-        for leg_state in self.active_legs.values():
-            return leg_state.claims
-        return None
+        scope_key = session_key[0] if isinstance(session_key, tuple) and len(session_key) > 0 else None
+        return self.scope_claims.get(scope_key)
 
     async def cleanup_idle_sessions(self, now_ms: int | None = None) -> int:
         now_ms = int(time.time() * 1000) if now_ms is None else now_ms
         stale = [
-            session_id
-            for session_id, session in self.sessions.items()
+            session_key
+            for session_key, session in self.sessions.items()
             if now_ms - session.last_seen_ms >= self.config.session_idle_timeout_ms
         ]
-        for session_id in stale:
-            await self.close_session(session_id)
+        for session_key in stale:
+            await self.close_session(session_key)
         return len(stale)
 
     async def stats_writer_loop(self) -> None:
@@ -473,7 +505,8 @@ class Runtime:
             token = first_frame.payload.decode("utf-8")
             claims = verify_session_token(token, self.config.token_secret, int(time.time()))
             self.validate_claims(claims, self.config.allowed_forward_ids)
-            leg_state = LegState(leg_id=leg_id, writer=writer, claims=claims)
+            scope_key = build_scope_key(claims, token)
+            leg_state = LegState(leg_id=leg_id, scope_key=scope_key, writer=writer, claims=claims)
             self._register_leg(leg_state)
             registered = True
             while True:
