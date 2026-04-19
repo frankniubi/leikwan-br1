@@ -651,6 +651,160 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             self.assertFalse((pathlib.Path(tmp_dir) / "leikwan-client-26-udp-uot.service").exists())
             self.assertFalse((pathlib.Path(tmp_dir) / "uot-bond-forward-26.json").exists())
 
+    def test_apply_forward_reapply_removes_stale_aux_unit_and_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = client_agent_module.ClientAgent(config_path)
+            forward = {
+                "forward_id": 26,
+                "listen_port": 11024,
+                "transport": "tcp+udp",
+                "mode": "bond",
+                "service_status": "active",
+                "endpoints": [{"endpoint_id": 184, "host": "8.163.90.132", "port": 7001}],
+                "bonding": {"ingress_mode": "plain_tcp_mux", "route_key": "a43547b6350f72cd"},
+            }
+
+            split_state = {"enabled": True}
+
+            def fake_render_forward_runtime(_forward_arg, _agent_config):
+                base = {
+                    "service_name": "leikwan-client-26",
+                    "service_path": str(pathlib.Path(tmp_dir) / "leikwan-client-26.service"),
+                    "service_unit": "[Unit]\nDescription=TCP\n",
+                    "start_script_path": str(pathlib.Path(tmp_dir) / "leikwan-client-start-26.sh"),
+                    "start_script": "#!/usr/bin/env bash\n",
+                    "files": [],
+                }
+                if not split_state["enabled"]:
+                    return base
+                base["extra_units"] = [
+                    {
+                        "service_name": "leikwan-client-26-udp-uot",
+                        "service_path": str(pathlib.Path(tmp_dir) / "leikwan-client-26-udp-uot.service"),
+                        "service_unit": "[Unit]\nDescription=UDP\n",
+                        "start_script_path": "",
+                        "start_script": "",
+                        "files": [
+                            {
+                                "path": str(pathlib.Path(tmp_dir) / "uot-bond-forward-26.json"),
+                                "content": "{\n  \"v\": 1\n}\n",
+                                "mode": 0o600,
+                            }
+                        ],
+                    }
+                ]
+                return base
+
+            with mock.patch.dict(sys.modules, {"install_forward_runtime": types.SimpleNamespace(render_forward_runtime=fake_render_forward_runtime)}):
+                with mock.patch.object(agent, "systemd_is_active", return_value=False):
+                    with mock.patch.object(agent, "delete_nft_rules"):
+                        with mock.patch.object(agent, "add_nft_rules"):
+                            with mock.patch.object(client_agent_module.subprocess, "run"):
+                                agent.apply_forward(forward)
+
+                self.assertTrue((pathlib.Path(tmp_dir) / "leikwan-client-26-udp-uot.service").exists())
+                self.assertTrue((pathlib.Path(tmp_dir) / "uot-bond-forward-26.json").exists())
+
+                split_state["enabled"] = False
+                with mock.patch.object(agent, "systemd_is_active", return_value=False):
+                    with mock.patch.object(agent, "delete_nft_rules"):
+                        with mock.patch.object(agent, "add_nft_rules"):
+                            with mock.patch.object(client_agent_module.subprocess, "run") as run_mock:
+                                agent.apply_forward(forward)
+
+                commands = [str(call.args[0]) for call in run_mock.call_args_list]
+                self.assertTrue(any("systemctl stop leikwan-client-26-udp-uot.service" in command for command in commands))
+                self.assertTrue(any("systemctl disable leikwan-client-26-udp-uot.service" in command for command in commands))
+                self.assertFalse((pathlib.Path(tmp_dir) / "leikwan-client-26-udp-uot.service").exists())
+                self.assertFalse((pathlib.Path(tmp_dir) / "uot-bond-forward-26.json").exists())
+                applied = json.loads((state_dir / "applied.json").read_text(encoding="utf-8"))
+                self.assertEqual(
+                    [item["service_name"] for item in applied["26"]["units"]],
+                    ["leikwan-client-26"],
+                )
+
+    def test_apply_forward_restarts_aux_unit_when_only_aux_config_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = client_agent_module.ClientAgent(config_path)
+            forward = {
+                "forward_id": 26,
+                "listen_port": 11024,
+                "transport": "tcp+udp",
+                "mode": "bond",
+                "service_status": "active",
+                "endpoints": [{"endpoint_id": 184, "host": "8.163.90.132", "port": 7001}],
+                "bonding": {"ingress_mode": "plain_tcp_mux", "route_key": "a43547b6350f72cd"},
+            }
+
+            aux_config_state = {"content": "{\n  \"session_token\": \"udp-token-v1\"\n}\n"}
+
+            def fake_render_forward_runtime(_forward_arg, _agent_config):
+                return {
+                    "service_name": "leikwan-client-26",
+                    "service_path": str(pathlib.Path(tmp_dir) / "leikwan-client-26.service"),
+                    "service_unit": "[Unit]\nDescription=TCP\n",
+                    "start_script_path": str(pathlib.Path(tmp_dir) / "leikwan-client-start-26.sh"),
+                    "start_script": "#!/usr/bin/env bash\n",
+                    "files": [],
+                    "extra_units": [
+                        {
+                            "service_name": "leikwan-client-26-udp-uot",
+                            "service_path": str(pathlib.Path(tmp_dir) / "leikwan-client-26-udp-uot.service"),
+                            "service_unit": "[Unit]\nDescription=UDP\n",
+                            "start_script_path": "",
+                            "start_script": "",
+                            "files": [
+                                {
+                                    "path": str(pathlib.Path(tmp_dir) / "uot-bond-forward-26.json"),
+                                    "content": aux_config_state["content"],
+                                    "mode": 0o600,
+                                }
+                            ],
+                        }
+                    ],
+                }
+
+            with mock.patch.dict(sys.modules, {"install_forward_runtime": types.SimpleNamespace(render_forward_runtime=fake_render_forward_runtime)}):
+                with mock.patch.object(agent, "systemd_is_active", return_value=False):
+                    with mock.patch.object(agent, "delete_nft_rules"):
+                        with mock.patch.object(agent, "add_nft_rules"):
+                            with mock.patch.object(client_agent_module.subprocess, "run"):
+                                agent.apply_forward(forward)
+
+                aux_config_state["content"] = "{\n  \"session_token\": \"udp-token-v2\"\n}\n"
+                with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                    with mock.patch.object(agent, "delete_nft_rules"):
+                        with mock.patch.object(agent, "add_nft_rules"):
+                            with mock.patch.object(client_agent_module.subprocess, "run") as run_mock:
+                                agent.apply_forward(forward)
+
+                commands = [str(call.args[0]) for call in run_mock.call_args_list]
+                self.assertTrue(any("systemctl restart leikwan-client-26-udp-uot.service" in command for command in commands))
+
     def test_apply_forward_uses_selected_bond_runtime_endpoints(self) -> None:
         captured = {}
 
