@@ -164,3 +164,60 @@ class SlaveUdpUotShadowRouteTests(unittest.TestCase):
         self.assertNotIn("a43547b6350f72cd.uot", route_keys)
         self.assertIsNone(agent.load_service_metadata(shadow_name))
         self.assertFalse(agent.service_unit_path(shadow_name).exists())
+
+    def test_reconcile_runtime_preserves_valid_base_shadow_pair(self) -> None:
+        agent = self.make_agent()
+        task = {"service_id": 1, "forward_id": 26, "endpoint_id": 184}
+        payload = {
+            "listen_port": 7001,
+            "target": "138.252.162.120:9000",
+            "path_prefix": "a43547b6350f72cd",
+            "route_key": "a43547b6350f72cd",
+            "transport_mode": "tcp+udp",
+            "ingress_protocol": "plain_tcp_mux",
+            "ingress_auth_token": "token-123",
+            "backend_protocol": "tcp_relay",
+            "filter_profile": "off",
+        }
+        self.publish_with_mocks(agent, task, payload)
+
+        with mock.patch.object(agent, "ensure_nft_table"):
+            with mock.patch.object(agent, "delete_nft_rules"):
+                with mock.patch.object(agent, "add_nft_rules"):
+                    agent.reconcile_runtime()
+
+        base_name = "wstunnel-svc-1-184"
+        shadow_name = "wstunnel-svc-1-184-udp-uot"
+        self.assertIsNotNone(agent.load_service_metadata(base_name))
+        self.assertIsNotNone(agent.load_service_metadata(shadow_name))
+        route_keys = [item["route_key"] for item in agent.listener_routes(7001)]
+        self.assertIn("a43547b6350f72cd", route_keys)
+        self.assertIn("a43547b6350f72cd.uot", route_keys)
+
+    def test_republish_non_shadow_eligible_removes_shadow_metadata_and_route(self) -> None:
+        agent = self.make_agent()
+        task = {"service_id": 1, "forward_id": 26, "endpoint_id": 184}
+        payload_shadow = {
+            "listen_port": 7001,
+            "target": "138.252.162.120:9000",
+            "path_prefix": "a43547b6350f72cd",
+            "route_key": "a43547b6350f72cd",
+            "transport_mode": "tcp+udp",
+            "ingress_protocol": "plain_tcp_mux",
+            "ingress_auth_token": "token-123",
+            "backend_protocol": "tcp_relay",
+            "filter_profile": "off",
+        }
+        payload_plain_tcp = dict(payload_shadow)
+        payload_plain_tcp["transport_mode"] = "tcp"
+        payload_plain_tcp["target"] = "138.252.162.120:9010"
+
+        self.publish_with_mocks(agent, task, payload_shadow)
+        self.publish_with_mocks(agent, task, payload_plain_tcp)
+
+        shadow_name = "wstunnel-svc-1-184-udp-uot"
+        self.assertIsNone(agent.load_service_metadata(shadow_name))
+        self.assertFalse(agent.service_unit_path(shadow_name).exists())
+        route_keys = [item["route_key"] for item in agent.listener_routes(7001)]
+        self.assertIn("a43547b6350f72cd", route_keys)
+        self.assertNotIn("a43547b6350f72cd.uot", route_keys)
