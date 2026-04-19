@@ -145,6 +145,60 @@ class UdpUotMergeRuntimeTests(unittest.TestCase):
             merge_runtime.build_session_key(scope_b, 9),
         )
 
+    def test_runtime_scope_uses_token_fingerprint_for_identical_route_claims(self) -> None:
+        claims = {
+            "target_host": "193.227.109.82",
+            "target_port": 5201,
+            "target_protocol": "udp",
+            "forward_id": 26,
+        }
+        token_a = merge_runtime.build_test_token(
+            {
+                **claims,
+                "expires_at": int(time.time()) + 60,
+                "nonce": "token-a",
+            },
+            "secret-123",
+        )
+        token_b = merge_runtime.build_test_token(
+            {
+                **claims,
+                "expires_at": int(time.time()) + 60,
+                "nonce": "token-b",
+            },
+            "secret-123",
+        )
+        scope_a = merge_runtime.build_scope_key(claims, token_a)
+        scope_b = merge_runtime.build_scope_key(claims, token_b)
+        self.assertNotEqual(scope_a, scope_b)
+        self.assertNotEqual(
+            merge_runtime.build_session_key(scope_a, 9),
+            merge_runtime.build_session_key(scope_b, 9),
+        )
+
+        config = merge_runtime.RuntimeConfig(
+            listen_host="127.0.0.1",
+            listen_port=8999,
+            token_secret="secret-123",
+            allowed_forward_ids=[26],
+            reorder_window_packets=8,
+            reorder_window_bytes=4096,
+            reorder_timeout_ms=25,
+            stats_path="NUL",
+        )
+        runtime = merge_runtime.Runtime(config)
+        runtime._register_leg(
+            merge_runtime.LegState(leg_id=1, scope_key=scope_a, writer=mock.Mock(), claims=dict(claims))
+        )
+        runtime._register_leg(
+            merge_runtime.LegState(leg_id=2, scope_key=scope_b, writer=mock.Mock(), claims=dict(claims))
+        )
+
+        self.assertEqual(runtime.pick_leg(scope_a).leg_id, 1)
+        self.assertEqual(runtime.pick_leg(scope_a).leg_id, 1)
+        self.assertEqual(runtime.pick_leg(scope_b).leg_id, 2)
+        self.assertEqual(runtime.pick_leg(scope_b).leg_id, 2)
+
     def test_cleanup_idle_sessions_removes_scoped_sessions(self) -> None:
         class CompletedTask:
             def cancel(self) -> None:
