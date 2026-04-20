@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.04.18.1"
+AGENT_VERSION = "2026.04.19.1"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -183,6 +183,16 @@ class SidecarAgent:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    def load_bond_leg_reputation_snapshot(self) -> dict | None:
+        path = self.state_dir / "bond-leg-health.json"
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def save_pull_state(self, payload: dict) -> None:
         self.pull_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -314,11 +324,23 @@ class SidecarAgent:
     def apply_config_patch(self, patch: dict) -> None:
         changed = False
         for key in ("service_name", "runtime_config_path", "state_dir"):
+            if key not in patch:
+                continue
             value = str(patch.get(key, "") or "").strip()
             if value == "":
                 continue
             if str(self.config.get(key, "") or "") != value:
                 self.config[key] = value
+                changed = True
+
+        if "udp_uot_sidepath" in patch:
+            sidepath = patch.get("udp_uot_sidepath")
+            if sidepath is None:
+                if "udp_uot_sidepath" in self.config:
+                    self.config.pop("udp_uot_sidepath", None)
+                    changed = True
+            elif isinstance(sidepath, dict) and self.config.get("udp_uot_sidepath") != sidepath:
+                self.config["udp_uot_sidepath"] = sidepath
                 changed = True
 
         if changed:
@@ -357,6 +379,81 @@ class SidecarAgent:
 
     def udp_uot_start_script_path(self) -> pathlib.Path:
         return self.state_dir / "start-sidecar-udp-uot.sh"
+
+    def cf_service_name(self, listen_port: int) -> str:
+        return self.service_name() + f"-cf-{listen_port}"
+
+    def cf_routes_path(self, listen_port: int) -> pathlib.Path:
+        return self.state_dir / f"cf-routes-{listen_port}.json"
+
+    def cf_managed_metadata_path(self) -> pathlib.Path:
+        return self.state_dir / "cf-managed.json"
+
+    def load_managed_cf_metadata(self) -> list[dict[str, Any]]:
+        path = self.cf_managed_metadata_path()
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return []
+        return payload if isinstance(payload, list) else []
+
+    def save_managed_cf_metadata(self, payload: list[dict[str, Any]]) -> None:
+        self.cf_managed_metadata_path().write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def cf_uot_service_name(self, forward_id: int) -> str:
+        return self.service_name() + f"-cf-uot-{forward_id}"
+
+    def cf_uot_runtime_config_path(self, forward_id: int) -> pathlib.Path:
+        return self.state_dir / f"cf-uot-{forward_id}.json"
+
+    def cf_uot_start_script_path(self, forward_id: int) -> pathlib.Path:
+        return self.state_dir / f"start-cf-uot-{forward_id}.sh"
+
+    def allocate_cf_backend_port(self, service_name: str) -> int:
+        used = {
+            int(item["backend_port"])
+            for item in self.load_managed_cf_metadata()
+            if int(item.get("backend_port", 0) or 0) > 0 and str(item.get("service_name", "")) != service_name
+        }
+        for port in range(26000, 26100):
+            if port not in used:
+                return port
+        raise RuntimeError("no free sidecar cf backend port available")
+
+    def render_cf_backend_unit(self, service_name: str, backend_port: int, target: str, path_prefix: str) -> str:
+        return f"""[Unit]
+Description=Leikwan CF Backend {service_name}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wstunnel server ws://127.0.0.1:{backend_port} \
+  --restrict-to {target} \
+  --restrict-http-upgrade-path-prefix {path_prefix} \
+  --websocket-ping-frequency-sec 5
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    def render_cf_mux_unit(self, listen_port: int, tls_cert_path: str, tls_key_path: str, routes_path: pathlib.Path) -> str:
+        return f"""[Unit]
+Description=Leikwan CF WSS Mux {listen_port}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/leikwan-wss-mux.py --listen-port {listen_port} --tls-cert {tls_cert_path} --tls-key {tls_key_path} --routes-file {routes_path}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
 
     @staticmethod
     def bond_binary_path() -> pathlib.Path:
@@ -464,7 +561,7 @@ class SidecarAgent:
                 update_state["last_failed_at"] = now
                 self.save_update_state(update_state)
                 raise
-            return
+            break
 
         bond_runtime = management.get("bond_runtime") if isinstance(management.get("bond_runtime"), dict) else None
         mptcp_runtime = management.get("mptcp_runtime") if isinstance(management.get("mptcp_runtime"), dict) else None
@@ -480,13 +577,75 @@ class SidecarAgent:
         primary_unit_path = self.service_unit_path()
         primary_runtime_path = self.runtime_config_path()
         primary_start_script = self.state_dir / "start-sidecar.sh"
+        point_id = 0
+        service_name_suffix = primary_service_name.rsplit("-", 1)[-1]
+        if service_name_suffix.isdigit():
+            point_id = int(service_name_suffix)
 
         secondary_service_name = self.mptcp_service_name()
         secondary_unit_path = self.unit_path_for(secondary_service_name)
         secondary_runtime_path = self.mptcp_runtime_config_path()
         secondary_start_script = self.mptcp_start_script_path()
 
+        cf_runtime = management.get("cf_runtime") if isinstance(management.get("cf_runtime"), dict) else None
+        if cf_runtime is not None:
+            listen_port = int(cf_runtime.get("listen_port", 0) or 0)
+            routes = cf_runtime.get("routes", [])
+            cf_service_name = self.cf_service_name(listen_port)
+            cf_unit_path = self.unit_path_for(cf_service_name)
+            cf_routes_path = self.cf_routes_path(listen_port)
+            if listen_port <= 0 or not isinstance(routes, list) or routes == []:
+                self.disable_runtime(cf_service_name, cf_unit_path, runtime_config_path=cf_routes_path)
+                self.save_managed_cf_metadata([])
+            else:
+                rendered_routes: list[dict[str, Any]] = []
+                for route in routes:
+                    if not isinstance(route, dict):
+                        continue
+                    service_name = str(route.get("service_name", "") or "").strip()
+                    path_prefix = str(route.get("path_prefix", "") or "").strip()
+                    target = str(route.get("target", "") or "").strip()
+                    if service_name == "" or path_prefix == "" or target == "":
+                        continue
+                    backend_port = self.allocate_cf_backend_port(service_name)
+                    preview_path = self.state_dir / f"{service_name}.service.preview"
+                    preview_path.write_text(
+                        self.render_cf_backend_unit(service_name, backend_port, target, path_prefix),
+                        encoding="utf-8",
+                    )
+                    rendered_routes.append(
+                        {
+                            "forward_id": int(route.get("forward_id", 0) or 0),
+                            "service_name": service_name,
+                            "path_prefix": path_prefix,
+                            "target": target,
+                            "backend_port": backend_port,
+                            "transport_mode": str(route.get("transport_mode", "tcp") or "tcp"),
+                            "shadow_route_key": str(route.get("shadow_route_key", "") or ""),
+                        }
+                    )
+                self.save_managed_cf_metadata(rendered_routes)
+                cf_routes_path.write_text(json.dumps({"routes": rendered_routes}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                unit_body = self.render_cf_mux_unit(
+                    listen_port,
+                    str(cf_runtime.get("tls_cert_path", "") or ""),
+                    str(cf_runtime.get("tls_key_path", "") or ""),
+                    cf_routes_path,
+                )
+                unit_changed = write_text_if_changed(cf_unit_path, unit_body)
+                if unit_changed:
+                    subprocess.run("systemctl daemon-reload", shell=True, check=False)
+                if unit_changed or not self.systemd_is_active(cf_service_name):
+                    subprocess.run(f"systemctl enable {cf_service_name}.service", shell=True, check=False)
+                    subprocess.run(f"systemctl restart {cf_service_name}.service", shell=True, check=False)
+
         if bond_runtime is not None:
+            bond_forward_ids = [
+                int(value)
+                for value in bond_runtime.get("forward_ids", [])
+                if str(value).strip().isdigit()
+            ] if isinstance(bond_runtime.get("forward_ids", []), list) else []
+            runtime_forward_id = bond_forward_ids[0] if len(bond_forward_ids) == 1 else 0
             runtime_config = {
                 "listen_host": str(bond_runtime.get("bind_host", "0.0.0.0") or "0.0.0.0"),
                 "listen_port": int(bond_runtime.get("listen_port", 0) or 0),
@@ -499,6 +658,11 @@ class SidecarAgent:
             start_script_lines = [
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
+                "export LEIKWAN_BOND_OBSERVER_TYPE='sidecar'",
+                f"export LEIKWAN_BOND_OBSERVER_ID='{point_id}'",
+                f"export LEIKWAN_BOND_FORWARD_ID='{runtime_forward_id}'",
+                f"export LEIKWAN_BOND_STATE_DIR='{self.state_dir}'",
+                f"export LEIKWAN_BOND_SNAPSHOT_PATH='{self.state_dir / 'bond-leg-health.json'}'",
                 f'BOND_SERVER="{self.bond_binary_path()}"',
                 f'LISTEN="{runtime_config["listen_host"]}:{runtime_config["listen_port"]}"',
                 f'TOKEN_SECRET="{runtime_config["token_secret"]}"',
@@ -531,23 +695,38 @@ WantedBy=multi-user.target
         sidepath = self.config.get("udp_uot_sidepath", {})
         if not isinstance(sidepath, dict):
             sidepath = {}
-        enabled_forward_ids = [
+        enabled_forward_ids = {
             int(value)
             for value in sidepath.get("enabled_forward_ids", [])
             if str(value).strip().isdigit()
-        ]
+        }
+        if cf_runtime is not None and isinstance(cf_runtime.get("routes"), list):
+            for route in cf_runtime.get("routes", []):
+                if not isinstance(route, dict):
+                    continue
+                if "udp" not in str(route.get("transport_mode", "") or "").lower():
+                    continue
+                enabled_forward_ids.add(int(route.get("forward_id", 0) or 0))
 
         udp_service_name = self.udp_uot_service_name()
         udp_unit_path = self.unit_path_for(udp_service_name)
         udp_runtime_path = self.udp_uot_runtime_config_path()
         udp_start_script = self.udp_uot_start_script_path()
 
-        if bond_runtime is not None and enabled_forward_ids:
+        if (bond_runtime is not None or cf_runtime is not None) and enabled_forward_ids:
+            udp_bind_host = "0.0.0.0"
+            udp_token_secret = ""
+            if bond_runtime is not None:
+                udp_bind_host = str(bond_runtime.get("bind_host", "0.0.0.0") or "0.0.0.0")
+                udp_token_secret = str(bond_runtime.get("token_secret", "") or "")
+            elif cf_runtime is not None:
+                udp_bind_host = str(cf_runtime.get("listen_host", "0.0.0.0") or "0.0.0.0")
+                udp_token_secret = str(management.get("token_secret", "") or "")
             runtime_config = {
-                "listen_host": str(bond_runtime.get("bind_host", "0.0.0.0") or "0.0.0.0"),
+                "listen_host": udp_bind_host,
                 "listen_port": int(sidepath.get("sidecar_port", 8999) or 8999),
-                "token_secret": str(bond_runtime.get("token_secret", "") or ""),
-                "allowed_forward_ids": enabled_forward_ids,
+                "token_secret": udp_token_secret,
+                "allowed_forward_ids": sorted(enabled_forward_ids),
                 "reorder_window_packets": int(sidepath.get("reorder_window_packets", 4096) or 4096),
                 "reorder_window_bytes": int(sidepath.get("reorder_window_bytes", 16777216) or 16777216),
                 "reorder_timeout_ms": int(sidepath.get("reorder_timeout_ms", 25) or 25),
@@ -670,6 +849,9 @@ WantedBy=multi-user.target
             "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
             "clock_sync": local_clock,
         }
+        bond_leg_reputation = self.load_bond_leg_reputation_snapshot()
+        if bond_leg_reputation is not None:
+            payload["bond_leg_reputation"] = bond_leg_reputation
         response, response_headers = http_json_with_headers("POST", f"{master}/api/sidecar/heartbeat", token, payload)
         management = response.get("management", {})
         if not isinstance(management, dict):

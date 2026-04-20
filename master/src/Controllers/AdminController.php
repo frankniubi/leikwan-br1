@@ -1667,6 +1667,41 @@ final class AdminController extends BaseController
             $cfOptions .= '<option value="' . (int) ($group['id'] ?? 0) . '"' . $selected . '>' . $this->escape((string) ($group['name'] ?? '')) . ' [' . $this->escape((string) ($group['region_code'] ?? '')) . ']</option>';
         }
 
+        $latestHeartbeats = $this->db->fetchAll(
+            'SELECT nh.node_id, nh.payload_json, n.name AS node_name
+             FROM node_heartbeats nh
+             INNER JOIN nodes n ON n.id = nh.node_id
+             INNER JOIN (
+                 SELECT node_id, MAX(id) AS max_id
+                 FROM node_heartbeats
+                 GROUP BY node_id
+             ) latest ON latest.max_id = nh.id
+             ORDER BY n.name ASC'
+        );
+        $cfStatsRows = '';
+        foreach ($latestHeartbeats as $heartbeat) {
+            $payload = is_string($heartbeat['payload_json'] ?? null) ? json_decode((string) $heartbeat['payload_json'], true) : [];
+            if (!is_array($payload)) {
+                continue;
+            }
+            foreach (($payload['cf_location_stats'] ?? []) as $stat) {
+                if (!is_array($stat)) {
+                    continue;
+                }
+                $cfStatsRows .= '<tr>
+                    <td>' . $this->escape((string) ($heartbeat['node_name'] ?? '')) . '</td>
+                    <td>' . (int) ($stat['location_group_id'] ?? 0) . '</td>
+                    <td>' . $this->escape((string) ($stat['selected_ip'] ?? '')) . '</td>
+                    <td>' . $this->escape((string) ($stat['last_latency_ms'] ?? '')) . '</td>
+                    <td>' . $this->escape((string) ($stat['last_jitter_ms'] ?? '')) . '</td>
+                    <td>' . $this->escape((string) ($stat['last_probe_at'] ?? '')) . '</td>
+                </tr>';
+            }
+        }
+        if ($cfStatsRows === '') {
+            $cfStatsRows = '<tr><td colspan="6" class="muted">No slave has reported CF location stats yet.</td></tr>';
+        }
+
         $rows = '';
         foreach ($combinations as $combination) {
             $rows .= '<tr>
@@ -1731,6 +1766,13 @@ final class AdminController extends BaseController
                   <table>
                     <thead><tr><th>ID</th><th>Tenant Label</th><th>Description</th><th>Badge</th><th>Backend</th><th>Mode</th><th>Slave Group</th><th>Sidecar</th><th>CF Group</th><th>Status</th><th>Actions</th></tr></thead>
                     <tbody>' . $rows . '</tbody>
+                  </table>
+                </div>
+                <h3 style="margin-top:18px;">Current Best CF IP</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Node</th><th>Location Group</th><th>Current Best CF IP</th><th>last_latency_ms</th><th>last_jitter_ms</th><th>Last Probe</th></tr></thead>
+                    <tbody>' . $cfStatsRows . '</tbody>
                   </table>
                 </div>
               </section>

@@ -58,6 +58,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('install/uninstall-bond-sidecar.sh');
     }
 
+    public function sidecarAgentUpdate(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/sidecar-agent-update.sh');
+    }
+
     public function uninstallClient(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/uninstall-client.sh');
@@ -123,9 +128,24 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('client-agent/leikwan_uot.py', 'text/x-python; charset=utf-8');
     }
 
+    public function uotBondRuntime(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('client-agent/leikwan_uot_bond.py', 'text/x-python; charset=utf-8');
+    }
+
     public function mptcpSidecarRuntime(Request $request, array $params): Response
     {
         return $this->serveRepoFile('sidecar-agent/leikwan_mptcp_sidecar.py', 'text/x-python; charset=utf-8');
+    }
+
+    public function udpUotMergeRuntime(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('sidecar-agent/leikwan_udp_uot_merge.py', 'text/x-python; charset=utf-8');
+    }
+
+    public function wssMuxRuntime(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('sidecar-agent/leikwan_wss_mux.py', 'text/x-python; charset=utf-8');
     }
 
     public function clientRateLimitHelper(Request $request, array $params): Response
@@ -136,6 +156,11 @@ final class ArtifactController extends BaseController
     public function installClientAgent(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/install-client-agent.sh');
+    }
+
+    public function clientAgentUpdate(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/client-agent-update.sh');
     }
 
     public function uninstallClientAgent(Request $request, array $params): Response
@@ -156,21 +181,6 @@ final class ArtifactController extends BaseController
     public function legacyClient(Request $request, array $params): Response
     {
         return $this->serveRepoFile('client.sh');
-    }
-
-    public function remoteInstallSlave(Request $request, array $params): Response
-    {
-        return $this->serveRepoFile('install/remote-install-slave.sh');
-    }
-
-    public function remoteInstallClient(Request $request, array $params): Response
-    {
-        return $this->serveRepoFile('install/remote-install-client.sh');
-    }
-
-    public function remoteInstallClientAgent(Request $request, array $params): Response
-    {
-        return $this->serveRepoFile('install/remote-install-client-agent.sh');
     }
 
     public function wstunnelPackage(Request $request, array $params): Response
@@ -220,6 +230,7 @@ final class ArtifactController extends BaseController
             'manifest' => $this->manifestFor(
                 'sidecar_agent',
                 'mptcp_sidecar_runtime',
+                'udp_uot_merge_runtime',
                 'bond_sidecar_installer',
                 'bond_sidecar_uninstaller'
             ),
@@ -240,8 +251,10 @@ final class ArtifactController extends BaseController
                 'client_agent_installer',
                 'mptcp_client_runtime',
                 'uot_runtime',
+                'uot_bond_runtime',
                 'sidecar_agent',
                 'mptcp_sidecar_runtime',
+                'udp_uot_merge_runtime',
                 'android_client_apk',
                 'windows_client_app',
                 'legacy_client',
