@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import email.utils
 import html
+import ipaddress
 import json
 import logging
 import os
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.04.17.2"
+AGENT_VERSION = "2026.04.19.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -829,6 +830,106 @@ class SlaveAgent:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    def cf_location_state_path(self) -> Path:
+        return self.state_dir / "cf-location-best-ip.json"
+
+    def load_cf_location_state(self) -> dict[str, Any]:
+        path = self.cf_location_state_path()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def save_cf_location_state(self, payload: dict[str, Any]) -> None:
+        self.write_json(self.cf_location_state_path(), payload)
+
+    @staticmethod
+    def tcp_ping(host: str, port: int, timeout: float = 1.0) -> float | None:
+        started = time.time()
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return round((time.time() - started) * 1000, 1)
+        except Exception:
+            return None
+
+    def expand_cf_candidates(self, cidrs: list[str], max_candidates: int) -> list[str]:
+        candidates: list[str] = []
+        for raw in cidrs:
+            value = str(raw or "").strip()
+            if value == "":
+                continue
+            try:
+                network = ipaddress.ip_network(value, strict=False)
+            except ValueError:
+                continue
+            if network.version != 4:
+                continue
+            if network.prefixlen == 32:
+                ip = str(network.network_address)
+                if ip not in candidates:
+                    candidates.append(ip)
+            else:
+                for host in network.hosts():
+                    ip = str(host)
+                    if ip not in candidates:
+                        candidates.append(ip)
+                    if len(candidates) >= max_candidates:
+                        return candidates
+            if len(candidates) >= max_candidates:
+                break
+        return candidates[:max_candidates]
+
+    def probe_cf_candidates(self, candidates: list[str], port: int, probe_mode: str) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        normalized_mode = str(probe_mode or "auto").strip().lower()
+        for ip in candidates:
+            latency_ms = self.tcp_ping(ip, port)
+            if latency_ms is None and normalized_mode == "icmp":
+                latency_ms = self.tcp_ping(ip, port)
+            if latency_ms is None:
+                continue
+            results.append(
+                {
+                    "ip": ip,
+                    "latency_ms": latency_ms,
+                    "jitter_ms": 0.0,
+                    "failures": 0,
+                }
+            )
+        if results == []:
+            raise RuntimeError("no reachable CF candidates")
+        results.sort(key=lambda item: (item["latency_ms"], item["jitter_ms"], item["failures"]))
+        return results
+
+    def select_cf_location_ip(self, cf_mode: dict[str, Any]) -> dict[str, Any]:
+        group_id = int(cf_mode.get("location_group_id", 0) or 0)
+        state = self.load_cf_location_state()
+        cache_key = str(group_id)
+        cached = state.get(cache_key, {}) if isinstance(state.get(cache_key), dict) else {}
+        now = time.time()
+        ttl = max(30, int(cf_mode.get("cache_ttl_seconds", 120) or 120))
+        if cached and (now - float(cached.get("last_probe_at", 0) or 0)) < ttl and str(cached.get("selected_ip", "")) != "":
+            return cached
+
+        candidates = self.expand_cf_candidates(list(cf_mode.get("cidrs", [])), int(cf_mode.get("max_candidates", 32) or 32))
+        results = self.probe_cf_candidates(candidates, int(cf_mode.get("dial_port", 443) or 443), str(cf_mode.get("probe_mode", "auto") or "auto"))
+        best = sorted(results, key=lambda item: (item["latency_ms"], item["jitter_ms"], item["failures"]))[0]
+        state[cache_key] = {
+            "location_group_id": group_id,
+            "selected_ip": best["ip"],
+            "last_latency_ms": best["latency_ms"],
+            "last_jitter_ms": best["jitter_ms"],
+            "last_probe_at": now,
+            "backup_ips": [item["ip"] for item in results[1:4]],
+            "consecutive_failures": 0,
+            "cooldown_until": 0,
+        }
+        self.save_cf_location_state(state)
+        return state[cache_key]
+
     def save_pull_state(self, payload: dict[str, Any]) -> None:
         existing = self.load_pull_state()
         existing.update(payload)
@@ -1044,6 +1145,7 @@ class SlaveAgent:
             "agent_version": AGENT_VERSION,
             "clock_sync": local_clock,
         }
+        payload["cf_location_stats"] = list(self.load_cf_location_state().values())
         _, response_headers = http_json_with_headers("POST", build_url(self.config["master_url"], "/api/node/heartbeat"), self.config["node_token"], payload)
         now = time.time()
         self.save_pull_state(
@@ -1497,6 +1599,7 @@ class SlaveAgent:
             "heartbeat_interval_seconds",
             "usage_interval_seconds",
             "log_level",
+            "udp_uot_sidepath",
         }
         changed = False
         changed_keys: set[str] = set()
@@ -1711,6 +1814,10 @@ class SlaveAgent:
         backend_protocol = str(payload.get("backend_protocol", "wss_backend") or "wss_backend").strip() or "wss_backend"
         ingress_auth_token = str(payload.get("ingress_auth_token", "") or "").strip()
         relay_protocols = [str(item).strip().lower() for item in payload.get("leg_relay_protocols", []) if str(item).strip() != ""]
+        backend_mode = str(payload.get("backend_mode", "current_mode") or "current_mode").strip()
+        cf_mode = payload.get("cf_mode", {})
+        if not isinstance(cf_mode, dict):
+            cf_mode = {}
         mptcp_underlay = payload.get("mptcp_underlay", {})
         if not isinstance(mptcp_underlay, dict):
             mptcp_underlay = {}
@@ -1768,7 +1875,20 @@ class SlaveAgent:
         if backend_port <= 0:
             backend_port = self.allocate_backend_port(service_name)
 
-        if ingress_protocol == "plain_tcp_mux" or backend_protocol == "tcp_relay":
+        if backend_mode == "cf_mode" and cf_mode != {}:
+            selection = self.select_cf_location_ip(cf_mode)
+            selected_ip = str(selection["selected_ip"])
+            unit_body = self.render_cf_wss_backend_unit(
+                service_name=service_name,
+                backend_port=backend_port,
+                target=target,
+                selected_ip=selected_ip,
+                remote_port=int(cf_mode.get("dial_port", 443) or 443),
+                sni_host=str(cf_mode.get("sni_host", "") or ""),
+                path_prefix=str(cf_mode.get("path_prefix", path_prefix) or path_prefix),
+                transport_mode="tcp" if "udp" in transport_mode.lower() and "tcp" in transport_mode.lower() else transport_mode,
+            )
+        elif ingress_protocol == "plain_tcp_mux" or backend_protocol == "tcp_relay":
             unit_body = self.render_plain_tcp_backend_unit(service_name, backend_port, target)
         else:
             unit_body = self.render_backend_unit(service_name, backend_port, target, path_prefix)
@@ -1819,6 +1939,9 @@ class SlaveAgent:
             "target": target,
             "path_prefix": path_prefix,
             "route_key": route_key,
+            "backend_mode": backend_mode,
+            "cf_mode": cf_mode,
+            "selected_cf_ip": selection["selected_ip"] if backend_mode == "cf_mode" and cf_mode != {} else "",
             "ingress_protocol": ingress_protocol,
             "backend_protocol": backend_protocol,
             "ingress_auth_token": ingress_auth_token,
@@ -1834,7 +1957,35 @@ class SlaveAgent:
         }
         self.write_json(metadata_path, metadata)
 
-        if self.udp_uot_sidepath_enabled(task, payload):
+        if backend_mode == "cf_mode" and cf_mode != {} and "udp" in transport_mode.lower():
+            shadow_service = udp_uot_shadow_service_name(service_name)
+            shadow_backend_port = self.allocate_backend_port(shadow_service)
+            shadow_route_key = route_key + ".uot"
+            shadow_metadata = dict(metadata)
+            shadow_metadata.update(
+                {
+                    "service_name": shadow_service,
+                    "unit_path": str(self.service_unit_path(shadow_service)),
+                    "backend_port": shadow_backend_port,
+                    "path_prefix": shadow_route_key,
+                    "route_key": shadow_route_key,
+                    "transport_mode": "tcp",
+                }
+            )
+            shadow_unit = self.render_cf_wss_backend_unit(
+                service_name=shadow_service,
+                backend_port=shadow_backend_port,
+                target="127.0.0.1:8999",
+                selected_ip=str(selection["selected_ip"]),
+                remote_port=int(cf_mode.get("dial_port", 443) or 443),
+                sni_host=str(cf_mode.get("sni_host", "") or ""),
+                path_prefix=shadow_route_key,
+                transport_mode="tcp",
+            )
+            shadow_unit_changed = self.write_text_if_changed(self.service_unit_path(shadow_service), shadow_unit)
+            self.ensure_backend_service(shadow_service, shadow_unit_changed)
+            self.save_service_metadata(shadow_service, shadow_metadata)
+        elif self.udp_uot_sidepath_enabled(task, payload):
             settings = self.udp_uot_sidepath_settings()
             shadow_service = udp_uot_shadow_service_name(service_name)
             shadow_backend_port = self.allocate_backend_port(shadow_service)
@@ -2428,6 +2579,37 @@ After=network.target
 [Service]
 Type=simple
 ExecStart={ingress_bin} backend --listen 127.0.0.1:{backend_port} --target {shell_arg(target)}
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    def render_cf_wss_backend_unit(
+        self,
+        service_name: str,
+        backend_port: int,
+        target: str,
+        selected_ip: str,
+        remote_port: int,
+        sni_host: str,
+        path_prefix: str,
+        transport_mode: str,
+    ) -> str:
+        local_proto = "udp" if str(transport_mode).strip().lower() == "udp" else "tcp"
+        return f"""[Unit]
+Description=Leikwan CF WSS Backend {service_name}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={self.config['wstunnel_bin']} client -L {local_proto}://127.0.0.1:{backend_port}:{target} \
+  --tls-sni-override {sni_host} \
+  --http-headers "Host: {sni_host}" \
+  --http-upgrade-path-prefix "{path_prefix}" \
+  wss://{selected_ip}:{remote_port}
 Restart=always
 RestartSec=3
 LimitNOFILE=1048576

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+INSTALLER_VERSION="2026.04.19.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 AGENT_TOKEN=""
@@ -109,6 +110,21 @@ install_wireguard_tools() {
   fi
 }
 
+ensure_time_sync() {
+  if command -v timedatectl >/dev/null 2>&1; then
+    if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qi '^yes$'; then
+      return 0
+    fi
+  fi
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y ntp
+    systemctl enable ntp.service >/dev/null 2>&1 || systemctl enable ntpd.service >/dev/null 2>&1 || true
+    systemctl restart ntp.service >/dev/null 2>&1 || systemctl restart ntpd.service >/dev/null 2>&1 || true
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --master) MASTER_URL="$2"; shift 2 ;;
@@ -140,6 +156,7 @@ if [[ "$SKIP_MPTCP_CHECK" != "1" ]]; then
     exit 1
   }
 fi
+ensure_time_sync
 install_wireguard_tools
 
 mkdir -p "$CONFIG_DIR" "$BIN_DIR"
@@ -151,9 +168,27 @@ download() {
   chmod 0755 "$path"
 }
 
-download "$ARTIFACT_BASE/artifacts/sidecar-agent.py" "$BIN_DIR/leikwan-sidecar-agent.py"
-download "$ARTIFACT_BASE/artifacts/leikwan-mptcp-sidecar.py" "$BIN_DIR/leikwan-mptcp-sidecar.py"
-download "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
+download_atomic() {
+  local url="$1"
+  local path="$2"
+  local tmp_path="${path}.new"
+  curl -fsSL "$url" -o "$tmp_path"
+  chmod 0755 "$tmp_path"
+  mv "$tmp_path" "$path"
+}
+
+download_atomic "$ARTIFACT_BASE/artifacts/sidecar-agent.py" "$BIN_DIR/leikwan-sidecar-agent.py"
+if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
+  download_atomic "$ARTIFACT_BASE/artifacts/sidecar-agent-update.sh" "$BIN_DIR/leikwan-sidecar-update"
+fi
+download_atomic "$ARTIFACT_BASE/artifacts/leikwan-mptcp-sidecar.py" "$BIN_DIR/leikwan-mptcp-sidecar.py"
+download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
+download_atomic "$ARTIFACT_BASE/artifacts/leikwan-udp-uot-merge.py" "$BIN_DIR/leikwan-udp-uot-merge.py"
+download_atomic "$ARTIFACT_BASE/artifacts/leikwan-wss-mux.py" "$BIN_DIR/leikwan-wss-mux.py"
+download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
+curl -fsSL "https://github.com/erebe/wstunnel/releases/download/v10.5.2/wstunnel_10.5.2_linux_amd64.tar.gz" -o /tmp/wstunnel.tar.gz
+tar -xzf /tmp/wstunnel.tar.gz -C /tmp
+mv /tmp/wstunnel "$BIN_DIR/wstunnel"
 
 # --- WireGuard watchdog ---
 download "$ARTIFACT_BASE/artifacts/leikwan-wg-watchdog.sh" "$BIN_DIR/leikwan-wg-watchdog.sh"
@@ -189,7 +224,8 @@ cat > "$CONFIG_DIR/config.json" <<JSON
   "runtime_bin": "$BIN_DIR/leikwan-mptcp-sidecar.py",
   "runtime_config_path": "$CONFIG_DIR/runtime.json",
   "state_dir": "/var/lib/leikwan-sidecar",
-  "log_level": "INFO"
+  "log_level": "INFO",
+  "installer_version": "$INSTALLER_VERSION"
 }
 JSON
 

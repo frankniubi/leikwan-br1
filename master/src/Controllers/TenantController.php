@@ -1392,6 +1392,7 @@ final class TenantController extends BaseController
             $rows .= '<tr>
                 <td>' . (int) $forward['id'] . '</td>
                 <td>' . (int) $forward['listen_port'] . '</td>
+                <td>' . $this->escape((string) ($forward['forward_combination_name'] ?? '')) . '</td>
                 <td>' . $targetCell . '</td>
                 <td>' . $this->escape((string) ($forward['line_client_name'] ?? '')) . '</td>
                 <td>' . $this->escape(implode(', ', array_map(static fn(array $group): string => (string) $group['name'], $forward['line_client_groups'] ?? []))) . '</td>
@@ -1696,7 +1697,7 @@ final class TenantController extends BaseController
               <div class="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>ID</th><th>Local Listen</th><th>Target</th><th>Line</th><th>Line Groups</th><th>Route Mode</th><th>Chain</th><th>Transport</th><th>Client Mode</th><th>Path</th><th>Endpoint Status</th><th>Actions</th></tr>
+                    <tr><th>ID</th><th>Local Listen</th><th>Forward Combination</th><th>Target</th><th>Line</th><th>Line Groups</th><th>Route Mode</th><th>Chain</th><th>Transport</th><th>Client Mode</th><th>Path</th><th>Endpoint Status</th><th>Actions</th></tr>
                   </thead>
                   <tbody>' . $rows . '</tbody>
                 </table>
