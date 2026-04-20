@@ -260,6 +260,261 @@ final class ProvisioningService
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listCfLocationGroups(): array
+    {
+        $groups = $this->db->fetchAll(
+            'SELECT * FROM cf_location_groups ORDER BY region_code ASC, name ASC, id ASC'
+        );
+        foreach ($groups as &$group) {
+            $group['cidrs'] = $this->db->fetchAll(
+                'SELECT * FROM cf_location_group_cidrs WHERE group_id = :group_id ORDER BY priority ASC, id ASC',
+                ['group_id' => (int) ($group['id'] ?? 0)]
+            );
+        }
+        unset($group);
+        return $groups;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function saveCfLocationGroup(array $payload): array
+    {
+        $id = (int) ($payload['id'] ?? 0);
+        $name = trim((string) ($payload['name'] ?? ''));
+        $regionCode = trim((string) ($payload['region_code'] ?? ''));
+        $probeMode = strtolower(trim((string) ($payload['probe_mode'] ?? 'auto')));
+        $cacheTtlSeconds = max(30, (int) ($payload['cache_ttl_seconds'] ?? 120));
+        $switchImprovementMs = max(1, (int) ($payload['switch_improvement_ms'] ?? 15));
+        $maxCandidates = max(1, min(256, (int) ($payload['max_candidates'] ?? 32)));
+        $isActive = !empty($payload['is_active']) ? 1 : 0;
+        $cidrLines = preg_split('/\r\n|\r|\n/', (string) ($payload['cidr_lines'] ?? '')) ?: [];
+        $cidrs = array_values(array_unique(array_filter(array_map('trim', $cidrLines), static fn(string $line): bool => $line !== '')));
+
+        if ($name === '' || $regionCode === '' || $cidrs === []) {
+            throw new ApiException('invalid_cf_location_group_payload', 422, ['payload' => $payload]);
+        }
+        if (!in_array($probeMode, ['auto', 'tcp', 'icmp'], true)) {
+            throw new ApiException('invalid_cf_location_group_probe_mode', 422, ['probe_mode' => $probeMode]);
+        }
+
+        return $this->db->transaction(function () use ($id, $name, $regionCode, $probeMode, $cacheTtlSeconds, $switchImprovementMs, $maxCandidates, $isActive, $cidrs): array {
+            if ($id > 0) {
+                $this->db->execute(
+                    'UPDATE cf_location_groups
+                     SET name = :name,
+                         region_code = :region_code,
+                         probe_mode = :probe_mode,
+                         cache_ttl_seconds = :cache_ttl_seconds,
+                         switch_improvement_ms = :switch_improvement_ms,
+                         max_candidates = :max_candidates,
+                         is_active = :is_active,
+                         updated_at = :updated_at
+                     WHERE id = :id',
+                    [
+                        'id' => $id,
+                        'name' => $name,
+                        'region_code' => $regionCode,
+                        'probe_mode' => $probeMode,
+                        'cache_ttl_seconds' => $cacheTtlSeconds,
+                        'switch_improvement_ms' => $switchImprovementMs,
+                        'max_candidates' => $maxCandidates,
+                        'is_active' => $isActive,
+                        'updated_at' => $this->now(),
+                    ]
+                );
+            } else {
+                $id = $this->db->insert('cf_location_groups', [
+                    'name' => $name,
+                    'region_code' => $regionCode,
+                    'probe_mode' => $probeMode,
+                    'cache_ttl_seconds' => $cacheTtlSeconds,
+                    'switch_improvement_ms' => $switchImprovementMs,
+                    'max_candidates' => $maxCandidates,
+                    'is_active' => $isActive,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+            }
+
+            $this->db->execute('DELETE FROM cf_location_group_cidrs WHERE group_id = :group_id', ['group_id' => $id]);
+            $priority = 10;
+            foreach ($cidrs as $cidr) {
+                $this->db->insert('cf_location_group_cidrs', [
+                    'group_id' => $id,
+                    'cidr' => $cidr,
+                    'priority' => $priority,
+                    'is_active' => 1,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+                $priority += 10;
+            }
+
+            $row = $this->db->fetchOne('SELECT * FROM cf_location_groups WHERE id = :id LIMIT 1', ['id' => $id]) ?? [];
+            $row['cidrs'] = $this->db->fetchAll(
+                'SELECT * FROM cf_location_group_cidrs WHERE group_id = :group_id ORDER BY priority ASC, id ASC',
+                ['group_id' => $id]
+            );
+            return $row;
+        });
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function saveForwardCombination(array $payload): array
+    {
+        $id = (int) ($payload['id'] ?? 0);
+        $name = trim((string) ($payload['name'] ?? ''));
+        $tenantLabel = trim((string) ($payload['tenant_label'] ?? ''));
+        $tenantDescription = trim((string) ($payload['tenant_description'] ?? ''));
+        $tenantBadge = trim((string) ($payload['tenant_badge'] ?? ''));
+        $nodeGroupKey = trim((string) ($payload['node_group_key'] ?? ''));
+        $backendMode = trim((string) ($payload['backend_mode'] ?? 'current_mode'));
+        $sidecarPointId = (int) ($payload['sidecar_point_id'] ?? 0);
+        $cfLocationGroupId = (int) ($payload['cf_location_group_id'] ?? 0);
+        $clientMode = $this->normalizeClientMode((string) ($payload['client_mode'] ?? 'single'));
+        $bondIngressMode = $this->normalizeBondIngressMode((string) ($payload['bond_ingress_mode'] ?? 'plain_tcp_mux'));
+        $isActive = !empty($payload['is_active']) ? 1 : 0;
+        $sortOrder = (int) ($payload['sort_order'] ?? 100);
+        $notes = trim((string) ($payload['notes'] ?? ''));
+
+        if ($name === '' || $tenantLabel === '' || $nodeGroupKey === '' || $sidecarPointId <= 0) {
+            throw new ApiException('invalid_forward_combination_payload', 422, ['payload' => $payload]);
+        }
+        if (!in_array($backendMode, ['current_mode', 'cf_mode'], true)) {
+            throw new ApiException('invalid_forward_combination_backend_mode', 422, ['backend_mode' => $backendMode]);
+        }
+        if (!in_array($clientMode, ['single', 'bond'], true)) {
+            throw new ApiException('invalid_forward_combination_client_mode', 422, ['client_mode' => $clientMode]);
+        }
+        if ($backendMode === 'cf_mode' && $cfLocationGroupId <= 0) {
+            throw new ApiException('cf_location_group_required', 422, ['payload' => $payload]);
+        }
+        if ($backendMode !== 'cf_mode') {
+            $cfLocationGroupId = 0;
+        }
+
+        $normalized = [
+            'name' => $name,
+            'tenant_label' => $tenantLabel,
+            'tenant_description' => $tenantDescription !== '' ? $tenantDescription : null,
+            'tenant_badge' => $tenantBadge !== '' ? $tenantBadge : null,
+            'node_group_key' => $nodeGroupKey,
+            'backend_mode' => $backendMode,
+            'sidecar_point_id' => $sidecarPointId,
+            'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
+            'client_mode' => $clientMode,
+            'bond_ingress_mode' => $bondIngressMode,
+            'is_active' => $isActive,
+            'sort_order' => $sortOrder,
+            'notes' => $notes !== '' ? $notes : null,
+            'updated_at' => $this->now(),
+        ];
+
+        if ($id > 0) {
+            $this->db->execute(
+                'UPDATE forward_combinations
+                 SET name = :name,
+                     tenant_label = :tenant_label,
+                     tenant_description = :tenant_description,
+                     tenant_badge = :tenant_badge,
+                     node_group_key = :node_group_key,
+                     backend_mode = :backend_mode,
+                     sidecar_point_id = :sidecar_point_id,
+                     cf_location_group_id = :cf_location_group_id,
+                     client_mode = :client_mode,
+                     bond_ingress_mode = :bond_ingress_mode,
+                     is_active = :is_active,
+                     sort_order = :sort_order,
+                     notes = :notes,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                $normalized + ['id' => $id]
+            );
+        } else {
+            $id = $this->db->insert('forward_combinations', $normalized + [
+                'created_at' => $this->now(),
+            ]);
+        }
+
+        return $this->forwardCombinationById($id) ?? [];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function availableForwardCombinationsForService(int $serviceId): array
+    {
+        $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+
+        $allowedGroupKeys = array_map(static fn(array $group): string => (string) ($group['group_key'] ?? ''), $this->allowedNodeGroupsForPlan((int) ($service['plan_id'] ?? 0)));
+        $allowedSidecarIds = array_map(static fn(array $point): int => (int) ($point['id'] ?? 0), $this->allowedSidecarPointsForPlan((int) ($service['plan_id'] ?? 0)));
+        $rows = $this->db->fetchAll(
+            'SELECT fc.*, sp.name AS sidecar_point_name, cg.name AS cf_location_group_name
+             FROM forward_combinations fc
+             INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+             LEFT JOIN cf_location_groups cg ON cg.id = fc.cf_location_group_id
+             WHERE fc.is_active = 1
+             ORDER BY fc.sort_order ASC, fc.id ASC'
+        );
+
+        return array_values(array_filter($rows, static function (array $row) use ($allowedGroupKeys, $allowedSidecarIds): bool {
+            $groupOk = $allowedGroupKeys === [] || in_array((string) ($row['node_group_key'] ?? ''), $allowedGroupKeys, true);
+            $sidecarOk = $allowedSidecarIds === [] || in_array((int) ($row['sidecar_point_id'] ?? 0), $allowedSidecarIds, true);
+            return $groupOk && $sidecarOk;
+        }));
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function forwardCombinationById(int $combinationId): ?array
+    {
+        if ($combinationId <= 0) {
+            return null;
+        }
+
+        $row = $this->db->fetchOne(
+            'SELECT fc.*, sp.name AS sidecar_point_name, cg.name AS cf_location_group_name
+             FROM forward_combinations fc
+             INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+             LEFT JOIN cf_location_groups cg ON cg.id = fc.cf_location_group_id
+             WHERE fc.id = :id LIMIT 1',
+            ['id' => $combinationId]
+        );
+
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function visibleForwardCombinationForService(int $combinationId, int $serviceId): array
+    {
+        $combination = $this->forwardCombinationById($combinationId);
+        if ($combination === null || (int) ($combination['is_active'] ?? 0) !== 1) {
+            throw new ApiException('forward_combination_not_found', 404, ['forward_combination_id' => $combinationId]);
+        }
+
+        $visibleIds = array_map(static fn(array $row): int => (int) ($row['id'] ?? 0), $this->availableForwardCombinationsForService($serviceId));
+        if (!in_array($combinationId, $visibleIds, true)) {
+            throw new ApiException('forward_combination_not_allowed', 422, ['forward_combination_id' => $combinationId]);
+        }
+
+        return $combination;
+    }
+
     public function saveNodeGroup(array $payload): array
     {
         $id = (int) ($payload['id'] ?? 0);
@@ -438,7 +693,7 @@ final class ProvisioningService
              FROM sidecar_points sp
              LEFT JOIN users u ON u.id = sp.owner_user_id
              LEFT JOIN forwards f ON f.bond_sidecar_point_id = sp.id AND f.enabled = 1
-             GROUP BY sp.id, sp.owner_user_id, sp.name, sp.sidecar_host, sp.listen_port, sp.bind_host, sp.total_speed_limit_mbps, sp.token_secret,
+             GROUP BY sp.id, sp.owner_user_id, sp.name, sp.sidecar_host, sp.listen_port, sp.bond_listen_port, sp.mptcp_listen_port, sp.bind_host, sp.total_speed_limit_mbps, sp.token_secret,
                       sp.agent_token, sp.agent_version, sp.agent_update_request_token, sp.agent_update_requested_at, sp.last_heartbeat_at, sp.last_status, sp.last_error, sp.is_active,
                       sp.created_at, sp.updated_at, u.email, u.name
              ORDER BY sp.updated_at DESC, sp.id DESC'
@@ -457,7 +712,7 @@ final class ProvisioningService
              LEFT JOIN users u ON u.id = sp.owner_user_id
              LEFT JOIN forwards f ON f.bond_sidecar_point_id = sp.id AND f.enabled = 1
              WHERE sp.owner_user_id = :user_id OR sp.owner_user_id IS NULL
-             GROUP BY sp.id, sp.owner_user_id, sp.name, sp.sidecar_host, sp.listen_port, sp.bind_host, sp.total_speed_limit_mbps, sp.token_secret,
+             GROUP BY sp.id, sp.owner_user_id, sp.name, sp.sidecar_host, sp.listen_port, sp.bond_listen_port, sp.mptcp_listen_port, sp.bind_host, sp.total_speed_limit_mbps, sp.token_secret,
                       sp.agent_token, sp.agent_version, sp.agent_update_request_token, sp.agent_update_requested_at, sp.last_heartbeat_at, sp.last_status, sp.last_error, sp.is_active,
                       sp.created_at, sp.updated_at, u.email, u.name
              ORDER BY sp.owner_user_id IS NULL DESC, sp.updated_at DESC, sp.id DESC',
@@ -598,6 +853,37 @@ final class ProvisioningService
     }
 
     /**
+     * @param array<string, mixed> $point
+     */
+    private function sidecarBondListenPort(array $point): int
+    {
+        $configured = (int) ($point['bond_listen_port'] ?? 0);
+        if ($configured > 0) {
+            return $configured;
+        }
+        return max(0, (int) ($point['listen_port'] ?? 0));
+    }
+
+    /**
+     * @param array<string, mixed> $point
+     * @param array<string, mixed> $pointConfig
+     */
+    private function sidecarMptcpListenPort(array $point, array $pointConfig = []): int
+    {
+        $configured = (int) ($point['mptcp_listen_port'] ?? 0);
+        if ($configured > 0) {
+            return $configured;
+        }
+
+        $wireguardListenPort = (int) ($pointConfig['wireguard_listen_port'] ?? 0);
+        if ($wireguardListenPort > 0) {
+            return $wireguardListenPort;
+        }
+
+        return $this->sidecarBondListenPort($point);
+    }
+
+    /**
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
@@ -607,19 +893,23 @@ final class ProvisioningService
         $ownerUserId = (int) ($payload['owner_user_id'] ?? 0);
         $name = trim((string) ($payload['name'] ?? ''));
         $sidecarHost = trim((string) ($payload['sidecar_host'] ?? ''));
-        $listenPort = (int) ($payload['listen_port'] ?? 0);
         $bindHost = trim((string) ($payload['bind_host'] ?? '0.0.0.0'));
         $totalSpeedLimitMbps = ($payload['total_speed_limit_mbps'] ?? '') !== '' ? max(1, (int) $payload['total_speed_limit_mbps']) : null;
         $isActive = !empty($payload['is_active']) ? 1 : 0;
-
-        if ($name === '' || $sidecarHost === '' || $listenPort <= 0) {
-            throw new ApiException('invalid_sidecar_point_payload', 422, ['payload' => $payload]);
-        }
 
         $existing = $id > 0 ? ($this->sidecarPointById($id) ?? []) : [];
         $tokenSecret = trim((string) ($payload['token_secret'] ?? ($existing['token_secret'] ?? '')));
         $agentToken = trim((string) ($payload['agent_token'] ?? ($existing['agent_token'] ?? '')));
         $agentConfigJson = $this->normalizeJsonField($payload['agent_config_json'] ?? ($existing['agent_config_json'] ?? null));
+        $pointConfig = $this->decodeJsonAssoc($agentConfigJson);
+        $legacyListenPort = max(0, (int) ($payload['listen_port'] ?? ($existing['listen_port'] ?? 0)));
+        $bondListenPort = max(0, (int) ($payload['bond_listen_port'] ?? ($existing['bond_listen_port'] ?? $legacyListenPort)));
+        $mptcpListenPort = max(0, (int) ($payload['mptcp_listen_port'] ?? ($existing['mptcp_listen_port'] ?? (((int) ($pointConfig['wireguard_listen_port'] ?? 0)) ?: $legacyListenPort))));
+
+        if ($name === '' || $sidecarHost === '' || $bondListenPort <= 0 || $mptcpListenPort <= 0) {
+            throw new ApiException('invalid_sidecar_point_payload', 422, ['payload' => $payload]);
+        }
+
         if ($tokenSecret === '') {
             $tokenSecret = bin2hex(random_bytes(24));
         }
@@ -631,7 +921,9 @@ final class ProvisioningService
             'owner_user_id' => $ownerUserId > 0 ? $ownerUserId : null,
             'name' => $name,
             'sidecar_host' => $sidecarHost,
-            'listen_port' => $listenPort,
+            'listen_port' => $bondListenPort,
+            'bond_listen_port' => $bondListenPort,
+            'mptcp_listen_port' => $mptcpListenPort,
             'bind_host' => $bindHost !== '' ? $bindHost : '0.0.0.0',
             'total_speed_limit_mbps' => $totalSpeedLimitMbps,
             'token_secret' => $tokenSecret,
@@ -648,6 +940,8 @@ final class ProvisioningService
                      name = :name,
                      sidecar_host = :sidecar_host,
                      listen_port = :listen_port,
+                     bond_listen_port = :bond_listen_port,
+                     mptcp_listen_port = :mptcp_listen_port,
                      bind_host = :bind_host,
                      total_speed_limit_mbps = :total_speed_limit_mbps,
                      token_secret = :token_secret,
@@ -1339,7 +1633,7 @@ final class ProvisioningService
     public function allowedSidecarPointsForPlan(int $planId): array
     {
         return $this->db->fetchAll(
-            'SELECT sp.id, sp.name, sp.sidecar_host, sp.listen_port
+            'SELECT sp.id, sp.name, sp.sidecar_host, sp.listen_port, sp.bond_listen_port, sp.mptcp_listen_port, sp.cf_listen_port, sp.agent_config_json
              FROM service_plan_sidecar_points spsp
              INNER JOIN sidecar_points sp ON sp.id = spsp.sidecar_point_id
              WHERE spsp.plan_id = :plan_id
@@ -1810,23 +2104,31 @@ final class ProvisioningService
     public function buildClientConfig(int $forwardId): array
     {
         $forward = $this->db->fetchOne(
-            'SELECT f.*, s.client_token, s.status AS service_status, s.name AS service_name,
-                    s.bandwidth_limit_mbps AS service_bandwidth_limit_mbps,
-                    c.name AS line_client_name, c.display_host AS line_client_host, c.speed_limit_mbps AS line_speed_limit_mbps,
-                    c.agent_config_json AS line_client_agent_config_json,
-                    cg.name AS line_client_group_name,
-                    fc.name AS forward_chain_name,
-                    sp.name AS bond_sidecar_point_name,
-                    sp.sidecar_host AS bond_sidecar_host,
-                    sp.listen_port AS bond_sidecar_port,
-                    sp.token_secret AS bond_sidecar_point_token_secret,
-                    sp.agent_config_json AS bond_sidecar_point_agent_config_json
-             FROM forwards f
+             'SELECT f.*, s.client_token, s.status AS service_status, s.name AS service_name,
+                     s.bandwidth_limit_mbps AS service_bandwidth_limit_mbps,
+                     c.name AS line_client_name, c.display_host AS line_client_host, c.speed_limit_mbps AS line_speed_limit_mbps,
+                     c.agent_config_json AS line_client_agent_config_json,
+                     cg.name AS line_client_group_name,
+                     fc.name AS forward_chain_name,
+                     sp.name AS bond_sidecar_point_name,
+                     combo.name AS forward_combination_name,
+                     combo.tenant_label AS forward_combination_label,
+                     f.backend_mode,
+                     f.forward_combination_id,
+                     f.cf_location_group_id,
+                     sp.sidecar_host AS bond_sidecar_host,
+                     sp.listen_port AS bond_sidecar_legacy_port,
+                     sp.bond_listen_port AS bond_sidecar_port,
+                     sp.mptcp_listen_port AS mptcp_sidecar_port,
+                     sp.token_secret AS bond_sidecar_point_token_secret,
+                     sp.agent_config_json AS bond_sidecar_point_agent_config_json
+              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
              LEFT JOIN clients c ON c.id = f.line_client_id
              LEFT JOIN client_groups cg ON cg.id = f.line_client_group_id
              LEFT JOIN forward_chains fc ON fc.id = f.forward_chain_id
              LEFT JOIN sidecar_points sp ON sp.id = f.bond_sidecar_point_id
+             LEFT JOIN forward_combinations combo ON combo.id = f.forward_combination_id
              WHERE f.id = :id LIMIT 1',
             ['id' => $forwardId]
         );
@@ -1858,7 +2160,7 @@ final class ProvisioningService
         }
 
         $endpoints = $this->db->fetchAll(
-            'SELECT e.*, n.name AS node_name, n.public_ip AS node_public_ip, n.agent_config_json AS node_agent_config_json
+            'SELECT e.*, n.name AS node_name, n.public_ip AS node_public_ip, n.agent_config_json AS node_agent_config_json, n.agent_version AS node_agent_version
              FROM service_endpoints e
              INNER JOIN nodes n ON n.id = e.node_id
              WHERE e.forward_id = :forward_id
@@ -1873,10 +2175,38 @@ final class ProvisioningService
         );
 
         $clientMode = $this->normalizeClientMode((string) $forward['client_mode']);
+        $bondIngressMode = $this->normalizeBondIngressMode((string) ($forward['bond_ingress_mode'] ?? 'wss_path_mux'));
+        $pointConfig = $this->decodeJsonAssoc($forward['bond_sidecar_point_agent_config_json'] ?? null);
+        $pointPortSource = [
+            'listen_port' => (int) ($forward['bond_sidecar_legacy_port'] ?? 0),
+            'bond_listen_port' => (int) ($forward['bond_sidecar_port'] ?? 0),
+            'mptcp_listen_port' => (int) ($forward['mptcp_sidecar_port'] ?? 0),
+        ];
+        $effectiveBondSidecarPort = $this->sidecarBondListenPort($pointPortSource);
+        $effectiveMptcpSidecarPort = $this->sidecarMptcpListenPort($pointPortSource, $pointConfig);
+        $effectiveSidecarTarget = in_array($clientMode, ['bond', 'mptcp'], true)
+            ? $this->resolveSidecarDirectTarget(
+                array_merge($forward, [
+                    'bond_sidecar_port' => $effectiveBondSidecarPort,
+                    'mptcp_sidecar_port' => $effectiveMptcpSidecarPort,
+                ]),
+                $clientMode
+            )
+            : [
+                'host' => (string) ($forward['bond_remote_host'] ?? ''),
+                'port' => isset($forward['bond_remote_port']) && (int) $forward['bond_remote_port'] > 0 ? (int) $forward['bond_remote_port'] : 0,
+            ];
         $ingressGroup = $this->nodeGroupByKey((string) ($forward['node_group_key'] ?? ''));
         $resolvedSniHost = $this->resolveIngressSniHost((string) ($forward['sni_host'] ?? ''), $ingressGroup);
         $resolvedCdnHost = $this->resolveIngressCdnHost((string) ($forward['cdn_host'] ?? ''), $resolvedSniHost, $ingressGroup);
-        $bondConfig = $clientMode === 'bond' ? $this->buildBondClientConfig($forward, $endpoints) : null;
+        $bondConfig = $clientMode === 'bond'
+            ? $this->buildBondClientConfig(
+                array_merge($forward, [
+                    'bond_ingress_mode' => $bondIngressMode,
+                ]),
+                $endpoints
+            )
+            : null;
         $mptcpConfig = $clientMode === 'mptcp' ? $this->buildMptcpClientConfig($forward, $endpoints) : null;
         $serviceBandwidthLimitMbps = max(0, (int) ($forward['service_bandwidth_limit_mbps'] ?? 0));
         $lineSpeedLimitMbps = max(0, (int) ($forward['line_speed_limit_mbps'] ?? 0));
@@ -1892,10 +2222,16 @@ final class ProvisioningService
             'target' => $forward['target_host'] . ':' . $forward['target_port'],
             'bond_sidecar_point_id' => $forward['bond_sidecar_point_id'] !== null ? (int) $forward['bond_sidecar_point_id'] : null,
             'bond_sidecar_point_name' => (string) ($forward['bond_sidecar_point_name'] ?? ''),
+            'forward_combination_id' => $forward['forward_combination_id'] !== null ? (int) $forward['forward_combination_id'] : null,
+            'forward_combination_name' => (string) ($forward['forward_combination_name'] ?? ''),
+            'forward_combination_label' => (string) ($forward['forward_combination_label'] ?? ''),
+            'backend_mode' => (string) ($forward['backend_mode'] ?? 'current_mode'),
+            'cf_location_group_id' => $forward['cf_location_group_id'] !== null ? (int) $forward['cf_location_group_id'] : null,
             'bond_sidecar_host' => (string) ($forward['bond_sidecar_host'] ?? ''),
-            'bond_sidecar_port' => isset($forward['bond_sidecar_port']) && (int) $forward['bond_sidecar_port'] > 0 ? (int) $forward['bond_sidecar_port'] : null,
-            'bond_remote_host' => (string) ($forward['bond_remote_host'] ?? ''),
-            'bond_remote_port' => isset($forward['bond_remote_port']) && (int) $forward['bond_remote_port'] > 0 ? (int) $forward['bond_remote_port'] : null,
+            'bond_sidecar_port' => $effectiveBondSidecarPort > 0 ? $effectiveBondSidecarPort : null,
+            'mptcp_sidecar_port' => $effectiveMptcpSidecarPort > 0 ? $effectiveMptcpSidecarPort : null,
+            'bond_remote_host' => (string) ($effectiveSidecarTarget['host'] ?? $forward['bond_remote_host'] ?? ''),
+            'bond_remote_port' => (int) ($effectiveSidecarTarget['port'] ?? $forward['bond_remote_port'] ?? 0) > 0 ? (int) ($effectiveSidecarTarget['port'] ?? $forward['bond_remote_port'] ?? 0) : null,
             'line_client_id' => $forward['line_client_id'] !== null ? (int) $forward['line_client_id'] : null,
             'line_client_name' => $forward['line_client_name'],
             'line_client_host' => $forward['line_client_host'],
@@ -1927,12 +2263,12 @@ final class ProvisioningService
                 'udp_fanout' => !in_array($clientMode, ['bond', 'mptcp'], true) && ((string) $forward['transport_mode']) === 'tcp+udp',
                 'dup_repeat' => 1,
             ],
-            'endpoints' => array_map(function (array $endpoint) use ($resolvedSniHost, $resolvedCdnHost, $ingressGroup): array {
+            'endpoints' => array_map(function (array $endpoint) use ($resolvedSniHost, $resolvedCdnHost, $ingressGroup, $clientMode, $bondIngressMode, $forward): array {
                 $nodeConfig = is_string($endpoint['node_agent_config_json'] ?? null) ? json_decode((string) $endpoint['node_agent_config_json'], true) : [];
                 if (!is_array($nodeConfig)) {
                     $nodeConfig = [];
                 }
-                return [
+                $item = [
                     'endpoint_id' => (int) $endpoint['id'],
                     'node' => (string) $endpoint['node_name'],
                     'host' => $this->resolveEndpointPublicHost($endpoint),
@@ -1941,8 +2277,13 @@ final class ProvisioningService
                     'priority' => (int) $endpoint['priority'],
                     'weight' => (int) $endpoint['weight'],
                     'health_status' => (string) $endpoint['health_status'],
-                    'supports_quic_leg' => (bool) ($nodeConfig['supports_quic'] ?? true),
+                    'supports_quic_leg' => $this->nodeSupportsBondQuic($nodeConfig, (string) ($endpoint['node_agent_version'] ?? '')),
                 ];
+                if ($clientMode === 'bond' && $bondIngressMode === 'plain_tcp_mux') {
+                    $item['ingress_protocol'] = 'plain_tcp_mux';
+                    $item['ingress_auth_token'] = $this->bondIngressAuthToken($forward, (int) $endpoint['id'], (string) ($forward['path_prefix'] ?? ''));
+                }
+                return $item;
             }, $endpoints),
         ];
     }
@@ -2159,12 +2500,15 @@ final class ProvisioningService
                     c.name AS line_client_name,
                     cg.name AS line_client_group_name,
                     fc.name AS forward_chain_name,
-                    sp.name AS bond_sidecar_point_name
+                    sp.name AS bond_sidecar_point_name,
+                    combo.name AS forward_combination_name,
+                    combo.tenant_label AS forward_combination_label
              FROM forwards f
              LEFT JOIN clients c ON c.id = f.line_client_id
              LEFT JOIN client_groups cg ON cg.id = f.line_client_group_id
              LEFT JOIN forward_chains fc ON fc.id = f.forward_chain_id
              LEFT JOIN sidecar_points sp ON sp.id = f.bond_sidecar_point_id
+             LEFT JOIN forward_combinations combo ON combo.id = f.forward_combination_id
              WHERE f.service_id = :service_id
                AND f.enabled = 1
              ORDER BY f.id ASC',
@@ -2212,6 +2556,7 @@ final class ProvisioningService
         $service['allowed_client_groups'] = $this->availableClientGroupsForService($serviceId);
         $service['available_clients'] = $this->availableClientsForService($serviceId);
         $service['available_sidecar_points'] = $this->listSidecarPointsForUser((int) ($service['user_id'] ?? 0));
+        $service['available_forward_combinations'] = $this->availableForwardCombinationsForService($serviceId);
         $service['available_forward_chains'] = $this->availableForwardChainsForService($serviceId);
         $service['effective_features'] = $this->effectiveFeatureFlagsForService($service);
         $service['billing'] = $this->billingOverviewFromService($service);
@@ -2386,11 +2731,15 @@ final class ProvisioningService
     {
         unset($payload['endpoint_count']);
 
+        $forwardCombinationId = (int) ($payload['forward_combination_id'] ?? 0);
+        $backendMode = trim((string) ($payload['backend_mode'] ?? 'current_mode'));
+        $cfLocationGroupId = (int) ($payload['cf_location_group_id'] ?? 0);
         $listenPort = (int) ($payload['listen_port'] ?? 0);
         $targetHost = (string) ($payload['target_host'] ?? '');
         $targetPort = (int) ($payload['target_port'] ?? 0);
         $bondRemoteHost = trim((string) ($payload['bond_remote_host'] ?? $payload['bond_sidecar_host'] ?? ''));
         $bondRemotePort = (int) ($payload['bond_remote_port'] ?? $payload['bond_sidecar_port'] ?? 0);
+        $bondIngressMode = $this->normalizeBondIngressMode((string) ($payload['bond_ingress_mode'] ?? 'wss_path_mux'));
         $bondSidecarPointId = (int) ($payload['bond_sidecar_point_id'] ?? 0);
         $transportMode = (string) ($payload['transport_mode'] ?? $this->config->get('DEFAULT_TRANSPORT_MODE', 'tcp+udp'));
         $clientMode = $this->normalizeClientMode((string) ($payload['client_mode'] ?? $this->config->get('DEFAULT_CLIENT_MODE', 'single')));
@@ -2426,6 +2775,19 @@ final class ProvisioningService
         $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
         if ($service === null) {
             throw new ApiException('service_not_found', 404);
+        }
+
+        if ($forwardCombinationId > 0) {
+            $combination = $this->visibleForwardCombinationForService($forwardCombinationId, $serviceId);
+            $backendMode = (string) ($combination['backend_mode'] ?? 'current_mode');
+            $clientMode = $this->normalizeClientMode((string) ($combination['client_mode'] ?? 'single'));
+            if (!in_array($clientMode, ['single', 'bond'], true)) {
+                throw new ApiException('invalid_forward_combination_client_mode', 422, ['client_mode' => $clientMode]);
+            }
+            $nodeGroup = (string) ($combination['node_group_key'] ?? '');
+            $bondSidecarPointId = (int) ($combination['sidecar_point_id'] ?? 0);
+            $bondIngressMode = $this->normalizeBondIngressMode((string) ($combination['bond_ingress_mode'] ?? 'plain_tcp_mux'));
+            $cfLocationGroupId = $backendMode === 'cf_mode' ? (int) ($combination['cf_location_group_id'] ?? 0) : 0;
         }
 
         $availableClients = $this->availableClientsForService($serviceId);
@@ -2622,8 +2984,11 @@ final class ProvisioningService
                 if ($bondRemoteHost === '') {
                     $bondRemoteHost = trim((string) ($sidecarPoint['sidecar_host'] ?? ''));
                 }
-                if ($bondRemotePort <= 0) {
-                    $bondRemotePort = (int) ($sidecarPoint['listen_port'] ?? 0);
+                $selectedSidecarPort = $clientMode === 'mptcp'
+                    ? $this->sidecarMptcpListenPort($sidecarPoint, $this->decodeJsonAssoc($sidecarPoint['agent_config_json'] ?? null))
+                    : $this->sidecarBondListenPort($sidecarPoint);
+                if ($selectedSidecarPort > 0) {
+                    $bondRemotePort = $selectedSidecarPort;
                 }
             }
             $bondRemote = $this->resolveBondRemoteTarget([
@@ -2705,7 +3070,11 @@ final class ProvisioningService
                 'target_port' => $targetPort,
                 'bond_remote_host' => $bondRemoteHost !== '' ? $bondRemoteHost : null,
                 'bond_remote_port' => $bondRemotePort > 0 ? $bondRemotePort : null,
+                'bond_ingress_mode' => $bondIngressMode,
                 'bond_sidecar_point_id' => $bondSidecarPointId > 0 ? $bondSidecarPointId : null,
+                'forward_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
+                'backend_mode' => $backendMode,
+                'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
                 'line_client_id' => $lineClientId > 0 ? $lineClientId : null,
                 'line_client_group_id' => $lineClientGroupId > 0 ? $lineClientGroupId : null,
                 'line_group_mode' => $lineGroupMode !== '' ? $lineGroupMode : 'selected',
@@ -2735,7 +3104,11 @@ final class ProvisioningService
                      target_port = :target_port,
                      bond_remote_host = :bond_remote_host,
                      bond_remote_port = :bond_remote_port,
+                     bond_ingress_mode = :bond_ingress_mode,
                      bond_sidecar_point_id = :bond_sidecar_point_id,
+                     forward_combination_id = :forward_combination_id,
+                     backend_mode = :backend_mode,
+                     cf_location_group_id = :cf_location_group_id,
                      line_client_id = :line_client_id,
                      line_client_group_id = :line_client_group_id,
                      line_group_mode = :line_group_mode,
@@ -2762,7 +3135,11 @@ final class ProvisioningService
                     'target_port' => $targetPort,
                     'bond_remote_host' => $bondRemoteHost !== '' ? $bondRemoteHost : null,
                     'bond_remote_port' => $bondRemotePort > 0 ? $bondRemotePort : null,
+                    'bond_ingress_mode' => $bondIngressMode,
                     'bond_sidecar_point_id' => $bondSidecarPointId > 0 ? $bondSidecarPointId : null,
+                    'forward_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
+                    'backend_mode' => $backendMode,
+                    'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
                     'line_client_id' => $lineClientId > 0 ? $lineClientId : null,
                     'line_client_group_id' => $lineClientGroupId > 0 ? $lineClientGroupId : null,
                     'line_group_mode' => $lineGroupMode !== '' ? $lineGroupMode : 'selected',
@@ -2798,8 +3175,11 @@ final class ProvisioningService
                 throw new ApiException('specific_node_no_public_host', 409, ['node_id' => $specificNodeId]);
             }
             $specificNode['resolved_public_host'] = $specificPublicHost;
-            $publishTarget = in_array($clientMode, ['bond', 'mptcp'], true)
-                ? $this->bondRemoteTarget($forward)
+            $directSidecarTarget = in_array($clientMode, ['bond', 'mptcp'], true)
+                ? $this->resolveSidecarDirectTarget($forward, $clientMode)
+                : null;
+            $publishTarget = $directSidecarTarget !== null
+                ? ($directSidecarTarget['host'] . ':' . $directSidecarTarget['port'])
                 : $forward['target_host'] . ':' . $forward['target_port'];
             $endpointId = $this->db->insert('service_endpoints', [
                 'forward_id' => $forwardId,
@@ -2824,7 +3204,7 @@ final class ProvisioningService
                 'tls_cert_ref' => (string) $this->config->get('DEFAULT_TLS_CERT_REF', 'default-edge-cert'),
                 'filter_profile' => (string) $forward['filter_profile'],
                 'transport_mode' => (string) $forward['transport_mode'],
-                'leg_relay_protocols' => $clientMode === 'bond' ? ['quic'] : [],
+                'leg_relay_protocols' => $this->legRelayProtocolsForNode($clientMode, $specificNode),
                 'mptcp_underlay' => $clientMode === 'mptcp' ? $this->buildMptcpSlaveUnderlayPayload($forward, $specificNode, [
                     'id' => $endpointId,
                     'public_port' => $forward['public_port'],
@@ -2859,8 +3239,11 @@ final class ProvisioningService
             ]);
         }
 
-        $publishTarget = in_array($clientMode, ['bond', 'mptcp'], true)
-            ? $this->bondRemoteTarget($forward)
+        $directSidecarTarget = in_array($clientMode, ['bond', 'mptcp'], true)
+            ? $this->resolveSidecarDirectTarget($forward, $clientMode)
+            : null;
+        $publishTarget = $directSidecarTarget !== null
+            ? ($directSidecarTarget['host'] . ':' . $directSidecarTarget['port'])
             : $forward['target_host'] . ':' . $forward['target_port'];
 
         $priority = 10;
@@ -2889,7 +3272,7 @@ final class ProvisioningService
                 'tls_cert_ref' => (string) $this->config->get('DEFAULT_TLS_CERT_REF', 'default-edge-cert'),
                 'filter_profile' => (string) $forward['filter_profile'],
                 'transport_mode' => (string) $forward['transport_mode'],
-                'leg_relay_protocols' => $clientMode === 'bond' ? ['quic'] : [],
+                'leg_relay_protocols' => $this->legRelayProtocolsForNode($clientMode, $node),
                 'mptcp_underlay' => $clientMode === 'mptcp' ? $this->buildMptcpSlaveUnderlayPayload($forward, $node, [
                     'id' => $endpointId,
                     'public_port' => $forward['public_port'],
@@ -3011,7 +3394,10 @@ final class ProvisioningService
             return;
         }
         $rows = $this->db->fetchAll(
-            'SELECT e.*, f.*, s.status AS service_status
+            'SELECT e.*,
+                    f.*,
+                    e.id AS service_endpoint_id,
+                    s.status AS service_status
              FROM service_endpoints e
              INNER JOIN forwards f ON f.id = e.forward_id
              INNER JOIN services s ON s.id = f.service_id
@@ -3037,8 +3423,16 @@ final class ProvisioningService
                 continue;
             }
             $node['resolved_public_host'] = $publicHost;
-            $payload = $this->publishTaskPayloadForForward($row, $node, (int) ($row['id'] ?? 0));
-            $this->queueTask($nodeId, 'publish', (int) ($row['service_id'] ?? 0), (int) ($row['forward_id'] ?? $row['id'] ?? 0), (int) ($row['id'] ?? 0), $payload);
+            $serviceEndpointId = (int) ($row['service_endpoint_id'] ?? 0);
+            $payload = $this->publishTaskPayloadForForward($row, $node, $serviceEndpointId);
+            $this->queueTask(
+                $nodeId,
+                'publish',
+                (int) ($row['service_id'] ?? 0),
+                (int) ($row['forward_id'] ?? $row['id'] ?? 0),
+                $serviceEndpointId,
+                $payload
+            );
         }
     }
 
@@ -3088,6 +3482,33 @@ final class ProvisioningService
         }
     }
 
+    public function republishActiveForwardsForNode(int $nodeId): void
+    {
+        if ($nodeId <= 0) {
+            return;
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT DISTINCT e.forward_id
+             FROM service_endpoints e
+             INNER JOIN forwards f ON f.id = e.forward_id
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE e.node_id = :node_id
+               AND e.health_status <> :deleted
+               AND e.health_status <> :deleting
+               AND f.enabled = 1
+               AND s.status = :service_status',
+            [
+                'node_id' => $nodeId,
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+                'service_status' => 'active',
+            ]
+        );
+        foreach ($rows as $row) {
+            $this->reconcileForwardEndpoints((int) ($row['forward_id'] ?? 0));
+        }
+    }
+
     public function republishActiveForwardsForService(int $serviceId): void
     {
         if ($serviceId <= 0) {
@@ -3108,6 +3529,146 @@ final class ProvisioningService
         foreach ($rows as $row) {
             $this->reconcileForwardEndpoints((int) ($row['forward_id'] ?? 0));
         }
+    }
+
+    /**
+     * @return array{republished:int, errors:string[]}
+     */
+    public function republishForwardsForServiceWithResult(int $serviceId): array
+    {
+        $errors = [];
+        $count = 0;
+        if ($serviceId <= 0) {
+            return ['republished' => 0, 'errors' => $errors];
+        }
+
+        try {
+            $this->republishActiveForwardsForService($serviceId);
+            $rows = $this->db->fetchAll(
+                'SELECT f.id
+                 FROM forwards f
+                 INNER JOIN services s ON s.id = f.service_id
+                 WHERE f.enabled = 1
+                   AND f.service_id = :service_id
+                   AND s.status = :service_status',
+                [
+                    'service_id' => $serviceId,
+                    'service_status' => 'active',
+                ]
+            );
+            $count = count($rows);
+        } catch (\Throwable $throwable) {
+            $errors[] = $throwable->getMessage();
+        }
+
+        return ['republished' => $count, 'errors' => $errors];
+    }
+
+    /**
+     * @return array{republished:int, errors:string[]}
+     */
+    public function republishForwardsForNodeWithResult(int $nodeId): array
+    {
+        $errors = [];
+        $count = 0;
+        if ($nodeId <= 0) {
+            return ['republished' => 0, 'errors' => $errors];
+        }
+
+        try {
+            $this->republishActiveForwardsForNode($nodeId);
+            $rows = $this->db->fetchAll(
+                'SELECT DISTINCT e.forward_id
+                 FROM service_endpoints e
+                 INNER JOIN forwards f ON f.id = e.forward_id
+                 INNER JOIN services s ON s.id = f.service_id
+                 WHERE e.node_id = :node_id
+                   AND e.health_status <> :deleted
+                   AND e.health_status <> :deleting
+                   AND f.enabled = 1
+                   AND s.status = :service_status',
+                [
+                    'node_id' => $nodeId,
+                    'deleted' => 'deleted',
+                    'deleting' => 'deleting',
+                    'service_status' => 'active',
+                ]
+            );
+            $count = count($rows);
+        } catch (\Throwable $throwable) {
+            $errors[] = $throwable->getMessage();
+        }
+
+        return ['republished' => $count, 'errors' => $errors];
+    }
+
+    /**
+     * @return array{republished:int, errors:string[]}
+     */
+    public function republishForwardsForClientWithResult(int $clientId): array
+    {
+        $errors = [];
+        $count = 0;
+        if ($clientId <= 0) {
+            return ['republished' => 0, 'errors' => $errors];
+        }
+
+        try {
+            $this->republishActiveForwardsForClient($clientId);
+            $rows = $this->db->fetchAll(
+                'SELECT f.id
+                 FROM forwards f
+                 INNER JOIN services s ON s.id = f.service_id
+                 WHERE f.enabled = 1
+                   AND f.line_client_id = :client_id
+                   AND s.status = :service_status',
+                [
+                    'client_id' => $clientId,
+                    'service_status' => 'active',
+                ]
+            );
+            $count = count($rows);
+        } catch (\Throwable $throwable) {
+            $errors[] = $throwable->getMessage();
+        }
+
+        return ['republished' => $count, 'errors' => $errors];
+    }
+
+    /**
+     * @return array{republished:int, errors:string[]}
+     */
+    public function republishAllForwardsWithResult(): array
+    {
+        $errors = [];
+        $count = 0;
+
+        try {
+            $rows = $this->db->fetchAll(
+                'SELECT f.id
+                 FROM forwards f
+                 INNER JOIN services s ON s.id = f.service_id
+                 WHERE f.enabled = 1
+                   AND s.status = :service_status',
+                ['service_status' => 'active']
+            );
+            foreach ($rows as $row) {
+                $forwardId = (int) ($row['id'] ?? 0);
+                if ($forwardId <= 0) {
+                    continue;
+                }
+                try {
+                    $this->reconcileForwardEndpoints($forwardId);
+                    $count++;
+                } catch (\Throwable $throwable) {
+                    $errors[] = 'Forward ' . $forwardId . ': ' . $throwable->getMessage();
+                }
+            }
+        } catch (\Throwable $throwable) {
+            $errors[] = $throwable->getMessage();
+        }
+
+        return ['republished' => $count, 'errors' => $errors];
     }
 
     private function reconcileForwardEndpoints(int $forwardId): void
@@ -3211,22 +3772,89 @@ final class ProvisioningService
      * @param array<string, mixed> $node
      * @return array<string, mixed>
      */
+
+    /**
+     * @param array<string, mixed> $forward
+     * @param array<string, mixed> $node
+     * @return array<string, mixed>
+     */
+    private function buildCfModePayload(array $forward, array $node): array
+    {
+        $groupId = (int) ($forward['cf_location_group_id'] ?? 0);
+        $group = $groupId > 0
+            ? $this->db->fetchOne('SELECT * FROM cf_location_groups WHERE id = :id LIMIT 1', ['id' => $groupId])
+            : null;
+        if (!is_array($group)) {
+            throw new ApiException('cf_location_group_not_found', 404, ['cf_location_group_id' => $groupId]);
+        }
+
+        $cidrRows = $this->db->fetchAll(
+            'SELECT cidr, priority, is_active FROM cf_location_group_cidrs WHERE group_id = :group_id AND is_active = 1 ORDER BY priority ASC, id ASC',
+            ['group_id' => $groupId]
+        );
+        if ($cidrRows === []) {
+            throw new ApiException('cf_location_group_empty', 422, ['cf_location_group_id' => $groupId]);
+        }
+
+        $point = (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0
+            ? $this->db->fetchOne('SELECT sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, cf_listen_port, agent_config_json FROM sidecar_points WHERE id = :id LIMIT 1', ['id' => (int) $forward['bond_sidecar_point_id']])
+            : null;
+        $pointHost = trim((string) ($point['sidecar_host'] ?? $forward['bond_remote_host'] ?? ''));
+        if ($pointHost === '') {
+            throw new ApiException('cf_mode_sidecar_host_missing', 422, ['forward_id' => (int) ($forward['id'] ?? 0)]);
+        }
+        $dialPort = max(1, (int) ($point['cf_listen_port'] ?? 443));
+
+        return [
+            'location_group_id' => $groupId,
+            'group_name' => (string) ($group['name'] ?? ''),
+            'region_code' => (string) ($group['region_code'] ?? ''),
+            'probe_mode' => (string) ($group['probe_mode'] ?? 'auto'),
+            'cache_ttl_seconds' => max(30, (int) ($group['cache_ttl_seconds'] ?? 120)),
+            'switch_improvement_ms' => max(1, (int) ($group['switch_improvement_ms'] ?? 15)),
+            'max_candidates' => max(1, min(256, (int) ($group['max_candidates'] ?? 32))),
+            'cidrs' => array_values(array_map(static fn(array $row): string => (string) $row['cidr'], $cidrRows)),
+            'dial_host' => $pointHost,
+            'dial_port' => $dialPort,
+            'sni_host' => trim((string) ($forward['sni_host'] ?? '')),
+            'path_prefix' => (string) ($forward['path_prefix'] ?? ''),
+            'route_key' => (string) ($forward['path_prefix'] ?? ''),
+            'ingress_auth_token' => $this->bondIngressAuthToken($forward, (int) ($node['id'] ?? 0), (string) ($forward['path_prefix'] ?? '')),
+        ];
+    }
+
     private function publishTaskPayloadForForward(array $forward, array $node, int $endpointId): array
     {
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
-        $publishTarget = in_array($clientMode, ['bond', 'mptcp'], true)
-            ? $this->bondRemoteTarget($forward)
+        $bondIngressMode = $this->normalizeBondIngressMode((string) ($forward['bond_ingress_mode'] ?? 'wss_path_mux'));
+        $routeKey = (string) ($forward['path_prefix'] ?? '');
+        $directSidecarTarget = in_array($clientMode, ['bond', 'mptcp'], true)
+            ? $this->resolveSidecarDirectTarget($forward, $clientMode)
+            : null;
+        $publishTarget = $directSidecarTarget !== null
+            ? ($directSidecarTarget['host'] . ':' . $directSidecarTarget['port'])
             : ((string) ($forward['target_host'] ?? '') . ':' . (int) ($forward['target_port'] ?? 0));
         return [
             'listen_port' => (int) ($forward['public_port'] ?? 0),
             'target' => $publishTarget,
+            'forward_combination_id' => $forward['forward_combination_id'] !== null ? (int) ($forward['forward_combination_id'] ?? 0) : null,
+            'backend_mode' => (string) ($forward['backend_mode'] ?? 'current_mode'),
+            'cf_mode' => (string) ($forward['backend_mode'] ?? 'current_mode') === 'cf_mode'
+                ? $this->buildCfModePayload($forward, $node)
+                : null,
             'path_prefix' => (string) ($forward['path_prefix'] ?? ''),
+            'route_key' => $routeKey,
             'sni_host' => (string) ($forward['sni_host'] ?? ''),
             'cdn_host' => (string) ($forward['cdn_host'] ?? ''),
             'tls_cert_ref' => (string) $this->config->get('DEFAULT_TLS_CERT_REF', 'default-edge-cert'),
             'filter_profile' => (string) ($forward['filter_profile'] ?? 'off'),
             'transport_mode' => (string) ($forward['transport_mode'] ?? 'tcp+udp'),
-            'leg_relay_protocols' => $clientMode === 'bond' ? ['quic'] : [],
+            'ingress_protocol' => $clientMode === 'bond' && $bondIngressMode === 'plain_tcp_mux' ? 'plain_tcp_mux' : 'wss_path_mux',
+            'backend_protocol' => $clientMode === 'bond' && $bondIngressMode === 'plain_tcp_mux' ? 'tcp_relay' : 'wss_backend',
+            'ingress_auth_token' => $clientMode === 'bond' && $bondIngressMode === 'plain_tcp_mux'
+                ? $this->bondIngressAuthToken($forward, $endpointId, $routeKey)
+                : '',
+            'leg_relay_protocols' => $this->legRelayProtocolsForNode($clientMode, $node),
             'mptcp_underlay' => $clientMode === 'mptcp' ? $this->buildMptcpSlaveUnderlayPayload($forward, $node, [
                 'id' => $endpointId,
                 'node_id' => (int) ($node['id'] ?? 0),
@@ -3946,6 +4574,14 @@ final class ProvisioningService
         };
     }
 
+    private function normalizeBondIngressMode(string $value): string
+    {
+        return match (strtolower(trim($value))) {
+            'plain_tcp_mux', 'plain-tcp-mux', 'plain_tcp', 'tcp_mux' => 'plain_tcp_mux',
+            default => 'wss_path_mux',
+        };
+    }
+
     /**
      * @param array<string, mixed> $context
      */
@@ -4028,8 +4664,9 @@ final class ProvisioningService
     private function buildBondClientConfig(array $forward, array $endpoints = []): array
     {
         $remote = $this->resolveBondRemoteTarget($forward);
-        $direct = $this->resolveBondDirectTarget($forward);
+        $direct = $this->resolveSidecarDirectTarget($forward, 'bond');
         $tokenSecret = $this->bondTokenSecret($forward);
+        $ingressMode = $this->normalizeBondIngressMode((string) ($forward['bond_ingress_mode'] ?? 'wss_path_mux'));
         $clientDirectQuicEnabled = $this->config->getBool('BOND_CLIENT_DIRECT_QUIC_ENABLED', false);
         [
             'join_timeout_ms' => $adaptiveJoinTimeoutMs,
@@ -4040,6 +4677,8 @@ final class ProvisioningService
         ['issued_at' => $issuedAt, 'expires_at' => $expiresAt] = $this->bondTokenTimestamps();
         return [
             'enabled' => true,
+            'ingress_mode' => $ingressMode,
+            'route_key' => (string) ($forward['path_prefix'] ?? ''),
             'hybrid_mode' => 'quic_ws',
             'sidecar_host' => $direct['host'],
             'sidecar_port' => $direct['port'],
@@ -4080,13 +4719,34 @@ final class ProvisioningService
         ];
     }
 
+    private function bondIngressAuthToken(array $forward, int $endpointId, string $routeKey): string
+    {
+        $serviceToken = trim((string) ($forward['client_token'] ?? ''));
+        if ($serviceToken === '') {
+            $serviceId = (int) ($forward['service_id'] ?? 0);
+            if ($serviceId > 0) {
+                $service = $this->db->fetchOne('SELECT client_token FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+                $serviceToken = trim((string) ($service['client_token'] ?? ''));
+            }
+        }
+        if ($serviceToken === '') {
+            $serviceToken = trim((string) ($this->config->get('BOND_TOKEN_SECRET', 'bond-default') ?? 'bond-default'));
+        }
+
+        return hash_hmac(
+            'sha256',
+            'bond-ingress:' . $endpointId . ':' . $routeKey,
+            $serviceToken
+        );
+    }
+
     /**
      * @param array<string, mixed> $forward
      * @return array<string, mixed>
      */
     private function buildMptcpClientConfig(array $forward, array $endpoints = []): array
     {
-        $direct = $this->resolveBondDirectTarget($forward);
+        $direct = $this->resolveSidecarDirectTarget($forward, 'mptcp');
         $tokenSecret = $this->bondTokenSecret($forward);
         ['issued_at' => $issuedAt, 'expires_at' => $expiresAt] = $this->bondTokenTimestamps();
         $subflowLimitDefault = max(2, count($endpoints) > 0 ? count($endpoints) : 2);
@@ -4113,7 +4773,7 @@ final class ProvisioningService
             'subflow_limit' => max(1, (int) ($this->config->getInt('MPTCP_SUBFLOW_LIMIT', $subflowLimitDefault) ?? $subflowLimitDefault)),
             'connect_timeout_ms' => max(100, (int) ($this->config->getInt('MPTCP_CONNECT_TIMEOUT_MS', 3000) ?? 3000)),
             'relay_idle_timeout_seconds' => max(15, (int) ($this->config->getInt('MPTCP_RELAY_IDLE_TIMEOUT_SECONDS', 120) ?? 120)),
-            'allow_tcp_fallback' => $this->config->getBool('MPTCP_ALLOW_TCP_FALLBACK', false),
+            'allow_tcp_fallback' => $this->config->getBool('MPTCP_ALLOW_TCP_FALLBACK', true),
             'tcp_congestion_control' => (string) ($this->config->get('MPTCP_TCP_CONGESTION_CONTROL', 'bbr') ?? 'bbr'),
             'socket_buffer_bytes' => max(1048576, (int) ($this->config->getInt('MPTCP_SOCKET_BUFFER_BYTES', 8388608) ?? 8388608)),
             'initcwnd' => max(10, (int) ($this->config->getInt('MPTCP_INITCWND', 80) ?? 80)),
@@ -4122,7 +4782,7 @@ final class ProvisioningService
             'tcp_wmem_max' => max(1048576, (int) ($this->config->getInt('MPTCP_TCP_WMEM_MAX', 16777216) ?? 16777216)),
             'tcp_rmem_max' => max(1048576, (int) ($this->config->getInt('MPTCP_TCP_RMEM_MAX', 16777216) ?? 16777216)),
             'manage_mptcp_endpoints' => $underlayLegs !== [],
-            'mptcp_endpoint_id_base' => ((int) ($forward['id'] ?? 0) % 25) * 10,
+            'mptcp_endpoint_id_base' => (((int) ($forward['id'] ?? 0) % 25) * 10) + 1,
             'mptcp_endpoints' => array_values(array_map(function ($leg, $idx) use ($forward) {
                 return [
                     'address' => $leg['local_address'],
@@ -4185,6 +4845,7 @@ final class ProvisioningService
                 'peer_public_host' => $publicHost,
                 'peer_udp_port' => $peerPort,
                 'peer_tcp_fallback_port' => $fallbackTcpPort,
+                'local_uot_udp_port' => $this->stableLocalUotUdpPort((int) ($forward['id'] ?? 0), (int) ($endpoint['node_id'] ?? 0)),
                 'peer_public_key' => $slavePublicKey,
                 'client_address' => $addresses['client_address'],
                 'slave_address' => $addresses['slave_address'],
@@ -4247,6 +4908,11 @@ final class ProvisioningService
         return $basePort + (($forwardId * 7) % 200);
     }
 
+    private function stableLocalUotUdpPort(int $forwardId, int $nodeId): int
+    {
+        return 45000 + abs((($forwardId * 257) + ($nodeId * 17)) % 15000);
+    }
+
     /**
      * Compute a stable per-leg listen port for the sidecar WG transit interface.
      * Returns 0 if the sidecar has no declared port range.
@@ -4259,6 +4925,65 @@ final class ProvisioningService
         $rangeSize = $portRangeEnd - $sidecarListenPort; // e.g. 14999-14969 = 30
         $stableIndex = abs(($forwardId * 256 + $nodeId) % $rangeSize);
         return $sidecarListenPort + 1 + $stableIndex;
+    }
+
+    private function sidecarWireguardListenPort(array $point, array $pointConfig): int
+    {
+        $configured = (int) ($pointConfig['wireguard_listen_port'] ?? 0);
+        if ($configured > 0) {
+            return $configured;
+        }
+        return $this->sidecarMptcpListenPort($point, $pointConfig);
+    }
+
+    private function sidecarWireguardPortRangeEnd(int $listenPort, array $pointConfig): int
+    {
+        $configured = (int) ($pointConfig['wireguard_port_range_end'] ?? 0);
+        if ($configured > $listenPort) {
+            return $configured;
+        }
+        if ($listenPort <= 0) {
+            return 0;
+        }
+        return min(65535, $listenPort + 30);
+    }
+
+    private function legRelayProtocolsForNode(string $clientMode, array $node): array
+    {
+        if ($clientMode !== 'bond') {
+            return [];
+        }
+        return $this->nodeSupportsBondQuic(
+            $node['agent_config_json'] ?? null,
+            (string) ($node['agent_version'] ?? $node['node_agent_version'] ?? '')
+        ) ? ['quic'] : [];
+    }
+
+    private function nodeSupportsBondQuic(mixed $nodeConfig, string $nodeAgentVersion): bool
+    {
+        $decoded = $this->decodeJsonAssoc($nodeConfig);
+        if ($decoded === []) {
+            return false;
+        }
+        if ($nodeAgentVersion === '' || version_compare($nodeAgentVersion, '2026.04.15.2', '<')) {
+            return false;
+        }
+        if (!(bool) ($decoded['supports_quic'] ?? false)) {
+            return false;
+        }
+        $outerTransport = strtolower(trim((string) ($decoded['wireguard_outer_transport'] ?? 'udp')));
+        if ($outerTransport === 'tcp') {
+            return false;
+        }
+        $protocols = $decoded['bond_protocols'] ?? null;
+        if (!is_array($protocols)) {
+            return false;
+        }
+        $normalized = array_map(
+            static fn(mixed $value): string => strtolower(trim((string) $value)),
+            $protocols
+        );
+        return in_array('quic', $normalized, true);
     }
 
     /**
@@ -4347,8 +5072,8 @@ final class ProvisioningService
             }
         }
 
-        $sidecarListenPort = (int) ($point['listen_port'] ?? 0);
-        $sidecarPortRangeEnd = (int) ($pointConfig['wireguard_port_range_end'] ?? 0);
+        $sidecarListenPort = $this->sidecarWireguardListenPort($point, $pointConfig);
+        $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $pointConfig);
 
         return [
             'underlays' => array_values(array_map(function ($leg, $idx) use ($pointId, $sidecarListenPort, $sidecarPortRangeEnd) {
@@ -4365,7 +5090,7 @@ final class ProvisioningService
                 ];
             }, $legs, array_keys($legs))),
             'mptcp_policy' => [
-                'endpoint_id_base' => ($pointId % 25) * 10,
+                'endpoint_id_base' => (($pointId % 25) * 10) + 1,
                 'endpoints' => array_values(array_map(function ($leg, $idx) use ($pointId) {
                     return [
                         'address' => (string) ($leg['local_address'] ?? ''),
@@ -4392,7 +5117,7 @@ final class ProvisioningService
             : null;
         $clientConfig = $this->decodeJsonAssoc($client['agent_config_json'] ?? null);
         $point = (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0
-            ? $this->db->fetchOne('SELECT agent_config_json, sidecar_host, listen_port FROM sidecar_points WHERE id = :id LIMIT 1', ['id' => (int) $forward['bond_sidecar_point_id']])
+            ? $this->db->fetchOne('SELECT agent_config_json, sidecar_host, listen_port, bond_listen_port, mptcp_listen_port FROM sidecar_points WHERE id = :id LIMIT 1', ['id' => (int) $forward['bond_sidecar_point_id']])
             : null;
         $sidecarConfig = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
 
@@ -4418,8 +5143,8 @@ final class ProvisioningService
             ? (int) $nodeConfig['wireguard_fallback_tcp_port']
             : ($nodeBasePort > 0 ? $nodeBasePort + 10000 : 0);
 
-        $sidecarListenPort = (int) ($point['listen_port'] ?? 0);
-        $sidecarPortRangeEnd = (int) ($sidecarConfig['wireguard_port_range_end'] ?? 0);
+        $sidecarListenPort = $this->sidecarWireguardListenPort(is_array($point) ? $point : [], $sidecarConfig);
+        $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $sidecarConfig);
         $sidecarLegPort = $this->stableSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $forwardId, $nodeId);
 
         return [
@@ -4427,6 +5152,7 @@ final class ProvisioningService
             'interface_name' => 'lwf' . $forwardId . 'n' . $nodeId,
             'listen_port' => $this->stableMptcpSlavePort($nodeBasePort, $forwardId),
             'fallback_tcp_port' => $this->stableMptcpSlavePort($nodeBaseFallback, $forwardId),
+            'local_uot_udp_port' => $this->stableLocalUotUdpPort($forwardId, $nodeId),
             'outer_transport' => $outerTransport,
             'sidecar_endpoint_host' => trim((string) ($point['sidecar_host'] ?? '')),
             'sidecar_endpoint_port' => $sidecarLegPort > 0 ? $sidecarLegPort : $sidecarListenPort,
@@ -4465,12 +5191,21 @@ final class ProvisioningService
         $wssLegs = max(1, count($endpoints));
         $quicLegs = 0;
         foreach ($endpoints as $endpoint) {
-            $nodeConfig = is_string($endpoint['node_agent_config_json'] ?? null)
-                ? json_decode((string) $endpoint['node_agent_config_json'], true)
-                : [];
-            if (!is_array($nodeConfig) || (bool) ($nodeConfig['supports_quic'] ?? true)) {
+            if ($this->nodeSupportsBondQuic(
+                $endpoint['node_agent_config_json'] ?? null,
+                (string) ($endpoint['node_agent_version'] ?? '')
+            )) {
                 $quicLegs++;
             }
+        }
+        if ($quicLegs === 0) {
+            $wssOnlyCeiling = max($ceiling, $configuredJoinTimeout);
+            return [
+                'join_timeout_ms' => max($floor, min($wssOnlyCeiling, $configuredJoinTimeout)),
+                'join_timeout_floor_ms' => $floor,
+                'join_timeout_ceiling_ms' => $wssOnlyCeiling,
+                'join_timeout_per_leg_ms' => $perLeg,
+            ];
         }
         $totalLegs = max(1, $wssLegs + $quicLegs);
         $adaptive = $floor + max(0, $totalLegs - 1) * $perLeg;
@@ -4489,17 +5224,32 @@ final class ProvisioningService
      */
     private function resolveBondDirectTarget(array $forward): array
     {
+        return $this->resolveSidecarDirectTarget($forward, 'bond');
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @return array{host: string, port: int}
+     */
+    private function resolveSidecarDirectTarget(array $forward, string $clientMode): array
+    {
+        $normalizedMode = $this->normalizeClientMode($clientMode);
         $host = trim((string) ($forward['bond_sidecar_host'] ?? ''));
-        $port = (int) ($forward['bond_sidecar_port'] ?? 0);
+        $pointConfig = $this->decodeJsonAssoc($forward['bond_sidecar_point_agent_config_json'] ?? null);
+        $port = $normalizedMode === 'mptcp'
+            ? (int) ($forward['mptcp_sidecar_port'] ?? 0)
+            : (int) ($forward['bond_sidecar_port'] ?? 0);
 
         if (($host === '' || $port <= 0) && (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0) {
             $point = $this->db->fetchOne(
-                'SELECT sidecar_host, listen_port FROM sidecar_points WHERE id = :id LIMIT 1',
+                'SELECT sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, agent_config_json FROM sidecar_points WHERE id = :id LIMIT 1',
                 ['id' => (int) $forward['bond_sidecar_point_id']]
             );
             if (is_array($point)) {
                 $host = trim((string) ($point['sidecar_host'] ?? $host));
-                $pointPort = (int) ($point['listen_port'] ?? 0);
+                $pointPort = $normalizedMode === 'mptcp'
+                    ? $this->sidecarMptcpListenPort($point, $this->decodeJsonAssoc($point['agent_config_json'] ?? null))
+                    : $this->sidecarBondListenPort($point);
                 if ($pointPort > 0) {
                     $port = $pointPort;
                 }
@@ -4511,6 +5261,17 @@ final class ProvisioningService
                 'host' => $host,
                 'port' => $port,
             ];
+        }
+
+        if ($normalizedMode === 'mptcp') {
+            $fallbackHost = trim((string) ($forward['bond_remote_host'] ?? ''));
+            $fallbackPort = (int) ($forward['bond_remote_port'] ?? 0);
+            if ($fallbackHost !== '' && $fallbackPort > 0) {
+                return [
+                    'host' => $fallbackHost,
+                    'port' => $fallbackPort,
+                ];
+            }
         }
 
         return $this->resolveBondRemoteTarget($forward);
