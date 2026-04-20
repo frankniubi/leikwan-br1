@@ -6,6 +6,7 @@ namespace Leikwan\Master\Controllers;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\WhmcsIdentityService;
@@ -802,6 +803,7 @@ final class TenantController extends BaseController
                 break;
             }
         }
+        $overviewClient = $editing ?? ($clients[0] ?? null);
 
         $latestClientAgentVersion = $this->artifactVersion('client_agent');
         $clientUsageMap = $this->provisioning->clientUsageOverviewMap(array_map(
@@ -831,6 +833,17 @@ final class TenantController extends BaseController
             }
             $clientForwardInstallMap[$clientId] = array_values($entries);
         }
+        $bondLegReputationService = new BondLegReputationService($this->db);
+        $tenantBondLegRows = $bondLegReputationService->scopedRowsForTenant((int) $user['id']);
+        $tenantBondLegEvents = $bondLegReputationService->recentEvents(['user_id' => (int) $user['id']], 50);
+        $bondLegRowsByForward = [];
+        foreach ($tenantBondLegRows as $row) {
+            $bondLegRowsByForward[(int) ($row['forward_id'] ?? 0)][] = $row;
+        }
+        $bondLegEventsByForward = [];
+        foreach ($tenantBondLegEvents as $event) {
+            $bondLegEventsByForward[(int) ($event['forward_id'] ?? 0)][] = $event;
+        }
         $clientCards = '';
         foreach ($clients as $client) {
             $assignedForwards = $clientForwardInstallMap[(int) ($client['id'] ?? 0)] ?? [];
@@ -848,7 +861,19 @@ final class TenantController extends BaseController
             };
             $diagLabel = $diagStatus !== '' ? $diagStatus : 'not run';
             $diagDialogId = 'client-diag-' . (int) $client['id'];
-            $diagDialog = $this->renderTenantClientDiagnosticsDialog($client, $diagDialogId);
+            $forwardIds = array_map(static fn(array $entry): int => (int) ($entry['forward_id'] ?? 0), $assignedForwards);
+            $clientWithReputation = $client;
+            $clientWithReputation['bond_leg_reputation_rows'] = [];
+            $clientWithReputation['bond_leg_reputation_events'] = [];
+            foreach ($forwardIds as $forwardId) {
+                foreach ($bondLegRowsByForward[$forwardId] ?? [] as $row) {
+                    $clientWithReputation['bond_leg_reputation_rows'][] = $row;
+                }
+                foreach ($bondLegEventsByForward[$forwardId] ?? [] as $event) {
+                    $clientWithReputation['bond_leg_reputation_events'][] = $event;
+                }
+            }
+            $diagDialog = $this->renderTenantClientDiagnosticsDialog($clientWithReputation, $diagDialogId);
 
             $agentVersion = trim((string) ($client['agent_version'] ?? ''));
             $lastSyncAt = trim((string) ($client['last_sync_at'] ?? ''));
@@ -897,6 +922,8 @@ final class TenantController extends BaseController
                 </div>
                 <div class="grid two">
                   <div>
+                    <div><span class="muted">Client ID:</span> ' . (int) ($client['id'] ?? 0) . '</div>
+                    <div><span class="muted">Token:</span> <code>' . $this->escape((string) ($client['agent_token'] ?? '')) . '</code></div>
                     <div><span class="muted">Group:</span> ' . $this->escape((string) ($client['group_name'] ?? '')) . '</div>
                     <div><span class="muted">Default Route:</span> ' . $this->escape($this->endpointModeLabel((string) ($client['default_endpoint_mode'] ?? 'slave_group'))) . '</div>
                     <div><span class="muted">Default Slave Group:</span> ' . $this->escape((string) ($client['default_node_group_key'] ?? '')) . '</div>
@@ -910,6 +937,7 @@ final class TenantController extends BaseController
                   </div>
                 </div>
                 ' . $usageSummary . '
+                ' . $installDetails . '
                 ' . $assignedForwardSummary . '
                 <div class="actions">
                   <a class="button ghost" href="/tenant/clients?edit=' . (int) $client['id'] . '">Edit</a>
@@ -927,12 +955,11 @@ final class TenantController extends BaseController
                     <button type="submit" class="button danger"' . (empty($features['allow_delete_clients']) ? ' disabled' : '') . '>Delete</button>
                   </form>
                 </div>
-                ' . $installDetails . '
                 <details style="margin-top:14px;">
                   <summary>Usage Calendar</summary>
                   ' . $usagePanel . '
                 </details>
-                <div class="muted" style="margin-top:14px;">Open <strong>View Diagnostics</strong> to check whether each bond leg is healthy and whether the tunnel was established. Slave addresses are hidden in that window.</div>
+                <div class="muted" style="margin-top:14px;">Open <strong>View Diagnostics</strong> to check whether each bond leg is healthy and whether the tunnel was established. Slave addresses are hidden in that window. Reference only. Runtime already adapts automatically when a leg degrades. You usually do not need to take action unless the line itself is failing.</div>
                 ' . $diagDialog . '
               </section>';
         }
@@ -959,11 +986,12 @@ final class TenantController extends BaseController
                 <p class="muted">这里管理你自己的线路接入点。创建后可直接安装 client-agent，并自动同步匹配的转发规则。</p>
               </div>
             </div>
+            ' . $this->renderClientAppDownloadOverview($overviewClient) . '
             ' . $notice . '
             <div class="grid two">
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Client' : 'Create Client') . '</h3>
-                <p class="muted">Think of a client here as a line profile plus an install token. The client-agent install itself only needs the panel URL and token. Route mode, slave group and chain are defaults for future forwards, not install-time bindings.</p>
+                <p class="muted">Think of a client here as a line profile plus a <code>Client ID + Token</code>. The app sign-in flow only needs those values. Route mode, slave group and chain are defaults for future forwards, not install-time bindings.</p>
                 <form method="post" action="/tenant/clients">
                   <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                   <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
@@ -971,19 +999,24 @@ final class TenantController extends BaseController
                     <div class="field"><label>Name</label><input type="text" name="name" value="' . $this->escape((string) ($editing['name'] ?? '')) . '" required></div>
                     <div class="field"><label>Display Host</label><input type="text" name="display_host" value="' . $this->escape((string) ($editing['display_host'] ?? '')) . '" required><p class="muted">Tenant-facing display label only. It does not drive slave SNI / CDN routing.</p></div>
                     <div class="field"><label>Client Group</label><select name="group_id">' . $groupOptions . '</select></div>
-                    <div class="field"><label>Bind IP</label><input type="text" name="bind_ip" value="' . $this->escape((string) ($editing['bind_ip'] ?? '')) . '"></div>
-                    <div class="field"><label>NIC Name</label><input type="text" name="nic_name" value="' . $this->escape((string) ($editing['nic_name'] ?? '')) . '"></div>
-                    <div class="field"><label>Port Range Start</label><input type="number" name="port_range_start" value="' . $this->escape((string) ($editing['port_range_start'] ?? '')) . '"><p class="muted">Optional. When this range is set, the panel auto-assigns forward ports from it.</p></div>
-                    <div class="field"><label>Port Range End</label><input type="number" name="port_range_end" value="' . $this->escape((string) ($editing['port_range_end'] ?? '')) . '"><p class="muted">Optional. Keep the range wide enough for future forwards.</p></div>
-                    <div class="field"><label>Traffic Multiplier</label><input type="number" step="0.01" name="traffic_multiplier" value="' . $this->escape((string) ($editing['traffic_multiplier'] ?? '1.00')) . '"></div>
-                    <div class="field"><label>Default Route Mode</label>
-                      <select name="default_endpoint_mode">' . $this->renderEndpointModeOptions((string) ($editing['default_endpoint_mode'] ?? 'slave_group')) . '</select>
-                    </div>
-                    <div class="field"><label>Default Slave Group Key</label><input type="text" name="default_node_group_key" value="' . $this->escape((string) ($editing['default_node_group_key'] ?? '')) . '"><p class="muted">Optional. Used as the default route suggestion when you create a forward later.</p></div>
-                    <div class="field"><label>Default Forward Chain</label><select name="default_forward_chain_id">' . $chainOptions . '</select><p class="muted">Optional advanced default. Leave empty for the simplest setup.</p></div>
                     <div class="field"><label>Status</label><select name="status"><option value="active"' . (((string) ($editing['status'] ?? 'active')) === 'active' ? ' selected' : '') . '>active</option><option value="disabled"' . (((string) ($editing['status'] ?? '')) === 'disabled' ? ' selected' : '') . '>disabled</option></select></div>
-                    <div class="field"><label>Agent Config JSON</label><textarea name="agent_config_json" placeholder="{&quot;poll_interval_seconds&quot;:60}">' . $this->escape((string) ($editing['agent_config_json'] ?? '')) . '</textarea><p class="muted">Merged into the installed client-agent config on the next sync. Useful for poll interval, log level or moving the panel domain.</p></div>
                   </div>
+                  <details style="margin-top:14px;">
+                    <summary>Advanced client settings</summary>
+                    <div class="form-grid" style="margin-top:14px;">
+                      <div class="field"><label>Bind IP</label><input type="text" name="bind_ip" value="' . $this->escape((string) ($editing['bind_ip'] ?? '')) . '"></div>
+                      <div class="field"><label>NIC Name</label><input type="text" name="nic_name" value="' . $this->escape((string) ($editing['nic_name'] ?? '')) . '"></div>
+                      <div class="field"><label>Port Range Start</label><input type="number" name="port_range_start" value="' . $this->escape((string) ($editing['port_range_start'] ?? '')) . '"><p class="muted">Optional. When this range is set, the panel auto-assigns forward ports from it.</p></div>
+                      <div class="field"><label>Port Range End</label><input type="number" name="port_range_end" value="' . $this->escape((string) ($editing['port_range_end'] ?? '')) . '"><p class="muted">Optional. Keep the range wide enough for future forwards.</p></div>
+                      <div class="field"><label>Traffic Multiplier</label><input type="number" step="0.01" name="traffic_multiplier" value="' . $this->escape((string) ($editing['traffic_multiplier'] ?? '1.00')) . '"></div>
+                      <div class="field"><label>Default Route Mode</label>
+                        <select name="default_endpoint_mode">' . $this->renderEndpointModeOptions((string) ($editing['default_endpoint_mode'] ?? 'slave_group')) . '</select>
+                      </div>
+                      <div class="field"><label>Default Slave Group Key</label><input type="text" name="default_node_group_key" value="' . $this->escape((string) ($editing['default_node_group_key'] ?? '')) . '"><p class="muted">Optional. Used as the default route suggestion when you create a forward later.</p></div>
+                      <div class="field"><label>Default Forward Chain</label><select name="default_forward_chain_id">' . $chainOptions . '</select><p class="muted">Optional advanced default. Leave empty for the simplest setup.</p></div>
+                      <div class="field"><label>Agent Config JSON</label><textarea name="agent_config_json" placeholder="{&quot;poll_interval_seconds&quot;:60}">' . $this->escape((string) ($editing['agent_config_json'] ?? '')) . '</textarea><p class="muted">Merged into the installed client-agent config on the next sync. Useful for poll interval, log level or moving the panel domain.</p></div>
+                    </div>
+                  </details>
                   <div class="actions">
                     <button class="button" type="submit"' . (empty($features['allow_manage_clients']) ? ' disabled' : '') . '>Save Client</button>
                     ' . ($editing !== null ? '<a class="button secondary" href="/tenant/clients">Cancel</a>' : '') . '
@@ -1085,7 +1118,7 @@ final class TenantController extends BaseController
                 <div class="hero" style="margin-bottom:14px;">
                   <div>
                     <h3 style="margin-bottom:6px;">' . $this->escape((string) $point['name']) . '</h3>
-                    <div class="muted">' . $this->escape((string) $point['sidecar_host']) . ':' . (int) $point['listen_port'] . ' • ' . ($isShared ? 'Shared by admin' : 'Owned by you') . '</div>
+                    <div class="muted">' . $this->escape((string) $point['sidecar_host']) . ' (' . $this->escape($this->sidecarPortSummary($point)) . ') • ' . ($isShared ? 'Shared by admin' : 'Owned by you') . '</div>
                   </div>
                   <div class="actions" style="margin-top:0;">
                     <span class="badge ' . $status['class'] . '">' . $this->escape($status['label']) . '</span>
@@ -1129,7 +1162,7 @@ final class TenantController extends BaseController
         }
 
         if ($cards === '') {
-            $cards = '<div class="muted">No sidecar point yet. Create one, install it on your C-side machine, then select it when you create a bond forward.</div>';
+            $cards = '<div class="muted">No sidecar point yet. Create one, install it on your C-side machine, then select it when you create a bond or MPTCP forward.</div>';
         }
 
         $body = '
@@ -1149,7 +1182,11 @@ final class TenantController extends BaseController
                   <div class="form-grid">
                     <div class="field"><label>Name</label><input type="text" name="name" value="' . $this->escape((string) ($editing['name'] ?? '')) . '" required></div>
                     <div class="field"><label>Sidecar Host</label><input type="text" name="sidecar_host" value="' . $this->escape((string) ($editing['sidecar_host'] ?? '')) . '" placeholder="198.51.100.10 or c.example.com" required></div>
-                    <div class="field"><label>Listen Port</label><input type="number" name="listen_port" value="' . $this->escape((string) ($editing['listen_port'] ?? $this->defaultBondRemotePort())) . '" required></div>
+                    <div class="field"><label>Bond Listen Port</label><input type="number" name="bond_listen_port" value="' . $this->escape((string) ($editing['bond_listen_port'] ?? $editing['listen_port'] ?? $this->defaultBondRemotePort())) . '" required></div>
+                    <div class="field"><label>MPTCP Listen Port</label><input type="number" name="mptcp_listen_port" value="' . $this->escape((string) ($editing['mptcp_listen_port'] ?? $this->sidecarMptcpListenPort($editing ?? []))) . '" required></div>
+                    <div class="field"><label>CF Listen Port</label><input type="number" name="cf_listen_port" value="' . $this->escape((string) ($editing['cf_listen_port'] ?? 443)) . '" required></div>
+                    <div class="field"><label>CF TLS Cert Path</label><input type="text" name="cf_tls_cert_path" value="' . $this->escape((string) ($this->decodeJsonList($editing['agent_config_json'] ?? null)['cf_tls_cert_path'] ?? '')) . '" placeholder="/etc/ssl/cf/fullchain.pem"></div>
+                    <div class="field"><label>CF TLS Key Path</label><input type="text" name="cf_tls_key_path" value="' . $this->escape((string) ($this->decodeJsonList($editing['agent_config_json'] ?? null)['cf_tls_key_path'] ?? '')) . '" placeholder="/etc/ssl/cf/privkey.pem"></div>
                     <div class="field"><label>Bind Host</label><input type="text" name="bind_host" value="' . $this->escape((string) ($editing['bind_host'] ?? '0.0.0.0')) . '" placeholder="0.0.0.0"></div>
                     <div class="field"><label>Total Limit Mbps</label><input type="number" name="total_speed_limit_mbps" value="' . $this->escape((string) ($editing['total_speed_limit_mbps'] ?? '')) . '" min="1" placeholder="optional"></div>
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>disabled</option></select></div>
@@ -1694,11 +1731,8 @@ final class TenantController extends BaseController
 
         $summary = $this->provisioning->serviceSummary($serviceId);
         $features = $summary['effective_features'] ?? [];
-        $bondReady = $this->isBondReady($service);
-        $availableSidecarPoints = is_array($summary['available_sidecar_points'] ?? null) ? $summary['available_sidecar_points'] : [];
-        $hasSidecarPoints = $availableSidecarPoints !== [];
+        $availableForwardCombinations = is_array($summary['available_forward_combinations'] ?? null) ? $summary['available_forward_combinations'] : [];
 
-        // Handle POST — create the forward
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             try {
                 SessionAuth::validateCsrf($request);
@@ -1714,175 +1748,42 @@ final class TenantController extends BaseController
             }
         }
 
-        // Build option lists
-        $allowedGroups = $summary['allowed_node_groups'] ?? [];
-        $availableClients = $summary['available_clients'] ?? [];
-        $availableChains = $summary['available_forward_chains'] ?? [];
-        $allowedClientGroups = $summary['allowed_client_groups'] ?? [];
-
-        $clientOptions = '<option value="">Auto choose</option>';
-        foreach ($availableClients as $client) {
-            $clientOptions .= '<option value="' . (int) $client['id'] . '">' . $this->escape((string) $client['name']) . ' - ' . $this->escape((string) $client['display_host']) . '</option>';
-        }
-        $clientGroupOptions = '';
-        foreach ($allowedClientGroups as $group) {
-            $clientGroupOptions .= '<option value="' . (int) $group['id'] . '">' . $this->escape((string) $group['name']) . '</option>';
-        }
-        $groupOptions = '<option value="">Auto choose</option>';
-
-        // Platform node groups
-        if ($allowedGroups !== []) {
-            $groupOptions .= '<optgroup label="Platform Nodes">';
-            foreach ($allowedGroups as $group) {
-                $groupOptions .= '<option value="' . $this->escape((string) $group['group_key']) . '">' . $this->escape((string) $group['name']) . '</option>';
-            }
-            $groupOptions .= '</optgroup>';
-        }
-
-        // User-owned nodes
-        $userNodes = $this->db->fetchAll(
-            'SELECT n.id, n.name, n.public_ip, n.sharing_mode
-             FROM nodes n
-             INNER JOIN services s ON s.id = n.owner_service_id
-             WHERE s.user_id = :uid AND (n.status = :active OR n.status = :degraded)
-             ORDER BY n.name ASC',
-            ['uid' => $user['id'], 'active' => 'active', 'degraded' => 'degraded']
-        );
-        if ($userNodes !== []) {
-            $groupOptions .= '<optgroup label="My Slaves">';
-            foreach ($userNodes as $uNode) {
-                $label = $this->escape((string) $uNode['name']) . ' (' . $this->escape((string) $uNode['public_ip']) . ')';
-                $groupOptions .= '<option value="_user_node_' . (int) $uNode['id'] . '">' . $label . '</option>';
-            }
-            $groupOptions .= '</optgroup>';
-        }
-
-        // Group-shared nodes
-        $sharedGroups = $this->provisioning->listUserSlaveGroups((int) $user['id']);
-        foreach ($sharedGroups as $sg) {
-            $sharedNodes = $sg['shared_nodes'] ?? [];
-            if ($sharedNodes === []) {
-                continue;
-            }
-            $groupOptions .= '<optgroup label="Shared — ' . $this->escape((string) $sg['name']) . '">';
-            foreach ($sharedNodes as $sNode) {
-                $label = $this->escape((string) $sNode['name']) . ' (' . $this->escape((string) $sNode['public_ip']) . ')';
-                $groupOptions .= '<option value="_user_node_' . (int) $sNode['id'] . '">' . $label . '</option>';
-            }
-            $groupOptions .= '</optgroup>';
-        }
-        $chainOptions = '<option value="">No chain</option>';
-        foreach ($availableChains as $chain) {
-            $chainOptions .= '<option value="' . (int) $chain['id'] . '">' . $this->escape((string) $chain['name']) . '</option>';
-        }
-        $sidecarPointOptions = $this->renderSidecarPointOptions($availableSidecarPoints);
-
-        // Determine available connection modes
-        $modeOptions = '<option value="single">Single (Direct)</option><option value="race">Race (Failover)</option>';
-        if ($bondReady) {
-            $modeOptions .= '<option value="bond">Bond (Aggregation)</option>';
-            if ($hasSidecarPoints) {
-                $modeOptions .= '<option value="mptcp">MPTCP (Kernel Multipath)</option>';
-            }
+        $combinationOptions = '<option value="">Select a forward combination</option>';
+        foreach ($availableForwardCombinations as $combination) {
+            $combinationOptions .= '<option value="' . (int) ($combination['id'] ?? 0) . '">' . $this->escape((string) ($combination['tenant_label'] ?? '')) . '</option>';
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
-        $defaultBondRemotePort = $this->defaultBondRemotePort();
-
-        $sidecarField = '';
-        if ($bondReady && $hasSidecarPoints) {
-            $sidecarField = '
-                <div class="field" id="qcf-sidecar-field" style="display:none;">
-                  <label>Sidecar Point</label>
-                  <select id="qcf-sidecar-point" name="bond_sidecar_point_id">' . $sidecarPointOptions . '</select>
-                  <p class="field-note">Required for Bond/MPTCP modes.</p>
-                </div>';
-        }
-
-        $mptcpWarning = '
-                <p id="qcf-mptcp-warning" class="field-note" style="display:none;color:var(--danger);">
-                  ⚠ MPTCP requires the client machine to run Linux with kernel 6.0 or above.
-                </p>';
+        $emptyState = $availableForwardCombinations === []
+            ? '<div class="flash danger">No route package is available for this service yet. Ask admin to publish a forward combination first.</div>'
+            : '';
 
         $body = '
             <div class="hero">
               <div>
                 <h2>Create Forward</h2>
-                <p class="muted">Specify your target and create a forward rule. Advanced options are auto-filled with safe defaults.</p>
+                <p class="muted">Choose one route package, then fill your backend target. The panel keeps all backend topology hidden.</p>
               </div>
             </div>
             <div class="card">
               ' . (empty($features['allow_manage_forwards']) ? '<div class="flash danger">Forward creation is disabled for your plan/account.</div>' : '') . '
+              ' . $emptyState . '
               <form method="post" action="/tenant/services/' . $serviceId . '/create-forward">
                 <input type="hidden" name="csrf_token" value="' . $csrf . '">
                 <div class="form-grid">
-                  <div class="field"><label>Target Host <span style="color:var(--danger)">*</span></label><input type="text" name="target_host" placeholder="10.0.0.5 or example.com" required></div>
-                  <div class="field"><label>Target Port <span style="color:var(--danger)">*</span></label><input type="number" name="target_port" placeholder="443" required></div>
-                  <div class="field"><label>Connection Mode</label>
-                    <select id="qcf-client-mode" name="client_mode">' . $modeOptions . '</select>
-                    <p class="field-note">Single = simplest. Race = failover.' . ($bondReady ? ' Bond = aggregation. MPTCP = kernel multipath.' : '') . '</p>
-                  </div>
-                  ' . $sidecarField . '
-                  ' . $mptcpWarning . '
+                  <div class="field"><label>Forward Combination</label><select name="forward_combination_id" required>' . $combinationOptions . '</select></div>
+                  <div class="field"><label>Target Host</label><input type="text" name="target_host" placeholder="10.0.0.5 or example.com" required></div>
+                  <div class="field"><label>Target Port</label><input type="number" name="target_port" placeholder="443" required></div>
+                  <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" placeholder="auto from line range"></div>
+                  <div class="field"><label>Transport</label><select name="transport_mode"><option value="tcp">TCP</option><option value="tcp+udp">TCP + UDP</option><option value="udp">UDP</option></select></div>
                 </div>
-
-                <details style="margin-top:20px;">
-                  <summary style="cursor:pointer;font-weight:600;color:var(--text-muted);">Advanced Options</summary>
-                  <div class="form-grid" style="margin-top:12px;">
-                    <div class="field"><label>Line Client</label><select name="line_client_id" ' . ($availableClients === [] || empty($features['allow_select_specific_line_client']) ? 'disabled' : '') . '>' . $clientOptions . '</select></div>
-                    <div class="field"><label>Line Client Groups</label><select name="line_client_group_ids[]" ' . (!empty($features['allow_select_multiple_line_groups']) ? 'multiple size="4"' : '') . '>' . $clientGroupOptions . '</select></div>
-                    <div class="field"><label>Line Group Mode</label>
-                      <select name="line_group_mode">
-                        <option value="selected">selected groups only</option>
-                        ' . (!empty($features['allow_use_all_line_groups']) ? '<option value="all_allowed">all allowed groups</option>' : '') . '
-                      </select>
-                    </div>
-                    <div class="field"><label>Slave Group</label><select name="node_group">' . $groupOptions . '</select></div>
-                    <div class="field"><label>Forward Chain</label><select name="forward_chain_id" ' . (empty($features['allow_forward_chain']) ? 'disabled' : '') . '>' . $chainOptions . '</select></div>
-                    <div class="field"><label>Transport</label>
-                      <select name="transport_mode">
-                        <option value="tcp">TCP</option>
-                        <option value="tcp+udp" selected>TCP + UDP</option>
-                        <option value="udp">UDP</option>
-                      </select>
-                    </div>
-                    <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" placeholder="auto from line range"><p class="field-note">Leave empty for auto.</p></div>
-                    <div class="field"><label>Public Port</label><input type="number" name="public_port" placeholder="auto"><p class="field-note">Leave empty for auto.</p></div>
-                    <div class="field"><label>Route Mode</label><select name="endpoint_mode">' . $this->renderEndpointModeOptions('slave_group', !empty($features['allow_forward_chain'])) . '</select></div>
-                    <div class="field"><label>Sidecar Host</label><input type="text" name="bond_remote_host" placeholder="manual override"><p class="field-note">Only for Bond/MPTCP without a saved sidecar point.</p></div>
-                    <div class="field"><label>Sidecar Port</label><input type="number" name="bond_remote_port" value="' . $defaultBondRemotePort . '" placeholder="' . $defaultBondRemotePort . '"></div>
-                    <div class="field"><label>Filter Profile</label>
-                      <select name="filter_profile">
-                        <option value="off">off</option>
-                        <option value="log-only">log-only</option>
-                        <option value="drop-suspicious">drop-suspicious</option>
-                      </select>
-                    </div>
-                  </div>
-                </details>
-
+                <div class="field-note" id="forward-combination-help">Show the selected combination\'s short description and badge here without exposing backend details.</div>
                 <div class="actions" style="margin-top:20px;">
-                  <button class="button" type="submit" ' . (empty($features['allow_manage_forwards']) ? 'disabled' : '') . '>Create Forward</button>
+                  <button class="button" type="submit" ' . (empty($features['allow_manage_forwards']) || $availableForwardCombinations === [] ? 'disabled' : '') . '>Create Forward</button>
                   <a class="button ghost" href="/tenant/services/' . $serviceId . '">Cancel</a>
                 </div>
               </form>
-            </div>
-            <script>
-            (function(){
-              var mode = document.getElementById("qcf-client-mode");
-              var sidecar = document.getElementById("qcf-sidecar-field");
-              var mptcpWarn = document.getElementById("qcf-mptcp-warning");
-              function toggle() {
-                var isBondOrMptcp = (mode.value === "bond" || mode.value === "mptcp");
-                if (sidecar) { sidecar.style.display = isBondOrMptcp ? "" : "none"; }
-                if (mptcpWarn) { mptcpWarn.style.display = (mode.value === "mptcp") ? "" : "none"; }
-              }
-              if (mode) {
-                mode.addEventListener("change", toggle);
-                toggle();
-              }
-            })();
-            </script>';
+            </div>';
 
         return $this->page('Create Forward', $body, $user, $this->tenantNav('wizard', $serviceId));
     }
@@ -1930,7 +1831,9 @@ final class TenantController extends BaseController
         $selectedSidecarPoint = $this->selectedSidecarPoint($availableSidecarPoints, (string) $data['bond_sidecar_point_id']);
         if ($selectedSidecarPoint !== null) {
             $data['bond_remote_host'] = trim((string) ($selectedSidecarPoint['sidecar_host'] ?? $data['bond_remote_host']));
-            $selectedPort = max(0, (int) ($selectedSidecarPoint['listen_port'] ?? 0));
+            $selectedPort = (string) $data['client_mode'] === 'mptcp'
+                ? $this->sidecarMptcpListenPort($selectedSidecarPoint)
+                : $this->sidecarBondListenPort($selectedSidecarPoint);
             if ($selectedPort > 0) {
                 $data['bond_remote_port'] = (string) $selectedPort;
             }
@@ -2237,67 +2140,6 @@ final class TenantController extends BaseController
             SessionAuth::flash('success', 'Client update requested. The installed client-agent will pull the latest panel-hosted version on its next sync.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to request client update: ' . $throwable->getMessage());
-        }
-
-        return Response::redirect('/tenant/clients');
-    }
-
-    public function installClientRemote(Request $request, array $params): Response
-    {
-        $user = SessionAuth::currentUser($this->db);
-        if ($user === null || (string) $user['role'] !== 'tenant') {
-            return Response::redirect('/login');
-        }
-
-        try {
-            SessionAuth::validateCsrf($request);
-            $clientId = $this->idParam($params);
-            $client = $this->db->fetchOne('SELECT * FROM clients WHERE id = :id AND owner_user_id = :user_id LIMIT 1', ['id' => $clientId, 'user_id' => $user['id']]);
-            if ($client === null) {
-                throw new ApiException('client_not_found', 404);
-            }
-
-            $script = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'install' . DIRECTORY_SEPARATOR . 'remote-install-client-agent.sh';
-            $host = trim((string) $request->input('host', ''));
-            $sshUser = trim((string) $request->input('user', 'root'));
-            $sshPort = trim((string) $request->input('port', '22'));
-            $sshKey = trim((string) $request->input('key', ''));
-
-            if ($host === '') {
-                throw new ApiException('remote_install_invalid', 422, ['message' => 'host is required']);
-            }
-
-            $parts = [
-                'bash',
-                $script,
-                '--host',
-                $host,
-                '--user',
-                $sshUser,
-                '--port',
-                $sshPort,
-                '--master',
-                $this->agentBaseUrl(),
-                '--artifact-base',
-                $this->artifactBaseUrl(),
-                '--client-id',
-                (string) $clientId,
-                '--agent-token',
-                (string) ($client['agent_token'] ?? ''),
-            ];
-            if ($sshKey !== '') {
-                $parts[] = '--key';
-                $parts[] = $sshKey;
-            }
-
-            [$exitCode, $stdout, $stderr] = $this->runLocalCommand($parts);
-            if ($exitCode !== 0) {
-                throw new ApiException('remote_install_failed', 500, ['stdout' => $stdout, 'stderr' => $stderr]);
-            }
-
-            SessionAuth::flash('success', 'Remote client-agent install started. ' . trim($stdout));
-        } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to start remote install: ' . $throwable->getMessage());
         }
 
         return Response::redirect('/tenant/clients');
@@ -2756,27 +2598,17 @@ final class TenantController extends BaseController
      */
     private function normalizeTenantForwardPayload(array $payload): array
     {
-        $payload['client_mode'] = $this->canonicalClientMode((string) ($payload['client_mode'] ?? 'single'));
-        $payload['bond_sidecar_point_id'] = max(0, (int) ($payload['bond_sidecar_point_id'] ?? 0));
-        $payload['bond_remote_host'] = trim((string) ($payload['bond_remote_host'] ?? $payload['bond_sidecar_host'] ?? ''));
-        $payload['bond_remote_port'] = max(0, (int) ($payload['bond_remote_port'] ?? $payload['bond_sidecar_port'] ?? 0));
-        $payload['transport_mode'] = match (strtolower(trim((string) ($payload['transport_mode'] ?? 'tcp')))) {
-            'udp' => 'udp',
-            'tcp+udp', 'udp+tcp', 'both' => 'tcp+udp',
-            default => 'tcp',
-        };
-
-        if (in_array($payload['client_mode'], ['bond', 'mptcp'], true)) {
-            if ((int) $payload['bond_remote_port'] <= 0) {
-                $payload['bond_remote_port'] = $this->defaultBondRemotePort();
-            }
-        } else {
-            $payload['bond_sidecar_point_id'] = 0;
-        }
-
-        unset($payload['endpoint_count']);
-
-        return $payload;
+        return [
+            'forward_combination_id' => max(0, (int) ($payload['forward_combination_id'] ?? 0)),
+            'listen_port' => max(0, (int) ($payload['listen_port'] ?? 0)),
+            'target_host' => trim((string) ($payload['target_host'] ?? '')),
+            'target_port' => max(0, (int) ($payload['target_port'] ?? 0)),
+            'transport_mode' => match (strtolower(trim((string) ($payload['transport_mode'] ?? 'tcp')))) {
+                'udp' => 'udp',
+                'tcp+udp', 'udp+tcp', 'both' => 'tcp+udp',
+                default => 'tcp',
+            },
+        ];
     }
 
     /**
@@ -2823,7 +2655,9 @@ final class TenantController extends BaseController
             $selected = ((string) $id === $selectedValue) ? ' selected' : '';
             $options .= '<option value="' . $id . '"' . $selected
                 . ' data-host="' . $this->escape(trim((string) ($point['sidecar_host'] ?? ''))) . '"'
-                . ' data-port="' . max(0, (int) ($point['listen_port'] ?? 0)) . '">'
+                . ' data-port="' . $this->sidecarBondListenPort($point) . '"'
+                . ' data-bond-port="' . $this->sidecarBondListenPort($point) . '"'
+                . ' data-mptcp-port="' . $this->sidecarMptcpListenPort($point) . '">'
                 . $this->escape($this->sidecarPointOptionLabel($point))
                 . '</option>';
         }
@@ -2838,9 +2672,8 @@ final class TenantController extends BaseController
     {
         $name = trim((string) ($point['name'] ?? 'Sidecar'));
         $host = trim((string) ($point['sidecar_host'] ?? ''));
-        $port = max(0, (int) ($point['listen_port'] ?? 0));
         $scope = (int) ($point['owner_user_id'] ?? 0) > 0 ? 'Mine' : 'Shared';
-        $target = $host !== '' ? $host . ($port > 0 ? ':' . $port : '') : '';
+        $target = $host !== '' ? $host . ' (' . $this->sidecarPortSummary($point) . ')' : '';
 
         if ($target === '') {
             return $name . ' [' . $scope . ']';
@@ -2906,11 +2739,27 @@ final class TenantController extends BaseController
                   portInput.value = portInput.dataset.defaultPort || "";
                 }
 
-                function updateSummary(isBond, option) {
+                function isSidecarMode() {
+                  var mode = (modeSelect.value || "").toLowerCase();
+                  return mode === "bond" || mode === "mptcp";
+                }
+
+                function selectedPortForMode(option) {
+                  var mode = (modeSelect.value || "").toLowerCase();
+                  if (!option) {
+                    return portInput.dataset.defaultPort || "";
+                  }
+                  if (mode === "mptcp") {
+                    return option.dataset.mptcpPort || option.dataset.port || portInput.dataset.defaultPort || "";
+                  }
+                  return option.dataset.bondPort || option.dataset.port || portInput.dataset.defaultPort || "";
+                }
+
+                function updateSummary(sidecarMode, option) {
                   if (!summary) {
                     return;
                   }
-                  if (!isBond) {
+                  if (!sidecarMode) {
                     summary.style.display = "none";
                     summary.textContent = "";
                     return;
@@ -2921,26 +2770,26 @@ final class TenantController extends BaseController
                     : "Manual entry: fill the sidecar host and port.";
                 }
 
-                function updateFields(isBond, option) {
+                function updateFields(sidecarMode, option) {
                   if (hostField) {
-                    hostField.style.display = isBond && !option ? "" : "none";
+                    hostField.style.display = sidecarMode && !option ? "" : "none";
                   }
                   if (portField) {
-                    portField.style.display = isBond && !option ? "" : "none";
+                    portField.style.display = sidecarMode && !option ? "" : "none";
                   }
                 }
 
                 function refresh() {
-                  var isBond = (modeSelect.value || "").toLowerCase() === "bond";
+                  var sidecarMode = isSidecarMode();
                   var option = selectedPoint();
-                  if (isBond && option) {
+                  if (sidecarMode && option) {
                     hostInput.value = option.dataset.host || "";
-                    portInput.value = option.dataset.port || portInput.dataset.defaultPort || "";
+                    portInput.value = selectedPortForMode(option);
                   } else if (!option) {
                     resetManualFields();
                   }
-                  updateFields(isBond, option);
-                  updateSummary(isBond, option);
+                  updateFields(sidecarMode, option);
+                  updateSummary(sidecarMode, option);
                 }
 
                 modeSelect.addEventListener("change", refresh);
@@ -2961,7 +2810,7 @@ final class TenantController extends BaseController
     ): string {
         return '
             <div id="' . $this->escape($helperId) . '" class="flash danger" style="display:none; margin-top:16px;">
-              <strong>Bond needs a sidecar point.</strong><br>
+              <strong>Bond or MPTCP needs a sidecar point.</strong><br>
               <span class="muted">Open <a href="/tenant/sidecars"><strong>Sidecar Points</strong></a>, install one on the C-side machine, then come back and pick it here.</span>
             </div>
             <script>
