@@ -172,13 +172,66 @@ abstract class BaseController
     /**
      * @param array<string, mixed> $point
      */
+    protected function sidecarBondListenPort(array $point): int
+    {
+        $configured = (int) ($point['bond_listen_port'] ?? 0);
+        if ($configured > 0) {
+            return $configured;
+        }
+        return max(0, (int) ($point['listen_port'] ?? 0));
+    }
+
+    /**
+     * @param array<string, mixed> $point
+     */
+    protected function sidecarMptcpListenPort(array $point): int
+    {
+        $configured = (int) ($point['mptcp_listen_port'] ?? 0);
+        if ($configured > 0) {
+            return $configured;
+        }
+        $config = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
+        $wireguardListenPort = (int) ($config['wireguard_listen_port'] ?? 0);
+        if ($wireguardListenPort > 0) {
+            return $wireguardListenPort;
+        }
+        return $this->sidecarBondListenPort($point);
+    }
+
+    /**
+     * @param array<string, mixed> $point
+     */
+    protected function sidecarPortSummary(array $point): string
+    {
+        $parts = [];
+        $bondPort = $this->sidecarBondListenPort($point);
+        $mptcpPort = $this->sidecarMptcpListenPort($point);
+        $cfPort = max(0, (int) ($point['cf_listen_port'] ?? 0));
+        if ($bondPort > 0) {
+            $parts[] = 'bond ' . $bondPort;
+        }
+        if ($mptcpPort > 0 && $mptcpPort !== $bondPort) {
+            $parts[] = 'mptcp ' . $mptcpPort;
+        }
+        if ($cfPort > 0) {
+            $parts[] = 'cf ' . $cfPort;
+        }
+        if ($parts === []) {
+            return '0';
+        }
+        return implode(' / ', $parts);
+    }
+
+    /**
+     * @param array<string, mixed> $point
+     */
     protected function bondSidecarInstallCommand(array $point): string
     {
         $serviceName = $this->sidecarServiceName((int) ($point['id'] ?? 0));
         $command = 'curl -fsSL ' . $this->artifactBaseUrl() . '/artifacts/install-bond-sidecar.sh | bash -s -- --master '
             . $this->agentBaseUrl()
             . ' --artifact-base ' . $this->artifactBaseUrl()
-            . ' --listen-port ' . (int) ($point['listen_port'] ?? 0)
+            . ' --listen-port ' . $this->sidecarBondListenPort($point)
             . ' --token-secret ' . (string) ($point['token_secret'] ?? '')
             . ' --agent-token ' . (string) ($point['agent_token'] ?? '')
             . ' --service-name ' . $serviceName;
@@ -391,6 +444,61 @@ abstract class BaseController
             . '</details>';
     }
 
+    /**
+     * @param array<string, mixed>|null $client
+     */
+    protected function renderClientAppDownloadOverview(?array $client = null): string
+    {
+        $windowsAppUrl = $this->windowsClientAppUrl();
+        $androidApkUrl = $this->androidClientApkUrl();
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = trim((string) ($client['agent_token'] ?? ''));
+        $hasClient = $clientId > 0 && $agentToken !== '';
+        $linuxInstall = $hasClient
+            ? $this->clientAgentInstallCommand($client)
+            : 'Create a client first, then copy the exact Linux install command for that client.';
+        $linuxActions = $hasClient
+            ? [
+                $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
+                $this->renderCopyButton('Copy Install Command', $linuxInstall),
+            ]
+            : [
+                $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
+            ];
+        $linuxDescription = $hasClient
+            ? 'Example shown for Client ID ' . $clientId . '. Each client card below includes its own exact Client ID, Token, and Linux install command.'
+            : 'Windows and Android sign in with Client ID + Token. Linux remains a local/manual install on the host that will run the client-agent.';
+
+        return '<section class="card" style="margin-bottom:20px;">'
+            . '<h3>App Download</h3>'
+            . '<p class="muted">Windows and Android sign in with <code>Client ID + Token</code>. Linux remains a local/manual install command for the host that runs the client-agent.</p>'
+            . $this->renderCommandPanel(
+                'Windows App',
+                $windowsAppUrl,
+                [
+                    $this->renderCommandLink('Download Windows App', $windowsAppUrl),
+                    $this->renderCopyButton('Copy Download Link', $windowsAppUrl),
+                ],
+                'Download the LeiKwan Bridge desktop app, then sign in with Client ID + Token.'
+            )
+            . $this->renderCommandPanel(
+                'Android App',
+                $androidApkUrl,
+                [
+                    $this->renderCommandLink('Download Android App', $androidApkUrl),
+                    $this->renderCopyButton('Copy Download Link', $androidApkUrl),
+                ],
+                'Download the Android app, then use the same Client ID + Token or the Android import string from a client card below.'
+            )
+            . $this->renderCommandPanel(
+                'Linux Install',
+                $linuxInstall,
+                $linuxActions,
+                $linuxDescription
+            )
+            . '</section>';
+    }
+
     protected function renderClientAgentInstallDetails(array $client, array $forwardInstalls = []): string
     {
         $installCommand = $this->clientAgentInstallCommand($client);
@@ -401,6 +509,8 @@ abstract class BaseController
         $androidApkUrl = $this->androidClientApkUrl();
         $windowsAppUrl = $this->windowsClientAppUrl();
         $uninstallCommand = $this->clientAgentUninstallCommand();
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = trim((string) ($client['agent_token'] ?? ''));
         $windowsInstallPanels = $this->renderCommandPanel(
             'Windows Forward Selector',
             $windowsManagerCommand,
@@ -408,7 +518,7 @@ abstract class BaseController
                 $this->renderCommandLink('Open Install Link', $windowsManagerUrl),
                 $this->renderCopyButton('Copy Install Command', $windowsManagerCommand),
             ],
-            'Install the client once, then run the same script again any time to choose which forward under this client to install, start, stop, or uninstall.'
+            'Secondary tool for hosts that still use the Windows PowerShell manager to pick and control local forward tasks.'
         );
         if ($windowsManagerUrl === $this->clientWindowsManagerUrl()) {
             $windowsInstallPanels .= $this->renderCommandPanel(
@@ -418,22 +528,31 @@ abstract class BaseController
                     $this->renderCommandLink('Open Install Link', $windowsInstallerUrl),
                     $this->renderCopyButton('Copy Install Link', $windowsInstallerUrl),
                 ],
-                'Download the installer script here. Use the service install panel to get the runnable Windows command with the real ForwardId and token.'
+                'Legacy bootstrap script. Use the Windows app above as the primary install path.'
             );
         }
 
-        return '<details style="margin-top:12px;">'
-            . '<summary>Install / Uninstall</summary>'
-            . '<div class="muted command-lead">Use the hosted installer link for quick access, or copy the full command in one click so you do not need to drag across a long line.</div>'
+        return '<section class="card" style="margin-top:14px;">'
+            . '<h4 style="margin:0 0 8px;">App Download</h4>'
+            . '<div class="muted command-lead">Use <code>Client ID + Token</code> with the Windows or Android app. Linux remains available as a local/manual install command for this client.</div>'
             . $this->renderCommandPanel(
-                'Linux Install',
-                $installCommand,
+                'Client ID',
+                (string) $clientId,
                 [
-                    $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
-                    $this->renderCopyButton('Copy Install Command', $installCommand),
-                ]
+                    $this->renderCopyButton('Copy Client ID', (string) $clientId),
+                ],
+                'Use this exact Client ID when signing in from the Windows or Android app.'
             )
-            . $windowsInstallPanels
+            . $this->renderCommandPanel(
+                'Token',
+                $agentToken,
+                $agentToken !== ''
+                    ? [
+                        $this->renderCopyButton('Copy Token', $agentToken),
+                    ]
+                    : [],
+                'Use this Token together with the Client ID.'
+            )
             . $this->renderCommandPanel(
                 'Windows App',
                 $windowsAppUrl,
@@ -441,23 +560,37 @@ abstract class BaseController
                     $this->renderCommandLink('Download Windows App', $windowsAppUrl),
                     $this->renderCopyButton('Copy Download Link', $windowsAppUrl),
                 ],
-                'Download the LeiKwan Bridge desktop app for Windows. Run the installer and enter the panel URL, client id and token to connect.'
+                'Install the LeiKwan Bridge desktop app, then sign in with Client ID + Token.'
             )
             . $this->renderCommandPanel(
-                'Android APK',
+                'Android App',
                 $androidApkUrl,
                 [
-                    $this->renderCommandLink('Download Android APK', $androidApkUrl),
-                    $this->renderCopyButton('Copy APK Link', $androidApkUrl),
+                    $this->renderCommandLink('Download Android App', $androidApkUrl),
+                    $this->renderCopyButton('Copy Download Link', $androidApkUrl),
                 ],
-                'Open the APK first, then import this client below if you want the app to auto-fill the panel URL, client id and token.'
+                'Install the Android app, then use the same Client ID + Token.'
             )
+            . $this->renderCommandPanel(
+                'Linux Install',
+                $installCommand,
+                [
+                    $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
+                    $this->renderCopyButton('Copy Install Command', $installCommand),
+                ],
+                'Manual/local install for this client on the Linux host that will run the client-agent.'
+            )
+            . '<details style="margin-top:14px;">'
+            . '<summary>More install tools</summary>'
+            . '<div class="muted" style="margin:10px 0 12px;">These secondary tools stay available for local management and compatibility flows, but the primary install story is now app download or Linux install with Client ID + Token.</div>'
+            . $windowsInstallPanels
             . $this->renderCommandPanel(
                 'Android Import String',
                 $androidImportCommand,
                 [
                     $this->renderCopyButton('Copy Android Import', $androidImportCommand),
-                ]
+                ],
+                'Optional helper to prefill the Android app with panel URL, Client ID, and Token.'
             )
             . $this->renderCommandPanel(
                 'Uninstall',
@@ -465,15 +598,32 @@ abstract class BaseController
                 [
                     $this->renderCommandLink('Open Uninstall Link', $this->clientAgentUninstallerUrl()),
                     $this->renderCopyButton('Copy Uninstall Command', $uninstallCommand),
-                ]
+                ],
+                'Manual uninstall command for the Linux client-agent host.'
             )
-            . '</details>';
+            . '</details>'
+            . '</section>';
     }
 
     /**
      * @return array<int, mixed>
      */
     protected function decodeJsonList(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+        if (!is_string($value) || $value === '') {
+            return [];
+        }
+        $decoded = json_decode($value, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function decodeJsonAssoc(mixed $value): array
     {
         if (is_array($value)) {
             return $value;
@@ -545,6 +695,8 @@ abstract class BaseController
         $lastRun = trim((string) ($client['last_diag_run_at'] ?? ''));
         $diagError = trim((string) ($client['last_diag_error'] ?? ''));
         $diagPayload = $this->decodeJsonList($client['last_diag_result_json'] ?? null);
+        $reputationRows = is_array($client['bond_leg_reputation_rows'] ?? null) ? $client['bond_leg_reputation_rows'] : [];
+        $reputationEvents = is_array($client['bond_leg_reputation_events'] ?? null) ? $client['bond_leg_reputation_events'] : [];
         $dialogTitleId = $dialogId . '-title';
         $content = '';
 
@@ -638,6 +790,46 @@ abstract class BaseController
         $errorHtml = $diagError !== ''
             ? '<div class="flash danger" style="margin:0 0 16px;">' . $this->escape($diagError) . '</div>'
             : '';
+        $reputationRowsHtml = '';
+        foreach ($reputationRows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $reputationRowsHtml .= '<tr>'
+                . '<td>' . (int) ($row['forward_id'] ?? 0) . '</td>'
+                . '<td>' . $this->escape((string) ($row['protocol'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($row['host'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($row['state'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($row['effective_weight'] ?? '0')) . '</td>'
+                . '<td>' . $this->escape((string) ($row['updated_at'] ?? '')) . '</td>'
+                . '</tr>';
+        }
+        if ($reputationRowsHtml === '') {
+            $reputationRowsHtml = '<tr><td colspan="6" class="muted">No reputation data yet for this client.</td></tr>';
+        }
+        $reputationEventsHtml = '';
+        foreach ($reputationEvents as $event) {
+            if (!is_array($event)) {
+                continue;
+            }
+            $reputationEventsHtml .= '<tr>'
+                . '<td>' . (int) ($event['forward_id'] ?? 0) . '</td>'
+                . '<td>' . $this->escape((string) ($event['protocol'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($event['from_state'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($event['to_state'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($event['reason'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($event['observed_at'] ?? '')) . '</td>'
+                . '</tr>';
+        }
+        if ($reputationEventsHtml === '') {
+            $reputationEventsHtml = '<tr><td colspan="6" class="muted">No recent reputation changes.</td></tr>';
+        }
+        $reputationSection = '<section class="diag-forward">'
+            . '<div class="diag-forward-title"><strong>Leg Reputation</strong><span class="badge info">Reference only</span></div>'
+            . '<div class="muted" style="margin:8px 0 14px;">Reference only. Runtime already adapts automatically when a leg degrades. You usually do not need to take action unless the line itself is failing.</div>'
+            . '<div class="table-wrap" style="margin-bottom:14px;"><table><thead><tr><th>Forward</th><th>Protocol</th><th>Host</th><th>State</th><th>Weight</th><th>Updated</th></tr></thead><tbody>' . $reputationRowsHtml . '</tbody></table></div>'
+            . '<div class="table-wrap"><table><thead><tr><th>Forward</th><th>Protocol</th><th>From</th><th>To</th><th>Reason</th><th>Observed</th></tr></thead><tbody>' . $reputationEventsHtml . '</tbody></table></div>'
+            . '</section>';
 
         return '<dialog id="' . $this->escape($dialogId) . '" class="diag-dialog" aria-labelledby="' . $this->escape($dialogTitleId) . '">'
             . '<div class="diag-dialog-shell">'
@@ -653,7 +845,7 @@ abstract class BaseController
             . '<span class="badge info">Last Run ' . $this->escape($lastRun !== '' ? $lastRun : 'never') . '</span>'
             . '</div>'
             . $errorHtml
-            . '<div class="diag-stack">' . $content . '</div>'
+            . '<div class="diag-stack">' . $content . $reputationSection . '</div>'
             . '<div class="diag-actions"><form method="dialog"><button type="submit" class="button secondary">Close</button></form></div>'
             . '</div>'
             . '</dialog>';
