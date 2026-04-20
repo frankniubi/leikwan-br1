@@ -6,6 +6,7 @@ namespace Leikwan\Master\Controllers;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\SslCertificateService;
@@ -29,6 +30,7 @@ final class AdminController extends BaseController
         if ($viewer === null) {
             return Response::redirect('/login');
         }
+        $csrf = $this->escape(SessionAuth::csrfToken());
 
         $cards = [
             ['label' => 'Tenants', 'value' => (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'tenant'])['total'] ?? 0)],
@@ -44,15 +46,29 @@ final class AdminController extends BaseController
         foreach ($cards as $card) {
             $cardHtml .= '<section class="card"><div class="muted">' . $this->escape($card['label']) . '</div><div class="stats">' . $card['value'] . '</div></section>';
         }
+        $reputationService = new BondLegReputationService($this->db);
+        $queueHealth = $this->taskQueueHealth();
+        $recentFailedTasks = $this->recentFailedProvisionTasks();
+        $worstLegs = $reputationService->latestGlobalRows(10);
 
         $body = '
             <div class="hero">
               <div>
                 <h2>Admin Overview</h2>
                 <p class="muted">Use the left navigation to manage tenants, plans, credentials, clients, slave groups and slave nodes.</p>
+                <div class="actions" style="margin-top:16px;">
+                  <form class="inline" method="post" action="/admin/republish/all">
+                    <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                    <button type="submit" class="button danger" onclick="return confirm(\'Republish all forwards?\');">Republish All Forwards</button>
+                  </form>
+                  <a class="button secondary" href="/admin/diagnostics">Diagnostics</a>
+                </div>
               </div>
             </div>
             <div class="grid three">' . $cardHtml . '</div>
+            ' . $this->renderTaskQueueHealthSection($queueHealth, $csrf) . '
+            ' . $this->renderRecentFailedTasksSection($recentFailedTasks) . '
+            ' . $this->renderWorstLegsSection($worstLegs) . '
             <div class="grid two" style="margin-top:20px;">
               <section class="card">
                 <h3>First Forward Quick Start</h3>
@@ -75,6 +91,443 @@ final class AdminController extends BaseController
             </div>';
 
         return $this->adminPage('Admin Overview', $body, $viewer, 'overview');
+    }
+
+    public function republishAllForwards(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $result = $this->provisioning?->republishAllForwardsWithResult() ?? ['republished' => 0, 'errors' => ['provisioning unavailable']];
+            $republished = (int) ($result['republished'] ?? 0);
+            $errors = is_array($result['errors'] ?? null) ? $result['errors'] : [];
+            if ($errors !== []) {
+                SessionAuth::flash('error', 'Republish finished with issues: ' . implode('; ', array_map('strval', $errors)));
+            } else {
+                SessionAuth::flash('success', 'Republished ' . $republished . ' forward(s).');
+            }
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to republish forwards: ' . $this->displayThrowableMessage($throwable));
+        }
+
+        return Response::redirect('/admin');
+    }
+
+    public function diagnosticsPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $clients = $this->db->fetchAll(
+            'SELECT id, name, display_host, agent_version, last_sync_at, last_diag_status, last_diag_run_at, last_diag_error, last_diag_result_json
+             FROM clients
+             ORDER BY updated_at DESC, id DESC
+             LIMIT 50'
+        );
+        $nodes = $this->db->fetchAll(
+            'SELECT id, name, public_ip, region, status, agent_version, current_load, last_heartbeat_at
+             FROM nodes
+             ORDER BY last_heartbeat_at DESC, id DESC
+             LIMIT 50'
+        );
+        $sidecars = $this->provisioning?->listSidecarPoints() ?? [];
+        $reputationService = new BondLegReputationService($this->db);
+        $reputationRows = $reputationService->latestGlobalRows(50);
+        $reputationEvents = $reputationService->recentEvents([], 50);
+
+        $okClients = 0;
+        $errorClients = 0;
+        $requestedClients = 0;
+        foreach ($clients as $client) {
+            $status = strtolower(trim((string) ($client['last_diag_status'] ?? '')));
+            if ($status === 'ok') {
+                $okClients++;
+            } elseif ($status === 'error') {
+                $errorClients++;
+            } elseif ($status === 'requested') {
+                $requestedClients++;
+            }
+        }
+
+        $onlineNodes = 0;
+        foreach ($nodes as $node) {
+            if ((string) ($node['status'] ?? '') === 'active') {
+                $onlineNodes++;
+            }
+        }
+
+        $onlineSidecars = 0;
+        foreach ($sidecars as $point) {
+            if (($this->sidecarPointStatusInfo($point)['label'] ?? '') === 'online') {
+                $onlineSidecars++;
+            }
+        }
+
+        $clientRows = '';
+        foreach ($clients as $client) {
+            $clientRows .= '<tr>
+                <td>' . (int) ($client['id'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($client['name'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($client['display_host'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($client['agent_version'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($client['last_sync_at'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($client['last_diag_status'] ?? 'not run')) . '</td>
+                <td>' . $this->escape((string) ($client['last_diag_run_at'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($client['last_diag_error'] ?? '')) . '</td>
+                <td>' . $this->renderClientDiagnosticsHtml($client) . '</td>
+            </tr>';
+        }
+
+        $nodeRows = '';
+        foreach ($nodes as $node) {
+            $nodeRows .= '<tr>
+                <td>' . (int) ($node['id'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($node['name'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($node['public_ip'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($node['region'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($node['status'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($node['agent_version'] ?? '')) . '</td>
+                <td>' . (int) ($node['current_load'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($node['last_heartbeat_at'] ?? '')) . '</td>
+            </tr>';
+        }
+
+        $sidecarRows = '';
+        foreach ($sidecars as $point) {
+            $status = $this->sidecarPointStatusInfo($point);
+            $sidecarRows .= '<tr>
+                <td>' . (int) ($point['id'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($point['name'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($point['sidecar_host'] ?? '')) . '</td>
+                <td>' . $this->escape($this->sidecarPortSummary($point)) . '</td>
+                <td>' . $this->escape((string) ($point['agent_version'] ?? '')) . '</td>
+                <td>' . $this->escape($status['label']) . '</td>
+                <td>' . $this->escape((string) ($point['last_heartbeat_at'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($point['last_error'] ?? '')) . '</td>
+            </tr>';
+        }
+
+        $body = '
+            <div class="hero">
+              <div>
+                <h2>Diagnostics</h2>
+                <p class="muted">Quick health snapshot for clients, slave nodes and sidecars. Use this page when a line feels wrong and you want the fastest facts first.</p>
+              </div>
+            </div>
+            <div class="grid three">
+              <section class="card"><div class="muted">Clients OK</div><div class="stats">' . $okClients . '</div></section>
+              <section class="card"><div class="muted">Clients Requested</div><div class="stats">' . $requestedClients . '</div></section>
+              <section class="card"><div class="muted">Clients Error</div><div class="stats">' . $errorClients . '</div></section>
+              <section class="card"><div class="muted">Nodes Online</div><div class="stats">' . $onlineNodes . '</div></section>
+              <section class="card"><div class="muted">Sidecars Online</div><div class="stats">' . $onlineSidecars . '</div></section>
+              <section class="card"><div class="muted">Queued Tasks</div><div class="stats">' . (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM provision_tasks WHERE status = :pending OR status = :running', ['pending' => 'pending', 'running' => 'running'])['total'] ?? 0) . '</div></section>
+            </div>
+            <div class="grid one" style="margin-top:20px;">
+              <section class="card">
+                <h3>Client Diagnostics</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>ID</th><th>Name</th><th>Host</th><th>Agent</th><th>Last Sync</th><th>Diag Status</th><th>Last Run</th><th>Error</th><th>Details</th></tr></thead>
+                    <tbody>' . $clientRows . '</tbody>
+                  </table>
+                </div>
+              </section>
+              <section class="card">
+                <h3>Slave Health</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>ID</th><th>Name</th><th>Public IP</th><th>Region</th><th>Status</th><th>Agent</th><th>Load</th><th>Heartbeat</th></tr></thead>
+                    <tbody>' . $nodeRows . '</tbody>
+                  </table>
+                </div>
+              </section>
+              <section class="card">
+                <h3>Sidecar Health</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>ID</th><th>Name</th><th>Host</th><th>Ports</th><th>Agent</th><th>Status</th><th>Heartbeat</th><th>Error</th></tr></thead>
+                    <tbody>' . $sidecarRows . '</tbody>
+                  </table>
+                </div>
+              </section>
+              ' . $this->renderBondLegReputationDiagnosticsSection($reputationRows, $reputationEvents) . '
+            </div>';
+
+        return $this->adminPage('Diagnostics', $body, $viewer, 'overview');
+    }
+
+    public function purgeStaleProvisionTasks(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $thresholdMinutes = (int) $request->input('threshold_minutes', 30);
+            if (!in_array($thresholdMinutes, [15, 30, 60], true)) {
+                $thresholdMinutes = 30;
+            }
+
+            $thresholdAt = gmdate('Y-m-d H:i:s', time() - ($thresholdMinutes * 60));
+            $preview = $this->db->fetchOne(
+                "SELECT COUNT(*) AS total, MIN(updated_at) AS oldest_affected_at
+                 FROM provision_tasks
+                 WHERE status = 'pending'
+                   AND updated_at < :threshold_at",
+                ['threshold_at' => $thresholdAt]
+            ) ?? [];
+            $candidateCount = (int) ($preview['total'] ?? 0);
+            $oldestAffectedAt = (string) ($preview['oldest_affected_at'] ?? '');
+
+            if ($candidateCount <= 0) {
+                SessionAuth::flash('success', 'Stale pending purge preview found 0 rows. deleted=0 skipped=0');
+                return Response::redirect('/admin');
+            }
+
+            $deleted = $this->db->execute(
+                "DELETE FROM provision_tasks
+                 WHERE status = 'pending'
+                   AND updated_at < :threshold_at",
+                ['threshold_at' => $thresholdAt]
+            );
+            $skipped = max(0, $candidateCount - $deleted);
+            SessionAuth::flash(
+                'success',
+                'Stale pending purge finished. deleted=' . $deleted . ' skipped=' . $skipped
+                . ($oldestAffectedAt !== '' ? ' oldest=' . $oldestAffectedAt : '')
+            );
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to purge stale pending tasks: ' . $this->displayThrowableMessage($throwable));
+        }
+
+        return Response::redirect('/admin');
+    }
+
+    /**
+     * @return array{pending_count:int,running_count:int,failed_count:int,oldest_pending_at:string,oldest_running_at:string}
+     */
+    private function taskQueueHealth(): array
+    {
+        $row = $this->db->fetchOne(
+            "SELECT
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                MIN(CASE WHEN status = 'pending' THEN updated_at END) AS oldest_pending_at,
+                MIN(CASE WHEN status = 'running' THEN updated_at END) AS oldest_running_at
+             FROM provision_tasks"
+        ) ?? [];
+
+        return [
+            'pending_count' => (int) ($row['pending_count'] ?? 0),
+            'running_count' => (int) ($row['running_count'] ?? 0),
+            'failed_count' => (int) ($row['failed_count'] ?? 0),
+            'oldest_pending_at' => (string) ($row['oldest_pending_at'] ?? ''),
+            'oldest_running_at' => (string) ($row['oldest_running_at'] ?? ''),
+        ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function recentFailedProvisionTasks(int $limit = 20): array
+    {
+        return $this->db->fetchAll(
+            'SELECT t.id, t.node_id, t.action, t.forward_id, t.endpoint_id, t.attempt_count, t.updated_at, t.error_message, t.result_json, t.payload_json, n.name AS node_name
+             FROM provision_tasks t
+             LEFT JOIN nodes n ON n.id = t.node_id
+             WHERE t.status = :status
+             ORDER BY t.updated_at DESC, t.id DESC
+             LIMIT ' . max(1, $limit),
+            ['status' => 'failed']
+        );
+    }
+
+    /**
+     * @param array{pending_count:int,running_count:int,failed_count:int,oldest_pending_at:string,oldest_running_at:string} $queueHealth
+     */
+    private function renderTaskQueueHealthSection(array $queueHealth, string $csrf): string
+    {
+        return '
+            <section class="card" style="margin-top:20px;">
+              <div class="hero" style="margin-bottom:14px;">
+                <div>
+                  <h3>Task Queue Health</h3>
+                  <div class="muted">Fast queue triage. This only purges stale rows where status = \'pending\'. Running work is never touched.</div>
+                </div>
+              </div>
+              <div class="grid three">
+                <section class="card"><div class="muted">Pending</div><div class="stats">' . (int) $queueHealth['pending_count'] . '</div></section>
+                <section class="card"><div class="muted">Running</div><div class="stats">' . (int) $queueHealth['running_count'] . '</div></section>
+                <section class="card"><div class="muted">Failed</div><div class="stats">' . (int) $queueHealth['failed_count'] . '</div></section>
+              </div>
+              <div class="grid two" style="margin-top:14px;">
+                <div class="muted">Oldest pending: ' . $this->escape($queueHealth['oldest_pending_at'] !== '' ? $queueHealth['oldest_pending_at'] : 'none') . '</div>
+                <div class="muted">Oldest running: ' . $this->escape($queueHealth['oldest_running_at'] !== '' ? $queueHealth['oldest_running_at'] : 'none') . '</div>
+              </div>
+              <form class="actions" method="post" action="/admin/provision-tasks/purge-stale" style="margin-top:14px;">
+                <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                <label class="muted" for="purge-threshold">Stale pending purge</label>
+                <select id="purge-threshold" name="threshold_minutes">
+                  <option value="15">15 min</option>
+                  <option value="30" selected>30 min</option>
+                  <option value="60">60 min</option>
+                </select>
+                <button type="submit" class="button danger" onclick="return confirm(\'Delete stale pending tasks only?\');">Purge stale pending</button>
+              </form>
+            </section>';
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $tasks
+     */
+    private function renderRecentFailedTasksSection(array $tasks): string
+    {
+        $rows = '';
+        foreach ($tasks as $task) {
+            $summary = trim((string) ($task['error_message'] ?? ''));
+            if ($summary === '') {
+                $summary = 'No error message recorded.';
+            }
+            $details = trim((string) ($task['result_json'] ?? ''));
+            $payload = trim((string) ($task['payload_json'] ?? ''));
+            $actionHint = 'inspect node heartbeat';
+            if (str_contains(strtolower($summary), 'pending')) {
+                $actionHint = 'purge stale pending';
+            } elseif (str_contains(strtolower((string) ($task['action'] ?? '')), 'publish')) {
+                $actionHint = 'republish';
+            }
+
+            $rows .= '<tr>
+                <td>#' . (int) ($task['id'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($task['node_name'] ?? $task['node_id'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($task['action'] ?? '')) . '</td>
+                <td>' . (int) ($task['forward_id'] ?? 0) . '</td>
+                <td>' . (int) ($task['endpoint_id'] ?? 0) . '</td>
+                <td>' . (int) ($task['attempt_count'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($task['updated_at'] ?? '')) . '</td>
+                <td>' . $this->escape($summary) . '</td>
+                <td>' . $this->escape($actionHint) . '</td>
+                <td><details><summary>Open details</summary><div style="margin-top:10px;"><pre>' . $this->escape($summary . "\n\nresult_json:\n" . $details . "\n\npayload_json:\n" . $payload) . '</pre></div></details></td>
+            </tr>';
+        }
+        if ($rows === '') {
+            $rows = '<tr><td colspan="10" class="muted">No failed tasks recently.</td></tr>';
+        }
+
+        return '
+            <section class="card" style="margin-top:20px;">
+              <h3>Recent Failed Tasks</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Node</th><th>Action</th><th>Forward</th><th>Endpoint</th><th>Attempts</th><th>Updated</th><th>Error</th><th>Hint</th><th>Details</th></tr></thead>
+                  <tbody>' . $rows . '</tbody>
+                </table>
+              </div>
+            </section>';
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     */
+    private function renderWorstLegsSection(array $rows): string
+    {
+        $bodyRows = '';
+        foreach ($rows as $row) {
+            $bodyRows .= '<tr>
+                <td>' . $this->escape((string) ($row['observer_type'] ?? '')) . '</td>
+                <td>' . (int) ($row['observer_id'] ?? 0) . '</td>
+                <td>' . (int) ($row['forward_id'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($row['protocol'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($row['host'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($row['state'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($row['effective_weight'] ?? '0')) . '</td>
+                <td>' . $this->escape((string) ($row['updated_at'] ?? '')) . '</td>
+            </tr>';
+        }
+        if ($bodyRows === '') {
+            $bodyRows = '<tr><td colspan="8" class="muted">No reputation data yet.</td></tr>';
+        }
+
+        return '
+            <section class="card" style="margin-top:20px;">
+              <h3>Worst Legs Right Now</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Observer</th><th>ID</th><th>Forward</th><th>Protocol</th><th>Host</th><th>State</th><th>Weight</th><th>Updated</th></tr></thead>
+                  <tbody>' . $bodyRows . '</tbody>
+                </table>
+              </div>
+            </section>';
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     * @param array<int, array<string, mixed>> $events
+     */
+    private function renderBondLegReputationDiagnosticsSection(array $rows, array $events): string
+    {
+        $currentRows = '';
+        foreach ($rows as $row) {
+            $currentRows .= '<tr>
+                <td>' . $this->escape((string) ($row['observer_type'] ?? '')) . '</td>
+                <td>' . (int) ($row['observer_id'] ?? 0) . '</td>
+                <td>' . (int) ($row['forward_id'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($row['protocol'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($row['host'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($row['state'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($row['score'] ?? '0')) . '</td>
+                <td>' . $this->escape((string) ($row['effective_weight'] ?? '0')) . '</td>
+                <td>' . $this->escape((string) ($row['updated_at'] ?? '')) . '</td>
+            </tr>';
+        }
+        if ($currentRows === '') {
+            $currentRows = '<tr><td colspan="9" class="muted">No reputation data yet.</td></tr>';
+        }
+
+        $eventRows = '';
+        foreach ($events as $event) {
+            $eventRows .= '<tr>
+                <td>' . $this->escape((string) ($event['observer_type'] ?? '')) . '</td>
+                <td>' . (int) ($event['observer_id'] ?? 0) . '</td>
+                <td>' . (int) ($event['forward_id'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($event['protocol'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($event['host'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($event['from_state'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($event['to_state'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($event['reason'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($event['observed_at'] ?? '')) . '</td>
+            </tr>';
+        }
+        if ($eventRows === '') {
+            $eventRows = '<tr><td colspan="9" class="muted">No recent reputation events.</td></tr>';
+        }
+
+        return '
+              <section class="card">
+                <h3>Bond Leg Reputation</h3>
+                <div class="muted" style="margin-bottom:12px;">Reference only. Runtime already adapts automatically. This panel view is for visibility, not routing control.</div>
+                <div class="table-wrap" style="margin-bottom:16px;">
+                  <table>
+                    <thead><tr><th>Observer</th><th>ID</th><th>Forward</th><th>Protocol</th><th>Host</th><th>State</th><th>Score</th><th>Weight</th><th>Updated</th></tr></thead>
+                    <tbody>' . $currentRows . '</tbody>
+                  </table>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Observer</th><th>ID</th><th>Forward</th><th>Protocol</th><th>Host</th><th>From</th><th>To</th><th>Reason</th><th>Observed</th></tr></thead>
+                    <tbody>' . $eventRows . '</tbody>
+                  </table>
+                </div>
+              </section>';
     }
 
     public function tenantsPage(Request $request, array $params): Response
@@ -896,6 +1349,7 @@ final class AdminController extends BaseController
                 break;
             }
         }
+        $overviewClient = $editing ?? ($clients[0] ?? null);
         $groupOptions = '<option value="">No group</option>';
         foreach ($clientGroups as $group) {
             $selected = $editing !== null && (int) ($editing['group_id'] ?? 0) === (int) $group['id'] ? ' selected' : '';
@@ -977,6 +1431,10 @@ final class AdminController extends BaseController
                             <input type="hidden" name="csrf_token" value="' . $csrf . '">
                             <button type="submit" class="button danger">Delete</button>
                         </form>
+                        <form class="inline" method="post" action="/admin/republish/client/' . (int) $client['id'] . '">
+                            <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                            <button type="submit" class="button secondary">Republish</button>
+                        </form>
                         <form class="inline" method="post" action="/admin/clients/' . (int) $client['id'] . '/diagnose">
                             <input type="hidden" name="csrf_token" value="' . $csrf . '">
                             <button type="submit" class="button secondary">Run Diagnostics</button>
@@ -1007,16 +1465,17 @@ final class AdminController extends BaseController
             <div class="hero">
               <div>
                 <h2>Clients</h2>
-                <p class="muted">Clients are the tenant-side line definitions. For the easiest start, create one client, point it at one default slave group, and let tenants build their first rule in single mode.</p>
+                <p class="muted">Clients are the tenant-side line definitions. Lead with app download and <code>Client ID + Token</code>; keep routing defaults tucked away until an operator actually needs them.</p>
               </div>
             </div>
+            ' . $this->renderClientAppDownloadOverview($overviewClient) . '
             <div class="grid two">
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Client' : 'Create Client') . '</h3>
                 <div class="flash success">
                   <strong>Recommended first setup:</strong> keep default route mode on <code>slave_group</code>, choose one default slave group, and leave forward chain empty.
                 </div>
-                <p class="muted">These fields define the default routing policy for the client inside the panel. They do not change how the client-agent installer works. Installing a client agent still only needs the panel URL, client id and agent token. If you leave owner empty, this client is shared and admin-managed.</p>
+                <p class="muted">These fields define the default routing policy for the client inside the panel. They do not change the app login flow. Installing a client app still only needs <code>Client ID + Token</code>. If you leave owner empty, this client is shared and admin-managed.</p>
                 <form method="post" action="/admin/clients">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
                   <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
@@ -1025,32 +1484,37 @@ final class AdminController extends BaseController
                     <div class="field"><label>Display Host</label><input type="text" name="display_host" value="' . $this->escape((string) ($editing['display_host'] ?? '')) . '" placeholder="bgp.example.com" required><p class="muted">Tenant-facing display label only. It does not drive slave SNI / CDN routing.</p></div>
                     <div class="field"><label>Owner Tenant</label><select name="owner_user_id">' . $ownerOptions . '</select></div>
                     <div class="field"><label>Client Group</label><select name="group_id">' . $groupOptions . '</select></div>
-                    <div class="field"><label>Bind IP</label><input type="text" name="bind_ip" value="' . $this->escape((string) ($editing['bind_ip'] ?? '')) . '" placeholder="optional"></div>
-                    <div class="field"><label>NIC Name</label><input type="text" name="nic_name" value="' . $this->escape((string) ($editing['nic_name'] ?? '')) . '" placeholder="eth0"></div>
-                    <div class="field"><label>Port Range Start</label><input type="number" name="port_range_start" value="' . $this->escape((string) ($editing['port_range_start'] ?? '')) . '"><p class="muted">Optional. When set together with port range end, the panel auto-assigns forward ports from this range.</p></div>
-                    <div class="field"><label>Port Range End</label><input type="number" name="port_range_end" value="' . $this->escape((string) ($editing['port_range_end'] ?? '')) . '"><p class="muted">Optional. Keep the range wide enough for future forwards.</p></div>
-                    <div class="field"><label>Traffic Multiplier</label><input type="number" step="0.01" name="traffic_multiplier" value="' . $this->escape((string) ($editing['traffic_multiplier'] ?? '1.00')) . '"></div>
-                    <div class="field"><label>Speed Limit Mbps</label><input type="number" name="speed_limit_mbps" value="' . $this->escape((string) ($editing['speed_limit_mbps'] ?? '')) . '"></div>
-                    <div class="field"><label>Default Route Mode</label>
-                      <select name="default_endpoint_mode">' . $this->renderEndpointModeOptions((string) ($editing['default_endpoint_mode'] ?? 'slave_group')) . '</select>
-                    </div>
-                    <div class="field"><label>Default Slave Group</label><select name="default_node_group_key">' . $nodeGroupOptions . '</select><p class="muted">Optional. Used as the default route suggestion when a forward is created later.</p></div>
-                    <div class="field"><label>Default Forward Chain</label><select name="default_forward_chain_id">' . $chainOptions . '</select><p class="muted">Optional advanced default. Leave empty unless you already use advanced multi-hop routing.</p></div>
-                    <div class="field"><label>Max IP Count</label><input type="number" name="max_ip_count" value="' . $this->escape((string) ($editing['max_ip_count'] ?? '')) . '"></div>
-                    <div class="field"><label>Max Conn Per IP</label><input type="number" name="max_conn_per_ip" value="' . $this->escape((string) ($editing['max_conn_per_ip'] ?? '')) . '"></div>
                     <div class="field"><label>Status</label><select name="status"><option value="active"' . (((string) ($editing['status'] ?? 'active')) === 'active' ? ' selected' : '') . '>active</option><option value="disabled"' . (((string) ($editing['status'] ?? '')) === 'disabled' ? ' selected' : '') . '>disabled</option></select></div>
                   </div>
-                  <div class="grid two" style="margin-top:14px;">
-                    <label><input type="checkbox" name="allow_custom_endpoints" value="1"' . (!empty($editing['allow_custom_endpoints']) ? ' checked' : '') . '> Allow custom slaves</label>
-                    <label><input type="checkbox" name="force_slave_mode" value="1"' . (!empty($editing['force_slave_mode']) ? ' checked' : '') . '> Force slave mode</label>
-                    <label><input type="checkbox" name="allow_forward_chain" value="1"' . ((isset($editing['allow_forward_chain']) ? !empty($editing['allow_forward_chain']) : true) ? ' checked' : '') . '> Allow forward chains</label>
-                    <label><input type="checkbox" name="allow_latency_test" value="1"' . ((isset($editing['allow_latency_test']) ? !empty($editing['allow_latency_test']) : true) ? ' checked' : '') . '> Allow latency test</label>
-                    <label><input type="checkbox" name="allow_inbound_proxy" value="1"' . (!empty($editing['allow_inbound_proxy']) ? ' checked' : '') . '> Allow inbound proxy</label>
-                  </div>
-                  <div class="field" style="margin-top:14px;"><label>Protocol Filter JSON</label><textarea name="protocol_filter_json" placeholder="{}">' . $this->escape((string) ($editing['protocol_filter_json'] ?? '')) . '</textarea></div>
-                  <div class="field" style="margin-top:14px;"><label>Custom Config JSON</label><textarea name="custom_config_json" placeholder="{}">' . $this->escape((string) ($editing['custom_config_json'] ?? '')) . '</textarea></div>
-                  <div class="field" style="margin-top:14px;"><label>Agent Config JSON</label><textarea name="agent_config_json" placeholder="{&quot;poll_interval_seconds&quot;:60}">' . $this->escape((string) ($editing['agent_config_json'] ?? '')) . '</textarea><p class="muted">Merged into the installed client-agent config on the next sync.</p></div>
-                  <div class="field" style="margin-top:14px;"><label>Tags JSON</label><textarea name="tags_json" placeholder="[\"vip\"]">' . $this->escape((string) ($editing['tags_json'] ?? '')) . '</textarea></div>
+                  <details style="margin-top:14px;">
+                    <summary>Advanced client settings</summary>
+                    <div class="form-grid" style="margin-top:14px;">
+                      <div class="field"><label>Bind IP</label><input type="text" name="bind_ip" value="' . $this->escape((string) ($editing['bind_ip'] ?? '')) . '" placeholder="optional"></div>
+                      <div class="field"><label>NIC Name</label><input type="text" name="nic_name" value="' . $this->escape((string) ($editing['nic_name'] ?? '')) . '" placeholder="eth0"></div>
+                      <div class="field"><label>Port Range Start</label><input type="number" name="port_range_start" value="' . $this->escape((string) ($editing['port_range_start'] ?? '')) . '"><p class="muted">Optional. When set together with port range end, the panel auto-assigns forward ports from this range.</p></div>
+                      <div class="field"><label>Port Range End</label><input type="number" name="port_range_end" value="' . $this->escape((string) ($editing['port_range_end'] ?? '')) . '"><p class="muted">Optional. Keep the range wide enough for future forwards.</p></div>
+                      <div class="field"><label>Traffic Multiplier</label><input type="number" step="0.01" name="traffic_multiplier" value="' . $this->escape((string) ($editing['traffic_multiplier'] ?? '1.00')) . '"></div>
+                      <div class="field"><label>Speed Limit Mbps</label><input type="number" name="speed_limit_mbps" value="' . $this->escape((string) ($editing['speed_limit_mbps'] ?? '')) . '"></div>
+                      <div class="field"><label>Default Route Mode</label>
+                        <select name="default_endpoint_mode">' . $this->renderEndpointModeOptions((string) ($editing['default_endpoint_mode'] ?? 'slave_group')) . '</select>
+                      </div>
+                      <div class="field"><label>Default Slave Group</label><select name="default_node_group_key">' . $nodeGroupOptions . '</select><p class="muted">Optional. Used as the default route suggestion when a forward is created later.</p></div>
+                      <div class="field"><label>Default Forward Chain</label><select name="default_forward_chain_id">' . $chainOptions . '</select><p class="muted">Optional advanced default. Leave empty unless you already use advanced multi-hop routing.</p></div>
+                      <div class="field"><label>Max IP Count</label><input type="number" name="max_ip_count" value="' . $this->escape((string) ($editing['max_ip_count'] ?? '')) . '"></div>
+                      <div class="field"><label>Max Conn Per IP</label><input type="number" name="max_conn_per_ip" value="' . $this->escape((string) ($editing['max_conn_per_ip'] ?? '')) . '"></div>
+                    </div>
+                    <div class="grid two" style="margin-top:14px;">
+                      <label><input type="checkbox" name="allow_custom_endpoints" value="1"' . (!empty($editing['allow_custom_endpoints']) ? ' checked' : '') . '> Allow custom slaves</label>
+                      <label><input type="checkbox" name="force_slave_mode" value="1"' . (!empty($editing['force_slave_mode']) ? ' checked' : '') . '> Force slave mode</label>
+                      <label><input type="checkbox" name="allow_forward_chain" value="1"' . ((isset($editing['allow_forward_chain']) ? !empty($editing['allow_forward_chain']) : true) ? ' checked' : '') . '> Allow forward chains</label>
+                      <label><input type="checkbox" name="allow_latency_test" value="1"' . ((isset($editing['allow_latency_test']) ? !empty($editing['allow_latency_test']) : true) ? ' checked' : '') . '> Allow latency test</label>
+                      <label><input type="checkbox" name="allow_inbound_proxy" value="1"' . (!empty($editing['allow_inbound_proxy']) ? ' checked' : '') . '> Allow inbound proxy</label>
+                    </div>
+                    <div class="field" style="margin-top:14px;"><label>Protocol Filter JSON</label><textarea name="protocol_filter_json" placeholder="{}">' . $this->escape((string) ($editing['protocol_filter_json'] ?? '')) . '</textarea></div>
+                    <div class="field" style="margin-top:14px;"><label>Custom Config JSON</label><textarea name="custom_config_json" placeholder="{}">' . $this->escape((string) ($editing['custom_config_json'] ?? '')) . '</textarea></div>
+                    <div class="field" style="margin-top:14px;"><label>Agent Config JSON</label><textarea name="agent_config_json" placeholder="{&quot;poll_interval_seconds&quot;:60}">' . $this->escape((string) ($editing['agent_config_json'] ?? '')) . '</textarea><p class="muted">Merged into the installed client-agent config on the next sync.</p></div>
+                    <div class="field" style="margin-top:14px;"><label>Tags JSON</label><textarea name="tags_json" placeholder="[\"vip\"]">' . $this->escape((string) ($editing['tags_json'] ?? '')) . '</textarea></div>
+                  </details>
                   <div class="actions"><button class="button" type="submit">Save Client</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/clients">Cancel</a>' : '') . '</div>
                 </form>
               </section>
@@ -1067,6 +1531,228 @@ final class AdminController extends BaseController
             </div>';
 
         return $this->adminPage('Clients', $body, $viewer, 'clients');
+    }
+
+
+    public function cfLocationGroupsPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $groups = $this->provisioning?->listCfLocationGroups() ?? [];
+        $editId = (int) $request->input('edit', 0);
+        $editing = null;
+        foreach ($groups as $group) {
+            if ((int) ($group['id'] ?? 0) === $editId) {
+                $editing = $group;
+                break;
+            }
+        }
+        $cidrText = '';
+        if (is_array($editing['cidrs'] ?? null)) {
+            $cidrText = implode(PHP_EOL, array_map(static fn(array $row): string => (string) ($row['cidr'] ?? ''), $editing['cidrs']));
+        }
+
+        $rows = '';
+        foreach ($groups as $group) {
+            $cidrs = is_array($group['cidrs'] ?? null)
+                ? implode(', ', array_map(static fn(array $row): string => (string) ($row['cidr'] ?? ''), $group['cidrs']))
+                : '';
+            $rows .= '<tr>
+                <td>' . (int) ($group['id'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($group['name'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($group['region_code'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($group['probe_mode'] ?? 'auto')) . '</td>
+                <td>' . (int) ($group['cache_ttl_seconds'] ?? 120) . '</td>
+                <td>' . (int) ($group['switch_improvement_ms'] ?? 15) . '</td>
+                <td>' . (int) ($group['max_candidates'] ?? 32) . '</td>
+                <td>' . $this->escape($cidrs) . '</td>
+                <td>' . (((int) ($group['is_active'] ?? 1)) === 1 ? '<span class="badge success">active</span>' : '<span class="badge danger">inactive</span>') . '</td>
+                <td><a class="button ghost" href="/admin/cf-location-groups?edit=' . (int) ($group['id'] ?? 0) . '">Edit</a></td>
+            </tr>';
+        }
+
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $body = '
+            <div class="hero">
+              <div>
+                <h2>Cloudflare Location Groups</h2>
+                <p class="muted">Reusable CIDR sets for slave-side best-IP selection in `cf_mode` forward combinations.</p>
+              </div>
+            </div>
+            <div class="grid two">
+              <section class="card">
+                <h3>' . ($editing !== null ? 'Edit Location Group' : 'Create Location Group') . '</h3>
+                <form method="post" action="/admin/cf-location-groups">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
+                  <div class="form-grid">
+                    <div class="field"><label>Name</label><input type="text" name="name" value="' . $this->escape((string) ($editing['name'] ?? '')) . '" required></div>
+                    <div class="field"><label>Region Code</label><input type="text" name="region_code" value="' . $this->escape((string) ($editing['region_code'] ?? '')) . '" placeholder="JP" required></div>
+                    <div class="field"><label>Probe Mode</label><select name="probe_mode"><option value="auto"' . (((string) ($editing['probe_mode'] ?? 'auto')) === 'auto' ? ' selected' : '') . '>auto</option><option value="tcp"' . (((string) ($editing['probe_mode'] ?? 'auto')) === 'tcp' ? ' selected' : '') . '>tcp</option><option value="icmp"' . (((string) ($editing['probe_mode'] ?? 'auto')) === 'icmp' ? ' selected' : '') . '>icmp</option></select></div>
+                    <div class="field"><label>Cache TTL Seconds</label><input type="number" name="cache_ttl_seconds" value="' . $this->escape((string) ($editing['cache_ttl_seconds'] ?? 120)) . '"></div>
+                    <div class="field"><label>Switch Improvement Ms</label><input type="number" name="switch_improvement_ms" value="' . $this->escape((string) ($editing['switch_improvement_ms'] ?? 15)) . '"></div>
+                    <div class="field"><label>Max Candidates</label><input type="number" name="max_candidates" value="' . $this->escape((string) ($editing['max_candidates'] ?? 32)) . '"></div>
+                    <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>inactive</option></select></div>
+                  </div>
+                  <div class="field" style="margin-top:14px;"><label>CIDRs</label><textarea name="cidr_lines" placeholder="104.16.0.0/13&#10;172.64.0.0/13" required>' . $this->escape($cidrText) . '</textarea></div>
+                  <div class="actions"><button class="button" type="submit">Save Group</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/cf-location-groups">Cancel</a>' : '') . '</div>
+                </form>
+              </section>
+              <section class="card">
+                <h3>Location Group List</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>ID</th><th>Name</th><th>Region</th><th>Probe</th><th>TTL</th><th>Improve</th><th>Candidates</th><th>CIDRs</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>' . $rows . '</tbody>
+                  </table>
+                </div>
+              </section>
+            </div>';
+
+        return $this->adminPage('Cloudflare Location Groups', $body, $viewer, 'cf-location-groups');
+    }
+
+    public function saveCfLocationGroup(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->provisioning?->saveCfLocationGroup($request->body());
+            SessionAuth::flash('success', 'Cloudflare location group saved.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to save Cloudflare location group: ' . $this->displayThrowableMessage($throwable));
+        }
+        return Response::redirect('/admin/cf-location-groups');
+    }
+
+    public function forwardCombinationsPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $combinations = $this->provisioning?->listForwardCombinations() ?? [];
+        $groups = $this->provisioning?->listNodeGroups() ?? [];
+        $sidecars = $this->provisioning?->listSidecarPoints() ?? [];
+        $cfGroups = $this->provisioning?->listCfLocationGroups() ?? [];
+        $editId = (int) $request->input('edit', 0);
+        $editing = null;
+        foreach ($combinations as $combination) {
+            if ((int) ($combination['id'] ?? 0) === $editId) {
+                $editing = $combination;
+                break;
+            }
+        }
+
+        $groupOptions = '';
+        foreach ($groups as $group) {
+            $selected = (string) ($editing['node_group_key'] ?? '') === (string) ($group['group_key'] ?? '') ? ' selected' : '';
+            $groupOptions .= '<option value="' . $this->escape((string) ($group['group_key'] ?? '')) . '"' . $selected . '>' . $this->escape((string) ($group['name'] ?? '')) . '</option>';
+        }
+        $sidecarOptions = '';
+        foreach ($sidecars as $point) {
+            $selected = (int) ($editing['sidecar_point_id'] ?? 0) === (int) ($point['id'] ?? 0) ? ' selected' : '';
+            $sidecarOptions .= '<option value="' . (int) ($point['id'] ?? 0) . '"' . $selected . '>' . $this->escape((string) ($point['name'] ?? '')) . ' (' . $this->escape((string) ($point['sidecar_host'] ?? '')) . ' ' . $this->escape($this->sidecarPortSummary($point)) . ')</option>';
+        }
+        $cfOptions = '<option value="">None</option>';
+        foreach ($cfGroups as $group) {
+            $selected = (int) ($editing['cf_location_group_id'] ?? 0) === (int) ($group['id'] ?? 0) ? ' selected' : '';
+            $cfOptions .= '<option value="' . (int) ($group['id'] ?? 0) . '"' . $selected . '>' . $this->escape((string) ($group['name'] ?? '')) . ' [' . $this->escape((string) ($group['region_code'] ?? '')) . ']</option>';
+        }
+
+        $rows = '';
+        foreach ($combinations as $combination) {
+            $rows .= '<tr>
+                <td>' . (int) ($combination['id'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($combination['tenant_label'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($combination['tenant_description'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($combination['tenant_badge'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($combination['backend_mode'] ?? 'current_mode')) . '</td>
+                <td>' . $this->escape((string) ($combination['client_mode'] ?? 'single')) . '</td>
+                <td>' . $this->escape((string) ($combination['node_group_key'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($combination['sidecar_point_name'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($combination['cf_location_group_name'] ?? '')) . '</td>
+                <td>' . (((int) ($combination['is_active'] ?? 1)) === 1 ? '<span class="badge success">active</span>' : '<span class="badge danger">inactive</span>') . '</td>
+                <td><a class="button ghost" href="/admin/forward-combinations?edit=' . (int) ($combination['id'] ?? 0) . '">Edit</a></td>
+            </tr>';
+        }
+
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $previewLabel = (string) ($editing['tenant_label'] ?? 'SHA -> NRT');
+        $previewDescription = (string) ($editing['tenant_description'] ?? 'Best for Japan');
+        $previewBadge = (string) ($editing['tenant_badge'] ?? 'Recommended');
+        $body = '
+            <div class="hero">
+              <div>
+                <h2>Forward Combinations</h2>
+                <p class="muted">Compose backend topology into one tenant-facing route package. Tenants should only ever choose this object.</p>
+              </div>
+            </div>
+            <div class="grid two">
+              <section class="card">
+                <h3>' . ($editing !== null ? 'Edit Forward Combination' : 'Create Forward Combination') . '</h3>
+                <form method="post" action="/admin/forward-combinations">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
+                  <div class="form-grid">
+                    <div class="field"><label>Internal Name</label><input type="text" name="name" value="' . $this->escape((string) ($editing['name'] ?? '')) . '" required></div>
+                    <div class="field"><label>Tenant Label</label><input type="text" name="tenant_label" value="' . $this->escape((string) ($editing['tenant_label'] ?? '')) . '" required></div>
+                    <div class="field"><label>Tenant Description</label><input type="text" name="tenant_description" value="' . $this->escape((string) ($editing['tenant_description'] ?? '')) . '" placeholder="Best for Japan"></div>
+                    <div class="field"><label>Tenant Badge</label><input type="text" name="tenant_badge" value="' . $this->escape((string) ($editing['tenant_badge'] ?? '')) . '" placeholder="Recommended"></div>
+                    <div class="field"><label>Slave Group</label><select name="node_group_key" required>' . $groupOptions . '</select></div>
+                    <div class="field"><label>Backend Mode</label><select name="backend_mode"><option value="current_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'current_mode' ? ' selected' : '') . '>current_mode</option><option value="cf_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'cf_mode' ? ' selected' : '') . '>cf_mode</option></select></div>
+                    <div class="field"><label>Sidecar Point</label><select name="sidecar_point_id" required>' . $sidecarOptions . '</select></div>
+                    <div class="field"><label>Cloudflare Location Group</label><select name="cf_location_group_id">' . $cfOptions . '</select></div>
+                    <div class="field"><label>Client Mode</label><select name="client_mode"><option value="single"' . (((string) ($editing['client_mode'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="bond"' . (((string) ($editing['client_mode'] ?? 'single')) === 'bond' ? ' selected' : '') . '>bond</option></select></div>
+                    <div class="field"><label>Bond Ingress Mode</label><select name="bond_ingress_mode"><option value="plain_tcp_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'plain_tcp_mux' ? ' selected' : '') . '>plain_tcp_mux</option><option value="wss_path_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'wss_path_mux' ? ' selected' : '') . '>wss_path_mux</option></select></div>
+                    <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . $this->escape((string) ($editing['sort_order'] ?? 100)) . '"></div>
+                    <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>inactive</option></select></div>
+                  </div>
+                  <div class="field" style="margin-top:14px;"><label>Notes</label><textarea name="notes">' . $this->escape((string) ($editing['notes'] ?? '')) . '</textarea></div>
+                  <div class="card" style="margin-top:16px;">
+                    <h3 style="margin-bottom:8px;">Tenant sees:</h3>
+                    <div><strong>' . $this->escape($previewLabel) . '</strong></div>
+                    <div class="muted">' . $this->escape($previewDescription) . '</div>
+                    <div style="margin-top:8px;">' . ($previewBadge !== '' ? '<span class="badge info">' . $this->escape($previewBadge) . '</span>' : '<span class="muted">No badge</span>') . '</div>
+                  </div>
+                  <div class="actions"><button class="button" type="submit">Save Combination</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/forward-combinations">Cancel</a>' : '') . '</div>
+                </form>
+              </section>
+              <section class="card">
+                <h3>Forward Combination List</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>ID</th><th>Tenant Label</th><th>Description</th><th>Badge</th><th>Backend</th><th>Mode</th><th>Slave Group</th><th>Sidecar</th><th>CF Group</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>' . $rows . '</tbody>
+                  </table>
+                </div>
+              </section>
+            </div>';
+
+        return $this->adminPage('Forward Combinations', $body, $viewer, 'forward-combinations');
+    }
+
+    public function saveForwardCombination(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->provisioning?->saveForwardCombination($request->body());
+            SessionAuth::flash('success', 'Forward combination saved.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to save forward combination: ' . $this->displayThrowableMessage($throwable));
+        }
+        return Response::redirect('/admin/forward-combinations');
     }
 
     public function sidecarsPage(Request $request, array $params): Response
@@ -1111,7 +1797,7 @@ final class AdminController extends BaseController
                 <td>' . $this->escape((string) $point['name']) . '</td>
                 <td>' . $this->escape((string) ($point['owner_email'] ?? 'shared')) . '</td>
                 <td>' . $this->escape((string) $point['sidecar_host']) . '</td>
-                <td>' . (int) $point['listen_port'] . '</td>
+                <td>' . $this->escape($this->sidecarPortSummary($point)) . '</td>
                 <td>' . $this->escape((string) ($point['bind_host'] ?? '0.0.0.0')) . '</td>
                 <td>' . $this->escape((string) ($point['total_speed_limit_mbps'] ?? '')) . '</td>
                 <td><span class="badge ' . $status['class'] . '">' . $this->escape($status['label']) . '</span></td>
@@ -1151,7 +1837,7 @@ final class AdminController extends BaseController
             <div class="hero">
               <div>
                 <h2>Sidecar Points</h2>
-                <p class="muted">Create tenant-owned or shared/admin-managed target-side bond sidecar points here. Shared points are visible to all tenants and can be selected in bond forwards.</p>
+                <p class="muted">Create tenant-owned or shared/admin-managed target-side sidecar points here. Shared points are visible to all tenants and can be selected in bond or MPTCP forwards.</p>
               </div>
             </div>
             <div class="grid two">
@@ -1164,7 +1850,11 @@ final class AdminController extends BaseController
                     <div class="field"><label>Name</label><input type="text" name="name" value="' . $this->escape((string) ($editing['name'] ?? '')) . '" required></div>
                     <div class="field"><label>Owner Tenant</label><select name="owner_user_id">' . $ownerOptions . '</select></div>
                     <div class="field"><label>Sidecar Host</label><input type="text" name="sidecar_host" value="' . $this->escape((string) ($editing['sidecar_host'] ?? '')) . '" required></div>
-                    <div class="field"><label>Listen Port</label><input type="number" name="listen_port" value="' . $this->escape((string) ($editing['listen_port'] ?? 9000)) . '" required></div>
+                    <div class="field"><label>Bond Listen Port</label><input type="number" name="bond_listen_port" value="' . $this->escape((string) ($editing['bond_listen_port'] ?? $editing['listen_port'] ?? 9000)) . '" required></div>
+                    <div class="field"><label>MPTCP Listen Port</label><input type="number" name="mptcp_listen_port" value="' . $this->escape((string) ($editing['mptcp_listen_port'] ?? $this->sidecarMptcpListenPort($editing ?? []))) . '" required></div>
+                    <div class="field"><label>CF Listen Port</label><input type="number" name="cf_listen_port" value="' . $this->escape((string) ($editing['cf_listen_port'] ?? 443)) . '" required></div>
+                    <div class="field"><label>CF TLS Cert Path</label><input type="text" name="cf_tls_cert_path" value="' . $this->escape((string) ($this->decodeJsonList($editing['agent_config_json'] ?? null)['cf_tls_cert_path'] ?? '')) . '" placeholder="/etc/ssl/cf/fullchain.pem"></div>
+                    <div class="field"><label>CF TLS Key Path</label><input type="text" name="cf_tls_key_path" value="' . $this->escape((string) ($this->decodeJsonList($editing['agent_config_json'] ?? null)['cf_tls_key_path'] ?? '')) . '" placeholder="/etc/ssl/cf/privkey.pem"></div>
                     <div class="field"><label>Bind Host</label><input type="text" name="bind_host" value="' . $this->escape((string) ($editing['bind_host'] ?? '0.0.0.0')) . '"></div>
                     <div class="field"><label>Total Limit Mbps</label><input type="number" name="total_speed_limit_mbps" value="' . $this->escape((string) ($editing['total_speed_limit_mbps'] ?? '')) . '" min="1" placeholder="optional"></div>
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>disabled</option></select></div>
@@ -1177,7 +1867,7 @@ final class AdminController extends BaseController
                 <h3>Sidecar Point List</h3>
                 <div class="table-wrap">
                   <table>
-                    <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Host</th><th>Port</th><th>Bind</th><th>Total Limit</th><th>Status</th><th>Version</th><th>Heartbeat</th><th>Forwards</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Host</th><th>Ports</th><th>Bind</th><th>Total Limit</th><th>Status</th><th>Version</th><th>Heartbeat</th><th>Forwards</th><th>Actions</th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
@@ -1530,44 +2220,16 @@ final class AdminController extends BaseController
             <div class="hero">
               <div>
                 <h2>Slave Nodes</h2>
-                <p class="muted">Install a slave manually with a script or let the panel trigger installation over SSH. For the first forward, you only need one online slave in one slave group.</p>
+                <p class="muted">Install a slave manually with a local command. For the first forward, you only need one online slave in one slave group.</p>
               </div>
             </div>
-            <div class="grid two">
-              <section class="card">
-                <h3>Remote SSH Install</h3>
-                <div class="flash success">Quick start: create one slave group first, then install one slave into that group. You can build your first tenant forward without chains or multiple endpoints.</div>
-                <form method="post" action="/admin/nodes/install-remote">
-                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                  <div class="form-grid">
-                    <div class="field"><label>Remote Host</label><input type="text" name="host" placeholder="1.2.3.4" required></div>
-                    <div class="field"><label>SSH User</label><input type="text" name="user" value="root"></div>
-                    <div class="field"><label>SSH Port</label><input type="number" name="port" value="22"></div>
-                    <div class="field"><label>SSH Key Path</label><input type="text" name="key" placeholder="/root/.ssh/id_rsa"></div>
-                    <div class="field"><label>SSH Password</label><input type="password" name="password" placeholder="root password" autocomplete="new-password"></div>
-                   <div class="field"><label>Region</label><input type="text" name="region" placeholder="hk"></div>
-                   <div class="field"><label>Node Name</label><input type="text" name="name" placeholder="hk-edge-01"></div>
-                   <div class="field"><label>Slave Group</label><select name="group_key">' . $groupOptions . '</select></div>
-                   <div class="field"><label>Agent API URL</label><input type="text" name="master_url" value="' . $appUrl . '"></div>
-                   <div class="field"><label>Credential Profile</label><select name="credential_profile_id">' . $installCredentialOptions . '</select></div>
-                   <div class="field"><label>TLS Mode</label><select name="tls_mode"><option value="self-signed">self-signed</option><option value="letsencrypt">lets encrypt</option><option value="existing">existing files</option></select></div>
-                   <div class="field"><label>TLS Domain</label><input type="text" name="tls_domain" placeholder="edge.example.com"></div>
-                   <div class="field"><label>Wildcard</label><select name="tls_wildcard"><option value="0">standard certificate</option><option value="1">wildcard + apex</option></select></div>
-                   <div class="field"><label>TLS Email</label><input type="text" name="tls_email" placeholder="ops@example.com"></div>
-                   <div class="field"><label>TLS Cert Path</label><input type="text" name="tls_cert_path" placeholder="/etc/wstunnel/ssl/server.crt"></div>
-                   <div class="field"><label>TLS Key Path</label><input type="text" name="tls_key_path" placeholder="/etc/wstunnel/ssl/server.key"></div>
-                    <div class="field" style="grid-column:1 / -1;"><label><input type="checkbox" name="force_register" value="1"> &#26032;&#22686; Node: ignore any existing node token on the host and append <code>--force-register</code></label></div>
-                   </div>
-                   <p class="muted">Use either SSH key path or SSH password. Password mode requires <code>sshpass</code> on the panel host. Choose a credential profile when you want Cloudflare DNS authorization and wildcard issuance. TLS mode defaults to self-signed. If you want the slave to receive a panel-managed certificate, install with self-signed first and then assign one from <code>Credentials -> SSL Certificate Library</code>.</p>
-                   <div class="actions"><button class="button" type="submit">Install Slave Remotely</button></div>
-                 </form>
-               </section>
-               <section class="card">
-                 <h3>Manual Install Command</h3>
-                 <div class="grid two" style="gap:14px;">
-                   <div>
-                     <h4 style="margin:0 0 8px;">Reuse Existing Identity</h4>
-                     <pre>' . $manualInstallCommand . '
+            <section class="card">
+              <h3>Manual Install Command</h3>
+              <div class="flash success">Quick start: create one slave group first, then install one slave into that group. You can build your first tenant forward without chains or multiple endpoints.</div>
+              <div class="grid two" style="gap:14px;">
+                <div>
+                  <h4 style="margin:0 0 8px;">Reuse Existing Identity</h4>
+                  <pre>' . $manualInstallCommand . '
 
 # if this host already has /etc/leikwan-slave/config.json from an older install,
 # append: --force-register
@@ -1578,16 +2240,16 @@ final class AdminController extends BaseController
 #   --cloudflare-email ops@example.com --cloudflare-global-key <global_key>
 # existing cert files:
 #   --tls-mode existing --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem</pre>
-                   </div>
-                   <div>
-                     <h4 style="margin:0 0 8px;">&#26032;&#22686;</h4>
-                     <pre>' . $manualNewInstallCommand . '</pre>
-                     <p class="muted">Use this when you want a brand-new node row for this host, or when the host was reused/cloned and you do not want to reuse the old <code>node_id</code>/<code>node_token</code>.</p>
-                   </div>
-                 </div>
-                <p class="muted">If the host was reused or cloned from an image and already has <code>/etc/leikwan-slave/config.json</code>, the installer will reuse that node identity unless you append <code>--force-register</code>.</p>
-               </section>
-             </div>
+                </div>
+                <div>
+                  <h4 style="margin:0 0 8px;">&#26032;&#22686;</h4>
+                  <pre>' . $manualNewInstallCommand . '</pre>
+                  <p class="muted">Use this when you want a brand-new node row for this host, or when the host was reused/cloned and you do not want to reuse the old <code>node_id</code>/<code>node_token</code>.</p>
+                </div>
+              </div>
+              <p class="muted">The panel no longer triggers Linux slave install over remote SSH. Install locally on the target host using the command above.</p>
+              <p class="muted">If the host was reused or cloned from an image and already has <code>/etc/leikwan-slave/config.json</code>, the installer will reuse that node identity unless you append <code>--force-register</code>.</p>
+            </section>
             <section class="card" style="margin-top:20px;">
               <h3>Edge Defaults</h3>
               <p class="muted">These defaults are used when a forward is published to slaves. Recommended now: one shared public port, usually <code>443</code>, and unique WebSocket paths per service.</p>
@@ -2115,76 +2777,6 @@ final class AdminController extends BaseController
         return Response::redirect('/admin/clients');
     }
 
-    public function installClientRemote(Request $request, array $params): Response
-    {
-        $viewer = $this->adminViewer();
-        if ($viewer === null) {
-            return Response::redirect('/login');
-        }
-
-        try {
-            SessionAuth::validateCsrf($request);
-            $clientId = $this->idParam($params);
-            $client = $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]);
-            if ($client === null) {
-                throw new ApiException('client_not_found', 404);
-            }
-
-            $script = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'install' . DIRECTORY_SEPARATOR . 'remote-install-client-agent.sh';
-            $host = trim((string) $request->input('host', ''));
-            $sshUser = trim((string) $request->input('user', 'root'));
-            $sshPort = trim((string) $request->input('port', '22'));
-            $sshKey = trim((string) $request->input('key', ''));
-            $sshPassword = (string) $request->input('password', '');
-
-            if ($host === '') {
-                throw new ApiException('remote_install_invalid', 422, ['message' => 'host is required']);
-            }
-            if ($sshKey !== '' && $sshPassword !== '') {
-                throw new ApiException('remote_install_invalid', 422, ['message' => 'use either ssh key or ssh password']);
-            }
-
-            $parts = [
-                'bash',
-                $script,
-                '--host',
-                $host,
-                '--user',
-                $sshUser,
-                '--port',
-                $sshPort,
-                '--master',
-                $this->agentBaseUrl(),
-                '--artifact-base',
-                $this->artifactBaseUrl(),
-                '--client-id',
-                (string) $clientId,
-                '--agent-token',
-                (string) ($client['agent_token'] ?? ''),
-            ];
-            if ($sshKey !== '') {
-                $parts[] = '--key';
-                $parts[] = $sshKey;
-            }
-
-            $env = [];
-            if ($sshPassword !== '') {
-                $env['LEIKWAN_SSH_PASSWORD'] = $sshPassword;
-            }
-
-            [$exitCode, $stdout, $stderr] = $this->runLocalCommand($parts, $env);
-            if ($exitCode !== 0) {
-                throw new ApiException('remote_install_failed', 500, ['stdout' => $stdout, 'stderr' => $stderr, 'exit_code' => $exitCode]);
-            }
-
-            SessionAuth::flash('success', 'Remote client-agent install started. ' . trim($stdout));
-        } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to start remote client-agent install: ' . $throwable->getMessage());
-        }
-
-        return Response::redirect('/admin/clients');
-    }
-
     public function deleteClient(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
@@ -2205,6 +2797,31 @@ final class AdminController extends BaseController
             );
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to delete client: ' . $this->displayThrowableMessage($throwable));
+        }
+
+        return Response::redirect('/admin/clients');
+    }
+
+    public function republishForClient(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $clientId = $this->idParam($params);
+            $result = $this->provisioning?->republishForwardsForClientWithResult($clientId) ?? ['republished' => 0, 'errors' => ['provisioning unavailable']];
+            $republished = (int) ($result['republished'] ?? 0);
+            $errors = is_array($result['errors'] ?? null) ? $result['errors'] : [];
+            if ($errors !== []) {
+                SessionAuth::flash('error', 'Republish finished with issues: ' . implode('; ', array_map('strval', $errors)));
+            } else {
+                SessionAuth::flash('success', 'Republished ' . $republished . ' forward(s) for the client.');
+            }
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to republish client forwards: ' . $this->displayThrowableMessage($throwable));
         }
 
         return Response::redirect('/admin/clients');
@@ -2671,105 +3288,6 @@ final class AdminController extends BaseController
         return Response::redirect('/admin/services');
     }
 
-    public function installNodeRemote(Request $request, array $params): Response
-    {
-        $viewer = $this->adminViewer();
-        if ($viewer === null) {
-            return Response::redirect('/login');
-        }
-
-        try {
-            SessionAuth::validateCsrf($request);
-            $host = trim((string) $request->input('host', ''));
-            $masterUrl = trim((string) $request->input('master_url', $this->agentBaseUrl()));
-            $artifactBaseUrl = trim((string) $request->input('artifact_base_url', $this->artifactBaseUrl()));
-            $groupKey = trim((string) $request->input('group_key', ''));
-            $sshKey = trim((string) $request->input('key', ''));
-            $sshPassword = (string) $request->input('password', '');
-            $tlsMode = trim((string) $request->input('tls_mode', 'self-signed'));
-            $credentialProfileId = (int) $request->input('credential_profile_id', 0);
-            $tlsWildcard = (int) $request->input('tls_wildcard', 0) === 1;
-            $forceRegister = (int) $request->input('force_register', 0) === 1;
-            if ($host === '' || $masterUrl === '' || $groupKey === '') {
-                throw new ApiException('remote_install_invalid', 422, ['message' => 'host, master_url and group_key are required']);
-            }
-            if ($sshKey !== '' && $sshPassword !== '') {
-                throw new ApiException('remote_install_invalid', 422, ['message' => 'use either ssh key or ssh password']);
-            }
-            if (!in_array($tlsMode, ['self-signed', 'letsencrypt', 'existing'], true)) {
-                throw new ApiException('remote_install_invalid', 422, ['message' => 'invalid tls_mode']);
-            }
-            if ($tlsMode === 'letsencrypt' && $tlsWildcard && $credentialProfileId <= 0) {
-                throw new ApiException('remote_install_invalid', 422, ['message' => 'wildcard letsencrypt requires a credential profile']);
-            }
-            $credentialProfile = null;
-            if ($credentialProfileId > 0) {
-                $credentialProfile = $this->db->fetchOne('SELECT * FROM credential_profiles WHERE id = :id LIMIT 1', ['id' => $credentialProfileId]);
-                if ($credentialProfile === null) {
-                    throw new ApiException('credential_profile_not_found', 404, ['id' => $credentialProfileId]);
-                }
-            }
-
-            $script = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'install' . DIRECTORY_SEPARATOR . 'remote-install-slave.sh';
-            $parts = ['bash', $script, '--host', $host, '--master', $masterUrl, '--artifact-base', $artifactBaseUrl, '--token', (string) $this->config->get('NODE_ENROLLMENT_TOKEN', ''), '--group', $groupKey];
-            if ($credentialProfileId > 0) {
-                $parts[] = '--credential-profile-id';
-                $parts[] = (string) $credentialProfileId;
-            }
-            foreach ([['user', 'user'], ['port', 'port'], ['key', 'key'], ['region', 'region'], ['name', 'name'], ['public-ip', 'public_ip'], ['private-ip', 'private_ip']] as [$arg, $field]) {
-                $value = trim((string) $request->input($field, ''));
-                if ($value !== '') {
-                    $parts[] = '--' . $arg;
-                    $parts[] = $value;
-                }
-            }
-            foreach ([['tls-mode', $tlsMode], ['tls-domain', (string) $request->input('tls_domain', '')], ['tls-email', (string) $request->input('tls_email', '')], ['tls-cert', (string) $request->input('tls_cert_path', '')], ['tls-key', (string) $request->input('tls_key_path', '')]] as [$arg, $value]) {
-                $value = trim((string) $value);
-                if ($value !== '') {
-                    $parts[] = '--' . $arg;
-                    $parts[] = $value;
-                }
-            }
-            if ($tlsWildcard) {
-                $parts[] = '--tls-wildcard';
-                $parts[] = '1';
-            }
-            if (is_array($credentialProfile)) {
-                $credentialConfig = $this->decodeJsonList($credentialProfile['config_json'] ?? null);
-                if ((string) ($credentialProfile['provider'] ?? '') === 'cloudflare_global_key') {
-                    $cloudflareEmail = trim((string) ($credentialConfig['cloudflare_email'] ?? ''));
-                    $cloudflareGlobalKey = trim((string) ($credentialConfig['cloudflare_global_key'] ?? ''));
-                    if ($cloudflareEmail === '' || $cloudflareGlobalKey === '') {
-                        throw new ApiException('credential_profile_invalid', 422, ['message' => 'selected credential profile is missing Cloudflare fields']);
-                    }
-                    $parts[] = '--cloudflare-email';
-                    $parts[] = $cloudflareEmail;
-                    $parts[] = '--cloudflare-global-key';
-                    $parts[] = $cloudflareGlobalKey;
-                }
-            }
-            if ($forceRegister) {
-                $parts[] = '--force-register';
-            }
-
-            $env = [];
-            if ($sshPassword !== '') {
-                $env['LEIKWAN_SSH_PASSWORD'] = $sshPassword;
-            }
-
-            [$exitCode, $stdout, $stderr] = $this->runLocalCommand($parts, $env);
-            if ($exitCode !== 0) {
-                throw new ApiException('remote_install_failed', 500, ['stdout' => $stdout, 'stderr' => $stderr, 'exit_code' => $exitCode]);
-            }
-
-            SessionAuth::flash('success', 'Remote install started. ' . trim($stdout));
-        } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to start remote install: ' . $throwable->getMessage());
-        }
-
-        return Response::redirect('/admin/nodes');
-    }
-
     public function saveEdgeDefaults(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
@@ -2910,6 +3428,8 @@ final class AdminController extends BaseController
             ['href' => '/admin/credentials', 'label' => 'Credentials', 'active' => $active === 'credentials'],
             ['href' => '/admin/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
             ['href' => '/admin/sidecars', 'label' => 'Sidecar Points', 'active' => $active === 'sidecars'],
+            ['href' => '/admin/cf-location-groups', 'label' => 'CF Location Groups', 'active' => $active === 'cf-location-groups'],
+            ['href' => '/admin/forward-combinations', 'label' => 'Forward Combinations', 'active' => $active === 'forward-combinations'],
             ['href' => '/knowledgebase', 'label' => 'Knowledgebase'],
             ['href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],
             ['href' => '/admin/chains', 'label' => 'Chains', 'active' => $active === 'chains'],
@@ -2967,7 +3487,7 @@ final class AdminController extends BaseController
         foreach ($points as $point) {
             $id = (int) ($point['id'] ?? 0);
             $checked = in_array($id, $selectedIds, true) ? ' checked' : '';
-            $label = $this->escape((string) ($point['name'] ?? '')) . ' (' . $this->escape((string) ($point['sidecar_host'] ?? '')) . ':' . (int) ($point['listen_port'] ?? 0) . ')';
+            $label = $this->escape((string) ($point['name'] ?? '')) . ' (' . $this->escape((string) ($point['sidecar_host'] ?? '')) . ' ' . $this->escape($this->sidecarPortSummary($point)) . ')';
             $html .= '<label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" name="' . $this->escape($name) . '" value="' . $id . '"' . $checked . '> ' . $label . '</label>';
         }
         return $html;

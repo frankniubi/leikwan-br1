@@ -476,6 +476,21 @@ final class ProvisioningService
         }));
     }
 
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listForwardCombinations(): array
+    {
+        return $this->db->fetchAll(
+            'SELECT fc.*, sp.name AS sidecar_point_name, cg.name AS cf_location_group_name
+             FROM forward_combinations fc
+             INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+             LEFT JOIN cf_location_groups cg ON cg.id = fc.cf_location_group_id
+             ORDER BY fc.sort_order ASC, fc.id ASC'
+        );
+    }
+
     /**
      * @return array<string, mixed>|null
      */
@@ -693,7 +708,7 @@ final class ProvisioningService
              FROM sidecar_points sp
              LEFT JOIN users u ON u.id = sp.owner_user_id
              LEFT JOIN forwards f ON f.bond_sidecar_point_id = sp.id AND f.enabled = 1
-             GROUP BY sp.id, sp.owner_user_id, sp.name, sp.sidecar_host, sp.listen_port, sp.bond_listen_port, sp.mptcp_listen_port, sp.bind_host, sp.total_speed_limit_mbps, sp.token_secret,
+             GROUP BY sp.id, sp.owner_user_id, sp.name, sp.sidecar_host, sp.listen_port, sp.bond_listen_port, sp.mptcp_listen_port, sp.cf_listen_port, sp.bind_host, sp.total_speed_limit_mbps, sp.token_secret,
                       sp.agent_token, sp.agent_version, sp.agent_update_request_token, sp.agent_update_requested_at, sp.last_heartbeat_at, sp.last_status, sp.last_error, sp.is_active,
                       sp.created_at, sp.updated_at, u.email, u.name
              ORDER BY sp.updated_at DESC, sp.id DESC'
@@ -712,7 +727,7 @@ final class ProvisioningService
              LEFT JOIN users u ON u.id = sp.owner_user_id
              LEFT JOIN forwards f ON f.bond_sidecar_point_id = sp.id AND f.enabled = 1
              WHERE sp.owner_user_id = :user_id OR sp.owner_user_id IS NULL
-             GROUP BY sp.id, sp.owner_user_id, sp.name, sp.sidecar_host, sp.listen_port, sp.bond_listen_port, sp.mptcp_listen_port, sp.bind_host, sp.total_speed_limit_mbps, sp.token_secret,
+             GROUP BY sp.id, sp.owner_user_id, sp.name, sp.sidecar_host, sp.listen_port, sp.bond_listen_port, sp.mptcp_listen_port, sp.cf_listen_port, sp.bind_host, sp.total_speed_limit_mbps, sp.token_secret,
                       sp.agent_token, sp.agent_version, sp.agent_update_request_token, sp.agent_update_requested_at, sp.last_heartbeat_at, sp.last_status, sp.last_error, sp.is_active,
                       sp.created_at, sp.updated_at, u.email, u.name
              ORDER BY sp.owner_user_id IS NULL DESC, sp.updated_at DESC, sp.id DESC',
@@ -905,6 +920,13 @@ final class ProvisioningService
         $legacyListenPort = max(0, (int) ($payload['listen_port'] ?? ($existing['listen_port'] ?? 0)));
         $bondListenPort = max(0, (int) ($payload['bond_listen_port'] ?? ($existing['bond_listen_port'] ?? $legacyListenPort)));
         $mptcpListenPort = max(0, (int) ($payload['mptcp_listen_port'] ?? ($existing['mptcp_listen_port'] ?? (((int) ($pointConfig['wireguard_listen_port'] ?? 0)) ?: $legacyListenPort))));
+        $cfListenPort = max(0, (int) ($payload['cf_listen_port'] ?? ($existing['cf_listen_port'] ?? 443)));
+        if ($cfListenPort <= 0) {
+            $cfListenPort = 443;
+        }
+        $pointConfig['cf_tls_cert_path'] = trim((string) ($payload['cf_tls_cert_path'] ?? ($pointConfig['cf_tls_cert_path'] ?? '')));
+        $pointConfig['cf_tls_key_path'] = trim((string) ($payload['cf_tls_key_path'] ?? ($pointConfig['cf_tls_key_path'] ?? '')));
+        $agentConfigJson = $this->normalizeJsonField($pointConfig);
 
         if ($name === '' || $sidecarHost === '' || $bondListenPort <= 0 || $mptcpListenPort <= 0) {
             throw new ApiException('invalid_sidecar_point_payload', 422, ['payload' => $payload]);
@@ -924,6 +946,7 @@ final class ProvisioningService
             'listen_port' => $bondListenPort,
             'bond_listen_port' => $bondListenPort,
             'mptcp_listen_port' => $mptcpListenPort,
+            'cf_listen_port' => $cfListenPort,
             'bind_host' => $bindHost !== '' ? $bindHost : '0.0.0.0',
             'total_speed_limit_mbps' => $totalSpeedLimitMbps,
             'token_secret' => $tokenSecret,
@@ -942,6 +965,7 @@ final class ProvisioningService
                      listen_port = :listen_port,
                      bond_listen_port = :bond_listen_port,
                      mptcp_listen_port = :mptcp_listen_port,
+                     cf_listen_port = :cf_listen_port,
                      bind_host = :bind_host,
                      total_speed_limit_mbps = :total_speed_limit_mbps,
                      token_secret = :token_secret,

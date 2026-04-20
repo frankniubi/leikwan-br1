@@ -102,6 +102,9 @@ final class Bootstrap
         $this->router->add('POST', '/buy-binding/verify', [$auth, 'verifyBuyBinding']);
         $this->router->add('POST', '/logout', [$auth, 'logout']);
         $this->router->add('GET', '/admin', [$admin, 'dashboard']);
+        $this->router->add('POST', '/admin/republish/all', [$admin, 'republishAllForwards']);
+        $this->router->add('POST', '/admin/provision-tasks/purge-stale', [$admin, 'purgeStaleProvisionTasks']);
+        $this->router->add('GET', '/admin/diagnostics', [$admin, 'diagnosticsPage']);
         $this->router->add('GET', '/admin/tenants', [$admin, 'tenantsPage']);
         $this->router->add('POST', '/admin/tenants', [$admin, 'saveTenant']);
         $this->router->add('POST', '/admin/tenant-registration/settings', [$admin, 'saveTenantRegistrationSettings']);
@@ -121,6 +124,11 @@ final class Bootstrap
         $this->router->add('GET', '/admin/clients', [$admin, 'clientsPage']);
         $this->router->add('POST', '/admin/clients', [$admin, 'saveClient']);
         $this->router->add('POST', '/admin/clients/{id}/delete', [$admin, 'deleteClient']);
+        $this->router->add('POST', '/admin/republish/client/{id}', [$admin, 'republishForClient']);
+        $this->router->add('GET', '/admin/cf-location-groups', [$admin, 'cfLocationGroupsPage']);
+        $this->router->add('POST', '/admin/cf-location-groups', [$admin, 'saveCfLocationGroup']);
+        $this->router->add('GET', '/admin/forward-combinations', [$admin, 'forwardCombinationsPage']);
+        $this->router->add('POST', '/admin/forward-combinations', [$admin, 'saveForwardCombination']);
         $this->router->add('GET', '/admin/sidecars', [$admin, 'sidecarsPage']);
         $this->router->add('POST', '/admin/sidecars', [$admin, 'saveSidecarPoint']);
         $this->router->add('POST', '/admin/sidecars/{id}/delete', [$admin, 'deleteSidecarPoint']);
@@ -132,7 +140,6 @@ final class Bootstrap
         $this->router->add('GET', '/admin/chains', [$admin, 'chainsPage']);
         $this->router->add('POST', '/admin/chains', [$admin, 'saveChain']);
         $this->router->add('GET', '/admin/nodes', [$admin, 'nodesPage']);
-        $this->router->add('POST', '/admin/nodes/install-remote', [$admin, 'installNodeRemote']);
         $this->router->add('POST', '/admin/nodes/{id}/manage', [$admin, 'saveNodeManagement']);
         $this->router->add('POST', '/admin/nodes/{id}/request-update', [$admin, 'requestNodeUpdate']);
         $this->router->add('POST', '/admin/nodes/{id}/delete', [$admin, 'deleteNode']);
@@ -219,7 +226,9 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/install-forward-runtime.py', [$artifacts, 'installForwardRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-mptcp-client.py', [$artifacts, 'mptcpClientRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-uot.py', [$artifacts, 'uotRuntime']);
+        $this->router->add('GET', '/artifacts/leikwan-uot-bond.py', [$artifacts, 'uotBondRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-mptcp-sidecar.py', [$artifacts, 'mptcpSidecarRuntime']);
+        $this->router->add('GET', '/artifacts/leikwan-udp-uot-merge.py', [$artifacts, 'udpUotMergeRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-rate-limit.py', [$artifacts, 'clientRateLimitHelper']);
         $this->router->add('GET', '/artifacts/api-default.html', [$artifacts, 'apiDefaultPage']);
         $this->router->add('GET', '/artifacts/install-slave.sh', [$artifacts, 'installSlave']);
@@ -234,12 +243,11 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/install-client.ps1', [$artifacts, 'installClientPowerShell']);
         $this->router->add('GET', '/artifacts/manage-client.ps1', [$artifacts, 'manageClientPowerShell']);
         $this->router->add('GET', '/artifacts/install-client-agent.sh', [$artifacts, 'installClientAgent']);
+        $this->router->add('GET', '/artifacts/client-agent-update.sh', [$artifacts, 'clientAgentUpdate']);
+        $this->router->add('GET', '/artifacts/sidecar-agent-update.sh', [$artifacts, 'sidecarAgentUpdate']);
         $this->router->add('GET', '/artifacts/uninstall-client-agent.sh', [$artifacts, 'uninstallClientAgent']);
         $this->router->add('GET', '/artifacts/leikwan-android-client.apk', [$artifacts, 'androidClientApk']);
         $this->router->add('GET', '/artifacts/leikwan-bridge-setup.exe', [$artifacts, 'windowsClientApp']);
-        $this->router->add('GET', '/artifacts/remote-install-slave.sh', [$artifacts, 'remoteInstallSlave']);
-        $this->router->add('GET', '/artifacts/remote-install-client.sh', [$artifacts, 'remoteInstallClient']);
-        $this->router->add('GET', '/artifacts/remote-install-client-agent.sh', [$artifacts, 'remoteInstallClientAgent']);
         $this->router->add('GET', '/artifacts/leikwan-wg-watchdog.sh', [$artifacts, 'wgWatchdog']);
         $this->router->add('GET', '/artifacts/wstunnel/{filename}', [$artifacts, 'wstunnelPackage']);
         $this->router->add('GET', '/artifacts/client.sh', [$artifacts, 'legacyClient']);
