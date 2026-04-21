@@ -176,7 +176,8 @@ final class TenantController extends BaseController
                 <td>' . $this->escape($this->transportModeLabel((string) $forward['transport_mode'])) . '</td>
                 <td>' . $endpointHtml . '</td>
                 <td>
-                    <div class="actions">' .
+                    <div class="actions">'
+                        . '<a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '/forward/' . (int) $forward['id'] . '/edit">Edit</a>' .
                         (!empty($features['allow_delete_forwards'])
                             ? '<form class="inline" method="post" action="/tenant/forwards/' . (int) $forward['id'] . '/delete">
                                 <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
@@ -1765,6 +1766,89 @@ final class TenantController extends BaseController
         return $this->page('Create Forward', $body, $user, $this->tenantNav('wizard', $serviceId));
     }
 
+    public function editForward(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+
+        $serviceId = $this->idParam($params);
+        $forwardId = (int) ($params['fid'] ?? 0);
+        $forward = $this->db->fetchOne(
+            'SELECT f.*, s.user_id, combo.tenant_label AS forward_combination_label
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             LEFT JOIN forward_combinations combo ON combo.id = f.forward_combination_id
+             WHERE f.id = :id AND f.service_id = :service_id LIMIT 1',
+            ['id' => $forwardId, 'service_id' => $serviceId]
+        );
+        if ($forward === null || (int) $forward['user_id'] !== (int) $user['id']) {
+            throw new ApiException('forward_not_found', 404);
+        }
+
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $body = '
+            <div class="hero">
+              <div>
+                <h2>Edit Forward</h2>
+                <p class="muted">Change your backend target settings without changing the admin-defined route package.</p>
+              </div>
+            </div>
+            <div class="card">
+              <form method="post" action="/tenant/services/' . $serviceId . '/forward/' . $forwardId . '/edit">
+                <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                <div class="form-grid">
+                  <div class="field"><label>Current Forward Combination</label><div class="value-chip">' . $this->escape((string) ($forward['forward_combination_label'] ?? '')) . '</div></div>
+                  <div class="field"><label>Target Host</label><input type="text" name="target_host" value="' . $this->escape((string) $forward['target_host']) . '" required></div>
+                  <div class="field"><label>Target Port</label><input type="number" name="target_port" value="' . (int) $forward['target_port'] . '" required></div>
+                  <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" value="' . (int) $forward['listen_port'] . '"></div>
+                  <div class="field"><label>Transport</label><select name="transport_mode"><option value="tcp"' . ((string) $forward['transport_mode'] === 'tcp' ? ' selected' : '') . '>TCP</option><option value="tcp+udp"' . ((string) $forward['transport_mode'] === 'tcp+udp' ? ' selected' : '') . '>TCP + UDP</option><option value="udp"' . ((string) $forward['transport_mode'] === 'udp' ? ' selected' : '') . '>UDP</option></select></div>
+                </div>
+                <div class="actions" style="margin-top:20px;">
+                  <button class="button" type="submit">Save Forward</button>
+                  <a class="button ghost" href="/tenant/services/' . $serviceId . '">Cancel</a>
+                </div>
+              </form>
+            </div>';
+
+        return $this->page('Edit Forward', $body, $user, $this->tenantNav('service', $serviceId));
+    }
+
+    public function saveForwardEdit(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+
+        $serviceId = $this->idParam($params);
+        $forwardId = (int) ($params['fid'] ?? 0);
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $forward = $this->db->fetchOne(
+                'SELECT f.*, s.user_id
+                 FROM forwards f
+                 INNER JOIN services s ON s.id = f.service_id
+                 WHERE f.id = :id AND f.service_id = :service_id LIMIT 1',
+                ['id' => $forwardId, 'service_id' => $serviceId]
+            );
+            if ($forward === null || (int) $forward['user_id'] !== (int) $user['id']) {
+                throw new ApiException('forward_not_found', 404);
+            }
+
+            $payload = $this->normalizeTenantForwardEditPayload($request->body());
+            $this->provisioning->updateForwardNonStructural($forwardId, $payload, 'tenant');
+            SessionAuth::flash('success', 'Forward updated.');
+            return Response::redirect('/tenant/services/' . $serviceId);
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to update forward: ' . $this->displayThrowableMessage($throwable));
+        }
+
+        return Response::redirect('/tenant/services/' . $serviceId . '/forward/' . $forwardId . '/edit');
+    }
+
     public function forwardWizard(Request $request, array $params): Response
     {
         $serviceId = $this->idParam($params);
@@ -2302,6 +2386,24 @@ final class TenantController extends BaseController
     {
         return [
             'forward_combination_id' => max(0, (int) ($payload['forward_combination_id'] ?? 0)),
+            'listen_port' => max(0, (int) ($payload['listen_port'] ?? 0)),
+            'target_host' => trim((string) ($payload['target_host'] ?? '')),
+            'target_port' => max(0, (int) ($payload['target_port'] ?? 0)),
+            'transport_mode' => match (strtolower(trim((string) ($payload['transport_mode'] ?? 'tcp')))) {
+                'udp' => 'udp',
+                'tcp+udp', 'udp+tcp', 'both' => 'tcp+udp',
+                default => 'tcp',
+            },
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function normalizeTenantForwardEditPayload(array $payload): array
+    {
+        return [
             'listen_port' => max(0, (int) ($payload['listen_port'] ?? 0)),
             'target_host' => trim((string) ($payload['target_host'] ?? '')),
             'target_port' => max(0, (int) ($payload['target_port'] ?? 0)),
