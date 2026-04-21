@@ -234,6 +234,30 @@ These handlers must:
 
 The service-detail render path must also simplify the forward table itself. Removing the create form is not enough if the table still leaks admin-owned routing concepts.
 
+Add a dedicated input normalizer for edit:
+
+- `normalizeTenantForwardEditPayload(array $payload): array`
+
+It must accept only:
+
+- `target_host`
+- `target_port`
+- `listen_port`
+- `transport_mode`
+
+Do not reuse the create payload normalizer for edit. Create and edit have different security boundaries and should stay explicit.
+
+### `master/src/Controllers/ServiceController.php`
+
+The authenticated user API must follow the same permission model as the tenant panel.
+
+Update `PUT /api/user/forwards/{id}` so it cannot mutate structural routing fields. It should route through the same non-structural update path used by tenant edit.
+
+This keeps the product contract honest:
+
+- admin owns routing / combination choice
+- tenant and authenticated end-user API callers can edit only backend-target fields
+
 ## Route Changes
 
 ### Keep
@@ -258,6 +282,14 @@ Both should only redirect to `/tenant/services/{id}/create-forward`.
 - `POST /tenant/services/{id}/forwards`
 
 There should no longer be a second active tenant create route.
+
+### API parity
+
+Keep the existing authenticated API route shape:
+
+- `PUT /api/user/forwards/{id}`
+
+but narrow its update contract so it matches tenant edit restrictions. The route remains available, but its allowed fields become non-structural only.
 
 ## Validation Rules
 
@@ -287,6 +319,12 @@ If a forward is in a state where edit should be blocked safely, the request shou
 
 Validation feedback should be field-specific where possible. A tenant should immediately understand whether the problem is an invalid host, an invalid port, or an unavailable edit state.
 
+For both tenant edit and authenticated user API update:
+
+- structural fields in the request body must be ignored or rejected explicitly
+- accepted update payload must be merged onto the existing forward snapshot
+- full forward validation must run on the merged payload before any live endpoint teardown begins
+
 ## Provisioning Behavior
 
 Editing a forward must preserve the existing combination snapshot and runtime identity.
@@ -297,6 +335,23 @@ After a valid edit:
 - republish or reconcile the forward using the already snapped combination/runtime configuration
 
 Edit is target-tuning only, not route reselection.
+
+### Safe update sequence
+
+Do not reuse the current unsafe order where live endpoints are revoked before the new payload is known-valid.
+
+Required update sequence:
+
+```text
+load existing forward
+  -> merge non-structural edit payload
+    -> validate merged forward snapshot
+      -> revoke old endpoints
+        -> save updated forward
+          -> queue replacement publish
+```
+
+If validation fails, the sequence must stop before revoke. The old forward stays live.
 
 ## Interaction States
 
@@ -368,6 +423,29 @@ Verify:
 - default combination helper text is real copy, not placeholder text
 - selected combination summary renders tenant label / badge / description
 - no-combination state disables submit and shows clear next step
+
+### Add safe-update behavior coverage
+
+Add a `ProvisioningService` behavior test using the existing fake-DB pattern already present in tests like `master/tests/provisioning_sidecar_republish_test.php`.
+
+It must verify:
+
+- invalid non-structural edit fails validation before `revokeForwardEndpoints()`
+- existing live endpoints remain untouched on failed edit
+- valid edit revokes/re-publishes only after merged-payload validation succeeds
+- structural fields such as `forward_combination_id`, `endpoint_mode`, `forward_chain_id`, `node_group_key`, and `client_mode` remain unchanged under tenant edit
+
+### Add authenticated user API contract coverage
+
+Add regression coverage for `PUT /api/user/forwards/{id}` so it verifies:
+
+- non-structural edits still work
+- structural routing mutations are rejected or ignored
+- API callers cannot bypass the tenant panel's routing restrictions
+
+### Update stale tenant regression coverage
+
+`master/tests/tenant_controller_regressions_test.php` currently asserts legacy route-mode / forward-chain UI behavior. That test must be updated or replaced so it validates the new combination-only direction instead of pinning the old tenant create form in place.
 
 ### Route behavior tests
 
