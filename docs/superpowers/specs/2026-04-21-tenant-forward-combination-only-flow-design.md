@@ -33,7 +33,7 @@ The tenant service detail page remains a management page, not a creation wizard.
 - ensure edit is limited to non-structural forward properties
 - add/update regression coverage for the new tenant flow
 
-## Out of Scope
+## NOT in scope
 
 - changing admin forward-combination CRUD
 - allowing tenants to switch combinations during edit
@@ -52,6 +52,26 @@ The repo also still contains older tenant creation surfaces:
 
 This design removes those overlapping create experiences so the tenant model becomes coherent.
 
+## What already exists
+
+There is no repo-root `DESIGN.md` in this project, so the review should anchor on the existing tenant panel patterns already used in `master/src/Controllers/TenantController.php`.
+
+Existing UI primitives worth reusing:
+
+- `hero` header blocks with page title and top-right actions
+- `card` sections for each management surface
+- `table-wrap` plus table layout for dense operational data
+- `button` and `button ghost` actions
+- `flash danger` / `flash success` feedback blocks
+- `field-note` helper text under form controls
+- per-resource `Edit` actions already used on tenant `clients` and `sidecars`
+
+Existing product context worth preserving:
+
+- `quickCreateForward()` already provides a dedicated create page using the `hero + card + form-grid + actions` structure
+- the service detail page already functions as the tenant's forward management hub
+- existing rows already expose delete, install commands, and endpoint status details, so the forward table is the natural home for "manage existing rules"
+
 ## Final Tenant Experience
 
 ### Service detail / manage-rules page
@@ -63,7 +83,7 @@ The tenant service detail page should:
 - show a single `Create Forward` CTA that links to `/tenant/services/{id}/create-forward`
 - show an `Edit` action for each existing forward row
 
-The page should no longer present any of these creation controls:
+The page should no longer present any of these creation controls or backend-topology columns:
 
 - client group
 - route mode
@@ -71,6 +91,24 @@ The page should no longer present any of these creation controls:
 - connection mode
 - sidecar point
 - slave group
+
+The forward table itself should be simplified so tenants see only user-meaningful information:
+
+- `Local Listen`
+- `Forward Combination`
+- `Target`
+- `Transport`
+- `Endpoint Status`
+- `Actions`
+
+Any secondary operational detail that must remain available should stay inside collapsed details, not as always-visible topology columns. The default scan of the page should remain backend-blind.
+
+If the service has zero forwards, the page should not show an empty bare table. It should show a proper empty state:
+
+- short explanation that no forward rules exist yet
+- one primary action: `Create Forward`
+- one secondary action: back to service overview or knowledge base
+- no mention of slave groups, sidecars, or route chains
 
 ### Create page
 
@@ -87,6 +125,12 @@ The create form continues exposing only:
 The tenant should not see backend topology or routing details.  
 Admin chooses and publishes combinations. Tenant chooses one published package and provides backend target info.
 
+The create page should also specify the combination-summary states explicitly, so the UI does not ship with placeholder copy:
+
+- **Default state:** helper text explains that the admin-defined package controls the route and the tenant only needs to provide backend target info
+- **Selected state:** show the combination's `tenant_label`, optional badge, and short description in a read-only summary block
+- **Unavailable state:** if no combinations exist, show the existing danger flash, keep the create button disabled, and focus the page on the "ask admin to publish a forward combination first" message
+
 ### Edit page
 
 Each forward row on the service detail page gets an `Edit` button that links to:
@@ -100,6 +144,22 @@ The edit page should:
 - allow changes only to tenant-owned backend-target fields
 - submit back to a dedicated POST handler
 - redirect back to the service detail page on success
+
+The edit page should mirror the visual structure of `quickCreateForward()` so create and edit feel like the same product surface:
+
+- same `hero`
+- same `card`
+- same `form-grid`
+- same bottom `actions` row
+
+This is a deliberate design choice. Tenant `clients` and `sidecars` use same-page `?edit=` patterns, but forward edit should use a dedicated page because the service detail page is already a dense management surface and should not grow another inline form after create was intentionally removed from it.
+
+If a forward cannot be edited safely, the tenant should get a clear blocked state:
+
+- flash error explaining why edit is unavailable
+- no silent failure
+- no hidden partial save
+- return path back to the service detail page
 
 ## Edit Permission Model
 
@@ -172,6 +232,8 @@ These handlers must:
 - render/save only the approved editable fields
 - preserve the existing forward combination and snapped runtime topology
 
+The service-detail render path must also simplify the forward table itself. Removing the create form is not enough if the table still leaks admin-owned routing concepts.
+
 ## Route Changes
 
 ### Keep
@@ -223,6 +285,8 @@ Edit must enforce:
 
 If a forward is in a state where edit should be blocked safely, the request should fail cleanly and leave the row unchanged.
 
+Validation feedback should be field-specific where possible. A tenant should immediately understand whether the problem is an invalid host, an invalid port, or an unavailable edit state.
+
 ## Provisioning Behavior
 
 Editing a forward must preserve the existing combination snapshot and runtime identity.
@@ -233,6 +297,40 @@ After a valid edit:
 - republish or reconcile the forward using the already snapped combination/runtime configuration
 
 Edit is target-tuning only, not route reselection.
+
+## Interaction States
+
+### Service detail page
+
+- **Zero forwards:** show a designed empty state with primary CTA
+- **Has forwards:** show simplified table plus actions
+- **Create disabled by plan/account:** show clear flash message, but still keep the page readable and focused on existing rules
+
+### Create page
+
+- **Default:** no combination selected yet
+- **Selected combination:** summary block updates in place
+- **No combinations published:** danger flash, disabled submit
+- **Validation error:** preserve entered values and keep the tenant on the same page
+
+### Edit page
+
+- **Normal edit:** prefilled fields, locked combination summary
+- **Validation error:** preserve entered values and show field-level feedback
+- **Blocked edit:** flash error + safe return path
+- **Save success:** redirect to service detail page with success flash
+
+## Responsive and accessibility requirements
+
+This design now depends on reducing visible table complexity. That is the responsive strategy, not "keep every old column and hope horizontal scroll saves us."
+
+Required behavior:
+
+- the service detail table must stay scannable on narrower widths by using fewer always-visible columns
+- action buttons should stack cleanly in the actions cell when space is tight
+- the combination summary block on create and edit pages must use text, not badge color alone, to convey meaning
+- labels and helper text must remain visible for keyboard and screen-reader users
+- touch targets for `Create Forward`, `Edit`, and `Delete` must remain usable on mobile-sized widths
 
 ## Testing Strategy
 
@@ -248,7 +346,9 @@ Update `master/tests/tenant_forward_combination_regression_test.php` so it verif
   - connection mode
   - sidecar point
   - slave group
+- service detail page no longer shows backend-topology columns such as route mode, chain, line groups, or client mode in the default forward table
 - service detail page still links to `/tenant/services/{id}/create-forward`
+- zero-forward state renders a primary `Create Forward` action instead of an empty legacy table
 
 ### Add tenant edit regression coverage
 
@@ -259,6 +359,15 @@ Add a dedicated tenant edit regression test that verifies:
 - edit form shows the current forward combination as read-only summary
 - edit updates only allowed fields
 - edit cannot change `forward_combination_id`
+- blocked edit path returns a clear error without partial mutation
+
+### Add create-page state coverage
+
+Verify:
+
+- default combination helper text is real copy, not placeholder text
+- selected combination summary renders tenant label / badge / description
+- no-combination state disables submit and shows clear next step
 
 ### Route behavior tests
 
