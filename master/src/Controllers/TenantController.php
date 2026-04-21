@@ -1728,7 +1728,11 @@ final class TenantController extends BaseController
 
         $combinationOptions = '<option value="">Select a forward combination</option>';
         foreach ($availableForwardCombinations as $combination) {
-            $combinationOptions .= '<option value="' . (int) ($combination['id'] ?? 0) . '">' . $this->escape((string) ($combination['tenant_label'] ?? '')) . '</option>';
+            $combinationOptions .= '<option value="' . (int) ($combination['id'] ?? 0) . '"'
+                . ' data-description="' . $this->escape((string) ($combination['tenant_description'] ?? '')) . '"'
+                . ' data-badge="' . $this->escape((string) ($combination['tenant_badge'] ?? '')) . '">'
+                . $this->escape((string) ($combination['tenant_label'] ?? ''))
+                . '</option>';
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
@@ -1755,7 +1759,7 @@ final class TenantController extends BaseController
                   <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" placeholder="auto from line range"></div>
                   <div class="field"><label>Transport</label><select name="transport_mode"><option value="tcp">TCP</option><option value="tcp+udp">TCP + UDP</option><option value="udp">UDP</option></select></div>
                 </div>
-                <div class="field-note" id="forward-combination-help">Show the selected combination\'s short description and badge here without exposing backend details.</div>
+                <div class="field-note" id="forward-combination-help">Choose one admin-defined route package. The panel keeps routing details hidden until you create the forward.</div>
                 <div class="actions" style="margin-top:20px;">
                   <button class="button" type="submit" ' . (empty($features['allow_manage_forwards']) || $availableForwardCombinations === [] ? 'disabled' : '') . '>Create Forward</button>
                   <a class="button ghost" href="/tenant/services/' . $serviceId . '">Cancel</a>

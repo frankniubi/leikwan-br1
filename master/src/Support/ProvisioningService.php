@@ -2089,6 +2089,61 @@ final class ProvisioningService
         return $this->saveForward((int) $forward['service_id'], $forwardId, $payload, $actor);
     }
 
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function updateForwardNonStructural(int $forwardId, array $payload, string $actor = 'user'): array
+    {
+        $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
+        if ($forward === null) {
+            throw new ApiException('forward_not_found', 404);
+        }
+
+        $listenPort = max(0, (int) ($payload['listen_port'] ?? $forward['listen_port'] ?? 0));
+        $targetHost = trim((string) ($payload['target_host'] ?? $forward['target_host'] ?? ''));
+        $targetPort = max(0, (int) ($payload['target_port'] ?? $forward['target_port'] ?? 0));
+        $transportMode = match (strtolower(trim((string) ($payload['transport_mode'] ?? $forward['transport_mode'] ?? 'tcp')))) {
+            'udp' => 'udp',
+            'tcp+udp', 'udp+tcp', 'both' => 'tcp+udp',
+            default => 'tcp',
+        };
+
+        if ($listenPort <= 0 || $targetHost === '' || $targetPort <= 0) {
+            throw new ApiException('invalid_forward_payload', 422, ['payload' => $payload]);
+        }
+
+        $this->db->execute(
+            'UPDATE forwards
+             SET listen_port = :listen_port,
+                 target_host = :target_host,
+                 target_port = :target_port,
+                 transport_mode = :transport_mode,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $forwardId,
+                'listen_port' => $listenPort,
+                'target_host' => $targetHost,
+                'target_port' => $targetPort,
+                'transport_mode' => $transportMode,
+                'updated_at' => $this->now(),
+            ]
+        );
+
+        $this->audit('forward.updated', [
+            'forward_id' => $forwardId,
+            'service_id' => (int) ($forward['service_id'] ?? 0),
+            'actor' => $actor,
+            'scope' => 'non_structural',
+        ]);
+
+        $this->revokeForwardEndpoints($forwardId, 'update');
+        $this->reconcileForwardEndpoints($forwardId);
+
+        return $this->buildClientConfig($forwardId);
+    }
+
     public function deleteForward(int $forwardId, string $actor = 'user'): void
     {
         $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
@@ -3387,6 +3442,43 @@ final class ProvisioningService
         ]);
     }
 
+    private function normalizeMalformedRepublishFailure(int $nodeId, int $forwardId, int $serviceEndpointId): void
+    {
+        if ($nodeId <= 0 || $forwardId <= 0 || $serviceEndpointId <= 0 || $forwardId === $serviceEndpointId) {
+            return;
+        }
+
+        $this->db->execute(
+            'UPDATE provision_tasks
+             SET status = :completed_status,
+                 result_json = :result_json,
+                 error_message = NULL,
+                 lease_expires_at = NULL,
+                 updated_at = :updated_at
+             WHERE node_id = :node_id
+               AND action = :action
+               AND forward_id = :forward_id
+               AND endpoint_id = :forward_id
+               AND endpoint_id <> :service_endpoint_id
+               AND status = :failed_status
+               AND error_message = :expected_error_message',
+            [
+                'completed_status' => 'completed',
+                'result_json' => json_encode([
+                    'note' => 'purged malformed publish task after endpoint_id hotfix',
+                    'normalized_by' => 'republishActiveEndpointsForNode',
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'updated_at' => $this->now(),
+                'node_id' => $nodeId,
+                'action' => 'publish',
+                'forward_id' => $forwardId,
+                'service_endpoint_id' => $serviceEndpointId,
+                'failed_status' => 'failed',
+                'expected_error_message' => 'purged malformed publish task after endpoint_id hotfix',
+            ]
+        );
+    }
+
     public function reconcileActiveForwardsForGroup(string $groupKey): void
     {
         $normalizedGroup = trim($groupKey);
@@ -3448,6 +3540,7 @@ final class ProvisioningService
             }
             $node['resolved_public_host'] = $publicHost;
             $serviceEndpointId = (int) ($row['service_endpoint_id'] ?? 0);
+            $this->normalizeMalformedRepublishFailure($nodeId, (int) ($row['forward_id'] ?? $row['id'] ?? 0), $serviceEndpointId);
             $payload = $this->publishTaskPayloadForForward($row, $node, $serviceEndpointId);
             $this->queueTask(
                 $nodeId,

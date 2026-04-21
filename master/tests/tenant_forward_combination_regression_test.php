@@ -19,6 +19,7 @@ foreach ([
     "'forward_combination_id' => max(0, (int) (\$payload['forward_combination_id'] ?? 0)),",
     '/tenant/services/{id}/create-forward',
     'Create Forward',
+    'Choose one admin-defined route package. The panel keeps routing details hidden until you create the forward.',
 ] as $snippet) {
     if (!str_contains($source . $bootstrap . $serviceSummarySource, $snippet)) {
         fail('missing required combination-only snippet: ' . $snippet);
@@ -36,6 +37,7 @@ foreach ([
     '<th>Route Mode</th>',
     '<th>Chain</th>',
     '<th>Client Mode</th>',
+    "Show the selected combination\\'s short description and badge here without exposing backend details.",
 ] as $forbidden) {
     if (str_contains($source, $forbidden)) {
         fail('found forbidden stale tenant forward snippet: ' . $forbidden);
