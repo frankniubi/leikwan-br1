@@ -169,36 +169,24 @@ final class TenantController extends BaseController
             $totalUsedBytes += $trafficUsedBytes;
             $totalLimitBytes += $trafficLimitBytes;
             $rows .= '<tr>
-                <td>' . (int) $forward['id'] . '</td>
-                <td>' . (int) $forward['listen_port'] . '</td>
-                <td>' . $this->escape((string) ($forward['forward_combination_name'] ?? '')) . '</td>
-                <td>' . $targetCell . '</td>
-                <td>' . $this->escape($this->transportModeLabel((string) $forward['transport_mode'])) . '</td>
-                <td>' . $endpointHtml . '</td>
+                <td>' . (int) $service['id'] . '</td>
+                <td><a href="/tenant/services/' . (int) $service['id'] . '"><strong>' . $this->escape((string) $service['name']) . '</strong></a></td>
+                <td><span class="badge ' . $statusClass . '">' . $this->escape((string) $service['status']) . '</span></td>
+                <td>' . $this->escape((string) $service['whmcs_service_id']) . '</td>
+                <td>' . $this->escape((string) ($service['plan_name'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($billing['mode_label'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($billing['estimated_total_formatted'] ?? '')) . '</td>
+                <td>' . $this->escape((string) $service['expire_at']) . '</td>
+                <td>' . (int) $service['bandwidth_limit_mbps'] . ' Mbps</td>
+                <td>' . (((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle') ? ((int) ($billing['included_traffic_gb'] ?? 0) . ' GB / month') : 'metered') . '</td>
+                <td>' . $this->formatTrafficBytes($trafficUsedBytes) . '</td>
+                <td>' . (((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle') ? $this->formatTrafficBytes($trafficRemainingBytes) : '-') . '</td>
+                <td>' . $this->escape($usageLabel) . '</td>
                 <td>
-                    <div class="actions">'
-                        . '<a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '/forward/' . (int) $forward['id'] . '/edit">Edit</a>' .
-                        (!empty($features['allow_delete_forwards'])
-                            ? '<form class="inline" method="post" action="/tenant/forwards/' . (int) $forward['id'] . '/delete">
-                                <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
-                                <button type="submit" class="button danger">Delete</button>
-                              </form>'
-                            : '<span class="muted">Delete disabled by policy</span>') .
-                    '</div>' .
-                    '<details style="margin-top:12px;">
-                        <summary>Install Commands</summary>
-                        <div class="muted" style="margin-top:10px;">Linux</div>
-                        <pre>' . $this->escape($linuxInstallCommand) . '</pre>
-                        <div class="muted" style="margin-top:10px;">Windows PowerShell (Admin)</div>
-                        <pre>' . $this->escape($windowsInstallCommand) . '</pre>
-                      </details>' .
-                    $sidecarInstallHtml .
-                    (!empty($features['allow_view_client_config'])
-                        ? '<details style="margin-top:12px;">
-                            <summary>View client config</summary>
-                            <pre>' . $this->escape($configJson) . '</pre>
-                          </details>'
-                        : '') . '
+                    <div class="actions">
+                        <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Add Forward</a>
+                        <a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '">Manage</a>
+                    </div>
                 </td>
             </tr>';
         }
