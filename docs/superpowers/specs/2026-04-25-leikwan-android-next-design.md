@@ -155,6 +155,36 @@ It is responsible for:
 - cleaner add/import flows
 - basic/advanced editing layouts
 
+## Panel Publish Logic Rule
+
+The new app must treat the panel-published contract as authoritative runtime truth.
+
+Authoritative source:
+- `master/src/Support/ProvisioningService.php`
+- especially `ProvisioningService::buildClientConfig()`
+
+Operational rule:
+- the Android app must consume the exact shape the panel publishes instead of re-deriving slave sets, sidecar targets, ingress auth, or bond settings from local guesses
+- service mode UI must display what the panel actually published
+- runtime launch decisions must be based on the same published fields the existing Linux and agent paths consume
+
+At minimum, the new app parser and runtime must stay aligned with the published values for:
+- `mode`
+- `transport`
+- `listen_port`
+- `target`
+- `service_status`
+- `speed_limit_mbps`
+- `bond_remote_host`
+- `bond_remote_port`
+- `bonding`
+- `mptcp`
+- `endpoints[]`, including `host`, `port`, `priority`, `weight`, `health_status`, `supports_quic_leg`, `ingress_protocol`, and `ingress_auth_token`
+
+Verification rule:
+- when validating service and bond behavior, compare live runtime behavior against the pulled panel-published contract, not just against local assumptions or loopback state
+- if panel-published endpoints and live runtime endpoints differ, treat that as a real mismatch, not as a UI-only issue
+
 ## Information Architecture
 
 The new app should follow the stronger `leikwan-android` structure.
@@ -370,8 +400,7 @@ Verify:
 ### UX flow
 
 Verify:
-- login
-- import
+- setup/import
 - edit
 - connect
 - disconnect
