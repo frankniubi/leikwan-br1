@@ -10,6 +10,42 @@
 
 ---
 
+## Autoplan Review Summary
+
+### CEO
+
+- Good scope. This is a real product improvement, not a cosmetic detour.
+- Keep the old working runtime as the base. Do not bet the release on a runtime rewrite.
+- Treat panel-published config as the source of truth. If the app invents its own truth, debugging will become fiction.
+- Bond should move forward to the latest Linux-aligned path because the old Android bond branch is already behind.
+
+### Design
+
+- Correct call to keep install-command setup instead of porting the panel account login flow.
+- Basic/Advanced proxy editing is the right compromise. Clean by default, no feature amputation.
+- The published-vs-live mismatch surface is a strong UX choice because it shows the real problem instead of hiding it in logs.
+- Reusing the visual shell of `leikwan-android` without inheriting its runtime assumptions is the right split.
+
+### Engineering
+
+- Strongest part of the plan is the two-layer parser approach: keep legacy `PullResponse` for runtime stability while adding a typed panel-published contract for UI and bond planning.
+- Correct to wrap the old stores first instead of forcing a Room migration before parity exists.
+- Correct to replace only the bond branch inside `TunnelEngine` instead of rewriting all service runtime modes at once.
+- Packaging `leikwan-ingress` explicitly is required. Without it, `plain_tcp_mux` parity stays fake.
+
+### DX / Ops
+
+- New app id, namespace, and deep-link scheme remove test friction and let all three apps coexist.
+- Copying the project while excluding local SDK/tooling directories avoids dragging trash into the new repo root.
+- The verification matrix is good because it proves direct, service, and bond paths separately.
+- Capturing pulled contract snapshots beside screenshots/logs is the right evidence trail for future regressions.
+
+### Verdict
+
+- Ready to implement.
+- Main execution risk is bond complexity, not Compose.
+- The safe rule is simple: preserve the old working paths, modernize bond surgically, and prove every service screen against the panel-published contract.
+
 ## Scope Decisions Locked Before Implementation
 
 - New project root: `C:\Users\frankniubi\Downloads\leikwan-br1\leikwan-android-next`
