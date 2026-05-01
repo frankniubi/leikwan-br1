@@ -16,14 +16,12 @@ final class AuthController extends BaseController
     public function home(Request $request, array $params): Response
     {
         $user = SessionAuth::currentUser($this->db);
-
-        $brandName = $this->escape($this->displayBrandName());
         $adminCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'admin'])['total'] ?? 0);
 
         $heroPrimary = '<a class="button" href="/login">Sign In</a>';
         $heroSecondary = '<a class="button ghost" href="/register">Create Account</a>';
-        $consoleCardTitle = 'Tenant Panel';
-        $consoleCardBody = 'Account, plans, forwards, client and sidecar.';
+        $consoleCardTitle = 'Tenant-ready console';
+        $consoleCardBody = 'Open services, forwards, clients, sidecars, and route policy from the panel.';
         $consoleCardAction = '<a class="button" href="/login">Open Panel</a>';
 
         if ($user !== null) {
@@ -33,9 +31,61 @@ final class AuthController extends BaseController
             $heroSecondary = (string) ($user['role'] ?? '') === 'admin'
                 ? '<a class="button ghost" href="/admin/tenants">Manage Tenants</a>'
                 : '<a class="button ghost" href="/tenant/forwards">Forward Config</a>';
-            $consoleCardTitle = 'Current Session';
-            $consoleCardBody = 'Jump back into the console you were using.';
+            $consoleCardTitle = 'Current session';
+            $consoleCardBody = 'Return to the workspace that owns this traffic policy.';
             $consoleCardAction = $heroPrimary;
+        }
+
+        $features = [
+            [
+                'kicker' => 'Bond Engine',
+                'title' => 'Single-thread bond speed',
+                'body' => 'Split one busy flow across controlled paths so one download, stream, or tunnel can use more than one route.',
+                'badge' => 'Multi-leg',
+            ],
+            [
+                'kicker' => 'Route Fabric',
+                'title' => 'IXP + IPLC routing',
+                'body' => 'Blend exchange access and private-line capacity by region, node group, tenant plan, and sidecar target.',
+                'badge' => 'IXP / IPLC',
+            ],
+            [
+                'kicker' => 'Risk Posture',
+                'title' => 'Lower regulatory exposure',
+                'body' => 'Use auditable private or partner paths with explicit routing policy instead of opaque public-network bypass.',
+                'badge' => 'Policy-first',
+            ],
+            [
+                'kicker' => 'Delivery Plane',
+                'title' => 'Tenant-ready control plane',
+                'body' => 'Keep admin plans, tenant services, client config, sidecars, and slave nodes in one delivery loop.',
+                'badge' => 'Ops-ready',
+            ],
+        ];
+
+        $featureCards = '';
+        foreach ($features as $feature) {
+            $featureCards .= '<section class="surface-card feature-card">'
+                . '<span class="card-kicker">' . $this->escape($feature['kicker']) . '</span>'
+                . '<div class="feature-badge">' . $this->escape($feature['badge']) . '</div>'
+                . '<h3>' . $this->escape($feature['title']) . '</h3>'
+                . '<p>' . $this->escape($feature['body']) . '</p>'
+                . '</section>';
+        }
+
+        $routeSteps = [
+            ['title' => 'Bond single flows', 'body' => 'Combine multiple healthy legs for one high-demand session.'],
+            ['title' => 'Choose IXP/IPLC paths', 'body' => 'Keep route intent visible by service, plan, and region.'],
+            ['title' => 'Deliver with policy', 'body' => 'Keep the risk posture explainable before traffic moves.'],
+        ];
+
+        $routeStepHtml = '';
+        foreach ($routeSteps as $index => $step) {
+            $routeStepHtml .= '<div class="step-item">'
+                . '<span class="step-index">' . ((int) $index + 1) . '</span>'
+                . '<div class="step-copy"><strong>' . $this->escape($step['title']) . '</strong>'
+                . '<span>' . $this->escape($step['body']) . '</span></div>'
+                . '</div>';
         }
 
         $opsCard = $adminCount === 0
@@ -48,24 +98,30 @@ final class AuthController extends BaseController
             : '<section class="surface-card entry-card">
                 <span class="card-kicker">Admin Console</span>
                 <h3>Plans, tenants, nodes</h3>
-                <p>Operator work stays in the admin console and does not share the tenant flow.</p>
+                <p>Operate plans, node groups, credentials, forward combinations, and rollout tasks.</p>
                 <div class="actions"><a class="button ghost" href="/login">Operator Sign In</a></div>
               </section>';
 
         $body = '
-            <section class="landing-hero">
+            <section class="landing-hero homepage-hero">
               <div class="hero-copy">
-                <span class="eyebrow">LeiKwan Bridge</span>
-                <h1>Lightweight IXP control plane.</h1>
-                <p>' . $brandName . ' for account, plans, forwards, client delivery and sidecar management.</p>
+                <span class="eyebrow">利群會聚 LeiKwan Bridge</span>
+                <h1>Bonded IXP/IPLC acceleration for single-thread traffic.</h1>
+                <p>利群會聚 LeiKwan Bridge turns IXP, IPLC, bond transport, client agents, and sidecars into one controlled delivery plane for high-throughput private access.</p>
                 <div class="hero-actions">' . $heroPrimary . $heroSecondary . '</div>
+                <div class="metric-strip">
+                  <div class="metric-card"><strong>Bond</strong><span>Single-flow acceleration</span></div>
+                  <div class="metric-card"><strong>IXP/IPLC</strong><span>Private route fabric</span></div>
+                  <div class="metric-card"><strong>Policy</strong><span>Auditable delivery</span></div>
+                </div>
               </div>
-              <section class="surface-card surface-note">
-                <span class="card-kicker">Overview</span>
-                <h3>Short homepage by design</h3>
-                <p>Use this page as the front door. Real work continues inside the tenant or admin console.</p>
+              <section class="surface-card route-card">
+                <span class="panel-kicker">Route posture</span>
+                <h3>Fast paths, visible policy, controlled delivery.</h3>
+                <div class="hero-list">' . $routeStepHtml . '</div>
               </section>
             </section>
+            <section class="feature-mosaic">' . $featureCards . '</section>
             <section class="entry-grid">
               <section class="surface-card entry-card">
                 <span class="card-kicker">' . $this->escape($consoleCardTitle) . '</span>
@@ -75,271 +131,11 @@ final class AuthController extends BaseController
               </section>
               ' . $opsCard . '
               <section class="surface-card entry-card">
-                <span class="card-kicker">Docs</span>
-                <h3>Knowledgebase</h3>
-                <p>Quick start, routing modes and troubleshooting in one place.</p>
+                <span class="card-kicker">Knowledgebase</span>
+                <h3>Routing playbooks</h3>
+                <p>Use docs for install flow, routing modes, diagnostics, and rollout notes.</p>
                 <div class="actions"><a class="button ghost" href="/knowledgebase">Open Docs</a></div>
               </section>
-            </section>';
-
-        return $this->publicPage('LeiKwan Bridge', $body, $user);
-
-        $brandName = $this->escape($this->displayBrandName());
-        $productName = $this->escape('LeiKwan Bridge');
-        $tenantCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'tenant'])['total'] ?? 0);
-        $serviceCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM services WHERE status = :status', ['status' => 'active'])['total'] ?? 0);
-        $nodeCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM nodes')['total'] ?? 0);
-        $planCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM service_plans')['total'] ?? 0);
-        $adminCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'admin'])['total'] ?? 0);
-
-        $heroPrimary = '<a class="button" href="/login">Sign In</a>';
-        $heroSecondary = '<a class="button ghost" href="/register">Create Account</a>';
-        $entryCard = '
-            <section class="surface-card">
-              <span class="card-kicker">Get Started</span>
-              <h3>Public entry for operators and tenants</h3>
-              <p>Sign in, open the right console, and keep the detailed work inside the panel.</p>
-              <div class="portal-actions">
-                <a class="button" href="/register">Create Tenant Account</a>
-                <a class="button secondary" href="/knowledgebase">Knowledgebase</a>
-              </div>
-            </section>';
-
-        if ($user !== null) {
-            $dashboardPath = $this->escape($this->dashboardPathForUser($user));
-            $dashboardLabel = $this->escape($this->dashboardLabelForUser($user));
-            $heroPrimary = '<a class="button" href="' . $dashboardPath . '">Open ' . $dashboardLabel . '</a>';
-            $heroSecondary = (string) ($user['role'] ?? '') === 'admin'
-                ? '<a class="button secondary" href="/tenant">Tenant Area</a>'
-                : '<a class="button secondary" href="/tenant/forwards">转发配置</a>';
-            $entryCard = '
-                <section class="surface-card">
-                  <span class="card-kicker">Session</span>
-                  <h3>Your console is ready</h3>
-                  <p>The homepage is now intentionally short. Continue the actual work inside your console.</p>
-                  <div class="portal-actions">' . $heroPrimary . $heroSecondary . '</div>
-                </section>';
-        }
-
-        $stats = [
-            ['label' => 'Online Nodes', 'value' => $nodeCount],
-            ['label' => 'Active Services', 'value' => $serviceCount],
-            ['label' => 'Tenant Accounts', 'value' => $tenantCount],
-            ['label' => 'Plans Ready', 'value' => $planCount],
-        ];
-        $statCards = '';
-        foreach ($stats as $stat) {
-            $statCards .= '<section class="surface-card">'
-                . '<div class="kpi-label">' . $this->escape($stat['label']) . '</div>'
-                . '<div class="kpi-value">' . (int) $stat['value'] . '</div>'
-                . '</section>';
-        }
-
-        $secondaryCard = $adminCount === 0
-            ? '<section class="surface-card">
-                <span class="card-kicker">First-Time Setup</span>
-                <h3>Create the first admin</h3>
-                <p>Finish the initial bootstrap once, then return to the web console.</p>
-                <pre>php master/scripts/create_user.php --email admin@example.com --password ChangeMe123! --role admin --name "Platform Admin"</pre>
-              </section>'
-            : '<section class="surface-card">
-                <span class="card-kicker">Console Map</span>
-                <h3>Three clear work areas</h3>
-                <ul class="list">
-                  <li>Homepage: entry and sign-in.</li>
-                  <li>Admin Console: plans, tenants, nodes, rules.</li>
-                  <li>Tenant Panel: account, plans, forwards, client, sidecar.</li>
-                </ul>
-              </section>';
-
-        $body = '
-            <div class="landing-stack">
-              <section class="landing-hero">
-                <div class="hero-copy">
-                  <span class="eyebrow">' . $productName . '</span>
-                  <h1>IXP forwarding, simplified.</h1>
-                  <p>' . $brandName . ' keeps access, tenant delivery and traffic operations inside one control plane.</p>
-                  <div class="hero-actions">' . $heroPrimary . $heroSecondary . '</div>
-                  <div class="status-row">
-                    <span class="status-pill">IXP Access</span>
-                    <span class="status-pill">Tenant Delivery</span>
-                    <span class="status-pill">Traffic Operations</span>
-                  </div>
-                </div>
-                <section class="surface-card">
-                  <span class="panel-kicker">Fast Entry</span>
-                  <h3>Short homepage, deeper consoles</h3>
-                  <div class="hero-list">
-                    <div class="step-item">
-                      <span class="step-index">1</span>
-                      <div class="step-copy">
-                        <strong>Sign in</strong>
-                        <span>Use panel credentials.</span>
-                      </div>
-                    </div>
-                    <div class="step-item">
-                      <span class="step-index">2</span>
-                      <div class="step-copy">
-                        <strong>Open the right console</strong>
-                        <span>Admin and tenant flows stay separate.</span>
-                      </div>
-                    </div>
-                    <div class="step-item">
-                      <span class="step-index">3</span>
-                      <div class="step-copy">
-                        <strong>Operate from there</strong>
-                        <span>Homepage no longer carries the long product story.</span>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              </section>
-              <section class="kpi-grid">' . $statCards . '</section>
-              <section class="portal-grid">
-                ' . $entryCard . '
-                ' . $secondaryCard . '
-              </section>
-            </div>';
-
-        return $this->publicPage('LeiKwan Bridge', $body, $user);
-        $brandName = $this->escape($this->displayBrandName());
-        $productName = $this->escape('利群會聚 LeiKwan Bridge');
-
-        $tenantCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'tenant'])['total'] ?? 0);
-        $serviceCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM services WHERE status = :status', ['status' => 'active'])['total'] ?? 0);
-        $nodeCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM nodes')['total'] ?? 0);
-        $planCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM service_plans')['total'] ?? 0);
-        $adminCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'admin'])['total'] ?? 0);
-
-        $heroPrimary = '<a class="button" href="/login">Sign In</a>';
-        $heroSecondary = '<a class="button ghost" href="/register">Create Account</a>';
-        $entryCard = '
-            <section class="surface-card">
-              <span class="card-kicker">适用场景</span>
-              <h3>适合需要稳定接入与合规管控的业务</h3>
-              <ul class="list">
-                <li>面向需要解决 IXP 入网难、出网路径复杂、跨地域接入门槛高的业务场景。</li>
-                <li>面向需要把租户、服务、线路、节点权限拆开管理的交付型平台。</li>
-                <li>面向需要把流量路径、客户端配置、诊断与更新统一收口的运维团队。</li>
-              </ul>
-              <div class="portal-actions">
-                <a class="button" href="/register">注册成为 Tenant</a>
-                <a class="button secondary" href="/login">已有账号登录</a>
-              </div>
-            </section>';
-
-        if ($user !== null) {
-            $dashboardPath = $this->escape($this->dashboardPathForUser($user));
-            $dashboardLabel = $this->escape($this->dashboardLabelForUser($user));
-            $heroPrimary = '<a class="button" href="' . $dashboardPath . '">Open ' . $dashboardLabel . '</a>';
-            $heroSecondary = (string) ($user['role'] ?? '') === 'admin'
-                ? '<a class="button secondary" href="/tenant">Tenant Area</a>'
-                : '<a class="button secondary" href="/tenant/clients">My Clients</a>';
-            $entryCard = '
-                <section class="surface-card">
-                  <span class="card-kicker">当前入口</span>
-                  <h3>你的会话已经就绪</h3>
-                  <p>首页现在负责说明产品定位，真正的运维和租户动作则留在各自控制台里完成。</p>
-                  <div class="portal-actions">' . $heroPrimary . $heroSecondary . '</div>
-                </section>';
-        }
-
-        $stats = [
-            ['label' => 'Online Nodes', 'value' => $nodeCount, 'hint' => '在线边缘节点与 IXP 接入资源'],
-            ['label' => 'Active Services', 'value' => $serviceCount, 'hint' => '已经交付并处于启用状态的服务'],
-            ['label' => 'Tenant Accounts', 'value' => $tenantCount, 'hint' => '被平台统一管理的租户账号'],
-            ['label' => 'Plans Ready', 'value' => $planCount, 'hint' => '可直接绑定交付策略的套餐方案'],
-        ];
-
-        $statCards = '';
-        foreach ($stats as $stat) {
-            $statCards .= '<section class="surface-card">'
-                . '<div class="kpi-label">' . $this->escape($stat['label']) . '</div>'
-                . '<div class="kpi-value">' . (int) $stat['value'] . '</div>'
-                . '<p>' . $this->escape($stat['hint']) . '</p>'
-                . '</section>';
-        }
-
-        $featureCards = '
-            <section class="surface-card">
-              <span class="card-kicker">IXP Access</span>
-              <h3>把复杂接入抽象成可交付的资源</h3>
-              <p>利群會聚 LeiKwan Bridge 用节点组、前向链路、套餐方案和客户端能力，去拆掉 IXP 入网过程里的人工拼装和分散配置。</p>
-            </section>
-            <section class="surface-card">
-              <span class="card-kicker">Traffic Compliance</span>
-              <h3>把合规要求落成可执行的流量规则</h3>
-              <p>从租户、服务到节点组与出口路径，平台把流量放行、默认路由、诊断与限制统一收在控制面里，方便审计和回溯。</p>
-            </section>
-            <section class="surface-card">
-              <span class="card-kicker">Delivery</span>
-              <h3>把交付、运维与更新变成一条链</h3>
-              <p>从服务激活、客户端配置、远程安装，到节点更新与诊断结果回传，整条生命周期都可以在同一套平台里推进。</p>
-            </section>';
-
-        $secondaryCard = $adminCount === 0
-            ? '<section class="surface-card">
-                <span class="card-kicker">First-Time Setup</span>
-                <h3>先创建首个管理账号</h3>
-                <p>如果这是第一次部署，需要先从 CLI 创建管理员，然后再进入控制台。</p>
-                <pre>php master/scripts/create_user.php --email admin@example.com --password ChangeMe123! --role admin --name "Platform Admin"</pre>
-              </section>'
-            : '<section class="surface-card">
-                <span class="card-kicker">Platform Composition</span>
-                <h3>从控制面到边缘节点的一体化结构</h3>
-                <ul class="list">
-                  <li>Admin Console 负责套餐、租户、节点、证书、链路和默认策略。</li>
-                  <li>Tenant Console 负责服务、转发、客户端与诊断视图。</li>
-                  <li>Client Agent 与 Slave Node 负责把控制面配置落到真实流量路径上。</li>
-                </ul>
-              </section>';
-
-        $body = '
-            <section class="landing-hero">
-              <div class="hero-copy">
-                <span class="eyebrow">' . $productName . '</span>
-                <h1>解决 IXP 入网难与流量合规问题</h1>
-                <p>' . $brandName . ' 面向需要稳定接入、清晰路由控制与合规交付的业务场景。利群會聚 LeiKwan Bridge 通过控制面、租户面板、客户端与边缘节点协同，把接入、交付、运维和流量治理收拢进一套平台。</p>
-                <div class="hero-actions">' . $heroPrimary . $heroSecondary . '</div>
-                <div class="status-row">
-                  <span class="status-pill">IXP 接入抽象</span>
-                  <span class="status-pill">流量合规治理</span>
-                  <span class="status-pill">租户化交付</span>
-                </div>
-              </div>
-              <section class="surface-card">
-                <span class="panel-kicker">v3 Core</span>
-                <h3>不是单页面板，而是一套可运营的交付结构。</h3>
-                <div class="hero-list">
-                  <div class="step-item">
-                    <span class="step-index">1</span>
-                    <div class="step-copy">
-                      <strong>控制面与转发面分离</strong>
-                      <span>平台负责策略、权限与配置，节点和客户端负责把真实流量跑起来。</span>
-                    </div>
-                  </div>
-                  <div class="step-item">
-                    <span class="step-index">2</span>
-                    <div class="step-copy">
-                      <strong>按租户与方案交付能力</strong>
-                      <span>不同租户、套餐、客户端组和节点组可以拿到不同的默认路线与权限边界。</span>
-                    </div>
-                  </div>
-                  <div class="step-item">
-                    <span class="step-index">3</span>
-                    <div class="step-copy">
-                      <strong>把诊断和更新纳入日常运维</strong>
-                      <span>不只负责开通，还负责后续的节点状态、客户端同步、故障排查与版本更新。</span>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            </section>
-            <section id="overview" class="kpi-grid">' . $statCards . '</section>
-            <section id="solution" class="feature-grid">' . $featureCards . '</section>
-            <section class="portal-grid">
-              ' . $entryCard . '
-              ' . $secondaryCard . '
             </section>';
 
         return $this->publicPage('利群會聚 LeiKwan Bridge', $body, $user);
