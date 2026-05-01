@@ -276,6 +276,7 @@ final class NodeController extends BaseController
             'heartbeat_interval_seconds',
             'usage_interval_seconds',
             'log_level',
+            'udp_uot_sidepath',
         ], null);
 
         foreach (array_keys($snapshot) as $key) {

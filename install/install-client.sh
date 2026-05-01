@@ -131,8 +131,11 @@ mkdir -p "$BIN_DIR" /etc/leikwan
 curl -fsSL "$ARTIFACT_BASE/artifacts/install-forward-runtime.py" -o "$BIN_DIR/install_forward_runtime.py"
 curl -fsSL "$ARTIFACT_BASE/artifacts/leikwan-mptcp-client.py" -o "$BIN_DIR/leikwan-mptcp-client.py"
 curl -fsSL "$ARTIFACT_BASE/artifacts/leikwan-uot.py" -o "$BIN_DIR/leikwan-uot.py"
+curl -fsSL "$ARTIFACT_BASE/artifacts/leikwan-uot-bond.py" -o "$BIN_DIR/leikwan-uot-bond.py"
 curl -fsSL "$ARTIFACT_BASE/artifacts/leikwan-rate-limit.py" -o "$BIN_DIR/leikwan-rate-limit.py"
-chmod 0755 "$BIN_DIR/install_forward_runtime.py" "$BIN_DIR/leikwan-mptcp-client.py" "$BIN_DIR/leikwan-uot.py" "$BIN_DIR/leikwan-rate-limit.py"
+curl -fsSL "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" -o "$BIN_DIR/leikwan-ingress"
+curl -fsSL "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" -o "$BIN_DIR/leikwan-bond"
+chmod 0755 "$BIN_DIR/install_forward_runtime.py" "$BIN_DIR/leikwan-mptcp-client.py" "$BIN_DIR/leikwan-uot.py" "$BIN_DIR/leikwan-uot-bond.py" "$BIN_DIR/leikwan-rate-limit.py" "$BIN_DIR/leikwan-ingress" "$BIN_DIR/leikwan-bond"
 
 # --- WireGuard watchdog ---
 curl -fsSL "$ARTIFACT_BASE/artifacts/leikwan-wg-watchdog.sh" -o "$BIN_DIR/leikwan-wg-watchdog.sh"
@@ -195,11 +198,14 @@ from install_forward_runtime import render_forward_runtime  # type: ignore
 
 payload = json.loads(pathlib.Path(os.environ["CONFIG_JSON"]).read_text(encoding="utf-8"))
 forward = payload["config"]
+bin_dir = pathlib.Path(os.environ["BIN_DIR"])
 rendered = render_forward_runtime(
     forward,
     {
-        "bond_bin": "/usr/local/bin/leikwan-bond",
-        "mptcp_client_bin": "/usr/local/bin/leikwan-mptcp-client.py",
+        "bond_bin": str(bin_dir / "leikwan-bond"),
+        "bond_ingress_bin": str(bin_dir / "leikwan-ingress"),
+        "mptcp_client_bin": str(bin_dir / "leikwan-mptcp-client.py"),
+        "uot_bond_bin": str(bin_dir / "leikwan-uot-bond.py"),
     },
 )
 

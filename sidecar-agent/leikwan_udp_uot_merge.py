@@ -24,6 +24,10 @@ MSG_OPEN = 1
 MSG_DATA = 2
 MSG_CLOSE = 3
 MSG_KEEPALIVE = 4
+LEG_PROBATION_AFTER_FAILURES = 2
+LEG_QUARANTINE_AFTER_FAILURES = 3
+LEG_PROBATION_SECONDS = 5.0
+LEG_QUARANTINE_SECONDS = 30.0
 
 
 @dataclasses.dataclass
@@ -85,6 +89,9 @@ class LegState:
     scope_key: object
     writer: asyncio.StreamWriter
     claims: dict[str, Any]
+    weight: int = 1
+    endpoint_id: int = 0
+    base_weight: int = 1
     write_lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
 
 
@@ -232,6 +239,39 @@ async def write_leg_frame(writer: asyncio.StreamWriter, frame: DataFrame) -> Non
     await writer.drain()
 
 
+def parse_leg_auth_payload(payload: bytes) -> dict[str, Any]:
+    text = payload.decode("utf-8")
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        return {
+            "token": text,
+            "endpoint_id": 0,
+            "weight": 1,
+        }
+    if not isinstance(decoded, dict):
+        raise RuntimeError("auth payload must be an object")
+    token = str(decoded.get("token", "") or "").strip()
+    if token == "":
+        raise RuntimeError("auth payload missing token")
+    return {
+        "token": token,
+        "endpoint_id": int(decoded.get("endpoint_id", 0) or 0),
+        "weight": max(1, int(decoded.get("weight", 1) or 1)),
+    }
+
+
+def build_auth_ready_frame() -> DataFrame:
+    return DataFrame(
+        version=1,
+        msg_type=MSG_KEEPALIVE,
+        flags=0,
+        session_id=0,
+        seq=0,
+        payload=b"",
+    )
+
+
 def load_config(path: str) -> RuntimeConfig:
     raw = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
     return RuntimeConfig(
@@ -257,6 +297,8 @@ class Runtime:
         self.sessions: dict[object, SessionState] = {}
         self.inbound_queue: asyncio.Queue[tuple[int, DataFrame]] = asyncio.Queue()
         self.next_leg_id = 1
+        self.endpoint_penalties: dict[int, dict[str, int]] = {}
+        self.scope_egress_history: dict[object, deque[tuple[int, int]]] = {}
         self.log_samples: dict[str, int] = {}
         self.stats: dict[str, int] = {
             "live_legs": 0,
@@ -276,11 +318,30 @@ class Runtime:
         if count <= 3 or count % 100 == 0:
             logging.log(level, message, *args)
 
+    def apply_endpoint_failure(self, endpoint_id: int, now_ms: int | None = None) -> None:
+        if endpoint_id <= 0:
+            return
+        now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+        penalty = self.endpoint_penalties.setdefault(endpoint_id, {"failures": 0, "suppress_until_ms": 0})
+        penalty["failures"] = int(penalty.get("failures", 0) or 0) + 1
+        if penalty["failures"] >= LEG_QUARANTINE_AFTER_FAILURES:
+            penalty["suppress_until_ms"] = now_ms + int(LEG_QUARANTINE_SECONDS * 1000)
+        elif penalty["failures"] >= LEG_PROBATION_AFTER_FAILURES:
+            penalty["suppress_until_ms"] = now_ms + int(LEG_PROBATION_SECONDS * 1000)
+        else:
+            penalty["suppress_until_ms"] = 0
+
+    def clear_endpoint_failure(self, endpoint_id: int) -> None:
+        if endpoint_id <= 0:
+            return
+        self.endpoint_penalties[endpoint_id] = {"failures": 0, "suppress_until_ms": 0}
+
     def _register_leg(self, leg_state: LegState) -> None:
         self.active_legs[leg_state.leg_id] = leg_state
         leg_order = self.scope_leg_order.setdefault(leg_state.scope_key, deque())
         if leg_state.leg_id not in leg_order:
-            leg_order.append(leg_state.leg_id)
+            for _ in range(max(1, int(leg_state.weight or 1))):
+                leg_order.append(leg_state.leg_id)
         self.scope_claims[leg_state.scope_key] = dict(leg_state.claims)
         self.stats["live_legs"] = len(self.active_legs)
 
@@ -295,15 +356,56 @@ class Runtime:
                     self.scope_claims.pop(leg_state.scope_key, None)
         self.stats["live_legs"] = len(self.active_legs)
 
-    def pick_leg(self, scope_key: object) -> LegState | None:
+    def record_scope_egress(self, scope_key: object, payload_bytes: int, now_ms: int | None = None) -> None:
+        now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+        history = self.scope_egress_history.setdefault(scope_key, deque())
+        history.append((now_ms, max(0, int(payload_bytes or 0))))
+        while history and now_ms - history[0][0] > 1000:
+            history.popleft()
+
+    def scope_target_leg_count(self, scope_key: object, now_ms: int | None = None, per_leg_capacity_bps: int = 200_000_000) -> int:
+        now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+        history = self.scope_egress_history.setdefault(scope_key, deque())
+        while history and now_ms - history[0][0] > 1000:
+            history.popleft()
+        if not history:
+            return 1
+        bits = sum(size for _ts, size in history) * 8
+        window_ms = max(250, now_ms - history[0][0] + 1)
+        estimated_bps = (bits * 1000) / window_ms
+        return max(1, int((estimated_bps + per_leg_capacity_bps - 1) // per_leg_capacity_bps))
+
+    def pick_leg(self, scope_key: object, max_legs: int | None = None) -> LegState | None:
         leg_order = self.scope_leg_order.get(scope_key)
         if not leg_order:
             return None
+        allowed_leg_ids: set[int] | None = None
+        if max_legs is not None:
+            candidates = []
+            seen: set[int] = set()
+            for leg_id in leg_order:
+                if leg_id in seen:
+                    continue
+                seen.add(leg_id)
+                leg_state = self.active_legs.get(leg_id)
+                if leg_state is None:
+                    continue
+                penalty = self.endpoint_penalties.get(int(leg_state.endpoint_id or 0), {})
+                candidates.append(
+                    (
+                        int(penalty.get("failures", 0) or 0),
+                        -int(leg_state.weight or 1),
+                        int(leg_state.leg_id),
+                        leg_state.leg_id,
+                    )
+                )
+            candidates.sort()
+            allowed_leg_ids = {item[3] for item in candidates[: max(1, int(max_legs or 1))]}
         for _ in range(len(leg_order)):
             leg_id = leg_order[0]
             leg_order.rotate(-1)
             leg_state = self.active_legs.get(leg_id)
-            if leg_state is not None:
+            if leg_state is not None and (allowed_leg_ids is None or leg_id in allowed_leg_ids):
                 return leg_state
         return None
 
@@ -395,7 +497,9 @@ class Runtime:
                 if session is None:
                     return
                 session.last_seen_ms = int(time.time() * 1000)
-                leg_state = self.pick_leg(session.scope_key)
+                self.record_scope_egress(session.scope_key, len(payload))
+                leg_count = self.scope_target_leg_count(session.scope_key)
+                leg_state = self.pick_leg(session.scope_key, max_legs=leg_count)
                 if leg_state is None:
                     self.stats["datagrams_dropped_no_leg"] += 1
                     continue
@@ -408,6 +512,7 @@ class Runtime:
                     payload=payload,
                 )
                 session.reverse_seq += 1
+                self.record_scope_egress(session.scope_key, len(payload))
                 await self.send_frame_on_leg(leg_state, frame)
                 self.stats["datagrams_out"] += 1
                 self.stats["bytes_out"] += len(payload)
@@ -498,17 +603,53 @@ class Runtime:
         leg_id = self.next_leg_id
         self.next_leg_id += 1
         registered = False
+        peer = writer.get_extra_info("peername")
+        endpoint_id = 0
         try:
             first_frame = await read_leg_frame(reader)
             if first_frame.msg_type != MSG_AUTH:
                 raise RuntimeError("auth frame required before data")
-            token = first_frame.payload.decode("utf-8")
+            auth_payload = parse_leg_auth_payload(first_frame.payload)
+            token = str(auth_payload["token"])
+            endpoint_id = int(auth_payload.get("endpoint_id", 0) or 0)
             claims = verify_session_token(token, self.config.token_secret, int(time.time()))
             self.validate_claims(claims, self.config.allowed_forward_ids)
             scope_key = build_scope_key(claims, token)
-            leg_state = LegState(leg_id=leg_id, scope_key=scope_key, writer=writer, claims=claims)
+            penalty = self.endpoint_penalties.get(endpoint_id, {})
+            suppress_until_ms = int(penalty.get("suppress_until_ms", 0) or 0)
+            now_ms = int(time.time() * 1000)
+            if suppress_until_ms > now_ms:
+                raise RuntimeError(f"endpoint {endpoint_id} still suppressed")
+            weight = max(1, int(auth_payload.get("weight", 1) or 1))
+            if int(penalty.get("failures", 0) or 0) >= LEG_QUARANTINE_AFTER_FAILURES:
+                weight = 1
+            elif int(penalty.get("failures", 0) or 0) >= LEG_PROBATION_AFTER_FAILURES:
+                weight = max(1, weight // 4)
+            leg_state = LegState(
+                leg_id=leg_id,
+                scope_key=scope_key,
+                writer=writer,
+                claims=claims,
+                weight=weight,
+                endpoint_id=endpoint_id,
+                base_weight=max(1, int(auth_payload.get("weight", 1) or 1)),
+            )
+            self.clear_endpoint_failure(endpoint_id)
             self._register_leg(leg_state)
+            await self.send_frame_on_leg(leg_state, build_auth_ready_frame())
             registered = True
+            self.sampled_log(
+                "leg-auth",
+                logging.INFO,
+                "udp-uot leg auth ok leg_id=%s peer=%s forward_id=%s target=%s:%s scope=%s live_legs=%s",
+                leg_id,
+                peer,
+                int(claims.get("forward_id", 0) or 0),
+                str(claims.get("target_host", "") or ""),
+                int(claims.get("target_port", 0) or 0),
+                scope_key,
+                self.stats["live_legs"],
+            )
             while True:
                 frame = await read_leg_frame(reader)
                 if frame.msg_type == MSG_AUTH:
@@ -519,8 +660,10 @@ class Runtime:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self.sampled_log("leg-error", logging.WARNING, "udp-uot leg error leg_id=%s error=%s", leg_id, exc)
+            self.sampled_log("leg-error", logging.WARNING, "udp-uot leg error leg_id=%s peer=%s error=%s", leg_id, peer, exc)
         finally:
+            if endpoint_id > 0:
+                self.apply_endpoint_failure(endpoint_id)
             if registered:
                 self._remove_leg(leg_id)
                 self.sampled_log("leg-disconnected", logging.INFO, "udp-uot leg disconnected leg_id=%s", leg_id)

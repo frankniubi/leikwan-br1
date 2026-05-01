@@ -9,6 +9,7 @@ use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\SessionAuth;
+use Leikwan\Master\Support\KnowledgebaseService;
 use Leikwan\Master\Support\SslCertificateService;
 use Leikwan\Master\Support\TenantRegistrationService;
 
@@ -679,6 +680,85 @@ final class AdminController extends BaseController
         return $this->adminPage('Tenants', $body, $viewer, 'tenants');
     }
 
+    public function tenantRegistrationPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $registration = $this->registrationService();
+        $registrationSettings = $registration->registrationSettings();
+        $inviteCodes = $registration->listInviteCodes();
+
+        $inviteRows = '';
+        foreach ($inviteCodes as $code) {
+            $isActive = (int) ($code['is_active'] ?? 0) === 1;
+            $inviteRows .= '<tr>
+                <td><code>' . $this->escape((string) $code['code']) . '</code></td>
+                <td>' . $this->escape((string) ($code['label'] ?? '')) . '</td>
+                <td>' . (int) ($code['used_count'] ?? 0) . ' / ' . (int) ($code['max_uses'] ?? 0) . '</td>
+                <td>' . $this->escape((string) ($code['expires_at'] ?? 'never')) . '</td>
+                <td>' . ($isActive ? '<span class="badge success">active</span>' : '<span class="badge danger">inactive</span>') . '</td>
+                <td>
+                    <form class="inline" method="post" action="/admin/tenant-registration/codes/' . (int) $code['id'] . '/toggle">
+                        <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
+                        <button type="submit" class="button secondary">' . ($isActive ? 'Disable' : 'Enable') . '</button>
+                    </form>
+                </td>
+            </tr>';
+        }
+        if ($inviteRows === '') {
+            $inviteRows = '<tr><td colspan="6" class="muted">No registration codes generated yet.</td></tr>';
+        }
+
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $requireCodeChecked = $registrationSettings['require_invite_code'] ? ' checked' : '';
+        $body = '
+            <div class="hero">
+              <div>
+                <h2>Registration Codes</h2>
+                <p class="muted">Manage tenant self-signup policy and invite codes. Tenant account creation remains on the Tenants page.</p>
+              </div>
+            </div>
+            <div class="grid two">
+              <section class="card">
+                <h3>Tenant Registration Settings</h3>
+                <form method="post" action="/admin/tenant-registration/settings">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  <label style="display:flex;align-items:center;gap:10px;">
+                    <input type="checkbox" name="require_invite_code" value="1"' . $requireCodeChecked . '>
+                    <span>Require registration code for tenant self-signup</span>
+                  </label>
+                  <p class="muted" style="margin-top:12px;">SMTP delivery is read from <code>.env</code>. New self-registered tenants stay in <code>pending_verification</code> until they verify their email.</p>
+                  <div class="actions"><button class="button" type="submit">Save Registration Settings</button></div>
+                </form>
+                <hr style="border:none;border-top:1px solid rgba(19,34,56,0.08);margin:22px 0;">
+                <h3>Generate Registration Code</h3>
+                <form method="post" action="/admin/tenant-registration/codes">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  <div class="form-grid">
+                    <div class="field"><label>Label</label><input type="text" name="label" placeholder="April campaign"></div>
+                    <div class="field"><label>Max Uses</label><input type="number" name="max_uses" value="1" min="1"></div>
+                    <div class="field"><label>Expires At (UTC)</label><input type="text" name="expires_at" placeholder="2026-05-01 00:00:00"></div>
+                  </div>
+                  <div class="actions"><button class="button" type="submit">Generate Code</button></div>
+                </form>
+              </section>
+              <section class="card">
+                <h3>Registration Codes</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Code</th><th>Label</th><th>Usage</th><th>Expires</th><th>Status</th><th>Action</th></tr></thead>
+                    <tbody>' . $inviteRows . '</tbody>
+                  </table>
+                </div>
+              </section>
+            </div>';
+
+        return $this->adminPage('Registration Codes', $body, $viewer, 'registration');
+    }
+
     public function plansPage(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
@@ -687,9 +767,10 @@ final class AdminController extends BaseController
         }
 
         $plans = $this->provisioning?->listPlans() ?? [];
-        $nodeGroups = $this->provisioning?->listNodeGroups() ?? [];
-        $clientGroups = $this->provisioning?->listClientGroups() ?? [];
-        $sidecarPoints = $this->provisioning?->listSidecarPoints() ?? [];
+        $forwardCombinations = array_values(array_filter(
+            $this->provisioning?->listForwardCombinations() ?? [],
+            static fn(array $combination): bool => (int) ($combination['is_active'] ?? 0) === 1
+        ));
         $defaults = $this->provisioning?->defaultFeatureFlags() ?? [];
         $editId = (int) $request->input('edit', 0);
         $editing = null;
@@ -699,18 +780,20 @@ final class AdminController extends BaseController
                 break;
             }
         }
-        $editingAllowedSidecarPointIds = [];
-        if ($editing !== null && $this->provisioning !== null) {
-            $editingAllowedSidecarPointIds = array_map(
-                static fn(array $sp): int => (int) $sp['id'],
-                $this->provisioning->allowedSidecarPointsForPlan((int) $editing['id'])
-            );
-        }
+        $editingAllowedForwardCombinationIds = array_map(
+            static fn(array $combination): int => (int) ($combination['id'] ?? 0),
+            $editing['allowed_forward_combinations'] ?? []
+        );
+        $editingIsLegacyPlan = $editing !== null && empty($editing['uses_forward_combinations']);
         $rows = '';
         foreach ($plans as $plan) {
-            $allowed = array_map(static fn(array $group): string => (string) $group['name'], $plan['allowed_node_groups'] ?? []);
-            $allowedClients = array_map(static fn(array $group): string => (string) $group['name'], $plan['allowed_client_groups'] ?? []);
-            $allowedSidecars = array_map(static fn(array $sp): string => (string) $sp['name'], $plan['allowed_sidecar_points'] ?? []);
+            $allowedForwardCombinations = array_map(
+                static fn(array $combination): string => trim((string) (($combination['tenant_label'] ?? '') !== '' ? $combination['tenant_label'] : ($combination['name'] ?? ''))),
+                $plan['allowed_forward_combinations'] ?? []
+            );
+            $forwardCombinationSummary = $allowedForwardCombinations !== []
+                ? $this->escape(implode(', ', $allowedForwardCombinations))
+                : '<span class="muted">Legacy rules (edit to convert)</span>';
             $billingSummary = ((string) ($plan['billing_mode'] ?? 'monthly_bundle') === 'metered')
                 ? 'Metered / ' . $this->escape((string) ($plan['billing_currency'] ?? 'CNY')) . ' ' . $this->escape((string) ($plan['monthly_base_fee'] ?? '0.00')) . ' base + ' . $this->escape((string) ($plan['traffic_price_per_gb'] ?? '0.0000')) . ' / GB'
                 : 'Bundle / ' . $this->escape((string) ($plan['billing_currency'] ?? 'CNY')) . ' ' . $this->escape((string) ($plan['monthly_base_fee'] ?? '0.00')) . ' + ' . (int) ($plan['monthly_included_traffic_gb'] ?? 0) . ' GB / month';
@@ -727,9 +810,7 @@ final class AdminController extends BaseController
                 <td>' . (int) $plan['default_bandwidth_limit_mbps'] . ' Mbps</td>
                 <td>' . (int) $plan['default_traffic_limit_gb'] . ' GB</td>
                 <td>' . $billingSummary . '</td>
-                <td>' . $this->escape(implode(', ', $allowed)) . '</td>
-                <td>' . $this->escape(implode(', ', $allowedClients)) . '</td>
-                <td>' . $this->escape(implode(', ', $allowedSidecars)) . '</td>
+                <td>' . $forwardCombinationSummary . '</td>
                 <td>' . ((int) $plan['is_active'] === 1 ? '<span class="badge success">active</span>' : '<span class="badge danger">inactive</span>') . '</td>
                 <td>
                     <div class="actions">
@@ -744,11 +825,14 @@ final class AdminController extends BaseController
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
+        $forwardCombinationFieldNote = $editingIsLegacyPlan
+            ? '<p class="muted">Legacy plan detected. Choose forward combinations and save to convert this plan.</p>'
+            : '<p class="muted">Plans now authorize tenant route packages through grouped forward combinations.</p>';
         $body = '
             <div class="hero">
               <div>
                 <h2>Plans</h2>
-                <p class="muted">Plans define usable resources, allowed slave groups and the billing model attached to each tenant service.</p>
+                <p class="muted">Plans define usable resources, billing, and allowed forward combinations for each tenant service.</p>
               </div>
             </div>
             <div class="grid two">
@@ -778,16 +862,9 @@ final class AdminController extends BaseController
                     <div class="field"><label>Extra Client Price</label><input type="number" step="0.01" min="0" name="extra_client_price" value="' . $this->escape((string) ($editing['extra_client_price'] ?? '0.00')) . '"><p class="muted">Monthly surcharge for each explicit Client above the included count.</p></div>
                   </div>
                   <div class="field" style="margin-top:14px;">
-                    <label>Allowed Slave Groups</label>
-                    <div class="stack">' . $this->renderGroupCheckboxes($nodeGroups, 'allowed_node_group_ids[]', array_map(static fn(array $group): int => (int) $group['id'], $editing['allowed_node_groups'] ?? [])) . '</div>
-                  </div>
-                  <div class="field" style="margin-top:14px;">
-                    <label>Allowed Client Groups</label>
-                    <div class="stack">' . $this->renderClientGroupCheckboxes($clientGroups, 'allowed_client_group_ids[]', array_map(static fn(array $group): int => (int) $group['id'], $editing['allowed_client_groups'] ?? [])) . '</div>
-                  </div>
-                  <div class="field" style="margin-top:14px;">
-                    <label>Allowed Sidecar Points</label>
-                    <div class="stack">' . $this->renderSidecarPointCheckboxes($sidecarPoints, 'allowed_sidecar_point_ids[]', $editingAllowedSidecarPointIds) . '</div>
+                    <label>Allowed Forward Combinations</label>
+                    ' . $forwardCombinationFieldNote . '
+                    <div class="stack">' . $this->renderForwardCombinationPlanGroups($forwardCombinations, $editingAllowedForwardCombinationIds) . '</div>
                   </div>
                   <div class="field" style="margin-top:14px;">
                     <label>Plan Feature Flags</label>
@@ -802,7 +879,7 @@ final class AdminController extends BaseController
                 <h3>Plan List</h3>
                 <div class="table-wrap">
                   <table>
-                    <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>Bandwidth</th><th>Traffic</th><th>Billing</th><th>Allowed Slave Groups</th><th>Allowed Client Groups</th><th>Allowed Sidecars</th><th>Status</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>Bandwidth</th><th>Traffic</th><th>Billing</th><th>Forward Combinations</th><th>Status</th><th>Actions</th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
@@ -2544,7 +2621,7 @@ final class AdminController extends BaseController
             $verificationSentAt = $status === 'pending_verification' ? ($existing['verification_sent_at'] ?? null) : null;
 
             if ($existing === null) {
-                $this->db->insert('users', [
+                $tenantId = $this->db->insert('users', [
                     'name' => $name,
                     'email' => $email,
                     'api_token' => bin2hex(random_bytes(24)),
@@ -2560,6 +2637,7 @@ final class AdminController extends BaseController
                 ]);
                 SessionAuth::flash('success', 'Tenant created.');
             } else {
+                $tenantId = (int) $existing['id'];
                 $this->db->execute(
                     'UPDATE users
                      SET name = :name,
@@ -2589,11 +2667,13 @@ final class AdminController extends BaseController
                 );
                 SessionAuth::flash('success', 'Tenant updated.');
             }
+
+            $this->provisioning?->ensureDefaultClientForUser($tenantId);
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to save tenant: ' . $throwable->getMessage());
         }
 
-        return Response::redirect('/admin/tenants');
+        return Response::redirect('/admin/registration');
     }
 
     public function deleteTenant(Request $request, array $params): Response
@@ -2621,7 +2701,7 @@ final class AdminController extends BaseController
             SessionAuth::flash('error', 'Failed to delete tenant: ' . $throwable->getMessage());
         }
 
-        return Response::redirect('/admin/tenants');
+        return Response::redirect('/admin/registration');
     }
 
     public function saveTenantRegistrationSettings(Request $request, array $params): Response
@@ -2639,7 +2719,7 @@ final class AdminController extends BaseController
             SessionAuth::flash('error', 'Failed to update registration settings: ' . $throwable->getMessage());
         }
 
-        return Response::redirect('/admin/tenants');
+        return Response::redirect('/admin/registration');
     }
 
     public function createTenantRegistrationCode(Request $request, array $params): Response
@@ -2709,6 +2789,7 @@ final class AdminController extends BaseController
                 'included_client_count' => $request->input('included_client_count', '0'),
                 'extra_client_price' => $request->input('extra_client_price', '0'),
                 'is_active' => $request->input('is_active', '1'),
+                'allowed_forward_combination_ids' => $request->body()['allowed_forward_combination_ids'] ?? [],
                 'allowed_node_group_ids' => $request->body()['allowed_node_group_ids'] ?? [],
                 'allowed_client_group_ids' => $request->body()['allowed_client_group_ids'] ?? [],
                 'allowed_sidecar_point_ids' => $request->body()['allowed_sidecar_point_ids'] ?? [],
@@ -3459,26 +3540,230 @@ final class AdminController extends BaseController
         });
     }
 
+    public function knowledgebaseThreadsPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $service = new KnowledgebaseService($this->db);
+        $threads = $service->listAdminThreads();
+        $rows = '';
+        foreach ($threads as $thread) {
+            $status = (string) ($thread['status'] ?? 'draft');
+            $statusClass = $status === 'published' ? 'success' : 'info';
+            $rows .= '<tr>'
+                . '<td>' . (int) ($thread['id'] ?? 0) . '</td>'
+                . '<td><strong>' . $this->escape((string) ($thread['title'] ?? '')) . '</strong><div class="muted">' . $this->escape((string) ($thread['excerpt'] ?? '')) . '</div></td>'
+                . '<td>' . $this->escape((string) ($thread['slug'] ?? '')) . '</td>'
+                . '<td><span class="badge ' . $statusClass . '">' . $this->escape($status) . '</span></td>'
+                . '<td>' . (((int) ($thread['is_pinned'] ?? 0) === 1) ? 'yes' : 'no') . '</td>'
+                . '<td>' . (int) ($thread['sort_order'] ?? 100) . '</td>'
+                . '<td>' . $this->escape((string) ($thread['updated_at'] ?? '')) . '</td>'
+                . '<td><div class="actions"><a class="button" href="/admin/knowledgebase/' . (int) ($thread['id'] ?? 0) . '/edit">Edit</a><a class="button ghost" href="/knowledgebase?thread=' . urlencode((string) ($thread['slug'] ?? '')) . '" target="_blank" rel="noopener">View Live Page</a></div></td>'
+                . '</tr>';
+        }
+
+        $body = '
+            <div class="hero">
+              <div>
+                <h2>Thread Library</h2>
+                <p class="muted">Admins can create starter docs, update operational guidance, and publish new threads for tenants without touching PHP templates.</p>
+              </div>
+              <div class="actions">
+                <a class="button" href="/admin/knowledgebase/new">Create Thread</a>
+                <a class="button ghost" href="/knowledgebase" target="_blank" rel="noopener">Open Reader</a>
+              </div>
+            </div>
+            <section class="card" style="margin-top:20px;">
+              <h3>Manage Threads</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Title</th><th>Slug</th><th>Status</th><th>Pinned</th><th>Order</th><th>Updated</th><th>Actions</th></tr></thead>
+                  <tbody>' . ($rows !== '' ? $rows : '<tr><td colspan="8" class="muted">No threads yet.</td></tr>') . '</tbody>
+                </table>
+              </div>
+            </section>';
+
+        return $this->adminPage('Knowledgebase', $body, $viewer, 'knowledgebase');
+    }
+
+    public function knowledgebaseEditorPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $service = new KnowledgebaseService($this->db);
+        $threadId = $this->idParam($params);
+        $thread = $threadId > 0 ? $service->findAdminThreadById($threadId) : null;
+        if ($threadId > 0 && $thread === null) {
+            SessionAuth::flash('error', 'Knowledgebase thread not found.');
+            return Response::redirect('/admin/knowledgebase');
+        }
+
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $thread = $thread ?? [
+            'id' => 0,
+            'title' => '',
+            'slug' => '',
+            'excerpt' => '',
+            'body_html' => '<p>Start writing here.</p>',
+            'status' => 'draft',
+            'is_pinned' => 0,
+            'sort_order' => 100,
+        ];
+
+        $pageTitle = (int) ($thread['id'] ?? 0) > 0 ? 'Edit Thread' : 'Create Thread';
+        $threadIdValue = (int) ($thread['id'] ?? 0);
+        $titleValue = $this->escape((string) ($thread['title'] ?? ''));
+        $slugValue = $this->escape((string) ($thread['slug'] ?? ''));
+        $excerptValue = $this->escape((string) ($thread['excerpt'] ?? ''));
+        $bodyHtmlValue = $this->escape((string) ($thread['body_html'] ?? ''));
+        $sortOrderValue = (int) ($thread['sort_order'] ?? 100);
+        $draftSelected = (string) ($thread['status'] ?? 'draft') === 'draft' ? ' selected' : '';
+        $publishedSelected = (string) ($thread['status'] ?? 'draft') === 'published' ? ' selected' : '';
+        $pinnedNoSelected = (int) ($thread['is_pinned'] ?? 0) === 0 ? ' selected' : '';
+        $pinnedYesSelected = (int) ($thread['is_pinned'] ?? 0) === 1 ? ' selected' : '';
+        $viewLiveButton = $threadIdValue > 0 && (string) ($thread['slug'] ?? '') !== ''
+            ? '<a class="button secondary" target="_blank" rel="noopener" href="/knowledgebase?thread=' . urlencode((string) ($thread['slug'] ?? '')) . '">View Live Page</a>'
+            : '';
+
+        $body = <<<HTML
+            <section class="card">
+              <div class="hero" style="margin-bottom:20px;">
+                <div>
+                  <h2>{$pageTitle}</h2>
+                  <p class="muted">Paste images directly into the editor. The panel will upload them and replace the pasted blob with a real URL.</p>
+                </div>
+                <div class="actions">
+                  <a class="button ghost" href="/admin/knowledgebase">Back to Library</a>
+                  {$viewLiveButton}
+                </div>
+              </div>
+              <form method="post" action="/admin/knowledgebase/save" enctype="multipart/form-data" data-kb-editor data-csrf-token="{$csrf}">
+                <input type="hidden" name="csrf_token" value="{$csrf}">
+                <input type="hidden" name="id" value="{$threadIdValue}">
+                <div class="form-grid">
+                  <div class="field"><label>Title</label><input type="text" name="title" value="{$titleValue}" required></div>
+                  <div class="field"><label>Slug</label><input type="text" name="slug" value="{$slugValue}"></div>
+                  <div class="field"><label>Summary</label><input type="text" name="excerpt" value="{$excerptValue}"></div>
+                  <div class="field"><label>Order</label><input type="number" name="sort_order" value="{$sortOrderValue}"></div>
+                  <div class="field"><label>Status</label><select name="status"><option value="draft"{$draftSelected}>Draft</option><option value="published"{$publishedSelected}>Published</option></select></div>
+                  <div class="field"><label>Pinned</label><select name="is_pinned"><option value="0"{$pinnedNoSelected}>No</option><option value="1"{$pinnedYesSelected}>Yes</option></select></div>
+                </div>
+                <div class="field" style="margin-top:16px;">
+                  <label>Body HTML</label>
+                  <textarea id="body_html" name="body_html" rows="20">{$bodyHtmlValue}</textarea>
+                </div>
+                <div class="actions" style="margin-top:18px;">
+                  <button class="button" type="submit">Save Thread</button>
+                </div>
+              </form>
+            </section>
+            <script src="https://cdn.jsdelivr.net/npm/tinymce@7/tinymce.min.js" referrerpolicy="origin"></script>
+            <script>
+              (function () {
+                const form = document.querySelector('[data-kb-editor]');
+                if (!form || typeof tinymce === 'undefined') {
+                  return;
+                }
+                const csrfToken = form.getAttribute('data-csrf-token') || '';
+                tinymce.init({
+                  selector: '#body_html',
+                  height: 560,
+                  menubar: 'file edit view insert format table tools help',
+                  plugins: 'advlist autolink lists link image table code codesample fullscreen paste',
+                  toolbar: 'undo redo | blocks | bold italic underline | bullist numlist blockquote | alignleft aligncenter alignright | link image table codesample | fullscreen code',
+                  paste_data_images: true,
+                  automatic_uploads: true,
+                  images_upload_handler: (blobInfo) => new Promise((resolve, reject) => {
+                    const formData = new FormData();
+                    formData.append('file', blobInfo.blob(), blobInfo.filename());
+                    formData.append('csrf_token', csrfToken);
+                    fetch('/admin/knowledgebase/images', {
+                      method: 'POST',
+                      body: formData,
+                      credentials: 'same-origin'
+                    })
+                      .then(async (response) => {
+                        const payload = await response.json();
+                        if (!response.ok || !payload.location) {
+                          throw new Error(payload.error || 'Image upload failed');
+                        }
+                        resolve(payload.location);
+                      })
+                      .catch((error) => reject(error.message));
+                  })
+                });
+              }());
+            </script>
+        HTML;
+
+        return $this->adminPage('Knowledgebase Editor', $body, $viewer, 'knowledgebase');
+    }
+
+    public function saveKnowledgebaseThread(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $service = new KnowledgebaseService($this->db);
+            $threadId = $service->saveThread([
+                'id' => $request->input('id', 0),
+                'title' => $request->input('title', ''),
+                'slug' => $request->input('slug', ''),
+                'excerpt' => $request->input('excerpt', ''),
+                'body_html' => $request->input('body_html', ''),
+                'status' => $request->input('status', 'draft'),
+                'is_pinned' => $request->input('is_pinned', '0'),
+                'sort_order' => $request->input('sort_order', '100'),
+            ], (int) ($viewer['id'] ?? 0));
+            SessionAuth::flash('success', 'Knowledgebase thread saved.');
+            return Response::redirect('/admin/knowledgebase/' . $threadId . '/edit');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to save knowledgebase thread: ' . $this->displayThrowableMessage($throwable));
+            return Response::redirect('/admin/knowledgebase');
+        }
+    }
+
+    public function uploadKnowledgebaseImage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::json(401, ['error' => 'authentication_required']);
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $upload = $this->readKnowledgebaseImageUpload();
+            $relativeDir = '/uploads/knowledgebase/' . gmdate('Y') . '/' . gmdate('m');
+            $absoluteDir = dirname(__DIR__, 2) . '/public' . $relativeDir;
+            if (!is_dir($absoluteDir) && !mkdir($absoluteDir, 0775, true) && !is_dir($absoluteDir)) {
+                throw new ApiException('knowledgebase_upload_dir_failed', 500, ['message' => 'failed to create upload directory']);
+            }
+
+            $filename = bin2hex(random_bytes(16)) . '.' . $upload['extension'];
+            $absolutePath = $absoluteDir . '/' . $filename;
+            if (!move_uploaded_file($upload['tmp_name'], $absolutePath)) {
+                throw new ApiException('knowledgebase_upload_failed', 500, ['message' => 'failed to store uploaded image']);
+            }
+
+            return Response::json(200, ['location' => $relativeDir . '/' . $filename]);
+        } catch (\Throwable $throwable) {
+            return Response::json(422, ['error' => $this->displayThrowableMessage($throwable)]);
+        }
+    }
+
     private function adminPage(string $title, string $body, array $viewer, string $active): Response
     {
-        return $this->page($title, $body, $viewer, [
-            ['href' => '/admin', 'label' => 'Overview', 'active' => $active === 'overview'],
-            ['href' => '/admin/tenants', 'label' => 'Tenants', 'active' => $active === 'tenants'],
-            ['href' => '/admin/services', 'label' => 'Services', 'active' => $active === 'services'],
-            ['href' => '/admin/plans', 'label' => 'Plans', 'active' => $active === 'plans'],
-            ['href' => '/admin/client-groups', 'label' => 'Client Groups', 'active' => $active === 'client-groups'],
-            ['href' => '/admin/credentials', 'label' => 'Credentials', 'active' => $active === 'credentials'],
-            ['href' => '/admin/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
-            ['href' => '/admin/sidecars', 'label' => 'Sidecar Points', 'active' => $active === 'sidecars'],
-            ['href' => '/admin/cf-location-groups', 'label' => 'CF Location Groups', 'active' => $active === 'cf-location-groups'],
-            ['href' => '/admin/forward-combinations', 'label' => 'Forward Combinations', 'active' => $active === 'forward-combinations'],
-            ['href' => '/knowledgebase', 'label' => 'Knowledgebase'],
-            ['href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],
-            ['href' => '/admin/chains', 'label' => 'Chains', 'active' => $active === 'chains'],
-            ['href' => '/admin/nodes', 'label' => 'Slave Nodes', 'active' => $active === 'nodes'],
-            ['href' => '/admin/user-groups', 'label' => 'User Groups', 'active' => $active === 'user-groups'],
-            ['href' => '/tenant', 'label' => 'Tenant Area'],
-        ]);
+        return $this->page($title, $body, $viewer, $this->adminNavigationItems($active));
     }
 
     /**
@@ -3532,6 +3817,59 @@ final class AdminController extends BaseController
             $label = $this->escape((string) ($point['name'] ?? '')) . ' (' . $this->escape((string) ($point['sidecar_host'] ?? '')) . ' ' . $this->escape($this->sidecarPortSummary($point)) . ')';
             $html .= '<label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" name="' . $this->escape($name) . '" value="' . $id . '"' . $checked . '> ' . $label . '</label>';
         }
+        return $html;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $combinations
+     * @param array<int, int> $selectedIds
+     */
+    private function renderForwardCombinationPlanGroups(array $combinations, array $selectedIds): string
+    {
+        if ($combinations === []) {
+            return '<div class="muted">No forward combinations yet. Create a forward combination first.</div>';
+        }
+
+        $groups = [];
+        foreach ($combinations as $combination) {
+            $backendMode = strtoupper(trim((string) ($combination['backend_mode'] ?? 'current_mode')));
+            $clientMode = strtoupper(trim((string) ($combination['client_mode'] ?? 'single')));
+            $groupLabel = $backendMode . ' / ' . $clientMode;
+            if ((string) ($combination['backend_mode'] ?? '') === 'cf_mode' && trim((string) ($combination['cf_location_group_name'] ?? '')) !== '') {
+                $groupLabel .= ' / ' . trim((string) $combination['cf_location_group_name']);
+            }
+            $groups[$groupLabel][] = $combination;
+        }
+
+        ksort($groups);
+        $html = '';
+        foreach ($groups as $groupLabel => $items) {
+            $html .= '<div style="border:1px solid var(--line);border-radius:18px;padding:14px 16px;background:rgba(250,251,252,0.88);">
+                <strong style="display:block;margin-bottom:10px;">' . $this->escape($groupLabel) . '</strong>';
+            foreach ($items as $combination) {
+                $combinationId = (int) ($combination['id'] ?? 0);
+                $label = trim((string) (($combination['tenant_label'] ?? '') !== '' ? $combination['tenant_label'] : ($combination['name'] ?? '')));
+                $meta = [];
+                $meta[] = 'Internal: ' . trim((string) ($combination['name'] ?? ''));
+                $meta[] = 'Node Group: ' . trim((string) ($combination['node_group_key'] ?? ''));
+                $meta[] = 'Sidecar: ' . trim((string) ($combination['sidecar_point_name'] ?? ''));
+                if (trim((string) ($combination['tenant_badge'] ?? '')) !== '') {
+                    $meta[] = 'Badge: ' . trim((string) $combination['tenant_badge']);
+                }
+                if (trim((string) ($combination['tenant_description'] ?? '')) !== '') {
+                    $meta[] = trim((string) $combination['tenant_description']);
+                }
+                $html .= '<label style="display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid rgba(19,34,56,0.08);">
+                    <input type="checkbox" name="allowed_forward_combination_ids[]" value="' . $combinationId . '"' . (in_array($combinationId, $selectedIds, true) ? ' checked' : '') . '>
+                    <span>
+                      <strong>' . $this->escape($label) . '</strong><br>
+                      <span class="muted" style="font-size:12px;line-height:1.6;">' . $this->escape(implode(' / ', array_values(array_filter($meta)))) . '</span>
+                    </span>
+                </label>';
+            }
+            $html .= '</div>';
+        }
+
         return $html;
     }
 
@@ -4164,18 +4502,6 @@ final class AdminController extends BaseController
         return $message;
     }
 
-    private function displayThrowableMessage(\Throwable $throwable): string
-    {
-        if ($throwable instanceof ApiException) {
-            $details = $throwable->details();
-            $message = trim((string) ($details['message'] ?? ''));
-            if ($message !== '') {
-                return $message;
-            }
-        }
-
-        return $throwable->getMessage();
-    }
 
     /**
      * @param array<int, string> $parts
@@ -4214,6 +4540,45 @@ final class AdminController extends BaseController
         $exitCode = proc_close($process);
 
         return [$exitCode, $stdout, $stderr];
+    }
+
+    private function readKnowledgebaseImageUpload(): array
+    {
+        $file = $_FILES['file'] ?? $_FILES['image'] ?? null;
+        if (!is_array($file)) {
+            throw new ApiException('knowledgebase_upload_missing', 422, ['message' => 'no image upload found']);
+        }
+
+        $errorCode = (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE);
+        if ($errorCode !== UPLOAD_ERR_OK) {
+            throw new ApiException('knowledgebase_upload_invalid', 422, ['message' => 'image upload failed']);
+        }
+
+        $tmpName = (string) ($file['tmp_name'] ?? '');
+        if ($tmpName === '' || !is_uploaded_file($tmpName)) {
+            throw new ApiException('knowledgebase_upload_invalid', 422, ['message' => 'uploaded image is not readable']);
+        }
+
+        $size = (int) ($file['size'] ?? 0);
+        if ($size <= 0 || $size > 5 * 1024 * 1024) {
+            throw new ApiException('knowledgebase_upload_size', 422, ['message' => 'image must be between 1 byte and 5 MB']);
+        }
+
+        $mime = (string) ((new \finfo(FILEINFO_MIME_TYPE))->file($tmpName) ?: '');
+        $allowed = [
+            'image/png' => 'png',
+            'image/jpeg' => 'jpg',
+            'image/gif' => 'gif',
+            'image/webp' => 'webp',
+        ];
+        if (!isset($allowed[$mime])) {
+            throw new ApiException('knowledgebase_upload_type', 422, ['message' => 'only PNG, JPG, GIF, and WEBP images are allowed']);
+        }
+
+        return [
+            'tmp_name' => $tmpName,
+            'extension' => $allowed[$mime],
+        ];
     }
 
     private function readUploadedTextFile(string $field): string

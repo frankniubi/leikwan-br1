@@ -10,6 +10,12 @@ $schema = file_get_contents(__DIR__ . '/../migrations/schema.sql');
 $migration = file_exists(__DIR__ . '/../migrations/20260420_add_cf_location_groups_and_forward_combinations.sql')
     ? file_get_contents(__DIR__ . '/../migrations/20260420_add_cf_location_groups_and_forward_combinations.sql')
     : '';
+$planForwardMigration = file_exists(__DIR__ . '/../migrations/20260422_add_service_plan_forward_combinations.sql')
+    ? file_get_contents(__DIR__ . '/../migrations/20260422_add_service_plan_forward_combinations.sql')
+    : '';
+$planForwardUpdatedAtMigration = file_exists(__DIR__ . '/../migrations/20260422_add_service_plan_forward_combinations_updated_at.sql')
+    ? file_get_contents(__DIR__ . '/../migrations/20260422_add_service_plan_forward_combinations_updated_at.sql')
+    : '';
 $source = file_get_contents(__DIR__ . '/../src/Support/ProvisioningService.php');
 
 foreach ([
@@ -26,10 +32,35 @@ foreach ([
     }
 }
 
+if (!str_contains((string) $schema, 'CREATE TABLE IF NOT EXISTS service_plan_forward_combinations')
+    || !str_contains((string) $schema, 'updated_at DATETIME NOT NULL')) {
+    fail('service_plan_forward_combinations schema is missing updated_at');
+}
+
+if (!str_contains((string) $planForwardMigration, 'CREATE TABLE IF NOT EXISTS service_plan_forward_combinations')) {
+    fail('missing plan forward combination creation migration');
+}
+
+if (!str_contains((string) $planForwardMigration, 'updated_at DATETIME NOT NULL')
+    && !str_contains((string) $planForwardUpdatedAtMigration, 'ALTER TABLE service_plan_forward_combinations')
+    && !str_contains((string) $planForwardUpdatedAtMigration, 'ADD COLUMN updated_at')) {
+    fail('missing migration coverage for service_plan_forward_combinations.updated_at');
+}
+
 foreach ([
+    'use Leikwan\Master\Support\ApiException;',
+    'public function allowedForwardCombinationsForPlan(int $planId): array',
+    'private function planUsesForwardCombinations(int $planId): bool',
     'public function saveCfLocationGroup(array $payload): array',
     'public function saveForwardCombination(array $payload): array',
     'public function availableForwardCombinationsForService(int $serviceId): array',
+    "\$forwardCombinationIds = [];",
+    "foreach ((array) (\$payload['allowed_forward_combination_ids'] ?? []) as \$combinationId) {",
+    "throw new ApiException('invalid_plan_forward_combination_payload', 422, ['payload' => \$payload]);",
+    "DELETE FROM service_plan_forward_combinations WHERE plan_id = :plan_id",
+    "'updated_at' => \$this->now(),",
+    "\$plan['forward_combination_count'] = count(\$plan['allowed_forward_combinations'] ?? []);",
+    'if ($this->planUsesForwardCombinations((int) ($service[\'plan_id\'] ?? 0))) {',
     "\$forwardCombinationId = (int) (\$payload['forward_combination_id'] ?? 0);",
     "\$backendMode = trim((string) (\$payload['backend_mode'] ?? 'current_mode'));",
     "if (!in_array(\$clientMode, ['single', 'bond'], true)) {",
@@ -40,6 +71,17 @@ foreach ([
     if (!str_contains($source, $snippet)) {
         fail('missing provisioning snippet: ' . $snippet);
     }
+}
+
+if (!preg_match(
+    '/service_plan_forward_combinations\'.*?\'created_at\' => \$this->now\(\),\s*\'updated_at\' => \$this->now\(\)/s',
+    (string) $source
+)) {
+    fail('service_plan_forward_combinations insert is missing updated_at');
+}
+
+if (str_contains($source, 'use Leikwan\Master\Exceptions\ApiException;')) {
+    fail('provisioning service still imports ApiException from the wrong namespace');
 }
 
 echo "ok\n";

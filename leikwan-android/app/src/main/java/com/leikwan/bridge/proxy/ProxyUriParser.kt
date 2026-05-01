@@ -1,11 +1,12 @@
 package com.leikwan.bridge.proxy
 
-import android.util.Base64
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.leikwan.bridge.data.ProxyNode
 import java.net.URI
 import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
+import java.util.Base64
 
 object ProxyUriParser {
     private val gson = Gson()
@@ -22,7 +23,8 @@ object ProxyUriParser {
 
     fun parseMultiple(text: String): List<ProxyNode> {
         val decoded = try {
-            String(Base64.decode(text.trim(), Base64.DEFAULT))
+            val bytes = decodeBase64Flexible(text.trim())
+            if (bytes != null) String(bytes, Charsets.UTF_8) else text
         } catch (_: Exception) {
             text
         }
@@ -39,18 +41,20 @@ object ProxyUriParser {
                 URLDecoder.decode(it, "UTF-8").ifEmpty { null }
             }
             val mainPart = withoutScheme.substringBefore("#")
+            val authorityPart = mainPart.substringBefore("?")
+            val queryPart = mainPart.substringAfter("?", "")
 
             val server: String
             val port: Int
             val method: String
             val password: String
 
-            if (mainPart.contains("@")) {
-                val userInfo = mainPart.substringBefore("@")
-                val hostPort = mainPart.substringAfter("@")
+            if (authorityPart.contains("@")) {
+                val userInfo = authorityPart.substringBefore("@")
+                val hostPort = authorityPart.substringAfter("@")
 
                 val decoded = tryBase64Decode(userInfo)
-                if (decoded != null && decoded.contains(":") && !decoded.startsWith("2022-")) {
+                if (decoded != null && decoded.contains(":")) {
                     method = decoded.substringBefore(":")
                     password = decoded.substringAfter(":")
                 } else {
@@ -61,22 +65,26 @@ object ProxyUriParser {
                     password = plaintext.substring(firstColon + 1)
                 }
 
-                server = hostPort.substringBeforeLast(":")
-                port = hostPort.substringAfterLast(":").toInt()
+                val hostAndPort = parseHostPort(hostPort) ?: return null
+                server = hostAndPort.first
+                port = hostAndPort.second
             } else {
-                val decoded = String(Base64.decode(mainPart, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP))
+                val decodedBytes = decodeBase64Flexible(authorityPart) ?: return null
+                val decoded = String(decodedBytes, Charsets.UTF_8)
                 method = decoded.substringBefore(":")
                 val rest = decoded.substringAfter(":")
                 password = rest.substringBefore("@")
                 val hostPort = rest.substringAfter("@")
-                server = hostPort.substringBeforeLast(":")
-                port = hostPort.substringAfterLast(":").toInt()
+                val hostAndPort = parseHostPort(hostPort) ?: return null
+                server = hostAndPort.first
+                port = hostAndPort.second
             }
 
             val config = JsonObject().apply {
                 addProperty("method", method)
                 addProperty("password", password)
             }
+            applyShadowsocksQueryParams(queryPart, config)
 
             ProxyNode(
                 name = name ?: "$server:$port",
@@ -92,7 +100,7 @@ object ProxyUriParser {
 
     private fun tryBase64Decode(input: String): String? {
         return try {
-            val bytes = Base64.decode(input, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+            val bytes = decodeBase64Flexible(input) ?: return null
             val decoded = String(bytes, Charsets.UTF_8)
             if (decoded.any { it.code < 32 && it != '\n' && it != '\r' && it != '\t' }) null
             else decoded
@@ -101,10 +109,31 @@ object ProxyUriParser {
         }
     }
 
+    private fun decodeBase64Flexible(input: String): ByteArray? {
+        val normalized = input.trim()
+        val padded = normalized.padEnd(((normalized.length + 3) / 4) * 4, '=')
+        val sanitized = normalized.replace('-', '+').replace('_', '/')
+        val paddedSanitized = sanitized.padEnd(((sanitized.length + 3) / 4) * 4, '=')
+        val candidates = listOf(normalized, padded, sanitized, paddedSanitized)
+        val decoders = listOf(
+            Base64.getUrlDecoder(),
+            Base64.getDecoder(),
+        )
+        for (candidate in candidates) {
+            for (decoder in decoders) {
+                val decoded = runCatching { decoder.decode(candidate) }.getOrNull()
+                if (decoded != null) {
+                    return decoded
+                }
+            }
+        }
+        return null
+    }
+
     private fun parseVmess(uri: String): ProxyNode? {
         return try {
             val encoded = uri.removePrefix("vmess://")
-            val json = String(Base64.decode(encoded, Base64.DEFAULT))
+            val json = String(decodeBase64Flexible(encoded) ?: return null, Charsets.UTF_8)
             val obj = gson.fromJson(json, JsonObject::class.java)
 
             val server = obj.get("add")?.asString ?: return null
@@ -157,6 +186,59 @@ object ProxyUriParser {
             )
         } catch (_: Exception) {
             null
+        }
+    }
+
+    private fun parseHostPort(hostPort: String): Pair<String, Int>? {
+        val server = hostPort.substringBeforeLast(":", "")
+        val port = hostPort.substringAfterLast(":", "").toIntOrNull()
+        if (server.isBlank() || port == null) return null
+        return server to port
+    }
+
+    private fun applyShadowsocksQueryParams(query: String, config: JsonObject) {
+        if (query.isBlank()) return
+        query.split("&")
+            .filter { it.isNotBlank() }
+            .forEach { pair ->
+                val parts = pair.split("=", limit = 2)
+                val key = urlDecode(parts[0]).trim()
+                val value = urlDecode(parts.getOrElse(1) { "" }).trim()
+                when (key) {
+                    "plugin" -> {
+                        val pluginName = value.substringBefore(";").trim()
+                        val pluginOpts = value.substringAfter(";", "").trim()
+                        if (pluginName.isNotBlank()) {
+                            config.addProperty("plugin", pluginName)
+                        }
+                        if (pluginOpts.isNotBlank()) {
+                            config.addProperty("plugin_opts", pluginOpts)
+                        }
+                    }
+                    "plugin_opts", "network" -> {
+                        if (value.isNotBlank()) config.addProperty(key, value)
+                    }
+                    "uot", "udp_over_tcp" -> {
+                        config.addProperty("udp_over_tcp", truthy(value))
+                    }
+                    "multiplex" -> {
+                        config.addProperty("multiplex_enabled", truthy(value))
+                    }
+                    else -> if (value.isNotBlank()) {
+                        config.addProperty(key, value)
+                    }
+                }
+            }
+    }
+
+    private fun urlDecode(value: String): String {
+        return URLDecoder.decode(value, StandardCharsets.UTF_8.name())
+    }
+
+    private fun truthy(value: String): Boolean {
+        return when (value.lowercase()) {
+            "1", "true", "yes", "on" -> true
+            else -> false
         }
     }
 }

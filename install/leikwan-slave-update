@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+CONFIG_PATH="/etc/leikwan-slave/config.json"
+MODE="update"
+REQUEST_TOKEN=""
+STATE_PATH=""
+if [[ $# -gt 0 && ( "$1" == "update" || "$1" == "check" ) ]]; then
+  MODE="$1"
+  shift
+fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --request-token) REQUEST_TOKEN="$2"; shift 2 ;;
+    --state-path) STATE_PATH="$2"; shift 2 ;;
+    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+MASTER_URL=$(python3 - <<'PY' "${CONFIG_PATH}"
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+print(data.get("master_url", ""))
+PY
+)
+STATE_DIR=$(python3 - <<'PY' "${CONFIG_PATH}"
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+print(data.get("state_dir", "/var/lib/leikwan-slave"))
+PY
+)
+if [[ -z "${STATE_PATH}" ]]; then
+  STATE_PATH="${STATE_DIR%/}/agent_update_state.json"
+fi
+write_update_state() {
+  local status="$1"
+  local error_message="${2:-}"
+  python3 - <<'PY' "${STATE_PATH}" "${REQUEST_TOKEN}" "${status}" "${error_message}" "/usr/local/bin/leikwan-slave-agent.py"
+import json, pathlib, re, sys, time
+path = pathlib.Path(sys.argv[1])
+request_token = sys.argv[2]
+status = sys.argv[3]
+error_message = sys.argv[4]
+agent_path = pathlib.Path(sys.argv[5])
+existing = {}
+if path.exists():
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            existing = loaded
+    except Exception:
+        existing = {}
+payload = dict(existing)
+payload["request_token"] = request_token
+payload["status"] = status
+payload["last_attempt_at"] = time.time()
+if error_message:
+    payload["last_error"] = error_message
+    payload["last_failed_at"] = time.time()
+else:
+    payload["last_error"] = ""
+if status == "running":
+    payload["last_started_at"] = time.time()
+elif status == "success":
+    version = ""
+    if agent_path.exists():
+        text = agent_path.read_text(encoding="utf-8")
+        match = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', text)
+        version = match.group(1) if match else ""
+    payload["last_completed_request_token"] = request_token
+    payload["last_completed_at"] = time.time()
+    payload["installed_version"] = version
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+}
+if [[ -z "${MASTER_URL}" ]]; then
+  write_update_state "error" "master_url missing in ${CONFIG_PATH}"
+  echo "master_url missing in ${CONFIG_PATH}" >&2
+  exit 1
+fi
+if ! curl --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -fsSL "${MASTER_URL%/}/artifacts/install-slave.sh" -o /tmp/leikwan-install-slave.sh; then
+  write_update_state "error" "failed to download install-slave.sh from ${MASTER_URL%/}/artifacts/install-slave.sh"
+  exit 1
+fi
+chmod +x /tmp/leikwan-install-slave.sh
+if [[ "${MODE}" == "check" ]]; then
+  exec /tmp/leikwan-install-slave.sh --check-update --config "${CONFIG_PATH}"
+fi
+write_update_state "running"
+if /tmp/leikwan-install-slave.sh --update --config "${CONFIG_PATH}"; then
+  write_update_state "success"
+else
+  status=$?
+  write_update_state "error" "install-slave exited with status ${status}"
+  exit "${status}"
+fi

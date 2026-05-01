@@ -1,0 +1,190 @@
+<?php
+declare(strict_types=1);
+
+namespace Leikwan\Master\Database;
+
+use Leikwan\Master\Config;
+use PDO;
+use PDOException;
+use Throwable;
+
+final class Database
+{
+    private Config $config;
+    private ?PDO $pdo = null;
+
+    public function __construct(Config $config)
+    {
+        $this->config = $config;
+    }
+
+    public function pdo(): PDO
+    {
+        if ($this->pdo instanceof PDO) {
+            return $this->pdo;
+        }
+
+        $driver = (string) $this->config->get('DB_DRIVER', 'mysql');
+        if ($driver === 'sqlite') {
+            $dsn = 'sqlite:' . $this->config->get('DB_NAME', __DIR__ . '/../../database.sqlite');
+            $user = null;
+            $password = null;
+        } else {
+            $host = $this->config->get('DB_HOST', '127.0.0.1');
+            $port = $this->config->get('DB_PORT', '3306');
+            $name = $this->config->get('DB_NAME', 'leikwan_master');
+            $dsn = sprintf('mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4', $host, $port, $name);
+            $user = $this->config->get('DB_USER', 'root');
+            $password = $this->config->get('DB_PASSWORD', '');
+        }
+
+        try {
+            $this->pdo = new PDO($dsn, $user, $password, [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            ]);
+        } catch (PDOException $exception) {
+            throw new \RuntimeException('Database connection failed: ' . $exception->getMessage(), 0, $exception);
+        }
+
+        return $this->pdo;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     * @return array<string, mixed>|null
+     */
+    public function fetchOne(string $sql, array $params = []): ?array
+    {
+        try {
+            $stmt = $this->pdo()->prepare($sql);
+            $stmt->execute($this->sanitizeParams($sql, $params));
+            $row = $stmt->fetch();
+            return $row === false ? null : $row;
+        } catch (Throwable $throwable) {
+            throw $this->queryException($throwable, $sql, $params);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     * @return array<int, array<string, mixed>>
+     */
+    public function fetchAll(string $sql, array $params = []): array
+    {
+        try {
+            $stmt = $this->pdo()->prepare($sql);
+            $stmt->execute($this->sanitizeParams($sql, $params));
+            return $stmt->fetchAll() ?: [];
+        } catch (Throwable $throwable) {
+            throw $this->queryException($throwable, $sql, $params);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    public function execute(string $sql, array $params = []): int
+    {
+        try {
+            $stmt = $this->pdo()->prepare($sql);
+            $stmt->execute($this->sanitizeParams($sql, $params));
+            return $stmt->rowCount();
+        } catch (Throwable $throwable) {
+            throw $this->queryException($throwable, $sql, $params);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    public function insert(string $table, array $data): int
+    {
+        $columns = array_keys($data);
+        $placeholders = array_map(static fn(string $key): string => ':' . $key, $columns);
+        $sql = sprintf(
+            'INSERT INTO %s (%s) VALUES (%s)',
+            $table,
+            implode(', ', $columns),
+            implode(', ', $placeholders)
+        );
+        $this->execute($sql, $data);
+        return (int) $this->pdo()->lastInsertId();
+    }
+
+    /**
+     * @param callable $callback
+     * @return mixed
+     */
+    public function transaction(callable $callback)
+    {
+        $pdo = $this->pdo();
+        $pdo->beginTransaction();
+        try {
+            $result = $callback($this);
+            $pdo->commit();
+            return $result;
+        } catch (\Throwable $throwable) {
+            $pdo->rollBack();
+            throw $throwable;
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    private function queryException(Throwable $throwable, string $sql, array $params): Throwable
+    {
+        $message = $throwable->getMessage();
+        if (str_contains($message, 'HY093') || str_contains($message, 'Invalid parameter number')) {
+            return new \RuntimeException(
+                'SQL parameter binding failed: ' . $message
+                . ' | SQL: ' . preg_replace('/\s+/', ' ', trim($sql))
+                . ' | Params: ' . json_encode($params, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                0,
+                $throwable
+            );
+        }
+
+        return $throwable;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     * @return array<string, mixed>
+     */
+    private function sanitizeParams(string $sql, array $params): array
+    {
+        if ($params === []) {
+            return $params;
+        }
+
+        $hasNamedKeys = false;
+        foreach (array_keys($params) as $key) {
+            if (is_string($key)) {
+                $hasNamedKeys = true;
+                break;
+            }
+        }
+
+        if (!$hasNamedKeys) {
+            return $params;
+        }
+
+        preg_match_all('/:([a-zA-Z_][a-zA-Z0-9_]*)/', $sql, $matches);
+        $placeholders = array_values(array_unique($matches[1] ?? []));
+        if ($placeholders === []) {
+            return [];
+        }
+
+        $allowed = array_flip($placeholders);
+        $filtered = [];
+        foreach ($params as $key => $value) {
+            if (is_string($key) && isset($allowed[$key])) {
+                $filtered[$key] = $value;
+            }
+        }
+
+        return $filtered;
+    }
+}

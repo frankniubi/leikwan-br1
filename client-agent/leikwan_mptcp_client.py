@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import socket
 import struct
 import subprocess
@@ -29,6 +30,16 @@ def load_json(path: pathlib.Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise RuntimeError(f"config must be an object: {path}")
+    original_payload = json.loads(json.dumps(payload))
+    endpoint_entries = payload.get("mptcp_endpoints", [])
+    if (
+        isinstance(endpoint_entries, list)
+        and endpoint_entries
+        and int(payload.get("mptcp_endpoint_id_base", 0) or 0) <= 0
+    ):
+        payload["mptcp_endpoint_id_base"] = 1
+    if payload != original_payload:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return payload
 
 
@@ -84,6 +95,13 @@ def run_command(parts: list[str], check: bool = False) -> subprocess.CompletedPr
             f"command failed: {' '.join(parts)}\nstdout={result.stdout}\nstderr={result.stderr}"
         )
     return result
+
+
+def configure_logging(config: dict[str, Any]) -> None:
+    logging.basicConfig(
+        level=getattr(logging, str(config.get("log_level", "INFO")).upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
 
 
 def apply_wireguard_underlay(config: dict[str, Any]) -> None:
@@ -246,18 +264,56 @@ def cleanup_stale_transit_interfaces(config: dict[str, Any], active_names: set[s
         current_interfaces = result.stdout.strip().split()
     except Exception:
         return
+    scoped_prefixes: set[str] = set()
+    forward_id = int(config.get("forward_id", 0) or 0)
+    if forward_id > 0:
+        scoped_prefixes.add(f"lw-mptcp-{forward_id}-")
+    for name in active_names:
+        if not name.startswith("lw-mptcp-"):
+            continue
+        prefix = name.rsplit("-", 1)[0] + "-"
+        scoped_prefixes.add(prefix)
     # Identify stale interfaces: match our naming patterns but not in active set
     for iface in current_interfaces:
-        if iface.startswith("lw-mptcp-") and iface not in active_names:
-            logging.info("removing stale transit interface: %s", iface)
-            if shutil_which("systemctl"):
-                run_command(["systemctl", "stop", f"wg-quick@{iface}.service"], check=False)
-                run_command(["systemctl", "disable", f"wg-quick@{iface}.service"], check=False)
-            elif shutil_which("wg-quick"):
-                run_command(["wg-quick", "down", iface], check=False)
-            conf_path = pathlib.Path(f"/etc/wireguard/{iface}.conf")
-            if conf_path.exists():
-                conf_path.unlink()
+        if not iface.startswith("lw-mptcp-"):
+            continue
+        if scoped_prefixes and not any(iface.startswith(prefix) for prefix in scoped_prefixes):
+            continue
+        if iface in active_names:
+            continue
+        logging.info("removing stale transit interface: %s", iface)
+        if shutil_which("systemctl"):
+            run_command(["systemctl", "stop", f"wg-quick@{iface}.service"], check=False)
+            run_command(["systemctl", "disable", f"wg-quick@{iface}.service"], check=False)
+        elif shutil_which("wg-quick"):
+            run_command(["wg-quick", "down", iface], check=False)
+        conf_path = pathlib.Path(f"/etc/wireguard/{iface}.conf")
+        if conf_path.exists():
+            conf_path.unlink()
+
+
+def ensure_clean_transit_interface(name: str) -> None:
+    if name == "":
+        return
+    if shutil_which("systemctl"):
+        run_command(["systemctl", "stop", f"wg-quick@{name}.service"], check=False)
+        run_command(["systemctl", "reset-failed", f"wg-quick@{name}.service"], check=False)
+    if shutil_which("wg-quick"):
+        run_command(["wg-quick", "down", name], check=False)
+    if shutil_which("ip"):
+        run_command(["ip", "link", "delete", "dev", name], check=False)
+
+
+def wait_for_interface(name: str, timeout_seconds: float = 5.0) -> bool:
+    if name == "" or not shutil_which("ip"):
+        return True
+    deadline = time.time() + max(0.1, timeout_seconds)
+    while time.time() < deadline:
+        result = run_command(["ip", "link", "show", "dev", name], check=False)
+        if result.returncode == 0:
+            return True
+        time.sleep(0.2)
+    return False
 
 
 def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> None:
@@ -278,22 +334,30 @@ def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> None:
     path = pathlib.Path(path_value)
     config_text = build_wireguard_interface_config(config)
     changed = write_text_if_changed(path, config_text, mode=0o600)
+    ensure_clean_transit_interface(name)
+    if shutil_which("wg-quick") and path.is_file():
+        if name != "" and shutil_which("systemctl"):
+            if changed:
+                run_command(["systemctl", "daemon-reload"], check=False)
+            run_command(["systemctl", "enable", f"wg-quick@{name}.service"], check=False)
+        run_command(["wg-quick", "up", str(path)], check=False)
+        if not wait_for_interface(name):
+            raise RuntimeError(f"transit interface did not appear after wg-quick up: {name}")
+        return
     if name != "" and shutil_which("systemctl"):
         if changed:
             run_command(["systemctl", "daemon-reload"], check=False)
         run_command(["systemctl", "enable", f"wg-quick@{name}.service"], check=False)
         run_command(["systemctl", "restart", f"wg-quick@{name}.service"], check=False)
-        return
-    if shutil_which("wg-quick") and path.is_file():
-        run_command(["wg-quick", "down", str(path)], check=False)
-        run_command(["wg-quick", "up", str(path)], check=False)
+        if not wait_for_interface(name):
+            raise RuntimeError(f"transit interface did not appear after restart: {name}")
 
 
 def ensure_uot_client_service(interface_name: str, leg: dict[str, Any]) -> None:
     if os.name == "nt":
         return
     endpoint_id = int(leg.get("endpoint_id", 0) or 0)
-    local_udp_port = int(leg.get("local_uot_udp_port", leg.get("peer_tcp_fallback_port", 0)) or 0)
+    local_udp_port = local_uot_udp_port(interface_name, leg)
     remote_tcp_port = int(leg.get("peer_tcp_fallback_port", 0) or 0)
     remote_host = str(leg.get("peer_public_host", "") or "").strip()
     if endpoint_id <= 0 or local_udp_port <= 0 or remote_tcp_port <= 0 or remote_host == "":
@@ -316,14 +380,49 @@ WantedBy=multi-user.target
 """
     changed = write_text_if_changed(unit_path, body)
     if shutil_which("systemctl"):
+        run_command(["systemctl", "stop", f"{service_name}.service"], check=False)
+    terminate_conflicting_uot_clients(local_udp_port)
+    if shutil_which("systemctl"):
         if changed:
             run_command(["systemctl", "daemon-reload"], check=False)
         run_command(["systemctl", "enable", f"{service_name}.service"], check=False)
         run_command(["systemctl", "restart", f"{service_name}.service"], check=False)
 
 
+def terminate_conflicting_uot_clients(local_udp_port: int) -> None:
+    if os.name == "nt" or local_udp_port <= 0 or not shutil_which("pgrep"):
+        return
+    pattern = f"leikwan-uot.py client --listen-udp 127.0.0.1:{local_udp_port}"
+    result = run_command(["pgrep", "-f", pattern], check=False)
+    if result.returncode != 0:
+        return
+    for raw_pid in str(result.stdout or "").splitlines():
+        raw_pid = raw_pid.strip()
+        if raw_pid == "" or not raw_pid.isdigit():
+            continue
+        pid = int(raw_pid)
+        if pid <= 0 or pid == os.getpid():
+            continue
+        run_command(["kill", "-TERM", str(pid)], check=False)
+
+
 def configurable_uot_path() -> pathlib.Path:
     return pathlib.Path("/usr/local/bin/leikwan-uot.py")
+
+
+def local_uot_udp_port(interface_name: str, leg: dict[str, Any]) -> int:
+    configured = int(leg.get("local_uot_udp_port", 0) or 0)
+    if configured > 0:
+        return configured
+    forward_id = int(leg.get("forward_id", 0) or 0)
+    if forward_id <= 0:
+        match = re.match(r"^lw-mptcp-(\d+)-", str(interface_name or "").strip())
+        if match is not None:
+            forward_id = int(match.group(1))
+    node_id = int(leg.get("node_id", leg.get("endpoint_id", 0)) or 0)
+    if forward_id > 0 and node_id > 0:
+        return 45000 + abs(((forward_id * 257) + (node_id * 17)) % 15000)
+    return int(leg.get("peer_tcp_fallback_port", 0) or 0)
 
 
 def shutil_which(command: str) -> str | None:
@@ -479,26 +578,57 @@ def configure_mptcp_policy(config: dict[str, Any]) -> None:
         return parsed
 
     desired_by_id = {endpoint_id_base + index: entry for index, entry in enumerate(desired_entries, start=1)}
+    desired_by_address = {str(entry.get("address", "")): entry for entry in desired_entries if str(entry.get("address", "")) != ""}
+    managed_id_end = endpoint_id_base + max(len(desired_entries), 10)
+
+    all_our_devices = {endpoint_device} if endpoint_device else set()
+    all_our_devices.update(
+        str(entry.get("dev", "") or "").strip()
+        for entry in desired_entries
+        if str(entry.get("dev", "") or "").strip() != ""
+    )
+
+    def in_managed_window(endpoint_id: int) -> bool:
+        return endpoint_id_base <= endpoint_id < managed_id_end
+
+    def ensure_endpoint_device_ready(device_name: str) -> None:
+        normalized = str(device_name or "").strip()
+        if normalized == "":
+            return
+        result = run_command(["ip", "link", "show", "dev", normalized], check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"mptcp endpoint device not ready: {normalized}")
+
     existing_entries = parse_endpoint_show(run_command(["ip", "mptcp", "endpoint", "show"], check=False).stdout)
     for entry in existing_entries:
         endpoint_id = entry.get("id")
         if not isinstance(endpoint_id, int):
             continue
         expected_entry = desired_by_id.get(endpoint_id)
+        entry_address = str(entry.get("address", ""))
+        entry_dev = str(entry.get("dev", "") or "")
+        address_entry = desired_by_address.get(entry_address)
+        delete_entry = False
         if expected_entry is None:
-            # Clean up orphan endpoints that belong to any of our devices
-            entry_dev = entry.get("dev", "")
-            all_our_devices = {endpoint_device} if endpoint_device else set()
-            all_our_devices.update(e.get("dev", "") for e in desired_entries if e.get("dev", ""))
-            if entry_dev and entry_dev in all_our_devices:
-                run_command(["ip", "mptcp", "endpoint", "delete", "id", str(endpoint_id)], check=False)
-            continue
-        if str(entry.get("address", "")) != expected_entry["address"] or relevant_flags(entry) != expected_flags(expected_entry):
-            run_command(["ip", "mptcp", "endpoint", "delete", "id", str(endpoint_id)], check=False)
+            if in_managed_window(endpoint_id):
+                delete_entry = True
+            elif entry_dev != "" and entry_dev in all_our_devices:
+                delete_entry = True
+            elif address_entry is not None:
+                expected_dev = str(address_entry.get("dev", "") or endpoint_device)
+                delete_entry = (
+                    relevant_flags(entry) != expected_flags(address_entry)
+                    or (expected_dev != "" and entry_dev != expected_dev)
+                )
         else:
-            expected_dev = expected_entry.get("dev", "") or endpoint_device
-            if expected_dev != "" and entry.get("dev", "") != expected_dev:
-                run_command(["ip", "mptcp", "endpoint", "delete", "id", str(endpoint_id)], check=False)
+            if entry_address != expected_entry["address"] or relevant_flags(entry) != expected_flags(expected_entry):
+                delete_entry = True
+            else:
+                expected_dev = expected_entry.get("dev", "") or endpoint_device
+                if expected_dev != "" and entry_dev != expected_dev:
+                    delete_entry = True
+        if delete_entry:
+            run_command(["ip", "mptcp", "endpoint", "delete", "id", str(endpoint_id)], check=False)
 
     existing_entries = parse_endpoint_show(run_command(["ip", "mptcp", "endpoint", "show"], check=False).stdout)
     for index, desired_entry in desired_by_id.items():
@@ -516,6 +646,7 @@ def configure_mptcp_policy(config: dict[str, Any]) -> None:
             continue
         parts = ["ip", "mptcp", "endpoint", "add", desired_entry["address"], "id", str(index)]
         ep_dev = desired_entry.get("dev", "") or endpoint_device
+        ensure_endpoint_device_ready(ep_dev)
         if ep_dev != "":
             parts.extend(["dev", ep_dev])
         if truthy(desired_entry.get("subflow", False)):
@@ -526,7 +657,10 @@ def configure_mptcp_policy(config: dict[str, Any]) -> None:
             parts.append("backup")
         if truthy(desired_entry.get("fullmesh", False)):
             parts.append("fullmesh")
-        run_command(parts, check=False)
+        result = run_command(parts, check=False)
+        if result.returncode != 0:
+            detail = str(result.stderr or result.stdout or "unknown error").strip()
+            raise RuntimeError(f"failed to add MPTCP endpoint {desired_entry['address']} on {ep_dev or 'default'}: {detail}")
 
 
 def running_kernel_supports_mptcp() -> bool:
@@ -846,16 +980,12 @@ async def run_udp_listener(config: dict[str, Any]) -> tuple[asyncio.DatagramTran
 
 
 async def main_async(config: dict[str, Any]) -> int:
-    logging.basicConfig(
-        level=getattr(logging, str(config.get("log_level", "INFO")).upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+    configure_logging(config)
 
     if not running_kernel_supports_mptcp() and not truthy(config.get("allow_tcp_fallback", False)):
         raise RuntimeError("running kernel does not support MPTCP; CONFIG_MPTCP is missing or net.mptcp.enabled is unavailable")
 
-    apply_underlays(config)
-    configure_mptcp_policy(config)
+    setup_runtime(config)
 
     tcp_server = await run_tcp_listener(config)
     udp_listener = await run_udp_listener(config)
@@ -881,12 +1011,26 @@ async def main_async(config: dict[str, Any]) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Leikwan MPTCP client runtime")
     parser.add_argument("--config", required=True)
+    parser.add_argument("--setup-underlays", action="store_true")
     return parser.parse_args()
+
+
+def setup_underlays_only(config: dict[str, Any]) -> None:
+    apply_underlays(config)
+
+
+def setup_runtime(config: dict[str, Any]) -> None:
+    apply_underlays(config)
+    configure_mptcp_policy(config)
 
 
 def main() -> int:
     args = parse_args()
     config = load_json(pathlib.Path(args.config))
+    configure_logging(config)
+    if args.setup_underlays:
+        setup_underlays_only(config)
+        return 0
     return asyncio.run(main_async(config))
 
 

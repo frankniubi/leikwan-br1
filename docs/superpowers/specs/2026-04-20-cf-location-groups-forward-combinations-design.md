@@ -62,6 +62,12 @@ Tenant sees only friendly combination names such as:
 - `SHA -> HKG`
 - `SHA -> NRT`
 
+Tenant may also see a short non-backend explanation such as:
+
+- `Low latency route`
+- `Best for Japan`
+- `Stable TCP path`
+
 Tenant does **not** see:
 
 - slave group
@@ -79,6 +85,8 @@ Suggested internal fields:
 - `id`
 - `name`
 - `tenant_label`
+- `tenant_description`
+- `tenant_badge`
 - `node_group_key`
 - `backend_mode`
   - `current_mode`
@@ -97,6 +105,14 @@ Examples:
 
 - `SHA -> HKG` = `slave group A + current_mode + sidecar A + bond`
 - `SHA -> NRT` = `slave group A + cf_mode + CF location group JP + sidecar B + bond`
+
+The tenant-facing surface should present:
+
+- one strong label
+- one short description
+- optional badge such as `Recommended` or `Lowest Latency`
+
+without exposing backend topology.
 
 ## Cloudflare Location Group Model
 
@@ -177,6 +193,31 @@ Concretely:
 - Host header: original `sni`
 - path / route key: original `route_key`
 - sidecar receives a normal WSS connection and stays unaware of the chosen Cloudflare IP
+
+## Phase-One Transport Contract
+
+`cf_mode` is **not** TCP-only in phase one.
+
+Instead, it uses two independent compatibility channels that may coexist under the same selected Cloudflare IP:
+
+### Main TCP channel
+
+- used for TCP traffic
+- uses the normal forward `route_key`
+- carries WSS/TCP toward the sidecar
+
+### Independent UoT shadow channel
+
+- used for UDP-compatible traffic, including WireGuard payloads
+- remains a compatibility transport, not native UDP underlay
+- runs as a separate side channel, not multiplexed into the same main TCP bridge
+- should use a deterministic shadow route such as `route_key + ".uot"`
+
+Phase-one rule:
+
+- one slave still shares one best-IP selection per location group
+- the main TCP channel and the UoT shadow channel both reuse that selected IP
+- channel separation is at the runtime/process level, not at the IP-selection-cache level
 
 ## Slave Responsibilities
 
@@ -277,6 +318,12 @@ This keeps latency low without creating probe-induced jitter.
 - `single`
 - `bond`
 
+### Allowed transport behavior in `cf_mode`
+
+- `tcp` -> main TCP channel only
+- `tcp+udp` -> main TCP channel plus independent UoT shadow channel
+- `udp` -> independent UoT shadow channel only
+
 ### Explicitly blocked in phase one
 
 - `race`
@@ -300,7 +347,8 @@ For this phase:
 
 - do not promise `mptcp`
 - do not model this as native sidecar-underlay `WireGuard`
-- keep UDP support only where the existing compatibility path already makes sense
+- do support UDP and WireGuard traffic only through the existing compatibility idea: an independent UoT shadow channel over TCP/WSS
+- keep that UoT channel separate from the main TCP channel so TCP and UDP failure handling do not share one transport process
 
 This keeps the new mode honest and protects speed-first delivery.
 
@@ -315,6 +363,7 @@ This keeps the new mode honest and protects speed-first delivery.
 
 2. **Forward Combinations**
    - create / edit combinations
+   - preview exactly what the tenant will see
    - choose slave group
    - choose `current_mode` or `cf_mode`
    - choose sidecar point
@@ -334,6 +383,12 @@ Tenant forward creation should expose only:
 - `Target Port`
 - `Local Listen Port`
 - `Transport`
+
+If no combinations are available for the service, show an empty state that explains:
+
+- no route package is available yet
+- tenant cannot fix this themselves
+- admin must publish or assign a forward combination first
 
 Tenant must not see:
 

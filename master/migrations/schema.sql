@@ -182,6 +182,17 @@ CREATE TABLE IF NOT EXISTS service_plans (
     updated_at DATETIME NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS service_plan_forward_combinations (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    forward_combination_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_plan_forward_combination_plan FOREIGN KEY (plan_id) REFERENCES service_plans(id),
+    CONSTRAINT fk_plan_forward_combination_combo FOREIGN KEY (forward_combination_id) REFERENCES forward_combinations(id),
+    UNIQUE KEY uniq_plan_forward_combination (plan_id, forward_combination_id)
+);
+
 CREATE TABLE IF NOT EXISTS services (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT UNSIGNED NOT NULL,
@@ -313,6 +324,7 @@ CREATE TABLE IF NOT EXISTS clients (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     group_id BIGINT UNSIGNED NULL,
     owner_user_id BIGINT UNSIGNED NULL,
+    is_default_for_owner TINYINT(1) NOT NULL DEFAULT 0,
     agent_token VARCHAR(128) NULL,
     agent_version VARCHAR(64) NULL,
     last_sync_at DATETIME NULL,
@@ -353,6 +365,7 @@ CREATE TABLE IF NOT EXISTS clients (
     CONSTRAINT fk_clients_owner_user FOREIGN KEY (owner_user_id) REFERENCES users(id),
     CONSTRAINT fk_clients_default_chain FOREIGN KEY (default_forward_chain_id) REFERENCES forward_chains(id),
     INDEX idx_clients_group (group_id),
+    INDEX idx_clients_owner_default_status (owner_user_id, is_default_for_owner, status),
     INDEX idx_clients_status (status)
 );
 

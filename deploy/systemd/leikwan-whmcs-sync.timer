@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Leikwan WHMCS Sync every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=leikwan-whmcs-sync.service
+
+[Install]
+WantedBy=timers.target

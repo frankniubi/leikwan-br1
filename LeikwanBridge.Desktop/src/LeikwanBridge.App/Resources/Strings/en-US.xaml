@@ -1,0 +1,98 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:system="clr-namespace:System;assembly=mscorlib">
+    <!-- App -->
+    <system:String x:Key="AppTitle">Leikwan Bridge</system:String>
+    <system:String x:Key="AppVersion">v1.0.0</system:String>
+
+    <!-- Navigation -->
+    <system:String x:Key="NavDashboard">Dashboard</system:String>
+    <system:String x:Key="NavForwards">Forwards</system:String>
+    <system:String x:Key="NavLog">Log</system:String>
+    <system:String x:Key="NavSettings">Settings</system:String>
+
+    <!-- Dashboard -->
+    <system:String x:Key="DashConnected">Connected</system:String>
+    <system:String x:Key="DashDisconnected">Disconnected</system:String>
+    <system:String x:Key="DashLastSync">Last sync:</system:String>
+    <system:String x:Key="DashActiveForwards">Active Forwards</system:String>
+    <system:String x:Key="DashBytesIn">Bytes In</system:String>
+    <system:String x:Key="DashBytesOut">Bytes Out</system:String>
+    <system:String x:Key="DashUptime">Uptime</system:String>
+    <system:String x:Key="DashSummaryTitle">Control Center</system:String>
+    <system:String x:Key="DashSummarySubtitle">Monitor connection state, focus on MPTCP forwards first, and control runtime recovery from one place.</system:String>
+    <system:String x:Key="DashQuickActions">Quick Actions</system:String>
+    <system:String x:Key="DashForwardControls">Forward Controls</system:String>
+    <system:String x:Key="DashRecentLogs">Recent Runtime Logs</system:String>
+    <system:String x:Key="DashVisibleForwards">{0} forwards shown</system:String>
+    <system:String x:Key="DashModeFilter">Mode Filter</system:String>
+    <system:String x:Key="DashOpenLogs">Open Full Log</system:String>
+    <system:String x:Key="DashOpenSettings">Open Settings</system:String>
+    <system:String x:Key="DashNoVisibleForwards">No forwards match the current filter.</system:String>
+
+    <!-- Forward Card -->
+    <system:String x:Key="FwdId">Forward ID</system:String>
+    <system:String x:Key="FwdMode">Mode</system:String>
+    <system:String x:Key="FwdListenPort">Listen Port</system:String>
+    <system:String x:Key="FwdTarget">Target</system:String>
+    <system:String x:Key="FwdStatus">Status</system:String>
+    <system:String x:Key="FwdRunning">Running</system:String>
+    <system:String x:Key="FwdStopped">Stopped</system:String>
+    <system:String x:Key="FwdError">Error</system:String>
+    <system:String x:Key="FwdEndpoints">Endpoints</system:String>
+    <system:String x:Key="FwdTransport">Transport</system:String>
+
+    <!-- Actions -->
+    <system:String x:Key="ActionStart">Start</system:String>
+    <system:String x:Key="ActionStop">Stop</system:String>
+    <system:String x:Key="ActionRestart">Restart</system:String>
+    <system:String x:Key="ActionStartAll">Start All</system:String>
+    <system:String x:Key="ActionStopAll">Stop All</system:String>
+    <system:String x:Key="ActionSave">Save</system:String>
+    <system:String x:Key="ActionCancel">Cancel</system:String>
+    <system:String x:Key="ActionConnect">Connect</system:String>
+    <system:String x:Key="ActionTestConnection">Test Connection</system:String>
+
+    <!-- Setup Wizard -->
+    <system:String x:Key="SetupTitle">Welcome to Leikwan Bridge</system:String>
+    <system:String x:Key="SetupSubtitle">Configure your connection to get started</system:String>
+    <system:String x:Key="SetupMasterUrl">Master URL</system:String>
+    <system:String x:Key="SetupClientId">Client ID</system:String>
+    <system:String x:Key="SetupAgentToken">Agent Token</system:String>
+    <system:String x:Key="SetupConnecting">Connecting...</system:String>
+    <system:String x:Key="SetupSuccess">Connection successful!</system:String>
+    <system:String x:Key="SetupFailed">Connection failed. Please check your settings.</system:String>
+
+    <!-- Settings -->
+    <system:String x:Key="SettingsConnection">Connection</system:String>
+    <system:String x:Key="SettingsPollInterval">Poll Interval (seconds)</system:String>
+    <system:String x:Key="SettingsHealthInterval">Health Check Interval (seconds)</system:String>
+    <system:String x:Key="SettingsLogLevel">Log Level</system:String>
+    <system:String x:Key="SettingsAutoStart">Start on Windows login</system:String>
+    <system:String x:Key="SettingsMinimizeToTray">Minimize to system tray</system:String>
+    <system:String x:Key="SettingsBinaries">Binary Paths</system:String>
+    <system:String x:Key="SettingsBondBin">Bond Binary</system:String>
+    <system:String x:Key="SettingsWstunnelBin">Wstunnel Binary</system:String>
+    <system:String x:Key="SettingsWgBin">WireGuard Binary</system:String>
+    <system:String x:Key="SettingsLanguage">Language</system:String>
+    <system:String x:Key="SettingsSaved">Settings saved.</system:String>
+
+    <!-- Log -->
+    <system:String x:Key="LogClear">Clear</system:String>
+    <system:String x:Key="LogExport">Export</system:String>
+    <system:String x:Key="LogFilter">Filter...</system:String>
+
+    <!-- Tray -->
+    <system:String x:Key="TrayShow">Show Window</system:String>
+    <system:String x:Key="TrayExit">Exit</system:String>
+    <system:String x:Key="TrayForwardsActive">{0} forwards active</system:String>
+
+    <!-- Mode Labels -->
+    <system:String x:Key="ModeMptcpFallback">MPTCP (Bond Fallback)</system:String>
+    <system:String x:Key="ModeMptcp">MPTCP</system:String>
+    <system:String x:Key="ModeBond">Bond</system:String>
+    <system:String x:Key="ModeRace">Race</system:String>
+    <system:String x:Key="ModeSingle">Single</system:String>
+    <system:String x:Key="ModeFilterAll">All</system:String>
+    <system:String x:Key="ModeFilterMptcp">MPTCP</system:String>
+</ResourceDictionary>

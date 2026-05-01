@@ -22,6 +22,11 @@ MSG_DATA = 2
 MSG_CLOSE = 3
 MSG_KEEPALIVE = 4
 MAX_RECONNECT_BACKOFF_SECONDS = 5.0
+LEG_KEEPALIVE_INTERVAL_SECONDS = 2.0
+LEG_PROBATION_AFTER_FAILURES = 2
+LEG_QUARANTINE_AFTER_FAILURES = 3
+LEG_PROBATION_SECONDS = 5.0
+LEG_QUARANTINE_SECONDS = 30.0
 
 
 @dataclasses.dataclass
@@ -54,6 +59,9 @@ class LegState:
     endpoint_id: int
     weight: int = 1
     active: bool = True
+    base_weight: int = 1
+    consecutive_failures: int = 0
+    suppress_until_ms: int = 0
 
 
 @dataclasses.dataclass
@@ -99,7 +107,12 @@ def decode_frame(payload: bytes) -> DataFrame:
 
 class WeightedLegSelector:
     def __init__(self, legs: list[LegState]) -> None:
-        self.sequence = deque([leg for leg in legs for _ in range(max(1, leg.weight))])
+        self.legs = legs
+        self.sequence: deque[LegState] = deque()
+        self.refresh()
+
+    def refresh(self) -> None:
+        self.sequence = deque([leg for leg in self.legs for _ in range(max(0, int(leg.weight or 0)))])
 
     def pick_leg(self) -> LegState:
         if not self.sequence:
@@ -187,6 +200,9 @@ async def open_plain_tcp_leg(host: str, port: int, route_key: str, auth_token: s
     reader, writer = await asyncio.open_connection(host, port)
     writer.write(f"LEIKWAN-INGRESS 1 OPEN {route_key} {auth_token}\n".encode("utf-8"))
     await writer.drain()
+    response = await reader.readline()
+    if response not in (b"OK\n", b"OK\r\n"):
+        raise RuntimeError(f"plain tcp mux open rejected: {response.decode('utf-8', errors='replace').strip() or 'empty response'}")
     return reader, writer
 
 
@@ -202,6 +218,18 @@ def parse_host_port(value: str) -> tuple[str, int]:
     if separator == "" or host.strip() == "" or port_text.strip() == "":
         raise ValueError(f"invalid host:port {value!r}")
     return host.strip(), int(port_text.strip())
+
+
+def build_leg_auth_payload(leg_config: LegConfig, session_token: str) -> bytes:
+    return json.dumps(
+        {
+            "token": session_token,
+            "endpoint_id": int(leg_config.endpoint_id),
+            "weight": max(1, int(leg_config.weight or 1)),
+        },
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
 
 
 def load_config(path: str) -> RuntimeConfig:
@@ -235,7 +263,15 @@ def load_config(path: str) -> RuntimeConfig:
 class Runtime:
     def __init__(self, config: RuntimeConfig) -> None:
         self.config = config
-        self.leg_states: list[LegState] = [LegState(endpoint_id=leg.endpoint_id, weight=max(1, leg.weight), active=False) for leg in config.legs]
+        self.leg_states: list[LegState] = [
+            LegState(
+                endpoint_id=leg.endpoint_id,
+                weight=max(1, leg.weight),
+                active=False,
+                base_weight=max(1, leg.weight),
+            )
+            for leg in config.legs
+        ]
         self.leg_by_id = {leg.endpoint_id: leg for leg in config.legs}
         self.selector = WeightedLegSelector(self.leg_states)
         self.merge = MergeBuffer(config.reorder_window_packets, config.reorder_window_bytes, config.reorder_timeout_ms)
@@ -257,6 +293,33 @@ class Runtime:
             "datagrams_dropped_gap": 0,
             "reorder_buffer_bytes": 0,
         }
+
+    def penalize_leg(self, leg_state: LegState, now_ms: int | None = None) -> None:
+        now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+        leg_state.consecutive_failures += 1
+        if leg_state.consecutive_failures >= LEG_QUARANTINE_AFTER_FAILURES:
+            leg_state.weight = 0
+            leg_state.suppress_until_ms = now_ms + int(LEG_QUARANTINE_SECONDS * 1000)
+        elif leg_state.consecutive_failures >= LEG_PROBATION_AFTER_FAILURES:
+            leg_state.weight = max(1, leg_state.base_weight // 4)
+            leg_state.suppress_until_ms = now_ms + int(LEG_PROBATION_SECONDS * 1000)
+        else:
+            leg_state.weight = max(1, leg_state.base_weight // 2)
+            leg_state.suppress_until_ms = 0
+        self.selector.refresh()
+
+    def restore_leg(self, leg_state: LegState) -> None:
+        leg_state.consecutive_failures = 0
+        leg_state.suppress_until_ms = 0
+        leg_state.weight = leg_state.base_weight
+        self.selector.refresh()
+
+    def mark_leg_ready(self, leg_state: LegState) -> None:
+        self.restore_leg(leg_state)
+        if not leg_state.active:
+            leg_state.active = True
+            self.stats["live_legs"] = sum(1 for item in self.leg_states if item.active)
+        self.selector.refresh()
 
     def sampled_log(self, key: str, level: int, message: str, *args: Any) -> None:
         count = self.log_samples.get(key, 0) + 1
@@ -324,6 +387,9 @@ class Runtime:
         while True:
             writer: asyncio.StreamWriter | None = None
             try:
+                now_ms = int(time.time() * 1000)
+                if leg_state.suppress_until_ms > now_ms:
+                    await asyncio.sleep((leg_state.suppress_until_ms - now_ms) / 1000.0)
                 reader, writer = await open_plain_tcp_leg(
                     leg_config.host, leg_config.port, self.config.route_key, leg_config.auth_token
                 )
@@ -335,18 +401,15 @@ class Runtime:
                         flags=0,
                         session_id=0,
                         seq=0,
-                        payload=self.config.session_token.encode("utf-8"),
+                        payload=build_leg_auth_payload(leg_config, self.config.session_token),
                     ),
                 )
-                if not leg_state.active:
-                    leg_state.active = True
-                    self.stats["live_legs"] = sum(1 for item in self.leg_states if item.active)
-                    self.sampled_log("leg-up", logging.INFO, "udp-uot leg up endpoint=%s", leg_config.endpoint_id)
                 backoff = 0.25
 
                 writer_task = asyncio.create_task(self.leg_writer_loop(writer, queue))
-                reader_task = asyncio.create_task(self.leg_reader_loop(reader))
-                done, pending = await asyncio.wait({writer_task, reader_task}, return_when=asyncio.FIRST_COMPLETED)
+                reader_task = asyncio.create_task(self.leg_reader_loop(reader, leg_config.endpoint_id))
+                keepalive_task = asyncio.create_task(self.leg_keepalive_loop(queue))
+                done, pending = await asyncio.wait({writer_task, reader_task, keepalive_task}, return_when=asyncio.FIRST_COMPLETED)
                 for task in pending:
                     task.cancel()
                 if pending:
@@ -356,6 +419,7 @@ class Runtime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self.penalize_leg(leg_state)
                 self.sampled_log("leg-down", logging.WARNING, "udp-uot leg down endpoint=%s error=%s", leg_config.endpoint_id, exc)
             finally:
                 if leg_state.active:
@@ -375,12 +439,38 @@ class Runtime:
             frame = await queue.get()
             await write_leg_frame(writer, frame)
 
-    async def leg_reader_loop(self, reader: asyncio.StreamReader) -> None:
+    async def leg_keepalive_loop(self, queue: asyncio.Queue[DataFrame], interval_seconds: float = LEG_KEEPALIVE_INTERVAL_SECONDS) -> None:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                queue.put_nowait(
+                    DataFrame(
+                        version=1,
+                        msg_type=MSG_KEEPALIVE,
+                        flags=0,
+                        session_id=0,
+                        seq=0,
+                        payload=b"",
+                    )
+                )
+            except asyncio.QueueFull:
+                self.sampled_log("keepalive-drop", logging.WARNING, "udp-uot keepalive drop queue full")
+
+    async def leg_reader_loop(self, reader: asyncio.StreamReader, endpoint_id: int) -> None:
+        ready_marked = False
         while True:
             header = await reader.readexactly(FRAME_PREFIX.size)
             frame_len = FRAME_PREFIX.unpack(header)[0]
             encoded = await reader.readexactly(frame_len)
             frame = decode_frame(encoded)
+            if not ready_marked:
+                leg_state = next((item for item in self.leg_states if item.endpoint_id == endpoint_id), None)
+                if leg_state is not None:
+                    was_active = leg_state.active
+                    self.mark_leg_ready(leg_state)
+                    if not was_active and leg_state.active:
+                        self.sampled_log("leg-up", logging.INFO, "udp-uot leg up endpoint=%s", endpoint_id)
+                ready_marked = True
             await self.inbound_queue.put(frame)
 
     def emit_udp(self, payload: bytes, session_id: int) -> None:

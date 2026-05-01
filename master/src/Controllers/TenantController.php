@@ -1350,27 +1350,14 @@ final class TenantController extends BaseController
                 $configPreview,
                 JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
             );
-            $linuxInstallCommand = 'curl -fsSL ' . $artifactBaseUrl . '/artifacts/install-client.sh | bash -s -- --master ' . $agentBaseUrl . ' --artifact-base ' . $artifactBaseUrl . ' --forward-id ' . (int) $forward['id'] . ' --token ' . (string) $service['client_token'];
-            $windowsInstallUrl = $artifactBaseUrl . '/artifacts/install-client.ps1?' . http_build_query([
-                'forward_id' => (int) $forward['id'],
-                'token' => (string) $service['client_token'],
-            ], '', '&', PHP_QUERY_RFC3986);
-            $windowsInstallCommand = '$tmp = "$env:TEMP\\install-client-forward-' . (int) $forward['id'] . '.ps1"; Invoke-WebRequest -UseBasicParsing "' . $windowsInstallUrl . '" -OutFile $tmp; powershell -ExecutionPolicy Bypass -File $tmp';
-            $sidecarInstallHtml = '';
+            $runtimeManagementHtml = '<div class="muted" style="margin-top:12px;">Install and update the line runtime from <a href="/tenant/clients"><strong>Client</strong></a>.</div>'
+                . '<div class="muted">Install or manage target-side sidecars from <a href="/tenant/sidecars"><strong>Sidecar Points</strong></a>.</div>';
             if (in_array($this->canonicalClientMode((string) ($forward['client_mode'] ?? 'single')), ['bond', 'mptcp'], true) && !empty($forward['bond_remote_host'])) {
-                $sidecarPort = (int) (($forward['bond_remote_port'] ?? 0) ?: $this->defaultBondRemotePort());
-                $sidecarPoint = (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0 ? $this->provisioning->visibleSidecarPointForUser((int) $forward['bond_sidecar_point_id'], (int) $user['id']) : null;
-                $isSharedSidecarPoint = $sidecarPoint !== null && (int) ($sidecarPoint['owner_user_id'] ?? 0) === 0;
-                $sidecarInstallCommand = $sidecarPoint !== null && !$isSharedSidecarPoint ? $this->bondSidecarInstallCommand($sidecarPoint) : '';
-                $sidecarUninstallCommand = $sidecarPoint !== null && !$isSharedSidecarPoint ? $this->bondSidecarUninstallCommand($sidecarPoint) : '';
-                $sidecarInstallHtml = '<details style="margin-top:12px;">
-                        <summary>Install Bond Sidecar</summary>
-                        <div class="muted" style="margin-top:10px;">Run this on the C-side target machine that matches ' . $this->escape((string) $forward['bond_remote_host']) . ':' . $sidecarPort . '.</div>
-                        ' . ($sidecarInstallCommand !== '' ? '<pre>' . $this->escape($sidecarInstallCommand) . '</pre>' : ($isSharedSidecarPoint ? '<div class="muted">This forward uses an admin-shared sidecar point. Installation and secret management stay with the administrator.</div>' : '<div class="muted">This forward is using a manually entered sidecar target. Create a reusable point in <a href="/tenant/sidecars">Sidecar Points</a> if you want install and heartbeat management here.</div>')) . '
-                        <div class="muted" style="margin-top:10px;">Backend seen by sidecar: ' . $this->escape((string) $forward['target_host']) . ':' . (int) $forward['target_port'] . '</div>
-                        <div class="muted">If this forward is bound to a managed sidecar point, its dedicated point secret and agent token are embedded in the install command above.</div>
-                        ' . ($sidecarUninstallCommand !== '' ? '<div class="muted" style="margin-top:10px;">Uninstall</div><pre>' . $this->escape($sidecarUninstallCommand) . '</pre>' : '') . '
-                      </details>';
+                $runtimeManagementHtml .= '<div class="muted">Current sidecar target: '
+                    . $this->escape((string) $forward['bond_remote_host'])
+                    . ':'
+                    . (int) (($forward['bond_remote_port'] ?? 0) ?: $this->defaultBondRemotePort())
+                    . '</div>';
             }
 
             $endpointHtml = '';
@@ -1413,14 +1400,7 @@ final class TenantController extends BaseController
                               </form>'
                             : '<span class="muted">Delete disabled by policy</span>') .
                     '</div>' .
-                    '<details style="margin-top:12px;">
-                        <summary>Install Commands</summary>
-                        <div class="muted" style="margin-top:10px;">Linux</div>
-                        <pre>' . $this->escape($linuxInstallCommand) . '</pre>
-                        <div class="muted" style="margin-top:10px;">Windows PowerShell (Admin)</div>
-                        <pre>' . $this->escape($windowsInstallCommand) . '</pre>
-                      </details>' .
-                    $sidecarInstallHtml .
+                    $runtimeManagementHtml .
                     (!empty($features['allow_view_client_config'])
                         ? '<details style="margin-top:12px;">
                             <summary>View client config</summary>
@@ -1637,7 +1617,7 @@ final class TenantController extends BaseController
                 </div>
                 <div class="actions">
                   <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Create New Forward</a>
-                  <a class="button ghost" href="/knowledgebase#quick-start">Knowledgebase</a>
+                  <a class="button ghost" href="/knowledgebase?thread=getting-started-first-forward-checklist">Knowledgebase</a>
                   <form class="inline" method="post" action="/tenant/services/' . (int) $service['id'] . '/regenerate-client-token">
                     <input type="hidden" name="csrf_token" value="' . $csrf . '">
                     <button class="button secondary" type="submit" ' . (empty($features['allow_rotate_client_token']) ? 'disabled' : '') . '>Rotate Client Token</button>
@@ -1648,12 +1628,12 @@ final class TenantController extends BaseController
               <section class="card">
                 <h3>Create Forward</h3>
                 <p class="muted">Choose one route package, then fill your backend target on the dedicated create page.</p>
-                <p class="field-note">Need help? <a href="/knowledgebase#quick-start">Quick Start</a> ? <a href="/knowledgebase#advanced-options">Advanced Options</a> ? <a href="/knowledgebase#usage-patterns">Usage Patterns</a></p>
+                <p class="field-note">Need help? <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Quick Start</a> ? <a href="/knowledgebase?thread=connection-modes-single-race-bond">Advanced Options</a> ? <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Usage Patterns</a></p>
                 ' . (empty($features['allow_manage_forwards']) ? '<div class="flash danger">Forward creation is disabled for your plan/account.</div>' : '') . '
                 ' . $createForwardNotice . '
                 <div class="actions" style="margin-top:12px;">
                   <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Create Forward</a>
-                  <a class="button ghost" href="/knowledgebase#quick-start">Knowledgebase</a>
+                  <a class="button ghost" href="/knowledgebase?thread=getting-started-first-forward-checklist">Knowledgebase</a>
                 </div>
               </section>
             </div>
@@ -1845,6 +1825,60 @@ final class TenantController extends BaseController
     {
         $serviceId = $this->idParam($params);
         return Response::redirect('/tenant/services/' . $serviceId . '/create-forward');
+    }
+
+    public function saveClient(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $services = $this->db->fetchAll('SELECT id FROM services WHERE user_id = :user_id', ['user_id' => $user['id']]);
+            $features = $services !== [] ? ($this->provisioning->serviceSummary((int) $services[0]['id'])['effective_features'] ?? []) : [];
+            if (empty($features['allow_manage_clients'])) {
+                throw new ApiException('feature_denied_manage_clients', 403);
+            }
+
+            $allowedGroups = $this->provisioning->availableClientGroupsForUser((int) $user['id']);
+            $groupId = (int) $request->input('group_id', 0);
+            if ($allowedGroups !== [] && $groupId > 0) {
+                $allowedGroupIds = array_map(static fn(array $group): int => (int) $group['id'], $allowedGroups);
+                if (!in_array($groupId, $allowedGroupIds, true)) {
+                    throw new ApiException('client_group_not_allowed', 422);
+                }
+            }
+
+            $this->provisioning->saveClient([
+                'id' => $request->input('id'),
+                'owner_user_id' => $user['id'],
+                'group_id' => $groupId,
+                'name' => $request->input('name'),
+                'display_host' => $request->input('display_host'),
+                'bind_ip' => $request->input('bind_ip'),
+                'nic_name' => $request->input('nic_name'),
+                'port_range_start' => $request->input('port_range_start'),
+                'port_range_end' => $request->input('port_range_end'),
+                'traffic_multiplier' => $request->input('traffic_multiplier', '1.00'),
+                'default_endpoint_mode' => $request->input('default_endpoint_mode', 'slave_group'),
+                'default_node_group_key' => $request->input('default_node_group_key'),
+                'default_forward_chain_id' => $request->input('default_forward_chain_id'),
+                'agent_config_json' => $request->input('agent_config_json'),
+                'status' => $request->input('status', 'active'),
+                'allow_custom_endpoints' => 0,
+                'force_slave_mode' => 0,
+                'allow_forward_chain' => 1,
+                'allow_latency_test' => 1,
+                'allow_inbound_proxy' => 0,
+            ]);
+            SessionAuth::flash('success', 'Client saved.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to save client: ' . $this->displayThrowableMessage($throwable));
+        }
+
+        return Response::redirect('/tenant/clients');
     }
 
     public function requestClientDiagnostics(Request $request, array $params): Response
@@ -2628,18 +2662,6 @@ final class TenantController extends BaseController
             </script>';
     }
 
-    private function displayThrowableMessage(\Throwable $throwable): string
-    {
-        if ($throwable instanceof ApiException) {
-            $details = $throwable->details();
-            $message = trim((string) ($details['message'] ?? ''));
-            if ($message !== '') {
-                return $message;
-            }
-        }
-
-        return $throwable->getMessage();
-    }
 
     private function forwardCreateFlashMessage(\Throwable $throwable): string
     {
