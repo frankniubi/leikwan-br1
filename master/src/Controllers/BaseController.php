@@ -1343,6 +1343,9 @@ HTML;
       gap: 16px;
       align-items: stretch;
     }
+    .homepage-hero {
+      grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+    }
     .auth-hero {
       display: flex;
       flex-direction: column;
@@ -1397,6 +1400,17 @@ HTML;
       border: 1px solid rgba(229,231,235,0.94);
       box-shadow: var(--shadow);
     }
+    .homepage-hero .hero-copy {
+      position: relative;
+      overflow: hidden;
+      padding: 30px;
+      border-radius: 28px;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(17,24,39,0.10), transparent 30%),
+        linear-gradient(135deg, rgba(255,255,255,0.96), rgba(243,244,246,0.82));
+      border: 1px solid rgba(209,213,219,0.82);
+      box-shadow: var(--shadow);
+    }
     .hero-copy {
       display: flex;
       flex-direction: column;
@@ -1419,6 +1433,66 @@ HTML;
       color: #374151;
       font-size: 12px;
       font-weight: 600;
+    }
+    .metric-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .metric-card {
+      padding: 14px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.76);
+      border: 1px solid rgba(209,213,219,0.82);
+    }
+    .metric-card strong {
+      display: block;
+      color: var(--text);
+      font-size: 15px;
+      margin-bottom: 4px;
+    }
+    .metric-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .feature-mosaic {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .feature-card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 250px;
+    }
+    .feature-card h3,
+    .route-card h3 {
+      font-size: 1.55rem;
+    }
+    .feature-badge {
+      width: fit-content;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: #111827;
+      color: #ffffff;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .route-card {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 12px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.96), rgba(249,250,251,0.92)),
+        radial-gradient(circle at 100% 0%, rgba(17,24,39,0.08), transparent 30%);
     }
     .entry-grid,
     .portal-grid,
@@ -1525,8 +1599,17 @@ HTML;
       .auth-grid,
       .entry-grid,
       .portal-grid,
+      .feature-mosaic,
       .form-grid {
         grid-template-columns: 1fr;
+      }
+    }
+    @media (max-width: 720px) {
+      .metric-strip {
+        grid-template-columns: 1fr;
+      }
+      .homepage-hero .hero-copy {
+        padding: 22px;
       }
     }
     @media (max-width: 820px) {
