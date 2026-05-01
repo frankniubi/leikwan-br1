@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn test_verify_valid_token() {
         let secret = "test-secret-key";
-        let payload = r#"{"target_host":"10.0.0.1","target_port":8080,"target_protocol":"tcp","service_id":"svc1","forward_id":42}"#;
+        let payload = r#"{"target_host":"10.0.0.1","target_port":8080,"target_protocol":"tcp","service_id":1,"forward_id":42}"#;
 
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
 
