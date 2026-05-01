@@ -663,7 +663,7 @@ WantedBy=multi-user.target
                 f"export LEIKWAN_BOND_FORWARD_ID='{runtime_forward_id}'",
                 f"export LEIKWAN_BOND_STATE_DIR='{self.state_dir}'",
                 f"export LEIKWAN_BOND_SNAPSHOT_PATH='{self.state_dir / 'bond-leg-health.json'}'",
-                f'BOND_SERVER="{self.bond_binary_path()}"',
+                f'BOND_SERVER="{self.bond_binary_path().as_posix()}"',
                 f'LISTEN="{runtime_config["listen_host"]}:{runtime_config["listen_port"]}"',
                 f'TOKEN_SECRET="{runtime_config["token_secret"]}"',
                 'exec "$BOND_SERVER" server --listen "$LISTEN" --token-secret "$TOKEN_SECRET"',
@@ -736,7 +736,7 @@ WantedBy=multi-user.target
             start_script_lines = [
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
-                f"exec /usr/bin/python3 /usr/local/bin/leikwan-udp-uot-merge.py --config {udp_runtime_path}",
+                f"exec /usr/local/bin/leikwan-udp-uot-merge --config {udp_runtime_path}",
             ]
             start_changed = write_text_if_changed(udp_start_script, "\n".join(start_script_lines) + "\n", mode=0o755)
             unit_body = f"""[Unit]
@@ -801,6 +801,7 @@ WantedBy=multi-user.target
             start_script_lines = [
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
+                f'/usr/bin/python3 {self.runtime_bin()} --config {secondary_runtime_path} --setup-only',
                 f'RUST_RELAY="{rust_relay_path}"',
                 'if [ -x "$RUST_RELAY" ]; then',
                 f'    exec "$RUST_RELAY" server --config {secondary_runtime_path}',
@@ -809,6 +810,8 @@ WantedBy=multi-user.target
                 'fi',
             ]
             start_script_changed = write_text_if_changed(secondary_start_script, "\n".join(start_script_lines) + "\n", mode=0o755)
+            if bond_runtime is None:
+                write_text_if_changed(primary_start_script, "\n".join(start_script_lines) + "\n", mode=0o755)
             unit_body = f"""[Unit]
 Description=Leikwan MPTCP Sidecar
 After=network.target

@@ -29,6 +29,7 @@ That means the system is not suffering from "no multi-leg scheduling".
 
 It is suffering from "bad legs are still treated as first-class participants".
 
+
 ## Product requirements
 
 ### Runtime requirements

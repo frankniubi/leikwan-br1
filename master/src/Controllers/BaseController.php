@@ -8,6 +8,7 @@ use DateTimeZone;
 use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Response;
+use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\SessionAuth;
 
 abstract class BaseController
@@ -1039,6 +1040,32 @@ abstract class BaseController
         return (string) ($user['role'] ?? '') === 'admin' ? 'Admin Console' : 'Tenant Panel';
     }
 
+    /**
+     * @return array<int, array{href:string,label:string,active?:bool}>
+     */
+    protected function adminNavigationItems(string $active = ''): array
+    {
+        return [
+            ['href' => '/admin', 'label' => 'Overview', 'active' => $active === 'overview'],
+            ['href' => '/admin/tenants', 'label' => 'Tenants', 'active' => $active === 'tenants'],
+            ['href' => '/admin/registration', 'label' => 'Registration Codes', 'active' => $active === 'registration'],
+            ['href' => '/admin/services', 'label' => 'Services', 'active' => $active === 'services'],
+            ['href' => '/admin/plans', 'label' => 'Plans', 'active' => $active === 'plans'],
+            ['href' => '/admin/client-groups', 'label' => 'Client Groups', 'active' => $active === 'client-groups'],
+            ['href' => '/admin/credentials', 'label' => 'Credentials', 'active' => $active === 'credentials'],
+            ['href' => '/admin/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
+            ['href' => '/admin/sidecars', 'label' => 'Sidecar Points', 'active' => $active === 'sidecars'],
+            ['href' => '/admin/cf-location-groups', 'label' => 'CF Location Groups', 'active' => $active === 'cf-location-groups'],
+            ['href' => '/admin/forward-combinations', 'label' => 'Forward Combinations', 'active' => $active === 'forward-combinations'],
+            ['href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
+            ['href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],
+            ['href' => '/admin/chains', 'label' => 'Chains', 'active' => $active === 'chains'],
+            ['href' => '/admin/nodes', 'label' => 'Slave Nodes', 'active' => $active === 'nodes'],
+            ['href' => '/admin/user-groups', 'label' => 'User Groups', 'active' => $active === 'user-groups'],
+            ['href' => '/tenant', 'label' => 'Tenant Area'],
+        ];
+    }
+
     protected function localeSwitcherHtml(): string
     {
         return <<<HTML
@@ -1046,6 +1073,7 @@ abstract class BaseController
                 <label for="locale-switcher" class="locale-label">Language</label>
                 <select id="locale-switcher" class="locale-select">
                     <option value="en">English</option>
+                    <option value="zh-Hans">Simplified Chinese</option>
                     <option value="zh-TW">Traditional Chinese</option>
                 </select>
             </div>
@@ -1063,13 +1091,26 @@ abstract class BaseController
         return '<div class="flash ' . $flashClass . '">' . $this->escape($flash['message']) . '</div>';
     }
 
+    protected function displayThrowableMessage(\Throwable $throwable): string
+    {
+        if ($throwable instanceof ApiException) {
+            $details = $throwable->details();
+            $message = trim((string) ($details['message'] ?? ''));
+            if ($message !== '') {
+                return $message;
+            }
+        }
+
+        return $throwable->getMessage();
+    }
+
     protected function i18nBootstrapHtml(): string
     {
         return <<<'HTML'
   <script>
     window.LEIKWAN_I18N = {
       defaultLocale: 'en',
-      supported: ['en', 'zh-TW'],
+      supported: ['en', 'zh-TW', 'zh-Hans'],
       basePath: '/i18n'
     };
   </script>

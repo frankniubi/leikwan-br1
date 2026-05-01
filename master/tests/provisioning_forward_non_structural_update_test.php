@@ -1,6 +1,62 @@
 <?php
 declare(strict_types=1);
 
+namespace Leikwan\Master {
+
+    final class Config
+    {
+        /** @var array<string, string> */
+        private array $values = [];
+
+        public function __construct(string $envPath)
+        {
+            foreach (@file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+                if (!is_string($line) || $line === '' || str_starts_with($line, '#') || !str_contains($line, '=')) {
+                    continue;
+                }
+                [$key, $value] = explode('=', $line, 2);
+                $this->values[trim($key)] = trim($value);
+            }
+        }
+
+        public function get(string $key, mixed $default = null): mixed
+        {
+            return $this->values[$key] ?? $default;
+        }
+
+        public function getInt(string $key, int $default = 0): int
+        {
+            return (int) ($this->values[$key] ?? $default);
+        }
+
+        public function getBool(string $key, bool $default = false): bool
+        {
+            if (!array_key_exists($key, $this->values)) {
+                return $default;
+            }
+            return in_array(strtolower((string) $this->values[$key]), ['1', 'true', 'yes', 'on'], true);
+        }
+    }
+}
+
+namespace Leikwan\Master\Support {
+
+    class ApiException extends \RuntimeException
+    {
+        /** @param array<string, mixed> $context */
+        public function __construct(string $message, int $code = 500, private array $context = [])
+        {
+            parent::__construct($message, $code);
+        }
+
+        /** @return array<string, mixed> */
+        public function context(): array
+        {
+            return $this->context;
+        }
+    }
+}
+
 namespace Leikwan\Master\Database {
 
     final class Database

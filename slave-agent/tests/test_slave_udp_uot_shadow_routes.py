@@ -47,6 +47,38 @@ class SlaveUdpUotShadowRouteTests(unittest.TestCase):
         )
         return slave_agent_module.SlaveAgent(config_path)
 
+    def test_apply_config_patch_can_add_and_remove_udp_uot_sidepath(self) -> None:
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        config_path = pathlib.Path(tmp_dir.name) / "config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "master_url": "https://panel.example.com",
+                    "node_token": "token",
+                    "state_dir": str(pathlib.Path(tmp_dir.name) / "state"),
+                    "systemd_dir": str(pathlib.Path(tmp_dir.name) / "systemd"),
+                    "ingress_bin": "/usr/local/bin/leikwan-ingress",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        agent = slave_agent_module.SlaveAgent(config_path)
+        sidepath = {
+            "enabled_forward_ids": [26],
+            "shadow_route_suffix": ".uot",
+            "sidecar_port": 8999,
+        }
+
+        agent.apply_config_patch({"udp_uot_sidepath": sidepath})
+        persisted = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["udp_uot_sidepath"], sidepath)
+
+        agent.apply_config_patch({"udp_uot_sidepath": None})
+        persisted = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertNotIn("udp_uot_sidepath", persisted)
+
     def publish_with_mocks(self, agent: slave_agent_module.SlaveAgent, task: dict, payload: dict):
         with mock.patch.object(agent, "ensure_nft_table"):
             with mock.patch.object(agent, "delete_nft_rules") as delete_nft_rules:
@@ -134,6 +166,50 @@ class SlaveUdpUotShadowRouteTests(unittest.TestCase):
         shadow_metadata_files = list(agent.services_dir.glob("*-udp-uot.json"))
         self.assertEqual(len(shadow_metadata_files), 1)
         self.assertTrue(agent.service_unit_path(shadow_name).exists())
+
+    def test_republish_same_forward_keeps_shadow_backend_port_stable(self) -> None:
+        agent = self.make_agent()
+        task = {"service_id": 1, "forward_id": 26, "endpoint_id": 184}
+        payload = {
+            "listen_port": 7001,
+            "target": "138.252.162.120:9000",
+            "path_prefix": "a43547b6350f72cd",
+            "route_key": "a43547b6350f72cd",
+            "transport_mode": "tcp+udp",
+            "ingress_protocol": "plain_tcp_mux",
+            "ingress_auth_token": "token-123",
+            "backend_protocol": "tcp_relay",
+            "filter_profile": "off",
+        }
+
+        self.publish_with_mocks(agent, task, payload)
+        shadow_name = "wstunnel-svc-1-184-udp-uot"
+        first_shadow_port = agent.load_service_metadata(shadow_name)["backend_port"]
+        first_routes = agent.listener_routes(7001)
+        first_route = next(item for item in first_routes if item["route_key"] == "a43547b6350f72cd.uot")
+        self.assertEqual(first_route["backend_port"], first_shadow_port)
+        first_unit = agent.service_unit_path(shadow_name).read_text(encoding="utf-8")
+        self.assertIn(f"--listen 127.0.0.1:{first_shadow_port}", first_unit)
+
+        payload_republish = dict(payload)
+        payload_republish["target"] = "138.252.162.120:9010"
+        original_tcp_port_available = agent.tcp_port_available
+
+        def fake_tcp_port_available(port: int) -> bool:
+            if port == first_shadow_port:
+                return False
+            return original_tcp_port_available(port)
+
+        with mock.patch.object(agent, "tcp_port_available", side_effect=fake_tcp_port_available):
+            self.publish_with_mocks(agent, task, payload_republish)
+
+        second_shadow_port = agent.load_service_metadata(shadow_name)["backend_port"]
+        second_routes = agent.listener_routes(7001)
+        second_route = next(item for item in second_routes if item["route_key"] == "a43547b6350f72cd.uot")
+        self.assertEqual(second_shadow_port, first_shadow_port)
+        self.assertEqual(second_route["backend_port"], first_shadow_port)
+        second_unit = agent.service_unit_path(shadow_name).read_text(encoding="utf-8")
+        self.assertIn(f"--listen 127.0.0.1:{first_shadow_port}", second_unit)
 
     def test_destroy_removes_shadow_metadata_and_route(self) -> None:
         agent = self.make_agent()

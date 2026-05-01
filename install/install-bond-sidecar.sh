@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.04.19.1"
+INSTALLER_VERSION="2026.04.26.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 AGENT_TOKEN=""
@@ -186,9 +186,7 @@ download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-udp-uot-merge.py" "$BIN_DIR/leikwan-udp-uot-merge.py"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-wss-mux.py" "$BIN_DIR/leikwan-wss-mux.py"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
-curl -fsSL "https://github.com/erebe/wstunnel/releases/download/v10.5.2/wstunnel_10.5.2_linux_amd64.tar.gz" -o /tmp/wstunnel.tar.gz
-tar -xzf /tmp/wstunnel.tar.gz -C /tmp
-mv /tmp/wstunnel "$BIN_DIR/wstunnel"
+download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
 
 # --- WireGuard watchdog ---
 download "$ARTIFACT_BASE/artifacts/leikwan-wg-watchdog.sh" "$BIN_DIR/leikwan-wg-watchdog.sh"

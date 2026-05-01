@@ -24,6 +24,31 @@ merge_runtime = load_module("udp_uot_merge_under_test", "sidecar-agent/leikwan_u
 
 
 class UdpUotMergeRuntimeTests(unittest.TestCase):
+    def test_build_auth_ready_frame_is_keepalive(self) -> None:
+        frame = merge_runtime.build_auth_ready_frame()
+        self.assertEqual(frame.msg_type, merge_runtime.MSG_KEEPALIVE)
+        self.assertEqual(frame.session_id, 0)
+        self.assertEqual(frame.payload, b"")
+
+    def test_parse_leg_auth_payload_accepts_weighted_json_payload(self) -> None:
+        payload = merge_runtime.json.dumps(
+            {
+                "token": "udp-token",
+                "endpoint_id": 184,
+                "weight": 8,
+            }
+        ).encode("utf-8")
+        parsed = merge_runtime.parse_leg_auth_payload(payload)
+        self.assertEqual(parsed["token"], "udp-token")
+        self.assertEqual(parsed["endpoint_id"], 184)
+        self.assertEqual(parsed["weight"], 8)
+
+    def test_parse_leg_auth_payload_accepts_legacy_plain_token(self) -> None:
+        parsed = merge_runtime.parse_leg_auth_payload(b"legacy-token")
+        self.assertEqual(parsed["token"], "legacy-token")
+        self.assertEqual(parsed["endpoint_id"], 0)
+        self.assertEqual(parsed["weight"], 1)
+
     def test_verify_session_token_recovers_forward_target(self) -> None:
         token = merge_runtime.build_test_token(
             {
@@ -122,6 +147,133 @@ class UdpUotMergeRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.pick_leg(scope_a).leg_id, 1)
         self.assertEqual(runtime.pick_leg(scope_b).leg_id, 2)
         self.assertIsNone(runtime.pick_leg(("missing",)))
+
+    def test_weighted_scope_selection_prefers_higher_weight_leg(self) -> None:
+        config = merge_runtime.RuntimeConfig(
+            listen_host="127.0.0.1",
+            listen_port=8999,
+            token_secret="secret-123",
+            allowed_forward_ids=[26],
+            reorder_window_packets=8,
+            reorder_window_bytes=4096,
+            reorder_timeout_ms=25,
+            stats_path="NUL",
+        )
+        runtime = merge_runtime.Runtime(config)
+        scope = merge_runtime.build_scope_key(
+            {
+                "target_host": "193.227.109.82",
+                "target_port": 5201,
+                "target_protocol": "udp",
+                "forward_id": 26,
+            }
+        )
+        runtime._register_leg(merge_runtime.LegState(leg_id=1, scope_key=scope, writer=mock.Mock(), claims={"forward_id": 26}, weight=8))
+        runtime._register_leg(merge_runtime.LegState(leg_id=2, scope_key=scope, writer=mock.Mock(), claims={"forward_id": 26}, weight=2))
+        picks = [runtime.pick_leg(scope).leg_id for _ in range(10)]
+        self.assertEqual(picks.count(1), 8)
+        self.assertEqual(picks.count(2), 2)
+
+    def test_capacity_based_scope_target_leg_count_uses_one_leg_below_100m(self) -> None:
+        config = merge_runtime.RuntimeConfig(
+            listen_host="127.0.0.1",
+            listen_port=8999,
+            token_secret="secret-123",
+            allowed_forward_ids=[26],
+            reorder_window_packets=8,
+            reorder_window_bytes=4096,
+            reorder_timeout_ms=25,
+            stats_path="NUL",
+        )
+        runtime = merge_runtime.Runtime(config)
+        scope = merge_runtime.build_scope_key(
+            {
+                "target_host": "193.227.109.82",
+                "target_port": 5201,
+                "target_protocol": "udp",
+                "forward_id": 26,
+            }
+        )
+        runtime.record_scope_egress(scope, 312_500, now_ms=1000)
+        runtime.record_scope_egress(scope, 312_500, now_ms=1100)
+        runtime.record_scope_egress(scope, 312_500, now_ms=1200)
+        runtime.record_scope_egress(scope, 312_500, now_ms=1300)
+        self.assertEqual(runtime.scope_target_leg_count(scope, now_ms=1300), 1)
+
+    def test_capacity_based_scope_target_leg_count_uses_two_legs_above_200m(self) -> None:
+        config = merge_runtime.RuntimeConfig(
+            listen_host="127.0.0.1",
+            listen_port=8999,
+            token_secret="secret-123",
+            allowed_forward_ids=[26],
+            reorder_window_packets=8,
+            reorder_window_bytes=4096,
+            reorder_timeout_ms=25,
+            stats_path="NUL",
+        )
+        runtime = merge_runtime.Runtime(config)
+        scope = merge_runtime.build_scope_key(
+            {
+                "target_host": "193.227.109.82",
+                "target_port": 5201,
+                "target_protocol": "udp",
+                "forward_id": 26,
+            }
+        )
+        runtime.record_scope_egress(scope, 3_125_000, now_ms=1000)
+        runtime.record_scope_egress(scope, 3_125_000, now_ms=1100)
+        runtime.record_scope_egress(scope, 3_125_000, now_ms=1200)
+        runtime.record_scope_egress(scope, 3_125_000, now_ms=1300)
+        self.assertEqual(runtime.scope_target_leg_count(scope, now_ms=1300), 2)
+
+    def test_capacity_based_selection_limits_to_required_number_of_legs(self) -> None:
+        config = merge_runtime.RuntimeConfig(
+            listen_host="127.0.0.1",
+            listen_port=8999,
+            token_secret="secret-123",
+            allowed_forward_ids=[26],
+            reorder_window_packets=8,
+            reorder_window_bytes=4096,
+            reorder_timeout_ms=25,
+            stats_path="NUL",
+        )
+        runtime = merge_runtime.Runtime(config)
+        scope = merge_runtime.build_scope_key(
+            {
+                "target_host": "193.227.109.82",
+                "target_port": 5201,
+                "target_protocol": "udp",
+                "forward_id": 26,
+            }
+        )
+        runtime._register_leg(merge_runtime.LegState(leg_id=1, scope_key=scope, writer=mock.Mock(), claims={"forward_id": 26}, weight=8, endpoint_id=184, base_weight=8))
+        runtime._register_leg(merge_runtime.LegState(leg_id=2, scope_key=scope, writer=mock.Mock(), claims={"forward_id": 26}, weight=8, endpoint_id=185, base_weight=8))
+        runtime._register_leg(merge_runtime.LegState(leg_id=3, scope_key=scope, writer=mock.Mock(), claims={"forward_id": 26}, weight=8, endpoint_id=186, base_weight=8))
+        runtime.record_scope_egress(scope, 3_125_000, now_ms=1000)
+        runtime.record_scope_egress(scope, 3_125_000, now_ms=1100)
+        runtime.record_scope_egress(scope, 3_125_000, now_ms=1200)
+        runtime.record_scope_egress(scope, 3_125_000, now_ms=1300)
+        picks = [runtime.pick_leg(scope, max_legs=runtime.scope_target_leg_count(scope, now_ms=1300)).leg_id for _ in range(12)]
+        self.assertTrue(all(pick in {1, 2} for pick in picks))
+
+    def test_apply_endpoint_failure_quarantines_after_three_failures(self) -> None:
+        config = merge_runtime.RuntimeConfig(
+            listen_host="127.0.0.1",
+            listen_port=8999,
+            token_secret="secret-123",
+            allowed_forward_ids=[26],
+            reorder_window_packets=8,
+            reorder_window_bytes=4096,
+            reorder_timeout_ms=25,
+            stats_path="NUL",
+        )
+        runtime = merge_runtime.Runtime(config)
+        runtime.apply_endpoint_failure(184, now_ms=1000)
+        runtime.apply_endpoint_failure(184, now_ms=1100)
+        runtime.apply_endpoint_failure(184, now_ms=1200)
+        penalty = runtime.endpoint_penalties[184]
+        self.assertEqual(penalty["failures"], 3)
+        self.assertGreater(penalty["suppress_until_ms"], 1200)
 
     def test_runtime_session_keys_include_scope_and_session_id(self) -> None:
         scope_a = merge_runtime.build_scope_key(

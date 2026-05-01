@@ -52,8 +52,23 @@ def int_or_default(value: object, default: int) -> int:
         return default
 
 
-def render_tcp_leg(target: str, priority: int) -> str:
-    return f"tcp://{target}?priority={priority}"
+def _leg_query_params(priority: int, endpoint: dict | None = None) -> str:
+    params = [f"priority={priority}"]
+    if isinstance(endpoint, dict):
+        endpoint_id = int_or_default(endpoint.get("endpoint_id"), 0)
+        node_id = int_or_default(endpoint.get("node_id"), 0)
+        host = str(endpoint.get("host", "") or "").strip()
+        if endpoint_id > 0:
+            params.append(f"endpoint_id={endpoint_id}")
+        if node_id > 0:
+            params.append(f"node_id={node_id}")
+        if host != "":
+            params.append(f"display_host={quote(host, safe='')}")
+    return "&".join(params)
+
+
+def render_tcp_leg(target: str, priority: int, endpoint: dict | None = None) -> str:
+    return f"tcp://{target}?{_leg_query_params(priority, endpoint)}"
 
 
 def bond_quic_leg_enabled(bond: dict) -> bool:
@@ -71,10 +86,10 @@ def render_quic_leg_for_endpoint(endpoint: dict, bond: dict) -> str | None:
     if host == "" or port <= 0:
         return None
 
-    server_name = str(endpoint.get("host") or bond.get("quic_server_name") or host).strip()
+    server_name = str(bond.get("quic_server_name") or endpoint.get("host") or host).strip()
     insecure = truthy(bond.get("quic_insecure", True))
     priority = int_or_default(bond.get("quic_priority"), 0)
-    params = [f"priority={priority}"]
+    params = _leg_query_params(priority, endpoint).split("&")
     if server_name != "":
         params.append(f"server_name={quote(server_name, safe='')}")
     if insecure:
@@ -164,6 +179,19 @@ def udp_uot_sidepath_settings(forward: dict, agent_config: dict) -> dict | None:
     }
 
 
+def udp_leg_weight(endpoint: dict, default_priority: int = 10) -> int:
+    role = str(endpoint.get("health_role", "healthy") or "healthy").strip().lower()
+    if role == "quarantined":
+        return 1
+    priority = int_or_default(endpoint.get("dynamic_priority"), default_priority)
+    delta = max(0, priority - default_priority)
+    if delta >= 30:
+        return 1
+    if delta >= 15:
+        return 2
+    return 8
+
+
 def render_udp_uot_aux_unit(
     forward: dict,
     bond: dict,
@@ -177,7 +205,7 @@ def render_udp_uot_aux_unit(
     config_path = f"/etc/leikwan/uot-bond-forward-{forward_id}.json"
     service_name = f"leikwan-client-{forward_id}-udp-uot"
     service_path = f"/etc/systemd/system/{service_name}.service"
-    runtime_bin = str(agent_config.get("uot_bond_bin", "/usr/local/bin/leikwan-uot-bond.py") or "/usr/local/bin/leikwan-uot-bond.py")
+    runtime_bin = str(agent_config.get("uot_bond_bin", "/usr/local/bin/leikwan-uot-bond") or "/usr/local/bin/leikwan-uot-bond")
     config_payload = {
         "forward_id": forward_id,
         "listen_udp": f"0.0.0.0:{int(forward['listen_port'])}",
@@ -192,10 +220,17 @@ def render_udp_uot_aux_unit(
                 "host": str(endpoint["host"]),
                 "port": int(endpoint["port"]),
                 "auth_token": str(endpoint.get("ingress_auth_token", "") or bond.get("ingress_auth_token", "")),
+                "dynamic_priority": int_or_default(endpoint.get("dynamic_priority"), int_or_default(bond.get("ws_priority"), 10)),
+                "health_role": str(endpoint.get("health_role", "healthy") or "healthy"),
+                "weight": udp_leg_weight(endpoint, int_or_default(bond.get("ws_priority"), 10)),
             }
             for endpoint in endpoints
         ],
     }
+    if runtime_bin.endswith(".py"):
+        exec_start = f"/usr/bin/python3 {runtime_bin} --config {config_path}"
+    else:
+        exec_start = f"{runtime_bin} --config {config_path}"
     service_unit = f"""[Unit]
 Description=Leikwan Client {forward_id} UDP UoT
 After=network.target
@@ -203,7 +238,7 @@ After=network.target
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 {runtime_bin} --config {config_path}
+ExecStart={exec_start}
 Restart=always
 RestartSec=3
 
@@ -329,6 +364,16 @@ WantedBy=multi-user.target
         base = 20000 + ((forward_id * 37) % 15000)
         rate_base = rate_limit_base_port(forward_id)
         lines = ["#!/usr/bin/env bash", "set -euo pipefail", "trap 'kill $(jobs -p) 2>/dev/null || true' EXIT"]
+        client_id = int_or_default(agent_config.get("client_id"), 0)
+        snapshot_path = f"/run/leikwan/bond-leg-health-forward-{forward_id}.json"
+        lines.extend(
+            [
+                "export LEIKWAN_BOND_OBSERVER_TYPE='client'",
+                f"export LEIKWAN_BOND_OBSERVER_ID='{client_id}'",
+                f"export LEIKWAN_BOND_FORWARD_ID='{forward_id}'",
+                f"export LEIKWAN_BOND_SNAPSHOT_PATH='{snapshot_path}'",
+            ]
+        )
         quic_via_slave = truthy(bond.get("quic_via_slave", True))
         use_local_rate_limit = speed_limit_mbps if not truthy(bond.get("disable_local_rate_limit", True)) else None
         ws_priority = int_or_default(bond.get("ws_priority"), 10)
@@ -374,7 +419,7 @@ WantedBy=multi-user.target
                 tcp_ready_ports.append(tcp_back)
                 endpoint_priority = int_or_default(endpoint.get("dynamic_priority"), ws_priority)
                 if use_wss_as_active_legs or not standby_wss_enabled(bond):
-                    tcp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{tcp_back}", endpoint_priority))
+                    tcp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{tcp_back}", endpoint_priority, endpoint))
             append_wait_for_local_listener(lines, tcp_ready_ports)
             lines.append(
                 f"{bond_bin} client --protocol tcp --listen {tcp_listen_host}:{tcp_listen_port} "
@@ -426,7 +471,7 @@ WantedBy=multi-user.target
                 udp_ready_ports.append(udp_back)
                 endpoint_priority = int_or_default(endpoint.get("dynamic_priority"), ws_priority)
                 if use_wss_as_active_legs or not standby_wss_enabled(bond):
-                    udp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{udp_back}", endpoint_priority))
+                    udp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{udp_back}", endpoint_priority, endpoint))
             append_wait_for_local_listener(lines, udp_ready_ports)
             lines.append(
                 f"{bond_bin} client --protocol udp --listen {udp_listen_host}:{udp_listen_port} "
@@ -523,6 +568,7 @@ WantedBy=multi-user.target
             "tcp_rmem_max": int_or_default(mptcp.get("tcp_rmem_max"), 16777216),
             "speed_limit_mbps": speed_limit_mbps,
             "endpoints": endpoints,
+            "allow_tcp_fallback": truthy(mptcp.get("allow_tcp_fallback", False)),
             "manage_mptcp_endpoints": truthy(mptcp.get("manage_mptcp_endpoints", True)),
             "mptcp_endpoint_device": str(mptcp.get("mptcp_endpoint_device", "") or ""),
             "mptcp_endpoint_id_base": int_or_default(mptcp.get("mptcp_endpoint_id_base"), 0),

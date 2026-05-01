@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.04.19.1"
+INSTALLER_VERSION="2026.04.24.1"
 MASTER_URL=""
 TOKEN=""
 GROUP_KEY="default"
@@ -14,6 +14,23 @@ PUBLIC_IP=""
 AUTO_INSTALL_MPTCP_KERNEL=0
 REBOOT_AFTER_MPTCP_KERNEL_INSTALL=0
 MODE="install"
+TLS_MODE="self-signed"
+TLS_MODE_SET=0
+TLS_DOMAIN=""
+TLS_DOMAIN_SET=0
+TLS_EMAIL=""
+TLS_EMAIL_SET=0
+TLS_WILDCARD=0
+TLS_WILDCARD_SET=0
+TLS_CERT_PATH="/etc/wstunnel/ssl/server.crt"
+TLS_CERT_PATH_SET=0
+TLS_KEY_PATH="/etc/wstunnel/ssl/server.key"
+TLS_KEY_PATH_SET=0
+CLOUDFLARE_EMAIL=""
+CLOUDFLARE_EMAIL_SET=0
+CLOUDFLARE_GLOBAL_KEY=""
+CLOUDFLARE_GLOBAL_KEY_SET=0
+FORCE_REGISTER=0
 
 running_kernel_has_mptcp() {
   [[ -e /proc/sys/net/mptcp/enabled ]]
@@ -153,6 +170,15 @@ while [[ $# -gt 0 ]]; do
     --bin-dir) BIN_DIR="$2"; shift 2 ;;
     --service-name) SERVICE_NAME="$2"; shift 2 ;;
     --public-ip) PUBLIC_IP="$2"; shift 2 ;;
+    --tls-mode) TLS_MODE="$2"; TLS_MODE_SET=1; shift 2 ;;
+    --tls-domain) TLS_DOMAIN="$2"; TLS_DOMAIN_SET=1; shift 2 ;;
+    --tls-email) TLS_EMAIL="$2"; TLS_EMAIL_SET=1; shift 2 ;;
+    --tls-wildcard) TLS_WILDCARD="$2"; TLS_WILDCARD_SET=1; shift 2 ;;
+    --tls-cert|--tls-cert-path) TLS_CERT_PATH="$2"; TLS_CERT_PATH_SET=1; shift 2 ;;
+    --tls-key|--tls-key-path) TLS_KEY_PATH="$2"; TLS_KEY_PATH_SET=1; shift 2 ;;
+    --cloudflare-email) CLOUDFLARE_EMAIL="$2"; CLOUDFLARE_EMAIL_SET=1; shift 2 ;;
+    --cloudflare-global-key) CLOUDFLARE_GLOBAL_KEY="$2"; CLOUDFLARE_GLOBAL_KEY_SET=1; shift 2 ;;
+    --force-register) FORCE_REGISTER=1; shift ;;
     --update) MODE="update"; shift ;;
     --check-update) MODE="check"; shift ;;
     --auto-install-mptcp-kernel) AUTO_INSTALL_MPTCP_KERNEL=1; shift ;;
@@ -165,6 +191,33 @@ if [[ -z "$CONFIG_PATH" ]]; then
   CONFIG_PATH="$CONFIG_DIR/config.json"
 else
   CONFIG_DIR="$(dirname "$CONFIG_PATH")"
+fi
+
+if [[ -f "$CONFIG_PATH" ]]; then
+  if [[ "$TLS_MODE_SET" != "1" ]]; then
+    TLS_MODE="$(json_config_value tls_mode self-signed)"
+  fi
+  if [[ "$TLS_DOMAIN_SET" != "1" ]]; then
+    TLS_DOMAIN="$(json_config_value tls_domain)"
+  fi
+  if [[ "$TLS_EMAIL_SET" != "1" ]]; then
+    TLS_EMAIL="$(json_config_value tls_email)"
+  fi
+  if [[ "$TLS_WILDCARD_SET" != "1" ]]; then
+    TLS_WILDCARD="$(json_config_value tls_wildcard 0)"
+  fi
+  if [[ "$TLS_CERT_PATH_SET" != "1" ]]; then
+    TLS_CERT_PATH="$(json_config_value tls_cert_path /etc/wstunnel/ssl/server.crt)"
+  fi
+  if [[ "$TLS_KEY_PATH_SET" != "1" ]]; then
+    TLS_KEY_PATH="$(json_config_value tls_key_path /etc/wstunnel/ssl/server.key)"
+  fi
+  if [[ "$CLOUDFLARE_EMAIL_SET" != "1" ]]; then
+    CLOUDFLARE_EMAIL="$(json_config_value cloudflare_email)"
+  fi
+  if [[ "$CLOUDFLARE_GLOBAL_KEY_SET" != "1" ]]; then
+    CLOUDFLARE_GLOBAL_KEY="$(json_config_value cloudflare_global_key)"
+  fi
 fi
 
 if [[ "$MODE" != "install" ]]; then
@@ -200,6 +253,38 @@ fi
 
 if [[ -z "$MASTER_URL" || -z "$TOKEN" ]]; then
   echo "usage: install-slave.sh --master <url> --token <enrollment-token>" >&2
+  exit 1
+fi
+
+case "$TLS_MODE" in
+  self-signed|letsencrypt|existing) ;;
+  *)
+    echo "invalid tls mode: $TLS_MODE" >&2
+    exit 1
+    ;;
+esac
+
+case "$TLS_WILDCARD" in
+  0|1) ;;
+  *)
+    echo "invalid tls wildcard flag: $TLS_WILDCARD" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$TLS_MODE" == "letsencrypt" ]]; then
+  if [[ -z "$TLS_DOMAIN" || -z "$TLS_EMAIL" ]]; then
+    echo "letsencrypt mode requires --tls-domain and --tls-email" >&2
+    exit 1
+  fi
+  if [[ "$TLS_WILDCARD" == "1" && ( -z "$CLOUDFLARE_EMAIL" || -z "$CLOUDFLARE_GLOBAL_KEY" ) ]]; then
+    echo "wildcard letsencrypt mode requires --cloudflare-email and --cloudflare-global-key" >&2
+    exit 1
+  fi
+fi
+
+if [[ "$TLS_MODE" == "existing" && ( -z "$TLS_CERT_PATH" || -z "$TLS_KEY_PATH" ) ]]; then
+  echo "existing tls mode requires --tls-cert and --tls-key" >&2
   exit 1
 fi
 
@@ -251,7 +336,7 @@ if running_kernel_has_mptcp; then
   SUPPORTS_MPTCP=true
 fi
 
-python3 - <<'PY' "$CONFIG_PATH" "$MASTER_URL" "$TOKEN" "$GROUP_KEY" "$REGION" "$PUBLIC_IP" "$SUPPORTS_MPTCP" "$INSTALLER_VERSION"
+python3 - <<'PY' "$CONFIG_PATH" "$MASTER_URL" "$TOKEN" "$GROUP_KEY" "$REGION" "$PUBLIC_IP" "$SUPPORTS_MPTCP" "$TLS_MODE" "$TLS_DOMAIN" "$TLS_EMAIL" "$TLS_WILDCARD" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "$CLOUDFLARE_EMAIL" "$CLOUDFLARE_GLOBAL_KEY" "$INSTALLER_VERSION"
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 master_url = sys.argv[2]
@@ -260,7 +345,15 @@ group_key = sys.argv[4]
 region = sys.argv[5]
 public_ip = sys.argv[6]
 supports_mptcp = sys.argv[7].strip().lower() == "true"
-installer_version = sys.argv[8]
+tls_mode = sys.argv[8]
+tls_domain = sys.argv[9]
+tls_email = sys.argv[10]
+tls_wildcard = int(sys.argv[11] or "0")
+tls_cert_path = sys.argv[12]
+tls_key_path = sys.argv[13]
+cloudflare_email = sys.argv[14]
+cloudflare_global_key = sys.argv[15]
+installer_version = sys.argv[16]
 payload = {}
 if path.exists():
     try:
@@ -276,6 +369,14 @@ payload.update({
     "region": region,
     "public_ip": public_ip,
     "supports_mptcp": supports_mptcp,
+    "tls_mode": tls_mode,
+    "tls_domain": tls_domain,
+    "tls_email": tls_email,
+    "tls_wildcard": tls_wildcard,
+    "tls_cert_path": tls_cert_path,
+    "tls_key_path": tls_key_path,
+    "cloudflare_email": cloudflare_email,
+    "cloudflare_global_key": cloudflare_global_key,
     "state_dir": payload.get("state_dir", "/var/lib/leikwan-slave"),
     "ingress_bin": payload.get("ingress_bin", "/usr/local/bin/leikwan-ingress"),
     "log_level": payload.get("log_level", "INFO"),
@@ -284,6 +385,24 @@ payload.update({
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 PY
+
+if [[ "$FORCE_REGISTER" == "1" ]]; then
+  python3 - <<'PY' "$CONFIG_PATH"
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+payload = {}
+if path.exists():
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            payload = loaded
+    except Exception:
+        payload = {}
+payload.pop("node_id", None)
+payload.pop("node_token", None)
+path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+fi
 
 cat > "/etc/systemd/system/$SERVICE_NAME.service" <<UNIT
 [Unit]
@@ -302,7 +421,7 @@ WantedBy=multi-user.target
 UNIT
 
 NODE_TOKEN="$(json_config_value node_token)"
-if [[ "$MODE" == "install" || -z "$NODE_TOKEN" ]]; then
+if [[ -z "$NODE_TOKEN" || "$FORCE_REGISTER" == "1" ]]; then
   /usr/bin/python3 "$BIN_DIR/leikwan-slave-agent.py" --config "$CONFIG_PATH" register || true
 fi
 systemctl daemon-reload

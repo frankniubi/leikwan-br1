@@ -24,6 +24,32 @@ pub struct TokenPayload {
     pub expires_at: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportProtocol {
+    Tcp,
+    Udp,
+}
+
+impl TransportProtocol {
+    pub fn from_str(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "udp" => Self::Udp,
+            _ => Self::Tcp,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionClaims {
+    pub target_host: String,
+    pub target_port: u16,
+    pub target_protocol: TransportProtocol,
+    pub service_id: u64,
+    pub forward_id: u64,
+    pub issued_at: u64,
+    pub expires_at: u64,
+}
+
 pub fn verify_token(token: &str, secret: &str) -> Result<TokenPayload> {
     let dot_pos = token.find('.').ok_or_else(|| anyhow!("invalid token format"))?;
     let payload_b64 = &token[..dot_pos];
@@ -48,4 +74,20 @@ pub fn verify_token(token: &str, secret: &str) -> Result<TokenPayload> {
         .map_err(|e| anyhow!("parse payload: {}", e))?;
 
     Ok(payload)
+}
+
+pub fn verify_session_token(token: &str, secret: &str, now: u64) -> Result<SessionClaims> {
+    let payload = verify_token(token, secret)?;
+    if payload.expires_at > 0 && now > payload.expires_at {
+        return Err(anyhow!("session token expired"));
+    }
+    Ok(SessionClaims {
+        target_host: payload.target_host,
+        target_port: payload.target_port,
+        target_protocol: TransportProtocol::from_str(&payload.target_protocol),
+        service_id: payload.service_id,
+        forward_id: payload.forward_id,
+        issued_at: payload.issued_at,
+        expires_at: payload.expires_at,
+    })
 }

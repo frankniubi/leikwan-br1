@@ -1,8 +1,14 @@
 mod client;
+mod frame;
 mod server;
+mod session;
 mod token;
+mod transport;
 
 use clap::{Parser, Subcommand};
+use session::SessionConfig;
+use token::TransportProtocol;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "leikwan-bond", version, about = "Multi-leg TCP/UDP bonding relay")]
@@ -31,6 +37,8 @@ enum Command {
         retransmit_ms: u64,
         #[arg(long, default_value = "3000")]
         connect_timeout_ms: u64,
+        #[arg(long, default_value = "400")]
+        join_timeout_ms: u64,
         #[arg(long, default_value = "0")]
         active_leg_limit: usize,
         #[arg(long, default_value = "16384")]
@@ -39,6 +47,16 @@ enum Command {
         latency_guard_bytes: usize,
         #[arg(long, default_value = "30")]
         interactive_rtt_slack_ms: u64,
+        #[arg(long, default_value = "65536")]
+        warmup_trigger_bytes: usize,
+        #[arg(long, default_value = "65536")]
+        warmup_slice_bytes: usize,
+        #[arg(long, default_value = "80")]
+        warmup_leg_delay_ms: u64,
+        #[arg(long, default_value = "262144")]
+        bulk_promote_bytes: usize,
+        #[arg(long, default_value = "3000")]
+        leg_cooldown_ms: u64,
     },
     /// Run as server: accept leg connections, reassemble and forward to target
     Server {
@@ -63,35 +81,129 @@ fn main() {
             max_window_bytes,
             retransmit_ms,
             connect_timeout_ms,
+            join_timeout_ms,
             active_leg_limit,
             interactive_chunk_bytes,
             latency_guard_bytes,
             interactive_rtt_slack_ms,
+            warmup_trigger_bytes,
+            warmup_slice_bytes,
+            warmup_leg_delay_ms,
+            bulk_promote_bytes,
+            leg_cooldown_ms,
         } => {
-            let config = client::ClientConfig {
-                protocol,
-                listen,
-                legs,
-                session_token,
-                chunk_size,
-                max_window_bytes,
-                retransmit_ms,
-                connect_timeout_ms,
-                active_leg_limit,
-                interactive_chunk_bytes,
-                latency_guard_bytes,
-                interactive_rtt_slack_ms,
+            let transport = match protocol.trim().to_ascii_lowercase().as_str() {
+                "tcp" => Ok(TransportProtocol::Tcp),
+                "udp" => Ok(TransportProtocol::Udp),
+                other => Err(anyhow::anyhow!("unsupported protocol {other}, expected tcp or udp")),
             };
-            client::run_client(config)
+            match transport {
+                Ok(protocol_mode) => {
+                    let config = SessionConfig {
+                        chunk_size,
+                        max_window_bytes,
+                        retransmit_after: Duration::from_millis(retransmit_ms),
+                        join_timeout: Duration::from_millis(join_timeout_ms),
+                        connect_timeout: Duration::from_millis(connect_timeout_ms),
+                        interactive_chunk_bytes,
+                        latency_guard_bytes,
+                        interactive_rtt_slack: Duration::from_millis(interactive_rtt_slack_ms),
+                        warmup_trigger_bytes,
+                        warmup_slice_bytes,
+                        warmup_leg_delay: Duration::from_millis(warmup_leg_delay_ms),
+                        bulk_promote_bytes,
+                        leg_cooldown: Duration::from_millis(leg_cooldown_ms),
+                    };
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .build();
+                    match rt {
+                        Ok(rt) => rt.block_on(session::run_client_listener(
+                            listen,
+                            legs,
+                            session_token,
+                            protocol_mode,
+                            config,
+                        )),
+                        Err(err) => Err(anyhow::anyhow!("failed to build tokio runtime: {err}")),
+                    }
+                }
+                Err(err) => Err(err),
+            }
         }
         Command::Server {
             listen,
             token_secret,
-        } => server::run_server(&listen, &token_secret),
+        } => {
+            let config = SessionConfig {
+                chunk_size: 131072,
+                max_window_bytes: 16777216,
+                retransmit_after: Duration::from_millis(300),
+                join_timeout: Duration::from_millis(400),
+                connect_timeout: Duration::from_millis(3000),
+                interactive_chunk_bytes: 16384,
+                latency_guard_bytes: 262144,
+                interactive_rtt_slack: Duration::from_millis(30),
+                warmup_trigger_bytes: 65536,
+                warmup_slice_bytes: 65536,
+                warmup_leg_delay: Duration::from_millis(80),
+                bulk_promote_bytes: 262144,
+                leg_cooldown: Duration::from_millis(3000),
+            };
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build();
+            match rt {
+                Ok(rt) => rt.block_on(session::run_server_listener(
+                    listen,
+                    None,
+                    false,
+                    token_secret,
+                    config,
+                )),
+                Err(err) => Err(anyhow::anyhow!("failed to build tokio runtime: {err}")),
+            }
+        }
     };
 
     if let Err(e) = result {
         log::error!("fatal: {:#}", e);
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_reports_refreshed_version() {
+        let cmd = Cli::command();
+        assert_eq!(cmd.get_version(), Some("0.1.14"));
+    }
+
+    #[test]
+    fn client_cli_accepts_join_timeout_flag() {
+        let cli = Cli::try_parse_from([
+            "leikwan-bond",
+            "client",
+            "--protocol",
+            "tcp",
+            "--listen",
+            "0.0.0.0:11024",
+            "--legs",
+            "tcp://127.0.0.1:20962?priority=10",
+            "--session-token",
+            "token",
+            "--join-timeout-ms",
+            "400",
+        ])
+        .expect("client cli should parse join-timeout-ms");
+
+        match cli.command {
+            Command::Client { join_timeout_ms, .. } => assert_eq!(join_timeout_ms, 400),
+            _ => panic!("expected client command"),
+        }
     }
 }

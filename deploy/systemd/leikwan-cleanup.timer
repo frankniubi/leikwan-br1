@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Leikwan Task Cleanup every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=leikwan-cleanup.service
+
+[Install]
+WantedBy=timers.target

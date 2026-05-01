@@ -106,6 +106,7 @@ final class Bootstrap
         $this->router->add('POST', '/admin/provision-tasks/purge-stale', [$admin, 'purgeStaleProvisionTasks']);
         $this->router->add('GET', '/admin/diagnostics', [$admin, 'diagnosticsPage']);
         $this->router->add('GET', '/admin/tenants', [$admin, 'tenantsPage']);
+        $this->router->add('GET', '/admin/registration', [$admin, 'tenantRegistrationPage']);
         $this->router->add('POST', '/admin/tenants', [$admin, 'saveTenant']);
         $this->router->add('POST', '/admin/tenant-registration/settings', [$admin, 'saveTenantRegistrationSettings']);
         $this->router->add('POST', '/admin/tenant-registration/codes', [$admin, 'createTenantRegistrationCode']);
@@ -129,6 +130,11 @@ final class Bootstrap
         $this->router->add('POST', '/admin/cf-location-groups', [$admin, 'saveCfLocationGroup']);
         $this->router->add('GET', '/admin/forward-combinations', [$admin, 'forwardCombinationsPage']);
         $this->router->add('POST', '/admin/forward-combinations', [$admin, 'saveForwardCombination']);
+        $this->router->add('GET', '/admin/knowledgebase', [$admin, 'knowledgebaseThreadsPage']);
+        $this->router->add('GET', '/admin/knowledgebase/new', [$admin, 'knowledgebaseEditorPage']);
+        $this->router->add('GET', '/admin/knowledgebase/{id}/edit', [$admin, 'knowledgebaseEditorPage']);
+        $this->router->add('POST', '/admin/knowledgebase/save', [$admin, 'saveKnowledgebaseThread']);
+        $this->router->add('POST', '/admin/knowledgebase/images', [$admin, 'uploadKnowledgebaseImage']);
         $this->router->add('GET', '/admin/sidecars', [$admin, 'sidecarsPage']);
         $this->router->add('POST', '/admin/sidecars', [$admin, 'saveSidecarPoint']);
         $this->router->add('POST', '/admin/sidecars/{id}/delete', [$admin, 'deleteSidecarPoint']);

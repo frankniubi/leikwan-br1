@@ -169,7 +169,8 @@ class SidecarDualRuntimeRegressionTests(unittest.TestCase):
             self.assertIn(runtime_path, writes)
             self.assertIn(start_script_path, writes)
             self.assertIn(unit_path, writes)
-            self.assertIn("leikwan-udp-uot-merge.py", writes[start_script_path])
+            self.assertIn("leikwan-udp-uot-merge", writes[start_script_path])
+            self.assertNotIn("/usr/bin/python3 /usr/local/bin/leikwan-udp-uot-merge.py", writes[start_script_path])
             self.assertIn("ExecStart=/bin/bash", writes[unit_path])
             commands = [" ".join(call.args[0]) if isinstance(call.args[0], list) else str(call.args[0]) for call in run_mock.call_args_list]
             self.assertTrue(any("leikwan-bond-sidecar-4-udp-uot.service" in command for command in commands))
