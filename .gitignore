@@ -38,7 +38,15 @@
 /artifacts/*.png
 
 # Build outputs / dependency caches.
+bin/
+obj/
+build/
+target/
+node_modules/
+.gradle/
 **/bin/
+!**/src/bin/
+!**/src/bin/**
 **/obj/
 **/build/
 **/target/
