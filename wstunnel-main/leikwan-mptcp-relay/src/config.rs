@@ -12,6 +12,10 @@ pub struct ClientConfig {
     pub remote_port: u16,
 
     #[serde(default)]
+    pub bond_mode: String,
+    #[serde(default = "default_bond_chunk_size")]
+    pub bond_chunk_size: usize,
+    #[serde(default)]
     pub tcp_session_token: String,
     #[serde(default)]
     pub udp_session_token: String,
@@ -93,6 +97,10 @@ fn default_congestion() -> String {
 
 fn default_socket_buffer() -> usize {
     8 * 1024 * 1024 // 8 MB
+}
+
+fn default_bond_chunk_size() -> usize {
+    64 * 1024
 }
 
 fn default_connect_timeout() -> u64 {
