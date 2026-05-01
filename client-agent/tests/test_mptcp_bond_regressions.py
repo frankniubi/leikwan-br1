@@ -53,6 +53,131 @@ leikwan_uot = load_module(
 
 
 class BondAndMptcpRegressionTests(unittest.TestCase):
+    def test_client_heartbeat_includes_bond_leg_reputation_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            snapshot_dir = pathlib.Path(tmp_dir) / "run-leikwan"
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+            snapshot_path = snapshot_dir / "bond-leg-health-forward-26.json"
+            snapshot_path.write_text(
+                json.dumps(
+                    {
+                        "observer_type": "client",
+                        "observer_id": 123,
+                        "forward_id": 26,
+                        "legs": [{"endpoint_id": 185, "host": "8.163.90.235"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "client_id": 123,
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            agent = client_agent_module.ClientAgent(config_path)
+            captured: dict[str, object] = {}
+
+            def fake_pull(method: str, url: str, token: str, payload: dict | None = None):
+                self.assertEqual(method, "GET")
+                self.assertTrue(url.endswith("/api/client/configs/pull"))
+                return ({"forwards": [], "client": {"id": 123}}, {"date": "Sun, 19 Apr 2026 12:00:00 GMT"})
+
+            def fake_post(method: str, url: str, token: str, payload: dict | None = None):
+                self.assertEqual(method, "POST")
+                self.assertTrue(url.endswith("/api/client/heartbeat"))
+                captured["payload"] = payload or {}
+                return {"ok": True}
+
+            with mock.patch.object(agent, "bond_leg_snapshot_dir", return_value=snapshot_dir):
+                with mock.patch.object(agent, "reconcile_global_mptcp_state"):
+                    with mock.patch.object(agent, "run_diagnostics_if_requested"):
+                        with mock.patch.object(agent, "ensure_wireguard_identity", return_value=""):
+                            with mock.patch.object(client_agent_module, "http_json_with_headers", side_effect=fake_pull):
+                                with mock.patch.object(client_agent_module, "http_json", side_effect=fake_post):
+                                    agent.sync_once()
+
+            payload = captured.get("payload")
+            self.assertIsInstance(payload, dict)
+            reputation = payload.get("bond_leg_reputation")
+            self.assertEqual(
+                reputation,
+                {
+                    "forwards": [
+                        {
+                            "observer_type": "client",
+                            "observer_id": 123,
+                            "forward_id": 26,
+                            "legs": [{"endpoint_id": 185, "host": "8.163.90.235"}],
+                        }
+                    ]
+                },
+            )
+
+    def test_sidecar_heartbeat_includes_bond_leg_reputation_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            snapshot_path = state_dir / "bond-leg-health.json"
+            snapshot_path.write_text(
+                json.dumps(
+                    {
+                        "observer_type": "sidecar",
+                        "observer_id": 7,
+                        "forward_id": 26,
+                        "legs": [{"host": "8.163.90.235"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                        "service_name": "leikwan-bond-sidecar-7",
+                        "runtime_config_path": str(pathlib.Path(tmp_dir) / "runtime.json"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+            captured: dict[str, object] = {}
+
+            def fake_heartbeat(method: str, url: str, token: str, payload: dict | None = None):
+                self.assertEqual(method, "POST")
+                self.assertTrue(url.endswith("/api/sidecar/heartbeat"))
+                captured["payload"] = payload or {}
+                return ({"management": {}}, {"date": "Sun, 19 Apr 2026 12:00:00 GMT"})
+
+            with mock.patch.object(agent, "apply_management"):
+                with mock.patch.object(agent, "ensure_wireguard_identity", return_value=""):
+                    with mock.patch.object(sidecar_agent_module, "http_json_with_headers", side_effect=fake_heartbeat):
+                        agent.heartbeat_once()
+
+            payload = captured.get("payload")
+            self.assertIsInstance(payload, dict)
+            self.assertEqual(
+                payload.get("bond_leg_reputation"),
+                {
+                    "observer_type": "sidecar",
+                    "observer_id": 7,
+                    "forward_id": 26,
+                    "legs": [{"host": "8.163.90.235"}],
+                },
+            )
+
     def test_uot_client_replies_from_configured_listen_port(self) -> None:
         asyncio.run(self._assert_uot_client_replies_from_configured_listen_port())
 
@@ -258,7 +383,7 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
         self.assertEqual(len(rendered["extra_units"]), 1)
         udp_unit = rendered["extra_units"][0]
         self.assertEqual(udp_unit["service_name"], "leikwan-client-26-udp-uot")
-        self.assertIn("/usr/bin/python3 /usr/local/bin/leikwan-uot-bond.py --config /etc/leikwan/uot-bond-forward-26.json", udp_unit["service_unit"])
+        self.assertIn("ExecStart=/usr/local/bin/leikwan-uot-bond --config /etc/leikwan/uot-bond-forward-26.json", udp_unit["service_unit"])
         config_file = next(item for item in udp_unit["files"] if item["path"] == "/etc/leikwan/uot-bond-forward-26.json")
         self.assertIn('"route_key": "a43547b6350f72cd.uot"', config_file["content"])
         self.assertIn('"session_token": "udp-token"', config_file["content"])
@@ -301,6 +426,77 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
         self.assertIn("--protocol udp --listen 0.0.0.0:11024", rendered["start_script"])
         self.assertNotIn("--protocol tcp --listen 0.0.0.0:11024", rendered["start_script"])
         self.assertEqual(rendered.get("extra_units", []), [])
+
+    def test_bond_udp_uot_sidepath_renders_health_metadata_and_weights(self) -> None:
+        rendered = install_forward_runtime.render_forward_runtime(
+            {
+                "forward_id": 26,
+                "listen_port": 11024,
+                "target": "193.227.109.82:5201",
+                "sni": "br1.nbwly.com",
+                "path_prefix": "a43547b6350f72cd",
+                "transport": "tcp+udp",
+                "mode": "bond",
+                "endpoints": [
+                    {
+                        "endpoint_id": 184,
+                        "host": "8.163.90.132",
+                        "port": 7001,
+                        "ingress_auth_token": "token-1",
+                        "dynamic_priority": 10,
+                        "health_role": "healthy",
+                    },
+                    {
+                        "endpoint_id": 185,
+                        "host": "8.163.90.235",
+                        "port": 7001,
+                        "ingress_auth_token": "token-2",
+                        "dynamic_priority": 25,
+                        "health_role": "probation",
+                    },
+                    {
+                        "endpoint_id": 186,
+                        "host": "8.163.87.42",
+                        "port": 7001,
+                        "ingress_auth_token": "token-3",
+                        "dynamic_priority": 40,
+                        "health_role": "quarantined",
+                    },
+                ],
+                "bonding": {
+                    "ingress_mode": "plain_tcp_mux",
+                    "route_key": "a43547b6350f72cd",
+                    "remote_target": "138.252.162.120:9000",
+                    "session_token": "tcp-token",
+                    "udp_session_token": "udp-token",
+                    "ws_priority": 10,
+                },
+            },
+            {
+                "bond_bin": "/usr/local/bin/leikwan-bond",
+                "udp_uot_sidepath": {
+                    "enabled_forward_ids": [26],
+                    "shadow_route_suffix": ".uot",
+                    "sidecar_port": 8999,
+                    "reorder_window_packets": 4096,
+                    "reorder_window_bytes": 16777216,
+                    "reorder_timeout_ms": 25,
+                },
+            },
+        )
+
+        udp_unit = rendered["extra_units"][0]
+        config_file = next(item for item in udp_unit["files"] if item["path"] == "/etc/leikwan/uot-bond-forward-26.json")
+        content = config_file["content"]
+        self.assertIn('"dynamic_priority": 10', content)
+        self.assertIn('"dynamic_priority": 25', content)
+        self.assertIn('"dynamic_priority": 40', content)
+        self.assertIn('"health_role": "healthy"', content)
+        self.assertIn('"health_role": "probation"', content)
+        self.assertIn('"health_role": "quarantined"', content)
+        self.assertIn('"weight": 8', content)
+        self.assertIn('"weight": 2', content)
+        self.assertIn('"weight": 1', content)
 
     def test_bond_runtime_uses_endpoint_dynamic_priority(self) -> None:
         rendered = install_forward_runtime.render_forward_runtime(
@@ -1134,6 +1330,66 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             self.assertEqual(persisted["state_dir"], next_state_dir)
             self.assertEqual(persisted["runtime_config_path"], next_runtime_path)
 
+    def test_client_agent_config_patch_can_add_and_remove_udp_uot_sidepath(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(pathlib.Path(tmp_dir) / "state"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            agent = client_agent_module.ClientAgent(config_path)
+            sidepath = {
+                "enabled_forward_ids": [26],
+                "shadow_route_suffix": ".uot",
+                "sidecar_port": 8999,
+            }
+
+            agent.apply_config_patch({"udp_uot_sidepath": sidepath})
+            persisted = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["udp_uot_sidepath"], sidepath)
+
+            agent.apply_config_patch({"udp_uot_sidepath": None})
+            persisted = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertNotIn("udp_uot_sidepath", persisted)
+
+    def test_sidecar_agent_config_patch_can_add_and_remove_udp_uot_sidepath(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(pathlib.Path(tmp_dir) / "shared-state"),
+                        "service_name": "leikwan-bond-sidecar-3",
+                        "runtime_config_path": "/etc/leikwan-sidecar/runtime.json",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+            sidepath = {
+                "enabled_forward_ids": [26],
+                "sidecar_port": 8999,
+                "reorder_window_packets": 4096,
+            }
+
+            agent.apply_config_patch({"udp_uot_sidepath": sidepath})
+            persisted = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["udp_uot_sidepath"], sidepath)
+
+            agent.apply_config_patch({"udp_uot_sidepath": None})
+            persisted = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertNotIn("udp_uot_sidepath", persisted)
+
     def test_sidecar_start_script_fails_fast_when_setup_only_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = pathlib.Path(tmp_dir) / "config.json"
@@ -1243,6 +1499,79 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             self.assertIn("/usr/local/bin/leikwan-bond", start_script)
             self.assertIn('exec "$BOND_SERVER" server --listen "$LISTEN" --token-secret "$TOKEN_SECRET"', start_script)
             self.assertNotIn("leikwan-mptcp-relay\" server --config", start_script)
+
+    def test_sidecar_bond_runtime_exports_single_forward_id_when_unambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            state_dir = pathlib.Path(tmp_dir) / "sidecar-state"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                        "service_name": "leikwan-bond-sidecar-4",
+                        "runtime_config_path": str(pathlib.Path(tmp_dir) / "runtime.json"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+            with mock.patch.object(agent, "ensure_relay_binary"):
+                with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                    with mock.patch.object(sidecar_agent_module.subprocess, "run"):
+                        agent.apply_management(
+                            {
+                                "bond_runtime": {
+                                    "bind_host": "0.0.0.0",
+                                    "listen_port": 9000,
+                                    "token_secret": "secret",
+                                    "forward_ids": [26],
+                                }
+                            }
+                        )
+
+            start_script = (state_dir / "start-sidecar.sh").read_text(encoding="utf-8")
+            self.assertIn("export LEIKWAN_BOND_FORWARD_ID='26'", start_script)
+
+    def test_sidecar_update_scheduling_does_not_skip_runtime_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            state_dir = pathlib.Path(tmp_dir) / "sidecar-state"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                        "service_name": "leikwan-bond-sidecar-4",
+                        "runtime_config_path": str(pathlib.Path(tmp_dir) / "runtime.json"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+            with mock.patch.object(agent, "ensure_relay_binary"):
+                with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                    with mock.patch.object(sidecar_agent_module.subprocess, "run"):
+                        with mock.patch.object(agent, "request_self_update") as update_mock:
+                            agent.apply_management(
+                                {
+                                    "desired_bond_sha256": "deadbeef",
+                                    "bond_runtime": {
+                                        "bind_host": "0.0.0.0",
+                                        "listen_port": 9000,
+                                        "token_secret": "secret",
+                                        "forward_ids": [26],
+                                    },
+                                }
+                            )
+
+            update_mock.assert_called_once()
+            start_script = (state_dir / "start-sidecar.sh").read_text(encoding="utf-8")
+            self.assertIn("export LEIKWAN_BOND_FORWARD_ID='26'", start_script)
 
     def test_sidecar_mptcp_policy_removes_stale_point_local_endpoints(self) -> None:
         recorded = []

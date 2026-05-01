@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Leikwan SSL Certificate Task Worker every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=leikwan-ssl-task-worker.service
+
+[Install]
+WantedBy=timers.target

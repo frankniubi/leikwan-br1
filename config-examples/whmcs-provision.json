@@ -1,0 +1,25 @@
+{
+  "whmcs_service_id": "10001",
+  "user_email": "user@example.com",
+  "user_name": "Demo User",
+  "product_code": "wss-forward-basic",
+  "service_name": "HK Basic",
+  "expire_at": "2026-04-30 00:00:00",
+  "bandwidth_limit_mbps": 100,
+  "traffic_limit_gb": 1000,
+  "forwards": [
+    {
+      "listen_port": 24443,
+      "public_port": 24443,
+      "target_host": "10.0.0.5",
+      "target_port": 443,
+      "transport_mode": "tcp+udp",
+      "client_mode": "multi-path",
+      "sni_host": "edge.example.com",
+      "cdn_host": "edge.example.com",
+      "node_group": "default",
+      "endpoint_count": 2,
+      "filter_profile": "off"
+    }
+  ]
+}

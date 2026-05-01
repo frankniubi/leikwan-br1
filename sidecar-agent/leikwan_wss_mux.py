@@ -58,14 +58,22 @@ class WssPathMux:
                 continue
             backend_target = str(entry.get('target', '') or '').strip()
             host, _, port_text = backend_target.rpartition(':')
-            if host.strip() == '' or port_text.strip() == '':
+            backend_port = int(entry.get('backend_port', 0) or 0)
+            if backend_port > 0:
+                backend_host = str(entry.get('backend_host', '') or '').strip() or '127.0.0.1'
+            else:
+                if host.strip() == '' or port_text.strip() == '':
+                    continue
+                backend_host = host
+                backend_port = int(port_text)
+            if backend_host.strip() == '' or backend_port <= 0:
                 continue
             routes.append(
                 {
                     'path_prefix': normalize_path_prefix(str(entry.get('path_prefix', ''))),
                     'route_path': normalized_route_path(str(entry.get('path_prefix', ''))),
-                    'backend_host': host,
-                    'backend_port': int(port_text),
+                    'backend_host': backend_host,
+                    'backend_port': backend_port,
                 }
             )
         routes.sort(key=lambda item: len(str(item['route_path'])), reverse=True)

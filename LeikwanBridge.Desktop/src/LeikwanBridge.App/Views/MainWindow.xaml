@@ -1,0 +1,437 @@
+﻿<Window x:Class="LeikwanBridge.App.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:LeikwanBridge.App.ViewModels"
+        xmlns:conv="clr-namespace:LeikwanBridge.App.Converters"
+        Title="{DynamicResource AppTitle}" Height="700" Width="1050"
+        MinHeight="500" MinWidth="800"
+        WindowStartupLocation="CenterScreen"
+        Icon="/LeikwanBridge.App;component/Resources/Icons/leikwan-host.ico"
+        Background="{StaticResource BgBrush}">
+
+    <Window.DataContext>
+        <vm:MainViewModel/>
+    </Window.DataContext>
+
+    <Window.Resources>
+        <conv:BoolToStatusBrushConverter x:Key="StatusBrush"/>
+        <conv:BoolToStatusTextConverter x:Key="StatusText"/>
+        <conv:ModeToColorConverter x:Key="ModeColor"/>
+        <conv:InverseBoolConverter x:Key="InverseBool"/>
+        <conv:InverseBoolToVisibilityConverter x:Key="InverseBoolToVis"/>
+        <conv:NullToVisibilityConverter x:Key="NullToVis"/>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
+
+    <Grid>
+        <!-- Setup Wizard Overlay -->
+        <Grid x:Name="SetupOverlay" Visibility="{Binding ShowSetupWizard, Converter={StaticResource BoolToVis}}"
+              Panel.ZIndex="100" Background="#E0F8FAFC">
+            <Border Style="{StaticResource CardBorder}" MaxWidth="450" MaxHeight="420"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel Margin="8">
+                    <TextBlock Text="{DynamicResource SetupTitle}" FontSize="22" FontWeight="Bold"
+                               Foreground="{StaticResource TextBrush}" Margin="0,0,0,4"/>
+                    <TextBlock Text="{DynamicResource SetupSubtitle}" FontSize="13"
+                               Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,20"/>
+
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupMasterUrl}"/>
+                    <TextBox Style="{StaticResource InputTextBox}" x:Name="TxtMasterUrl"
+                             Margin="0,0,0,12"/>
+
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupClientId}"/>
+                    <TextBox Style="{StaticResource InputTextBox}" x:Name="TxtClientId" Margin="0,0,0,12"/>
+
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupAgentToken}"/>
+                    <PasswordBox x:Name="TxtAgentToken" Padding="10,8" FontSize="13" Margin="0,0,0,20"/>
+
+                    <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionConnect}"
+                            Click="OnConnect_Click" HorizontalAlignment="Stretch"/>
+
+                    <TextBlock x:Name="SetupStatus" Margin="0,12,0,0" FontSize="12"
+                               Foreground="{StaticResource MutedTextBrush}" TextAlignment="Center"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- Main Layout -->
+        <Grid Visibility="{Binding ShowSetupWizard, Converter={StaticResource InverseBoolToVis}}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="220"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Sidebar -->
+            <Border Grid.Column="0" Background="{StaticResource SidebarBgBrush}">
+                <DockPanel>
+                    <!-- Logo / Title -->
+                    <StackPanel DockPanel.Dock="Top" Margin="16,20,16,24">
+                        <TextBlock Text="{DynamicResource AppTitle}" FontSize="20" FontWeight="Bold"
+                                   Foreground="White"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <Ellipse Width="8" Height="8" Margin="0,0,6,0"
+                                     Fill="{Binding IsConnected, Converter={StaticResource StatusBrush}}"/>
+                            <TextBlock Text="{Binding ConnectionStatus}" FontSize="12"
+                                       Foreground="{StaticResource SidebarTextBrush}"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- Nav Buttons -->
+                    <StackPanel DockPanel.Dock="Top" Margin="8,0">
+                        <Button Style="{StaticResource NavButton}" Content="{DynamicResource NavDashboard}"
+                                Command="{Binding NavigateToCommand}" CommandParameter="Dashboard"/>
+                        <Button Style="{StaticResource NavButton}" Content="{DynamicResource NavForwards}"
+                                Command="{Binding NavigateToCommand}" CommandParameter="Forwards"/>
+                        <Button Style="{StaticResource NavButton}" Content="{DynamicResource NavLog}"
+                                Command="{Binding NavigateToCommand}" CommandParameter="Log"/>
+                        <Button Style="{StaticResource NavButton}" Content="{DynamicResource NavSettings}"
+                                Command="{Binding NavigateToCommand}" CommandParameter="Settings"/>
+                    </StackPanel>
+
+                    <!-- Bottom Actions -->
+                    <StackPanel DockPanel.Dock="Bottom" Margin="8,0,8,16" VerticalAlignment="Bottom">
+                        <Button Style="{StaticResource NavButton}" Content="{DynamicResource ActionStartAll}"
+                                Command="{Binding StartAllCommand}"/>
+                        <Button Style="{StaticResource NavButton}" Content="{DynamicResource ActionStopAll}"
+                                Command="{Binding StopAllForwardsCommand}"/>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- Content Area -->
+            <Grid Grid.Column="1" Margin="24,16">
+                <!-- Dashboard View -->
+                <ScrollViewer x:Name="DashboardPanel"
+                              VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Border Style="{StaticResource CardBorder}" Padding="20">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource DashSummaryTitle}" Margin="0,0,0,6"/>
+                                    <TextBlock Text="{DynamicResource DashSummarySubtitle}" TextWrapping="Wrap"
+                                               Foreground="{StaticResource MutedTextBrush}" MaxWidth="520"/>
+                                </StackPanel>
+                                <Border Grid.Column="1" Style="{StaticResource ModeBadge}"
+                                        Background="{Binding IsConnected, Converter={StaticResource StatusBrush}}"
+                                        VerticalAlignment="Top">
+                                    <TextBlock Text="{Binding ConnectionStatus}" FontSize="11"
+                                               Foreground="White" FontWeight="SemiBold"/>
+                                </Border>
+                            </Grid>
+                        </Border>
+
+                        <UniformGrid Columns="4" Margin="0,0,0,12">
+                            <Border Style="{StaticResource CardBorder}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource DashActiveForwards}"/>
+                                    <TextBlock Text="{Binding ActiveForwardCount}" FontSize="28" FontWeight="Bold"
+                                               Foreground="{StaticResource PrimaryBrush}"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource CardBorder}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource DashBytesIn}"/>
+                                    <TextBlock Text="{Binding TotalBytesIn}" FontSize="28" FontWeight="Bold"
+                                               Foreground="{StaticResource SuccessBrush}"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource CardBorder}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource DashBytesOut}"/>
+                                    <TextBlock Text="{Binding TotalBytesOut}" FontSize="28" FontWeight="Bold"
+                                               Foreground="{StaticResource WarningBrush}"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource CardBorder}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource DashLastSync}"/>
+                                    <TextBlock Text="{Binding LastSyncTime}" FontSize="20" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextBrush}"/>
+                                </StackPanel>
+                            </Border>
+                        </UniformGrid>
+
+                        <Border Style="{StaticResource CardBorder}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource DashQuickActions}"/>
+                                <WrapPanel>
+                                    <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionStartAll}"
+                                            Command="{Binding StartAllCommand}" Margin="0,0,8,8"/>
+                                    <Button Style="{StaticResource DangerButton}" Content="{DynamicResource ActionStopAll}"
+                                            Command="{Binding StopAllForwardsCommand}" Margin="0,0,8,8"/>
+                                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource DashOpenLogs}"
+                                            Command="{Binding NavigateToCommand}" CommandParameter="Log" Margin="0,0,8,8"/>
+                                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource DashOpenSettings}"
+                                            Command="{Binding NavigateToCommand}" CommandParameter="Settings" Margin="0,0,8,8"/>
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorder}">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,12">
+                                    <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource DashForwardControls}" DockPanel.Dock="Left" Margin="0"/>
+                                    <TextBlock Text="{Binding VisibleForwardCount, StringFormat={}{0} forwards shown}"
+                                               DockPanel.Dock="Right" VerticalAlignment="Center"
+                                               Foreground="{StaticResource MutedTextBrush}"/>
+                                </DockPanel>
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="240"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{DynamicResource DashModeFilter}"
+                                               VerticalAlignment="Center" Margin="0,0,12,0"
+                                               Foreground="{StaticResource MutedTextBrush}" FontWeight="SemiBold"/>
+                                    <ComboBox Grid.Column="1"
+                                              ItemsSource="{Binding AvailableModeFilters}"
+                                              SelectedItem="{Binding ActiveModeFilter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              Padding="8,4"/>
+                                </Grid>
+
+                                <TextBlock Text="{DynamicResource DashNoVisibleForwards}" Foreground="{StaticResource MutedTextBrush}"
+                                           Margin="0,0,0,12">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding VisibleForwardCount}" Value="0">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+
+                                <ItemsControl ItemsSource="{Binding VisibleForwards}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Style="{StaticResource CardBorder}" Width="300" Cursor="Hand"
+                                                    MouseLeftButtonUp="OnForwardCardClick">
+                                                <StackPanel>
+                                                    <DockPanel Margin="0,0,0,10">
+                                                        <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                                                            <Ellipse Style="{StaticResource StatusDot}"
+                                                                     Fill="{Binding IsRunning, Converter={StaticResource StatusBrush}}"/>
+                                                            <TextBlock Text="{Binding ForwardId, StringFormat='Forward #{0}'}"
+                                                                       FontSize="15" FontWeight="SemiBold"
+                                                                       Foreground="{StaticResource TextBrush}"/>
+                                                        </StackPanel>
+                                                        <Border DockPanel.Dock="Right" Style="{StaticResource ModeBadge}"
+                                                                Background="{Binding Mode, Converter={StaticResource ModeColor}}"
+                                                                HorizontalAlignment="Right">
+                                                            <TextBlock Text="{Binding ModeDisplay}" FontSize="11"
+                                                                       Foreground="White" FontWeight="SemiBold"/>
+                                                        </Border>
+                                                    </DockPanel>
+
+                                                    <Grid Margin="0,0,0,10">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <Grid.RowDefinitions>
+                                                            <RowDefinition/>
+                                                            <RowDefinition/>
+                                                            <RowDefinition/>
+                                                            <RowDefinition/>
+                                                        </Grid.RowDefinitions>
+                                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="{DynamicResource FwdListenPort}" FontSize="12"
+                                                                   Foreground="{StaticResource MutedTextBrush}" Margin="0,0,8,4"/>
+                                                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding ListenPort}" FontSize="12"
+                                                                   Foreground="{StaticResource TextBrush}"/>
+                                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="{DynamicResource FwdTarget}" FontSize="12"
+                                                                   Foreground="{StaticResource MutedTextBrush}" Margin="0,0,8,4"/>
+                                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Target}" FontSize="12"
+                                                                   Foreground="{StaticResource TextBrush}" TextWrapping="Wrap"/>
+                                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="{DynamicResource FwdTransport}" FontSize="12"
+                                                                   Foreground="{StaticResource MutedTextBrush}" Margin="0,0,8,4"/>
+                                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Transport}" FontSize="12"
+                                                                   Foreground="{StaticResource TextBrush}"/>
+                                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="{DynamicResource FwdEndpoints}" FontSize="12"
+                                                                   Foreground="{StaticResource MutedTextBrush}" Margin="0,0,8,0"/>
+                                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding EndpointCount}" FontSize="12"
+                                                                   Foreground="{StaticResource TextBrush}"/>
+                                                    </Grid>
+
+                                                    <WrapPanel HorizontalAlignment="Right">
+                                                        <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionStart}" Margin="0,0,6,6"
+                                                                Command="{Binding DataContext.StartForwardCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                CommandParameter="{Binding}"/>
+                                                        <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionStop}" Margin="0,0,6,6"
+                                                                Command="{Binding DataContext.StopForwardCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                CommandParameter="{Binding}"/>
+                                                        <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionRestart}" Margin="0,0,0,6"
+                                                                Command="{Binding DataContext.RestartForwardCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                CommandParameter="{Binding}"/>
+                                                    </WrapPanel>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0"
+                                        Visibility="{Binding SelectedForward, Converter={StaticResource NullToVis}}">
+                                    <StackPanel>
+                                        <DockPanel Margin="0,0,0,12">
+                                            <TextBlock Style="{StaticResource SectionHeader}" Text="Forward Details" DockPanel.Dock="Left" Margin="0"/>
+                                            <Border DockPanel.Dock="Right" Style="{StaticResource ModeBadge}"
+                                                    Background="{Binding SelectedForward.Mode, Converter={StaticResource ModeColor}}">
+                                                <TextBlock Text="{Binding SelectedForward.ModeDisplay}" FontSize="11"
+                                                           Foreground="White" FontWeight="SemiBold"/>
+                                            </Border>
+                                        </DockPanel>
+
+                                        <Grid Margin="0,0,0,12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="160"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition/>
+                                                <RowDefinition/>
+                                                <RowDefinition/>
+                                                <RowDefinition/>
+                                                <RowDefinition/>
+                                                <RowDefinition/>
+                                            </Grid.RowDefinitions>
+
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="Forward"/>
+                                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedForward.ForwardId, StringFormat=Forward #{0}}" FontSize="14" FontWeight="SemiBold"/>
+
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource FwdStatus}"/>
+                                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedForward.StatusText}" FontSize="14"/>
+
+                                            <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource FwdListenPort}"/>
+                                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedForward.ListenPort}" FontSize="14"/>
+
+                                            <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource FwdTransport}"/>
+                                            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedForward.Transport}" FontSize="14"/>
+
+                                            <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource FwdEndpoints}"/>
+                                            <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding SelectedForward.EndpointCount}" FontSize="14"/>
+
+                                            <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource FwdTarget}"/>
+                                            <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding SelectedForward.Target}" FontSize="14" TextWrapping="Wrap"/>
+                                        </Grid>
+
+                                        <WrapPanel HorizontalAlignment="Right">
+                                            <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionStart}" Margin="0,0,6,6"
+                                                    Command="{Binding StartForwardCommand}"
+                                                    CommandParameter="{Binding SelectedForward}"/>
+                                            <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionStop}" Margin="0,0,6,6"
+                                                    Command="{Binding StopForwardCommand}"
+                                                    CommandParameter="{Binding SelectedForward}"/>
+                                            <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionRestart}" Margin="0,0,0,6"
+                                                    Command="{Binding RestartForwardCommand}"
+                                                    CommandParameter="{Binding SelectedForward}"/>
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorder}">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,12">
+                                    <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource DashRecentLogs}" DockPanel.Dock="Left" Margin="0"/>
+                                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource DashOpenLogs}"
+                                            Command="{Binding NavigateToCommand}" CommandParameter="Log"
+                                            DockPanel.Dock="Right"/>
+                                </DockPanel>
+                                <ListBox ItemsSource="{Binding LogEntries}" FontFamily="Consolas" FontSize="11"
+                                         MaxHeight="180" BorderThickness="0" Background="Transparent"
+                                         ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" TextWrapping="NoWrap"
+                                                       Foreground="{StaticResource TextBrush}"/>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- Log View -->
+                <DockPanel x:Name="LogPanel" Visibility="Collapsed">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                        <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource NavLog}"
+                                   DockPanel.Dock="Left"/>
+                        <Button Style="{StaticResource GhostButton}" Content="{DynamicResource LogClear}"
+                                Command="{Binding ClearLogCommand}" DockPanel.Dock="Right"
+                                HorizontalAlignment="Right"/>
+                    </DockPanel>
+                    <Border Style="{StaticResource CardBorder}" Padding="8">
+                        <ListBox ItemsSource="{Binding LogEntries}" FontFamily="Consolas" FontSize="11"
+                                 BorderThickness="0" Background="Transparent"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                 x:Name="LogListBox">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" TextWrapping="NoWrap"
+                                               Foreground="{StaticResource TextBrush}"/>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Border>
+                </DockPanel>
+
+                <!-- Settings View -->
+                <ScrollViewer x:Name="SettingsPanel" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                    <StackPanel MaxWidth="600">
+                        <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource NavSettings}"/>
+
+                        <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource SettingsConnection}" FontSize="15"
+                                           FontWeight="SemiBold" Margin="0,0,0,12"/>
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupMasterUrl}"/>
+                                <TextBox Style="{StaticResource InputTextBox}" x:Name="SettMasterUrl" Margin="0,0,0,8"/>
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupClientId}"/>
+                                <TextBox Style="{StaticResource InputTextBox}" x:Name="SettClientId" Margin="0,0,0,8"/>
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupAgentToken}"/>
+                                <TextBox Style="{StaticResource InputTextBox}" x:Name="SettToken" Margin="0,0,0,8"/>
+
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SettingsPollInterval}"/>
+                                <TextBox Style="{StaticResource InputTextBox}" x:Name="SettPollInterval" Margin="0,0,0,8"/>
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SettingsHealthInterval}"/>
+                                <TextBox Style="{StaticResource InputTextBox}" x:Name="SettHealthInterval" Margin="0,0,0,8"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource SettingsLanguage}" FontSize="15"
+                                           FontWeight="SemiBold" Margin="0,0,0,12"/>
+                                <ComboBox x:Name="SettLanguage" SelectedIndex="0" Margin="0,0,0,8">
+                                    <ComboBoxItem Content="English" Tag="en-US"/>
+                                    <ComboBoxItem Content="涓枃" Tag="zh-CN"/>
+                                </ComboBox>
+                                <CheckBox x:Name="SettAutoStart" Content="{DynamicResource SettingsAutoStart}" Margin="0,0,0,4"/>
+                                <CheckBox x:Name="SettMinimizeTray" Content="{DynamicResource SettingsMinimizeToTray}" IsChecked="True"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionSave}"
+                                Click="OnSaveSettings_Click" HorizontalAlignment="Left" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="SettingsStatus" FontSize="12" Foreground="{StaticResource SuccessBrush}"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>
+

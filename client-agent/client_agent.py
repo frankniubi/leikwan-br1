@@ -17,7 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.04.17.4"
+AGENT_VERSION = "2026.04.27.2"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 INVALID_FORWARD_LOG_INTERVAL_SECONDS = 600
@@ -250,6 +250,17 @@ class ClientAgent:
             return configured
         return self.wireguard_listen_port() + 10000
 
+    @staticmethod
+    def install_forward_runtime_path() -> pathlib.Path:
+        return pathlib.Path(__file__).with_name("install_forward_runtime.py")
+
+    def semantic_agent_config(self) -> dict:
+        payload = dict(self.config)
+        payload["wireguard_listen_port"] = self.wireguard_listen_port()
+        payload["wireguard_fallback_tcp_port"] = self.wireguard_fallback_tcp_port()
+        payload["install_forward_runtime_sha256"] = file_sha256(self.install_forward_runtime_path())
+        return payload
+
     def ensure_wireguard_identity(self) -> str:
         private_key_path = self.wireguard_private_key_path()
         public_key_path = self.wireguard_public_key_path()
@@ -460,6 +471,36 @@ class ClientAgent:
         existing.update(payload)
         self.pull_state_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def bond_leg_snapshot_dir(self) -> pathlib.Path:
+        configured = str(self.config.get("bond_leg_snapshot_dir", "") or "").strip()
+        if configured != "":
+            return pathlib.Path(configured)
+        return pathlib.Path("/run/leikwan")
+
+    def load_bond_leg_reputation_snapshots(self) -> list[dict[str, object]]:
+        snapshots: list[dict[str, object]] = []
+        snapshot_dir = self.bond_leg_snapshot_dir()
+        for path in sorted(snapshot_dir.glob("bond-leg-health-forward-*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(payload, dict):
+                snapshots.append(payload)
+        return snapshots
+
+    def load_forward_bond_runtime_snapshot(self, forward_id: int) -> dict[str, object]:
+        if forward_id <= 0:
+            return {}
+        snapshot_path = self.bond_leg_snapshot_dir() / f"bond-leg-health-forward-{forward_id}.json"
+        if not snapshot_path.exists():
+            return {}
+        try:
+            payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
     @staticmethod
     def state_timestamp(value: object) -> float:
         try:
@@ -634,6 +675,9 @@ class ClientAgent:
                 "wireguard_listen_port": self.wireguard_listen_port(),
                 "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
                 "clock_sync": local_clock,
+                "bond_leg_reputation": {
+                    "forwards": self.load_bond_leg_reputation_snapshots(),
+                },
             },
         )
         now = time.time()
@@ -690,11 +734,30 @@ class ClientAgent:
         update_state = self.load_update_state()
         completed_request_token = str(update_state.get("last_completed_request_token", "") or "")
 
-        if explicit_request_token != "" and completed_request_token == explicit_request_token:
-            applied = self.load_applied()
-            if applied.get("_last_agent_update_request_token") != explicit_request_token:
+        if explicit_request_token != "":
+            if completed_request_token == explicit_request_token:
+                applied = self.load_applied()
+                if applied.get("_last_agent_update_request_token") != explicit_request_token:
+                    applied["_last_agent_update_request_token"] = explicit_request_token
+                    self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+            elif not self.management_requires_local_update(client_meta):
+                now = time.time()
+                update_state.update(
+                    {
+                        "request_token": explicit_request_token,
+                        "status": "success",
+                        "last_attempt_at": now,
+                        "last_completed_request_token": explicit_request_token,
+                        "last_completed_at": now,
+                        "installed_version": AGENT_VERSION,
+                        "last_error": "",
+                    }
+                )
+                self.save_update_state(update_state)
+                applied = self.load_applied()
                 applied["_last_agent_update_request_token"] = explicit_request_token
                 self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+                explicit_request_token = ""
 
         for request_token in [token for token in [explicit_request_token, auto_request_token] if token]:
             if completed_request_token == request_token:
@@ -752,6 +815,9 @@ class ClientAgent:
 
         return "auto-release:" + "|".join(mismatches)
 
+    def management_requires_local_update(self, client_meta: dict) -> bool:
+        return self.auto_update_request_token(client_meta) != ""
+
     def apply_config_patch(self, patch: object) -> None:
         if not isinstance(patch, dict):
             return
@@ -762,15 +828,21 @@ class ClientAgent:
             "health_check_interval_seconds",
             "log_level",
             "state_dir",
+            "udp_uot_sidepath",
         }
         config_changed = False
         for key, value in patch.items():
             if key not in allowed_keys:
                 continue
             if value is None:
-                if key not in DEFAULT_MANAGED_CONFIG:
+                if key in DEFAULT_MANAGED_CONFIG:
+                    value = DEFAULT_MANAGED_CONFIG[key]
+                else:
+                    if key not in self.config:
+                        continue
+                    self.config.pop(key, None)
+                    config_changed = True
                     continue
-                value = DEFAULT_MANAGED_CONFIG[key]
             if self.config.get(key) == value:
                 continue
             self.config[key] = value
@@ -912,7 +984,7 @@ class ClientAgent:
         if mode == "bond":
             render_forward["endpoints"] = self.select_bond_runtime_endpoints(render_forward)
 
-        rendered = render_forward_runtime(render_forward, self.config)
+        rendered = render_forward_runtime(render_forward, self.semantic_agent_config())
         self.delete_nft_rules(forward_id)
         self.add_nft_rules(forward_id, int(forward.get("listen_port", 0) or 0), transport)
         applied = self.load_applied()
@@ -1018,20 +1090,62 @@ class ClientAgent:
             service_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
             if delete_files and service_path.exists():
                 service_path.unlink()
+            if delete_files:
+                start_script_path = pathlib.Path(f"/usr/local/bin/leikwan-client-start-{forward_id}.sh")
+                if start_script_path.exists():
+                    start_script_path.unlink()
 
         self.delete_nft_rules(forward_id)
         if delete_files:
+            self.cleanup_mptcp_forward_runtime(forward_id)
             if isinstance(previous, dict):
                 for managed_path_raw in previous.get("managed_paths", []):
                     managed_path = pathlib.Path(str(managed_path_raw))
-                    if (
-                        managed_path == pathlib.Path(f"/etc/systemd/system/leikwan-client-{forward_id}.service")
-                        or managed_path == pathlib.Path(f"/usr/local/bin/leikwan-client-start-{forward_id}.sh")
-                    ):
-                        continue
                     if managed_path.exists():
                         managed_path.unlink()
             subprocess.run("systemctl daemon-reload", shell=True, check=False)
+
+    def cleanup_mptcp_forward_runtime(self, forward_id: int) -> None:
+        if forward_id <= 0:
+            return
+        self.__class__.cleanup_orphan_mptcp_runtime(set(), target_forward_ids={forward_id})
+
+    @classmethod
+    def cleanup_orphan_mptcp_runtime(
+        cls,
+        active_forward_ids: set[int],
+        target_forward_ids: set[int] | None = None,
+    ) -> None:
+        if shutil.which("wg") is None:
+            return
+        result = subprocess.run(["wg", "show", "interfaces"], text=True, capture_output=True, check=False)
+        interfaces = result.stdout.strip().split()
+        removed_service_units = False
+        for iface in interfaces:
+            match = re.match(r"^lw-mptcp-(\d+)-", iface)
+            if match is None:
+                continue
+            forward_id = int(match.group(1))
+            if target_forward_ids is not None:
+                should_remove = forward_id in target_forward_ids
+            else:
+                should_remove = forward_id not in active_forward_ids
+            if not should_remove:
+                continue
+            subprocess.run(["systemctl", "stop", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "disable", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
+            conf_path = pathlib.Path(f"/etc/wireguard/{iface}.conf")
+            if conf_path.exists():
+                conf_path.unlink()
+            unit_root = pathlib.Path("/etc/systemd/system")
+            if unit_root.exists():
+                for unit_path in unit_root.glob(f"leikwan-uot-lw-mptcp-{forward_id}-*.service"):
+                    subprocess.run(["systemctl", "stop", unit_path.name], text=True, capture_output=True, check=False)
+                    subprocess.run(["systemctl", "disable", unit_path.name], text=True, capture_output=True, check=False)
+                    unit_path.unlink()
+                    removed_service_units = True
+        if removed_service_units:
+            subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
 
     def ensure_runtime_health(self, forwards: list[dict]) -> None:
         if not forwards:
@@ -1052,9 +1166,6 @@ class ClientAgent:
 
             endpoints = [endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
             mode = self.normalize_mode(forward.get("mode", "single"))
-            if mode == "bond" and self.service_status_matches_bond_restart_rule(service_name):
-                self.restart_forward_service(forward_id, service_name, "bond status matched reset warning rule")
-                continue
             if mode == "mptcp":
                 if self.mptcp_setup_in_progress(forward_id):
                     logging.info("forward %s mptcp setup-underlays still in progress; skipping health probe", forward_id)
@@ -1089,7 +1200,8 @@ class ClientAgent:
             if not isinstance(bonding, dict):
                 bonding = {}
             plain_tcp_ingress = mode == "bond" and str(bonding.get("ingress_mode", "wss_path_mux")) == "plain_tcp_mux"
-            for endpoint in endpoints:
+            backend_mode = str(forward.get("backend_mode", "current_mode") or "current_mode")
+            for endpoint_index, endpoint in enumerate(endpoints):
                 if plain_tcp_ingress:
                     ready, latency_ms, error = self.remote_plain_tcp_ready_probe(
                         str(endpoint.get("host", "")),
@@ -1104,6 +1216,12 @@ class ClientAgent:
                         str(forward.get("sni", "") or endpoint.get("cdn_host", "") or endpoint.get("host", "")),
                         str(forward.get("path_prefix", "")),
                     )
+                if ready and mode == "bond" and plain_tcp_ingress and backend_mode == "cf_mode":
+                    ready, stronger_latency_ms, stronger_error = self.cf_bond_one_leg_connect_probe(forward, endpoint, endpoint_index)
+                    if stronger_latency_ms is not None:
+                        latency_ms = stronger_latency_ms
+                    if stronger_error is not None:
+                        error = stronger_error
                 ready_results.append(ready)
                 if mode == "bond":
                     endpoint_id = int(endpoint.get("endpoint_id", 0) or 0)
@@ -1113,13 +1231,21 @@ class ClientAgent:
                         .get(str(endpoint_id), {})
                         .get("role", "healthy")
                     )
-                    updated = self.record_bond_endpoint_probe_result(
-                        forward_id,
-                        endpoint_id,
-                        ready,
-                        latency_ms,
-                        error,
-                    )
+                    if not ready and plain_tcp_ingress and backend_mode == "cf_mode":
+                        updated = self.force_bond_endpoint_quarantine(
+                            forward_id,
+                            endpoint_id,
+                            error,
+                            latency_ms,
+                        )
+                    else:
+                        updated = self.record_bond_endpoint_probe_result(
+                            forward_id,
+                            endpoint_id,
+                            ready,
+                            latency_ms,
+                            error,
+                        )
                     if str(previous_role or "healthy") != str(updated.get("role", "healthy") or "healthy"):
                         self.refresh_bond_runtime_endpoints(forward_id, dict(forward), service_name)
 
@@ -1263,6 +1389,16 @@ class ClientAgent:
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         )
 
+    @staticmethod
+    def bond_runtime_base_port(forward_id: int) -> int:
+        return 20000 + ((forward_id * 37) % 15000)
+
+    @classmethod
+    def bond_runtime_endpoint_back_port(cls, forward_id: int, endpoint_index: int, protocol: str = "tcp") -> int:
+        base = cls.bond_runtime_base_port(forward_id)
+        offset = max(0, int(endpoint_index))
+        return base + offset + (200 if str(protocol).strip().lower() == "udp" else 0)
+
     def record_bond_endpoint_probe_result(
         self,
         forward_id: int,
@@ -1314,6 +1450,200 @@ class ClientAgent:
         self.save_bond_endpoint_health(health)
         return entry
 
+    def force_bond_endpoint_quarantine(
+        self,
+        forward_id: int,
+        endpoint_id: int,
+        error: str | None,
+        latency_ms: float | None = None,
+        now: float | None = None,
+    ) -> dict:
+        now = time.time() if now is None else now
+        health = self.load_bond_endpoint_health()
+        entry = health.setdefault(str(forward_id), {}).setdefault(
+            str(endpoint_id),
+            {
+                "role": "healthy",
+                "consecutive_failures": 0,
+                "consecutive_successes": 0,
+                "quarantine_until": 0.0,
+                "probation_until": 0.0,
+                "last_error": "",
+                "last_latency_ms": None,
+            },
+        )
+        entry["role"] = "quarantined"
+        entry["consecutive_failures"] = max(3, int(entry.get("consecutive_failures", 0) or 0) + 1)
+        entry["consecutive_successes"] = 0
+        entry["quarantine_until"] = now + 90.0
+        entry["probation_until"] = 0.0
+        entry["last_error"] = error or "cf_bond_leg_probe_failed"
+        entry["last_latency_ms"] = latency_ms
+        self.save_bond_endpoint_health(health)
+        return entry
+
+    @staticmethod
+    def cf_bond_runtime_health_entry(leg: dict, now: float) -> tuple[str, dict] | None:
+        endpoint_id = int(leg.get("endpoint_id", 0) or 0)
+        tcp = leg.get("tcp", {}) if isinstance(leg.get("tcp", {}), dict) else {}
+        if endpoint_id <= 0 or tcp == {}:
+            return None
+
+        runtime_state = str(tcp.get("state", "healthy") or "healthy").strip().lower()
+        runtime_reason = str(tcp.get("last_reason", "") or "").strip()
+
+        role = "healthy"
+        quarantine_until = 0.0
+        probation_until = 0.0
+        if runtime_state == "quarantined":
+            role = "quarantined"
+            quarantine_until = now + 90.0
+        elif runtime_state in {"probation", "degraded"}:
+            role = "probation"
+            probation_until = now + 60.0
+
+        return (
+            str(endpoint_id),
+            {
+                "role": role,
+                "consecutive_failures": 3 if role == "quarantined" else (2 if role == "probation" else 0),
+                "consecutive_successes": 3 if role == "healthy" else 0,
+                "quarantine_until": quarantine_until,
+                "probation_until": probation_until,
+                "last_error": runtime_reason,
+                "last_latency_ms": None,
+            },
+        )
+
+    def reconcile_cf_bond_runtime_health(self, forward: dict, now: float | None = None) -> dict:
+        now = time.time() if now is None else now
+        if self.normalize_mode(forward.get("mode", "single")) != "bond":
+            return self.load_bond_endpoint_health()
+        if str(forward.get("backend_mode", "current_mode") or "current_mode") != "cf_mode":
+            return self.load_bond_endpoint_health()
+
+        forward_id = int(forward.get("forward_id", 0) or 0)
+        if forward_id <= 0:
+            return self.load_bond_endpoint_health()
+
+        snapshot = self.load_forward_bond_runtime_snapshot(forward_id)
+        legs = snapshot.get("legs", []) if isinstance(snapshot.get("legs", []), list) else []
+        health = self.load_bond_endpoint_health()
+        scoped = health.setdefault(str(forward_id), {})
+        changed = False
+
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            mapped = self.cf_bond_runtime_health_entry(leg, now)
+            if mapped is None:
+                continue
+            endpoint_id, entry = mapped
+            previous = scoped.get(endpoint_id)
+            if previous != entry:
+                scoped[endpoint_id] = entry
+                changed = True
+
+        if changed:
+            self.save_bond_endpoint_health(health)
+        return health
+
+    def cf_bond_one_leg_connect_probe(
+        self,
+        forward: dict,
+        endpoint: dict,
+        endpoint_index: int,
+        timeout: float = 3.0,
+    ) -> tuple[bool, float | None, str | None]:
+        forward_id = int(forward.get("forward_id", 0) or 0)
+        endpoint_id = int(endpoint.get("endpoint_id", 0) or 0)
+        host = str(endpoint.get("host", "") or "").strip()
+        token = str((forward.get("bonding", {}) or {}).get("session_token", "") or "").strip()
+        if forward_id <= 0 or endpoint_id <= 0 or host == "" or token == "":
+            return False, None, "cf_bond_probe_missing_forward_fields"
+
+        back_port = self.bond_runtime_endpoint_back_port(forward_id, endpoint_index, "tcp")
+        ws_priority = int(((forward.get("bonding", {}) or {}).get("ws_priority", 10) or 10))
+        leg_spec = f"tcp://127.0.0.1:{back_port}?priority={ws_priority}&endpoint_id={endpoint_id}&display_host={host}"
+        bond_bin = str(self.bond_binary_path())
+        if not pathlib.Path(bond_bin).exists():
+            return False, None, f"bond_binary_missing:{bond_bin}"
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_sock:
+            listen_sock.bind(("127.0.0.1", 0))
+            probe_port = int(listen_sock.getsockname()[1])
+
+        bonding = forward.get("bonding", {}) if isinstance(forward.get("bonding", {}), dict) else {}
+        command = [
+            bond_bin,
+            "client",
+            "--protocol",
+            "tcp",
+            "--listen",
+            f"127.0.0.1:{probe_port}",
+            "--legs",
+            leg_spec,
+            "--session-token",
+            token,
+            "--chunk-size",
+            str(int(bonding.get("chunk_size", 65536) or 65536)),
+            "--max-window-bytes",
+            str(int(bonding.get("max_window_bytes", 8388608) or 8388608)),
+            "--retransmit-ms",
+            str(int(bonding.get("retransmit_ms", 700) or 700)),
+            "--connect-timeout-ms",
+            str(int(bonding.get("connect_timeout_ms", 3000) or 3000)),
+            "--join-timeout-ms",
+            str(int(bonding.get("join_timeout_ms", 400) or 400)),
+            "--interactive-chunk-bytes",
+            str(int(bonding.get("interactive_chunk_bytes", 16 * 1024) or 16 * 1024)),
+            "--latency-guard-bytes",
+            str(int(bonding.get("latency_guard_bytes", 256 * 1024) or 256 * 1024)),
+            "--interactive-rtt-slack-ms",
+            str(int(bonding.get("interactive_rtt_slack_ms", 30) or 30)),
+            "--warmup-trigger-bytes",
+            str(int(bonding.get("warmup_trigger_bytes", 65536) or 65536)),
+            "--warmup-slice-bytes",
+            str(int(bonding.get("warmup_slice_bytes", 65536) or 65536)),
+            "--warmup-leg-delay-ms",
+            str(int(bonding.get("warmup_leg_delay_ms", 20) or 20)),
+            "--bulk-promote-bytes",
+            str(int(bonding.get("bulk_promote_bytes", 262144) or 262144)),
+            "--leg-cooldown-ms",
+            str(int(bonding.get("leg_cooldown_ms", 3000) or 3000)),
+        ]
+        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        started = time.time()
+
+        def process_error() -> str:
+            if process.stderr is None:
+                return f"bond_probe_exit_{process.returncode}"
+            output = process.stderr.read() or ""
+            lines = [line.strip() for line in output.splitlines() if line.strip() != ""]
+            return lines[-1] if lines else f"bond_probe_exit_{process.returncode}"
+
+        try:
+            deadline = started + max(0.5, timeout)
+            last_error = "cf_bond_leg_probe_timeout"
+            while time.time() < deadline:
+                if process.poll() is not None:
+                    return False, None, process_error()
+                try:
+                    with socket.create_connection(("127.0.0.1", probe_port), timeout=0.3):
+                        return True, round((time.time() - started) * 1000, 1), None
+                except Exception as exc:  # noqa: BLE001
+                    last_error = str(exc)
+                    time.sleep(0.05)
+            return False, None, last_error
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=1.0)
+
     def select_bond_runtime_endpoints(self, forward: dict, now: float | None = None) -> list[dict]:
         now = time.time() if now is None else now
         endpoints = [dict(endpoint) for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
@@ -1321,7 +1651,7 @@ class ClientAgent:
         if not isinstance(bonding, dict):
             bonding = {}
         base_priority = int(bonding.get("ws_priority", 10) or 10)
-        health = self.load_bond_endpoint_health().get(str(int(forward.get("forward_id", 0) or 0)), {})
+        health = self.reconcile_cf_bond_runtime_health(forward, now).get(str(int(forward.get("forward_id", 0) or 0)), {})
 
         decorated = []
         for endpoint in endpoints:
@@ -1343,6 +1673,18 @@ class ClientAgent:
             else:
                 endpoint["dynamic_priority"] = base_priority + 30
             decorated.append(endpoint)
+
+        is_cf_bond = str(forward.get("backend_mode", "current_mode") or "current_mode") == "cf_mode"
+        if is_cf_bond:
+            healthy = [item for item in decorated if item["health_role"] == "healthy"]
+            if healthy:
+                healthy.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+                return healthy
+
+            probation = [item for item in decorated if item["health_role"] == "probation"]
+            if probation:
+                probation.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+                return probation[:1]
 
         preferred = [item for item in decorated if item["health_role"] != "quarantined"]
         if preferred:
@@ -1515,6 +1857,41 @@ class ClientAgent:
         )
         server_name = str(sni or host)
         started = time.time()
+        curl_bin = shutil.which("curl")
+
+        if curl_bin:
+            connect_timeout = max(1, int(timeout))
+            max_time = max(connect_timeout + 2, int(timeout) + 2)
+            command = [
+                curl_bin,
+                "-k",
+                "-sS",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "--connect-timeout",
+                str(connect_timeout),
+                "--max-time",
+                str(max_time),
+                "-H",
+                f"Host: {server_name}",
+                f"https://{host}:{port}{request_path}",
+            ]
+            result = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            status_code = str(result.stdout or "").strip()
+            if result.returncode == 0 and status_code == "200":
+                return True, round((time.time() - started) * 1000, 1), None
+            if result.returncode != 0:
+                detail = str(result.stderr or "").strip() or str(result.stdout or "").strip() or f"curl exited {result.returncode}"
+                return False, None, detail
+            if status_code != "":
+                return False, None, f"HTTP {status_code}"
 
         try:
             with socket.create_connection((host, port), timeout=timeout) as raw_sock:

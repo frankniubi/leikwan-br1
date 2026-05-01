@@ -1,1 +1,61 @@
 .worktrees/
+
+# Local credentials / environment files. Keep these out of commits.
+/leikwan-v3.txt
+/cantons.txt
+/shanghais.txt
+/infoandcredentials.txt
+*.env.local
+.env
+
+# Scratch files from live debugging and handoff planning.
+/.tmp*
+/tmp_*.sh
+/tmp_*.py
+/findings.md
+/progress.md
+/task_plan.md
+
+# Local generated artifacts and runtime captures.
+/artifacts/backups/
+/artifacts/git-safety/
+/artifacts/android-runtime-temp/
+/artifacts/android-smoke/
+/artifacts/connprobe*/
+/artifacts/db/
+/artifacts/dbcopy/
+/artifacts/investigate*/
+/artifacts/livecheck/
+/artifacts/nekobox/
+/artifacts/ops/
+/artifacts/postrepro/
+/artifacts/recheck/
+/artifacts/windows/publish/
+/artifacts/windows/_setup_stage/
+/artifacts/*.log
+/artifacts/*.txt
+/artifacts/*.xml
+/artifacts/*.png
+
+# Build outputs / dependency caches.
+**/bin/
+**/obj/
+**/build/
+**/target/
+**/node_modules/
+**/.gradle/
+/leikwan-android/local.properties
+/wstunnel-main/leikwan-client-win/src-tauri/gen/
+
+# External scratch/vendor checkouts not owned by this repo.
+/NekoBoxForAndroid-main/
+/complex1/
+/toonify-mcp/
+/leikwan-android-next/
+/api-default.html
+/README.md
+/LICENSE
+
+# Ad-hoc local backups.
+*.bak
+*.bak-*

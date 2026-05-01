@@ -92,7 +92,8 @@ final class SidecarAgentController extends BaseController
             )
         );
         $cfRows = $this->db->fetchAll(
-            'SELECT f.id, f.path_prefix, f.target_host, f.target_port, f.transport_mode
+            'SELECT f.id, f.path_prefix, f.target_host, f.target_port, f.transport_mode,
+                    f.bond_remote_host, f.bond_remote_port
              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
              WHERE f.bond_sidecar_point_id = :point_id
@@ -121,7 +122,16 @@ final class SidecarAgentController extends BaseController
             'routes' => array_values(array_reduce($cfRows, static function (array $carry, array $row): array {
                 $forwardId = (int) ($row['id'] ?? 0);
                 $pathPrefix = (string) ($row['path_prefix'] ?? '');
-                $target = (string) ($row['target_host'] ?? '') . ':' . (int) ($row['target_port'] ?? 0);
+                $targetHost = trim((string) ($row['bond_remote_host'] ?? ''));
+                $targetPort = (int) ($row['bond_remote_port'] ?? 0);
+                if ($targetHost === '' || $targetPort <= 0) {
+                    $targetHost = trim((string) ($row['target_host'] ?? ''));
+                    $targetPort = (int) ($row['target_port'] ?? 0);
+                }
+                $target = $targetHost . ':' . $targetPort;
+                if ($targetPort > 0) {
+                    $target = '127.0.0.1:' . $targetPort;
+                }
                 $transportMode = (string) ($row['transport_mode'] ?? 'tcp');
                 $carry[] = [
                     'forward_id' => $forwardId,

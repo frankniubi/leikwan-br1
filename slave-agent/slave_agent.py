@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.04.19.1"
+AGENT_VERSION = "2026.04.27.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -855,6 +855,123 @@ class SlaveAgent:
         except Exception:
             return None
 
+    def probe_cf_websocket_upgrade(
+        self,
+        ip: str,
+        port: int,
+        sni_host: str,
+        path_prefix: str,
+        timeout: float = 1.0,
+    ) -> tuple[bool, float | None, str | None]:
+        request_path = "/" + normalize_path_prefix(path_prefix)
+        host_header = sni_host.strip() or ip
+        server_name = sni_host.strip() or host_header
+        started = time.time()
+        try:
+            with socket.create_connection((ip, port), timeout=timeout) as raw_sock:
+                context = ssl.create_default_context()
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+                with context.wrap_socket(raw_sock, server_hostname=server_name) as tls_sock:
+                    tls_sock.settimeout(timeout)
+                    request_bytes = (
+                        f"GET {request_path} HTTP/1.1\r\n"
+                        f"Host: {host_header}\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        "Sec-WebSocket-Key: dGVzdC1sZWlrd2FuLXByb2Jl\r\n"
+                        "Sec-WebSocket-Version: 13\r\n\r\n"
+                    ).encode("utf-8")
+                    tls_sock.sendall(request_bytes)
+                    response_head = tls_sock.recv(4096).decode("latin-1", errors="ignore")
+            status_line = response_head.split("\r\n", 1)[0]
+            if " 101 " not in status_line:
+                return False, None, status_line or "websocket_upgrade_failed"
+            return True, round((time.time() - started) * 1000, 1), None
+        except Exception as exc:  # noqa: BLE001
+            return False, None, str(exc)
+
+    def probe_cf_websocket_path(
+        self,
+        ip: str,
+        port: int,
+        sni_host: str,
+        path_prefix: str,
+        probe_target: str = "",
+        timeout: float = 1.0,
+    ) -> tuple[bool, float | None, str | None]:
+        effective_target = str(probe_target or "").strip()
+        if effective_target == "":
+            return self.probe_cf_websocket_upgrade(ip, port, sni_host, path_prefix, timeout=timeout)
+
+        wstunnel_bin = str(self.config.get("wstunnel_bin", "/usr/local/bin/wstunnel") or "/usr/local/bin/wstunnel").strip() or "/usr/local/bin/wstunnel"
+        if not Path(wstunnel_bin).exists():
+            return self.probe_cf_websocket_upgrade(ip, port, sni_host, path_prefix, timeout=timeout)
+
+        normalized_path = normalize_path_prefix(path_prefix)
+        host_header = sni_host.strip() or ip
+        server_name = sni_host.strip() or host_header
+        started = time.time()
+        local_port = 0
+        with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as port_sock:
+            port_sock.bind(("127.0.0.1", 0))
+            local_port = int(port_sock.getsockname()[1])
+
+        command = [
+            wstunnel_bin,
+            "client",
+            "-L",
+            f"tcp://127.0.0.1:{local_port}:{effective_target}",
+            "--tls-sni-override",
+            server_name,
+            "--http-headers",
+            f"Host: {host_header}",
+            "--http-upgrade-path-prefix",
+            normalized_path,
+            f"wss://{ip}:{port}",
+        ]
+
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        def process_error() -> str:
+            if process.stderr is None:
+                return f"wstunnel_exit_{process.returncode}"
+            output = process.stderr.read() or ""
+            lines = [line.strip() for line in output.splitlines() if line.strip() != ""]
+            return lines[-1] if lines else f"wstunnel_exit_{process.returncode}"
+
+        try:
+            deadline = started + max(0.5, timeout)
+            last_error = "probe_timeout"
+            while time.time() < deadline:
+                if process.poll() is not None:
+                    return False, None, process_error()
+                try:
+                    with socket.create_connection(("127.0.0.1", local_port), timeout=0.2) as probe_sock:
+                        probe_sock.settimeout(0.2)
+                        probe_sock.sendall(b"X")
+                        time.sleep(0.05)
+                        if process.poll() is not None:
+                            return False, None, process_error()
+                        return True, round((time.time() - started) * 1000, 1), None
+                except Exception as exc:  # noqa: BLE001
+                    last_error = str(exc)
+                    time.sleep(0.05)
+            return False, None, last_error
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=1.0)
+
     def expand_cf_candidates(self, cidrs: list[str], max_candidates: int) -> list[str]:
         candidates: list[str] = []
         for raw in cidrs:
@@ -882,27 +999,57 @@ class SlaveAgent:
                 break
         return candidates[:max_candidates]
 
-    def probe_cf_candidates(self, candidates: list[str], port: int, probe_mode: str) -> list[dict[str, Any]]:
+    def probe_cf_candidates(self, candidates: list[str], cf_mode: dict[str, Any]) -> list[dict[str, Any]]:
+        port = int(cf_mode.get("dial_port", 443) or 443)
+        sni_host = str(cf_mode.get("sni_host", "") or "")
+        path_prefix = str(cf_mode.get("path_prefix", "") or "")
+        probe_target = str(cf_mode.get("probe_target", "") or "")
+        sample_count = max(1, min(3, int(cf_mode.get("probe_samples", 2) or 2)))
         results: list[dict[str, Any]] = []
-        normalized_mode = str(probe_mode or "auto").strip().lower()
+
         for ip in candidates:
-            latency_ms = self.tcp_ping(ip, port)
-            if latency_ms is None and normalized_mode == "icmp":
-                latency_ms = self.tcp_ping(ip, port)
-            if latency_ms is None:
-                continue
-            results.append(
-                {
-                    "ip": ip,
-                    "latency_ms": latency_ms,
-                    "jitter_ms": 0.0,
-                    "failures": 0,
-                }
-            )
-        if results == []:
-            raise RuntimeError("no reachable CF candidates")
-        results.sort(key=lambda item: (item["latency_ms"], item["jitter_ms"], item["failures"]))
+            latencies: list[float] = []
+            failures = 0
+            last_error = ""
+            for _ in range(sample_count):
+                ok, latency_ms, error = self.probe_cf_websocket_path(ip, port, sni_host, path_prefix, probe_target)
+                if ok and latency_ms is not None:
+                    latencies.append(latency_ms)
+                else:
+                    failures += 1
+                    last_error = error or "probe_failed"
+            if latencies:
+                avg_latency = round(sum(latencies) / len(latencies), 1)
+                jitter = round(max(latencies) - min(latencies), 1) if len(latencies) > 1 else 0.0
+                results.append(
+                    {
+                        "ip": ip,
+                        "ok": True,
+                        "latency_ms": avg_latency,
+                        "jitter_ms": jitter,
+                        "failures": failures,
+                        "error": last_error,
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "ip": ip,
+                        "ok": False,
+                        "latency_ms": 999999.0,
+                        "jitter_ms": 999999.0,
+                        "failures": failures,
+                        "error": last_error or "probe_failed",
+                    }
+                )
+
+        results.sort(key=lambda item: (not item["ok"], item["latency_ms"], item["jitter_ms"], item["failures"], item["ip"]))
         return results
+
+    @staticmethod
+    def candidate_on_cooldown(candidate_stats: dict[str, Any], ip: str, now: float) -> bool:
+        item = candidate_stats.get(ip, {}) if isinstance(candidate_stats.get(ip), dict) else {}
+        return float(item.get("cooldown_until", 0) or 0) > now
 
     def select_cf_location_ip(self, cf_mode: dict[str, Any]) -> dict[str, Any]:
         group_id = int(cf_mode.get("location_group_id", 0) or 0)
@@ -914,18 +1061,58 @@ class SlaveAgent:
         if cached and (now - float(cached.get("last_probe_at", 0) or 0)) < ttl and str(cached.get("selected_ip", "")) != "":
             return cached
 
+        candidate_limit = max(1, min(8, int(cf_mode.get("max_candidates", 8) or 8)))
+        improvement_ms = max(0, int(cf_mode.get("switch_improvement_ms", 15) or 15))
+        cooldown_seconds = max(60, ttl)
+        candidate_stats = cached.get("candidate_stats", {}) if isinstance(cached.get("candidate_stats"), dict) else {}
+
         candidates = self.expand_cf_candidates(list(cf_mode.get("cidrs", [])), int(cf_mode.get("max_candidates", 32) or 32))
-        results = self.probe_cf_candidates(candidates, int(cf_mode.get("dial_port", 443) or 443), str(cf_mode.get("probe_mode", "auto") or "auto"))
-        best = sorted(results, key=lambda item: (item["latency_ms"], item["jitter_ms"], item["failures"]))[0]
+        filtered = [ip for ip in candidates if not self.candidate_on_cooldown(candidate_stats, ip, now)]
+        filtered = filtered[:candidate_limit]
+        results = self.probe_cf_candidates(filtered, cf_mode)
+
+        successes = [item for item in results if item["ok"]]
+        if not successes:
+            if cached and str(cached.get("selected_ip", "")) != "":
+                cached["last_probe_at"] = now
+                state[cache_key] = cached
+                self.save_cf_location_state(state)
+                return cached
+            raise RuntimeError("no reachable CF candidates")
+
+        for item in results:
+            stats = candidate_stats.setdefault(item["ip"], {})
+            if item["ok"]:
+                stats["last_latency_ms"] = item["latency_ms"]
+                stats["last_jitter_ms"] = item["jitter_ms"]
+                stats["last_probe_at"] = now
+                stats["consecutive_failures"] = 0
+                stats["cooldown_until"] = 0
+            else:
+                stats["last_probe_at"] = now
+                stats["consecutive_failures"] = int(stats.get("consecutive_failures", 0) or 0) + 1
+                stats["cooldown_until"] = now + cooldown_seconds
+                stats["last_error"] = item["error"]
+
+        best = successes[0]
+        selected = best
+        current_ip = str(cached.get("selected_ip", "") or "")
+        current_success = next((item for item in successes if item["ip"] == current_ip), None)
+        if current_success is not None and current_ip != str(best["ip"]):
+            improvement = float(current_success["latency_ms"] or 0) - float(best["latency_ms"] or 0)
+            if improvement < improvement_ms:
+                selected = current_success
+
         state[cache_key] = {
             "location_group_id": group_id,
-            "selected_ip": best["ip"],
-            "last_latency_ms": best["latency_ms"],
-            "last_jitter_ms": best["jitter_ms"],
+            "selected_ip": selected["ip"],
+            "last_latency_ms": selected["latency_ms"],
+            "last_jitter_ms": selected["jitter_ms"],
             "last_probe_at": now,
-            "backup_ips": [item["ip"] for item in results[1:4]],
-            "consecutive_failures": 0,
-            "cooldown_until": 0,
+            "backup_ips": [item["ip"] for item in successes if item["ip"] != selected["ip"]][:3],
+            "consecutive_failures": int(candidate_stats.get(selected["ip"], {}).get("consecutive_failures", 0) or 0),
+            "cooldown_until": float(candidate_stats.get(selected["ip"], {}).get("cooldown_until", 0) or 0),
+            "candidate_stats": candidate_stats,
         }
         self.save_cf_location_state(state)
         return state[cache_key]
@@ -1342,10 +1529,12 @@ class SlaveAgent:
 
                 if self.is_udp_uot_shadow_metadata(metadata):
                     unit_body = self.render_plain_tcp_backend_unit(service_name, backend_port, target)
+                    expected_exec = "leikwan-ingress backend"
                 else:
                     unit_body = self.render_backend_unit(service_name, backend_port, target, path_prefix)
+                    expected_exec = "wstunnel server"
                 unit_changed = self.write_text_if_changed(self.service_unit_path(service_name), unit_body)
-                self.ensure_backend_service(service_name, unit_changed)
+                self.ensure_backend_service(service_name, unit_changed, expected_exec_substring=expected_exec)
 
                 relay_unit_path = self.service_unit_path(relay_name)
                 if "quic" in relay_protocols and relay_target != "":
@@ -1875,25 +2064,34 @@ class SlaveAgent:
         if backend_port <= 0:
             backend_port = self.allocate_backend_port(service_name)
 
-        if backend_mode == "cf_mode" and cf_mode != {}:
-            selection = self.select_cf_location_ip(cf_mode)
+        use_plain_tcp_backend = backend_protocol == "tcp_relay"
+        selection: dict[str, Any] | None = None
+
+        if use_plain_tcp_backend:
+            unit_body = self.render_plain_tcp_backend_unit(service_name, backend_port, target)
+            expected_exec = "leikwan-ingress backend"
+        elif backend_mode == "cf_mode" and cf_mode != {}:
+            selection_mode = dict(cf_mode)
+            selection_mode["probe_target"] = target
+            selection = self.select_cf_location_ip(selection_mode)
             selected_ip = str(selection["selected_ip"])
             unit_body = self.render_cf_wss_backend_unit(
                 service_name=service_name,
                 backend_port=backend_port,
                 target=target,
                 selected_ip=selected_ip,
+                dial_host=str(cf_mode.get("dial_host", "") or ""),
                 remote_port=int(cf_mode.get("dial_port", 443) or 443),
                 sni_host=str(cf_mode.get("sni_host", "") or ""),
                 path_prefix=str(cf_mode.get("path_prefix", path_prefix) or path_prefix),
                 transport_mode="tcp" if "udp" in transport_mode.lower() and "tcp" in transport_mode.lower() else transport_mode,
             )
-        elif ingress_protocol == "plain_tcp_mux" or backend_protocol == "tcp_relay":
-            unit_body = self.render_plain_tcp_backend_unit(service_name, backend_port, target)
+            expected_exec = "wstunnel client"
         else:
             unit_body = self.render_backend_unit(service_name, backend_port, target, path_prefix)
+            expected_exec = "wstunnel server"
         unit_changed = self.write_text_if_changed(unit_path, unit_body)
-        self.ensure_backend_service(service_name, unit_changed)
+        self.ensure_backend_service(service_name, unit_changed, expected_exec_substring=expected_exec)
 
         relay_changed = False
         relay_client_changed = False
@@ -1941,7 +2139,7 @@ class SlaveAgent:
             "route_key": route_key,
             "backend_mode": backend_mode,
             "cf_mode": cf_mode,
-            "selected_cf_ip": selection["selected_ip"] if backend_mode == "cf_mode" and cf_mode != {} else "",
+            "selected_cf_ip": str(selection["selected_ip"]) if selection is not None else "",
             "ingress_protocol": ingress_protocol,
             "backend_protocol": backend_protocol,
             "ingress_auth_token": ingress_auth_token,
@@ -1957,9 +2155,12 @@ class SlaveAgent:
         }
         self.write_json(metadata_path, metadata)
 
-        if backend_mode == "cf_mode" and cf_mode != {} and "udp" in transport_mode.lower():
+        if (not use_plain_tcp_backend) and backend_mode == "cf_mode" and cf_mode != {} and "udp" in transport_mode.lower():
             shadow_service = udp_uot_shadow_service_name(service_name)
-            shadow_backend_port = self.allocate_backend_port(shadow_service)
+            existing_shadow = self.load_service_metadata(shadow_service) or {}
+            shadow_backend_port = int(existing_shadow.get("backend_port", 0) or 0)
+            if shadow_backend_port <= 0:
+                shadow_backend_port = self.allocate_backend_port(shadow_service)
             shadow_route_key = route_key + ".uot"
             shadow_metadata = dict(metadata)
             shadow_metadata.update(
@@ -1977,18 +2178,22 @@ class SlaveAgent:
                 backend_port=shadow_backend_port,
                 target="127.0.0.1:8999",
                 selected_ip=str(selection["selected_ip"]),
+                dial_host=str(cf_mode.get("dial_host", "") or ""),
                 remote_port=int(cf_mode.get("dial_port", 443) or 443),
                 sni_host=str(cf_mode.get("sni_host", "") or ""),
                 path_prefix=shadow_route_key,
                 transport_mode="tcp",
             )
             shadow_unit_changed = self.write_text_if_changed(self.service_unit_path(shadow_service), shadow_unit)
-            self.ensure_backend_service(shadow_service, shadow_unit_changed)
+            self.ensure_backend_service(shadow_service, shadow_unit_changed, expected_exec_substring="wstunnel client")
             self.save_service_metadata(shadow_service, shadow_metadata)
         elif self.udp_uot_sidepath_enabled(task, payload):
             settings = self.udp_uot_sidepath_settings()
             shadow_service = udp_uot_shadow_service_name(service_name)
-            shadow_backend_port = self.allocate_backend_port(shadow_service)
+            existing_shadow = self.load_service_metadata(shadow_service) or {}
+            shadow_backend_port = int(existing_shadow.get("backend_port", 0) or 0)
+            if shadow_backend_port <= 0:
+                shadow_backend_port = self.allocate_backend_port(shadow_service)
             shadow_target = replace_target_port(target, int(settings.get("sidecar_port", 8999) or 8999))
             shadow_suffix = str(settings.get("shadow_route_suffix", ".uot") or ".uot")
             shadow_route_key = route_key + shadow_suffix
@@ -2014,7 +2219,7 @@ class SlaveAgent:
             )
             shadow_unit = self.render_plain_tcp_backend_unit(shadow_service, shadow_backend_port, shadow_target)
             shadow_unit_changed = self.write_text_if_changed(self.service_unit_path(shadow_service), shadow_unit)
-            self.ensure_backend_service(shadow_service, shadow_unit_changed)
+            self.ensure_backend_service(shadow_service, shadow_unit_changed, expected_exec_substring="leikwan-ingress backend")
             self.save_service_metadata(shadow_service, shadow_metadata)
         else:
             self.remove_udp_uot_shadow_service(task, payload, service_name)
@@ -2487,17 +2692,41 @@ class SlaveAgent:
             return False
         return run_command(f"systemctl is-active --quiet {service_name}.service", check=False).returncode == 0
 
-    def ensure_backend_service(self, service_name: str, unit_changed: bool) -> None:
+    def ensure_backend_service(self, service_name: str, unit_changed: bool, expected_exec_substring: str | None = None) -> None:
         if not shutil.which("systemctl"):
             return
+        is_active = self.systemd_is_active(service_name)
+        if expected_exec_substring and is_active and not unit_changed:
+            current_cmdline = self.service_main_process_cmdline(service_name)
+            if expected_exec_substring not in current_cmdline:
+                unit_changed = True
         if unit_changed:
             run_command("systemctl daemon-reload")
         run_command(f"systemctl enable {service_name}.service")
-        is_active = self.systemd_is_active(service_name)
         if unit_changed and is_active:
             run_command(f"systemctl restart {service_name}.service")
         elif not is_active:
             run_command(f"systemctl start {service_name}.service")
+
+    def service_main_process_cmdline(self, service_name: str) -> str:
+        if not shutil.which("systemctl"):
+            return ""
+        result = run_command(f"systemctl show {service_name}.service --property MainPID --value", check=False)
+        if result.returncode != 0:
+            return ""
+        pid_text = str(result.stdout or "").strip() if hasattr(result, "stdout") else ""
+        try:
+            pid = int(pid_text)
+        except (TypeError, ValueError):
+            return ""
+        if pid <= 0:
+            return ""
+        cmdline_path = Path("/proc") / str(pid) / "cmdline"
+        try:
+            raw = cmdline_path.read_bytes()
+        except FileNotFoundError:
+            return ""
+        return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
 
     def render_quic_relay_unit(self, service_name: str, listen_port: int, upstream: str) -> str:
         relay_bin = shell_arg(str(self.config.get("leg_relay_bin", "/usr/local/bin/leikwan-leg-relay")))
@@ -2593,12 +2822,22 @@ WantedBy=multi-user.target
         backend_port: int,
         target: str,
         selected_ip: str,
+        dial_host: str,
         remote_port: int,
         sni_host: str,
         path_prefix: str,
         transport_mode: str,
     ) -> str:
         local_proto = "udp" if str(transport_mode).strip().lower() == "udp" else "tcp"
+        explicit_dial_host = str(dial_host or "").strip()
+        effective_sni_host = str(sni_host or "").strip()
+        remote_host = str(selected_ip or "").strip() or explicit_dial_host or effective_sni_host
+        sni_args = ""
+        if effective_sni_host != "":
+            sni_args = (
+                f"  --tls-sni-override {effective_sni_host} \\\n"
+                f'  --http-headers "Host: {effective_sni_host}" \\\n'
+            )
         return f"""[Unit]
 Description=Leikwan CF WSS Backend {service_name}
 After=network.target
@@ -2606,10 +2845,9 @@ After=network.target
 [Service]
 Type=simple
 ExecStart={self.config['wstunnel_bin']} client -L {local_proto}://127.0.0.1:{backend_port}:{target} \
-  --tls-sni-override {sni_host} \
-  --http-headers "Host: {sni_host}" \
+{sni_args}\
   --http-upgrade-path-prefix "{path_prefix}" \
-  wss://{selected_ip}:{remote_port}
+  wss://{remote_host}:{remote_port}
 Restart=always
 RestartSec=3
 LimitNOFILE=1048576

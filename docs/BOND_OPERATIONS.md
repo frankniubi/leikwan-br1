@@ -562,3 +562,27 @@ Rollback:
     systemctl disable leikwan-client-26-udp-uot
     systemctl stop leikwan-bond-sidecar-4-udp-uot
     systemctl disable leikwan-bond-sidecar-4-udp-uot
+
+### Forward 26 bad-leg health
+
+`forward 26` now has two layers of bad-leg protection:
+
+1. `leikwan-bond` TCP session scheduling no longer keeps sticky/preferred-leg behavior on a leg once that leg has been downgraded by runtime health.
+2. UDP UoT bootstrap now inherits client-agent bond endpoint health as per-leg `dynamic_priority`, `health_role`, and `weight`, then the client and sidecar UoT runtimes apply temporary probation/quarantine on repeated runtime failures.
+
+Current runtime binaries:
+- client UDP sidepath: `/usr/local/bin/leikwan-uot-bond`
+- sidecar UDP merge: `/usr/local/bin/leikwan-udp-uot-merge`
+- build both on the Debian 11 bullseye panel host, not local WSL, before any live rollout
+
+Rollout order:
+
+- deploy sidecar `leikwan-bond` first
+- deploy client `leikwan-bond` second
+- verify reverse TCP health snapshots and throughput
+- only then deploy `install_forward_runtime.py`, `leikwan_uot_bond.py`, and `leikwan_udp_uot_merge.py`
+
+Rollback rule:
+
+- if reverse TCP falls back toward the toxic-leg collapse, roll back the bond binary first
+- if TCP looks good but UDP regresses, roll back only the UDP UoT Python pieces

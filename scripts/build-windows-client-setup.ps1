@@ -1,0 +1,217 @@
+param(
+    [string]$AppPublishDir = "artifacts/windows/publish",
+    [string]$BondExe = "wstunnel-main/target/release/leikwan-bond.exe",
+    [string]$IngressExe = "wstunnel-main/target/release/leikwan-ingress.exe",
+    [string]$UotBondExe = "wstunnel-main/target/release/leikwan-uot-bond.exe",
+    [string]$WstunnelExe = "wstunnel.exe",
+    [string]$OutputSetup = "artifacts/windows/leikwan-bridge-setup.exe",
+    [string]$StageDir = "artifacts/windows/_setup_stage"
+)
+
+$ErrorActionPreference = "Stop"
+
+function Require-File {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "required file missing: $Path"
+    }
+}
+
+$appExe = Join-Path $AppPublishDir "LeikwanBridge.App.exe"
+Require-File $appExe
+Require-File $BondExe
+Require-File $IngressExe
+Require-File $UotBondExe
+Require-File $WstunnelExe
+
+if (Test-Path -LiteralPath $StageDir) {
+    Remove-Item -LiteralPath $StageDir -Recurse -Force
+}
+
+$payloadDir = Join-Path $StageDir "payload"
+$binDir = Join-Path $payloadDir "bin"
+New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+
+Copy-Item -LiteralPath $appExe -Destination (Join-Path $payloadDir "leikwan-client-win.exe") -Force
+Copy-Item -LiteralPath $BondExe -Destination (Join-Path $binDir "leikwan-bond.exe") -Force
+Copy-Item -LiteralPath $IngressExe -Destination (Join-Path $binDir "leikwan-ingress.exe") -Force
+Copy-Item -LiteralPath $UotBondExe -Destination (Join-Path $binDir "leikwan-uot-bond.exe") -Force
+Copy-Item -LiteralPath $WstunnelExe -Destination (Join-Path $binDir "wstunnel.exe") -Force
+
+$installScript = @'
+$ErrorActionPreference = "Stop"
+
+$installDir = Join-Path $env:LOCALAPPDATA "LeiKwan Bridge"
+$payloadDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$sourceRoot = Join-Path $payloadDir "app"
+$sourceBin = Join-Path $sourceRoot "bin"
+$targetBin = Join-Path $installDir "bin"
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$backupDir = Join-Path $installDir ("backup-" + $timestamp)
+
+New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+
+Get-CimInstance Win32_Process | Where-Object {
+    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($installDir, [System.StringComparison]::OrdinalIgnoreCase)
+} | ForEach-Object {
+    try {
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
+    } catch {
+        Write-Warning "failed to stop process $($_.Name) [$($_.ProcessId)]: $($_.Exception.Message)"
+    }
+}
+Start-Sleep -Milliseconds 800
+
+$backupTargets = @(
+    "leikwan-client-win.exe",
+    "wstunnel.exe",
+    "leikwan-bond.exe",
+    "leikwan-ingress.exe",
+    "leikwan-uot-bond.exe"
+)
+
+$existing = @()
+foreach ($name in $backupTargets) {
+    $candidate = Join-Path $installDir $name
+    if (Test-Path -LiteralPath $candidate) {
+        $existing += $candidate
+    }
+}
+
+if (Test-Path -LiteralPath $targetBin) {
+    $existing += $targetBin
+}
+
+if ($existing.Count -gt 0) {
+    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+    foreach ($item in $existing | Select-Object -Unique) {
+        if ((Get-Item $item).PSIsContainer) {
+            Copy-Item -LiteralPath $item -Destination (Join-Path $backupDir (Split-Path $item -Leaf)) -Recurse -Force
+        } else {
+            Copy-Item -LiteralPath $item -Destination (Join-Path $backupDir (Split-Path $item -Leaf)) -Force
+        }
+    }
+}
+
+Get-Process -Name "leikwan-client-win" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+New-Item -ItemType Directory -Path $targetBin -Force | Out-Null
+
+Copy-Item -LiteralPath (Join-Path $sourceRoot "leikwan-client-win.exe") -Destination (Join-Path $installDir "leikwan-client-win.exe") -Force
+Copy-Item -LiteralPath (Join-Path $sourceBin "wstunnel.exe") -Destination (Join-Path $targetBin "wstunnel.exe") -Force
+Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-bond.exe") -Destination (Join-Path $targetBin "leikwan-bond.exe") -Force
+Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-ingress.exe") -Destination (Join-Path $targetBin "leikwan-ingress.exe") -Force
+Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-uot-bond.exe") -Destination (Join-Path $targetBin "leikwan-uot-bond.exe") -Force
+
+# Keep root-level copies for backward compatibility with older local layouts.
+Copy-Item -LiteralPath (Join-Path $sourceBin "wstunnel.exe") -Destination (Join-Path $installDir "wstunnel.exe") -Force
+Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-bond.exe") -Destination (Join-Path $installDir "leikwan-bond.exe") -Force
+Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-ingress.exe") -Destination (Join-Path $installDir "leikwan-ingress.exe") -Force
+Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-uot-bond.exe") -Destination (Join-Path $installDir "leikwan-uot-bond.exe") -Force
+
+$manifest = [ordered]@{
+    installed_at = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    source = "leikwan-bridge-setup.exe"
+    app_sha256 = (Get-FileHash (Join-Path $installDir "leikwan-client-win.exe") -Algorithm SHA256).Hash
+    bond_sha256 = (Get-FileHash (Join-Path $targetBin "leikwan-bond.exe") -Algorithm SHA256).Hash
+    ingress_sha256 = (Get-FileHash (Join-Path $targetBin "leikwan-ingress.exe") -Algorithm SHA256).Hash
+    uot_bond_sha256 = (Get-FileHash (Join-Path $targetBin "leikwan-uot-bond.exe") -Algorithm SHA256).Hash
+    wstunnel_sha256 = (Get-FileHash (Join-Path $targetBin "wstunnel.exe") -Algorithm SHA256).Hash
+    backup_dir = if (Test-Path -LiteralPath $backupDir) { $backupDir } else { "" }
+}
+$manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $installDir "install-manifest.json") -Encoding UTF8
+
+Write-Host "Installed LeiKwan Bridge to $installDir"
+if (Test-Path -LiteralPath $backupDir) {
+    Write-Host "Backup saved to $backupDir"
+}
+'@
+
+$installPs1 = Join-Path $StageDir "install.ps1"
+Set-Content -LiteralPath $installPs1 -Value $installScript -Encoding UTF8
+
+$launcherCmd = @'
+@echo off
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
+exit /b %errorlevel%
+'@
+$installCmd = Join-Path $StageDir "install.cmd"
+Set-Content -LiteralPath $installCmd -Value $launcherCmd -Encoding ASCII
+
+$appStageDir = Join-Path $StageDir "app"
+$appBinStageDir = Join-Path $appStageDir "bin"
+New-Item -ItemType Directory -Path $appBinStageDir -Force | Out-Null
+
+Copy-Item -LiteralPath (Join-Path $payloadDir "leikwan-client-win.exe") -Destination (Join-Path $appStageDir "leikwan-client-win.exe") -Force
+Copy-Item -LiteralPath (Join-Path $binDir "wstunnel.exe") -Destination (Join-Path $appBinStageDir "wstunnel.exe") -Force
+Copy-Item -LiteralPath (Join-Path $binDir "leikwan-bond.exe") -Destination (Join-Path $appBinStageDir "leikwan-bond.exe") -Force
+Copy-Item -LiteralPath (Join-Path $binDir "leikwan-ingress.exe") -Destination (Join-Path $appBinStageDir "leikwan-ingress.exe") -Force
+Copy-Item -LiteralPath (Join-Path $binDir "leikwan-uot-bond.exe") -Destination (Join-Path $appBinStageDir "leikwan-uot-bond.exe") -Force
+
+$sedPath = Join-Path $StageDir "package.sed"
+$packageTitle = "LeiKwan Bridge Setup"
+$outputName = Split-Path -Leaf $OutputSetup
+$sourceFiles = @(
+    "install.cmd",
+    "install.ps1",
+    "app\leikwan-client-win.exe",
+    "app\bin\wstunnel.exe",
+    "app\bin\leikwan-bond.exe",
+    "app\bin\leikwan-ingress.exe",
+    "app\bin\leikwan-uot-bond.exe"
+)
+
+$sedContent = @"
+[Version]
+Class=IEXPRESS
+SEDVersion=3
+[Options]
+PackagePurpose=InstallApp
+ShowInstallProgramWindow=1
+HideExtractAnimation=0
+UseLongFileName=1
+InsideCompressed=0
+CAB_FixedSize=0
+CAB_ResvCodeSigning=0
+RebootMode=I
+InstallPrompt=
+DisplayLicense=
+FinishMessage=LeiKwan Bridge installation complete.
+TargetName=$([System.IO.Path]::GetFullPath($OutputSetup))
+FriendlyName=$packageTitle
+AppLaunched=install.cmd
+PostInstallCmd=<None>
+AdminQuietInstCmd=
+UserQuietInstCmd=
+SourceFiles=SourceFiles
+[SourceFiles]
+SourceFiles0=$([System.IO.Path]::GetFullPath($StageDir))
+[SourceFiles0]
+"@
+
+for ($i = 0; $i -lt $sourceFiles.Count; $i++) {
+    $sedContent += "`r`n%FILE$i%=" + $sourceFiles[$i]
+}
+
+$sedContent += "`r`n[Strings]"
+for ($i = 0; $i -lt $sourceFiles.Count; $i++) {
+    $sedContent += "`r`nFILE$i=" + $sourceFiles[$i]
+}
+
+Set-Content -LiteralPath $sedPath -Value $sedContent -Encoding ASCII
+
+if (Test-Path -LiteralPath $OutputSetup) {
+    Remove-Item -LiteralPath $OutputSetup -Force
+}
+
+Start-Process -FilePath "$env:WINDIR\System32\iexpress.exe" -ArgumentList "/N", $sedPath -Wait -NoNewWindow
+
+if (-not (Test-Path -LiteralPath $OutputSetup)) {
+    throw "failed to create setup file: $OutputSetup"
+}
+
+$hash = (Get-FileHash -LiteralPath $OutputSetup -Algorithm SHA256).Hash
+Write-Host "Created $OutputSetup"
+Write-Host "SHA256=$hash"

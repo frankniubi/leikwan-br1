@@ -6,6 +6,7 @@ namespace Leikwan\Master\Controllers;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\Auth;
+use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ProvisioningService;
 
 final class ClientAgentController extends BaseController
@@ -89,6 +90,13 @@ final class ClientAgentController extends BaseController
                 'updated_at' => gmdate('Y-m-d H:i:s'),
             ]
         );
+        $reputation = $request->input('bond_leg_reputation', []);
+        if (is_array($reputation) && $reputation !== []) {
+            (new BondLegReputationService($this->db))->ingestClientSnapshots(
+                (int) $client['id'],
+                is_array($reputation['forwards'] ?? null) ? $reputation['forwards'] : []
+            );
+        }
         $this->provisioning->recordAgentUsage('client', (int) $client['id'], $usageBytesIn, $usageBytesOut);
 
         return $this->json(['ok' => true]);
@@ -189,10 +197,11 @@ final class ClientAgentController extends BaseController
             'poll_interval_seconds',
             'health_check_interval_seconds',
             'log_level',
+            'udp_uot_sidepath',
         ], null);
         $snapshot['master_url'] = $this->agentBaseUrl();
 
-        foreach (['state_dir', 'poll_interval_seconds', 'health_check_interval_seconds', 'log_level'] as $key) {
+        foreach (['state_dir', 'poll_interval_seconds', 'health_check_interval_seconds', 'log_level', 'udp_uot_sidepath'] as $key) {
             if (array_key_exists($key, $stored)) {
                 $snapshot[$key] = $stored[$key];
             }

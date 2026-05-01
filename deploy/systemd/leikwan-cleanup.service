@@ -1,0 +1,8 @@
+[Unit]
+Description=Leikwan Task Cleanup
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/www/master
+ExecStart=/usr/bin/php /var/www/master/cli/cleanup-tasks.php --retention-days 7 --offline-minutes 60 --lease-timeout 10

@@ -7,7 +7,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
-use Leikwan\Master\Exceptions\ApiException;
+use Leikwan\Master\Support\ApiException;
 
 final class ProvisioningService
 {
@@ -451,11 +451,57 @@ final class ProvisioningService
     /**
      * @return array<int, array<string, mixed>>
      */
+    private function planUsesForwardCombinations(int $planId): bool
+    {
+        if ($planId <= 0) {
+            return false;
+        }
+
+        return $this->db->fetchOne(
+            'SELECT id
+             FROM service_plan_forward_combinations
+             WHERE plan_id = :plan_id
+             LIMIT 1',
+            ['plan_id' => $planId]
+        ) !== null;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function allowedForwardCombinationsForPlan(int $planId): array
+    {
+        if ($planId <= 0) {
+            return [];
+        }
+
+        return $this->db->fetchAll(
+            'SELECT fc.*, sp.name AS sidecar_point_name, cg.name AS cf_location_group_name
+             FROM service_plan_forward_combinations spfc
+             INNER JOIN forward_combinations fc ON fc.id = spfc.forward_combination_id
+             INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+             LEFT JOIN cf_location_groups cg ON cg.id = fc.cf_location_group_id
+             WHERE spfc.plan_id = :plan_id
+             ORDER BY fc.sort_order ASC, fc.id ASC',
+            ['plan_id' => $planId]
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
     public function availableForwardCombinationsForService(int $serviceId): array
     {
         $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
         if ($service === null) {
             throw new ApiException('service_not_found', 404);
+        }
+
+        if ($this->planUsesForwardCombinations((int) ($service['plan_id'] ?? 0))) {
+            return array_values(array_filter(
+                $this->allowedForwardCombinationsForPlan((int) ($service['plan_id'] ?? 0)),
+                static fn(array $row): bool => (int) ($row['is_active'] ?? 0) === 1
+            ));
         }
 
         $allowedGroupKeys = array_map(static fn(array $group): string => (string) ($group['group_key'] ?? ''), $this->allowedNodeGroupsForPlan((int) ($service['plan_id'] ?? 0)));
@@ -695,6 +741,187 @@ final class ProvisioningService
              ORDER BY c.updated_at DESC, c.id DESC',
             ['user_id' => $userId]
         );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function defaultClientForUser(int $userId): ?array
+    {
+        if ($userId <= 0) {
+            return null;
+        }
+
+        $row = $this->db->fetchOne(
+            'SELECT *
+             FROM clients
+             WHERE owner_user_id = :owner_user_id
+               AND is_default_for_owner = 1
+             ORDER BY CASE WHEN status = :active THEN 0 ELSE 1 END, id ASC
+             LIMIT 1',
+            [
+                'owner_user_id' => $userId,
+                'active' => 'active',
+            ]
+        );
+
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function ensureDefaultClientForUser(int $userId): array
+    {
+        $user = $this->tenantUserById($userId);
+        $existingDefault = $this->defaultClientForUser($userId);
+        if ($existingDefault !== null) {
+            return $existingDefault;
+        }
+
+        $owned = $this->db->fetchAll(
+            'SELECT *
+             FROM clients
+             WHERE owner_user_id = :owner_user_id
+             ORDER BY CASE WHEN status = :active THEN 0 ELSE 1 END, id ASC',
+            [
+                'owner_user_id' => $userId,
+                'active' => 'active',
+            ]
+        );
+
+        if ($owned !== []) {
+            $clientId = (int) ($owned[0]['id'] ?? 0);
+            $this->markClientAsDefaultForUser($userId, $clientId);
+            return $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]) ?? [];
+        }
+
+        return $this->createDefaultClientForUser($userId, $user);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>
+     */
+    public function createDefaultClientForUser(int $userId, array $user): array
+    {
+        $email = trim((string) ($user['email'] ?? ''));
+        $localPart = $email !== '' ? strstr($email, '@', true) : '';
+        $localPart = is_string($localPart) ? $localPart : '';
+        $displayHostBase = preg_replace('/[^a-z0-9]+/i', '-', $localPart);
+        $displayHostBase = trim((string) $displayHostBase, '-');
+        if ($displayHostBase === '') {
+            $displayHostBase = 'tenant-' . $userId;
+        }
+        $displayHost = strtolower($displayHostBase . '-' . $userId . '.client.local');
+
+        $clientId = $this->db->insert('clients', [
+            'group_id' => null,
+            'owner_user_id' => $userId,
+            'is_default_for_owner' => 1,
+            'agent_token' => bin2hex(random_bytes(24)),
+            'name' => 'Default Client',
+            'display_host' => $displayHost,
+            'status' => 'active',
+            'created_at' => $this->now(),
+            'updated_at' => $this->now(),
+        ]);
+
+        return $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]) ?? [];
+    }
+
+    public function markClientAsDefaultForUser(int $userId, int $clientId): void
+    {
+        if ($userId <= 0 || $clientId <= 0) {
+            throw new ApiException('invalid_default_client_target', 422, ['message' => 'Default client target is invalid.']);
+        }
+
+        $client = $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]);
+        if ($client === null || (int) ($client['owner_user_id'] ?? 0) !== $userId) {
+            throw new ApiException('default_client_not_owned', 422, ['message' => 'The selected client is not owned by this tenant.']);
+        }
+
+        $updatedAt = $this->now();
+        $this->db->execute(
+            'UPDATE clients
+             SET is_default_for_owner = 0,
+                 updated_at = :updated_at
+             WHERE owner_user_id = :owner_user_id',
+            [
+                'owner_user_id' => $userId,
+                'updated_at' => $updatedAt,
+            ]
+        );
+
+        $this->db->execute(
+            'UPDATE clients
+             SET is_default_for_owner = 1,
+                 updated_at = :updated_at
+             WHERE id = :id
+               AND owner_user_id = :owner_user_id',
+            [
+                'id' => $clientId,
+                'owner_user_id' => $userId,
+                'updated_at' => $updatedAt,
+            ]
+        );
+    }
+
+    /**
+     * @return array{scanned:int,created:int,marked_existing:int,normalized_duplicates:int}
+     */
+    public function backfillDefaultClientsForUsers(?int $userId = null, bool $apply = false): array
+    {
+        $tenants = $userId !== null
+            ? [$this->tenantUserById($userId)]
+            : $this->db->fetchAll('SELECT * FROM users WHERE role = :role ORDER BY id ASC', ['role' => 'tenant']);
+
+        $summary = [
+            'scanned' => count($tenants),
+            'created' => 0,
+            'marked_existing' => 0,
+            'normalized_duplicates' => 0,
+        ];
+
+        foreach ($tenants as $tenant) {
+            $tenantId = (int) ($tenant['id'] ?? 0);
+            $owned = $this->db->fetchAll(
+                'SELECT *
+                 FROM clients
+                 WHERE owner_user_id = :owner_user_id
+                 ORDER BY CASE WHEN status = :active THEN 0 ELSE 1 END, id ASC',
+                [
+                    'owner_user_id' => $tenantId,
+                    'active' => 'active',
+                ]
+            );
+            $defaults = array_values(array_filter($owned, static fn(array $client): bool => (int) ($client['is_default_for_owner'] ?? 0) === 1));
+
+            if ($owned === []) {
+                $summary['created']++;
+                if ($apply) {
+                    $this->createDefaultClientForUser($tenantId, $tenant);
+                }
+                continue;
+            }
+
+            if ($defaults === []) {
+                $summary['marked_existing']++;
+                if ($apply) {
+                    $this->markClientAsDefaultForUser($tenantId, (int) ($owned[0]['id'] ?? 0));
+                }
+                continue;
+            }
+
+            if (count($defaults) > 1) {
+                $summary['normalized_duplicates']++;
+                if ($apply) {
+                    $this->markClientAsDefaultForUser($tenantId, (int) ($owned[0]['id'] ?? 0));
+                }
+            }
+        }
+
+        return $summary;
     }
 
     /**
@@ -1186,8 +1413,12 @@ final class ProvisioningService
         );
 
         foreach ($plans as &$plan) {
+            $plan['uses_forward_combinations'] = $this->planUsesForwardCombinations((int) $plan['id']);
+            $plan['allowed_forward_combinations'] = $this->allowedForwardCombinationsForPlan((int) $plan['id']);
             $plan['allowed_node_groups'] = $this->allowedNodeGroupsForPlan((int) $plan['id']);
             $plan['allowed_client_groups'] = $this->allowedClientGroupsForPlan((int) $plan['id']);
+            $plan['allowed_sidecar_points'] = $this->allowedSidecarPointsForPlan((int) $plan['id']);
+            $plan['forward_combination_count'] = count($plan['allowed_forward_combinations'] ?? []);
             $plan['feature_flags'] = $this->decodeFeatureFlags((string) ($plan['feature_flags_json'] ?? ''));
         }
         unset($plan);
@@ -1466,9 +1697,20 @@ final class ProvisioningService
                 $sidecarPointIds[] = $casted;
             }
         }
+        $forwardCombinationIds = [];
+        foreach ((array) ($payload['allowed_forward_combination_ids'] ?? []) as $combinationId) {
+            $casted = (int) $combinationId;
+            if ($casted > 0) {
+                $forwardCombinationIds[] = $casted;
+            }
+        }
+        $forwardCombinationIds = array_values(array_unique($forwardCombinationIds));
 
         if ($name === '' || $productCode === '') {
             throw new ApiException('invalid_plan_payload', 422, ['payload' => $payload]);
+        }
+        if ($forwardCombinationIds === []) {
+            throw new ApiException('invalid_plan_forward_combination_payload', 422, ['payload' => $payload]);
         }
 
         if ($billingCurrency === '') {
@@ -1478,7 +1720,25 @@ final class ProvisioningService
             $monthlyIncludedTraffic = $traffic;
         }
 
-        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds): array {
+        $forwardCombinationRows = $this->db->fetchAll(
+            'SELECT id, is_active
+             FROM forward_combinations
+             WHERE id IN (' . implode(',', array_map('intval', $forwardCombinationIds)) . ')'
+        );
+        $validForwardCombinationIds = [];
+        foreach ($forwardCombinationRows as $row) {
+            if ((int) ($row['is_active'] ?? 0) === 1) {
+                $validForwardCombinationIds[] = (int) ($row['id'] ?? 0);
+            }
+        }
+        sort($validForwardCombinationIds);
+        $expectedForwardCombinationIds = $forwardCombinationIds;
+        sort($expectedForwardCombinationIds);
+        if ($validForwardCombinationIds !== $expectedForwardCombinationIds) {
+            throw new ApiException('invalid_plan_forward_combination_payload', 422, ['payload' => $payload]);
+        }
+
+        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds): array {
             if ($id > 0) {
                 $this->db->execute(
                     'UPDATE service_plans
@@ -1579,10 +1839,25 @@ final class ProvisioningService
                 ]);
             }
 
+            $this->db->execute('DELETE FROM service_plan_forward_combinations WHERE plan_id = :plan_id', [
+                'plan_id' => $id,
+            ]);
+            foreach ($forwardCombinationIds as $combinationId) {
+                $this->db->insert('service_plan_forward_combinations', [
+                    'plan_id' => $id,
+                    'forward_combination_id' => $combinationId,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+            }
+
             $plan = $this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id LIMIT 1', ['id' => $id]) ?? [];
+            $plan['uses_forward_combinations'] = $this->planUsesForwardCombinations($id);
+            $plan['allowed_forward_combinations'] = $this->allowedForwardCombinationsForPlan($id);
             $plan['allowed_node_groups'] = $this->allowedNodeGroupsForPlan($id);
             $plan['allowed_client_groups'] = $this->allowedClientGroupsForPlan($id);
             $plan['allowed_sidecar_points'] = $this->allowedSidecarPointsForPlan($id);
+            $plan['forward_combination_count'] = count($plan['allowed_forward_combinations'] ?? []);
             $plan['feature_flags'] = $this->decodeFeatureFlags((string) ($plan['feature_flags_json'] ?? ''));
             return $plan;
         });
@@ -1595,6 +1870,38 @@ final class ProvisioningService
     {
         if ($planId <= 0) {
             return [];
+        }
+
+        if ($this->planUsesForwardCombinations($planId)) {
+            $descriptionSelect = $this->nodeGroupDescriptionColumnAvailable()
+                ? 'g.description'
+                : 'NULL AS description';
+            $ingressSelect = $this->nodeGroupIngressSelectSql();
+            $groupBy = 'g.id, g.group_key, g.name, g.created_at, g.updated_at';
+            if ($this->nodeGroupDescriptionColumnAvailable()) {
+                $groupBy .= ', g.description';
+            }
+            if ($this->nodeGroupIngressColumnsAvailable()) {
+                $groupBy .= ', g.ingress_cdn_host, g.ingress_sni_host, g.ingress_path_strategy, g.ingress_port_strategy, g.ingress_preferred_public_port';
+            }
+
+            return $this->db->fetchAll(
+                'SELECT g.id, g.group_key, g.name, ' . $descriptionSelect . ',
+                        ' . $ingressSelect . ',
+                        g.created_at, g.updated_at, COUNT(n.id) AS node_count
+                 FROM service_plan_forward_combinations spfc
+                 INNER JOIN forward_combinations fc ON fc.id = spfc.forward_combination_id
+                 INNER JOIN node_groups g ON g.group_key = fc.node_group_key
+                 LEFT JOIN nodes n ON n.group_id = g.id AND (n.status = :active OR n.status = :degraded)
+                 WHERE spfc.plan_id = :plan_id
+                 GROUP BY ' . $groupBy . '
+                 ORDER BY g.name ASC, g.id ASC',
+                [
+                    'plan_id' => $planId,
+                    'active' => 'active',
+                    'degraded' => 'degraded',
+                ]
+            );
         }
 
         $descriptionSelect = $this->nodeGroupDescriptionColumnAvailable()
@@ -1636,6 +1943,10 @@ final class ProvisioningService
             return [];
         }
 
+        if ($this->planUsesForwardCombinations($planId)) {
+            return [];
+        }
+
         return $this->db->fetchAll(
             'SELECT g.*, COUNT(c.id) AS client_count
              FROM service_plan_client_groups pg
@@ -1656,6 +1967,23 @@ final class ProvisioningService
      */
     public function allowedSidecarPointsForPlan(int $planId): array
     {
+        if ($planId <= 0) {
+            return [];
+        }
+
+        if ($this->planUsesForwardCombinations($planId)) {
+            return $this->db->fetchAll(
+                'SELECT sp.id, sp.name, sp.sidecar_host, sp.listen_port, sp.bond_listen_port, sp.mptcp_listen_port, sp.cf_listen_port, sp.agent_config_json
+                 FROM service_plan_forward_combinations spfc
+                 INNER JOIN forward_combinations fc ON fc.id = spfc.forward_combination_id
+                 INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+                 WHERE spfc.plan_id = :plan_id
+                 GROUP BY sp.id, sp.name, sp.sidecar_host, sp.listen_port, sp.bond_listen_port, sp.mptcp_listen_port, sp.cf_listen_port, sp.agent_config_json
+                 ORDER BY sp.name ASC, sp.id ASC',
+                ['plan_id' => $planId]
+            );
+        }
+
         return $this->db->fetchAll(
             'SELECT sp.id, sp.name, sp.sidecar_host, sp.listen_port, sp.bond_listen_port, sp.mptcp_listen_port, sp.cf_listen_port, sp.agent_config_json
              FROM service_plan_sidecar_points spsp
@@ -3921,6 +4249,11 @@ final class ProvisioningService
             throw new ApiException('cf_mode_sidecar_host_missing', 422, ['forward_id' => (int) ($forward['id'] ?? 0)]);
         }
         $dialPort = max(1, (int) ($point['cf_listen_port'] ?? 443));
+        $pointConfig = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
+        $cfSniHost = trim((string) ($pointConfig['cf_sni_host'] ?? $pointConfig['cf_sni'] ?? ''));
+        if ($cfSniHost === '') {
+            $cfSniHost = trim((string) ($forward['sni_host'] ?? ''));
+        }
 
         return [
             'location_group_id' => $groupId,
@@ -3933,7 +4266,7 @@ final class ProvisioningService
             'cidrs' => array_values(array_map(static fn(array $row): string => (string) $row['cidr'], $cidrRows)),
             'dial_host' => $pointHost,
             'dial_port' => $dialPort,
-            'sni_host' => trim((string) ($forward['sni_host'] ?? '')),
+            'sni_host' => $cfSniHost,
             'path_prefix' => (string) ($forward['path_prefix'] ?? ''),
             'route_key' => (string) ($forward['path_prefix'] ?? ''),
             'ingress_auth_token' => $this->bondIngressAuthToken($forward, (int) ($node['id'] ?? 0), (string) ($forward['path_prefix'] ?? '')),
@@ -3944,19 +4277,28 @@ final class ProvisioningService
     {
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
         $bondIngressMode = $this->normalizeBondIngressMode((string) ($forward['bond_ingress_mode'] ?? 'wss_path_mux'));
+        $backendMode = (string) ($forward['backend_mode'] ?? 'current_mode');
+        $plainTcpIngress = $clientMode === 'bond' && $bondIngressMode === 'plain_tcp_mux';
+        $backendProtocol = $plainTcpIngress && $backendMode !== 'cf_mode'
+            ? 'tcp_relay'
+            : 'wss_backend';
         $routeKey = (string) ($forward['path_prefix'] ?? '');
         $directSidecarTarget = in_array($clientMode, ['bond', 'mptcp'], true)
             ? $this->resolveSidecarDirectTarget($forward, $clientMode)
             : null;
-        $publishTarget = $directSidecarTarget !== null
-            ? ($directSidecarTarget['host'] . ':' . $directSidecarTarget['port'])
-            : ((string) ($forward['target_host'] ?? '') . ':' . (int) ($forward['target_port'] ?? 0));
+        if ($backendMode === 'cf_mode' && $directSidecarTarget !== null) {
+            $publishTarget = '127.0.0.1:' . $directSidecarTarget['port'];
+        } else {
+            $publishTarget = $directSidecarTarget !== null
+                ? ($directSidecarTarget['host'] . ':' . $directSidecarTarget['port'])
+                : ((string) ($forward['target_host'] ?? '') . ':' . (int) ($forward['target_port'] ?? 0));
+        }
         return [
             'listen_port' => (int) ($forward['public_port'] ?? 0),
             'target' => $publishTarget,
-            'forward_combination_id' => $forward['forward_combination_id'] !== null ? (int) ($forward['forward_combination_id'] ?? 0) : null,
-            'backend_mode' => (string) ($forward['backend_mode'] ?? 'current_mode'),
-            'cf_mode' => (string) ($forward['backend_mode'] ?? 'current_mode') === 'cf_mode'
+            'forward_combination_id' => ($forward['forward_combination_id'] ?? null) !== null ? (int) $forward['forward_combination_id'] : null,
+            'backend_mode' => $backendMode,
+            'cf_mode' => $backendMode === 'cf_mode'
                 ? $this->buildCfModePayload($forward, $node)
                 : null,
             'path_prefix' => (string) ($forward['path_prefix'] ?? ''),
@@ -3966,9 +4308,9 @@ final class ProvisioningService
             'tls_cert_ref' => (string) $this->config->get('DEFAULT_TLS_CERT_REF', 'default-edge-cert'),
             'filter_profile' => (string) ($forward['filter_profile'] ?? 'off'),
             'transport_mode' => (string) ($forward['transport_mode'] ?? 'tcp+udp'),
-            'ingress_protocol' => $clientMode === 'bond' && $bondIngressMode === 'plain_tcp_mux' ? 'plain_tcp_mux' : 'wss_path_mux',
-            'backend_protocol' => $clientMode === 'bond' && $bondIngressMode === 'plain_tcp_mux' ? 'tcp_relay' : 'wss_backend',
-            'ingress_auth_token' => $clientMode === 'bond' && $bondIngressMode === 'plain_tcp_mux'
+            'ingress_protocol' => $plainTcpIngress ? 'plain_tcp_mux' : 'wss_path_mux',
+            'backend_protocol' => $backendProtocol,
+            'ingress_auth_token' => $plainTcpIngress
                 ? $this->bondIngressAuthToken($forward, $endpointId, $routeKey)
                 : '',
             'leg_relay_protocols' => $this->legRelayProtocolsForNode($clientMode, $node),
@@ -5639,11 +5981,17 @@ final class ProvisioningService
     public function effectiveFeatureFlagsForService(array $service): array
     {
         $flags = $this->defaultFeatureFlags();
-        foreach ($this->decodeFeatureFlags((string) ($service['plan_feature_flags_json'] ?? '')) as $key => $value) {
-            $flags[$key] = $value;
-        }
-        foreach ($this->decodeFeatureFlags((string) ($service['user_feature_flags_json'] ?? '')) as $key => $value) {
-            $flags[$key] = $value;
+        foreach (['plan_feature_flags_json', 'user_feature_flags_json'] as $field) {
+            $decoded = json_decode((string) ($service[$field] ?? ''), true);
+            if (!is_array($decoded)) {
+                continue;
+            }
+
+            foreach ($flags as $key => $value) {
+                if (array_key_exists($key, $decoded)) {
+                    $flags[$key] = (bool) $decoded[$key];
+                }
+            }
         }
         return $flags;
     }
