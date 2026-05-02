@@ -298,6 +298,7 @@ abstract class BaseController
 
     protected function clientWindowsManagerUrlForClient(array $client): string
     {
+        $clientId = (int) ($client['id'] ?? 0);
         $agentToken = trim((string) ($client['agent_token'] ?? ''));
         if ($clientId <= 0 || $agentToken === '') {
             return $this->clientWindowsManagerUrl();
