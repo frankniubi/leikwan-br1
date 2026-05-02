@@ -28,8 +28,6 @@ foreach ([
 
 $requiredBaseSnippets = [
     'App Download',
-    'Client ID',
-    'Token',
     'Windows App',
     'Android App',
     'Linux Install',
@@ -41,18 +39,35 @@ foreach ($requiredBaseSnippets as $snippet) {
     }
 }
 
-$requiredPageSnippets = [
-    'Advanced client settings',
-    'Client ID + Token',
-];
-
-foreach ($requiredPageSnippets as $snippet) {
-    if (!str_contains($tenantSource, $snippet)) {
-        fail('expected TenantController to contain snippet: ' . $snippet);
-    }
+if (!str_contains($tenantSource, 'Advanced client settings')) {
+    fail('expected TenantController to contain advanced client settings behind the manage-client permission gate');
+}
+foreach (['Advanced client settings', 'Client ID + Token'] as $snippet) {
     if (!str_contains($adminSource, $snippet)) {
         fail('expected AdminController to contain snippet: ' . $snippet);
     }
+}
+
+$tenantClientsStart = strpos($tenantSource, 'public function clientsPage(Request $request, array $params): Response');
+$tenantClientsEnd = strpos($tenantSource, 'public function sidecarsPage(Request $request, array $params): Response');
+if (!is_int($tenantClientsStart) || !is_int($tenantClientsEnd) || $tenantClientsEnd <= $tenantClientsStart) {
+    fail('failed to isolate tenant clientsPage source');
+}
+$tenantClientsPage = substr($tenantSource, $tenantClientsStart, $tenantClientsEnd - $tenantClientsStart);
+foreach (['Client ID + Token', 'Client ID:', 'Token:'] as $tenantSecretSnippet) {
+    if (str_contains($tenantClientsPage, $tenantSecretSnippet)) {
+        fail('tenant clientsPage should not expose raw client id/token snippet: ' . $tenantSecretSnippet);
+    }
+}
+
+$appOverviewStart = strpos($baseSource, 'protected function renderClientAppDownloadOverview(?array $client = null): string');
+$appOverviewEnd = strpos($baseSource, 'protected function renderClientAgentInstallDetails(array $client, array $forwardInstalls = []): string');
+if (!is_int($appOverviewStart) || !is_int($appOverviewEnd) || $appOverviewEnd <= $appOverviewStart) {
+    fail('failed to isolate renderClientAppDownloadOverview source');
+}
+$appOverview = substr($baseSource, $appOverviewStart, $appOverviewEnd - $appOverviewStart);
+if (!str_contains($appOverview, '$clientId = (int) ($client[' . "'id'" . '] ?? 0);')) {
+    fail('renderClientAppDownloadOverview must define clientId before checking whether a client exists');
 }
 
 $forbiddenAdminSnippets = [

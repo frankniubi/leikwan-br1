@@ -800,6 +800,7 @@ final class TenantController extends BaseController
         $services = $this->db->fetchAll('SELECT id FROM services WHERE user_id = :user_id', ['user_id' => $user['id']]);
         $featureBase = $services !== [] ? $this->provisioning->serviceSummary((int) $services[0]['id']) : null;
         $features = $featureBase['effective_features'] ?? $this->provisioning->defaultFeatureFlags();
+        $canManageClients = !empty($features['allow_manage_clients']);
         $clients = $this->provisioning->listClientsForUser((int) $user['id']);
         $allowedGroups = $this->provisioning->availableClientGroupsForUser((int) $user['id']);
         $chains = $this->provisioning->availableForwardChainsForService((int) ($services[0]['id'] ?? 0));
@@ -902,7 +903,7 @@ final class TenantController extends BaseController
                 </div>
                 <details style="margin-top:14px;">
                   <summary>Linux Install</summary>
-                  ' . $this->renderClientAgentInstallDetails($client) . '
+                  ' . $this->renderTenantClientLinuxInstall($client) . '
                 </details>
                 <details style="margin-top:14px;">
                   <summary>Online devices</summary>
@@ -916,7 +917,7 @@ final class TenantController extends BaseController
                   <div><span class="muted">Default Chain:</span> ' . $this->escape((string) ($client['default_forward_chain_name'] ?? '')) . '</div>
                 </details>
                 <div class="actions">
-                  <a class="button ghost" href="/tenant/clients?edit=' . (int) $client['id'] . '">Edit</a>
+                  ' . ($canManageClients ? '<a class="button ghost" href="/tenant/clients?edit=' . (int) $client['id'] . '">Edit</a>' : '') . '
                   <form class="inline" method="post" action="/tenant/clients/' . (int) $client['id'] . '/diagnose">
                     <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                     <button type="submit" class="button secondary">Run Diagnostics</button>
@@ -947,24 +948,13 @@ final class TenantController extends BaseController
             $chainOptions .= '<option value="' . (int) $chain['id'] . '"' . $selected . '>' . $this->escape((string) $chain['name']) . '</option>';
         }
 
-        $notice = empty($features['allow_manage_clients'])
+        $notice = !$canManageClients
             ? '<div class="flash danger">Your plan/account is not allowed to manage self-provided clients.</div>'
             : '<div class="flash success">You can add your own client lines here. Admin-provided lines will still appear inside service pages when authorized. Installing a client app does not require route defaults.</div>';
 
-        $body = '
-            <div class="hero">
-              <div>
-                <h2>接入点 (Client)</h2>
-                <p class="muted">Keep this simple. Create a client, install the app, and watch whether the device is online.</p>
-              </div>
-            </div>
-            <section class="card" style="margin-bottom:20px;">
-              <h3>Quick start</h3>
-              <p class="muted">Create one client, then use its Linux install command on the machine that will host the client.</p>
-            </section>
-            ' . $notice . '
-            <div class="grid two">
-              <section class="card">
+        $clientFormSection = '';
+        if ($canManageClients) {
+            $clientFormSection = '<section class="card">
                 <h3>' . ($editing !== null ? 'Edit Client' : 'Create Client') . '</h3>
                 <p class="muted">Tenants only need a clear name, a display host, and an installable client. Keep advanced routing defaults collapsed unless you really need them.</p>
                 <form method="post" action="/tenant/clients">
@@ -994,11 +984,31 @@ final class TenantController extends BaseController
                     </div>
                   </details>
                   <div class="actions">
-                    <button class="button" type="submit"' . (empty($features['allow_manage_clients']) ? ' disabled' : '') . '>Save Client</button>
+                    <button class="button" type="submit">Save Client</button>
                     ' . ($editing !== null ? '<a class="button secondary" href="/tenant/clients">Cancel</a>' : '') . '
                   </div>
                 </form>
-              </section>
+              </section>';
+        }
+
+        $body = '
+            <div class="hero">
+              <div>
+                <h2>Client Setup</h2>
+                <p class="muted">Keep this simple. Install Windows or Android from the top of this page; use Linux Install only for Linux hosts.</p>
+              </div>
+            </div>
+            <section class="card" style="margin-bottom:20px;">
+              <h3>Quick start</h3>
+              <p class="muted">Install the client app first. Windows and Android use app download; Linux hosts use the per-client Linux Install command below.</p>
+              <div class="actions">
+                ' . $this->renderCommandLink('Download Windows App', $this->windowsClientAppUrl()) . '
+                ' . $this->renderCommandLink('Download Android App', $this->androidClientApkUrl()) . '
+              </div>
+            </section>
+            ' . $notice . '
+            <div class="grid two">
+              ' . $clientFormSection . '
               <section class="card">
                 <h3>My Client List</h3>
                 <p class="muted">Each client card shows only what a tenant needs first: install state, online count, and a few actions. Open details only when needed.</p>
@@ -1038,6 +1048,29 @@ final class TenantController extends BaseController
             </script>';
 
         return $this->page('接入点 (Client)', $body, $user, $this->tenantNav('clients'));
+    }
+
+
+    /**
+     * @param array<string, mixed> $client
+     */
+    protected function renderTenantClientLinuxInstall(array $client): string
+    {
+        $installCommand = $this->clientAgentInstallCommand($client);
+
+        return '<section class="card" style="margin-top:14px;">'
+            . '<h4 style="margin:0 0 8px;">Linux Install</h4>'
+            . '<div class="muted command-lead">Run this only on the Linux host that will run the client-agent.</div>'
+            . $this->renderCommandPanel(
+                'Linux Install',
+                $installCommand,
+                [
+                    $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
+                    $this->renderCopyButton('Copy Install Command', $installCommand),
+                ],
+                'Manual/local install for this client on the Linux host that will run the client-agent.'
+            )
+            . '</section>';
     }
 
     public function sidecarsPage(Request $request, array $params): Response
