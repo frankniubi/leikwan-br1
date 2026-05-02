@@ -901,7 +901,7 @@ final class TenantController extends BaseController
                   </div>
                 </div>
                 <details style="margin-top:14px;">
-                  <summary>Install details</summary>
+                  <summary>Linux Install</summary>
                   ' . $this->renderClientAgentInstallDetails($client) . '
                 </details>
                 <details style="margin-top:14px;">
@@ -960,11 +960,7 @@ final class TenantController extends BaseController
             </div>
             <section class="card" style="margin-bottom:20px;">
               <h3>Quick start</h3>
-              <p class="muted">Create one client, then use its install details to download the Windows or Android app, or run the Linux install command on the machine that will host the client.</p>
-              <div class="actions" style="margin-top:14px;">
-                <a class="button" href="' . $this->escape($this->windowsClientAppUrl()) . '" target="_blank" rel="noopener">Download Windows App</a>
-                <a class="button ghost" href="' . $this->escape($this->androidClientApkUrl()) . '" target="_blank" rel="noopener">Download Android App</a>
-              </div>
+              <p class="muted">Create one client, then use its Linux install command on the machine that will host the client.</p>
             </section>
             ' . $notice . '
             <div class="grid two">
