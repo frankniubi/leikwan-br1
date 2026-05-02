@@ -337,6 +337,7 @@ CREATE TABLE IF NOT EXISTS clients (
     agent_config_json JSON NULL,
     agent_update_request_token VARCHAR(128) NULL,
     agent_update_requested_at DATETIME NULL,
+    online_device_limit INT NOT NULL DEFAULT 1,
     name VARCHAR(191) NOT NULL,
     display_host VARCHAR(255) NOT NULL,
     bind_ip VARCHAR(64) NULL,
@@ -367,6 +368,25 @@ CREATE TABLE IF NOT EXISTS clients (
     INDEX idx_clients_group (group_id),
     INDEX idx_clients_owner_default_status (owner_user_id, is_default_for_owner, status),
     INDEX idx_clients_status (status)
+);
+
+CREATE TABLE IF NOT EXISTS client_device_sessions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    device_id VARCHAR(191) NOT NULL,
+    device_name VARCHAR(191) NULL,
+    platform VARCHAR(64) NULL,
+    user_agent VARCHAR(255) NULL,
+    last_ip VARCHAR(64) NULL,
+    first_seen_at DATETIME NOT NULL,
+    last_seen_at DATETIME NOT NULL,
+    last_pull_at DATETIME NULL,
+    last_heartbeat_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_client_device_sessions_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+    UNIQUE KEY uniq_client_device (client_id, device_id),
+    INDEX idx_client_device_sessions_seen (client_id, last_seen_at)
 );
 
 CREATE TABLE IF NOT EXISTS service_plan_client_groups (

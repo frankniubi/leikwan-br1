@@ -131,6 +131,8 @@ final class Auth
             throw new ApiException('client_agent_auth_failed', 401);
         }
 
+        (new ClientOnlineSessionService($db))->enforceFromRequest($client, $request);
+
         return $client;
     }
 

@@ -7,6 +7,7 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\BondLegReputationService;
+use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\WhmcsIdentityService;
@@ -813,52 +814,9 @@ final class TenantController extends BaseController
         $overviewClient = $editing ?? ($clients[0] ?? null);
 
         $latestClientAgentVersion = $this->artifactVersion('client_agent');
-        $clientUsageMap = $this->provisioning->clientUsageOverviewMap(array_map(
-            static fn(array $client): int => (int) ($client['id'] ?? 0),
-            $clients
-        ));
-        $clientForwardInstallMap = [];
-        foreach ($clients as $client) {
-            $clientId = (int) ($client['id'] ?? 0);
-            $entries = [];
-            foreach ($this->provisioning->assignedForwardConfigsForClient($clientId) as $config) {
-                if (!is_array($config)) {
-                    continue;
-                }
-                $forwardId = (int) ($config['forward_id'] ?? 0);
-                $token = trim((string) ($config['client_token'] ?? ''));
-                if ($forwardId <= 0 || $token === '') {
-                    continue;
-                }
-                $entries[$forwardId] = [
-                    'forward_id' => $forwardId,
-                    'client_token' => $token,
-                    'service_name' => (string) ($config['service_name'] ?? ''),
-                    'listen_port' => (int) ($config['listen_port'] ?? 0),
-                    'target' => (string) ($config['target'] ?? ''),
-                ];
-            }
-            $clientForwardInstallMap[$clientId] = array_values($entries);
-        }
-        $bondLegReputationService = new BondLegReputationService($this->db);
-        $tenantBondLegRows = $bondLegReputationService->scopedRowsForTenant((int) $user['id']);
-        $tenantBondLegEvents = $bondLegReputationService->recentEvents(['user_id' => (int) $user['id']], 50);
-        $bondLegRowsByForward = [];
-        foreach ($tenantBondLegRows as $row) {
-            $bondLegRowsByForward[(int) ($row['forward_id'] ?? 0)][] = $row;
-        }
-        $bondLegEventsByForward = [];
-        foreach ($tenantBondLegEvents as $event) {
-            $bondLegEventsByForward[(int) ($event['forward_id'] ?? 0)][] = $event;
-        }
+        $onlineSessionService = new ClientOnlineSessionService($this->db);
         $clientCards = '';
         foreach ($clients as $client) {
-            $assignedForwards = $clientForwardInstallMap[(int) ($client['id'] ?? 0)] ?? [];
-            $assignedForwardSummary = $this->renderAssignedForwardSummary($assignedForwards);
-            $installDetails = $this->renderClientAgentInstallDetails(
-                $client,
-                $assignedForwards
-            );
             $diagStatus = strtolower(trim((string) ($client['last_diag_status'] ?? '')));
             $diagBadgeClass = match ($diagStatus) {
                 'ok' => 'success',
@@ -868,18 +826,10 @@ final class TenantController extends BaseController
             };
             $diagLabel = $diagStatus !== '' ? $diagStatus : 'not run';
             $diagDialogId = 'client-diag-' . (int) $client['id'];
-            $forwardIds = array_map(static fn(array $entry): int => (int) ($entry['forward_id'] ?? 0), $assignedForwards);
-            $clientWithReputation = $client;
-            $clientWithReputation['bond_leg_reputation_rows'] = [];
-            $clientWithReputation['bond_leg_reputation_events'] = [];
-            foreach ($forwardIds as $forwardId) {
-                foreach ($bondLegRowsByForward[$forwardId] ?? [] as $row) {
-                    $clientWithReputation['bond_leg_reputation_rows'][] = $row;
-                }
-                foreach ($bondLegEventsByForward[$forwardId] ?? [] as $event) {
-                    $clientWithReputation['bond_leg_reputation_events'][] = $event;
-                }
-            }
+            $clientWithReputation = $client + [
+                'bond_leg_reputation_rows' => [],
+                'bond_leg_reputation_events' => [],
+            ];
             $diagDialog = $this->renderTenantClientDiagnosticsDialog($clientWithReputation, $diagDialogId);
 
             $agentVersion = trim((string) ($client['agent_version'] ?? ''));
@@ -907,15 +857,26 @@ final class TenantController extends BaseController
                 }
             }
 
-            $usage = $clientUsageMap[(int) ($client['id'] ?? 0)] ?? [];
-            $usagePanel = $this->renderUsageOverviewPanel($usage, 'Client Traffic');
-            $usageSummary = '<div class="muted" style="margin-top:14px;">Traffic: Hour '
-                . $this->escape($this->formatUsageBytes((int) ($usage['hour_bytes'] ?? 0)))
-                . ' | Today '
-                . $this->escape($this->formatUsageBytes((int) ($usage['day_bytes'] ?? 0)))
-                . ' | Month '
-                . $this->escape($this->formatUsageBytes((int) ($usage['month_bytes'] ?? 0)))
-                . '</div>';
+            $activeSessions = $onlineSessionService->activeSessionsForClient((int) ($client['id'] ?? 0));
+            $onlineCount = count($activeSessions);
+            $onlineLimit = max(1, (int) ($client['online_device_limit'] ?? 1));
+            $onlineSummary = $onlineCount . ' / ' . $onlineLimit;
+            $onlineRows = '';
+            foreach ($activeSessions as $session) {
+                $label = trim((string) ($session['device_name'] ?? ''));
+                if ($label === '') {
+                    $label = trim((string) ($session['platform'] ?? 'Device'));
+                }
+                $onlineRows .= '<li>'
+                    . $this->escape($label)
+                    . '<span class="muted" style="margin-left:8px;">'
+                    . $this->escape((string) ($session['last_seen_at'] ?? ''))
+                    . '</span></li>';
+            }
+            if ($onlineRows === '') {
+                $onlineRows = '<li class="muted">No active device right now.</li>';
+            }
+
             $clientCards .= '<section class="card">
                 <div class="hero" style="margin-bottom:14px;">
                   <div>
@@ -923,29 +884,37 @@ final class TenantController extends BaseController
                     <div class="muted">' . $this->escape((string) $client['display_host']) . '</div>
                   </div>
                   <div class="actions" style="margin-top:0;">
-                    <span class="badge ' . $diagBadgeClass . '">Diagnostics: ' . $this->escape($diagLabel) . '</span>
-                    <span class="badge ' . $updateBadgeClass . '">Update: ' . $this->escape($updateLabel) . '</span>
+                    <span class="badge ' . $updateBadgeClass . '">App: ' . $this->escape($updateLabel) . '</span>
+                    <span class="badge info">Online devices: ' . $this->escape($onlineSummary) . '</span>
                   </div>
                 </div>
                 <div class="grid two">
                   <div>
-                    <div><span class="muted">Client ID:</span> ' . (int) ($client['id'] ?? 0) . '</div>
-                    <div><span class="muted">Token:</span> <code>' . $this->escape((string) ($client['agent_token'] ?? '')) . '</code></div>
                     <div><span class="muted">Group:</span> ' . $this->escape((string) ($client['group_name'] ?? '')) . '</div>
-                    <div><span class="muted">Default Route:</span> ' . $this->escape($this->endpointModeLabel((string) ($client['default_endpoint_mode'] ?? 'slave_group'))) . '</div>
-                    <div><span class="muted">Default Slave Group:</span> ' . $this->escape((string) ($client['default_node_group_key'] ?? '')) . '</div>
-                    <div><span class="muted">Default Chain:</span> ' . $this->escape((string) ($client['default_forward_chain_name'] ?? '')) . '</div>
+                    <div><span class="muted">Last Sync:</span> ' . $this->escape($lastSyncAt !== '' ? $lastSyncAt : 'never') . '</div>
+                    <div><span class="muted">Installed App:</span> ' . $this->escape($agentVersion !== '' ? $agentVersion : 'not installed') . '</div>
                   </div>
                   <div>
-                    <div><span class="muted">Installed Agent:</span> ' . $this->escape($agentVersion !== '' ? $agentVersion : 'not installed') . '</div>
-                    <div><span class="muted">Latest Panel Version:</span> ' . $this->escape($latestClientAgentVersion !== '' ? $latestClientAgentVersion : 'unknown') . '</div>
-                    <div><span class="muted">Last Sync:</span> ' . $this->escape($lastSyncAt !== '' ? $lastSyncAt : 'never') . '</div>
+                    <div><span class="muted">Online device limit:</span> ' . $onlineLimit . '</div>
+                    <div><span class="muted">Diagnostics:</span> ' . $this->escape($diagLabel) . '</div>
                     <div><span class="muted">Last Update Request:</span> ' . $this->escape($updateRequestedAt !== '' ? $updateRequestedAt : 'none') . '</div>
                   </div>
                 </div>
-                ' . $usageSummary . '
-                ' . $installDetails . '
-                ' . $assignedForwardSummary . '
+                <details style="margin-top:14px;">
+                  <summary>Install details</summary>
+                  ' . $this->renderClientAgentInstallDetails($client) . '
+                </details>
+                <details style="margin-top:14px;">
+                  <summary>Online devices</summary>
+                  <ul class="list" style="margin-top:10px;">' . $onlineRows . '</ul>
+                </details>
+                <details style="margin-top:14px;">
+                  <summary>Advanced defaults</summary>
+                  <div class="muted" style="margin-top:10px;">These are only defaults for future forwards. They are not required for app install.</div>
+                  <div style="margin-top:12px;"><span class="muted">Default Route:</span> ' . $this->escape($this->endpointModeLabel((string) ($client['default_endpoint_mode'] ?? 'slave_group'))) . '</div>
+                  <div><span class="muted">Default Slave Group:</span> ' . $this->escape((string) ($client['default_node_group_key'] ?? '')) . '</div>
+                  <div><span class="muted">Default Chain:</span> ' . $this->escape((string) ($client['default_forward_chain_name'] ?? '')) . '</div>
+                </details>
                 <div class="actions">
                   <a class="button ghost" href="/tenant/clients?edit=' . (int) $client['id'] . '">Edit</a>
                   <form class="inline" method="post" action="/tenant/clients/' . (int) $client['id'] . '/diagnose">
@@ -962,10 +931,6 @@ final class TenantController extends BaseController
                     <button type="submit" class="button danger"' . (empty($features['allow_delete_clients']) ? ' disabled' : '') . '>Delete</button>
                   </form>
                 </div>
-                <details style="margin-top:14px;">
-                  <summary>Usage Calendar</summary>
-                  ' . $usagePanel . '
-                </details>
                 <div class="muted" style="margin-top:14px;">Open <strong>View Diagnostics</strong> to check whether each bond leg is healthy and whether the tunnel was established. Slave addresses are hidden in that window. Reference only. Runtime already adapts automatically when a leg degrades. You usually do not need to take action unless the line itself is failing.</div>
                 ' . $diagDialog . '
               </section>';
@@ -984,21 +949,28 @@ final class TenantController extends BaseController
 
         $notice = empty($features['allow_manage_clients'])
             ? '<div class="flash danger">Your plan/account is not allowed to manage self-provided clients.</div>'
-            : '<div class="flash success">You can add your own client lines here. Admin-provided lines will still appear inside service pages when authorized. Installing a client agent does not require a slave group; the default slave group below is only used as a suggested route when you create forwards later.</div>';
+            : '<div class="flash success">You can add your own client lines here. Admin-provided lines will still appear inside service pages when authorized. Installing a client app does not require route defaults.</div>';
 
         $body = '
             <div class="hero">
               <div>
                 <h2>接入点 (Client)</h2>
-                <p class="muted">这里管理你自己的线路接入点。创建后可直接安装 client-agent，并自动同步匹配的转发规则。</p>
+                <p class="muted">Keep this simple. Create a client, install the app, and watch whether the device is online.</p>
               </div>
             </div>
-            ' . $this->renderClientAppDownloadOverview($overviewClient) . '
+            <section class="card" style="margin-bottom:20px;">
+              <h3>Quick start</h3>
+              <p class="muted">Create one client, then use its install details to download the Windows or Android app, or run the Linux install command on the machine that will host the client.</p>
+              <div class="actions" style="margin-top:14px;">
+                <a class="button" href="' . $this->escape($this->windowsClientAppUrl()) . '" target="_blank" rel="noopener">Download Windows App</a>
+                <a class="button ghost" href="' . $this->escape($this->androidClientApkUrl()) . '" target="_blank" rel="noopener">Download Android App</a>
+              </div>
+            </section>
             ' . $notice . '
             <div class="grid two">
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Client' : 'Create Client') . '</h3>
-                <p class="muted">Think of a client here as a line profile plus a <code>Client ID + Token</code>. The app sign-in flow only needs those values. Route mode, slave group and chain are defaults for future forwards, not install-time bindings.</p>
+                <p class="muted">Tenants only need a clear name, a display host, and an installable client. Keep advanced routing defaults collapsed unless you really need them.</p>
                 <form method="post" action="/tenant/clients">
                   <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                   <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
@@ -1007,6 +979,7 @@ final class TenantController extends BaseController
                     <div class="field"><label>Display Host</label><input type="text" name="display_host" value="' . $this->escape((string) ($editing['display_host'] ?? '')) . '" required><p class="muted">Tenant-facing display label only. It does not drive slave SNI / CDN routing.</p></div>
                     <div class="field"><label>Client Group</label><select name="group_id">' . $groupOptions . '</select></div>
                     <div class="field"><label>Status</label><select name="status"><option value="active"' . (((string) ($editing['status'] ?? 'active')) === 'active' ? ' selected' : '') . '>active</option><option value="disabled"' . (((string) ($editing['status'] ?? '')) === 'disabled' ? ' selected' : '') . '>disabled</option></select></div>
+                    <div class="field"><label>Online device limit</label><input type="number" min="1" name="online_device_limit" value="' . $this->escape((string) ($editing['online_device_limit'] ?? '1')) . '" required><p class="muted">Limit the number of simultaneously online client devices for this client.</p></div>
                   </div>
                   <details style="margin-top:14px;">
                     <summary>Advanced client settings</summary>
@@ -1032,7 +1005,7 @@ final class TenantController extends BaseController
               </section>
               <section class="card">
                 <h3>My Client List</h3>
-                <p class="muted">Each client card below shows install state, update state and diagnostic state directly. You should not need horizontal scrolling just to see whether the line is healthy.</p>
+                <p class="muted">Each client card shows only what a tenant needs first: install state, online count, and a few actions. Open details only when needed.</p>
                 <div class="stack">' . ($clientCards !== '' ? $clientCards : '<div class="muted">No client yet.</div>') . '</div>
               </section>
             </div>
@@ -1861,6 +1834,7 @@ final class TenantController extends BaseController
                 'nic_name' => $request->input('nic_name'),
                 'port_range_start' => $request->input('port_range_start'),
                 'port_range_end' => $request->input('port_range_end'),
+                'online_device_limit' => $request->input('online_device_limit', 1),
                 'traffic_multiplier' => $request->input('traffic_multiplier', '1.00'),
                 'default_endpoint_mode' => $request->input('default_endpoint_mode', 'slave_group'),
                 'default_node_group_key' => $request->input('default_node_group_key'),
