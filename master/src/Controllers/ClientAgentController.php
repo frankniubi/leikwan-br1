@@ -7,6 +7,7 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\BondLegReputationService;
+use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\ProvisioningService;
 
 final class ClientAgentController extends BaseController
@@ -22,6 +23,8 @@ final class ClientAgentController extends BaseController
     public function pullConfigs(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
+        $deviceSessionService = new ClientOnlineSessionService($this->db);
+        $deviceId = $deviceSessionService->enforceFromRequest($client, $request, 'pull');
         $forwards = $this->provisioning->assignedForwardConfigsForClient((int) $client['id']);
         $clientAgent = $this->artifactMetadata('client_agent');
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
@@ -53,6 +56,9 @@ final class ClientAgentController extends BaseController
                 'desired_bond_sha256' => $desiredBondSha256,
                 'desired_mptcp_runtime_version' => (string) ($mptcpRuntime['version'] ?? ''),
                 'desired_mptcp_runtime_sha256' => (string) ($mptcpRuntime['sha256'] ?? ''),
+                'online_device_limit' => max(1, (int) ($client['online_device_limit'] ?? 1)),
+                'active_online_devices' => $deviceSessionService->activeCountForClient((int) $client['id']),
+                'current_device_id' => $deviceId,
             ],
             'forwards' => $forwards,
         ]);
@@ -61,6 +67,9 @@ final class ClientAgentController extends BaseController
     public function heartbeat(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
+        $deviceSessionService = new ClientOnlineSessionService($this->db);
+        $deviceId = $deviceSessionService->deviceIdFromRequest($request);
+        $deviceSessionService->recordAndEnforce($client, $deviceId, $deviceSessionService->deviceMetadataFromRequest($request), 'heartbeat');
         $usageBytesIn = max(0, (int) $request->input('usage_bytes_in', 0));
         $usageBytesOut = max(0, (int) $request->input('usage_bytes_out', 0));
         $existingAgentConfig = is_string($client['agent_config_json'] ?? null)

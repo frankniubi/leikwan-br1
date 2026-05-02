@@ -298,7 +298,6 @@ abstract class BaseController
 
     protected function clientWindowsManagerUrlForClient(array $client): string
     {
-        $clientId = (int) ($client['id'] ?? 0);
         $agentToken = trim((string) ($client['agent_token'] ?? ''));
         if ($clientId <= 0 || $agentToken === '') {
             return $this->clientWindowsManagerUrl();
@@ -452,7 +451,6 @@ abstract class BaseController
     {
         $windowsAppUrl = $this->windowsClientAppUrl();
         $androidApkUrl = $this->androidClientApkUrl();
-        $clientId = (int) ($client['id'] ?? 0);
         $agentToken = trim((string) ($client['agent_token'] ?? ''));
         $hasClient = $clientId > 0 && $agentToken !== '';
         $linuxInstall = $hasClient
@@ -467,12 +465,12 @@ abstract class BaseController
                 $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
             ];
         $linuxDescription = $hasClient
-            ? 'Example shown for Client ID ' . $clientId . '. Each client card below includes its own exact Client ID, Token, and Linux install command.'
-            : 'Windows and Android sign in with Client ID + Token. Linux remains a local/manual install on the host that will run the client-agent.';
+            ? 'Example shown for the current client. Each client card below includes its own exact install details and Linux install command.'
+            : 'Windows and Android use the app install flow. Linux remains a local/manual install on the host that will run the client-agent.';
 
         return '<section class="card" style="margin-bottom:20px;">'
             . '<h3>App Download</h3>'
-            . '<p class="muted">Windows and Android sign in with <code>Client ID + Token</code>. Linux remains a local/manual install command for the host that runs the client-agent.</p>'
+            . '<p class="muted">Windows and Android use the app install flow. Linux remains a local/manual install command for the host that runs the client-agent.</p>'
             . $this->renderCommandPanel(
                 'Windows App',
                 $windowsAppUrl,
@@ -480,7 +478,7 @@ abstract class BaseController
                     $this->renderCommandLink('Download Windows App', $windowsAppUrl),
                     $this->renderCopyButton('Copy Download Link', $windowsAppUrl),
                 ],
-                'Download the LeiKwan Bridge desktop app, then sign in with Client ID + Token.'
+                'Download the LeiKwan Bridge desktop app for this client.'
             )
             . $this->renderCommandPanel(
                 'Android App',
@@ -489,7 +487,7 @@ abstract class BaseController
                     $this->renderCommandLink('Download Android App', $androidApkUrl),
                     $this->renderCopyButton('Copy Download Link', $androidApkUrl),
                 ],
-                'Download the Android app, then use the same Client ID + Token or the Android import string from a client card below.'
+                'Download the Android app for this client or use the Android import string from a client card below.'
             )
             . $this->renderCommandPanel(
                 'Linux Install',
@@ -535,25 +533,7 @@ abstract class BaseController
 
         return '<section class="card" style="margin-top:14px;">'
             . '<h4 style="margin:0 0 8px;">App Download</h4>'
-            . '<div class="muted command-lead">Use <code>Client ID + Token</code> with the Windows or Android app. Linux remains available as a local/manual install command for this client.</div>'
-            . $this->renderCommandPanel(
-                'Client ID',
-                (string) $clientId,
-                [
-                    $this->renderCopyButton('Copy Client ID', (string) $clientId),
-                ],
-                'Use this exact Client ID when signing in from the Windows or Android app.'
-            )
-            . $this->renderCommandPanel(
-                'Token',
-                $agentToken,
-                $agentToken !== ''
-                    ? [
-                        $this->renderCopyButton('Copy Token', $agentToken),
-                    ]
-                    : [],
-                'Use this Token together with the Client ID.'
-            )
+            . '<div class="muted command-lead">Windows and Android use the app install flow. Linux remains available as a local/manual install command for this client.</div>'
             . $this->renderCommandPanel(
                 'Windows App',
                 $windowsAppUrl,
@@ -561,7 +541,7 @@ abstract class BaseController
                     $this->renderCommandLink('Download Windows App', $windowsAppUrl),
                     $this->renderCopyButton('Copy Download Link', $windowsAppUrl),
                 ],
-                'Install the LeiKwan Bridge desktop app, then sign in with Client ID + Token.'
+                'Install the LeiKwan Bridge desktop app for this client.'
             )
             . $this->renderCommandPanel(
                 'Android App',
@@ -570,7 +550,7 @@ abstract class BaseController
                     $this->renderCommandLink('Download Android App', $androidApkUrl),
                     $this->renderCopyButton('Copy Download Link', $androidApkUrl),
                 ],
-                'Install the Android app, then use the same Client ID + Token.'
+                'Install the Android app for this client.'
             )
             . $this->renderCommandPanel(
                 'Linux Install',
@@ -583,7 +563,7 @@ abstract class BaseController
             )
             . '<details style="margin-top:14px;">'
             . '<summary>More install tools</summary>'
-            . '<div class="muted" style="margin:10px 0 12px;">These secondary tools stay available for local management and compatibility flows, but the primary install story is now app download or Linux install with Client ID + Token.</div>'
+            . '<div class="muted" style="margin:10px 0 12px;">These secondary tools stay available for local management and compatibility flows, but the primary install story is now app download or Linux install.</div>'
             . $windowsInstallPanels
             . $this->renderCommandPanel(
                 'Android Import String',
@@ -591,7 +571,7 @@ abstract class BaseController
                 [
                     $this->renderCopyButton('Copy Android Import', $androidImportCommand),
                 ],
-                'Optional helper to prefill the Android app with panel URL, Client ID, and Token.'
+                'Optional helper to prefill the Android app with panel URL and this client token.'
             )
             . $this->renderCommandPanel(
                 'Uninstall',
