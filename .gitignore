@@ -1,4 +1,5 @@
 .worktrees/
+.superpowers/
 
 # Local credentials / environment files. Keep these out of commits.
 /leikwan-v3.txt
