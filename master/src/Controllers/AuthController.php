@@ -18,123 +18,108 @@ final class AuthController extends BaseController
         $user = SessionAuth::currentUser($this->db);
         $adminCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'admin'])['total'] ?? 0);
 
-        $heroPrimary = '<a class="button" href="/login">Sign In</a>';
-        $heroSecondary = '<a class="button ghost" href="/register">Create Account</a>';
-        $consoleCardTitle = 'Tenant-ready console';
-        $consoleCardBody = 'Open services, forwards, clients, sidecars, and route policy from the panel.';
-        $consoleCardAction = '<a class="button" href="/login">Open Panel</a>';
+        $heroPrimary = '<a class="button launch-primary" href="/login">Sign In</a>';
+        $heroSecondary = '<a class="button launch-secondary" href="/register">Create Account</a>';
+        $consoleTitle = 'Tenant console';
+        $consoleBody = 'Open the panel that controls services, forwards, clients, sidecars, and route policy.';
+        $consoleAction = '<a class="button launch-secondary" href="/login">Open Panel</a>';
 
         if ($user !== null) {
             $dashboardPath = $this->escape($this->dashboardPathForUser($user));
             $dashboardLabel = $this->escape($this->dashboardLabelForUser($user));
-            $heroPrimary = '<a class="button" href="' . $dashboardPath . '">Open ' . $dashboardLabel . '</a>';
+            $heroPrimary = '<a class="button launch-primary" href="' . $dashboardPath . '">Open ' . $dashboardLabel . '</a>';
             $heroSecondary = (string) ($user['role'] ?? '') === 'admin'
-                ? '<a class="button ghost" href="/admin/tenants">Manage Tenants</a>'
-                : '<a class="button ghost" href="/tenant/forwards">Forward Config</a>';
-            $consoleCardTitle = 'Current session';
-            $consoleCardBody = 'Return to the workspace that owns this traffic policy.';
-            $consoleCardAction = $heroPrimary;
+                ? '<a class="button launch-secondary" href="/admin/tenants">Manage Tenants</a>'
+                : '<a class="button launch-secondary" href="/tenant/forwards">Forward Config</a>';
+            $consoleTitle = 'Current session';
+            $consoleBody = 'Return to the workspace that owns this traffic policy.';
+            $consoleAction = $heroPrimary;
         }
 
-        $features = [
+        $proofs = [
             [
-                'kicker' => 'Bond Engine',
+                'number' => '01',
                 'title' => 'Single-thread bond speed',
-                'body' => 'Split one busy flow across controlled paths so one download, stream, or tunnel can use more than one route.',
-                'badge' => 'Multi-leg',
+                'body' => 'Split one busy TCP or UDP session over multiple healthy legs so a single stream can use more than one route.',
             ],
             [
-                'kicker' => 'Route Fabric',
+                'number' => '02',
                 'title' => 'IXP + IPLC routing',
-                'body' => 'Blend exchange access and private-line capacity by region, node group, tenant plan, and sidecar target.',
-                'badge' => 'IXP / IPLC',
+                'body' => 'Blend exchange fabric and private-line paths by tenant plan, node group, region, and sidecar target.',
             ],
             [
-                'kicker' => 'Risk Posture',
+                'number' => '03',
                 'title' => 'Lower regulatory exposure',
-                'body' => 'Use auditable private or partner paths with explicit routing policy instead of opaque public-network bypass.',
-                'badge' => 'Policy-first',
-            ],
-            [
-                'kicker' => 'Delivery Plane',
-                'title' => 'Tenant-ready control plane',
-                'body' => 'Keep admin plans, tenant services, client config, sidecars, and slave nodes in one delivery loop.',
-                'badge' => 'Ops-ready',
+                'body' => 'Prefer auditable private or partner routes with explicit policy instead of opaque public-network bypass.',
             ],
         ];
 
-        $featureCards = '';
-        foreach ($features as $feature) {
-            $featureCards .= '<section class="surface-card feature-card">'
-                . '<span class="card-kicker">' . $this->escape($feature['kicker']) . '</span>'
-                . '<div class="feature-badge">' . $this->escape($feature['badge']) . '</div>'
-                . '<h3>' . $this->escape($feature['title']) . '</h3>'
-                . '<p>' . $this->escape($feature['body']) . '</p>'
+        $proofCards = '';
+        foreach ($proofs as $proof) {
+            $proofCards .= '<section class="launch-proof">'
+                . '<span>' . $this->escape($proof['number']) . '</span>'
+                . '<h3>' . $this->escape($proof['title']) . '</h3>'
+                . '<p>' . $this->escape($proof['body']) . '</p>'
                 . '</section>';
         }
 
-        $routeSteps = [
-            ['title' => 'Bond single flows', 'body' => 'Combine multiple healthy legs for one high-demand session.'],
-            ['title' => 'Choose IXP/IPLC paths', 'body' => 'Keep route intent visible by service, plan, and region.'],
-            ['title' => 'Deliver with policy', 'body' => 'Keep the risk posture explainable before traffic moves.'],
-        ];
-
-        $routeStepHtml = '';
-        foreach ($routeSteps as $index => $step) {
-            $routeStepHtml .= '<div class="step-item">'
-                . '<span class="step-index">' . ((int) $index + 1) . '</span>'
-                . '<div class="step-copy"><strong>' . $this->escape($step['title']) . '</strong>'
-                . '<span>' . $this->escape($step['body']) . '</span></div>'
-                . '</div>';
-        }
-
         $opsCard = $adminCount === 0
-            ? '<section class="surface-card entry-card">
-                <span class="card-kicker">Bootstrap</span>
+            ? '<section class="launch-entry accent">
+                <span>Operator setup</span>
                 <h3>Create the first admin</h3>
-                <p>Finish the first setup once, then everything continues in the web console.</p>
+                <p>Finish bootstrap once, then run tenants, services, forwards, credentials, and rollout tasks from the console.</p>
                 <pre>php master/scripts/create_user.php --email admin@example.com --password ChangeMe123! --role admin --name "Platform Admin"</pre>
               </section>'
-            : '<section class="surface-card entry-card">
-                <span class="card-kicker">Admin Console</span>
+            : '<section class="launch-entry accent">
+                <span>Operator setup</span>
                 <h3>Plans, tenants, nodes</h3>
                 <p>Operate plans, node groups, credentials, forward combinations, and rollout tasks.</p>
-                <div class="actions"><a class="button ghost" href="/login">Operator Sign In</a></div>
+                <div class="actions"><a class="button launch-secondary" href="/login">Operator Sign In</a></div>
               </section>';
 
         $body = '
-            <section class="landing-hero homepage-hero">
-              <div class="hero-copy">
-                <span class="eyebrow">利群會聚 LeiKwan Bridge</span>
-                <h1>Bonded IXP/IPLC acceleration for single-thread traffic.</h1>
-                <p>利群會聚 LeiKwan Bridge turns IXP, IPLC, bond transport, client agents, and sidecars into one controlled delivery plane for high-throughput private access.</p>
+            <section class="launch-hero">
+              <div class="launch-copy">
+                <span class="launch-kicker">利群會聚 LeiKwan Bridge</span>
+                <h1>Bond speed. Private paths. Clean control.</h1>
+                <p>One busy session should not crawl because one route is full. LeiKwan Bridge bonds IXP, IPLC, slave nodes, clients, and sidecars into one policy-visible delivery plane.</p>
                 <div class="hero-actions">' . $heroPrimary . $heroSecondary . '</div>
-                <div class="metric-strip">
-                  <div class="metric-card"><strong>Bond</strong><span>Single-flow acceleration</span></div>
-                  <div class="metric-card"><strong>IXP/IPLC</strong><span>Private route fabric</span></div>
-                  <div class="metric-card"><strong>Policy</strong><span>Auditable delivery</span></div>
+              </div>
+              <div class="flow-visual" aria-label="LeiKwan Bridge bonded path diagram">
+                <div class="flow-topline">
+                  <span>1 flow</span>
+                  <strong>many legs</strong>
+                </div>
+                <div class="flow-band">
+                  <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                </div>
+                <div class="flow-nodes">
+                  <span>Client</span>
+                  <span>Slave</span>
+                  <span>Sidecar</span>
+                  <span>Target</span>
+                </div>
+                <div class="flow-pills">
+                  <span>IXP fabric</span>
+                  <span>IPLC paths</span>
+                  <span>Policy proof</span>
                 </div>
               </div>
-              <section class="surface-card route-card">
-                <span class="panel-kicker">Route posture</span>
-                <h3>Fast paths, visible policy, controlled delivery.</h3>
-                <div class="hero-list">' . $routeStepHtml . '</div>
-              </section>
             </section>
-            <section class="feature-mosaic">' . $featureCards . '</section>
-            <section class="entry-grid">
-              <section class="surface-card entry-card">
-                <span class="card-kicker">' . $this->escape($consoleCardTitle) . '</span>
-                <h3>' . $this->escape($consoleCardTitle) . '</h3>
-                <p>' . $this->escape($consoleCardBody) . '</p>
-                <div class="actions">' . $consoleCardAction . '</div>
+            <section class="proof-grid">' . $proofCards . '</section>
+            <section class="launch-entry-grid">
+              <section class="launch-entry">
+                <span>' . $this->escape($consoleTitle) . '</span>
+                <h3>' . $this->escape($consoleTitle) . '</h3>
+                <p>' . $this->escape($consoleBody) . '</p>
+                <div class="actions">' . $consoleAction . '</div>
               </section>
               ' . $opsCard . '
-              <section class="surface-card entry-card">
-                <span class="card-kicker">Knowledgebase</span>
+              <section class="launch-entry">
+                <span>Knowledgebase</span>
                 <h3>Routing playbooks</h3>
-                <p>Use docs for install flow, routing modes, diagnostics, and rollout notes.</p>
-                <div class="actions"><a class="button ghost" href="/knowledgebase">Open Docs</a></div>
+                <p>Install flow, route modes, diagnostics, sidecar rollout, and recovery notes live in the panel docs.</p>
+                <div class="actions"><a class="button launch-secondary" href="/knowledgebase">Open Docs</a></div>
               </section>
             </section>';
 

@@ -1159,7 +1159,18 @@
     "Open admin editor": "Open admin editor",
     "Read the starter threads, open the exact topic you need, and keep future updates as normal panel-managed content instead of one giant static page.": "Read the starter threads, open the exact topic you need, and keep future updates as normal panel-managed content instead of one giant static page.",
     "Threaded operational docs for admins and tenants": "Threaded operational docs for admins and tenants",
-    "Client": "Client"
+    "Client": "Client",
+    "Bond speed. Private paths. Clean control.": "Bond 加速，私有路徑，清晰控制。",
+    "Tenant console": "租戶控制台",
+    "Operator setup": "操作員設定",
+    "1 flow": "1 條流",
+    "many legs": "多條線路",
+    "IXP fabric": "IXP 網絡",
+    "IPLC paths": "IPLC 路徑",
+    "Policy proof": "策略證明",
+    "Slave": "中轉節點",
+    "Finish bootstrap once, then run tenants, services, forwards, credentials, and rollout tasks from the console.": "完成一次初始化後，即可從控制台管理租戶、服務、轉發、憑證與發布任務。",
+    "Install flow, route modes, diagnostics, sidecar rollout, and recovery notes live in the panel docs.": "安裝流程、路由模式、診斷、sidecar 發布與恢復筆記都在面板文件中。"
   },
   "attributes": {
     "Enter password": "輸入密碼",
@@ -1216,6 +1227,7 @@
     "abc.example.com or example.com": "abc.example.com 或 example.com",
     "global api key": "全域 API 金鑰",
     "hk-edge wildcard cert": "hk-edge 通配符證書",
-    "use group default": "使用群組預設值"
+    "use group default": "使用群組預設值",
+    "LeiKwan Bridge bonded path diagram": "利群會聚 Bridge 綁定路徑圖"
   }
 }
