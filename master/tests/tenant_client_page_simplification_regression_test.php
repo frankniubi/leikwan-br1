@@ -23,9 +23,7 @@ $clientsPage = substr($source, $start, $end - $start);
 foreach ([
     'Quick start',
     'Online device limit',
-    'Download Windows App',
-    'Download Android App',
-    'Install details',
+    'Linux Install',
     'Online devices',
     'These are only defaults for future forwards. They are not required for app install.',
     'Keep this simple. Create a client, install the app, and watch whether the device is online.',
@@ -36,6 +34,11 @@ foreach ([
 }
 
 foreach ([
+    'Install details',
+    'Download Windows App',
+    'Download Android App',
+    'Windows App',
+    'Android App',
     'Client ID:',
     'Token:',
     'Usage Calendar',
