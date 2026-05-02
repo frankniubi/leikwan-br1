@@ -1243,6 +1243,7 @@ final class ProvisioningService
     public function saveClient(array $payload): array
     {
         $id = (int) ($payload['id'] ?? 0);
+        $existing = $id > 0 ? ($this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $id]) ?? []) : [];
         $groupId = (int) ($payload['group_id'] ?? 0);
         $ownerUserId = (int) ($payload['owner_user_id'] ?? 0);
         $name = trim((string) ($payload['name'] ?? ''));
@@ -1273,6 +1274,7 @@ final class ProvisioningService
             'agent_token' => (string) ($payload['agent_token'] ?? ''),
             'agent_version' => ($payload['agent_version'] ?? '') !== '' ? (string) $payload['agent_version'] : null,
             'last_sync_at' => ($payload['last_sync_at'] ?? '') !== '' ? (string) $payload['last_sync_at'] : null,
+            'online_device_limit' => max(1, (int) ($payload['online_device_limit'] ?? ($existing['online_device_limit'] ?? 1))),
             'name' => $name,
             'display_host' => $displayHost,
             'bind_ip' => $bindIp !== '' ? $bindIp : null,
@@ -1300,7 +1302,7 @@ final class ProvisioningService
         ];
         if ($normalized['agent_token'] === '') {
             $normalized['agent_token'] = $id > 0
-                ? ((string) (($this->db->fetchOne('SELECT agent_token FROM clients WHERE id = :id LIMIT 1', ['id' => $id])['agent_token'] ?? '')) ?: bin2hex(random_bytes(24)))
+                ? ((string) (($existing['agent_token'] ?? '')) ?: bin2hex(random_bytes(24)))
                 : bin2hex(random_bytes(24));
         }
 
@@ -1312,6 +1314,7 @@ final class ProvisioningService
                      agent_token = :agent_token,
                      agent_version = :agent_version,
                      last_sync_at = :last_sync_at,
+                     online_device_limit = :online_device_limit,
                      name = :name,
                      display_host = :display_host,
                      bind_ip = :bind_ip,
