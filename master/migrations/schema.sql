@@ -176,7 +176,9 @@ CREATE TABLE IF NOT EXISTS service_plans (
     bandwidth_step_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
     included_client_count INT NOT NULL DEFAULT 0,
     extra_client_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    default_client_online_device_limit INT NOT NULL DEFAULT 1,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
+    is_tenant_visible TINYINT(1) NOT NULL DEFAULT 1,
     feature_flags_json JSON NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL

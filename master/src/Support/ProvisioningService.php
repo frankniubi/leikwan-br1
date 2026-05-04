@@ -1436,7 +1436,7 @@ final class ProvisioningService
     {
         return array_values(array_filter(
             $this->listPlans(),
-            static fn(array $plan): bool => (int) ($plan['is_active'] ?? 0) === 1
+            static fn(array $plan): bool => (int) ($plan['is_active'] ?? 0) === 1 && (int) ($plan['is_tenant_visible'] ?? 1) === 1
         ));
     }
 
@@ -1741,7 +1741,7 @@ final class ProvisioningService
             throw new ApiException('invalid_plan_forward_combination_payload', 422, ['payload' => $payload]);
         }
 
-        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds): array {
+        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $payload): array {
             if ($id > 0) {
                 $this->db->execute(
                     'UPDATE service_plans
@@ -1760,7 +1760,9 @@ final class ProvisioningService
                          bandwidth_step_price = :bandwidth_step_price,
                          included_client_count = :included_client_count,
                          extra_client_price = :extra_client_price,
+                         default_client_online_device_limit = :default_client_online_device_limit,
                          is_active = :is_active,
+                         is_tenant_visible = :is_tenant_visible,
                          feature_flags_json = :feature_flags_json,
                          updated_at = :updated_at
                      WHERE id = :id',
@@ -1781,7 +1783,9 @@ final class ProvisioningService
                         'bandwidth_step_price' => $bandwidthStepPrice,
                         'included_client_count' => $includedClientCount,
                         'extra_client_price' => $extraClientPrice,
+                        'default_client_online_device_limit' => max(1, (int) ($payload['default_client_online_device_limit'] ?? 1)),
                         'is_active' => $isActive,
+                        'is_tenant_visible' => (int) (($payload['is_tenant_visible'] ?? '1') ? 1 : 0),
                         'feature_flags_json' => $featureFlagsJson,
                         'updated_at' => $this->now(),
                     ]
@@ -1803,7 +1807,9 @@ final class ProvisioningService
                     'bandwidth_step_price' => $bandwidthStepPrice,
                     'included_client_count' => $includedClientCount,
                     'extra_client_price' => $extraClientPrice,
+                    'default_client_online_device_limit' => max(1, (int) ($payload['default_client_online_device_limit'] ?? 1)),
                     'is_active' => $isActive,
+                    'is_tenant_visible' => (int) (($payload['is_tenant_visible'] ?? '1') ? 1 : 0),
                     'feature_flags_json' => $featureFlagsJson,
                     'created_at' => $this->now(),
                     'updated_at' => $this->now(),
@@ -6025,6 +6031,9 @@ final class ProvisioningService
         }
         if ((int) ($plan['is_active'] ?? 0) !== 1) {
             throw new ApiException('plan_not_active', 422, ['message' => 'This package is not available for purchase right now.']);
+        }
+        if ((int) ($plan['is_tenant_visible'] ?? 1) !== 1) {
+            throw new ApiException('plan_not_public', 422, ['message' => 'This package is not available for tenant self-purchase right now.']);
         }
         return $plan;
     }
