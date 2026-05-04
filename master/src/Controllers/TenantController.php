@@ -533,6 +533,7 @@ final class TenantController extends BaseController
             return Response::redirect('/login');
         }
 
+        $expandedPlanId = max(0, (int) $request->input('buy', 0));
         $services = $this->db->fetchAll(
             'SELECT s.id, s.name, s.status, s.expire_at, s.bandwidth_limit_mbps, s.whmcs_service_id, p.name AS plan_name
              FROM services s
@@ -567,100 +568,87 @@ final class TenantController extends BaseController
                 <td>' . $this->escape((string) ($service['expire_at'] ?? '')) . '</td>
                 <td>
                   <div class="actions">
-                    <a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '">详情</a>
-                    <a class="button" href="/tenant/services/' . (int) $service['id'] . '/forward-wizard">新增 Forward</a>
+                    <a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '">Details</a>
+                    <a class="button" href="/tenant/services/' . (int) $service['id'] . '/forward-wizard">Create Forward</a>
                   </div>
                 </td>
               </tr>';
         }
         if ($serviceRows === '') {
-            $serviceRows = '<tr><td colspan="8" class="muted">还没有已开通套餐。</td></tr>';
+            $serviceRows = '<tr><td colspan="8" class="muted">No active package yet.</td></tr>';
         }
 
-        $purchasePlanOptions = '<option value="">Select a package</option>';
-        $purchasePlanRows = '';
+        $planCards = '';
         foreach ($purchasePlans as $plan) {
             if (!is_array($plan)) {
                 continue;
             }
 
+            $planId = (int) ($plan['id'] ?? 0);
+            $isExpanded = $expandedPlanId === $planId;
             $planCurrency = strtoupper(trim((string) ($plan['billing_currency'] ?? 'CNY')));
             $planPrice = number_format((float) ($plan['monthly_base_fee'] ?? 0), 2);
             $resetPrice = number_format((float) ($plan['traffic_reset_price'] ?? 0), 2);
-            $bandwidthStepPrice = number_format((float) ($plan['bandwidth_step_price'] ?? 0), 2);
-            $purchasePlanOptions .= '<option value="' . (int) ($plan['id'] ?? 0) . '">'
-                . $this->escape((string) ($plan['name'] ?? 'Plan'))
-                . ' / ' . $this->escape($planCurrency) . ' ' . $this->escape($planPrice)
-                . '</option>';
-            $purchasePlanRows .= '<tr>
-                <td>' . $this->escape((string) ($plan['name'] ?? '')) . '</td>
-                <td>' . $this->escape((string) ($plan['description'] ?? '')) . '</td>
-                <td>' . (int) ($plan['default_bandwidth_limit_mbps'] ?? 0) . ' Mbps</td>
-                <td>' . (int) ($plan['default_traffic_limit_gb'] ?? 0) . ' GB</td>
-                <td>' . $this->escape($planCurrency) . ' ' . $this->escape($planPrice) . '</td>
-                <td>+' . (int) ($plan['bandwidth_step_mbps'] ?? 0) . ' Mbps / ' . $this->escape($planCurrency) . ' ' . $this->escape($bandwidthStepPrice) . '</td>
-                <td>' . (int) ($plan['included_client_count'] ?? 0) . ' included / + ' . $this->escape($planCurrency) . ' ' . $this->escape(number_format((float) ($plan['extra_client_price'] ?? 0), 2)) . '</td>
-                <td>' . $this->escape($planCurrency) . ' ' . $this->escape($resetPrice) . '</td>
-              </tr>';
+            $includedClients = (int) ($plan['included_client_count'] ?? 0);
+            $deviceLimit = max(1, (int) ($plan['default_client_online_device_limit'] ?? 1));
+            $inlineForm = $isExpanded
+                ? '<form method="post" action="/tenant/plans/purchase" style="margin-top:16px;">
+                    <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                    <input type="hidden" name="plan_id" value="' . $planId . '">
+                    <div class="form-grid">
+                      <div class="field"><label>Service Name</label><input type="text" name="service_name" placeholder="Optional. Leave empty to auto-generate a name."></div>
+                      <div class="field"><label>Bandwidth Mbps</label><input type="number" min="1" name="bandwidth_limit_mbps" placeholder="Optional. Leave empty to use the package base bandwidth."></div>
+                    </div>
+                    <div class="actions"><button class="button" type="submit">Purchase Package</button><a class="button secondary" href="/tenant/plans">Cancel</a></div>
+                  </form>'
+                : '<div class="actions" style="margin-top:18px;"><a class="button" href="/tenant/plans?buy=' . $planId . '#plan-' . $planId . '">Order Now</a></div>';
+
+            $planCards .= '<section class="card" id="plan-' . $planId . '" style="display:flex;flex-direction:column;justify-content:space-between;min-height:340px;">
+                <div class="grid two storefront-card-head" style="align-items:flex-start;gap:22px;">
+                  <div>
+                    <h3 style="font-size:2rem;margin-bottom:14px;">' . $this->escape((string) ($plan['name'] ?? 'Plan')) . '</h3>
+                    ' . $this->tenantPlanFeatureListHtml($plan) . '
+                  </div>
+                  <div class="storefront-price-block" style="text-align:right;min-width:220px;">
+                    <div class="muted">Starting from</div>
+                    <div class="stats">' . $this->escape($planCurrency) . ' ' . $this->escape($planPrice) . '</div>
+                    <div>Monthly</div>
+                    <div class="muted" style="margin-top:8px;">Traffic Reset ' . $this->escape($planCurrency) . ' ' . $this->escape($resetPrice) . '</div>
+                    <div class="muted">Included Traffic: ' . (int) ($plan['default_traffic_limit_gb'] ?? 0) . ' GB</div>
+                    <div class="muted">Included Clients: ' . $includedClients . '</div>
+                    <div class="muted">Client Device Limit: ' . $deviceLimit . '</div>
+                  </div>
+                </div>
+                ' . $inlineForm . '
+              </section>';
         }
-        if ($purchasePlanRows === '') {
-            $purchasePlanRows = '<tr><td colspan="8" class="muted">No active package is currently available for purchase.</td></tr>';
+        if ($planCards === '') {
+            $planCards = '<section class="card"><h3>No package available</h3><p class="muted">No visible package is available right now. Contact the administrator if you expected to self-purchase.</p></section>';
         }
-        $purchaseDisabled = $purchasePlans === [] ? ' disabled' : '';
 
         $body = '
             <div class="hero">
               <div>
-                <h2>套餐</h2>
-                <p class="muted">这里负责开通新套餐，并查看你当前所有服务。每个服务的细节调节和流量重置仍在服务详情页。</p>
+                <h2>Packages</h2>
+                <p class="muted">Use this storefront to compare packages first, then open an inline order form to set service name and bandwidth before purchase.</p>
               </div>
               <div class="actions" style="margin-top:0;">
-                <a class="button ghost" href="/tenant/forwards">前往转发配置</a>
+                <a class="button ghost" href="/tenant/forwards">Forward Config</a>
               </div>
             </div>
             <div class="grid three">
-              <section class="card"><div class="muted">当前套餐</div><div class="stats">' . count($services) . '</div></section>
-              <section class="card"><div class="muted">可购套餐</div><div class="stats">' . count($purchasePlans) . '</div></section>
-              <section class="card"><div class="muted">总带宽</div><div class="stats">' . $totalBandwidth . ' Mbps</div></section>
-              <section class="card"><div class="muted">本周期预估</div><div class="stats">CNY ' . $this->escape(number_format($totalEstimatedBilling, 2)) . '</div></section>
-            </div>
-            <div class="grid two" style="margin-top:20px;">
-              <section class="card">
-                <h3>购买新套餐</h3>
-                <p class="muted">使用 panel 余额即时开通。首月金额会按所选带宽和附加项实时估算。</p>
-                <form method="post" action="/tenant/plans/purchase">
-                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                  <div class="form-grid">
-                    <div class="field">
-                      <label>Package</label>
-                      <select name="plan_id" required>' . $purchasePlanOptions . '</select>
-                    </div>
-                    <div class="field">
-                      <label>Bandwidth Mbps</label>
-                      <input type="number" min="1" name="bandwidth_limit_mbps" placeholder="Optional. Leave empty to use the package base bandwidth.">
-                    </div>
-                    <div class="field">
-                      <label>Service Name</label>
-                      <input type="text" name="service_name" placeholder="Optional. Leave empty to auto-generate a name.">
-                    </div>
-                  </div>
-                  <div class="actions">
-                    <button class="button" type="submit"' . $purchaseDisabled . '>Purchase Package</button>
-                  </div>
-                </form>
-              </section>
-              <section class="card">
-                <h3>可用套餐</h3>
-                <div class="table-wrap">
-                  <table>
-                    <thead><tr><th>Name</th><th>Description</th><th>Base Bandwidth</th><th>Included Traffic</th><th>Monthly Base Fee</th><th>Bandwidth Add-on</th><th>Client Pricing</th><th>Traffic Reset Price</th></tr></thead>
-                    <tbody>' . $purchasePlanRows . '</tbody>
-                  </table>
-                </div>
-              </section>
+              <section class="card"><div class="muted">Current Services</div><div class="stats">' . count($services) . '</div></section>
+              <section class="card"><div class="muted">Visible Packages</div><div class="stats">' . count($purchasePlans) . '</div></section>
+              <section class="card"><div class="muted">Total Bandwidth</div><div class="stats">' . $totalBandwidth . ' Mbps</div></section>
+              <section class="card"><div class="muted">Current Cycle Estimate</div><div class="stats">CNY ' . $this->escape(number_format($totalEstimatedBilling, 2)) . '</div></section>
             </div>
             <section class="card" style="margin-top:20px;">
-              <h3>当前服务</h3>
+              <h3>Purchase Package</h3>
+              <p class="muted">Choose the package that fits your usage, then open its inline order form to set service name and bandwidth before purchase.</p>
+              <div class="grid two">' . $planCards . '</div>
+            </section>
+            <section class="card" style="margin-top:20px;">
+              <h3>Current Services</h3>
               <div class="table-wrap">
                 <table>
                   <thead><tr><th>Name</th><th>Status</th><th>Plan</th><th>Current Bandwidth</th><th>Traffic Policy</th><th>Current Bill</th><th>Expire At</th><th>Actions</th></tr></thead>
@@ -669,11 +657,32 @@ final class TenantController extends BaseController
               </div>
             </section>';
 
-        return $this->page('套餐', $body, $user, $this->tenantNav('plans'));
+        return $this->page('濂楅', $body, $user, $this->tenantNav('plans'));
     }
 
-    public function transferBalance(Request $request, array $params): Response
+    /**
+     * @param array<string, mixed> $plan
+     */
+    private function tenantPlanFeatureListHtml(array $plan): string
     {
+        $description = trim((string) ($plan['description'] ?? ''));
+        $lines = preg_split('/\r\n|\r|\n/', $description) ?: [];
+        $items = [];
+        foreach ($lines as $line) {
+            $trimmed = trim((string) $line);
+            if ($trimmed !== '') {
+                $items[] = '<li>' . $this->escape($trimmed) . '</li>';
+            }
+        }
+
+        if ($items === []) {
+            return '<p class="muted">No package details provided yet.</p>';
+        }
+
+        return '<ul class="list">' . implode('', $items) . '</ul>';
+    }
+
+    public function transferBalance(Request $request, array $params): Response    {
         $user = SessionAuth::currentUser($this->db);
         if ($user === null || (string) $user['role'] !== 'tenant') {
             return Response::redirect('/login');
@@ -744,7 +753,7 @@ final class TenantController extends BaseController
             return Response::redirect('/tenant/services/' . (int) ($service['id'] ?? 0));
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Package purchase failed: ' . $throwable->getMessage());
-            return Response::redirect('/tenant/plans');
+            return Response::redirect('/tenant/plans?buy=' . (int) $request->input('plan_id', 0) . '#plan-' . (int) $request->input('plan_id', 0));
         }
     }
 
