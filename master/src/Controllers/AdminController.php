@@ -803,6 +803,9 @@ final class AdminController extends BaseController
             $billingSummary .= ' / Included Clients ' . (int) ($plan['included_client_count'] ?? 0)
                 . ' + Extra Client '
                 . $this->escape((string) ($plan['billing_currency'] ?? 'CNY')) . ' ' . $this->escape((string) ($plan['extra_client_price'] ?? '0.00'));
+            $visibilitySummary = (int) ($plan['is_tenant_visible'] ?? 1) === 1
+                ? '<span class="badge success">tenant visible</span>'
+                : '<span class="badge info">internal test</span>';
             $rows .= '<tr>
                 <td>' . (int) $plan['id'] . '</td>
                 <td>' . $this->escape((string) $plan['name']) . '</td>
@@ -811,6 +814,7 @@ final class AdminController extends BaseController
                 <td>' . (int) $plan['default_traffic_limit_gb'] . ' GB</td>
                 <td>' . $billingSummary . '</td>
                 <td>' . $forwardCombinationSummary . '</td>
+                <td>' . $visibilitySummary . '</td>
                 <td>' . ((int) $plan['is_active'] === 1 ? '<span class="badge success">active</span>' : '<span class="badge danger">inactive</span>') . '</td>
                 <td>
                     <div class="actions">
@@ -849,7 +853,11 @@ final class AdminController extends BaseController
                     <div class="field"><label>Status</label>
                       <select name="is_active"><option value="1"' . ((int) ($editing['is_active'] ?? 1) === 1 ? ' selected' : '') . '>active</option><option value="0"' . ((int) ($editing['is_active'] ?? 1) === 0 ? ' selected' : '') . '>inactive</option></select>
                     </div>
-                    <div class="field"><label>Description</label><input type="text" name="description" value="' . $this->escape((string) ($editing['description'] ?? '')) . '"></div>
+                    <div class="field"><label>Description</label><textarea name="description" placeholder="One feature per line for the tenant storefront card.">' . $this->escape((string) ($editing['description'] ?? '')) . '</textarea><p class="muted">Use one line per tenant-visible feature. These lines render directly on the tenant purchase card.</p></div>
+                    <div class="field"><label>Tenant Visibility</label>
+                      <select name="is_tenant_visible"><option value="1"' . ((int) ($editing['is_tenant_visible'] ?? 1) === 1 ? ' selected' : '') . '>Visible to tenants</option><option value="0"' . ((int) ($editing['is_tenant_visible'] ?? 1) === 0 ? ' selected' : '') . '>Internal test package</option></select>
+                      <p class="muted">Hidden plans stay active for internal/admin workflows, but do not appear on the tenant purchase page.</p>
+                    </div>
                     <div class="field"><label>Billing Mode</label><select name="billing_mode"><option value="monthly_bundle"' . (((string) ($editing['billing_mode'] ?? 'monthly_bundle')) === 'monthly_bundle' ? ' selected' : '') . '>monthly_bundle</option><option value="metered"' . (((string) ($editing['billing_mode'] ?? 'monthly_bundle')) === 'metered' ? ' selected' : '') . '>metered</option></select></div>
                     <div class="field"><label>Billing Currency</label><input type="text" name="billing_currency" value="' . $this->escape((string) ($editing['billing_currency'] ?? 'CNY')) . '" placeholder="CNY"></div>
                     <div class="field"><label>Monthly Base Fee</label><input type="number" step="0.01" min="0" name="monthly_base_fee" value="' . $this->escape((string) ($editing['monthly_base_fee'] ?? '0.00')) . '"></div>
@@ -860,6 +868,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Bandwidth Step Price</label><input type="number" step="0.01" min="0" name="bandwidth_step_price" value="' . $this->escape((string) ($editing['bandwidth_step_price'] ?? '0.00')) . '"><p class="muted">Monthly surcharge for each extra bandwidth step.</p></div>
                     <div class="field"><label>Included Client Count</label><input type="number" min="0" name="included_client_count" value="' . $this->escape((string) ($editing['included_client_count'] ?? '0')) . '"><p class="muted">How many explicit Clients are included before extra monthly Client charges start.</p></div>
                     <div class="field"><label>Extra Client Price</label><input type="number" step="0.01" min="0" name="extra_client_price" value="' . $this->escape((string) ($editing['extra_client_price'] ?? '0.00')) . '"><p class="muted">Monthly surcharge for each explicit Client above the included count.</p></div>
+                    <div class="field"><label>Client Device Limit</label><input type="number" min="1" name="default_client_online_device_limit" value="' . $this->escape((string) ($editing['default_client_online_device_limit'] ?? '1')) . '" required><p class="muted">Tenant-visible default entitlement shown on the package card. Per-client enforcement still lives on the client record.</p></div>
                   </div>
                   <div class="field" style="margin-top:14px;">
                     <label>Allowed Forward Combinations</label>
@@ -879,7 +888,7 @@ final class AdminController extends BaseController
                 <h3>Plan List</h3>
                 <div class="table-wrap">
                   <table>
-                    <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>Bandwidth</th><th>Traffic</th><th>Billing</th><th>Forward Combinations</th><th>Status</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>Bandwidth</th><th>Traffic</th><th>Billing</th><th>Forward Combinations</th><th>Visibility</th><th>Status</th><th>Actions</th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
@@ -2788,7 +2797,9 @@ final class AdminController extends BaseController
                 'bandwidth_step_price' => $request->input('bandwidth_step_price', '0'),
                 'included_client_count' => $request->input('included_client_count', '0'),
                 'extra_client_price' => $request->input('extra_client_price', '0'),
+                'default_client_online_device_limit' => $request->input('default_client_online_device_limit', '1'),
                 'is_active' => $request->input('is_active', '1'),
+                'is_tenant_visible' => $request->input('is_tenant_visible', '1'),
                 'allowed_forward_combination_ids' => $request->body()['allowed_forward_combination_ids'] ?? [],
                 'allowed_node_group_ids' => $request->body()['allowed_node_group_ids'] ?? [],
                 'allowed_client_group_ids' => $request->body()['allowed_client_group_ids'] ?? [],
