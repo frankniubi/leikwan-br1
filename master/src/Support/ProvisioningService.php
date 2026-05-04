@@ -743,6 +743,21 @@ final class ProvisioningService
         );
     }
 
+    public function maxClientProfilesForTenantOwnedClients(int $userId): int
+    {
+        $service = $this->db->fetchOne(
+            'SELECT s.id, s.plan_id, p.max_client_profiles
+             FROM services s
+             LEFT JOIN service_plans p ON p.id = s.plan_id
+             WHERE s.user_id = :user_id
+             ORDER BY s.id ASC
+             LIMIT 1',
+            ['user_id' => $userId]
+        );
+
+        return max(1, (int) ($service['max_client_profiles'] ?? 1));
+    }
+
     /**
      * @return array<string, mixed>|null
      */
@@ -1713,7 +1728,11 @@ final class ProvisioningService
             throw new ApiException('invalid_plan_payload', 422, ['payload' => $payload]);
         }
         if ($forwardCombinationIds === []) {
-            throw new ApiException('invalid_plan_forward_combination_payload', 422, ['payload' => $payload]);
+            throw new ApiException(
+                'invalid_plan_forward_combination_payload',
+                422,
+                ['message' => 'Select at least one active forward combination before saving the plan.']
+            );
         }
 
         if ($billingCurrency === '') {
@@ -1738,7 +1757,11 @@ final class ProvisioningService
         $expectedForwardCombinationIds = $forwardCombinationIds;
         sort($expectedForwardCombinationIds);
         if ($validForwardCombinationIds !== $expectedForwardCombinationIds) {
-            throw new ApiException('invalid_plan_forward_combination_payload', 422, ['payload' => $payload]);
+            throw new ApiException(
+                'invalid_plan_forward_combination_payload',
+                422,
+                ['message' => 'Select at least one active forward combination before saving the plan.']
+            );
         }
 
         return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $payload): array {
@@ -1761,6 +1784,7 @@ final class ProvisioningService
                          included_client_count = :included_client_count,
                          extra_client_price = :extra_client_price,
                          default_client_online_device_limit = :default_client_online_device_limit,
+                         max_client_profiles = :max_client_profiles,
                          is_active = :is_active,
                          is_tenant_visible = :is_tenant_visible,
                          feature_flags_json = :feature_flags_json,
@@ -1784,6 +1808,7 @@ final class ProvisioningService
                         'included_client_count' => $includedClientCount,
                         'extra_client_price' => $extraClientPrice,
                         'default_client_online_device_limit' => max(1, (int) ($payload['default_client_online_device_limit'] ?? 1)),
+                        'max_client_profiles' => max(1, (int) ($payload['max_client_profiles'] ?? 1)),
                         'is_active' => $isActive,
                         'is_tenant_visible' => (int) (($payload['is_tenant_visible'] ?? '1') ? 1 : 0),
                         'feature_flags_json' => $featureFlagsJson,
@@ -1808,6 +1833,7 @@ final class ProvisioningService
                     'included_client_count' => $includedClientCount,
                     'extra_client_price' => $extraClientPrice,
                     'default_client_online_device_limit' => max(1, (int) ($payload['default_client_online_device_limit'] ?? 1)),
+                    'max_client_profiles' => max(1, (int) ($payload['max_client_profiles'] ?? 1)),
                     'is_active' => $isActive,
                     'is_tenant_visible' => (int) (($payload['is_tenant_visible'] ?? '1') ? 1 : 0),
                     'feature_flags_json' => $featureFlagsJson,
@@ -6122,6 +6148,7 @@ final class ProvisioningService
             'plan_bandwidth_step_price' => $plan['bandwidth_step_price'] ?? 0,
             'plan_included_client_count' => (int) ($plan['included_client_count'] ?? 0),
             'plan_extra_client_price' => $plan['extra_client_price'] ?? 0,
+            'plan_max_client_profiles' => (int) ($plan['max_client_profiles'] ?? 1),
             'active_client_count' => $activeClientCount,
             'created_at' => $this->now(),
         ];
