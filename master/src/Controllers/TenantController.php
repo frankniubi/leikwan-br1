@@ -590,6 +590,7 @@ final class TenantController extends BaseController
             $planPrice = number_format((float) ($plan['monthly_base_fee'] ?? 0), 2);
             $resetPrice = number_format((float) ($plan['traffic_reset_price'] ?? 0), 2);
             $includedClients = (int) ($plan['included_client_count'] ?? 0);
+            $maxClientProfiles = max(1, (int) ($plan['max_client_profiles'] ?? 1));
             $deviceLimit = max(1, (int) ($plan['default_client_online_device_limit'] ?? 1));
             $inlineForm = $isExpanded
                 ? '<form method="post" action="/tenant/plans/purchase" style="margin-top:16px;">
@@ -616,7 +617,8 @@ final class TenantController extends BaseController
                     <div class="muted" style="margin-top:8px;">Traffic Reset ' . $this->escape($planCurrency) . ' ' . $this->escape($resetPrice) . '</div>
                     <div class="muted">Included Traffic: ' . (int) ($plan['default_traffic_limit_gb'] ?? 0) . ' GB</div>
                     <div class="muted">Included Clients: ' . $includedClients . '</div>
-                    <div class="muted">Client Device Limit: ' . $deviceLimit . '</div>
+                    <div class="muted">Client Profiles: ' . $maxClientProfiles . '</div>
+                    <div class="muted">Devices per Client: ' . $deviceLimit . '</div>
                   </div>
                 </div>
                 ' . $inlineForm . '
@@ -811,6 +813,9 @@ final class TenantController extends BaseController
         $features = $featureBase['effective_features'] ?? $this->provisioning->defaultFeatureFlags();
         $canManageClients = !empty($features['allow_manage_clients']);
         $clients = $this->provisioning->listClientsForUser((int) $user['id']);
+        $currentClientProfiles = count($clients);
+        $maxClientProfiles = $this->provisioning->maxClientProfilesForTenantOwnedClients((int) $user['id']);
+        $clientProfileSummary = '<div class="flash info">Current Client Profiles: ' . $currentClientProfiles . ' / ' . $maxClientProfiles . '. This package allows up to ' . $maxClientProfiles . ' client profiles.</div>';
         $allowedGroups = $this->provisioning->availableClientGroupsForUser((int) $user['id']);
         $chains = $this->provisioning->availableForwardChainsForService((int) ($services[0]['id'] ?? 0));
         $editId = (int) $request->input('edit', 0);
@@ -821,6 +826,7 @@ final class TenantController extends BaseController
                 break;
             }
         }
+        $clientProfileCapReached = $currentClientProfiles >= $maxClientProfiles && $editing === null;
         $overviewClient = $editing ?? ($clients[0] ?? null);
 
         $latestClientAgentVersion = $this->artifactVersion('client_agent');
@@ -962,7 +968,9 @@ final class TenantController extends BaseController
             : '<div class="flash success">You can add your own client lines here. Admin-provided lines will still appear inside service pages when authorized. Installing a client app does not require route defaults.</div>';
 
         $clientFormSection = '';
-        if ($canManageClients) {
+        if ($canManageClients && $clientProfileCapReached) {
+            $clientFormSection = '<section class="card"><h3>Create Client</h3><div class="flash danger">This package allows up to ' . $maxClientProfiles . ' client profiles.</div></section>';
+        } elseif ($canManageClients) {
             $clientFormSection = '<section class="card">
                 <h3>' . ($editing !== null ? 'Edit Client' : 'Create Client') . '</h3>
                 <p class="muted">Tenants only need a clear name, a display host, and an installable client. Keep advanced routing defaults collapsed unless you really need them.</p>
@@ -1016,6 +1024,7 @@ final class TenantController extends BaseController
               </div>
             </section>
             ' . $notice . '
+            ' . $clientProfileSummary . '
             <div class="grid two">
               ' . $clientFormSection . '
               <section class="card">
@@ -1859,6 +1868,20 @@ final class TenantController extends BaseController
                 $allowedGroupIds = array_map(static fn(array $group): int => (int) $group['id'], $allowedGroups);
                 if (!in_array($groupId, $allowedGroupIds, true)) {
                     throw new ApiException('client_group_not_allowed', 422);
+                }
+            }
+
+            $currentClientProfiles = count($this->provisioning->listClientsForUser((int) $user['id']));
+            $maxClientProfiles = $this->provisioning->maxClientProfilesForTenantOwnedClients((int) $user['id']);
+            $isCreate = (int) $request->input('id', 0) <= 0;
+
+            if ($isCreate) {
+                if ($currentClientProfiles >= $maxClientProfiles) {
+                    throw new ApiException(
+                        'tenant_client_profile_limit_reached',
+                        422,
+                        ['message' => 'This package allows up to ' . $maxClientProfiles . ' client profiles.']
+                    );
                 }
             }
 

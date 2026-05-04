@@ -803,6 +803,8 @@ final class AdminController extends BaseController
             $billingSummary .= ' / Included Clients ' . (int) ($plan['included_client_count'] ?? 0)
                 . ' + Extra Client '
                 . $this->escape((string) ($plan['billing_currency'] ?? 'CNY')) . ' ' . $this->escape((string) ($plan['extra_client_price'] ?? '0.00'));
+            $billingSummary .= ' / Max Client Profiles ' . (int) ($plan['max_client_profiles'] ?? 1);
+            $billingSummary .= ' / Devices per Client ' . (int) ($plan['default_client_online_device_limit'] ?? 1);
             $visibilitySummary = (int) ($plan['is_tenant_visible'] ?? 1) === 1
                 ? '<span class="badge success">tenant visible</span>'
                 : '<span class="badge info">internal test</span>';
@@ -868,6 +870,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Bandwidth Step Price</label><input type="number" step="0.01" min="0" name="bandwidth_step_price" value="' . $this->escape((string) ($editing['bandwidth_step_price'] ?? '0.00')) . '"><p class="muted">Monthly surcharge for each extra bandwidth step.</p></div>
                     <div class="field"><label>Included Client Count</label><input type="number" min="0" name="included_client_count" value="' . $this->escape((string) ($editing['included_client_count'] ?? '0')) . '"><p class="muted">How many explicit Clients are included before extra monthly Client charges start.</p></div>
                     <div class="field"><label>Extra Client Price</label><input type="number" step="0.01" min="0" name="extra_client_price" value="' . $this->escape((string) ($editing['extra_client_price'] ?? '0.00')) . '"><p class="muted">Monthly surcharge for each explicit Client above the included count.</p></div>
+                    <div class="field"><label>Max Client Profiles</label><input type="number" min="1" name="max_client_profiles" value="' . $this->escape((string) ($editing['max_client_profiles'] ?? '1')) . '" required><p class="muted">hard creation cap for independent client profiles. This is separate from billing included client count.</p></div>
                     <div class="field"><label>Client Device Limit</label><input type="number" min="1" name="default_client_online_device_limit" value="' . $this->escape((string) ($editing['default_client_online_device_limit'] ?? '1')) . '" required><p class="muted">Tenant-visible default entitlement shown on the package card. Per-client enforcement still lives on the client record.</p></div>
                   </div>
                   <div class="field" style="margin-top:14px;">
@@ -2797,6 +2800,7 @@ final class AdminController extends BaseController
                 'bandwidth_step_price' => $request->input('bandwidth_step_price', '0'),
                 'included_client_count' => $request->input('included_client_count', '0'),
                 'extra_client_price' => $request->input('extra_client_price', '0'),
+                'max_client_profiles' => $request->input('max_client_profiles', '1'),
                 'default_client_online_device_limit' => $request->input('default_client_online_device_limit', '1'),
                 'is_active' => $request->input('is_active', '1'),
                 'is_tenant_visible' => $request->input('is_tenant_visible', '1'),
