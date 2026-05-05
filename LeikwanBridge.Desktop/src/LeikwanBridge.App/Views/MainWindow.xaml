@@ -39,17 +39,34 @@
                     <TextBox Style="{StaticResource InputTextBox}" x:Name="TxtMasterUrl"
                              Margin="0,0,0,12"/>
 
-                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupClientId}"/>
-                    <TextBox Style="{StaticResource InputTextBox}" x:Name="TxtClientId" Margin="0,0,0,12"/>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="Email"/>
+                    <TextBox Style="{StaticResource InputTextBox}" x:Name="TxtEmail" Margin="0,0,0,12"/>
 
-                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupAgentToken}"/>
-                    <PasswordBox x:Name="TxtAgentToken" Padding="10,8" FontSize="13" Margin="0,0,0,20"/>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="Password"/>
+                    <PasswordBox x:Name="TxtPassword" Padding="10,8" FontSize="13" Margin="0,0,0,20"/>
 
                     <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionConnect}"
                             Click="OnConnect_Click" HorizontalAlignment="Stretch"/>
 
                     <TextBlock x:Name="SetupStatus" Margin="0,12,0,0" FontSize="12"
                                Foreground="{StaticResource MutedTextBrush}" TextAlignment="Center"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Grid x:Name="ClientPickerOverlay"
+              Visibility="{Binding ShowClientPicker, Converter={StaticResource BoolToVis}}"
+              Panel.ZIndex="101"
+              Background="#D0F8FAFC">
+            <Border Style="{StaticResource CardBorder}" MaxWidth="520" MaxHeight="520"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel Margin="8">
+                    <TextBlock Text="Select Client" FontSize="22" FontWeight="Bold" Margin="0,0,0,8"/>
+                    <TextBlock Text="Choose which client profile to use on this device."
+                               Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,16"/>
+                    <ListBox x:Name="ClientPickerList" DisplayMemberPath="Name" Height="240"/>
+                    <Button Style="{StaticResource PrimaryButton}" Content="Continue"
+                            Click="OnSelectClient_Click" Margin="0,16,0,0"/>
                 </StackPanel>
             </Border>
         </Grid>
@@ -74,6 +91,10 @@
                             <TextBlock Text="{Binding ConnectionStatus}" FontSize="12"
                                        Foreground="{StaticResource SidebarTextBrush}"/>
                         </StackPanel>
+                        <TextBlock Text="{Binding SignedInEmail}" FontSize="11"
+                                   Foreground="{StaticResource SidebarTextBrush}" Margin="0,10,0,0"/>
+                        <TextBlock Text="{Binding ActiveClientName}" FontSize="12"
+                                   Foreground="White" Margin="0,4,0,0"/>
                     </StackPanel>
 
                     <!-- Nav Buttons -->
@@ -90,6 +111,10 @@
 
                     <!-- Bottom Actions -->
                     <StackPanel DockPanel.Dock="Bottom" Margin="8,0,8,16" VerticalAlignment="Bottom">
+                        <Button Style="{StaticResource NavButton}" Content="Switch Client"
+                                Click="OnShowClientPicker_Click"/>
+                        <Button Style="{StaticResource NavButton}" Content="Sign Out"
+                                Click="OnSignOut_Click"/>
                         <Button Style="{StaticResource NavButton}" Content="{DynamicResource ActionStartAll}"
                                 Command="{Binding StartAllCommand}"/>
                         <Button Style="{StaticResource NavButton}" Content="{DynamicResource ActionStopAll}"
@@ -400,10 +425,10 @@
                                            FontWeight="SemiBold" Margin="0,0,0,12"/>
                                 <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupMasterUrl}"/>
                                 <TextBox Style="{StaticResource InputTextBox}" x:Name="SettMasterUrl" Margin="0,0,0,8"/>
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupClientId}"/>
-                                <TextBox Style="{StaticResource InputTextBox}" x:Name="SettClientId" Margin="0,0,0,8"/>
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupAgentToken}"/>
-                                <TextBox Style="{StaticResource InputTextBox}" x:Name="SettToken" Margin="0,0,0,8"/>
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Signed In Email"/>
+                                <TextBox Style="{StaticResource InputTextBox}" x:Name="SettSignedInEmail" Margin="0,0,0,8" IsReadOnly="True"/>
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Active Client"/>
+                                <TextBox Style="{StaticResource InputTextBox}" x:Name="SettActiveClientName" Margin="0,0,0,8" IsReadOnly="True"/>
 
                                 <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SettingsPollInterval}"/>
                                 <TextBox Style="{StaticResource InputTextBox}" x:Name="SettPollInterval" Margin="0,0,0,8"/>
