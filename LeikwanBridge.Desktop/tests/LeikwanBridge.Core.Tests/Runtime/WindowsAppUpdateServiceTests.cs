@@ -1,4 +1,5 @@
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services;
 using Xunit;
 
 namespace LeikwanBridge.Core.Tests.Runtime;
@@ -38,5 +39,29 @@ public sealed class WindowsAppUpdateServiceTests
 
         Assert.Equal("0.1.15.0", manifest.WindowsClientApp.Version);
         Assert.Equal("/artifacts/leikwan-bridge-setup.exe", manifest.WindowsClientApp.ArtifactUrl);
+    }
+
+
+    [Fact]
+    public void IsRemoteVersionNewer_ReturnsTrue_WhenManifestVersionIsHigher()
+    {
+        Assert.True(WindowsAppUpdateService.IsRemoteVersionNewer("0.1.15.0", "0.1.14.0"));
+    }
+
+    [Fact]
+    public void IsRemoteVersionNewer_ReturnsFalse_WhenManifestVersionIsSameOrLower()
+    {
+        Assert.False(WindowsAppUpdateService.IsRemoteVersionNewer("0.1.14.0", "0.1.14.0"));
+        Assert.False(WindowsAppUpdateService.IsRemoteVersionNewer("0.1.13.9", "0.1.14.0"));
+    }
+
+    [Fact]
+    public void BuildCachedInstallerPath_UsesDeterministicUpdatesDirectory()
+    {
+        var path = WindowsAppUpdateService.BuildCachedInstallerPath(
+            @"C:\Users\demo\AppData\Local\LeiKwan Bridge",
+            "0.1.15.0");
+
+        Assert.EndsWith(@"updates\leikwan-bridge-setup-0.1.15.0.exe", path);
     }
 }
