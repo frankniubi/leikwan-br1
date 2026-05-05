@@ -32,11 +32,17 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _currentView = "Dashboard";
     [ObservableProperty] private bool _showSetupWizard = true;
     [ObservableProperty] private string _activeModeFilter = "All";
+    [ObservableProperty] private bool _showClientPicker;
+    [ObservableProperty] private int _pendingClientSelectionId;
+    [ObservableProperty] private string _signedInUsername = "";
+    [ObservableProperty] private string _signedInEmail = "";
+    [ObservableProperty] private string _activeClientName = "";
     [ObservableProperty] private ForwardViewModel? _selectedForward;
 
     public ObservableCollection<ForwardViewModel> Forwards { get; } = [];
     public ObservableCollection<ForwardViewModel> VisibleForwards { get; } = [];
     public ObservableCollection<string> AvailableModeFilters { get; } = ["All"];
+    public ObservableCollection<DesktopClientChoice> AvailableClientChoices { get; } = [];
     public ObservableCollection<string> LogEntries { get; } = [];
     public bool ShouldAutoConnectOnStartup => !ShowSetupWizard && !IsConnected;
 
@@ -48,9 +54,80 @@ public partial class MainViewModel : ObservableObject
     public void Initialize(AgentConfig config)
     {
         _config = config;
+        SignedInUsername = config.SignedInUsername;
+        SignedInEmail = config.SignedInEmail;
+        ActiveClientName = config.ActiveClientName;
+        AvailableClientChoices.Clear();
+        foreach (var client in config.AvailableClients)
+            AvailableClientChoices.Add(client);
+
         ShowSetupWizard = string.IsNullOrWhiteSpace(config.MasterUrl)
+                       || string.IsNullOrWhiteSpace(config.DesktopSessionToken)
                        || string.IsNullOrWhiteSpace(config.AgentToken)
-                       || config.ClientId <= 0;
+                       || config.ActiveClientId <= 0;
+        ShowClientPicker = false;
+        PendingClientSelectionId = 0;
+    }
+
+
+    public void CompleteDesktopLogin(DesktopLoginResponse login)
+    {
+        _config.DesktopSessionToken = login.SessionToken;
+        _config.SignedInUserId = login.UserId;
+        _config.SignedInUsername = login.Username;
+        _config.SignedInEmail = login.Email;
+        _config.AvailableClients = login.Clients;
+
+        SignedInUsername = login.Username;
+        SignedInEmail = login.Email;
+
+        AvailableClientChoices.Clear();
+        foreach (var client in login.Clients)
+            AvailableClientChoices.Add(client);
+
+        if (login.Clients.Count == 1)
+        {
+            PendingClientSelectionId = login.Clients[0].Id;
+            ShowClientPicker = false;
+            return;
+        }
+
+        PendingClientSelectionId = 0;
+        ShowClientPicker = login.Clients.Count > 1;
+    }
+
+
+    public void CompleteClientSelection(ClientSelectionResponse selection)
+    {
+        _config.ClientId = selection.ClientId;
+        _config.ActiveClientId = selection.ClientId;
+        _config.ActiveClientName = selection.ClientName;
+        _config.AgentToken = selection.AgentToken;
+        ActiveClientName = selection.ClientName;
+        ShowClientPicker = false;
+        ShowSetupWizard = false;
+    }
+
+    public void SignOutForTests()
+    {
+        _config.DesktopSessionToken = string.Empty;
+        _config.SignedInUserId = 0;
+        _config.SignedInUsername = string.Empty;
+        _config.SignedInEmail = string.Empty;
+        _config.AvailableClients = [];
+        _config.ActiveClientId = 0;
+        _config.ActiveClientName = string.Empty;
+        _config.ClientId = 0;
+        _config.AgentToken = string.Empty;
+        AvailableClientChoices.Clear();
+        SignedInUsername = string.Empty;
+        SignedInEmail = string.Empty;
+        ActiveClientName = string.Empty;
+        SelectedForward = null;
+        Forwards.Clear();
+        VisibleForwards.Clear();
+        ShowClientPicker = false;
+        ShowSetupWizard = true;
     }
 
     [RelayCommand]

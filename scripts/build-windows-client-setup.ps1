@@ -44,11 +44,76 @@ $ErrorActionPreference = "Stop"
 
 $installDir = Join-Path $env:LOCALAPPDATA "LeiKwan Bridge"
 $payloadDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$sourceRoot = Join-Path $payloadDir "app"
-$sourceBin = Join-Path $sourceRoot "bin"
 $targetBin = Join-Path $installDir "bin"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $backupDir = Join-Path $installDir ("backup-" + $timestamp)
+
+function Resolve-PayloadFile {
+    param(
+        [string]$Name,
+        [string[]]$Candidates
+    )
+
+    foreach ($candidate in $Candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+
+    throw "installer payload missing: $Name"
+}
+
+function Ensure-DesktopShortcut {
+    param(
+        [string]$TargetPath,
+        [string]$WorkingDirectory
+    )
+
+    $desktopDir = $env:LEIKWAN_DESKTOP_DIR
+    if ([string]::IsNullOrWhiteSpace($desktopDir)) {
+        $desktopDir = [Environment]::GetFolderPath([System.Environment+SpecialFolder]::DesktopDirectory)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($desktopDir)) {
+        Write-Warning "desktop directory unavailable; skipping shortcut creation"
+        return
+    }
+
+    New-Item -ItemType Directory -Path $desktopDir -Force | Out-Null
+    $shortcutPath = Join-Path $desktopDir "LeiKwan Bridge.lnk"
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $TargetPath
+    $shortcut.WorkingDirectory = $WorkingDirectory
+    $shortcut.IconLocation = "$TargetPath,0"
+    $shortcut.Description = "LeiKwan Bridge"
+    $shortcut.Save()
+}
+
+$sourceAppExe = Resolve-PayloadFile -Name "leikwan-client-win.exe" -Candidates @(
+    (Join-Path $payloadDir "app\leikwan-client-win.exe"),
+    (Join-Path $payloadDir "leikwan-client-win.exe")
+)
+$sourceWstunnel = Resolve-PayloadFile -Name "wstunnel.exe" -Candidates @(
+    (Join-Path $payloadDir "app\bin\wstunnel.exe"),
+    (Join-Path $payloadDir "bin\wstunnel.exe"),
+    (Join-Path $payloadDir "wstunnel.exe")
+)
+$sourceBond = Resolve-PayloadFile -Name "leikwan-bond.exe" -Candidates @(
+    (Join-Path $payloadDir "app\bin\leikwan-bond.exe"),
+    (Join-Path $payloadDir "bin\leikwan-bond.exe"),
+    (Join-Path $payloadDir "leikwan-bond.exe")
+)
+$sourceIngress = Resolve-PayloadFile -Name "leikwan-ingress.exe" -Candidates @(
+    (Join-Path $payloadDir "app\bin\leikwan-ingress.exe"),
+    (Join-Path $payloadDir "bin\leikwan-ingress.exe"),
+    (Join-Path $payloadDir "leikwan-ingress.exe")
+)
+$sourceUotBond = Resolve-PayloadFile -Name "leikwan-uot-bond.exe" -Candidates @(
+    (Join-Path $payloadDir "app\bin\leikwan-uot-bond.exe"),
+    (Join-Path $payloadDir "bin\leikwan-uot-bond.exe"),
+    (Join-Path $payloadDir "leikwan-uot-bond.exe")
+)
 
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 
@@ -98,17 +163,19 @@ Get-Process -Name "leikwan-client-win" -ErrorAction SilentlyContinue | Stop-Proc
 
 New-Item -ItemType Directory -Path $targetBin -Force | Out-Null
 
-Copy-Item -LiteralPath (Join-Path $sourceRoot "leikwan-client-win.exe") -Destination (Join-Path $installDir "leikwan-client-win.exe") -Force
-Copy-Item -LiteralPath (Join-Path $sourceBin "wstunnel.exe") -Destination (Join-Path $targetBin "wstunnel.exe") -Force
-Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-bond.exe") -Destination (Join-Path $targetBin "leikwan-bond.exe") -Force
-Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-ingress.exe") -Destination (Join-Path $targetBin "leikwan-ingress.exe") -Force
-Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-uot-bond.exe") -Destination (Join-Path $targetBin "leikwan-uot-bond.exe") -Force
+Copy-Item -LiteralPath $sourceAppExe -Destination (Join-Path $installDir "leikwan-client-win.exe") -Force
+Copy-Item -LiteralPath $sourceWstunnel -Destination (Join-Path $targetBin "wstunnel.exe") -Force
+Copy-Item -LiteralPath $sourceBond -Destination (Join-Path $targetBin "leikwan-bond.exe") -Force
+Copy-Item -LiteralPath $sourceIngress -Destination (Join-Path $targetBin "leikwan-ingress.exe") -Force
+Copy-Item -LiteralPath $sourceUotBond -Destination (Join-Path $targetBin "leikwan-uot-bond.exe") -Force
 
 # Keep root-level copies for backward compatibility with older local layouts.
-Copy-Item -LiteralPath (Join-Path $sourceBin "wstunnel.exe") -Destination (Join-Path $installDir "wstunnel.exe") -Force
-Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-bond.exe") -Destination (Join-Path $installDir "leikwan-bond.exe") -Force
-Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-ingress.exe") -Destination (Join-Path $installDir "leikwan-ingress.exe") -Force
-Copy-Item -LiteralPath (Join-Path $sourceBin "leikwan-uot-bond.exe") -Destination (Join-Path $installDir "leikwan-uot-bond.exe") -Force
+Copy-Item -LiteralPath $sourceWstunnel -Destination (Join-Path $installDir "wstunnel.exe") -Force
+Copy-Item -LiteralPath $sourceBond -Destination (Join-Path $installDir "leikwan-bond.exe") -Force
+Copy-Item -LiteralPath $sourceIngress -Destination (Join-Path $installDir "leikwan-ingress.exe") -Force
+Copy-Item -LiteralPath $sourceUotBond -Destination (Join-Path $installDir "leikwan-uot-bond.exe") -Force
+
+Ensure-DesktopShortcut -TargetPath (Join-Path $installDir "leikwan-client-win.exe") -WorkingDirectory $installDir
 
 $manifest = [ordered]@{
     installed_at = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
@@ -120,7 +187,13 @@ $manifest = [ordered]@{
     wstunnel_sha256 = (Get-FileHash (Join-Path $targetBin "wstunnel.exe") -Algorithm SHA256).Hash
     backup_dir = if (Test-Path -LiteralPath $backupDir) { $backupDir } else { "" }
 }
-$manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $installDir "install-manifest.json") -Encoding UTF8
+$manifestPath = Join-Path $installDir "install-manifest.json"
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText(
+    $manifestPath,
+    ($manifest | ConvertTo-Json -Depth 4),
+    $utf8NoBom
+)
 
 Write-Host "Installed LeiKwan Bridge to $installDir"
 if (Test-Path -LiteralPath $backupDir) {
