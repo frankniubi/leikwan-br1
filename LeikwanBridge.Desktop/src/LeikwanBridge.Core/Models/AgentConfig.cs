@@ -14,6 +14,27 @@ public sealed class AgentConfig
     [JsonPropertyName("client_id")]
     public int ClientId { get; set; }
 
+    [JsonPropertyName("desktop_session_token")]
+    public string DesktopSessionToken { get; set; } = "";
+
+    [JsonPropertyName("signed_in_user_id")]
+    public int SignedInUserId { get; set; }
+
+    [JsonPropertyName("signed_in_username")]
+    public string SignedInUsername { get; set; } = "";
+
+    [JsonPropertyName("signed_in_email")]
+    public string SignedInEmail { get; set; } = "";
+
+    [JsonPropertyName("available_clients")]
+    public List<DesktopClientChoice> AvailableClients { get; set; } = [];
+
+    [JsonPropertyName("active_client_id")]
+    public int ActiveClientId { get; set; }
+
+    [JsonPropertyName("active_client_name")]
+    public string ActiveClientName { get; set; } = "";
+
     [JsonPropertyName("state_dir")]
     public string StateDir { get; set; } = "";
 
