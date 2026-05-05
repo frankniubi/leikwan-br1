@@ -49,17 +49,13 @@ public partial class MainWindow : Window
         StateChanged += OnWindowStateChanged;
     }
 
-    private void OnConnect_Click(object sender, RoutedEventArgs e)
+    private async void OnConnect_Click(object sender, RoutedEventArgs e)
     {
         var masterUrl = TxtMasterUrl.Text.Trim();
-        if (!int.TryParse(TxtClientId.Text.Trim(), out int clientId) || clientId <= 0)
-        {
-            SetupStatus.Text = "Invalid Client ID.";
-            return;
-        }
-        var agentToken = TxtAgentToken.Password.Trim();
+        var email = TxtEmail.Text.Trim();
+        var password = TxtPassword.Password.Trim();
 
-        if (string.IsNullOrWhiteSpace(masterUrl) || string.IsNullOrWhiteSpace(agentToken))
+        if (string.IsNullOrWhiteSpace(masterUrl) || string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
         {
             SetupStatus.Text = "All fields are required.";
             return;
@@ -67,16 +63,23 @@ public partial class MainWindow : Window
 
         SetupStatus.Text = FindResource("SetupConnecting") as string ?? "Connecting...";
 
-        App.Config.MasterUrl = masterUrl;
-        App.Config.ClientId = clientId;
-        App.Config.AgentToken = agentToken;
+        try
+        {
+            using var api = new MasterApiClient(masterUrl, string.Empty);
+            var login = await api.DesktopLoginAsync(email, password);
+            _vm.Config.MasterUrl = masterUrl;
+            _vm.CompleteDesktopLogin(login);
 
-        // Save config
-        var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
-        stateManager.SaveConfig(App.ConfigPath, App.Config);
+            var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
+            stateManager.SaveConfig(App.ConfigPath, _vm.Config);
 
-        _vm.Initialize(App.Config);
-        _vm.ConnectCommand.Execute(null);
+            if (!_vm.ShowClientPicker && _vm.PendingClientSelectionId > 0)
+                await ActivateSelectedClientAsync(_vm.PendingClientSelectionId);
+        }
+        catch (Exception ex)
+        {
+            SetupStatus.Text = ex.Message;
+        }
     }
 
     private void OnForwardCardClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -87,12 +90,18 @@ public partial class MainWindow : Window
         }
     }
 
+
+    private async void OnSelectClient_Click(object sender, RoutedEventArgs e)
+    {
+        if (ClientPickerList.SelectedItem is not DesktopClientChoice client)
+            return;
+
+        await ActivateSelectedClientAsync(client.Id);
+    }
+
     private void OnSaveSettings_Click(object sender, RoutedEventArgs e)
     {
         App.Config.MasterUrl = SettMasterUrl.Text.Trim();
-        if (int.TryParse(SettClientId.Text.Trim(), out int cid))
-            App.Config.ClientId = cid;
-        App.Config.AgentToken = SettToken.Text.Trim();
         if (int.TryParse(SettPollInterval.Text.Trim(), out int poll) && poll > 0)
             App.Config.PollIntervalSeconds = poll;
         if (int.TryParse(SettHealthInterval.Text.Trim(), out int health) && health > 0)
@@ -150,8 +159,8 @@ public partial class MainWindow : Window
         SettMasterUrl.Text = string.IsNullOrWhiteSpace(App.Config.MasterUrl)
             ? AppDefaults.DefaultMasterUrl
             : App.Config.MasterUrl;
-        SettClientId.Text = App.Config.ClientId.ToString();
-        SettToken.Text = App.Config.AgentToken;
+        SettSignedInEmail.Text = App.Config.SignedInEmail;
+        SettActiveClientName.Text = App.Config.ActiveClientName;
         SettPollInterval.Text = App.Config.PollIntervalSeconds.ToString();
         SettHealthInterval.Text = App.Config.HealthCheckIntervalSeconds.ToString();
         SettAutoStart.IsChecked = App.Config.AutoStart;
@@ -166,6 +175,56 @@ public partial class MainWindow : Window
                 break;
             }
         }
+    }
+
+    private async Task ActivateSelectedClientAsync(int clientId)
+    {
+        var masterUrl = _vm.Config.MasterUrl;
+        var sessionToken = _vm.Config.DesktopSessionToken;
+        if (string.IsNullOrWhiteSpace(masterUrl) || string.IsNullOrWhiteSpace(sessionToken) || clientId <= 0)
+            return;
+
+        try
+        {
+            _vm.DisconnectCommand.Execute(null);
+
+            using var api = new MasterApiClient(masterUrl, string.Empty);
+            var selection = await api.SelectClientAsync(sessionToken, clientId);
+            _vm.CompleteClientSelection(selection);
+            ClientPickerList.SelectedItem = null;
+
+            var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
+            stateManager.SaveConfig(App.ConfigPath, _vm.Config);
+
+            _vm.Initialize(_vm.Config);
+            PopulateSettings();
+            _vm.ConnectCommand.Execute(null);
+        }
+        catch (Exception ex)
+        {
+            SetupStatus.Text = ex.Message;
+        }
+    }
+
+    private void OnShowClientPicker_Click(object sender, RoutedEventArgs e)
+    {
+        if (_vm.Config.AvailableClients.Count <= 1)
+            return;
+
+        ClientPickerList.ItemsSource = _vm.AvailableClientChoices;
+        _vm.ShowClientPicker = true;
+    }
+
+    private void OnSignOut_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.DisconnectCommand.Execute(null);
+        _vm.SignOutForTests();
+        var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
+        stateManager.SaveConfig(App.ConfigPath, _vm.Config);
+        TxtPassword.Password = string.Empty;
+        TxtEmail.Text = string.Empty;
+        SetupStatus.Text = string.Empty;
+        PopulateSettings();
     }
 
     private static void SetAutoStart(bool enable)

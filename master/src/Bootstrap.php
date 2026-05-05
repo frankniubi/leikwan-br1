@@ -219,6 +219,7 @@ final class Bootstrap
         $this->router->add('GET', '/api/admin/nodes', [$nodes, 'listNodes']);
         $this->router->add('GET', '/api/admin/services', [$services, 'listAllServices']);
         $this->router->add('POST', '/api/client/login', [$clientAgent, 'desktopLogin']);
+$this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopClient']);
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
         $this->router->add('POST', '/api/client/heartbeat', [$clientAgent, 'heartbeat']);
         $this->router->add('POST', '/api/client/diagnostics/result', [$clientAgent, 'diagnosticsResult']);
