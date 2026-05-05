@@ -108,7 +108,7 @@
         "platform": "linux-amd64"
     },
     "windows_client_app": {
-        "version": "0.1.14.0",
+        "version": "0.1.15.0",
         "path": "artifacts/windows/leikwan-bridge-setup.exe",
         "artifact_url": "/artifacts/leikwan-bridge-setup.exe"
     }

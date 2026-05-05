@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private readonly TrayWindowLifecycle _trayLifecycle = new();
     private Forms.NotifyIcon? _trayIcon;
     private bool _trayReady;
+    private readonly WindowsAppUpdateService _updateService = new();
 
     public MainWindow()
     {
@@ -41,10 +42,13 @@ public partial class MainWindow : Window
             ? AppDefaults.DefaultMasterUrl
             : App.Config.MasterUrl;
 
-        Loaded += (_, _) =>
+        Loaded += async (_, _) =>
         {
             EnsureTrayIcon();
+            if (await TryApplyPendingUpdateAsync())
+                return;
             TryAutoConnect();
+            await CheckForUpdatesAsync();
         };
         StateChanged += OnWindowStateChanged;
     }
@@ -225,6 +229,173 @@ public partial class MainWindow : Window
         TxtEmail.Text = string.Empty;
         SetupStatus.Text = string.Empty;
         PopulateSettings();
+    }
+
+
+    private async void OnCheckForUpdates_Click(object sender, RoutedEventArgs e)
+    {
+        await CheckForUpdatesAsync();
+    }
+
+    private async void OnInstallUpdateNow_Click(object sender, RoutedEventArgs e)
+    {
+        if (_vm.AvailableUpdateArtifact == null)
+            return;
+
+        try
+        {
+            var installerPath = await PrepareCachedInstallerAsync(_vm.AvailableUpdateArtifact);
+            ClearPendingUpdateState();
+            LaunchInstallerAndExit(installerPath);
+        }
+        catch (Exception ex)
+        {
+            SetupStatus.Text = ex.Message;
+            Log.Warning(ex, "install-now update flow failed");
+        }
+    }
+
+    private async void OnDeferUpdateUntilRestart_Click(object sender, RoutedEventArgs e)
+    {
+        if (_vm.AvailableUpdateArtifact == null)
+            return;
+
+        try
+        {
+            var artifact = _vm.AvailableUpdateArtifact;
+            var installerPath = await PrepareCachedInstallerAsync(artifact);
+            var sha = WindowsAppUpdateService.ComputeSha256(installerPath);
+            _vm.DeferUpdateForRestartForTests(artifact.Version, installerPath, sha);
+            SaveCurrentConfig();
+        }
+        catch (Exception ex)
+        {
+            SetupStatus.Text = ex.Message;
+            Log.Warning(ex, "deferred update flow failed");
+        }
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(App.Config.MasterUrl))
+                return;
+
+            var artifact = await _updateService.FetchWindowsClientArtifactAsync(App.Config.MasterUrl);
+            var localVersion = GetCurrentAppVersion();
+            App.Config.LastUpdateCheckAt = DateTimeOffset.UtcNow.ToString("O");
+            SaveCurrentConfig();
+            if (WindowsAppUpdateService.IsRemoteVersionNewer(artifact.Version, localVersion))
+            {
+                _vm.PresentUpdatePrompt(artifact);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "update check failed");
+        }
+    }
+
+    private Task<bool> TryApplyPendingUpdateAsync()
+    {
+        if (!WindowsAppUpdateService.HasPendingUpdate(App.Config))
+            return Task.FromResult(false);
+
+        if (!Version.TryParse(App.Config.PendingUpdateVersion, out var pendingVersion))
+        {
+            ClearPendingUpdateState();
+            return Task.FromResult(false);
+        }
+
+        if (Version.TryParse(GetCurrentAppVersion(), out var currentVersion) && currentVersion >= pendingVersion)
+        {
+            ClearPendingUpdateState();
+            return Task.FromResult(false);
+        }
+
+        var path = App.Config.PendingUpdateInstallerPath;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            ClearPendingUpdateState();
+            return Task.FromResult(false);
+        }
+
+        var actualSha = WindowsAppUpdateService.ComputeSha256(path);
+        if (!string.IsNullOrWhiteSpace(App.Config.PendingUpdateSha256)
+            && !string.Equals(actualSha, App.Config.PendingUpdateSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            ClearPendingUpdateState();
+            return Task.FromResult(false);
+        }
+
+        ClearPendingUpdateState();
+        LaunchInstallerAndExit(path);
+        return Task.FromResult(true);
+    }
+
+    private async Task<string> PrepareCachedInstallerAsync(WindowsClientAppArtifact artifact)
+    {
+        var installRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LeiKwan Bridge");
+        var installerPath = WindowsAppUpdateService.BuildCachedInstallerPath(installRoot, artifact.Version);
+
+        if (File.Exists(installerPath))
+        {
+            var cachedSha = WindowsAppUpdateService.ComputeSha256(installerPath);
+            if (string.Equals(cachedSha, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
+                return installerPath;
+        }
+
+        await _updateService.DownloadInstallerAsync(App.Config.MasterUrl.TrimEnd('/') + artifact.ArtifactUrl, installerPath);
+        var downloadedSha = WindowsAppUpdateService.ComputeSha256(installerPath);
+        if (!string.Equals(downloadedSha, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("downloaded installer hash mismatch");
+
+        return installerPath;
+    }
+
+    private void LaunchInstallerAndExit(string installerPath)
+    {
+        _vm.DisconnectCommand.Execute(null);
+        _trayLifecycle.RequestExit();
+        DisposeTrayIcon();
+        var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = installerPath,
+            UseShellExecute = true,
+            WorkingDirectory = Path.GetDirectoryName(installerPath) ?? string.Empty,
+        });
+        if (process == null)
+            throw new InvalidOperationException("failed to launch installer");
+        System.Windows.Application.Current.Shutdown();
+    }
+
+    private void ClearPendingUpdateState()
+    {
+        App.Config.PendingUpdateVersion = string.Empty;
+        App.Config.PendingUpdateInstallerPath = string.Empty;
+        App.Config.PendingUpdateSha256 = string.Empty;
+        App.Config.PendingUpdateDownloadedAt = string.Empty;
+        SaveCurrentConfig();
+    }
+
+    private void SaveCurrentConfig()
+    {
+        var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
+        stateManager.SaveConfig(App.ConfigPath, App.Config);
+    }
+
+    private static string GetCurrentAppVersion()
+    {
+        var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+        if (!string.IsNullOrWhiteSpace(exePath))
+        {
+            var fileVersion = FileVersionInfo.GetVersionInfo(exePath).FileVersion;
+            if (!string.IsNullOrWhiteSpace(fileVersion))
+                return fileVersion;
+        }
+
+        return typeof(App).Assembly.GetName().Version?.ToString() ?? "0.0.0.0";
     }
 
     private static void SetAutoStart(bool enable)
