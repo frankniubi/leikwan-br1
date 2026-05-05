@@ -64,4 +64,25 @@ public sealed class WindowsAppUpdateServiceTests
 
         Assert.EndsWith(@"updates\leikwan-bridge-setup-0.1.15.0.exe", path);
     }
+
+
+    [Fact]
+    public void HasPendingUpdate_ReturnsTrue_WhenConfigContainsInstallerPathAndVersion()
+    {
+        var config = new AgentConfig
+        {
+            PendingUpdateVersion = "0.1.15.0",
+            PendingUpdateInstallerPath = @"C:\Users\demo\AppData\Local\LeiKwan Bridge\updates\leikwan-bridge-setup-0.1.15.0.exe",
+            PendingUpdateSha256 = "ABC123",
+        };
+
+        Assert.True(WindowsAppUpdateService.HasPendingUpdate(config));
+    }
+
+    [Fact]
+    public void HasPendingUpdate_ReturnsFalse_WhenVersionOrInstallerPathMissing()
+    {
+        Assert.False(WindowsAppUpdateService.HasPendingUpdate(new AgentConfig()));
+        Assert.False(WindowsAppUpdateService.HasPendingUpdate(new AgentConfig { PendingUpdateVersion = "0.1.15.0" }));
+    }
 }

@@ -71,6 +71,24 @@
             </Border>
         </Grid>
 
+        <Grid x:Name="UpdatePromptOverlay"
+              Visibility="{Binding ShowUpdatePrompt, Converter={StaticResource BoolToVis}}"
+              Panel.ZIndex="102"
+              Background="#D0F8FAFC">
+            <Border Style="{StaticResource CardBorder}" MaxWidth="520" MaxHeight="360"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel Margin="8">
+                    <TextBlock Text="Update Available" FontSize="22" FontWeight="Bold" Margin="0,0,0,8"/>
+                    <TextBlock Text="{Binding AvailableUpdateVersion, StringFormat=Version {0} is ready to install.}"
+                               Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,16"/>
+                    <Button Style="{StaticResource PrimaryButton}" Content="Install now"
+                            Click="OnInstallUpdateNow_Click" Margin="0,0,0,8"/>
+                    <Button Style="{StaticResource GhostButton}" Content="Wait until next restart"
+                            Click="OnDeferUpdateUntilRestart_Click"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
         <!-- Main Layout -->
         <Grid Visibility="{Binding ShowSetupWizard, Converter={StaticResource InverseBoolToVis}}">
             <Grid.ColumnDefinitions>
@@ -111,6 +129,8 @@
 
                     <!-- Bottom Actions -->
                     <StackPanel DockPanel.Dock="Bottom" Margin="8,0,8,16" VerticalAlignment="Bottom">
+                        <Button Style="{StaticResource NavButton}" Content="Check for Updates"
+                                Click="OnCheckForUpdates_Click"/>
                         <Button Style="{StaticResource NavButton}" Content="Switch Client"
                                 Click="OnShowClientPicker_Click"/>
                         <Button Style="{StaticResource NavButton}" Content="Sign Out"
