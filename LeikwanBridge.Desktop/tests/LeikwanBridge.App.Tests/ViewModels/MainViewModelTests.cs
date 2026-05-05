@@ -139,6 +139,33 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void ShowUpdatePrompt_SetsUpdatePromptState()
+    {
+        var vm = new MainViewModel();
+
+        vm.ShowUpdatePromptForTests("0.1.15.0");
+
+        Assert.True(vm.ShowUpdatePrompt);
+        Assert.Equal("0.1.15.0", vm.AvailableUpdateVersion);
+    }
+
+    [Fact]
+    public void DeferUpdateForRestart_StoresPendingUpdateState()
+    {
+        var vm = new MainViewModel();
+        vm.Initialize(new AgentConfig { MasterUrl = "https://v3-mirror.leikwanhost.com" });
+
+        vm.DeferUpdateForRestartForTests(
+            version: "0.1.15.0",
+            installerPath: @"C:\Users\demo\AppData\Local\LeiKwan Bridge\updates\leikwan-bridge-setup-0.1.15.0.exe",
+            sha256: "ABC123");
+
+        Assert.Equal("0.1.15.0", vm.Config.PendingUpdateVersion);
+        Assert.Equal("ABC123", vm.Config.PendingUpdateSha256);
+        Assert.False(vm.ShowUpdatePrompt);
+    }
+
+    [Fact]
     public void ApplyForwardSnapshot_AutoSelectsMptcpFilter_WhenMptcpForwardExists()
     {
         var vm = new MainViewModel();

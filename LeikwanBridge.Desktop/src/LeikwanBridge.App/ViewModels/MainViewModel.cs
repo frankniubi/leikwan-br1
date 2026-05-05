@@ -22,6 +22,7 @@ public partial class MainViewModel : ObservableObject
     private HealthCheckService? _healthCheckService;
     private WireGuardManager? _wgManager;
     private InstalledRuntimeCleanupService? _installedRuntimeCleanup;
+    private WindowsClientAppArtifact? _availableUpdateArtifact;
 
     [ObservableProperty] private bool _isConnected;
     [ObservableProperty] private string _connectionStatus = "Disconnected";
@@ -37,6 +38,8 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _signedInUsername = "";
     [ObservableProperty] private string _signedInEmail = "";
     [ObservableProperty] private string _activeClientName = "";
+    [ObservableProperty] private bool _showUpdatePrompt;
+    [ObservableProperty] private string _availableUpdateVersion = "";
     [ObservableProperty] private ForwardViewModel? _selectedForward;
 
     public ObservableCollection<ForwardViewModel> Forwards { get; } = [];
@@ -128,6 +131,30 @@ public partial class MainViewModel : ObservableObject
         VisibleForwards.Clear();
         ShowClientPicker = false;
         ShowSetupWizard = true;
+    }
+
+
+    public void ShowUpdatePromptForTests(string version)
+    {
+        AvailableUpdateVersion = version;
+        ShowUpdatePrompt = true;
+    }
+
+    public void PresentUpdatePrompt(WindowsClientAppArtifact artifact)
+    {
+        _availableUpdateArtifact = artifact;
+        AvailableUpdateVersion = artifact.Version;
+        ShowUpdatePrompt = true;
+    }
+
+    public void DeferUpdateForRestartForTests(string version, string installerPath, string sha256)
+    {
+        _config.PendingUpdateVersion = version;
+        _config.PendingUpdateInstallerPath = installerPath;
+        _config.PendingUpdateSha256 = sha256;
+        _config.PendingUpdateDownloadedAt = DateTimeOffset.UtcNow.ToString("O");
+        ShowUpdatePrompt = false;
+        AvailableUpdateVersion = string.Empty;
     }
 
     [RelayCommand]
@@ -271,6 +298,7 @@ public partial class MainViewModel : ObservableObject
     private void ClearLog() => LogEntries.Clear();
 
     public AgentConfig Config => _config;
+    public WindowsClientAppArtifact? AvailableUpdateArtifact => _availableUpdateArtifact;
     public int VisibleForwardCount => VisibleForwards.Count;
 
     public void ApplyForwardSnapshot(IEnumerable<ForwardConfig> forwards, Func<int, bool> isRunning)
