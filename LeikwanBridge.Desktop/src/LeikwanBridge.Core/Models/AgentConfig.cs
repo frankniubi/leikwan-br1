@@ -35,6 +35,21 @@ public sealed class AgentConfig
     [JsonPropertyName("active_client_name")]
     public string ActiveClientName { get; set; } = "";
 
+    [JsonPropertyName("pending_update_version")]
+    public string PendingUpdateVersion { get; set; } = "";
+
+    [JsonPropertyName("pending_update_installer_path")]
+    public string PendingUpdateInstallerPath { get; set; } = "";
+
+    [JsonPropertyName("pending_update_sha256")]
+    public string PendingUpdateSha256 { get; set; } = "";
+
+    [JsonPropertyName("pending_update_downloaded_at")]
+    public string PendingUpdateDownloadedAt { get; set; } = "";
+
+    [JsonPropertyName("last_update_check_at")]
+    public string LastUpdateCheckAt { get; set; } = "";
+
     [JsonPropertyName("state_dir")]
     public string StateDir { get; set; } = "";
 
