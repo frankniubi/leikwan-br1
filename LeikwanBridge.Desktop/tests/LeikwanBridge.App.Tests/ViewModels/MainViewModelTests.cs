@@ -15,12 +15,30 @@ public sealed class MainViewModelTests
         vm.Initialize(new AgentConfig
         {
             MasterUrl = "https://v3.leikwanhost.com",
+            DesktopSessionToken = "desktop-session-token",
+            SignedInEmail = "ops@example.com",
+            ActiveClientId = 1,
+            ActiveClientName = "Client 1",
             ClientId = 1,
             AgentToken = "token",
         });
 
         Assert.False(vm.ShowSetupWizard);
         Assert.True(vm.ShouldAutoConnectOnStartup);
+    }
+
+    [Fact]
+    public void Initialize_WithoutDesktopSession_ShowsLoginScreen()
+    {
+        var vm = new MainViewModel();
+
+        vm.Initialize(new AgentConfig
+        {
+            MasterUrl = "https://v3-mirror.leikwanhost.com",
+        });
+
+        Assert.True(vm.ShowSetupWizard);
+        Assert.False(vm.ShouldAutoConnectOnStartup);
     }
 
     [Fact]

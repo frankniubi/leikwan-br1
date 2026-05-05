@@ -49,8 +49,9 @@ public partial class MainViewModel : ObservableObject
     {
         _config = config;
         ShowSetupWizard = string.IsNullOrWhiteSpace(config.MasterUrl)
+                       || string.IsNullOrWhiteSpace(config.DesktopSessionToken)
                        || string.IsNullOrWhiteSpace(config.AgentToken)
-                       || config.ClientId <= 0;
+                       || config.ActiveClientId <= 0;
     }
 
     [RelayCommand]
