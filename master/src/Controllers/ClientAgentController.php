@@ -8,6 +8,7 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
+use Leikwan\Master\Support\DesktopClientSessionService;
 use Leikwan\Master\Support\ProvisioningService;
 
 final class ClientAgentController extends BaseController
@@ -171,19 +172,51 @@ final class ClientAgentController extends BaseController
             return $this->json(['ok' => false, 'error' => 'no clients assigned to this account'], 403);
         }
 
-        // Return first client's token (user can switch in the UI later)
-        $client = $clients[0];
+        $sessionService = new DesktopClientSessionService($this->db, $this->config);
+        $session = $sessionService->issueForUser((int) $user['id'], (string) $user['email'], (string) ($user['name'] ?? $user['email']));
+
         return $this->json([
             'ok' => true,
-            'token' => (string) $client['agent_token'],
+            'session_token' => (string) $session['session_token'],
             'user_id' => (int) $user['id'],
             'username' => (string) ($user['name'] ?? $user['email']),
-            'client_id' => (int) $client['id'],
-            'client_name' => (string) $client['name'],
+            'email' => (string) $user['email'],
             'clients' => array_map(fn($c) => [
                 'id' => (int) $c['id'],
                 'name' => (string) $c['name'],
             ], $clients),
+        ]);
+    }
+
+    public function selectDesktopClient(Request $request, array $params): Response
+    {
+        $sessionToken = trim((string) $request->input('session_token', ''));
+        $clientId = (int) $request->input('client_id', 0);
+
+        if ($sessionToken === '' || $clientId <= 0) {
+            return $this->json(['ok' => false, 'error' => 'session_token and client_id required'], 400);
+        }
+
+        $sessionService = new DesktopClientSessionService($this->db, $this->config);
+        $session = $sessionService->findActive($sessionToken);
+        if ($session === null) {
+            return $this->json(['ok' => false, 'error' => 'invalid desktop session'], 401);
+        }
+
+        $client = $this->db->fetchOne(
+            'SELECT id, name, agent_token FROM clients WHERE id = :id AND owner_user_id = :user_id AND status = :status LIMIT 1',
+            ['id' => $clientId, 'user_id' => $session['user_id'], 'status' => 'active']
+        );
+
+        if ($client === null) {
+            return $this->json(['ok' => false, 'error' => 'client not found'], 404);
+        }
+
+        return $this->json([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+            'client_name' => (string) $client['name'],
+            'agent_token' => (string) $client['agent_token'],
         ]);
     }
 
