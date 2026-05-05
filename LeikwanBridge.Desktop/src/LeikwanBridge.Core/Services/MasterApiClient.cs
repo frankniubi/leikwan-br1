@@ -30,6 +30,34 @@ public sealed class MasterApiClient : IDisposable
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
+    public async Task<DesktopLoginResponse> DesktopLoginAsync(string email, string password, CancellationToken ct = default)
+    {
+        var url = $"{_masterUrl}/api/client/login";
+        var payload = new { email, password };
+        var json = JsonSerializer.Serialize(payload, JsonOptions);
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
+        var response = await _http.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<DesktopLoginResponse>(body, JsonOptions)
+               ?? throw new InvalidOperationException("null desktop login response");
+    }
+
+    public async Task<ClientSelectionResponse> SelectClientAsync(string sessionToken, int clientId, CancellationToken ct = default)
+    {
+        var url = $"{_masterUrl}/api/client/select";
+        var payload = new { session_token = sessionToken, client_id = clientId };
+        var json = JsonSerializer.Serialize(payload, JsonOptions);
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
+        var response = await _http.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<ClientSelectionResponse>(body, JsonOptions)
+               ?? throw new InvalidOperationException("null client selection response");
+    }
+
     public async Task<PullResponse> PullConfigsAsync(CancellationToken ct = default)
     {
         var url = $"{_masterUrl}/api/client/configs/pull";
