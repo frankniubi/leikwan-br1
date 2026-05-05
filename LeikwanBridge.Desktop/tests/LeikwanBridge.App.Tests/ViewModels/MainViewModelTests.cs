@@ -48,6 +48,97 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void CompleteDesktopLogin_WithSingleClient_StoresPendingSelectionWithoutPicker()
+    {
+        var vm = new MainViewModel();
+        vm.Initialize(new AgentConfig { MasterUrl = "https://v3-mirror.leikwanhost.com" });
+
+        vm.CompleteDesktopLogin(new DesktopLoginResponse
+        {
+            Ok = true,
+            SessionToken = "desktop-session-token",
+            UserId = 8,
+            Email = "ops@example.com",
+            Username = "Ops",
+            Clients =
+            [
+                new DesktopClientChoice { Id = 26, Name = "Client 26" },
+            ],
+        });
+
+        Assert.False(vm.ShowClientPicker);
+        Assert.Equal(26, vm.PendingClientSelectionId);
+    }
+
+    [Fact]
+    public void CompleteDesktopLogin_WithMultipleClients_ShowsPicker()
+    {
+        var vm = new MainViewModel();
+        vm.Initialize(new AgentConfig { MasterUrl = "https://v3-mirror.leikwanhost.com" });
+
+        vm.CompleteDesktopLogin(new DesktopLoginResponse
+        {
+            Ok = true,
+            SessionToken = "desktop-session-token",
+            UserId = 8,
+            Email = "ops@example.com",
+            Username = "Ops",
+            Clients =
+            [
+                new DesktopClientChoice { Id = 26, Name = "Client 26" },
+                new DesktopClientChoice { Id = 27, Name = "Client 27" },
+            ],
+        });
+
+        Assert.True(vm.ShowClientPicker);
+        Assert.Equal(2, vm.AvailableClientChoices.Count);
+    }
+
+    [Fact]
+    public void CompleteClientSelection_StoresActiveClientAndHidesPicker()
+    {
+        var vm = new MainViewModel();
+        vm.Initialize(new AgentConfig { MasterUrl = "https://v3-mirror.leikwanhost.com" });
+
+        vm.CompleteClientSelection(new ClientSelectionResponse
+        {
+            Ok = true,
+            ClientId = 27,
+            ClientName = "Client 27",
+            AgentToken = "agent-token-27",
+        });
+
+        Assert.False(vm.ShowClientPicker);
+        Assert.False(vm.ShowSetupWizard);
+        Assert.Equal(27, vm.Config.ActiveClientId);
+        Assert.Equal("Client 27", vm.Config.ActiveClientName);
+        Assert.Equal("agent-token-27", vm.Config.AgentToken);
+    }
+
+    [Fact]
+    public void SignOutForTests_ClearsSessionAndClientState()
+    {
+        var vm = new MainViewModel();
+        vm.Initialize(new AgentConfig
+        {
+            MasterUrl = "https://v3-mirror.leikwanhost.com",
+            DesktopSessionToken = "desktop-session-token",
+            SignedInEmail = "ops@example.com",
+            ActiveClientId = 26,
+            ActiveClientName = "Client 26",
+            ClientId = 26,
+            AgentToken = "agent-token-26",
+        });
+
+        vm.SignOutForTests();
+
+        Assert.True(vm.ShowSetupWizard);
+        Assert.Equal(string.Empty, vm.Config.DesktopSessionToken);
+        Assert.Equal(0, vm.Config.ActiveClientId);
+        Assert.Equal(string.Empty, vm.Config.AgentToken);
+    }
+
+    [Fact]
     public void ApplyForwardSnapshot_AutoSelectsMptcpFilter_WhenMptcpForwardExists()
     {
         var vm = new MainViewModel();
