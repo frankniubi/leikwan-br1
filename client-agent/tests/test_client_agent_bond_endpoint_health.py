@@ -60,6 +60,16 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             self.assertEqual(entry["role"], "probation")
             self.assertGreater(entry["probation_until"], 60.0)
 
+    def test_record_bond_endpoint_probe_result_tracks_quality_score_from_latency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            first = agent.record_bond_endpoint_probe_result(26, 184, True, 12.0, None, now=100.0)
+            second = agent.record_bond_endpoint_probe_result(26, 185, True, 180.0, None, now=100.0)
+
+            self.assertGreater(first["quality_score"], second["quality_score"])
+            self.assertGreaterEqual(first["quality_score"], 0.9)
+            self.assertLessEqual(second["quality_score"], 0.5)
+
     def test_select_bond_runtime_endpoints_omits_quarantined_nodes_but_keeps_best_bad_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent = self.make_agent(tmp_dir)
@@ -621,6 +631,38 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
 
             self.assertEqual([item["endpoint_id"] for item in selected], [185])
             self.assertEqual(selected[0]["health_role"], "healthy")
+
+    def test_select_bond_runtime_endpoints_cf_limits_healthy_set_to_best_three_by_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            forward = {
+                "forward_id": 40,
+                "mode": "bond",
+                "backend_mode": "cf_mode",
+                "endpoints": [
+                    {"endpoint_id": 254, "host": "8.163.90.132", "port": 7000},
+                    {"endpoint_id": 255, "host": "8.163.69.176", "port": 7000},
+                    {"endpoint_id": 256, "host": "8.163.87.42", "port": 7000},
+                    {"endpoint_id": 257, "host": "8.163.90.235", "port": 7000},
+                    {"endpoint_id": 258, "host": "8.163.71.73", "port": 7000},
+                ],
+                "bonding": {"ws_priority": 10},
+            }
+            agent.save_bond_endpoint_health(
+                {
+                    "40": {
+                        "254": {"role": "healthy", "consecutive_successes": 4, "consecutive_failures": 0, "quality_score": 1.0},
+                        "255": {"role": "healthy", "consecutive_successes": 4, "consecutive_failures": 0, "quality_score": 0.2},
+                        "256": {"role": "healthy", "consecutive_successes": 4, "consecutive_failures": 0, "quality_score": 0.95},
+                        "257": {"role": "healthy", "consecutive_successes": 4, "consecutive_failures": 0, "quality_score": 0.1},
+                        "258": {"role": "healthy", "consecutive_successes": 4, "consecutive_failures": 0, "quality_score": 0.9},
+                    }
+                }
+            )
+
+            selected = agent.select_bond_runtime_endpoints(forward, now=100.0)
+
+            self.assertEqual([item["endpoint_id"] for item in selected], [254, 256, 258])
 
     def test_select_bond_runtime_endpoints_non_cf_bond_ignores_cf_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

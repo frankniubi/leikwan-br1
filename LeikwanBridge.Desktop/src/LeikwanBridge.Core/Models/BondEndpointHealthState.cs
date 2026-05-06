@@ -24,4 +24,7 @@ public sealed class BondEndpointHealthEntry
 
     [JsonPropertyName("last_latency_ms")]
     public double? LastLatencyMs { get; set; }
+
+    [JsonPropertyName("quality_score")]
+    public double QualityScore { get; set; } = 1.0;
 }

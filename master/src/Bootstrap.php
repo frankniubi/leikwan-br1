@@ -248,6 +248,7 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/install-mptcp-sidecar.sh', [$artifacts, 'installBondSidecar']);
         $this->router->add('GET', '/artifacts/uninstall-bond-sidecar.sh', [$artifacts, 'uninstallBondSidecar']);
         $this->router->add('GET', '/artifacts/uninstall-mptcp-sidecar.sh', [$artifacts, 'uninstallBondSidecar']);
+        $this->router->add('GET', '/artifacts/slave-agent-update.sh', [$artifacts, 'slaveAgentUpdate']);
         $this->router->add('GET', '/artifacts/uninstall-client.sh', [$artifacts, 'uninstallClient']);
         $this->router->add('GET', '/artifacts/install-client.ps1', [$artifacts, 'installClientPowerShell']);
         $this->router->add('GET', '/artifacts/manage-client.ps1', [$artifacts, 'manageClientPowerShell']);

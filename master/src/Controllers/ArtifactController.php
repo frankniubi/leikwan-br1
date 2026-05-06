@@ -63,6 +63,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('install/sidecar-agent-update.sh');
     }
 
+    public function slaveAgentUpdate(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/leikwan-slave-update');
+    }
+
     public function uninstallClient(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/uninstall-client.sh');
@@ -239,31 +244,36 @@ final class ArtifactController extends BaseController
 
     public function clientManifest(Request $request, array $params): Response
     {
+        $manifest = $this->manifestFor(
+            'client_installer',
+            'client_installer_windows',
+            'client_manager_windows',
+            'bond_sidecar_installer',
+            'bond_sidecar_uninstaller',
+            'client_agent',
+            'client_agent_installer',
+            'mptcp_client_runtime',
+            'uot_runtime',
+            'uot_bond_runtime',
+            'sidecar_agent',
+            'mptcp_sidecar_runtime',
+            'udp_uot_merge_runtime',
+            'android_client_apk',
+            'windows_client_app',
+            'legacy_client',
+            'wstunnel_linux_amd64',
+            'wstunnel_windows_amd64',
+            'leikwan_bond_linux_amd64',
+            'leikwan_bond_windows_amd64',
+            'leikwan_bond_android_arm64'
+        );
+        if (isset($manifest['windows_client_app']) && is_array($manifest['windows_client_app'])) {
+            $manifest['windows_client_app']['artifact_url'] = (string) (($this->versions()['windows_client_app']['artifact_url'] ?? '') ?: $manifest['windows_client_app']['artifact_url']);
+        }
+
         return Response::json(200, [
             'component' => 'client',
-            'manifest' => $this->manifestFor(
-                'client_installer',
-                'client_installer_windows',
-                'client_manager_windows',
-                'bond_sidecar_installer',
-                'bond_sidecar_uninstaller',
-                'client_agent',
-                'client_agent_installer',
-                'mptcp_client_runtime',
-                'uot_runtime',
-                'uot_bond_runtime',
-                'sidecar_agent',
-                'mptcp_sidecar_runtime',
-                'udp_uot_merge_runtime',
-                'android_client_apk',
-                'windows_client_app',
-                'legacy_client',
-                'wstunnel_linux_amd64',
-                'wstunnel_windows_amd64',
-                'leikwan_bond_linux_amd64',
-                'leikwan_bond_windows_amd64',
-                'leikwan_bond_android_arm64'
-            ),
+            'manifest' => $manifest,
         ]);
     }
 

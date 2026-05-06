@@ -166,6 +166,28 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void ReportNoUpdateAvailable_SetsVisibleStatusMessage()
+    {
+        var vm = new MainViewModel();
+
+        vm.ReportNoUpdateAvailableForTests("0.1.15.0");
+
+        Assert.Equal("Already up to date (0.1.15.0).", vm.ConnectionStatus);
+        Assert.False(vm.ShowUpdatePrompt);
+    }
+
+    [Fact]
+    public void ReportUpdateCheckFailed_SetsVisibleStatusMessage()
+    {
+        var vm = new MainViewModel();
+
+        vm.ReportUpdateCheckFailedForTests("manifest unreachable");
+
+        Assert.Equal("Update check failed: manifest unreachable", vm.ConnectionStatus);
+        Assert.False(vm.ShowUpdatePrompt);
+    }
+
+    [Fact]
     public void ApplyForwardSnapshot_AutoSelectsMptcpFilter_WhenMptcpForwardExists()
     {
         var vm = new MainViewModel();
