@@ -553,7 +553,7 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
                     "warmup_slice_bytes": 65536,
                     "warmup_leg_delay_ms": 20,
                     "bulk_promote_bytes": 262144,
-                    "leg_cooldown_ms": 3000,
+                    "leg_cooldown_ms": 1800000,
                     "quic_enabled": False,
                     "quic_via_slave": False,
                     "wss_standby_enabled": True,
@@ -570,7 +570,7 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
         self.assertIn("--warmup-slice-bytes 65536", script)
         self.assertIn("--warmup-leg-delay-ms 20", script)
         self.assertIn("--bulk-promote-bytes 262144", script)
-        self.assertIn("--leg-cooldown-ms 3000", script)
+        self.assertIn("--leg-cooldown-ms 1800000", script)
 
     def test_remote_plain_tcp_ready_probe_uses_ping(self) -> None:
         sent_payloads: list[bytes] = []

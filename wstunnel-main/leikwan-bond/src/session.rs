@@ -31,7 +31,7 @@ const UDP_MAX_REASSEMBLED_BYTES: usize = 1024 * 1024;
 const DEFAULT_TCP_LEG_RTT: Duration = Duration::from_millis(120);
 const DEFAULT_QUIC_LEG_RTT: Duration = Duration::from_millis(35);
 const DEFAULT_INTERACTIVE_RTT_SLACK: Duration = Duration::from_millis(30);
-const CLIENT_LEG_RETRY_BACKOFF: Duration = Duration::from_millis(300);
+const CLIENT_LEG_RETRY_BACKOFF: Duration = Duration::from_secs(30 * 60);
 const MIN_TRANSPORT_RESUME_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_TRANSPORT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CLIENT_TCP_LEG_JOIN_GRACE: Duration = Duration::from_millis(600);
@@ -4789,8 +4789,18 @@ mod tests {
             warmup_slice_bytes: 65536,
             warmup_leg_delay: Duration::from_millis(80),
             bulk_promote_bytes: 262144,
-            leg_cooldown: Duration::from_millis(3000),
+            leg_cooldown: Duration::from_millis(1800000),
         }
+    }
+
+    #[test]
+    fn client_leg_retry_backoff_is_extended_beyond_subsecond_thrashing() {
+        assert_eq!(CLIENT_LEG_RETRY_BACKOFF, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn default_leg_cooldown_is_extended_to_thirty_minutes() {
+        assert_eq!(test_config().leg_cooldown, Duration::from_secs(30 * 60));
     }
 
     #[test]

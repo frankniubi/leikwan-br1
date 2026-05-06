@@ -10,7 +10,7 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class ConfigPollingServiceTests
 {
     [Fact]
-    public async Task SyncOnceAsync_PublishesPullStateBeforeApplyingForwards()
+    public async Task SyncOnceAsync_PublishesPullStateAndAppliesForwardsBeforePublishingSnapshot()
     {
         using var tempDir = new TempStateDirectory();
         using var server = new PullApiServer(BuildPullResponseJson());
@@ -32,7 +32,7 @@ public sealed class ConfigPollingServiceTests
 
         await service.SyncOnceAsync();
 
-        Assert.Equal(["pull-state", "forwards", "apply:26"], order);
+        Assert.Equal(["pull-state", "apply:26", "forwards"], order);
     }
 
     [Fact]
@@ -144,7 +144,7 @@ public sealed class ConfigPollingServiceTests
                 "warmup_slice_bytes": 65536,
                 "warmup_leg_delay_ms": 80,
                 "bulk_promote_bytes": 262144,
-                "leg_cooldown_ms": 3000,
+                "leg_cooldown_ms": 1800000,
                 "disable_local_rate_limit": true,
                 "quic_enabled": false,
                 "quic_via_slave": false,

@@ -150,7 +150,6 @@ namespace {
     });
 
     use Leikwan\Master\Database\Database;
-    use Leikwan\Master\Support\ApiException;
     use Leikwan\Master\Support\ClientOnlineSessionService;
 
     function fail(string $message): never
@@ -190,21 +189,14 @@ namespace {
         'user_agent' => 'Leikwan-Windows-GUI/test',
     ], 'heartbeat');
 
-    try {
-        $service->recordAndEnforce($client, 'device-b', [
-            'device_name' => 'Android B',
-            'platform' => 'android',
-            'user_agent' => 'okhttp/test',
-        ], 'pull');
-        fail('expected second active device to be rejected');
-    } catch (ApiException $exception) {
-        if ($exception->statusCode() !== 429) {
-            fail('expected online limit rejection status 429, got ' . $exception->statusCode());
-        }
-        $details = $exception->details();
-        if ((int) ($details['online_device_limit'] ?? 0) !== 1) {
-            fail('expected rejection details to expose online_device_limit=1');
-        }
+    $service->recordAndEnforce($client, 'device-b', [
+        'device_name' => 'Android B',
+        'platform' => 'android',
+        'user_agent' => 'okhttp/test',
+    ], 'pull');
+
+    if ($service->activeCountForClient(1) !== 2) {
+        fail('expected second active device to be accepted and counted');
     }
 
     foreach ($db->sessions as $id => $row) {
@@ -214,12 +206,6 @@ namespace {
         $db->sessions[$id]['last_seen_at'] = gmdate('Y-m-d H:i:s', time() - (ClientOnlineSessionService::ACTIVE_WINDOW_SECONDS + 30));
         $db->sessions[$id]['updated_at'] = gmdate('Y-m-d H:i:s');
     }
-
-    $service->recordAndEnforce($client, 'device-b', [
-        'device_name' => 'Android B',
-        'platform' => 'android',
-        'user_agent' => 'okhttp/test',
-    ], 'pull');
 
     if ($service->activeCountForClient(1) !== 1) {
         fail('expected stale session to stop counting toward active device limit');

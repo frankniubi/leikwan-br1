@@ -37,7 +37,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                 agent.record_bond_endpoint_probe_result(26, 184, False, None, "timeout", now=100.0)
             entry = agent.load_bond_endpoint_health()["26"]["184"]
             self.assertEqual(entry["role"], "quarantined")
-            self.assertGreater(entry["quarantine_until"], 100.0)
+            self.assertEqual(entry["quarantine_until"], 100.0 + (30.0 * 60.0))
 
     def test_bond_endpoint_reenters_as_probation_before_healthy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -55,10 +55,18 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                 }
             }
             agent.save_bond_endpoint_health(health)
-            agent.record_bond_endpoint_probe_result(26, 184, True, 12.0, None, now=60.0)
+            agent.record_bond_endpoint_probe_result(26, 184, True, 12.0, None, now=50.0 + (30.0 * 60.0) + 10.0)
             entry = agent.load_bond_endpoint_health()["26"]["184"]
             self.assertEqual(entry["role"], "probation")
-            self.assertGreater(entry["probation_until"], 60.0)
+            self.assertGreater(entry["probation_until"], 50.0 + (30.0 * 60.0) + 10.0)
+
+    def test_force_bond_endpoint_quarantine_holds_endpoint_for_thirty_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            entry = agent.force_bond_endpoint_quarantine(26, 184, "cf_bond_leg_probe_failed", None, now=250.0)
+
+            self.assertEqual(entry["role"], "quarantined")
+            self.assertEqual(entry["quarantine_until"], 250.0 + (30.0 * 60.0))
 
     def test_record_bond_endpoint_probe_result_tracks_quality_score_from_latency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -351,6 +359,56 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             self.assertEqual(error, "udp listener probe failed: listener_not_found")
             tcp_mock.assert_called_once_with(11024)
             listener_mock.assert_called_once_with(11024, "udp")
+
+    def test_cf_bond_one_leg_connect_probe_uses_thirty_minute_leg_cooldown_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            forward = {
+                "forward_id": 26,
+                "bonding": {
+                    "session_token": "session-token-1",
+                },
+            }
+            endpoint = {
+                "endpoint_id": 184,
+                "host": "8.163.90.132",
+            }
+
+            created_commands: list[list[str]] = []
+
+            class FakeProcess:
+                def __init__(self):
+                    self.stderr = mock.Mock(read=mock.Mock(return_value=""))
+                    self.returncode = 0
+
+                def poll(self):
+                    return 0
+
+                def terminate(self):
+                    return None
+
+                def wait(self, timeout=None):  # noqa: ANN001
+                    return 0
+
+                def kill(self):
+                    return None
+
+            with mock.patch.object(client_agent_module.pathlib.Path, "exists", return_value=True):
+                with mock.patch.object(client_agent_module.socket, "socket") as socket_ctor:
+                    fake_bind_sock = mock.MagicMock()
+                    fake_bind_sock.__enter__.return_value = fake_bind_sock
+                    fake_bind_sock.getsockname.return_value = ("127.0.0.1", 31000)
+                    socket_ctor.return_value = fake_bind_sock
+                    with mock.patch.object(client_agent_module.subprocess, "Popen", side_effect=lambda cmd, **kwargs: created_commands.append(cmd) or FakeProcess()):
+                        ok, latency_ms, error = agent.cf_bond_one_leg_connect_probe(forward, endpoint, 0)
+
+            self.assertFalse(ok)
+            self.assertIsNone(latency_ms)
+            self.assertEqual(error, "bond_probe_exit_0")
+            self.assertTrue(created_commands)
+            self.assertIn("--leg-cooldown-ms", created_commands[0])
+            index = created_commands[0].index("--leg-cooldown-ms")
+            self.assertEqual(created_commands[0][index + 1], "1800000")
 
     def test_remote_ready_probe_prefers_curl_for_wss_ready_check(self) -> None:
         with mock.patch.object(client_agent_module.shutil, "which", side_effect=lambda name: "/usr/bin/curl" if name == "curl" else None):

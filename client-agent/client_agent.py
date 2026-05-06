@@ -19,6 +19,8 @@ import urllib.request
 
 AGENT_VERSION = "2026.04.27.2"
 UPDATE_RETRY_SECONDS = 300
+CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
+CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
 UPDATE_STALE_SECONDS = 900
 INVALID_FORWARD_LOG_INTERVAL_SECONDS = 600
 DEFAULT_MANAGED_CONFIG = {
@@ -1436,7 +1438,10 @@ class ClientAgent:
                 entry["quality_score"] = round(max(0.1, 1.0 - (clamped / 200.0)), 4)
             if float(entry.get("quarantine_until", 0.0) or 0.0) > 0:
                 entry["role"] = "probation"
-                entry["probation_until"] = max(float(entry.get("probation_until", 0.0) or 0.0), now + 60.0)
+                entry["probation_until"] = max(
+                    float(entry.get("probation_until", 0.0) or 0.0),
+                    now + CLIENT_BOND_ENDPOINT_PROBATION_SECONDS,
+                )
                 entry["quarantine_until"] = 0.0
             elif int(entry["consecutive_successes"]) >= 3:
                 entry["role"] = "healthy"
@@ -1447,12 +1452,15 @@ class ClientAgent:
             entry["last_error"] = error or "probe_failed"
             if int(entry["consecutive_failures"]) >= 3:
                 entry["role"] = "quarantined"
-                entry["quarantine_until"] = now + 90.0
+                entry["quarantine_until"] = now + CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS
                 entry["probation_until"] = 0.0
                 entry["quality_score"] = 0.0
             elif int(entry["consecutive_failures"]) >= 2:
                 entry["role"] = "probation"
-                entry["probation_until"] = max(float(entry.get("probation_until", 0.0) or 0.0), now + 60.0)
+                entry["probation_until"] = max(
+                    float(entry.get("probation_until", 0.0) or 0.0),
+                    now + CLIENT_BOND_ENDPOINT_PROBATION_SECONDS,
+                )
                 entry["quality_score"] = min(float(entry.get("quality_score", 1.0) or 1.0), 0.5)
 
         self.save_bond_endpoint_health(health)
@@ -1484,7 +1492,7 @@ class ClientAgent:
         entry["role"] = "quarantined"
         entry["consecutive_failures"] = max(3, int(entry.get("consecutive_failures", 0) or 0) + 1)
         entry["consecutive_successes"] = 0
-        entry["quarantine_until"] = now + 90.0
+        entry["quarantine_until"] = now + CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS
         entry["probation_until"] = 0.0
         entry["last_error"] = error or "cf_bond_leg_probe_failed"
         entry["last_latency_ms"] = latency_ms
@@ -1621,7 +1629,7 @@ class ClientAgent:
             "--bulk-promote-bytes",
             str(int(bonding.get("bulk_promote_bytes", 262144) or 262144)),
             "--leg-cooldown-ms",
-            str(int(bonding.get("leg_cooldown_ms", 3000) or 3000)),
+            str(int(bonding.get("leg_cooldown_ms", 1800000) or 1800000)),
         ]
         process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         started = time.time()

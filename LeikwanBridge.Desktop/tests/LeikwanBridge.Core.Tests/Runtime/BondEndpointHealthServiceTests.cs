@@ -21,7 +21,7 @@ public sealed class BondEndpointHealthServiceTests
     }
 
     [Fact]
-    public void SelectRuntimeEndpoints_CfBond_UsesSingleProbationEndpointWhenNoHealthyExists()
+    public void SelectRuntimeEndpoints_CfBond_UsesSingleProbationEndpointWhenOnlyOlderQuarantineHasExpired()
     {
         using var tempDir = new TempStateDirectory();
         var stateManager = new StateManager(tempDir.Path);
@@ -29,7 +29,7 @@ public sealed class BondEndpointHealthServiceTests
         service.ForceQuarantine(47, 316, "failed-a", null, nowUnixSeconds: 1_000);
         service.ForceQuarantine(47, 317, "failed-b", null, nowUnixSeconds: 900);
 
-        var selected = service.SelectRuntimeEndpoints(CreateCfBondForward(), nowUnixSeconds: 1_001);
+        var selected = service.SelectRuntimeEndpoints(CreateCfBondForward(), nowUnixSeconds: 2_701);
 
         Assert.Single(selected);
         Assert.Equal(317, selected[0].EndpointId);
@@ -38,7 +38,7 @@ public sealed class BondEndpointHealthServiceTests
     }
 
     [Fact]
-    public void RecordProbeResult_ThirdCfFailureQuarantinesEndpointForNinetySeconds()
+    public void RecordProbeResult_ThirdCfFailureQuarantinesEndpointForThirtyMinutes()
     {
         using var tempDir = new TempStateDirectory();
         var stateManager = new StateManager(tempDir.Path);
@@ -50,8 +50,21 @@ public sealed class BondEndpointHealthServiceTests
 
         Assert.Equal("quarantined", entry.Role);
         Assert.Equal(3, entry.ConsecutiveFailures);
-        Assert.Equal(2_092, entry.QuarantineUntil);
+        Assert.Equal(3_802, entry.QuarantineUntil);
         Assert.Equal("three", entry.LastError);
+    }
+
+    [Fact]
+    public void ForceQuarantine_HoldsEndpointForThirtyMinutes()
+    {
+        using var tempDir = new TempStateDirectory();
+        var stateManager = new StateManager(tempDir.Path);
+        var service = new BondEndpointHealthService(stateManager);
+
+        var entry = service.ForceQuarantine(47, 316, "cf_bond_leg_probe_failed", null, nowUnixSeconds: 10_000);
+
+        Assert.Equal("quarantined", entry.Role);
+        Assert.Equal(11_800, entry.QuarantineUntil);
     }
 
     [Fact]
