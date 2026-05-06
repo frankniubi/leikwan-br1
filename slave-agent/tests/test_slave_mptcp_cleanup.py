@@ -185,6 +185,35 @@ class SlaveMptcpCleanupTests(unittest.TestCase):
 
         self.assertEqual(events, ["ack", "handle", "result", "update"])
 
+    def test_apply_management_state_does_not_schedule_duplicate_update_while_running(self) -> None:
+        agent = self.make_agent()
+        now = 1778067400.0
+        agent.save_update_state(
+            {
+                "request_token": "auto-release:agent=2026.04.27.1",
+                "status": "running",
+                "last_attempt_at": now,
+                "last_started_at": now,
+            }
+        )
+
+        management = {
+            "agent_config_json": {},
+            "agent_update_request_token": "auto-slave-agent:version=2026.04.27.1",
+            "desired_agent_version": "2026.04.27.1",
+            "desired_agent_sha256": "b86a5ee57afbee50a6e5a24fca383184c4c2bf02acd0feb28c5a1c0a1379f995",
+            "desired_installer_version": "2026.04.24.1",
+        }
+
+        with mock.patch.object(slave_agent_module.time, "time", return_value=now + 5):
+            with mock.patch.object(agent, "request_self_update") as update_mock:
+                agent.apply_management_state(management)
+
+        update_mock.assert_not_called()
+        update_state = agent.load_update_state()
+        self.assertEqual(update_state.get("request_token"), "auto-release:agent=2026.04.27.1")
+        self.assertEqual(update_state.get("status"), "running")
+
 
 if __name__ == "__main__":
     unittest.main()

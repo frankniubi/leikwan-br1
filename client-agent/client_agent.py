@@ -1420,6 +1420,7 @@ class ClientAgent:
                 "probation_until": 0.0,
                 "last_error": "",
                 "last_latency_ms": None,
+                "quality_score": 1.0,
             },
         )
 
@@ -1428,6 +1429,11 @@ class ClientAgent:
             entry["consecutive_failures"] = 0
             entry["last_error"] = ""
             entry["last_latency_ms"] = latency_ms
+            if latency_ms is None:
+                entry["quality_score"] = 1.0
+            else:
+                clamped = max(0.0, min(float(latency_ms), 200.0))
+                entry["quality_score"] = round(max(0.1, 1.0 - (clamped / 200.0)), 4)
             if float(entry.get("quarantine_until", 0.0) or 0.0) > 0:
                 entry["role"] = "probation"
                 entry["probation_until"] = max(float(entry.get("probation_until", 0.0) or 0.0), now + 60.0)
@@ -1443,9 +1449,11 @@ class ClientAgent:
                 entry["role"] = "quarantined"
                 entry["quarantine_until"] = now + 90.0
                 entry["probation_until"] = 0.0
+                entry["quality_score"] = 0.0
             elif int(entry["consecutive_failures"]) >= 2:
                 entry["role"] = "probation"
                 entry["probation_until"] = max(float(entry.get("probation_until", 0.0) or 0.0), now + 60.0)
+                entry["quality_score"] = min(float(entry.get("quality_score", 1.0) or 1.0), 0.5)
 
         self.save_bond_endpoint_health(health)
         return entry
@@ -1470,6 +1478,7 @@ class ClientAgent:
                 "probation_until": 0.0,
                 "last_error": "",
                 "last_latency_ms": None,
+                "quality_score": 1.0,
             },
         )
         entry["role"] = "quarantined"
@@ -1479,6 +1488,7 @@ class ClientAgent:
         entry["probation_until"] = 0.0
         entry["last_error"] = error or "cf_bond_leg_probe_failed"
         entry["last_latency_ms"] = latency_ms
+        entry["quality_score"] = 0.0
         self.save_bond_endpoint_health(health)
         return entry
 
@@ -1512,6 +1522,7 @@ class ClientAgent:
                 "probation_until": probation_until,
                 "last_error": runtime_reason,
                 "last_latency_ms": None,
+                "quality_score": 1.0 if role == "healthy" else (0.5 if role == "probation" else 0.0),
             },
         )
 
@@ -1666,6 +1677,7 @@ class ClientAgent:
                 role = "healthy"
 
             endpoint["health_role"] = role
+            endpoint["quality_score"] = float(entry.get("quality_score", 1.0 if role == "healthy" else (0.5 if role == "probation" else 0.0)) or 0.0)
             if role == "healthy":
                 endpoint["dynamic_priority"] = base_priority
             elif role == "probation":
@@ -1678,8 +1690,8 @@ class ClientAgent:
         if is_cf_bond:
             healthy = [item for item in decorated if item["health_role"] == "healthy"]
             if healthy:
-                healthy.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
-                return healthy
+                healthy.sort(key=lambda item: (-float(item.get("quality_score", 0.0) or 0.0), int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+                return healthy[:3]
 
             probation = [item for item in decorated if item["health_role"] == "probation"]
             if probation:

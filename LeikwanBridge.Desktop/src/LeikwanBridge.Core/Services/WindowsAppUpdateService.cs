@@ -28,6 +28,15 @@ public sealed class WindowsAppUpdateService
             && !string.IsNullOrWhiteSpace(config.PendingUpdateInstallerPath);
     }
 
+    public static string ResolveArtifactUrl(string masterUrl, string artifactUrl)
+    {
+        if (string.IsNullOrWhiteSpace(artifactUrl))
+            return string.Empty;
+        if (Uri.TryCreate(artifactUrl, UriKind.Absolute, out var absolute))
+            return absolute.ToString();
+        return masterUrl.TrimEnd('/') + "/" + artifactUrl.TrimStart('/');
+    }
+
     public async Task<WindowsClientAppArtifact> FetchWindowsClientArtifactAsync(string masterUrl, CancellationToken ct = default)
     {
         var url = masterUrl.TrimEnd('/') + "/artifacts/client-manifest.json";

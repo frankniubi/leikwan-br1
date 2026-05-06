@@ -65,6 +65,26 @@ public sealed class WindowsAppUpdateServiceTests
         Assert.EndsWith(@"updates\leikwan-bridge-setup-0.1.15.0.exe", path);
     }
 
+    [Fact]
+    public void ResolveArtifactUrl_CombinesRelativeArtifactPathWithMasterUrl()
+    {
+        var url = WindowsAppUpdateService.ResolveArtifactUrl(
+            "https://v3-mirror.leikwanhost.com",
+            "/artifacts/leikwan-bridge-setup.exe");
+
+        Assert.Equal("https://v3-mirror.leikwanhost.com/artifacts/leikwan-bridge-setup.exe", url);
+    }
+
+    [Fact]
+    public void ResolveArtifactUrl_PreservesAbsoluteArtifactUrl()
+    {
+        var url = WindowsAppUpdateService.ResolveArtifactUrl(
+            "https://v3-mirror.leikwanhost.com",
+            "https://cdn.example.com/leikwan-bridge-setup.exe");
+
+        Assert.Equal("https://cdn.example.com/leikwan-bridge-setup.exe", url);
+    }
+
 
     [Fact]
     public void HasPendingUpdate_ReturnsTrue_WhenConfigContainsInstallerPathAndVersion()

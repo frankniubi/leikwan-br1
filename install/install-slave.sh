@@ -133,6 +133,15 @@ ensure_time_sync() {
   fi
 }
 
+download_atomic() {
+  local url="$1"
+  local path="$2"
+  local tmp_path="${path}.new"
+  curl -fsSL "$url" -o "$tmp_path"
+  chmod 0755 "$tmp_path"
+  mv "$tmp_path" "$path"
+}
+
 json_config_value() {
   local key="$1"
   local default_value="${2:-}"
@@ -293,20 +302,14 @@ ensure_time_sync
 install_wireguard_tools
 
 mkdir -p "$CONFIG_DIR" "$BIN_DIR"
-curl -fsSL "$MASTER_URL/artifacts/slave-agent.py" -o "$BIN_DIR/leikwan-slave-agent.py"
-curl -fsSL "$MASTER_URL/artifacts/leikwan-uot.py" -o "$BIN_DIR/leikwan-uot.py"
-curl -fsSL "https://github.com/erebe/wstunnel/releases/download/v10.5.2/wstunnel_10.5.2_linux_amd64.tar.gz" -o /tmp/wstunnel.tar.gz
-tar -xzf /tmp/wstunnel.tar.gz -C /tmp
-cp /tmp/wstunnel "$BIN_DIR/wstunnel"
-curl -fsSL "$MASTER_URL/artifacts/wstunnel/leikwan-ingress_linux_amd64" -o "$BIN_DIR/leikwan-ingress"
-chmod 0755 "$BIN_DIR/leikwan-slave-agent.py"
-chmod 0755 "$BIN_DIR/leikwan-uot.py"
-chmod 0755 "$BIN_DIR/wstunnel"
-chmod 0755 "$BIN_DIR/leikwan-ingress"
+download_atomic "$MASTER_URL/artifacts/slave-agent.py" "$BIN_DIR/leikwan-slave-agent.py"
+download_atomic "$MASTER_URL/artifacts/slave-agent-update.sh" "$BIN_DIR/leikwan-slave-update"
+download_atomic "$MASTER_URL/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
+download_atomic "$MASTER_URL/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
+download_atomic "$MASTER_URL/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
 
 # --- WireGuard watchdog ---
-curl -fsSL "$MASTER_URL/artifacts/leikwan-wg-watchdog.sh" -o "$BIN_DIR/leikwan-wg-watchdog.sh"
-chmod 0755 "$BIN_DIR/leikwan-wg-watchdog.sh"
+download_atomic "$MASTER_URL/artifacts/leikwan-wg-watchdog.sh" "$BIN_DIR/leikwan-wg-watchdog.sh"
 cat > /etc/systemd/system/leikwan-wg-watchdog.service <<'WDUNIT'
 [Unit]
 Description=Leikwan WireGuard Watchdog

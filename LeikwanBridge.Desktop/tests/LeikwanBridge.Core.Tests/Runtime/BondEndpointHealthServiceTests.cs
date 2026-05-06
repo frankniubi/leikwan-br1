@@ -54,6 +54,45 @@ public sealed class BondEndpointHealthServiceTests
         Assert.Equal("three", entry.LastError);
     }
 
+    [Fact]
+    public void RecordProbeResult_TracksQualityScoreFromLatency()
+    {
+        using var tempDir = new TempStateDirectory();
+        var stateManager = new StateManager(tempDir.Path);
+        var service = new BondEndpointHealthService(stateManager);
+
+        var fast = service.RecordProbeResult(47, 316, ok: true, latencyMs: 12.0, error: null, nowUnixSeconds: 3_000);
+        var slow = service.RecordProbeResult(47, 317, ok: true, latencyMs: 180.0, error: null, nowUnixSeconds: 3_000);
+
+        Assert.True(fast.QualityScore > slow.QualityScore);
+        Assert.True(fast.QualityScore >= 0.9);
+        Assert.True(slow.QualityScore <= 0.5);
+    }
+
+    [Fact]
+    public void SelectRuntimeEndpoints_CfBond_LimitsHealthySetToBestThreeByPriority()
+    {
+        using var tempDir = new TempStateDirectory();
+        var stateManager = new StateManager(tempDir.Path);
+        var service = new BondEndpointHealthService(stateManager);
+
+        stateManager.SaveBondEndpointHealth(new Dictionary<string, Dictionary<string, BondEndpointHealthEntry>>
+        {
+            ["40"] = new()
+            {
+                ["254"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 1.0 },
+                ["255"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 0.2 },
+                ["256"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 0.95 },
+                ["257"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 0.1 },
+                ["258"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 0.9 },
+            }
+        });
+
+        var selected = service.SelectRuntimeEndpoints(CreateCfBondForwardWithFiveHealthyLegs(), nowUnixSeconds: 5_000);
+
+        Assert.Equal([254, 256, 258], selected.Select(endpoint => endpoint.EndpointId).ToList());
+    }
+
     private static ForwardConfig CreateCfBondForward()
     {
         return new ForwardConfig
@@ -90,6 +129,34 @@ public sealed class BondEndpointHealthServiceTests
                 RouteKey = "forward-47",
                 SessionToken = "tcp-session",
                 RemoteTarget = "127.0.0.1:8899",
+                WsPriority = 10,
+            },
+        };
+    }
+
+    private static ForwardConfig CreateCfBondForwardWithFiveHealthyLegs()
+    {
+        return new ForwardConfig
+        {
+            ForwardId = 40,
+            BackendMode = "cf_mode",
+            Mode = "bond",
+            ListenPort = 11030,
+            Transport = "tcp",
+            Endpoints =
+            [
+                new EndpointConfig { EndpointId = 254, Host = "8.163.90.132", Port = 7000, DynamicPriority = 10 },
+                new EndpointConfig { EndpointId = 255, Host = "8.163.69.176", Port = 7000, DynamicPriority = 10 },
+                new EndpointConfig { EndpointId = 256, Host = "8.163.87.42", Port = 7000, DynamicPriority = 10 },
+                new EndpointConfig { EndpointId = 257, Host = "8.163.90.235", Port = 7000, DynamicPriority = 10 },
+                new EndpointConfig { EndpointId = 258, Host = "8.163.71.73", Port = 7000, DynamicPriority = 10 },
+            ],
+            Bonding = new BondingConfig
+            {
+                IngressMode = "plain_tcp_mux",
+                RouteKey = "forward-40",
+                SessionToken = "tcp-session",
+                RemoteTarget = "45.196.220.47:5201",
                 WsPriority = 10,
             },
         };
