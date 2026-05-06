@@ -50,16 +50,6 @@ final class ClientOnlineSessionService
         );
 
         if ($existing === null) {
-            $limit = max(1, (int) ($client['online_device_limit'] ?? 1));
-            $activeCount = $this->activeCountForClient($clientId);
-            if ($activeCount >= $limit) {
-                throw new ApiException('client_online_limit_reached', 429, [
-                    'client_id' => $clientId,
-                    'online_device_limit' => $limit,
-                    'active_online_devices' => $activeCount,
-                ]);
-            }
-
             $this->db->insert('client_device_sessions', [
                 'client_id' => $clientId,
                 'device_id' => $deviceId,

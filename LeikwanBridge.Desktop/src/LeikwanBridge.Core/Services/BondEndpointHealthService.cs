@@ -5,6 +5,8 @@ namespace LeikwanBridge.Core.Services;
 
 public sealed class BondEndpointHealthService
 {
+    private const double ProbationSeconds = 60;
+    private const double QuarantineSeconds = 30 * 60;
     private readonly StateManager _stateManager;
 
     public BondEndpointHealthService(StateManager stateManager)
@@ -35,7 +37,7 @@ public sealed class BondEndpointHealthService
             if (entry.QuarantineUntil > 0)
             {
                 entry.Role = "probation";
-                entry.ProbationUntil = Math.Max(entry.ProbationUntil, now + 60);
+                entry.ProbationUntil = Math.Max(entry.ProbationUntil, now + ProbationSeconds);
                 entry.QuarantineUntil = 0;
             }
             else if (entry.ConsecutiveSuccesses >= 3)
@@ -53,14 +55,14 @@ public sealed class BondEndpointHealthService
             if (entry.ConsecutiveFailures >= 3)
             {
                 entry.Role = "quarantined";
-                entry.QuarantineUntil = now + 90;
+                entry.QuarantineUntil = now + QuarantineSeconds;
                 entry.ProbationUntil = 0;
                 entry.QualityScore = 0.0;
             }
             else if (entry.ConsecutiveFailures >= 2)
             {
                 entry.Role = "probation";
-                entry.ProbationUntil = Math.Max(entry.ProbationUntil, now + 60);
+                entry.ProbationUntil = Math.Max(entry.ProbationUntil, now + ProbationSeconds);
                 entry.QualityScore = Math.Min(entry.QualityScore, 0.5);
             }
         }
@@ -81,7 +83,7 @@ public sealed class BondEndpointHealthService
         entry.Role = "quarantined";
         entry.ConsecutiveFailures = Math.Max(3, entry.ConsecutiveFailures + 1);
         entry.ConsecutiveSuccesses = 0;
-        entry.QuarantineUntil = now + 90;
+        entry.QuarantineUntil = now + QuarantineSeconds;
         entry.ProbationUntil = 0;
         entry.LastError = string.IsNullOrWhiteSpace(error) ? "cf_bond_leg_probe_failed" : error;
         entry.LastLatencyMs = latencyMs;

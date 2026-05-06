@@ -5215,6 +5215,11 @@ final class ProvisioningService
             'interactive_chunk_bytes' => max(1024, (int) ($this->config->getInt('BOND_INTERACTIVE_CHUNK_BYTES', 16 * 1024) ?? (16 * 1024))),
             'latency_guard_bytes' => max(16 * 1024, (int) ($this->config->getInt('BOND_LATENCY_GUARD_BYTES', 256 * 1024) ?? (256 * 1024))),
             'interactive_rtt_slack_ms' => max(5, (int) ($this->config->getInt('BOND_INTERACTIVE_RTT_SLACK_MS', 30) ?? 30)),
+            'warmup_trigger_bytes' => max(1024, (int) ($this->config->getInt('BOND_WARMUP_TRIGGER_BYTES', 64 * 1024) ?? (64 * 1024))),
+            'warmup_slice_bytes' => max(1024, (int) ($this->config->getInt('BOND_WARMUP_SLICE_BYTES', 64 * 1024) ?? (64 * 1024))),
+            'warmup_leg_delay_ms' => max(5, (int) ($this->config->getInt('BOND_WARMUP_LEG_DELAY_MS', 20) ?? 20)),
+            'bulk_promote_bytes' => max(1024, (int) ($this->config->getInt('BOND_BULK_PROMOTE_BYTES', 256 * 1024) ?? (256 * 1024))),
+            'leg_cooldown_ms' => max(1000, (int) ($this->config->getInt('BOND_LEG_COOLDOWN_MS', 30 * 60 * 1000) ?? (30 * 60 * 1000))),
             // In the CNIX topology the client reaches sidecar through slave endpoints,
             // so QUIC legs must stay enabled while direct-to-sidecar experiments remain opt-in.
             'quic_enabled' => true,

@@ -80,7 +80,7 @@ public sealed class BondingConfig
     public int BulkPromoteBytes { get; set; } = 262144;
 
     [JsonPropertyName("leg_cooldown_ms")]
-    public int LegCooldownMs { get; set; } = 3000;
+    public int LegCooldownMs { get; set; } = 1800000;
 
     [JsonPropertyName("quic_enabled")]
     public bool QuicEnabled { get; set; } = true;

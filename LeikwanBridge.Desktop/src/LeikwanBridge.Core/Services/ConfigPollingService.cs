@@ -89,7 +89,6 @@ public sealed class ConfigPollingService
         };
         _stateManager.SavePullState(pullState);
         PullStateChanged?.Invoke(pullState);
-        ForwardsUpdated?.Invoke(forwards);
 
         // Determine which forwards to apply/remove
         var applied = _stateManager.LoadApplied();
@@ -131,6 +130,8 @@ public sealed class ConfigPollingService
                 }
             }
         }
+
+        ForwardsUpdated?.Invoke(forwards);
     }
 
     private void SavePullError(Exception ex)

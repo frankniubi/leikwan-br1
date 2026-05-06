@@ -55,7 +55,7 @@ enum Command {
         warmup_leg_delay_ms: u64,
         #[arg(long, default_value = "262144")]
         bulk_promote_bytes: usize,
-        #[arg(long, default_value = "3000")]
+        #[arg(long, default_value = "1800000")]
         leg_cooldown_ms: u64,
     },
     /// Run as server: accept leg connections, reassemble and forward to target
@@ -148,7 +148,7 @@ fn main() {
                 warmup_slice_bytes: 65536,
                 warmup_leg_delay: Duration::from_millis(80),
                 bulk_promote_bytes: 262144,
-                leg_cooldown: Duration::from_millis(3000),
+                leg_cooldown: Duration::from_millis(1800000),
             };
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn cli_reports_refreshed_version() {
         let cmd = Cli::command();
-        assert_eq!(cmd.get_version(), Some("0.1.14"));
+        assert_eq!(cmd.get_version(), Some("0.1.15"));
     }
 
     #[test]
