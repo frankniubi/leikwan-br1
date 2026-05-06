@@ -78,7 +78,7 @@
         "artifact_url": "/artifacts/leikwan-udp-uot-merge.py"
     },
     "leikwan_bond_linux_amd64": {
-        "version": "0.1.14",
+        "version": "0.1.15",
         "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
         "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64"
     },
@@ -93,7 +93,7 @@
         "artifact_url": "/artifacts/wstunnel/leikwan-ingress_linux_amd64"
     },
     "leikwan_bond_windows_amd64": {
-        "version": "0.1.14",
+        "version": "0.1.15",
         "path": "artifacts/wstunnel/leikwan-bond_windows_amd64.exe",
         "artifact_url": "/artifacts/wstunnel/leikwan-bond_windows_amd64.exe"
     },
@@ -108,7 +108,7 @@
         "platform": "linux-amd64"
     },
     "windows_client_app": {
-        "version": "0.1.16.0",
+        "version": "0.1.16.1",
         "path": "artifacts/windows/leikwan-bridge-setup.exe",
         "artifact_url": "/artifacts/leikwan-bridge-setup.exe"
     }

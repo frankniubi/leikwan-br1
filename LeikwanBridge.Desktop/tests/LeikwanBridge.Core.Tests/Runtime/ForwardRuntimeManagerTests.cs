@@ -92,6 +92,29 @@ public sealed class ForwardRuntimeManagerTests
         Assert.Null(ex);
     }
 
+    [Fact]
+    public void IsForwardRunning_ReturnsTrue_WhenAppliedStateIsActiveAndCriticalRolesAreStillAlive()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+
+        manager.ApplyForward(CreatePlainTcpMuxBondForward());
+
+        supervisor.RunningRoles.Clear();
+        supervisor.RunningRoles.Add("bond-ingress-leg-0");
+        supervisor.RunningRoles.Add("bond-ingress-leg-1");
+        supervisor.RunningRoles.Add("bond-runtime");
+
+        Assert.True(manager.IsForwardRunning(26));
+    }
+
     private static AgentConfig CreateConfig()
     {
         return new AgentConfig
@@ -152,7 +175,7 @@ public sealed class ForwardRuntimeManagerTests
                 WarmupSliceBytes = 65536,
                 WarmupLegDelayMs = 80,
                 BulkPromoteBytes = 262144,
-                LegCooldownMs = 3000,
+                LegCooldownMs = 1800000,
                 DisableLocalRateLimit = true,
                 QuicEnabled = false,
                 QuicViaSlave = false,

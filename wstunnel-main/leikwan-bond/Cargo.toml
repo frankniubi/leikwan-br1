@@ -1,6 +1,6 @@
 ﻿[package]
 name = "leikwan-bond"
-version = "0.1.14"
+version = "0.1.15"
 edition = "2021"
 
 [dependencies]
@@ -26,4 +26,3 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 
 [build-dependencies]
 winres = "0.1.12"
-
