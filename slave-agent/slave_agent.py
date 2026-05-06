@@ -1923,11 +1923,11 @@ class SlaveAgent:
         tracked_status = str(update_state.get("status", "") or "")
         last_attempt_at = self.state_timestamp(update_state.get("last_attempt_at"))
 
-        if tracked_request_token != request_token:
-            return True
-
         if tracked_status == "running" and last_attempt_at > 0 and (now - last_attempt_at) < UPDATE_STALE_SECONDS:
             return False
+
+        if tracked_request_token != request_token:
+            return True
 
         if last_attempt_at > 0 and (now - last_attempt_at) < UPDATE_RETRY_SECONDS:
             return False

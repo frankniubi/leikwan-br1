@@ -290,9 +290,14 @@ public partial class MainWindow : Window
             {
                 _vm.PresentUpdatePrompt(artifact);
             }
+            else
+            {
+                _vm.ReportNoUpdateAvailableForTests(localVersion);
+            }
         }
         catch (Exception ex)
         {
+            _vm.ReportUpdateCheckFailedForTests(ex.Message);
             Log.Warning(ex, "update check failed");
         }
     }
@@ -346,7 +351,9 @@ public partial class MainWindow : Window
                 return installerPath;
         }
 
-        await _updateService.DownloadInstallerAsync(App.Config.MasterUrl.TrimEnd('/') + artifact.ArtifactUrl, installerPath);
+        await _updateService.DownloadInstallerAsync(
+            WindowsAppUpdateService.ResolveArtifactUrl(App.Config.MasterUrl, artifact.ArtifactUrl),
+            installerPath);
         var downloadedSha = WindowsAppUpdateService.ComputeSha256(installerPath);
         if (!string.Equals(downloadedSha, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("downloaded installer hash mismatch");
@@ -585,4 +592,3 @@ public partial class MainWindow : Window
         return TryFindResource(key) as string ?? key;
     }
 }
-

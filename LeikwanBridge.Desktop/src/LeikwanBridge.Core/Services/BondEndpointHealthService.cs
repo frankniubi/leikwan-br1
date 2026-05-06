@@ -29,6 +29,9 @@ public sealed class BondEndpointHealthService
             entry.ConsecutiveFailures = 0;
             entry.LastError = "";
             entry.LastLatencyMs = latencyMs;
+            entry.QualityScore = latencyMs is null
+                ? 1.0
+                : Math.Round(Math.Max(0.1, 1.0 - (Math.Min(Math.Max(latencyMs.Value, 0.0), 200.0) / 200.0)), 4);
             if (entry.QuarantineUntil > 0)
             {
                 entry.Role = "probation";
@@ -52,11 +55,13 @@ public sealed class BondEndpointHealthService
                 entry.Role = "quarantined";
                 entry.QuarantineUntil = now + 90;
                 entry.ProbationUntil = 0;
+                entry.QualityScore = 0.0;
             }
             else if (entry.ConsecutiveFailures >= 2)
             {
                 entry.Role = "probation";
                 entry.ProbationUntil = Math.Max(entry.ProbationUntil, now + 60);
+                entry.QualityScore = Math.Min(entry.QualityScore, 0.5);
             }
         }
 
@@ -80,6 +85,7 @@ public sealed class BondEndpointHealthService
         entry.ProbationUntil = 0;
         entry.LastError = string.IsNullOrWhiteSpace(error) ? "cf_bond_leg_probe_failed" : error;
         entry.LastLatencyMs = latencyMs;
+        entry.QualityScore = 0.0;
         SaveEntry(forwardId, endpointId, entry);
         return entry;
     }
@@ -101,6 +107,12 @@ public sealed class BondEndpointHealthService
             scoped.TryGetValue(endpoint.EndpointId.ToString(), out var entry);
             var role = ResolveEffectiveRole(entry, now);
             endpoint.HealthRole = role;
+            endpoint.QualityScore = entry?.QualityScore > 0 ? entry.QualityScore : role switch
+            {
+                "healthy" => 1.0,
+                "probation" => 0.5,
+                _ => 0.0,
+            };
             endpoint.DynamicPriority = role switch
             {
                 "healthy" => basePriority,
@@ -111,7 +123,7 @@ public sealed class BondEndpointHealthService
 
         var healthy = SortEndpoints(endpoints.Where(endpoint => endpoint.HealthRole == "healthy")).ToList();
         if (healthy.Count > 0)
-            return healthy;
+            return healthy.Take(3).ToList();
 
         var probation = SortEndpoints(endpoints.Where(endpoint => endpoint.HealthRole == "probation")).ToList();
         if (probation.Count > 0)
@@ -158,7 +170,7 @@ public sealed class BondEndpointHealthService
 
     private static IEnumerable<EndpointConfig> SortEndpoints(IEnumerable<EndpointConfig> endpoints)
     {
-        return endpoints.OrderBy(endpoint => endpoint.DynamicPriority).ThenBy(endpoint => endpoint.EndpointId);
+        return endpoints.OrderByDescending(endpoint => endpoint.QualityScore).ThenBy(endpoint => endpoint.DynamicPriority).ThenBy(endpoint => endpoint.EndpointId);
     }
 }
 

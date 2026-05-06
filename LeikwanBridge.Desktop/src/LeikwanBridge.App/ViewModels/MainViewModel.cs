@@ -157,6 +157,20 @@ public partial class MainViewModel : ObservableObject
         AvailableUpdateVersion = string.Empty;
     }
 
+    public void ReportNoUpdateAvailableForTests(string version)
+    {
+        ShowUpdatePrompt = false;
+        AvailableUpdateVersion = string.Empty;
+        ConnectionStatus = $"Already up to date ({version}).";
+    }
+
+    public void ReportUpdateCheckFailedForTests(string message)
+    {
+        ShowUpdatePrompt = false;
+        AvailableUpdateVersion = string.Empty;
+        ConnectionStatus = $"Update check failed: {message}";
+    }
+
     [RelayCommand]
     private async Task ConnectAsync(CancellationToken ct)
     {
@@ -164,12 +178,20 @@ public partial class MainViewModel : ObservableObject
             return;
 
         _api?.Dispose();
-        _api = new MasterApiClient(_config.MasterUrl, _config.AgentToken);
+        _api = new MasterApiClient(
+            _config.MasterUrl,
+            _config.AgentToken,
+            MasterApiClient.BuildWindowsDeviceId(_config.ActiveClientId > 0 ? _config.ActiveClientId : _config.ClientId, Environment.MachineName),
+            $"Leikwan Bridge on {Environment.MachineName}",
+            "windows-desktop");
 
         var ok = await _api.TestConnectionAsync(ct);
         if (!ok)
         {
-            ConnectionStatus = GetString("DashDisconnected");
+            ConnectionStatus = string.IsNullOrWhiteSpace(_api.LastErrorMessage)
+                ? GetString("DashDisconnected")
+                : _api.LastErrorMessage;
+            AddLog($"Connection failed: {ConnectionStatus}");
             IsConnected = false;
             return;
         }

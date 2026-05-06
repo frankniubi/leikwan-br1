@@ -74,6 +74,22 @@ namespace Leikwan\Master\Database {
                 return null;
             }
 
+            if (str_contains($normalized, 'SELECT p.default_client_online_device_limit FROM services s')) {
+                $userId = (int) ($params['user_id'] ?? 0);
+                $status = (string) ($params['status'] ?? 'active');
+                foreach ($this->rows('services') as $service) {
+                    if ((int) ($service['user_id'] ?? 0) !== $userId || (string) ($service['status'] ?? '') !== $status) {
+                        continue;
+                    }
+                    foreach ($this->rows('service_plans') as $plan) {
+                        if ((int) ($plan['id'] ?? 0) === (int) ($service['plan_id'] ?? 0)) {
+                            return ['default_client_online_device_limit' => $plan['default_client_online_device_limit'] ?? 1];
+                        }
+                    }
+                }
+                return null;
+            }
+
             return null;
         }
 
@@ -209,12 +225,21 @@ namespace {
         ['id' => 201, 'owner_user_id' => 30, 'group_id' => null, 'is_default_for_owner' => 1, 'agent_token' => 'tok-201', 'name' => 'First Wrong Default', 'display_host' => 'first.example.com', 'status' => 'active', 'created_at' => '2026-04-25 00:00:00', 'updated_at' => '2026-04-25 00:00:00'],
         ['id' => 202, 'owner_user_id' => 30, 'group_id' => null, 'is_default_for_owner' => 1, 'agent_token' => 'tok-202', 'name' => 'Second Wrong Default', 'display_host' => 'second.example.com', 'status' => 'active', 'created_at' => '2026-04-25 00:00:01', 'updated_at' => '2026-04-25 00:00:01'],
     ]);
+    $db->seed('service_plans', [
+        ['id' => 501, 'default_client_online_device_limit' => 3],
+    ]);
+    $db->seed('services', [
+        ['id' => 601, 'user_id' => 10, 'plan_id' => 501, 'status' => 'active'],
+    ]);
 
     $service = new ProvisioningService(new Config(), $db);
 
     $created = $service->ensureDefaultClientForUser(10);
     if ((int) ($created['owner_user_id'] ?? 0) !== 10 || (int) ($created['is_default_for_owner'] ?? 0) !== 1) {
         fail('expected ensureDefaultClientForUser() to create a default client for tenant 10');
+    }
+    if ((int) ($created['online_device_limit'] ?? 0) !== 3) {
+        fail('expected default client to inherit active plan device limit');
     }
 
     $repeat = $service->ensureDefaultClientForUser(10);

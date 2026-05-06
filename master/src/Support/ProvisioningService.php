@@ -758,6 +758,25 @@ final class ProvisioningService
         return max(1, (int) ($service['max_client_profiles'] ?? 1));
     }
 
+    public function defaultClientOnlineDeviceLimitForTenant(int $userId): int
+    {
+        $service = $this->db->fetchOne(
+            'SELECT p.default_client_online_device_limit
+             FROM services s
+             LEFT JOIN service_plans p ON p.id = s.plan_id
+             WHERE s.user_id = :user_id
+               AND s.status = :status
+             ORDER BY s.id ASC
+             LIMIT 1',
+            [
+                'user_id' => $userId,
+                'status' => 'active',
+            ]
+        );
+
+        return max(1, (int) ($service['default_client_online_device_limit'] ?? 1));
+    }
+
     /**
      * @return array<string, mixed>|null
      */
@@ -837,6 +856,7 @@ final class ProvisioningService
             'agent_token' => bin2hex(random_bytes(24)),
             'name' => 'Default Client',
             'display_host' => $displayHost,
+            'online_device_limit' => $this->defaultClientOnlineDeviceLimitForTenant($userId),
             'status' => 'active',
             'created_at' => $this->now(),
             'updated_at' => $this->now(),
