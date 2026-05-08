@@ -572,6 +572,73 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
         self.assertIn("--bulk-promote-bytes 262144", script)
         self.assertIn("--leg-cooldown-ms 1800000", script)
 
+    def test_bond_latency_first_runtime_marks_primary_and_helper_legs(self) -> None:
+        rendered = install_forward_runtime.render_forward_runtime(
+            {
+                "forward_id": 40,
+                "listen_port": 11030,
+                "target": "45.196.220.47:5201",
+                "sni": "br1.nbwly.com",
+                "path_prefix": "5b6997520f04a681",
+                "transport": "tcp",
+                "mode": "bond",
+                "endpoints": [
+                    {"endpoint_id": 256, "host": "8.163.87.42", "port": 7000, "dynamic_priority": 10, "ingress_auth_token": "token-a", "leg_role": "primary"},
+                    {"endpoint_id": 254, "host": "8.163.90.132", "port": 7000, "dynamic_priority": 10, "ingress_auth_token": "token-b", "leg_role": "helper"},
+                ],
+                "bonding": {
+                    "policy_mode": "latency_first",
+                    "udp_primary_only": True,
+                    "ingress_mode": "plain_tcp_mux",
+                    "route_key": "5b6997520f04a681",
+                    "remote_target": "138.252.162.120:9000",
+                    "session_token": "tcp-token",
+                },
+            },
+            {
+                "bond_bin": "/usr/local/bin/leikwan-bond",
+                "bond_ingress_bin": "/usr/local/bin/leikwan-ingress",
+            },
+        )
+
+        script = rendered["start_script"]
+        self.assertIn("role=primary", script)
+        self.assertIn("role=helper", script)
+        self.assertIn("--latency-first", script)
+
+    def test_bond_latency_first_udp_runtime_sets_primary_only_flag(self) -> None:
+        rendered = install_forward_runtime.render_forward_runtime(
+            {
+                "forward_id": 40,
+                "listen_port": 11030,
+                "target": "45.196.220.47:5201",
+                "sni": "br1.nbwly.com",
+                "path_prefix": "5b6997520f04a681",
+                "transport": "udp",
+                "mode": "bond",
+                "endpoints": [
+                    {"endpoint_id": 256, "host": "8.163.87.42", "port": 7000, "dynamic_priority": 10, "leg_role": "primary"},
+                    {"endpoint_id": 254, "host": "8.163.90.132", "port": 7000, "dynamic_priority": 10, "leg_role": "helper"},
+                ],
+                "bonding": {
+                    "policy_mode": "latency_first",
+                    "udp_primary_only": True,
+                    "ingress_mode": "wss_path_mux",
+                    "remote_target": "138.252.162.120:9000",
+                    "session_token": "tcp-token",
+                    "udp_session_token": "udp-token",
+                },
+            },
+            {
+                "bond_bin": "/usr/local/bin/leikwan-bond",
+                "bond_ingress_bin": "/usr/local/bin/leikwan-ingress",
+            },
+        )
+
+        self.assertIn("--protocol udp --listen 0.0.0.0:11030", rendered["start_script"])
+        self.assertIn("--latency-first", rendered["start_script"])
+        self.assertIn("--udp-primary-only", rendered["start_script"])
+
     def test_remote_plain_tcp_ready_probe_uses_ping(self) -> None:
         sent_payloads: list[bytes] = []
 

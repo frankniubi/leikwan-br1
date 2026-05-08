@@ -58,12 +58,15 @@ def _leg_query_params(priority: int, endpoint: dict | None = None) -> str:
         endpoint_id = int_or_default(endpoint.get("endpoint_id"), 0)
         node_id = int_or_default(endpoint.get("node_id"), 0)
         host = str(endpoint.get("host", "") or "").strip()
+        leg_role = str(endpoint.get("leg_role", "") or "").strip()
         if endpoint_id > 0:
             params.append(f"endpoint_id={endpoint_id}")
         if node_id > 0:
             params.append(f"node_id={node_id}")
         if host != "":
             params.append(f"display_host={quote(host, safe='')}")
+        if leg_role in {"primary", "helper"}:
+            params.append(f"role={quote(leg_role, safe='')}")
     return "&".join(params)
 
 
@@ -388,6 +391,9 @@ WantedBy=multi-user.target
         warmup_leg_delay_ms = int_or_default(bond.get("warmup_leg_delay_ms"), 20)
         bulk_promote_bytes = int_or_default(bond.get("bulk_promote_bytes"), 262144)
         leg_cooldown_ms = int_or_default(bond.get("leg_cooldown_ms"), 1800000)
+        policy_mode = str(bond.get("policy_mode", "") or "").strip()
+        latency_first = policy_mode == "latency_first"
+        udp_primary_only = truthy(bond.get("udp_primary_only", False))
         ingress_mode = str(bond.get("ingress_mode", "wss_path_mux")).strip() or "wss_path_mux"
         route_key = str(bond.get("route_key", path_prefix)).strip() or path_prefix
         tcp_ready_ports: list[int] = []
@@ -421,8 +427,10 @@ WantedBy=multi-user.target
                 if use_wss_as_active_legs or not standby_wss_enabled(bond):
                     tcp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{tcp_back}", endpoint_priority, endpoint))
             append_wait_for_local_listener(lines, tcp_ready_ports)
+            tcp_latency_flags = "--latency-first " if latency_first else ""
             lines.append(
                 f"{bond_bin} client --protocol tcp --listen {tcp_listen_host}:{tcp_listen_port} "
+                f"{tcp_latency_flags}"
                 f"--legs '{','.join(tcp_leg_targets)}' --session-token '{bond_session_token}' "
                 f"--chunk-size {int(bond.get('chunk_size', 65536) or 65536)} "
                 f"--max-window-bytes {int(bond.get('max_window_bytes', 8388608) or 8388608)} "
@@ -473,8 +481,12 @@ WantedBy=multi-user.target
                 if use_wss_as_active_legs or not standby_wss_enabled(bond):
                     udp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{udp_back}", endpoint_priority, endpoint))
             append_wait_for_local_listener(lines, udp_ready_ports)
+            udp_latency_flags = "--latency-first " if latency_first else ""
+            if latency_first and udp_primary_only:
+                udp_latency_flags += "--udp-primary-only "
             lines.append(
                 f"{bond_bin} client --protocol udp --listen {udp_listen_host}:{udp_listen_port} "
+                f"{udp_latency_flags}"
                 f"--legs '{','.join(udp_leg_targets)}' --session-token '{udp_token}' "
                 f"--chunk-size {int(bond.get('chunk_size', 65536) or 65536)} "
                 f"--max-window-bytes {int(bond.get('max_window_bytes', 8388608) or 8388608)} "

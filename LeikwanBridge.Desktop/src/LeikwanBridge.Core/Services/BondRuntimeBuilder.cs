@@ -133,6 +133,8 @@ public sealed class BondRuntimeBuilder
                 $"--warmup-leg-delay-ms {bond.WarmupLegDelayMs} " +
                 $"--bulk-promote-bytes {bond.BulkPromoteBytes} " +
                 $"--leg-cooldown-ms {bond.LegCooldownMs}";
+            if (string.Equals(bond.PolicyMode, "latency_first", StringComparison.OrdinalIgnoreCase))
+                bondArgs += " --latency-first";
             processes.Add(new RuntimeProcess(
                 "bond-runtime",
                 "bond-runtime",
@@ -217,6 +219,10 @@ public sealed class BondRuntimeBuilder
                 $"--warmup-leg-delay-ms {bond.WarmupLegDelayMs} " +
                 $"--bulk-promote-bytes {bond.BulkPromoteBytes} " +
                 $"--leg-cooldown-ms {bond.LegCooldownMs}";
+            if (string.Equals(bond.PolicyMode, "latency_first", StringComparison.OrdinalIgnoreCase))
+                bondArgs += " --latency-first";
+            if (string.Equals(bond.PolicyMode, "latency_first", StringComparison.OrdinalIgnoreCase) && bond.UdpPrimaryOnly)
+                bondArgs += " --udp-primary-only";
             processes.Add(new RuntimeProcess(
                 "bond-udp-runtime",
                 "bond-udp-runtime",
@@ -410,6 +416,8 @@ public sealed class BondRuntimeBuilder
             queryParams.Add($"endpoint_id={endpoint.EndpointId}");
         if (!string.IsNullOrWhiteSpace(endpoint.Host))
             queryParams.Add($"display_host={Uri.EscapeDataString(endpoint.Host)}");
+        if (endpoint.LegRole is "primary" or "helper")
+            queryParams.Add($"role={Uri.EscapeDataString(endpoint.LegRole)}");
         return $"tcp://{target}?{string.Join("&", queryParams)}";
     }
 

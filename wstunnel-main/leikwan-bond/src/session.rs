@@ -1,7 +1,7 @@
 use crate::frame::{HelloFrame, WireFrame, read_frame, write_frame};
 use crate::token::{SessionClaims, TransportProtocol, verify_session_token};
 use crate::transport::{
-    LegIo, LegSpec, LegTransport, accept_quic_leg, build_server_quic_endpoint, connect_leg, default_quic_listen,
+    LegIo, LegRole, LegSpec, LegTransport, accept_quic_leg, build_server_quic_endpoint, connect_leg, default_quic_listen,
     parse_leg_specs,
 };
 use anyhow::{Context, anyhow};
@@ -55,6 +55,8 @@ pub struct SessionConfig {
     pub warmup_leg_delay: Duration,
     pub bulk_promote_bytes: usize,
     pub leg_cooldown: Duration,
+    pub latency_first: bool,
+    pub udp_primary_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,6 +340,7 @@ struct LegState {
     inflight_bytes: usize,
     transport: LegTransport,
     priority: u16,
+    role: LegRole,
     smoothed_rtt: Duration,
     label: String,
     spec_index: Option<usize>,
@@ -472,6 +475,7 @@ struct OpenLeg {
     stream: LegIo,
     transport: LegTransport,
     priority: u16,
+    role: LegRole,
     label: String,
     spec_index: Option<usize>,
     endpoint_id: Option<u64>,
@@ -480,12 +484,13 @@ struct OpenLeg {
 }
 
 impl OpenLeg {
-    fn new(stream: LegIo, priority: u16, label: String) -> Self {
+    fn new(stream: LegIo, priority: u16, role: LegRole, label: String) -> Self {
         let transport = stream.transport();
         Self {
             stream,
             transport,
             priority,
+            role,
             host: extract_host_from_label(&label),
             label,
             spec_index: None,
@@ -686,6 +691,7 @@ pub async fn run_server_listener(
                     let leg = OpenLeg::new(
                         LegIo::Tcp(socket),
                         LegTransport::Tcp.default_priority(),
+                        LegRole::Primary,
                         format!("tcp://{}", peer),
                     );
                     if let Err(err) = read_hello_and_queue(leg, tx).await {
@@ -709,6 +715,7 @@ pub async fn run_server_listener(
                                 let leg = OpenLeg::new(
                                     stream,
                                     LegTransport::Quic.default_priority(),
+                                    LegRole::Primary,
                                     format!("quic://{}", peer),
                                 );
                                 if let Err(err) = read_hello_and_queue(leg, tx).await {
@@ -1452,7 +1459,7 @@ async fn connect_client_udp_legs(
             .with_context(|| format!("timed out waiting for bond hello-ack from {}", spec.original))??;
         if matches!(ack, WireFrame::HelloAck) {
             ready_legs.push(
-                OpenLeg::new(stream, spec.priority, spec.original.clone())
+                OpenLeg::new(stream, spec.priority, spec.role, spec.original.clone())
                     .with_metadata(
                         spec.endpoint_id,
                         spec.node_id,
@@ -1493,7 +1500,7 @@ async fn connect_and_ack_leg(
         .with_context(|| format!("timed out waiting for bond hello-ack from {}", spec.original))??;
     if matches!(ack, WireFrame::HelloAck) {
         return Ok(
-            OpenLeg::new(stream, spec.priority, spec.original.clone()).with_metadata(
+            OpenLeg::new(stream, spec.priority, spec.role, spec.original.clone()).with_metadata(
                 spec.endpoint_id,
                 spec.node_id,
                 spec.display_host.clone().unwrap_or_else(|| spec.host.clone()),
@@ -2470,6 +2477,7 @@ fn spawn_tcp_leg_tasks(legs: Vec<OpenLeg>, event_tx: mpsc::UnboundedSender<TcpTr
 fn spawn_tcp_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<TcpTransportEvent>) -> LegState {
     let transport = leg.transport;
     let priority = leg.priority;
+    let role = leg.role;
     let label = leg.label;
     let spec_index = leg.spec_index;
     let endpoint_id = leg.endpoint_id;
@@ -2486,6 +2494,7 @@ fn spawn_tcp_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSend
         inflight_bytes: 0,
         transport,
         priority,
+        role,
         smoothed_rtt: initial_leg_rtt(transport),
         label,
         spec_index,
@@ -3359,6 +3368,7 @@ fn spawn_leg_tasks(legs: Vec<OpenLeg>, event_tx: mpsc::UnboundedSender<SessionEv
 fn spawn_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<SessionEvent>) -> LegState {
     let transport = leg.transport;
     let priority = leg.priority;
+    let role = leg.role;
     let label = leg.label;
     let spec_index = leg.spec_index;
     let endpoint_id = leg.endpoint_id;
@@ -3375,6 +3385,7 @@ fn spawn_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<S
         inflight_bytes: 0,
         transport,
         priority,
+        role,
         smoothed_rtt: initial_leg_rtt(transport),
         label,
         spec_index,
@@ -4236,6 +4247,15 @@ fn select_stream_leg(
     let interactive_flow = payload_len <= config.interactive_chunk_bytes
         || outstanding_bytes < config.latency_guard_bytes;
 
+    if config.latency_first && outstanding_bytes < config.bulk_promote_bytes {
+        if let Some(primary_leg) = legs
+            .iter()
+            .find(|leg| leg.active && leg.role == LegRole::Primary && leg_available_for_new_data(leg, Instant::now()))
+        {
+            return Some(primary_leg.id);
+        }
+    }
+
     // Keep sticky-leg behavior for small/interactive traffic so ack/control
     // latency stays low, but allow larger streams to stripe chunks across
     // active legs instead of pinning the whole stream to the first winner.
@@ -4377,6 +4397,12 @@ fn select_leg_for_data_with_cooldown(
 }
 
 fn select_control_leg(legs: &[LegState], round_robin_cursor: &mut usize) -> Option<usize> {
+    if let Some(primary_leg) = legs
+        .iter()
+        .find(|leg| leg.active && leg.role == LegRole::Primary)
+    {
+        return Some(primary_leg.id);
+    }
     select_leg_with_mode(
         legs,
         round_robin_cursor,
@@ -4387,6 +4413,12 @@ fn select_control_leg(legs: &[LegState], round_robin_cursor: &mut usize) -> Opti
 }
 
 fn select_stream_affinity_leg(legs: &[LegState], round_robin_cursor: &mut usize) -> Option<usize> {
+    if let Some(primary_leg) = legs
+        .iter()
+        .find(|leg| leg.active && leg.role == LegRole::Primary)
+    {
+        return Some(primary_leg.id);
+    }
     let mut candidates: Vec<&LegState> = legs.iter().filter(|leg| leg.active).collect();
     if candidates.is_empty() {
         return None;
@@ -4420,6 +4452,11 @@ fn select_udp_leg(
     payload_len: usize,
     config: &SessionConfig,
 ) -> Option<usize> {
+    if config.latency_first && config.udp_primary_only {
+        if let Some(primary_leg) = legs.iter().find(|leg| leg.active && leg.role == LegRole::Primary) {
+            return Some(primary_leg.id);
+        }
+    }
     let prefer_low_latency = payload_len <= config.interactive_chunk_bytes;
     select_leg_with_mode(
         legs,
@@ -4565,6 +4602,15 @@ fn decide_striping_stage(
         return TcpStripingStage::Sticky;
     }
     let total_bytes = sent_bytes.saturating_add(backlog_bytes);
+    if config.latency_first {
+        if total_bytes < config.bulk_promote_bytes {
+            return TcpStripingStage::Sticky;
+        }
+        if warmup_used_legs < 2 {
+            return TcpStripingStage::Warmup;
+        }
+        return TcpStripingStage::Bulk;
+    }
     if total_bytes >= config.bulk_promote_bytes {
         return TcpStripingStage::Bulk;
     }
@@ -4761,6 +4807,7 @@ mod tests {
             inflight_bytes,
             transport: LegTransport::Tcp,
             priority,
+            role: LegRole::Primary,
             smoothed_rtt: Duration::from_millis(smoothed_rtt_ms),
             label: format!("leg-{id}"),
             spec_index: Some(id),
@@ -4790,6 +4837,8 @@ mod tests {
             warmup_leg_delay: Duration::from_millis(80),
             bulk_promote_bytes: 262144,
             leg_cooldown: Duration::from_millis(1800000),
+            latency_first: false,
+            udp_primary_only: false,
         }
     }
 
@@ -5039,6 +5088,37 @@ mod tests {
     }
 
     #[test]
+    fn latency_first_stays_on_primary_before_bulk_threshold() {
+        let mut config = test_config();
+        config.latency_first = true;
+
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        legs[0].role = LegRole::Primary;
+        legs[1].role = LegRole::Helper;
+
+        let mut cursor = 0usize;
+        let selected = select_stream_leg(&legs, &mut cursor, Some(0), 32 * 1024, 0, &config);
+        assert_eq!(selected, Some(0));
+    }
+
+    #[test]
+    fn latency_first_udp_prefers_primary_until_primary_fails() {
+        let mut config = test_config();
+        config.latency_first = true;
+        config.udp_primary_only = true;
+
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        legs[0].role = LegRole::Primary;
+        legs[1].role = LegRole::Helper;
+
+        let mut cursor = 0usize;
+        assert_eq!(select_udp_leg(&legs, &mut cursor, 1200, &config), Some(0));
+
+        legs[0].active = false;
+        assert_eq!(select_udp_leg(&legs, &mut cursor, 1200, &config), Some(1));
+    }
+
+    #[test]
     fn leg_health_state_transitions_downward_and_upward() {
         let mut legs = vec![fake_leg(0, 10, 0, 20)];
 
@@ -5122,6 +5202,7 @@ mod tests {
             inflight_bytes: 0,
             transport: LegTransport::Tcp,
             priority: 10,
+            role: LegRole::Primary,
             smoothed_rtt: Duration::from_millis(20),
             label: String::from("leg-0"),
             spec_index: Some(0),

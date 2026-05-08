@@ -1530,9 +1530,18 @@ class ClientAgent:
                 "probation_until": probation_until,
                 "last_error": runtime_reason,
                 "last_latency_ms": None,
-                "quality_score": 1.0 if role == "healthy" else (0.5 if role == "probation" else 0.0),
+                "quality_score": 0.6 if role == "healthy" else (0.4 if role == "probation" else 0.0),
             },
         )
+
+    @staticmethod
+    def latency_first_bond_enabled(forward: dict) -> bool:
+        if str(forward.get("mode", "") or "").strip() != "bond":
+            return False
+        bond = forward.get("bonding", {})
+        if not isinstance(bond, dict):
+            return False
+        return str(bond.get("policy_mode", "") or "").strip() == "latency_first"
 
     def reconcile_cf_bond_runtime_health(self, forward: dict, now: float | None = None) -> dict:
         now = time.time() if now is None else now
@@ -1694,25 +1703,34 @@ class ClientAgent:
                 endpoint["dynamic_priority"] = base_priority + 30
             decorated.append(endpoint)
 
+        latency_first = self.latency_first_bond_enabled(forward)
         is_cf_bond = str(forward.get("backend_mode", "current_mode") or "current_mode") == "cf_mode"
-        if is_cf_bond:
-            healthy = [item for item in decorated if item["health_role"] == "healthy"]
-            if healthy:
-                healthy.sort(key=lambda item: (-float(item.get("quality_score", 0.0) or 0.0), int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
-                return healthy[:3]
+        if not latency_first:
+            preferred = [item for item in decorated if item["health_role"] != "quarantined"]
+            if preferred:
+                preferred.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+                return preferred
 
-            probation = [item for item in decorated if item["health_role"] == "probation"]
-            if probation:
-                probation.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
-                return probation[:1]
+            decorated.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+            return decorated[:1]
 
-        preferred = [item for item in decorated if item["health_role"] != "quarantined"]
-        if preferred:
-            preferred.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
-            return preferred
+        healthy = [item for item in decorated if item["health_role"] == "healthy"]
+        healthy.sort(key=lambda item: (-float(item.get("quality_score", 0.0) or 0.0), int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+        probation = [item for item in decorated if item["health_role"] == "probation"]
+        probation.sort(key=lambda item: (-float(item.get("quality_score", 0.0) or 0.0), int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+        quarantined = [item for item in decorated if item["health_role"] == "quarantined"]
+        quarantined.sort(key=lambda item: (-float(item.get("quality_score", 0.0) or 0.0), int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
 
-        decorated.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
-        return decorated[:1]
+        if healthy:
+            selected = healthy[:3] if is_cf_bond else healthy
+        elif probation:
+            selected = probation[:1]
+        else:
+            selected = quarantined[:1]
+
+        for index, endpoint in enumerate(selected):
+            endpoint["leg_role"] = "primary" if index == 0 else "helper"
+        return selected
 
     def run_diagnostics_if_requested(self, master: str, token: str, client_meta: dict, forwards: list[dict]) -> None:
         request_token = str(client_meta.get("diag_request_token", "") or "")

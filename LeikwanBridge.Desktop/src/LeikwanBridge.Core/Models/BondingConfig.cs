@@ -118,6 +118,18 @@ public sealed class BondingConfig
     [JsonPropertyName("ws_priority")]
     public int WsPriority { get; set; } = 10;
 
+    [JsonPropertyName("policy_mode")]
+    public string PolicyMode { get; set; } = "";
+
+    [JsonPropertyName("udp_primary_only")]
+    public bool UdpPrimaryOnly { get; set; }
+
+    [JsonPropertyName("primary_reselect_on_failure_only")]
+    public bool PrimaryReselectOnFailureOnly { get; set; } = true;
+
+    [JsonPropertyName("cf_primary_selection_mode")]
+    public string CfPrimarySelectionMode { get; set; } = "real_path";
+
     [JsonPropertyName("adaptive_join_timeout")]
     public bool AdaptiveJoinTimeout { get; set; } = true;
 
