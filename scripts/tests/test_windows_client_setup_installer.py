@@ -79,6 +79,13 @@ class WindowsClientSetupInstallerTests(unittest.TestCase):
             install_dir = localappdata / "LeiKwan Bridge"
             bin_dir = install_dir / "bin"
             self.assertTrue((install_dir / "leikwan-client-win.exe").is_file())
+            self.assertTrue((install_dir / "LeikwanBridge.App.dll").is_file())
+            self.assertTrue((install_dir / "LeikwanBridge.Core.dll").is_file())
+            self.assertTrue((install_dir / "LeikwanBridge.App.deps.json").is_file())
+            self.assertTrue((install_dir / "LeikwanBridge.App.runtimeconfig.json").is_file())
+            self.assertTrue((install_dir / "CommunityToolkit.Mvvm.dll").is_file())
+            self.assertTrue((install_dir / "Serilog.dll").is_file())
+            self.assertTrue((install_dir / "Serilog.Sinks.File.dll").is_file())
             self.assertTrue((install_dir / "wstunnel.exe").is_file())
             self.assertTrue((install_dir / "leikwan-bond.exe").is_file())
             self.assertTrue((install_dir / "leikwan-ingress.exe").is_file())
