@@ -95,7 +95,8 @@ public sealed class BondEndpointHealthService
     public List<EndpointConfig> SelectRuntimeEndpoints(ForwardConfig forward, double? nowUnixSeconds = null)
     {
         var endpoints = forward.Endpoints.Select(endpoint => endpoint.Clone()).ToList();
-        if (!IsCfPlainTcpBond(forward))
+        if (ModeNormalizer.Normalize(forward.Mode) != "bond"
+            || !string.Equals(forward.Bonding?.PolicyMode, "latency_first", StringComparison.OrdinalIgnoreCase))
             return endpoints;
 
         var now = nowUnixSeconds ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
@@ -111,8 +112,8 @@ public sealed class BondEndpointHealthService
             endpoint.HealthRole = role;
             endpoint.QualityScore = entry?.QualityScore > 0 ? entry.QualityScore : role switch
             {
-                "healthy" => 1.0,
-                "probation" => 0.5,
+                "healthy" => 0.6,
+                "probation" => 0.4,
                 _ => 0.0,
             };
             endpoint.DynamicPriority = role switch
@@ -125,14 +126,29 @@ public sealed class BondEndpointHealthService
 
         var healthy = SortEndpoints(endpoints.Where(endpoint => endpoint.HealthRole == "healthy")).ToList();
         if (healthy.Count > 0)
-            return healthy.Take(3).ToList();
+        {
+            var selected = string.Equals(forward.BackendMode, "cf_mode", StringComparison.OrdinalIgnoreCase)
+                ? healthy.Take(3).ToList()
+                : healthy;
+            for (var index = 0; index < selected.Count; index++)
+                selected[index].LegRole = index == 0 ? "primary" : "helper";
+            return selected;
+        }
 
         var probation = SortEndpoints(endpoints.Where(endpoint => endpoint.HealthRole == "probation")).ToList();
         if (probation.Count > 0)
+        {
+            probation[0].LegRole = "primary";
             return [probation[0]];
+        }
 
         var fallback = SortEndpoints(endpoints).ToList();
-        return fallback.Count > 0 ? [fallback[0]] : [];
+        if (fallback.Count > 0)
+        {
+            fallback[0].LegRole = "primary";
+            return [fallback[0]];
+        }
+        return [];
     }
 
     public static bool IsCfPlainTcpBond(ForwardConfig forward)

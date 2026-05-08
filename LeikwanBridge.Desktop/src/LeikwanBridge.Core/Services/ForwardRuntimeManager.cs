@@ -221,7 +221,8 @@ public class ForwardRuntimeManager : IDisposable
 
     private ForwardConfig WithSelectedBondRuntimeEndpoints(ForwardConfig forward)
     {
-        if (!BondEndpointHealthService.IsCfPlainTcpBond(forward))
+        if (ModeNormalizer.Normalize(forward.Mode) != "bond"
+            || !string.Equals(forward.Bonding?.PolicyMode, "latency_first", StringComparison.OrdinalIgnoreCase))
             return forward;
 
         var selectedEndpoints = _bondEndpointHealth.SelectRuntimeEndpoints(forward);
