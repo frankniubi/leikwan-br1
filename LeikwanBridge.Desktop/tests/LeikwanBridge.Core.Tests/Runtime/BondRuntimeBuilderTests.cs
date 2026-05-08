@@ -102,6 +102,24 @@ public sealed class BondRuntimeBuilderTests
         Assert.Single(spec.Processes, process => process.Role == "bond-runtime");
     }
 
+    [Fact]
+    public void BuildBond_LatencyFirst_EmitsRolesAndFlags()
+    {
+        var builder = CreateBuilder();
+        var forward = CreatePlainTcpMuxBondForward();
+        forward.Bonding!.PolicyMode = "latency_first";
+        forward.Bonding.UdpPrimaryOnly = true;
+        forward.Endpoints[0].LegRole = "primary";
+        forward.Endpoints[1].LegRole = "helper";
+
+        var spec = builder.Build(forward);
+        var runtime = Assert.Single(spec.Processes, process => process.Role == "bond-runtime");
+
+        Assert.Contains("role=primary", runtime.Arguments);
+        Assert.Contains("role=helper", runtime.Arguments);
+        Assert.Contains("--latency-first", runtime.Arguments);
+    }
+
     private static BondRuntimeBuilder CreateBuilder(AgentConfig? config = null)
     {
         return new BondRuntimeBuilder(config ?? new AgentConfig

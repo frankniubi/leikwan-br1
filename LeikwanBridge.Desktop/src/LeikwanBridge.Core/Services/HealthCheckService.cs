@@ -232,6 +232,8 @@ public sealed class HealthCheckService
             $"--warmup-leg-delay-ms {bonding.WarmupLegDelayMs} " +
             $"--bulk-promote-bytes {bonding.BulkPromoteBytes} " +
             $"--leg-cooldown-ms {bonding.LegCooldownMs}";
+        if (string.Equals(bonding.PolicyMode, "latency_first", StringComparison.OrdinalIgnoreCase))
+            args += " --latency-first";
 
         using var process = new Process
         {

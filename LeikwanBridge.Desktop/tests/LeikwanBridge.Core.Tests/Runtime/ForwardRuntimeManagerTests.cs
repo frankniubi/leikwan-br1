@@ -188,6 +188,7 @@ public sealed class ForwardRuntimeManagerTests
     {
         var forward = CreatePlainTcpMuxBondForward();
         forward.BackendMode = "cf_mode";
+        forward.Bonding!.PolicyMode = "latency_first";
         return forward;
     }
 

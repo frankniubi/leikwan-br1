@@ -106,6 +106,30 @@ public sealed class BondEndpointHealthServiceTests
         Assert.Equal([254, 256, 258], selected.Select(endpoint => endpoint.EndpointId).ToList());
     }
 
+    [Fact]
+    public void SelectRuntimeEndpoints_LatencyFirstNormalBond_MarksPrimaryThenHelpers()
+    {
+        using var tempDir = new TempStateDirectory();
+        var stateManager = new StateManager(tempDir.Path);
+        var service = new BondEndpointHealthService(stateManager);
+
+        stateManager.SaveBondEndpointHealth(new Dictionary<string, Dictionary<string, BondEndpointHealthEntry>>
+        {
+            ["40"] = new()
+            {
+                ["254"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 0.75 },
+                ["256"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 0.95 },
+                ["258"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 0.60 },
+            }
+        });
+
+        var forward = CreateLatencyFirstNormalBondForward();
+        var selected = service.SelectRuntimeEndpoints(forward, nowUnixSeconds: 100);
+
+        Assert.Equal(new[] { 256, 254, 258 }, selected.Select(endpoint => endpoint.EndpointId).ToArray());
+        Assert.Equal(new[] { "primary", "helper", "helper" }, selected.Select(endpoint => endpoint.LegRole).ToArray());
+    }
+
     private static ForwardConfig CreateCfBondForward()
     {
         return new ForwardConfig
@@ -142,6 +166,7 @@ public sealed class BondEndpointHealthServiceTests
                 RouteKey = "forward-47",
                 SessionToken = "tcp-session",
                 RemoteTarget = "127.0.0.1:8899",
+                PolicyMode = "latency_first",
                 WsPriority = 10,
             },
         };
@@ -170,6 +195,34 @@ public sealed class BondEndpointHealthServiceTests
                 RouteKey = "forward-40",
                 SessionToken = "tcp-session",
                 RemoteTarget = "45.196.220.47:5201",
+                PolicyMode = "latency_first",
+                WsPriority = 10,
+            },
+        };
+    }
+
+    private static ForwardConfig CreateLatencyFirstNormalBondForward()
+    {
+        return new ForwardConfig
+        {
+            ForwardId = 40,
+            BackendMode = "current_mode",
+            Mode = "bond",
+            ListenPort = 11030,
+            Transport = "tcp",
+            Endpoints =
+            [
+                new EndpointConfig { EndpointId = 254, Host = "8.163.90.132", Port = 7000, DynamicPriority = 10 },
+                new EndpointConfig { EndpointId = 256, Host = "8.163.87.42", Port = 7000, DynamicPriority = 10 },
+                new EndpointConfig { EndpointId = 258, Host = "8.163.71.73", Port = 7000, DynamicPriority = 10 },
+            ],
+            Bonding = new BondingConfig
+            {
+                IngressMode = "plain_tcp_mux",
+                RouteKey = "forward-40",
+                SessionToken = "tcp-session",
+                RemoteTarget = "45.196.220.47:5201",
+                PolicyMode = "latency_first",
                 WsPriority = 10,
             },
         };

@@ -586,3 +586,14 @@ Rollback rule:
 
 - if reverse TCP falls back toward the toxic-leg collapse, roll back the bond binary first
 - if TCP looks good but UDP regresses, roll back only the UDP UoT Python pieces
+
+### Latency-first bond
+
+`bond_latency_first` keeps the sidecar as the final HK aggregation point, but changes runtime behavior so one `primary` slave leg handles stream-open and interactive traffic while helper legs only join clearly bulk TCP sessions.
+
+Operational expectations:
+
+- short TCP and speedtest-style latency should stay much closer to the best single leg than the old eager-striping bond mode
+- higher sustained TCP throughput than single-leg mode once helper legs join
+- phase one keeps UDP primary-only, with helper legs reserved for failover
+- no direct client-to-sidecar topology change

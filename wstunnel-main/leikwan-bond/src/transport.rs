@@ -31,6 +31,12 @@ pub enum LegTransport {
     Quic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegRole {
+    Primary,
+    Helper,
+}
+
 impl LegTransport {
     pub fn default_priority(self) -> u16 {
         match self {
@@ -48,6 +54,7 @@ pub struct LegSpec {
     pub server_name: Option<String>,
     pub insecure: bool,
     pub priority: u16,
+    pub role: LegRole,
     pub endpoint_id: Option<u64>,
     pub node_id: Option<u64>,
     pub display_host: Option<String>,
@@ -63,6 +70,7 @@ impl fmt::Debug for LegSpec {
             .field("server_name", &self.server_name)
             .field("insecure", &self.insecure)
             .field("priority", &self.priority)
+            .field("role", &self.role)
             .field("endpoint_id", &self.endpoint_id)
             .field("node_id", &self.node_id)
             .field("display_host", &self.display_host)
@@ -90,6 +98,7 @@ pub fn parse_leg_spec(raw: &str) -> anyhow::Result<LegSpec> {
             server_name: None,
             insecure: false,
             priority: LegTransport::Tcp.default_priority(),
+            role: LegRole::Primary,
             endpoint_id: None,
             node_id: None,
             display_host: None,
@@ -117,6 +126,7 @@ pub fn parse_leg_spec(raw: &str) -> anyhow::Result<LegSpec> {
     let mut server_name = None;
     let mut insecure = false;
     let mut priority = transport.default_priority();
+    let mut role = LegRole::Primary;
     let mut endpoint_id = None;
     let mut node_id = None;
     let mut display_host = None;
@@ -135,6 +145,12 @@ pub fn parse_leg_spec(raw: &str) -> anyhow::Result<LegSpec> {
                 if let Ok(parsed) = value.parse::<u16>() {
                     priority = parsed;
                 }
+            }
+            "role" => {
+                role = match value.as_ref() {
+                    "helper" => LegRole::Helper,
+                    _ => LegRole::Primary,
+                };
             }
             "endpoint_id" => {
                 if let Ok(parsed) = value.parse::<u64>() {
@@ -162,6 +178,7 @@ pub fn parse_leg_spec(raw: &str) -> anyhow::Result<LegSpec> {
         server_name,
         insecure,
         priority,
+        role,
         endpoint_id,
         node_id,
         display_host,
@@ -531,5 +548,19 @@ impl ServerCertVerifier for SkipServerVerification {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LegRole, parse_leg_spec};
+
+    #[test]
+    fn parse_leg_spec_reads_role_query_param() {
+        let spec = parse_leg_spec("tcp://127.0.0.1:20962?priority=10&endpoint_id=184&role=primary").expect("parse");
+        assert_eq!(spec.role, LegRole::Primary);
+
+        let helper = parse_leg_spec("tcp://127.0.0.1:20963?priority=10&endpoint_id=185&role=helper").expect("parse");
+        assert_eq!(helper.role, LegRole::Helper);
     }
 }

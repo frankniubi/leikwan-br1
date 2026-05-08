@@ -681,7 +681,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                     {"endpoint_id": 185, "host": "8.163.90.235", "port": 7001},
                     {"endpoint_id": 186, "host": "8.163.87.42", "port": 7001},
                 ],
-                "bonding": {"ws_priority": 10},
+                "bonding": {"policy_mode": "latency_first", "ws_priority": 10},
             }
 
             with mock.patch.object(agent, "bond_leg_snapshot_dir", return_value=snapshot_dir):
@@ -704,7 +704,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                     {"endpoint_id": 257, "host": "8.163.90.235", "port": 7000},
                     {"endpoint_id": 258, "host": "8.163.71.73", "port": 7000},
                 ],
-                "bonding": {"ws_priority": 10},
+                "bonding": {"policy_mode": "latency_first", "ws_priority": 10},
             }
             agent.save_bond_endpoint_health(
                 {
@@ -760,6 +760,104 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
 
             self.assertEqual([item["endpoint_id"] for item in selected], [184, 185])
             self.assertTrue(all(item["health_role"] == "healthy" for item in selected))
+
+    def test_select_bond_runtime_endpoints_latency_first_normal_bond_marks_primary_then_helpers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            agent.save_bond_endpoint_health(
+                {
+                    "40": {
+                        "254": {"role": "healthy", "consecutive_successes": 4, "consecutive_failures": 0, "quality_score": 0.75},
+                        "256": {"role": "healthy", "consecutive_successes": 4, "consecutive_failures": 0, "quality_score": 0.95},
+                        "258": {"role": "healthy", "consecutive_successes": 4, "consecutive_failures": 0, "quality_score": 0.60},
+                    }
+                }
+            )
+            forward = {
+                "forward_id": 40,
+                "mode": "bond",
+                "backend_mode": "current_mode",
+                "endpoints": [
+                    {"endpoint_id": 254, "host": "8.163.90.132", "port": 7000},
+                    {"endpoint_id": 256, "host": "8.163.87.42", "port": 7000},
+                    {"endpoint_id": 258, "host": "8.163.71.73", "port": 7000},
+                ],
+                "bonding": {"policy_mode": "latency_first", "ws_priority": 10},
+            }
+
+            selected = agent.select_bond_runtime_endpoints(forward, now=100.0)
+
+            self.assertEqual([item["endpoint_id"] for item in selected], [256, 254, 258])
+            self.assertEqual([item["leg_role"] for item in selected], ["primary", "helper", "helper"])
+
+    def test_select_bond_runtime_endpoints_cf_snapshot_does_not_promote_null_latency_legs_to_perfect(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            snapshot_dir = pathlib.Path(tmp_dir) / "run-leikwan"
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+            (snapshot_dir / "bond-leg-health-forward-47.json").write_text(
+                json.dumps(
+                    {
+                        "forward_id": 47,
+                        "legs": [
+                            {"endpoint_id": 316, "host": "47.116.11.144", "tcp": {"state": "healthy", "last_reason": None}, "recent_events": []},
+                            {"endpoint_id": 318, "host": "101.133.142.65", "tcp": {"state": "healthy", "last_reason": None}, "recent_events": []},
+                            {"endpoint_id": 320, "host": "8.133.170.123", "tcp": {"state": "healthy", "last_reason": None}, "recent_events": []},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent.save_bond_endpoint_health(
+                {
+                    "47": {
+                        "316": {"role": "healthy", "consecutive_successes": 3, "consecutive_failures": 0, "quality_score": 0.40},
+                        "317": {"role": "healthy", "consecutive_successes": 20, "consecutive_failures": 0, "quality_score": 0.7480, "last_latency_ms": 50.4},
+                        "318": {"role": "healthy", "consecutive_successes": 3, "consecutive_failures": 0, "quality_score": 0.40},
+                        "319": {"role": "healthy", "consecutive_successes": 20, "consecutive_failures": 0, "quality_score": 0.7485, "last_latency_ms": 50.3},
+                        "320": {"role": "healthy", "consecutive_successes": 3, "consecutive_failures": 0, "quality_score": 0.40},
+                    }
+                }
+            )
+            forward = {
+                "forward_id": 47,
+                "mode": "bond",
+                "backend_mode": "cf_mode",
+                "endpoints": [
+                    {"endpoint_id": 316, "host": "47.116.11.144", "port": 7000},
+                    {"endpoint_id": 317, "host": "47.116.104.15", "port": 7000},
+                    {"endpoint_id": 318, "host": "101.133.142.65", "port": 7000},
+                    {"endpoint_id": 319, "host": "47.116.134.3", "port": 7000},
+                    {"endpoint_id": 320, "host": "8.133.170.123", "port": 7000},
+                ],
+                "bonding": {"policy_mode": "latency_first", "ws_priority": 10},
+            }
+
+            with mock.patch.object(agent, "bond_leg_snapshot_dir", return_value=snapshot_dir):
+                selected = agent.select_bond_runtime_endpoints(forward, now=100.0)
+
+            self.assertEqual([item["endpoint_id"] for item in selected], [319, 317, 316])
+            self.assertEqual(selected[0]["leg_role"], "primary")
+            self.assertTrue(all(item["quality_score"] < 1.0 for item in selected))
+
+    def test_select_bond_runtime_endpoints_non_latency_first_bond_keeps_existing_ordering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            forward = {
+                "forward_id": 26,
+                "mode": "bond",
+                "backend_mode": "current_mode",
+                "endpoints": [
+                    {"endpoint_id": 184, "host": "8.163.90.132", "port": 7001},
+                    {"endpoint_id": 185, "host": "8.163.90.235", "port": 7001},
+                ],
+                "bonding": {"ws_priority": 10},
+            }
+
+            selected = agent.select_bond_runtime_endpoints(forward, now=100.0)
+
+            self.assertEqual([item["endpoint_id"] for item in selected], [184, 185])
+            self.assertTrue(all("leg_role" not in item for item in selected))
 
 
 if __name__ == "__main__":

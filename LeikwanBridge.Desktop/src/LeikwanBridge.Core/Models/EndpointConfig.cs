@@ -37,6 +37,9 @@ public sealed class EndpointConfig
     [JsonPropertyName("quality_score")]
     public double QualityScore { get; set; } = 1.0;
 
+    [JsonPropertyName("leg_role")]
+    public string LegRole { get; set; } = "";
+
     [JsonPropertyName("supports_quic_leg")]
     public bool SupportsQuicLeg { get; set; } = true;
 
@@ -55,6 +58,7 @@ public sealed class EndpointConfig
             DynamicPriority = DynamicPriority,
             HealthRole = HealthRole,
             QualityScore = QualityScore,
+            LegRole = LegRole,
             SupportsQuicLeg = SupportsQuicLeg,
         };
     }

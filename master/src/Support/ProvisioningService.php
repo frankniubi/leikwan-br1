@@ -5234,6 +5234,10 @@ final class ProvisioningService
             'quic_insecure' => true,
             'quic_priority' => 0,
             'ws_priority' => 10,
+            'policy_mode' => trim((string) ($this->config->get('BOND_POLICY_MODE', 'latency_first') ?? 'latency_first')) ?: 'latency_first',
+            'udp_primary_only' => $this->config->getBool('BOND_UDP_PRIMARY_ONLY', true),
+            'primary_reselect_on_failure_only' => $this->config->getBool('BOND_PRIMARY_RESELECT_ON_FAILURE_ONLY', true),
+            'cf_primary_selection_mode' => trim((string) ($this->config->get('BOND_CF_PRIMARY_SELECTION_MODE', 'real_path') ?? 'real_path')) ?: 'real_path',
             'token_expires_at' => $expiresAt,
         ];
     }

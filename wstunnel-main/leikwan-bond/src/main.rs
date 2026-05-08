@@ -57,6 +57,10 @@ enum Command {
         bulk_promote_bytes: usize,
         #[arg(long, default_value = "1800000")]
         leg_cooldown_ms: u64,
+        #[arg(long, default_value_t = false)]
+        latency_first: bool,
+        #[arg(long, default_value_t = false)]
+        udp_primary_only: bool,
     },
     /// Run as server: accept leg connections, reassemble and forward to target
     Server {
@@ -91,6 +95,8 @@ fn main() {
             warmup_leg_delay_ms,
             bulk_promote_bytes,
             leg_cooldown_ms,
+            latency_first,
+            udp_primary_only,
         } => {
             let transport = match protocol.trim().to_ascii_lowercase().as_str() {
                 "tcp" => Ok(TransportProtocol::Tcp),
@@ -113,6 +119,8 @@ fn main() {
                         warmup_leg_delay: Duration::from_millis(warmup_leg_delay_ms),
                         bulk_promote_bytes,
                         leg_cooldown: Duration::from_millis(leg_cooldown_ms),
+                        latency_first,
+                        udp_primary_only,
                     };
                     let rt = tokio::runtime::Builder::new_multi_thread()
                         .enable_all()
@@ -149,6 +157,8 @@ fn main() {
                 warmup_leg_delay: Duration::from_millis(80),
                 bulk_promote_bytes: 262144,
                 leg_cooldown: Duration::from_millis(1800000),
+                latency_first: false,
+                udp_primary_only: false,
             };
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
