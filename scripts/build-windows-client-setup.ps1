@@ -114,6 +114,17 @@ $sourceUotBond = Resolve-PayloadFile -Name "leikwan-uot-bond.exe" -Candidates @(
     (Join-Path $payloadDir "bin\leikwan-uot-bond.exe"),
     (Join-Path $payloadDir "leikwan-uot-bond.exe")
 )
+$appSupportFiles = @(
+    "CommunityToolkit.Mvvm.dll",
+    "LeikwanBridge.App.deps.json",
+    "LeikwanBridge.App.dll",
+    "LeikwanBridge.App.pdb",
+    "LeikwanBridge.App.runtimeconfig.json",
+    "LeikwanBridge.Core.dll",
+    "LeikwanBridge.Core.pdb",
+    "Serilog.dll",
+    "Serilog.Sinks.File.dll"
+)
 
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 
@@ -130,6 +141,15 @@ Start-Sleep -Milliseconds 800
 
 $backupTargets = @(
     "leikwan-client-win.exe",
+    "CommunityToolkit.Mvvm.dll",
+    "LeikwanBridge.App.deps.json",
+    "LeikwanBridge.App.dll",
+    "LeikwanBridge.App.pdb",
+    "LeikwanBridge.App.runtimeconfig.json",
+    "LeikwanBridge.Core.dll",
+    "LeikwanBridge.Core.pdb",
+    "Serilog.dll",
+    "Serilog.Sinks.File.dll",
     "wstunnel.exe",
     "leikwan-bond.exe",
     "leikwan-ingress.exe",
@@ -163,6 +183,13 @@ Get-Process -Name "leikwan-client-win" -ErrorAction SilentlyContinue | Stop-Proc
 
 New-Item -ItemType Directory -Path $targetBin -Force | Out-Null
 
+foreach ($supportFile in $appSupportFiles) {
+    $sourceSupport = Resolve-PayloadFile -Name $supportFile -Candidates @(
+        (Join-Path $payloadDir ("app\" + $supportFile)),
+        (Join-Path $payloadDir $supportFile)
+    )
+    Copy-Item -LiteralPath $sourceSupport -Destination (Join-Path $installDir $supportFile) -Force
+}
 Copy-Item -LiteralPath $sourceAppExe -Destination (Join-Path $installDir "leikwan-client-win.exe") -Force
 Copy-Item -LiteralPath $sourceWstunnel -Destination (Join-Path $targetBin "wstunnel.exe") -Force
 Copy-Item -LiteralPath $sourceBond -Destination (Join-Path $targetBin "leikwan-bond.exe") -Force
@@ -217,7 +244,10 @@ $appStageDir = Join-Path $StageDir "app"
 $appBinStageDir = Join-Path $appStageDir "bin"
 New-Item -ItemType Directory -Path $appBinStageDir -Force | Out-Null
 
-Copy-Item -LiteralPath (Join-Path $payloadDir "leikwan-client-win.exe") -Destination (Join-Path $appStageDir "leikwan-client-win.exe") -Force
+Copy-Item -LiteralPath $appExe -Destination (Join-Path $appStageDir "leikwan-client-win.exe") -Force
+Get-ChildItem -LiteralPath $AppPublishDir -File | Where-Object { $_.Name -ne "LeikwanBridge.App.exe" } | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $appStageDir $_.Name) -Force
+}
 Copy-Item -LiteralPath (Join-Path $binDir "wstunnel.exe") -Destination (Join-Path $appBinStageDir "wstunnel.exe") -Force
 Copy-Item -LiteralPath (Join-Path $binDir "leikwan-bond.exe") -Destination (Join-Path $appBinStageDir "leikwan-bond.exe") -Force
 Copy-Item -LiteralPath (Join-Path $binDir "leikwan-ingress.exe") -Destination (Join-Path $appBinStageDir "leikwan-ingress.exe") -Force
@@ -228,13 +258,10 @@ $packageTitle = "LeiKwan Bridge Setup"
 $outputName = Split-Path -Leaf $OutputSetup
 $sourceFiles = @(
     "install.cmd",
-    "install.ps1",
-    "app\leikwan-client-win.exe",
-    "app\bin\wstunnel.exe",
-    "app\bin\leikwan-bond.exe",
-    "app\bin\leikwan-ingress.exe",
-    "app\bin\leikwan-uot-bond.exe"
+    "install.ps1"
 )
+$sourceFiles += Get-ChildItem -LiteralPath $appStageDir -File | ForEach-Object { "app\" + $_.Name }
+$sourceFiles += Get-ChildItem -LiteralPath $appBinStageDir -File | ForEach-Object { "app\bin\" + $_.Name }
 
 $sedContent = @"
 [Version]

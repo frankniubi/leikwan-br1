@@ -7,6 +7,14 @@ namespace LeikwanBridge.App.Services;
 public sealed class InstalledRuntimeCleanupService
 {
     public record RunningProcessInfo(int ProcessId, string? ExecutablePath);
+    private static readonly HashSet<string> ManagedExecutableNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "leikwan-client-win.exe",
+        "leikwan-bond.exe",
+        "leikwan-ingress.exe",
+        "leikwan-uot-bond.exe",
+        "wstunnel.exe",
+    };
 
     private readonly Func<IReadOnlyList<RunningProcessInfo>> _processProvider;
     private readonly Action<int> _killProcess;
@@ -52,7 +60,7 @@ public sealed class InstalledRuntimeCleanupService
                 continue;
             }
 
-            if (!executablePath.StartsWith(rootPath, StringComparison.OrdinalIgnoreCase))
+            if (!ShouldCleanProcess(rootPath, executablePath))
                 continue;
 
             try
@@ -72,6 +80,19 @@ public sealed class InstalledRuntimeCleanupService
     private static string NormalizeDirectoryPath(string path)
     {
         return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+    }
+
+    private static bool ShouldCleanProcess(string installRoot, string executablePath)
+    {
+        if (executablePath.StartsWith(installRoot, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var fileName = Path.GetFileName(executablePath);
+        if (string.IsNullOrWhiteSpace(fileName) || !ManagedExecutableNames.Contains(fileName))
+            return false;
+
+        var normalized = executablePath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+        return normalized.IndexOf("LeiKwan Bridge", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static IReadOnlyList<RunningProcessInfo> SnapshotRunningProcesses()
