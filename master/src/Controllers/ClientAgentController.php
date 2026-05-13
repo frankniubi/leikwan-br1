@@ -26,7 +26,8 @@ final class ClientAgentController extends BaseController
         $client = Auth::requireClientAgent($request, $this->db);
         $deviceSessionService = new ClientOnlineSessionService($this->db);
         $deviceId = $deviceSessionService->enforceFromRequest($client, $request, 'pull');
-        $forwards = $this->provisioning->assignedForwardConfigsForClient((int) $client['id']);
+        $deviceSession = $deviceSessionService->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
+        $forwards = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
         $clientAgent = $this->artifactMetadata('client_agent');
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
         $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
