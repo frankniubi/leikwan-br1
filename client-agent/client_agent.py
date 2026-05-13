@@ -983,7 +983,14 @@ class ClientAgent:
             logging.warning("forward %s requested mptcp mode but helper is missing at %s", forward_id, mptcp_client)
 
         render_forward = dict(forward)
-        if mode == "bond":
+        candidate_pool = self.select_forward_candidates(render_forward)
+        if candidate_pool:
+            render_forward["candidate_pool"] = candidate_pool
+        runtime_mode = self.choose_runtime_family(render_forward, self.running_kernel_supports_mptcp())
+        if runtime_mode in {"bond", "mptcp"}:
+            render_forward["mode"] = runtime_mode
+        if runtime_mode == "bond":
+            render_forward = self.apply_latency_target_candidate_escalation(render_forward)
             render_forward["endpoints"] = self.select_bond_runtime_endpoints(render_forward)
 
         rendered = render_forward_runtime(render_forward, self.semantic_agent_config())
@@ -1671,6 +1678,81 @@ class ClientAgent:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=1.0)
+
+    def choose_runtime_family(self, forward: dict, mptcp_supported: bool) -> str:
+        runtime_preference = str(forward.get("runtime_preference", "single") or "single").strip()
+        if runtime_preference != "mptcp_preferred_bond_fallback":
+            return self.normalize_mode(forward.get("mode", "single"))
+
+        candidate_pool = [item for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
+        primary = next((item for item in candidate_pool if bool(item.get("selected_primary", False))), candidate_pool[0] if candidate_pool else None)
+        if isinstance(primary, dict) and str(primary.get("candidate_kind", "") or "") == "self_leg":
+            return "bond"
+        if mptcp_supported:
+            return "mptcp"
+        return "bond"
+
+    def select_forward_candidates(self, forward: dict) -> list[dict]:
+        candidates = [dict(item) for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
+        ready = [item for item in candidates if bool(item.get("ready", True))]
+        ready.sort(key=lambda item: (float(item.get("measured_rtt_ms", 999999.0) or 999999.0), str(item.get("candidate_kind", ""))))
+        for index, item in enumerate(ready):
+            item["selected_primary"] = index == 0
+        return ready
+
+    def filter_mptcp_capable_candidates(self, candidate_pool: list[dict]) -> list[dict]:
+        return [
+            dict(item)
+            for item in candidate_pool
+            if isinstance(item, dict)
+            and str(item.get("candidate_kind", "") or "") != "self_leg"
+            and "mptcp" in list(item.get("runtime_capabilities", []))
+        ]
+
+    def apply_latency_target_candidate_escalation(self, forward: dict) -> dict:
+        next_forward = dict(forward)
+        desired_latency_ms = float(forward.get("desired_latency_ms", 0) or 0)
+        helper_cap = max(0, int(forward.get("helper_group_cap", 0) or 0))
+        pool = [dict(item) for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
+        primary = next((item for item in pool if bool(item.get("selected_primary", False))), None)
+        if desired_latency_ms <= 0 or helper_cap <= 0 or primary is None:
+            next_forward["candidate_pool"] = pool
+            return next_forward
+        if str(primary.get("candidate_kind", "") or "") != "self_leg":
+            next_forward["candidate_pool"] = pool
+            return next_forward
+        primary_rtt = float(primary.get("measured_rtt_ms", 999999.0) or 999999.0)
+        if primary_rtt <= desired_latency_ms:
+            next_forward["candidate_pool"] = pool
+            return next_forward
+        helpers = [item for item in pool if str(item.get("candidate_kind", "") or "") == "rented_group_leg" and bool(item.get("ready", True))]
+        helpers.sort(key=lambda item: (float(item.get("measured_rtt_ms", 999999.0) or 999999.0), int(item.get("origin_group_order", 999999) or 999999)))
+        chosen_group_keys = set()
+        chosen = 0
+        for helper in helpers:
+            group_key = str(helper.get("origin_group_key", "") or "")
+            if group_key != "" and group_key in chosen_group_keys:
+                continue
+            helper["active_helper"] = True
+            if group_key != "":
+                chosen_group_keys.add(group_key)
+            chosen += 1
+            if chosen >= helper_cap:
+                break
+        next_forward["candidate_pool"] = pool
+        return next_forward
+
+    def normalize_self_leg_runtime_shape(self, candidate: dict) -> dict:
+        return {
+            "candidate_kind": "self_leg",
+            "probe_transport": str(candidate.get("probe_transport", "") or ""),
+            "dial_host": str(candidate.get("dial_host", "") or ""),
+            "dial_port": int(candidate.get("dial_port", 0) or 0),
+            "cf_sni_host": str(candidate.get("cf_sni_host", "") or ""),
+            "path_prefix": str(candidate.get("path_prefix", "") or ""),
+            "target_sidecar_host": str(candidate.get("target_sidecar_host", "") or ""),
+            "target_sidecar_port": int(candidate.get("target_sidecar_port", 0) or 0),
+        }
 
     def select_bond_runtime_endpoints(self, forward: dict, now: float | None = None) -> list[dict]:
         now = time.time() if now is None else now
