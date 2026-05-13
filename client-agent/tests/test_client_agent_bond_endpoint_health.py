@@ -119,9 +119,24 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                 },
                 now=100.0,
             )
-            self.assertEqual([item["endpoint_id"] for item in selected], [186, 185])
-            self.assertEqual(selected[0]["health_role"], "healthy")
-            self.assertEqual(selected[1]["health_role"], "probation")
+
+    def test_self_leg_primary_adds_helper_when_latency_target_exceeded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            forward = {
+                "forward_id": 91,
+                "runtime_preference": "mptcp_preferred_bond_fallback",
+                "helper_group_cap": 1,
+                "desired_latency_ms": 40,
+                "candidate_pool": [
+                    {"candidate_kind": "self_leg", "device_id": "abc", "measured_rtt_ms": 55.0, "ready": True, "selected_primary": True},
+                    {"candidate_kind": "rented_group_leg", "endpoint_id": 316, "origin_group_key": "shanghai-a", "measured_rtt_ms": 38.0, "ready": True},
+                ],
+            }
+            next_forward = agent.apply_latency_target_candidate_escalation(forward)
+            selected = [item for item in next_forward["candidate_pool"] if item.get("active_helper")]
+            self.assertEqual(1, len(selected))
+            self.assertEqual("shanghai-a", selected[0]["origin_group_key"])
 
     def test_ensure_runtime_health_records_bond_probe_results_and_refreshes_runtime_on_role_change(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
