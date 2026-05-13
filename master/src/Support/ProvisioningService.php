@@ -4268,7 +4268,7 @@ final class ProvisioningService
         if ($forward === null || (int) ($forward['enabled'] ?? 0) !== 1 || (string) ($forward['service_status'] ?? '') !== 'active') {
             return;
         }
-        $groupKeys = [(string) ($forward['node_group_key'] ?? '')];
+        $groupKeys = $this->orderedHelperGroupKeysForForward($forward);
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
         $desiredCount = $this->panelManagedEndpointCount($clientMode, $groupKeys, (int) ($forward['service_id'] ?? 0) ?: null);
         $desiredNodes = $this->pickNodesForGroups($groupKeys, $desiredCount, (int) ($forward['service_id'] ?? 0) ?: null);
@@ -4433,6 +4433,7 @@ final class ProvisioningService
         return [
             'listen_port' => (int) ($forward['public_port'] ?? 0),
             'target' => $publishTarget,
+            'origin_group_key' => (string) ($node['node_group_key'] ?? $node['group_key'] ?? ''),
             'forward_combination_id' => ($forward['forward_combination_id'] ?? null) !== null ? (int) $forward['forward_combination_id'] : null,
             'backend_mode' => $backendMode,
             'cf_mode' => $backendMode === 'cf_mode'
@@ -4529,7 +4530,7 @@ final class ProvisioningService
             'active' => 'active',
             'degraded' => 'degraded',
         ];
-        $sql = 'SELECT n.*
+        $sql = 'SELECT n.*, g.group_key AS node_group_key
                 FROM nodes n
                 LEFT JOIN node_groups g ON g.id = n.group_id
                 WHERE (n.status = :active OR n.status = :degraded)';
@@ -4601,6 +4602,21 @@ final class ProvisioningService
         usort($orderedSecondary, $sorter);
 
         return array_slice(array_merge($orderedPrimary, $orderedSecondary), 0, max(1, $count));
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @return array<int, string>
+     */
+    private function orderedHelperGroupKeysForForward(array $forward): array
+    {
+        $forwardCombinationId = (int) ($forward['forward_combination_id'] ?? 0);
+        $keys = $this->forwardCombinationHelperNodeGroupKeys($forwardCombinationId);
+        if ($keys !== []) {
+            return $keys;
+        }
+        $fallback = trim((string) ($forward['node_group_key'] ?? ''));
+        return $fallback !== '' ? [$fallback] : [];
     }
 
     /**
