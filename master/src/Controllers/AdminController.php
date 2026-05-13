@@ -1812,6 +1812,10 @@ final class AdminController extends BaseController
         $previewLabel = (string) ($editing['tenant_label'] ?? 'SHA -> NRT');
         $previewDescription = (string) ($editing['tenant_description'] ?? 'Best for Japan');
         $previewBadge = (string) ($editing['tenant_badge'] ?? 'Recommended');
+        $helperNodeGroupKeysText = implode("\n", array_map(
+            static fn(mixed $value): string => trim((string) $value),
+            is_array($editing['helper_node_group_keys'] ?? null) ? (array) $editing['helper_node_group_keys'] : []
+        ));
         $body = '
             <div class="hero">
               <div>
@@ -1835,10 +1839,17 @@ final class AdminController extends BaseController
                     <div class="field"><label>Sidecar Point</label><select name="sidecar_point_id" required>' . $sidecarOptions . '</select></div>
                     <div class="field"><label>Cloudflare Location Group</label><select name="cf_location_group_id">' . $cfOptions . '</select></div>
                     <div class="field"><label>Client Mode</label><select name="client_mode"><option value="single"' . (((string) ($editing['client_mode'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="bond"' . (((string) ($editing['client_mode'] ?? 'single')) === 'bond' ? ' selected' : '') . '>bond</option></select></div>
+                    <div class="field"><label>Runtime Preference</label><select name="runtime_preference"><option value="single"' . (((string) ($editing['runtime_preference'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="mptcp_preferred_bond_fallback"' . (((string) ($editing['runtime_preference'] ?? 'single')) === 'mptcp_preferred_bond_fallback' ? ' selected' : '') . '>mptcp_preferred_bond_fallback</option></select></div>
+                    <div class="field"><label>Allow Private Self Leg</label><select name="allow_private_self_leg"><option value="0"' . (((int) ($editing['allow_private_self_leg'] ?? 0)) === 0 ? ' selected' : '') . '>No</option><option value="1"' . (((int) ($editing['allow_private_self_leg'] ?? 0)) === 1 ? ' selected' : '') . '>Yes</option></select></div>
+                    <div class="field"><label>Self Leg Scope</label><select name="self_leg_scope"><option value="none"' . (((string) ($editing['self_leg_scope'] ?? 'none')) === 'none' ? ' selected' : '') . '>none</option><option value="device_session"' . (((string) ($editing['self_leg_scope'] ?? 'none')) === 'device_session' ? ' selected' : '') . '>device_session</option></select></div>
+                    <div class="field"><label>Self Leg Role</label><select name="self_leg_role"><option value="none"' . (((string) ($editing['self_leg_role'] ?? 'none')) === 'none' ? ' selected' : '') . '>none</option><option value="latency_anchor"' . (((string) ($editing['self_leg_role'] ?? 'none')) === 'latency_anchor' ? ' selected' : '') . '>latency_anchor</option></select></div>
+                    <div class="field"><label>Helper Group Cap</label><input type="number" name="helper_group_cap" min="0" value="' . $this->escape((string) ($editing['helper_group_cap'] ?? 0)) . '"></div>
+                    <div class="field"><label>Helper Escalation Policy</label><select name="helper_escalation_policy"><option value="disabled"' . (((string) ($editing['helper_escalation_policy'] ?? 'disabled')) === 'disabled' ? ' selected' : '') . '>disabled</option><option value="desired_latency_only"' . (((string) ($editing['helper_escalation_policy'] ?? 'disabled')) === 'desired_latency_only' ? ' selected' : '') . '>desired_latency_only</option></select></div>
                     <div class="field"><label>Bond Ingress Mode</label><select name="bond_ingress_mode"><option value="plain_tcp_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'plain_tcp_mux' ? ' selected' : '') . '>plain_tcp_mux</option><option value="wss_path_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'wss_path_mux' ? ' selected' : '') . '>wss_path_mux</option></select></div>
                     <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . $this->escape((string) ($editing['sort_order'] ?? 100)) . '"></div>
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>inactive</option></select></div>
                   </div>
+                  <div class="field" style="margin-top:14px;"><label>Helper Node Group Keys</label><textarea name="helper_node_group_keys_text" placeholder="shanghai-a&#10;shanghai-b&#10;guangzhou-a">' . $this->escape($helperNodeGroupKeysText) . '</textarea><p class="muted">One node group key per line, ordered by priority.</p></div>
                   <div class="field" style="margin-top:14px;"><label>Notes</label><textarea name="notes">' . $this->escape((string) ($editing['notes'] ?? '')) . '</textarea></div>
                   <div class="card" style="margin-top:16px;">
                     <h3 style="margin-bottom:8px;">Tenant sees:</h3>
