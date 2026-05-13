@@ -122,6 +122,17 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
                 },
             )
 
+    def test_mptcp_runtime_filters_out_self_leg_candidates(self) -> None:
+        agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)
+        candidates = agent.filter_mptcp_capable_candidates(
+            [
+                {"candidate_kind": "self_leg", "runtime_capabilities": ["bond"]},
+                {"candidate_kind": "rented_group_leg", "runtime_capabilities": ["bond", "mptcp"]},
+            ]
+        )
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("rented_group_leg", candidates[0]["candidate_kind"])
+
     def test_sidecar_heartbeat_includes_bond_leg_reputation_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = pathlib.Path(tmp_dir) / "config.json"
