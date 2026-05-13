@@ -132,6 +132,25 @@ final class ClientOnlineSessionService
         return $rows;
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function activeSessionForClientAndDevice(int $clientId, string $deviceId): ?array
+    {
+        $row = $this->db->fetchOne(
+            'SELECT * FROM client_device_sessions WHERE client_id = :client_id AND device_id = :device_id LIMIT 1',
+            [
+                'client_id' => $clientId,
+                'device_id' => trim($deviceId),
+            ]
+        );
+        if ($row === null) {
+            return null;
+        }
+        $cutoff = gmdate('Y-m-d H:i:s', time() - self::ACTIVE_WINDOW_SECONDS);
+        return (string) ($row['last_seen_at'] ?? '') >= $cutoff ? $row : null;
+    }
+
     public function deviceIdFromRequest(Request $request): string
     {
         $header = trim((string) ($request->header('x-device-id') ?? ''));

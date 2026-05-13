@@ -624,20 +624,31 @@ final class ProvisioningService
     private function attachHelperNodeGroupKeysToForwardCombinations(array $rows): array
     {
         foreach ($rows as &$row) {
-            $row['helper_node_group_keys'] = array_map(
-                static fn(array $item): string => (string) ($item['node_group_key'] ?? ''),
-                $this->db->fetchAll(
-                    'SELECT node_group_key
-                     FROM forward_combination_helper_groups
-                     WHERE forward_combination_id = :forward_combination_id AND is_active = 1
-                     ORDER BY sort_order ASC, id ASC',
-                    ['forward_combination_id' => (int) ($row['id'] ?? 0)]
-                )
-            );
+            $row['helper_node_group_keys'] = $this->forwardCombinationHelperNodeGroupKeys((int) ($row['id'] ?? 0));
         }
         unset($row);
 
         return $rows;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function forwardCombinationHelperNodeGroupKeys(int $forwardCombinationId): array
+    {
+        if ($forwardCombinationId <= 0) {
+            return [];
+        }
+        return array_values(array_filter(array_map(
+            static fn(array $item): string => trim((string) ($item['node_group_key'] ?? '')),
+            $this->db->fetchAll(
+                'SELECT node_group_key
+                 FROM forward_combination_helper_groups
+                 WHERE forward_combination_id = :forward_combination_id AND is_active = 1
+                 ORDER BY sort_order ASC, id ASC',
+                ['forward_combination_id' => $forwardCombinationId]
+            )
+        ), static fn(string $value): bool => $value !== ''));
     }
 
     /**
@@ -2437,7 +2448,7 @@ final class ProvisioningService
     /**
      * @return array<int, array<string, mixed>>
      */
-    public function assignedForwardConfigsForClient(int $clientId): array
+    public function assignedForwardConfigsForClient(int $clientId, ?array $deviceSession = null): array
     {
         $client = $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]);
         if ($client === null) {
@@ -2488,6 +2499,9 @@ final class ProvisioningService
 
             $config = $this->buildClientConfig($forwardId);
             $config['service_status'] = (string) $forward['service_status'];
+            $config['runtime_preference'] = (string) ($config['forward_combination_runtime_preference'] ?? 'single');
+            $config['helper_group_cap'] = max(0, (int) ($config['forward_combination_helper_group_cap'] ?? 0));
+            $config['candidate_pool'] = $this->buildForwardCandidatePool($config, $client, $deviceSession);
             $config['endpoints'] = array_values(array_filter(
                 is_array($config['endpoints'] ?? null) ? $config['endpoints'] : [],
                 static function (mixed $endpoint): bool {
@@ -2506,6 +2520,91 @@ final class ProvisioningService
         }
 
         return $matched;
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     * @param array<string, mixed> $client
+     * @param array<string, mixed>|null $deviceSession
+     * @return array<int, array<string, mixed>>
+     */
+    private function buildForwardCandidatePool(array $config, array $client, ?array $deviceSession): array
+    {
+        $pool = [];
+        foreach ((array) ($config['endpoints'] ?? []) as $endpoint) {
+            if (!is_array($endpoint)) {
+                continue;
+            }
+            $originGroupKey = trim((string) ($endpoint['origin_group_key'] ?? $endpoint['node_group_key'] ?? $endpoint['group_key'] ?? ''));
+            $pool[] = [
+                'candidate_kind' => 'rented_group_leg',
+                'endpoint_id' => (int) ($endpoint['endpoint_id'] ?? 0),
+                'origin_group_key' => $originGroupKey,
+                'origin_group_order' => $this->helperGroupOrderForConfig($config, $originGroupKey),
+                'runtime_capabilities' => ['bond', 'mptcp'],
+                'host' => (string) ($endpoint['host'] ?? ''),
+                'port' => (int) ($endpoint['port'] ?? 0),
+            ];
+        }
+
+        $selfLeg = $this->buildSelfLegCandidate($config, $client, $deviceSession);
+        if ($selfLeg !== null) {
+            array_unshift($pool, $selfLeg);
+        }
+
+        return $pool;
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     * @param array<string, mixed> $client
+     * @param array<string, mixed>|null $deviceSession
+     * @return array<string, mixed>|null
+     */
+    private function buildSelfLegCandidate(array $config, array $client, ?array $deviceSession): ?array
+    {
+        if ((int) ($config['forward_combination_allow_private_self_leg'] ?? 0) !== 1) {
+            return null;
+        }
+        if ($deviceSession === null) {
+            return null;
+        }
+        $deviceId = trim((string) ($deviceSession['device_id'] ?? ''));
+        if ($deviceId === '') {
+            return null;
+        }
+        return [
+            'candidate_kind' => 'self_leg',
+            'session_id' => (int) ($deviceSession['id'] ?? 0),
+            'device_id' => $deviceId,
+            'runtime_capabilities' => ['bond'],
+            'self_leg_scope' => 'device_session',
+            'self_leg_role' => 'latency_anchor',
+            'probe_transport' => 'cf_direct_wss',
+            'dial_host' => (string) ($config['bond_remote_host'] ?? ''),
+            'dial_port' => (int) ($config['bond_remote_port'] ?? 0),
+            'cf_sni_host' => (string) ($config['sni'] ?? ''),
+            'path_prefix' => (string) ($config['path_prefix'] ?? ''),
+            'ingress_auth_token' => '',
+            'target_sidecar_host' => (string) ($config['bond_remote_host'] ?? ''),
+            'target_sidecar_port' => (int) ($config['bond_remote_port'] ?? 0),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     */
+    private function helperGroupOrderForConfig(array $config, string $groupKey): int
+    {
+        if ($groupKey === '') {
+            return 999999;
+        }
+        foreach ((array) ($config['forward_combination_helper_node_group_keys'] ?? []) as $index => $value) {
+            if ($groupKey === trim((string) $value)) {
+                return (int) $index;
+            }
+        }
+        return 999999;
     }
 
     /**
@@ -2657,6 +2756,12 @@ final class ProvisioningService
                      sp.name AS bond_sidecar_point_name,
                      combo.name AS forward_combination_name,
                      combo.tenant_label AS forward_combination_label,
+                     combo.runtime_preference AS forward_combination_runtime_preference,
+                     combo.allow_private_self_leg AS forward_combination_allow_private_self_leg,
+                     combo.self_leg_scope AS forward_combination_self_leg_scope,
+                     combo.self_leg_role AS forward_combination_self_leg_role,
+                     combo.helper_group_cap AS forward_combination_helper_group_cap,
+                     combo.helper_escalation_policy AS forward_combination_helper_escalation_policy,
                      f.backend_mode,
                      f.forward_combination_id,
                      f.cf_location_group_id,
@@ -2769,6 +2874,13 @@ final class ProvisioningService
             'forward_combination_id' => $forward['forward_combination_id'] !== null ? (int) $forward['forward_combination_id'] : null,
             'forward_combination_name' => (string) ($forward['forward_combination_name'] ?? ''),
             'forward_combination_label' => (string) ($forward['forward_combination_label'] ?? ''),
+            'forward_combination_runtime_preference' => (string) ($forward['forward_combination_runtime_preference'] ?? 'single'),
+            'forward_combination_allow_private_self_leg' => (int) ($forward['forward_combination_allow_private_self_leg'] ?? 0),
+            'forward_combination_self_leg_scope' => (string) ($forward['forward_combination_self_leg_scope'] ?? 'none'),
+            'forward_combination_self_leg_role' => (string) ($forward['forward_combination_self_leg_role'] ?? 'none'),
+            'forward_combination_helper_group_cap' => (int) ($forward['forward_combination_helper_group_cap'] ?? 0),
+            'forward_combination_helper_escalation_policy' => (string) ($forward['forward_combination_helper_escalation_policy'] ?? 'disabled'),
+            'forward_combination_helper_node_group_keys' => $this->forwardCombinationHelperNodeGroupKeys((int) ($forward['forward_combination_id'] ?? 0)),
             'backend_mode' => (string) ($forward['backend_mode'] ?? 'current_mode'),
             'cf_location_group_id' => $forward['cf_location_group_id'] !== null ? (int) $forward['cf_location_group_id'] : null,
             'bond_sidecar_host' => (string) ($forward['bond_sidecar_host'] ?? ''),
