@@ -149,6 +149,12 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     sidecar_point_id BIGINT UNSIGNED NOT NULL,
     cf_location_group_id BIGINT UNSIGNED NULL,
     client_mode VARCHAR(32) NOT NULL DEFAULT 'single',
+    runtime_preference VARCHAR(64) NOT NULL DEFAULT 'single',
+    allow_private_self_leg TINYINT(1) NOT NULL DEFAULT 0,
+    self_leg_scope VARCHAR(64) NOT NULL DEFAULT 'none',
+    self_leg_role VARCHAR(64) NOT NULL DEFAULT 'none',
+    helper_group_cap INT NOT NULL DEFAULT 0,
+    helper_escalation_policy VARCHAR(64) NOT NULL DEFAULT 'disabled',
     bond_ingress_mode VARCHAR(32) NOT NULL DEFAULT 'plain_tcp_mux',
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     sort_order INT NOT NULL DEFAULT 100,
@@ -157,6 +163,19 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     updated_at DATETIME NOT NULL,
     CONSTRAINT fk_forward_combinations_sidecar FOREIGN KEY (sidecar_point_id) REFERENCES sidecar_points(id),
     CONSTRAINT fk_forward_combinations_cf_group FOREIGN KEY (cf_location_group_id) REFERENCES cf_location_groups(id)
+);
+
+CREATE TABLE IF NOT EXISTS forward_combination_helper_groups (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    forward_combination_id BIGINT UNSIGNED NOT NULL,
+    node_group_key VARCHAR(191) NOT NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_forward_combination_helper_groups_combo FOREIGN KEY (forward_combination_id) REFERENCES forward_combinations(id) ON DELETE CASCADE,
+    INDEX idx_forward_combination_helper_groups_combo (forward_combination_id, sort_order),
+    INDEX idx_forward_combination_helper_groups_group (node_group_key)
 );
 
 CREATE TABLE IF NOT EXISTS service_plans (
