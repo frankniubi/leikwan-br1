@@ -381,16 +381,26 @@ final class ProvisioningService
         $sidecarPointId = (int) ($payload['sidecar_point_id'] ?? 0);
         $cfLocationGroupId = (int) ($payload['cf_location_group_id'] ?? 0);
         $clientMode = $this->normalizeClientMode((string) ($payload['client_mode'] ?? 'single'));
+        $runtimePreference = trim((string) ($payload['runtime_preference'] ?? 'single'));
+        $allowPrivateSelfLeg = !in_array(strtolower(trim((string) ($payload['allow_private_self_leg'] ?? '0'))), ['0', 'false', 'no', 'off', ''], true);
+        $selfLegScope = trim((string) ($payload['self_leg_scope'] ?? 'none')) ?: 'none';
+        $selfLegRole = trim((string) ($payload['self_leg_role'] ?? 'none')) ?: 'none';
+        $helperGroupCap = max(0, (int) ($payload['helper_group_cap'] ?? 0));
+        $helperEscalationPolicy = trim((string) ($payload['helper_escalation_policy'] ?? 'disabled')) ?: 'disabled';
         $bondIngressMode = $this->normalizeBondIngressMode((string) ($payload['bond_ingress_mode'] ?? 'plain_tcp_mux'));
         $isActive = !empty($payload['is_active']) ? 1 : 0;
         $sortOrder = (int) ($payload['sort_order'] ?? 100);
         $notes = trim((string) ($payload['notes'] ?? ''));
+        $helperNodeGroupKeys = $this->normalizeForwardCombinationHelperGroupKeys($payload);
 
         if ($name === '' || $tenantLabel === '' || $nodeGroupKey === '' || $sidecarPointId <= 0) {
             throw new ApiException('invalid_forward_combination_payload', 422, ['payload' => $payload]);
         }
         if (!in_array($backendMode, ['current_mode', 'cf_mode'], true)) {
             throw new ApiException('invalid_forward_combination_backend_mode', 422, ['backend_mode' => $backendMode]);
+        }
+        if (!in_array($runtimePreference, ['single', 'mptcp_preferred_bond_fallback'], true)) {
+            throw new ApiException('invalid_forward_combination_runtime_preference', 422, ['runtime_preference' => $runtimePreference]);
         }
         if (!in_array($clientMode, ['single', 'bond'], true)) {
             throw new ApiException('invalid_forward_combination_client_mode', 422, ['client_mode' => $clientMode]);
@@ -412,6 +422,12 @@ final class ProvisioningService
             'sidecar_point_id' => $sidecarPointId,
             'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
             'client_mode' => $clientMode,
+            'runtime_preference' => $runtimePreference,
+            'allow_private_self_leg' => $allowPrivateSelfLeg ? 1 : 0,
+            'self_leg_scope' => $selfLegScope,
+            'self_leg_role' => $selfLegRole,
+            'helper_group_cap' => $helperGroupCap,
+            'helper_escalation_policy' => $helperEscalationPolicy,
             'bond_ingress_mode' => $bondIngressMode,
             'is_active' => $isActive,
             'sort_order' => $sortOrder,
@@ -445,6 +461,20 @@ final class ProvisioningService
             ]);
         }
 
+        $this->db->execute('DELETE FROM forward_combination_helper_groups WHERE forward_combination_id = :forward_combination_id', [
+            'forward_combination_id' => $id,
+        ]);
+        foreach ($helperNodeGroupKeys as $sortOrder => $helperNodeGroupKey) {
+            $this->db->insert('forward_combination_helper_groups', [
+                'forward_combination_id' => $id,
+                'node_group_key' => $helperNodeGroupKey,
+                'sort_order' => $sortOrder,
+                'is_active' => 1,
+                'created_at' => $this->now(),
+                'updated_at' => $this->now(),
+            ]);
+        }
+
         return $this->forwardCombinationById($id) ?? [];
     }
 
@@ -475,7 +505,7 @@ final class ProvisioningService
             return [];
         }
 
-        return $this->db->fetchAll(
+        $rows = $this->db->fetchAll(
             'SELECT fc.*, sp.name AS sidecar_point_name, cg.name AS cf_location_group_name
              FROM service_plan_forward_combinations spfc
              INNER JOIN forward_combinations fc ON fc.id = spfc.forward_combination_id
@@ -485,6 +515,7 @@ final class ProvisioningService
              ORDER BY fc.sort_order ASC, fc.id ASC',
             ['plan_id' => $planId]
         );
+        return $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
     }
 
     /**
@@ -514,6 +545,7 @@ final class ProvisioningService
              WHERE fc.is_active = 1
              ORDER BY fc.sort_order ASC, fc.id ASC'
         );
+        $rows = $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
 
         return array_values(array_filter($rows, static function (array $row) use ($allowedGroupKeys, $allowedSidecarIds): bool {
             $groupOk = $allowedGroupKeys === [] || in_array((string) ($row['node_group_key'] ?? ''), $allowedGroupKeys, true);
@@ -528,13 +560,14 @@ final class ProvisioningService
      */
     public function listForwardCombinations(): array
     {
-        return $this->db->fetchAll(
+        $rows = $this->db->fetchAll(
             'SELECT fc.*, sp.name AS sidecar_point_name, cg.name AS cf_location_group_name
              FROM forward_combinations fc
              INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
              LEFT JOIN cf_location_groups cg ON cg.id = fc.cf_location_group_id
              ORDER BY fc.sort_order ASC, fc.id ASC'
         );
+        return $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
     }
 
     /**
@@ -555,7 +588,56 @@ final class ProvisioningService
             ['id' => $combinationId]
         );
 
-        return is_array($row) ? $row : null;
+        if (!is_array($row)) {
+            return null;
+        }
+        $rows = $this->attachHelperNodeGroupKeysToForwardCombinations([$row]);
+        return $rows[0] ?? null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<int, string>
+     */
+    private function normalizeForwardCombinationHelperGroupKeys(array $payload): array
+    {
+        $raw = $payload['helper_node_group_keys'] ?? null;
+        if (!is_array($raw)) {
+            $rawText = trim((string) ($payload['helper_node_group_keys_text'] ?? ''));
+            $raw = $rawText !== '' ? preg_split('/\r\n|\r|\n/', $rawText) : [];
+        }
+        $keys = [];
+        foreach ((array) $raw as $groupKey) {
+            $normalized = trim((string) $groupKey);
+            if ($normalized === '' || in_array($normalized, $keys, true)) {
+                continue;
+            }
+            $keys[] = $normalized;
+        }
+        return $keys;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function attachHelperNodeGroupKeysToForwardCombinations(array $rows): array
+    {
+        foreach ($rows as &$row) {
+            $row['helper_node_group_keys'] = array_map(
+                static fn(array $item): string => (string) ($item['node_group_key'] ?? ''),
+                $this->db->fetchAll(
+                    'SELECT node_group_key
+                     FROM forward_combination_helper_groups
+                     WHERE forward_combination_id = :forward_combination_id AND is_active = 1
+                     ORDER BY sort_order ASC, id ASC',
+                    ['forward_combination_id' => (int) ($row['id'] ?? 0)]
+                )
+            );
+        }
+        unset($row);
+
+        return $rows;
     }
 
     /**
