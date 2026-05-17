@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     allow_private_self_leg TINYINT(1) NOT NULL DEFAULT 0,
     self_leg_scope VARCHAR(64) NOT NULL DEFAULT 'none',
     self_leg_role VARCHAR(64) NOT NULL DEFAULT 'none',
-    helper_group_cap INT NOT NULL DEFAULT 0,
+    helper_group_cap INT NOT NULL DEFAULT 4 COMMENT 'Max legs used for bond/CF Bond/MPTCP. 0 = unlimited. Default 4.',
     helper_escalation_policy VARCHAR(64) NOT NULL DEFAULT 'disabled',
     bond_ingress_mode VARCHAR(32) NOT NULL DEFAULT 'plain_tcp_mux',
     is_active TINYINT(1) NOT NULL DEFAULT 1,
