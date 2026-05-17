@@ -189,6 +189,33 @@ class RuntimePreferenceTests(unittest.TestCase):
         )
         self.assertEqual("mptcp", family)
 
+    def test_solo_allowed_self_leg_can_keep_mptcp_when_helpers_are_slower(self) -> None:
+        agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)
+        family = client_agent_module.ClientAgent.choose_runtime_family(
+            agent,
+            {
+                "mode": "mptcp",
+                "runtime_preference": "mptcp_preferred_bond_fallback",
+                "candidate_pool": [
+                    {
+                        "candidate_kind": "self_leg",
+                        "selected_primary": True,
+                        "self_leg_mptcp_solo_allowed": True,
+                        "runtime_capabilities": ["bond", "mptcp"],
+                        "probe_transport": "cf_direct_wss",
+                        "measured_rtt_ms": 35,
+                    },
+                    {
+                        "candidate_kind": "rented_group_leg",
+                        "runtime_capabilities": ["bond", "mptcp"],
+                        "measured_rtt_ms": 80,
+                    },
+                ],
+            },
+            mptcp_supported=True,
+        )
+        self.assertEqual("mptcp", family)
+
 
 if __name__ == "__main__":
     unittest.main()

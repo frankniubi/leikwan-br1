@@ -13,8 +13,8 @@ if ($source === false) {
 
 foreach ([
     'private function applyMaxLegsCapToPool(',
-    'array_slice($pool, 0, $cap)',
-    "'max_legs_used' => $maxLegs",
+    'array_slice($rented, 0, $cap)',
+    '$config[\'max_legs_used\'] = $maxLegs',
 ] as $snippet) {
     if (strpos($source, $snippet) === false) {
         fail('missing cap snippet: ' . $snippet);

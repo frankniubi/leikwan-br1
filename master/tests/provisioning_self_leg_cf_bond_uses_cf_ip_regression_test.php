@@ -13,8 +13,8 @@ if ($source === false) {
 
 foreach ([
     "if ((string) (\$config['backend_mode'] ?? '') === 'cf_mode')",
-    "'probe_transport' => 'cf_direct_wss'",
-    "'self_leg_wg' => null",
+    '$wgProfile = null;',
+    "\$probeTransport = \$wgProfile !== null ? 'private_wg' : 'cf_direct_wss';",
     'self_leg_cf_only_under_cf_bond',
 ] as $snippet) {
     if (strpos($source, $snippet) === false) {
