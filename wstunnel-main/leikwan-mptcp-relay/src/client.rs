@@ -60,10 +60,10 @@ fn handle_client_connection(local_stream: TcpStream, config: &ClientConfig) -> R
     // Bond mode: distribute across multiple bound TCP legs.
     if config.bond_mode.contains("tcp") {
         let legs = crate::bond::derive_bond_legs_from_config(config);
-        if legs.len() >= 2 {
+        if !legs.is_empty() {
             return crate::bond::bond_relay_tcp(local_stream, &legs, config);
         }
-        warn!("bond mode requested but only {} legs available, falling back to MPTCP", legs.len());
+        warn!("bond mode requested but no legs were available, falling back to MPTCP");
     }
 
     // Resolve remote address.

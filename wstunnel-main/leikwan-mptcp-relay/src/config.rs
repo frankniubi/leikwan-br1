@@ -10,6 +10,10 @@ pub struct ClientConfig {
     pub transport: String,
     pub remote_host: String,
     pub remote_port: u16,
+    #[serde(default)]
+    pub relay_host: String,
+    #[serde(default)]
+    pub relay_port: u16,
 
     #[serde(default)]
     pub bond_mode: String,
@@ -42,6 +46,8 @@ pub struct ClientConfig {
     pub mptcp_endpoints: Vec<serde_json::Value>,
     #[serde(default)]
     pub endpoints: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub direct_legs: Vec<serde_json::Value>,
 
     #[serde(default)]
     pub underlay: serde_json::Value,

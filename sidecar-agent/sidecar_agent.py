@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.04.19.1"
+AGENT_VERSION = "2026.05.17.1"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -174,6 +174,82 @@ class SidecarAgent:
         write_text_if_changed(public_key_path, public_key + "\n", mode=0o644)
         return public_key
 
+
+    def self_leg_client_peer_state_path(self) -> pathlib.Path:
+        return self.state_dir / "self-leg-client-peer-state.json"
+
+    def load_self_leg_client_peer_state(self) -> dict:
+        path = self.self_leg_client_peer_state_path()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def save_self_leg_client_peer_state(self, payload: dict) -> None:
+        self.self_leg_client_peer_state_path().write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def self_leg_client_interfaces_dir(self) -> pathlib.Path:
+        path = self.wireguard_dir() / "self-leg-clients"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def self_leg_client_system_path(interface_name: str) -> pathlib.Path:
+        return pathlib.Path("/etc/wireguard") / f"{interface_name}.conf"
+
+    def apply_self_leg_client_peer(self, peer: dict[str, object]) -> None:
+        if not peer.get("enabled", True) or shutil.which("wg") is None or shutil.which("wg-quick") is None:
+            return
+        self.ensure_wireguard_identity()
+        private_key = self.wireguard_private_key_path().read_text(encoding="utf-8").strip()
+        interface_name = str(peer.get("interface_name", "") or "").strip()[:15]
+        local_address = str(peer.get("sidecar_address", "") or peer.get("local_address", "") or "").strip()
+        client_address = str(peer.get("client_address", "") or peer.get("peer_address", "") or "").strip()
+        client_public_key = str(peer.get("client_public_key", "") or "").strip()
+        listen_port = max(0, int(peer.get("listen_port", 0) or 0))
+        keepalive = max(0, int(peer.get("persistent_keepalive", peer.get("peer_keepalive_seconds", 25)) or 0))
+        if interface_name == "" or local_address == "" or client_address == "" or client_public_key == "":
+            return
+        keepalive_line = f"PersistentKeepalive = {keepalive}\n" if keepalive > 0 else ""
+        config = (
+            "[Interface]\n"
+            f"PrivateKey = {private_key}\n"
+            + (f"ListenPort = {listen_port}\n" if listen_port > 0 else "")
+            + f"Address = {local_address}/32\n"
+            "\n"
+            "[Peer]\n"
+            f"PublicKey = {client_public_key}\n"
+            f"AllowedIPs = {client_address}/32\n"
+            f"{keepalive_line}"
+        )
+        path = self.self_leg_client_interfaces_dir() / f"{interface_name}.conf"
+        changed = write_text_if_changed(path, config, mode=0o600)
+        system_path = self.self_leg_client_system_path(interface_name)
+        system_changed = write_text_if_changed(system_path, config, mode=0o600)
+        if shutil.which("systemctl") is not None:
+            if changed or system_changed:
+                subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+                subprocess.run(["systemctl", "enable", f"wg-quick@{interface_name}.service"], text=True, capture_output=True, check=False)
+                subprocess.run(["systemctl", "restart", f"wg-quick@{interface_name}.service"], text=True, capture_output=True, check=False)
+
+    def remove_self_leg_client_peer(self, peer: dict[str, object]) -> None:
+        interface_name = str(peer.get("interface_name", "") or "").strip()[:15]
+        if interface_name == "":
+            return
+        if shutil.which("systemctl") is not None:
+            subprocess.run(["systemctl", "stop", f"wg-quick@{interface_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "disable", f"wg-quick@{interface_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "reset-failed", f"wg-quick@{interface_name}.service"], text=True, capture_output=True, check=False)
+        path = self.self_leg_client_interfaces_dir() / f"{interface_name}.conf"
+        if path.exists():
+            path.unlink()
+        system_path = self.self_leg_client_system_path(interface_name)
+        if system_path.exists():
+            system_path.unlink()
+
     def load_runtime_stats(self) -> dict:
         if not self.runtime_stats_path.exists():
             return {}
@@ -195,6 +271,147 @@ class SidecarAgent:
 
     def save_pull_state(self, payload: dict) -> None:
         self.pull_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def sidecar_uplink_state_path(self) -> pathlib.Path:
+        return self.state_dir / "slave-sidecar-uplink-state.json"
+
+    def load_sidecar_uplink_state(self) -> dict:
+        path = self.sidecar_uplink_state_path()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def save_sidecar_uplink_state(self, payload: dict) -> None:
+        self.sidecar_uplink_state_path().write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def sidecar_uplink_interfaces_dir(self) -> pathlib.Path:
+        path = self.wireguard_dir() / "interfaces"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def sidecar_uplink_system_path(interface_name: str) -> pathlib.Path:
+        return pathlib.Path("/etc/wireguard") / f"{interface_name}.conf"
+
+    def apply_slave_sidecar_uplink(self, uplink: dict[str, object]) -> None:
+        if not uplink.get("enabled") or shutil.which("wg") is None or shutil.which("wg-quick") is None:
+            return
+        self.ensure_wireguard_identity()
+        private_key = self.wireguard_private_key_path().read_text(encoding="utf-8").strip()
+        interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+        local_address = str(uplink.get("local_address", "") or "").strip()
+        peer_address = str(uplink.get("peer_address", "") or "").strip()
+        peer_public_key = str(uplink.get("slave_peer_public_key", "") or "").strip()
+        listen_port = max(0, int(uplink.get("listen_port", 0) or 0))
+        outer_transport = str(uplink.get("outer_transport", "udp") or "udp").strip().lower()
+        peer_tcp_fallback_port = max(0, int(uplink.get("peer_tcp_fallback_port", 0) or 0))
+        keepalive = max(0, int(uplink.get("peer_keepalive_seconds", 0) or 0))
+        if interface_name == "" or local_address == "" or peer_address == "" or peer_public_key == "":
+            return
+        if outer_transport == "tcp" and peer_tcp_fallback_port > 0 and listen_port > 0:
+            self.ensure_sidecar_uot_server_service(interface_name, peer_tcp_fallback_port, listen_port)
+        else:
+            self.remove_sidecar_uot_server_service(interface_name)
+        keepalive_line = f"PersistentKeepalive = {keepalive}\n" if keepalive > 0 else ""
+        config = (
+            "[Interface]\n"
+            f"PrivateKey = {private_key}\n"
+            f"ListenPort = {listen_port}\n"
+            f"Address = {local_address}/32\n"
+            "\n"
+            "[Peer]\n"
+            f"PublicKey = {peer_public_key}\n"
+            f"AllowedIPs = {peer_address}/32\n"
+            f"{keepalive_line}"
+        )
+        path = self.sidecar_uplink_interfaces_dir() / f"{interface_name}.conf"
+        changed = write_text_if_changed(path, config, mode=0o600)
+        system_path = self.sidecar_uplink_system_path(interface_name)
+        system_changed = write_text_if_changed(system_path, config, mode=0o600)
+        if shutil.which("systemctl") is not None:
+            if changed or system_changed:
+                subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+                subprocess.run(["systemctl", "enable", f"wg-quick@{interface_name}.service"], text=True, capture_output=True, check=False)
+                subprocess.run(["systemctl", "restart", f"wg-quick@{interface_name}.service"], text=True, capture_output=True, check=False)
+
+    def remove_slave_sidecar_uplink(self, uplink: dict[str, object]) -> None:
+        interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+        if interface_name == "":
+            return
+        if shutil.which("systemctl") is not None:
+            subprocess.run(["systemctl", "stop", f"wg-quick@{interface_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "disable", f"wg-quick@{interface_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "reset-failed", f"wg-quick@{interface_name}.service"], text=True, capture_output=True, check=False)
+        path = self.sidecar_uplink_interfaces_dir() / f"{interface_name}.conf"
+        if path.exists():
+            path.unlink()
+        system_path = self.sidecar_uplink_system_path(interface_name)
+        if system_path.exists():
+            system_path.unlink()
+        self.remove_sidecar_uot_server_service(interface_name)
+
+    def restart_slave_sidecar_uplink(self, interface_name: str) -> None:
+        iface = str(interface_name or "").strip()[:15]
+        if iface == "" or shutil.which("systemctl") is None:
+            return
+        subprocess.run(["systemctl", "restart", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
+
+    def cleanup_stale_mptcp_transit_interfaces(self, point_id: int) -> None:
+        if point_id <= 0 or shutil.which("wg") is None:
+            return
+        result = subprocess.run(["wg", "show", "interfaces"], text=True, capture_output=True, check=False)
+        interfaces = result.stdout.strip().split() if result.returncode == 0 else []
+        scoped_prefix = f"lw-sc-{point_id}-"
+        for iface in interfaces:
+            if not iface.startswith(scoped_prefix):
+                continue
+            if shutil.which("systemctl") is not None:
+                subprocess.run(["systemctl", "stop", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
+                subprocess.run(["systemctl", "disable", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
+            elif shutil.which("wg-quick") is not None:
+                subprocess.run(["wg-quick", "down", iface], text=True, capture_output=True, check=False)
+            conf_path = pathlib.Path(f"/etc/wireguard/{iface}.conf")
+            if conf_path.exists():
+                conf_path.unlink()
+
+    def ensure_sidecar_uot_server_service(self, interface_name: str, listen_tcp_port: int, target_udp_port: int) -> None:
+        if listen_tcp_port <= 0 or target_udp_port <= 0:
+            return
+        service_name = f"leikwan-uot-server-{interface_name}"
+        unit_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
+        body = f"""[Unit]
+Description=Leikwan UoT Server {service_name}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/leikwan-uot.py server --listen-tcp 0.0.0.0:{listen_tcp_port} --target-udp 127.0.0.1:{target_udp_port}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+        changed = write_text_if_changed(unit_path, body, mode=0o644)
+        if shutil.which("systemctl") is not None:
+            if changed:
+                subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+                subprocess.run(["systemctl", "enable", f"{service_name}.service"], text=True, capture_output=True, check=False)
+                subprocess.run(["systemctl", "restart", f"{service_name}.service"], text=True, capture_output=True, check=False)
+
+    def remove_sidecar_uot_server_service(self, interface_name: str) -> None:
+        service_name = f"leikwan-uot-server-{interface_name}"
+        unit_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
+        if shutil.which("systemctl") is not None:
+            subprocess.run(["systemctl", "stop", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "disable", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+        if unit_path.exists():
+            unit_path.unlink()
 
     @staticmethod
     def detect_time_service() -> str:
@@ -343,6 +560,27 @@ class SidecarAgent:
                 self.config["udp_uot_sidepath"] = sidepath
                 changed = True
 
+        if "managed_iperf3_ports" in patch:
+            managed_ports = self.normalize_managed_iperf3_ports(patch.get("managed_iperf3_ports"))
+            if managed_ports == []:
+                if "managed_iperf3_ports" in self.config:
+                    self.config.pop("managed_iperf3_ports", None)
+                    changed = True
+            elif self.config.get("managed_iperf3_ports") != managed_ports:
+                self.config["managed_iperf3_ports"] = managed_ports
+                changed = True
+
+        if "disable_auto_update" in patch:
+            value = patch.get("disable_auto_update")
+            enabled = str(value).strip().lower() in {"1", "true", "yes", "on"} if not isinstance(value, bool) else value
+            if value is None:
+                if "disable_auto_update" in self.config:
+                    self.config.pop("disable_auto_update", None)
+                    changed = True
+            elif bool(self.config.get("disable_auto_update", False)) != enabled:
+                self.config["disable_auto_update"] = enabled
+                changed = True
+
         if changed:
             write_text_if_changed(self.config_path, json.dumps(self.config, ensure_ascii=False, indent=2) + "\n", mode=0o600)
             self.state_dir = pathlib.Path(str(self.config.get("state_dir", DEFAULT_CONFIG["state_dir"])))
@@ -402,6 +640,105 @@ class SidecarAgent:
     def save_managed_cf_metadata(self, payload: list[dict[str, Any]]) -> None:
         self.cf_managed_metadata_path().write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    def managed_iperf3_state_path(self) -> pathlib.Path:
+        return self.state_dir / "managed-iperf3-ports.json"
+
+    def load_managed_iperf3_ports(self) -> list[int]:
+        path = self.managed_iperf3_state_path()
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return []
+        values = payload.get("ports", []) if isinstance(payload, dict) else payload
+        if not isinstance(values, list):
+            return []
+        ports: list[int] = []
+        for value in values:
+            try:
+                port = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= port <= 65535 and port not in ports:
+                ports.append(port)
+        return ports
+
+    def save_managed_iperf3_ports(self, ports: list[int]) -> None:
+        self.managed_iperf3_state_path().write_text(json.dumps({"ports": ports}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def managed_iperf3_service_name(self, port: int) -> str:
+        return f"{self.service_name()}-iperf3-{int(port)}"
+
+    @staticmethod
+    def normalize_managed_iperf3_ports(values: object) -> list[int]:
+        if not isinstance(values, list):
+            return []
+        ports: list[int] = []
+        for value in values:
+            try:
+                port = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= port <= 65535 and port not in ports:
+                ports.append(port)
+        return ports
+
+    @staticmethod
+    def render_managed_iperf3_unit(service_name: str, iperf3_bin: str, port: int) -> str:
+        return f"""[Unit]
+Description=Leikwan Managed iperf3 Server {service_name}
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/bash -lc 'command -v {iperf3_bin} >/dev/null || command -v iperf3 >/dev/null || (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y iperf3)'
+ExecStart={iperf3_bin} -s -p {int(port)} --one-off
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    def disable_managed_iperf3_service(self, port: int) -> None:
+        service_name = self.managed_iperf3_service_name(port)
+        unit_path = self.unit_path_for(service_name)
+        if shutil.which("systemctl") is not None:
+            subprocess.run(["systemctl", "stop", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "disable", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "reset-failed", f"{service_name}.service"], text=True, capture_output=True, check=False)
+        if unit_path.exists():
+            unit_path.unlink()
+        if shutil.which("systemctl") is not None:
+            subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+
+    def apply_managed_iperf3_servers(self) -> None:
+        requested_ports = self.normalize_managed_iperf3_ports(self.config.get("managed_iperf3_ports", []))
+        previous_ports = self.load_managed_iperf3_ports()
+        for stale_port in previous_ports:
+            if stale_port not in requested_ports:
+                self.disable_managed_iperf3_service(stale_port)
+        iperf3_bin = shutil.which("iperf3") or "/usr/bin/iperf3"
+        for port in requested_ports:
+            service_name = self.managed_iperf3_service_name(port)
+            unit_body = self.render_managed_iperf3_unit(service_name, iperf3_bin, port)
+            unit_path = self.unit_path_for(service_name)
+            try:
+                unit_changed = write_text_if_changed(unit_path, unit_body)
+                if shutil.which("systemctl") is not None:
+                    if unit_changed:
+                        subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+                    if unit_changed or not self.systemd_is_active(service_name):
+                        subprocess.run(["systemctl", "enable", f"{service_name}.service"], text=True, capture_output=True, check=False)
+                        subprocess.run(["systemctl", "restart", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            except OSError:
+                logging.exception("failed to install managed iperf3 service %s", service_name)
+        self.save_managed_iperf3_ports(requested_ports)
+
+    def mptcp_forward_routes_path(self) -> pathlib.Path:
+        return self.state_dir / "mptcp-forward-routes.json"
+
     def cf_uot_service_name(self, forward_id: int) -> str:
         return self.service_name() + f"-cf-uot-{forward_id}"
 
@@ -411,14 +748,24 @@ class SidecarAgent:
     def cf_uot_start_script_path(self, forward_id: int) -> pathlib.Path:
         return self.state_dir / f"start-cf-uot-{forward_id}.sh"
 
-    def allocate_cf_backend_port(self, service_name: str) -> int:
-        used = {
-            int(item["backend_port"])
-            for item in self.load_managed_cf_metadata()
-            if int(item.get("backend_port", 0) or 0) > 0 and str(item.get("service_name", "")) != service_name
-        }
+    def allocate_cf_backend_port(self, service_name: str, reserved_ports: set[int] | None = None) -> int:
+        reserved = set(reserved_ports or set())
+        used: set[int] = set()
+        existing = 0
+        for item in self.load_managed_cf_metadata():
+            if not isinstance(item, dict):
+                continue
+            backend_port = int(item.get("backend_port", 0) or 0)
+            if backend_port <= 0:
+                continue
+            if str(item.get("service_name", "")) == service_name:
+                existing = backend_port
+                continue
+            used.add(backend_port)
+        if existing > 0 and existing not in used and existing not in reserved:
+            return existing
         for port in range(26000, 26100):
-            if port not in used:
+            if port not in used and port not in reserved:
                 return port
         raise RuntimeError("no free sidecar cf backend port available")
 
@@ -513,9 +860,13 @@ WantedBy=multi-user.target
         config_patch = dict(management.get("config_patch", {})) if isinstance(management.get("config_patch", {}), dict) else {}
         if config_patch != {}:
             self.apply_config_patch(config_patch)
+        self.apply_managed_iperf3_servers()
 
         explicit_request_token = str(management.get("agent_update_request_token", "") or "")
         auto_request_token = self.auto_update_request_token(management)
+        if bool(self.config.get("disable_auto_update", False)):
+            explicit_request_token = ""
+            auto_request_token = ""
         update_state = self.load_update_state()
         completed_request_token = str(update_state.get("last_completed_request_token", "") or "")
 
@@ -587,6 +938,63 @@ WantedBy=multi-user.target
         secondary_runtime_path = self.mptcp_runtime_config_path()
         secondary_start_script = self.mptcp_start_script_path()
 
+        sidecar_uplinks = management.get("sidecar_uplinks", []) if isinstance(management.get("sidecar_uplinks", []), list) else []
+        current_uplink_state = self.load_sidecar_uplink_state()
+        active_interfaces: set[str] = set()
+        for uplink in sidecar_uplinks:
+            if not isinstance(uplink, dict):
+                continue
+            interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+            if interface_name == "":
+                continue
+            active_interfaces.add(interface_name)
+            self.apply_slave_sidecar_uplink(uplink)
+        existing_slaves = current_uplink_state.get("slaves", {}) if isinstance(current_uplink_state.get("slaves", {}), dict) else {}
+        for slave_id, info in list(existing_slaves.items()):
+            iface = str((info if isinstance(info, dict) else {}).get("interface_name", "") or "").strip()[:15]
+            if iface != "" and iface not in active_interfaces:
+                self.remove_slave_sidecar_uplink({"interface_name": iface})
+                existing_slaves.pop(slave_id, None)
+        if sidecar_uplinks:
+            next_state = {"slaves": {}}
+            for uplink in sidecar_uplinks:
+                if not isinstance(uplink, dict):
+                    continue
+                interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+                if interface_name == "":
+                    continue
+                slave_key = interface_name.split("-")[-1]
+                next_state["slaves"][slave_key] = {"interface_name": interface_name}
+            self.save_sidecar_uplink_state(next_state)
+
+        self_leg_client_peers = management.get("self_leg_client_peers", []) if isinstance(management.get("self_leg_client_peers", []), list) else []
+        current_self_leg_state = self.load_self_leg_client_peer_state()
+        active_self_leg_interfaces: set[str] = set()
+        for peer in self_leg_client_peers:
+            if not isinstance(peer, dict):
+                continue
+            interface_name = str(peer.get("interface_name", "") or "").strip()[:15]
+            if interface_name == "":
+                continue
+            active_self_leg_interfaces.add(interface_name)
+            self.apply_self_leg_client_peer(peer)
+        existing_self_leg = current_self_leg_state.get("interfaces", {}) if isinstance(current_self_leg_state.get("interfaces", {}), dict) else {}
+        for key, info in list(existing_self_leg.items()):
+            iface = str((info if isinstance(info, dict) else {}).get("interface_name", key) or "").strip()[:15]
+            if iface != "" and iface not in active_self_leg_interfaces:
+                self.remove_self_leg_client_peer({"interface_name": iface})
+                existing_self_leg.pop(key, None)
+        if self_leg_client_peers:
+            next_self_leg_state = {"interfaces": {}}
+            for peer in self_leg_client_peers:
+                if not isinstance(peer, dict):
+                    continue
+                interface_name = str(peer.get("interface_name", "") or "").strip()[:15]
+                if interface_name == "":
+                    continue
+                next_self_leg_state["interfaces"][interface_name] = {"interface_name": interface_name}
+            self.save_self_leg_client_peer_state(next_self_leg_state)
+
         cf_runtime = management.get("cf_runtime") if isinstance(management.get("cf_runtime"), dict) else None
         if cf_runtime is not None:
             listen_port = int(cf_runtime.get("listen_port", 0) or 0)
@@ -598,7 +1006,14 @@ WantedBy=multi-user.target
                 self.disable_runtime(cf_service_name, cf_unit_path, runtime_config_path=cf_routes_path)
                 self.save_managed_cf_metadata([])
             else:
+                previous_cf_services = {
+                    str(item.get("service_name", "") or "")
+                    for item in self.load_managed_cf_metadata()
+                    if isinstance(item, dict) and str(item.get("service_name", "") or "") != ""
+                }
                 rendered_routes: list[dict[str, Any]] = []
+                reserved_cf_backend_ports: set[int] = set()
+                active_cf_services: set[str] = set()
                 for route in routes:
                     if not isinstance(route, dict):
                         continue
@@ -607,25 +1022,87 @@ WantedBy=multi-user.target
                     target = str(route.get("target", "") or "").strip()
                     if service_name == "" or path_prefix == "" or target == "":
                         continue
-                    backend_port = self.allocate_cf_backend_port(service_name)
-                    preview_path = self.state_dir / f"{service_name}.service.preview"
-                    preview_path.write_text(
-                        self.render_cf_backend_unit(service_name, backend_port, target, path_prefix),
-                        encoding="utf-8",
-                    )
+                    backend_mode = str(route.get("backend_mode", "") or "").strip().lower()
+                    target_host, _, target_port_text = target.rpartition(":")
+                    target_port = int(target_port_text) if target_host.strip() != "" and target_port_text.strip().isdigit() else 0
+                    direct_backend = backend_mode == "direct" and target_host.strip() != "" and target_port > 0
+                    if direct_backend:
+                        backend_port = target_port
+                        backend_host = target_host.strip()
+                        active_cf_services.add(service_name)
+                        stale_unit_path = self.unit_path_for(service_name)
+                        preview_path = self.state_dir / f"{service_name}.service.preview"
+                        if preview_path.exists():
+                            preview_path.unlink()
+                        if os.name != "nt" and stale_unit_path.exists():
+                            self.disable_runtime(service_name, stale_unit_path)
+                    else:
+                        backend_port = self.allocate_cf_backend_port(service_name, reserved_cf_backend_ports)
+                        reserved_cf_backend_ports.add(backend_port)
+                        backend_host = "127.0.0.1"
+                        unit_body = self.render_cf_backend_unit(service_name, backend_port, target, path_prefix)
+                        preview_path = self.state_dir / f"{service_name}.service.preview"
+                        preview_path.write_text(unit_body, encoding="utf-8")
+                        active_cf_services.add(service_name)
+                        if os.name != "nt":
+                            backend_unit_path = self.unit_path_for(service_name)
+                            try:
+                                unit_changed = write_text_if_changed(backend_unit_path, unit_body)
+                                if unit_changed:
+                                    subprocess.run("systemctl daemon-reload", shell=True, check=False)
+                                if unit_changed or not self.systemd_is_active(service_name):
+                                    subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
+                                    subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
+                            except OSError:
+                                logging.exception("failed to install CF backend service %s", service_name)
                     rendered_routes.append(
                         {
                             "forward_id": int(route.get("forward_id", 0) or 0),
                             "service_name": service_name,
                             "path_prefix": path_prefix,
                             "target": target,
+                            "backend_host": backend_host,
                             "backend_port": backend_port,
+                            "backend_mode": backend_mode,
                             "transport_mode": str(route.get("transport_mode", "tcp") or "tcp"),
                             "shadow_route_key": str(route.get("shadow_route_key", "") or ""),
                         }
                     )
+                for stale_service in sorted(previous_cf_services - active_cf_services):
+                    if os.name != "nt":
+                        self.disable_runtime(stale_service, self.unit_path_for(stale_service))
                 self.save_managed_cf_metadata(rendered_routes)
                 cf_routes_path.write_text(json.dumps({"routes": rendered_routes}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                mptcp_forward_routes: list[dict[str, Any]] = []
+                if isinstance(mptcp_runtime, dict):
+                    raw_forward_routes = mptcp_runtime.get("forward_routes", [])
+                    if isinstance(raw_forward_routes, list):
+                        backend_by_forward_id: dict[int, dict[str, Any]] = {}
+                        for entry in rendered_routes:
+                            if not isinstance(entry, dict):
+                                continue
+                            fid = int(entry.get("forward_id", 0) or 0)
+                            if fid <= 0:
+                                continue
+                            service_name = str(entry.get("service_name", "") or "")
+                            is_shadow_route = service_name.endswith("-uot") or str(entry.get("shadow_route_key", "") or "") != ""
+                            if fid in backend_by_forward_id and is_shadow_route:
+                                continue
+                            backend_by_forward_id[fid] = {
+                                "target_host": str(entry.get("backend_host", "127.0.0.1") or "127.0.0.1"),
+                                "target_port": int(entry.get("backend_port", 0) or 0),
+                            }
+                        for raw_route in raw_forward_routes:
+                            if not isinstance(raw_route, dict):
+                                continue
+                            route = dict(raw_route)
+                            fid = int(route.get("forward_id", 0) or 0)
+                            backend = backend_by_forward_id.get(fid)
+                            if route.get("target_mode") == "cf_local_backend" and isinstance(backend, dict):
+                                route["target_host"] = str(backend.get("target_host", "127.0.0.1") or "127.0.0.1")
+                                route["target_port"] = int(backend.get("target_port", 0) or 0)
+                            mptcp_forward_routes.append(route)
+                self.mptcp_forward_routes_path().write_text(json.dumps({"routes": mptcp_forward_routes}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
                 unit_body = self.render_cf_mux_unit(
                     listen_port,
                     str(cf_runtime.get("tls_cert_path", "") or ""),
@@ -795,6 +1272,8 @@ WantedBy=multi-user.target
                 "mptcp_endpoint_id_base": int(mptcp_policy.get("endpoint_id_base", 0) or 0),
                 "mptcp_endpoints": mptcp_policy.get("endpoints", []),
                 "subflow_limit": max(1, len(mptcp_policy.get("endpoints", [])) if isinstance(mptcp_policy.get("endpoints", []), list) else 1),
+                "forward_routes_path": str(self.mptcp_forward_routes_path()),
+                "forward_routes": mptcp_runtime.get("forward_routes", []) if isinstance(mptcp_runtime.get("forward_routes", []), list) else [],
             }
             runtime_changed = write_text_if_changed(secondary_runtime_path, json.dumps(runtime_config, ensure_ascii=False, indent=2) + "\n", mode=0o600)
             rust_relay_path = pathlib.Path(str(self.state_dir)) / "leikwan-mptcp-relay"
@@ -834,6 +1313,7 @@ WantedBy=multi-user.target
                 subprocess.run(f"systemctl restart {secondary_service_name}.service", shell=True, check=False)
         else:
             self.disable_runtime(secondary_service_name, secondary_unit_path, secondary_start_script, secondary_runtime_path)
+            self.cleanup_stale_mptcp_transit_interfaces(point_id)
 
     def heartbeat_once(self) -> None:
         stats = self.load_runtime_stats()
@@ -876,6 +1356,8 @@ WantedBy=multi-user.target
 
     def auto_update_request_token(self, management: dict) -> str:
         if not isinstance(management, dict):
+            return ""
+        if bool(self.config.get("disable_auto_update", False)):
             return ""
 
         desired_agent_version = str(management.get("desired_sidecar_agent_version", "") or "").strip()

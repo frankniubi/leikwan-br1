@@ -218,10 +218,12 @@ def apply_wireguard_transit_underlays(underlays: list[dict[str, Any]], parent_co
         for key in ("local_private_key_path", "initcwnd", "initrwnd"):
             if key not in merged and key in parent_config:
                 merged[key] = parent_config[key]
-        apply_wireguard_transit_underlay_single(merged)
         name = str(merged.get("interface_name", "") or "").strip()
-        if name:
-            active_iface_names.add(name)
+        if apply_wireguard_transit_underlay_single(merged):
+            if name:
+                active_iface_names.add(name)
+        elif name:
+            logging.warning("skipped failed MPTCP transit interface: %s", name)
     cleanup_stale_transit_interfaces(parent_config, active_iface_names)
 
 
@@ -261,9 +263,78 @@ def cleanup_stale_transit_interfaces(config: dict[str, Any], active_names: set[s
             conf_path.unlink()
 
 
-def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> None:
-    if os.name == "nt":
+
+def wait_for_interface(name: str, timeout_seconds: float = 5.0) -> bool:
+    if name == "" or not shutil_which("ip"):
+        return True
+    deadline = time.time() + max(0.1, timeout_seconds)
+    while time.time() < deadline:
+        result = run_command(["ip", "link", "show", "dev", name], check=False)
+        if result.returncode == 0:
+            return True
+        time.sleep(0.2)
+    return False
+
+def desired_transit_addresses(config: dict[str, Any]) -> set[str]:
+    addresses: set[str] = set()
+    legs = config.get("legs", [])
+    if not isinstance(legs, list):
+        return addresses
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        for key in ("local_address", "peer_address", "mptcp_remote_address"):
+            value = str(leg.get(key, "") or "").strip()
+            if value != "":
+                addresses.add(value)
+    return addresses
+
+
+def remove_conflicting_transit_addresses(name: str, addresses: set[str]) -> None:
+    if os.name == "nt" or not addresses or not shutil_which("ip"):
         return
+    result = run_command(["ip", "-o", "-4", "addr", "show"], check=False)
+    if result.returncode != 0:
+        return
+    for raw_line in str(result.stdout or "").splitlines():
+        parts = raw_line.split()
+        if len(parts) < 4:
+            continue
+        iface = parts[1]
+        if iface == name:
+            continue
+        addr = parts[3].split("/", 1)[0]
+        if addr not in addresses:
+            continue
+        logging.warning("removing conflicting transit interface %s holding %s for %s", iface, addr, name)
+        if shutil_which("systemctl"):
+            run_command(["systemctl", "stop", f"wg-quick@{iface}.service"], check=False)
+            run_command(["systemctl", "disable", f"wg-quick@{iface}.service"], check=False)
+            run_command(["systemctl", "reset-failed", f"wg-quick@{iface}.service"], check=False)
+        if shutil_which("wg-quick"):
+            run_command(["wg-quick", "down", iface], check=False)
+        run_command(["ip", "link", "delete", "dev", iface], check=False)
+        conf_path = pathlib.Path(f"/etc/wireguard/{iface}.conf")
+        if (iface.startswith("lw-sc-") or iface.startswith("lwsc")) and conf_path.exists():
+            conf_path.unlink()
+
+
+def ensure_clean_transit_interface(name: str, addresses: set[str] | None = None) -> None:
+    if name == "":
+        return
+    if shutil_which("systemctl"):
+        run_command(["systemctl", "stop", f"wg-quick@{name}.service"], check=False)
+        run_command(["systemctl", "reset-failed", f"wg-quick@{name}.service"], check=False)
+    if shutil_which("wg-quick"):
+        run_command(["wg-quick", "down", name], check=False)
+    if shutil_which("ip"):
+        run_command(["ip", "link", "delete", "dev", name], check=False)
+    remove_conflicting_transit_addresses(name, addresses or set())
+
+
+def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> bool:
+    if os.name == "nt":
+        return True
     name = str(config.get("interface_name", "") or "").strip()
     if name == "":
         raise RuntimeError("wireguard underlay missing interface_name")
@@ -279,22 +350,77 @@ def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> None:
     path = pathlib.Path(path_value)
     config_text = build_wireguard_interface_config(config)
     changed = write_text_if_changed(path, config_text, mode=0o600)
+    ensure_clean_transit_interface(name, desired_transit_addresses(config))
     if name != "" and shutil_which("systemctl"):
         if changed:
             run_command(["systemctl", "daemon-reload"], check=False)
-            run_command(["systemctl", "enable", f"wg-quick@{name}.service"], check=False)
-            run_command(["systemctl", "restart", f"wg-quick@{name}.service"], check=False)
-        else:
-            is_active = run_command(["systemctl", "is-active", f"wg-quick@{name}.service"], check=False)
-            if is_active.stdout.strip() != "active":
-                run_command(["systemctl", "enable", f"wg-quick@{name}.service"], check=False)
-                run_command(["systemctl", "start", f"wg-quick@{name}.service"], check=False)
-        return
+        run_command(["systemctl", "enable", f"wg-quick@{name}.service"], check=False)
+        result = run_command(["systemctl", "restart", f"wg-quick@{name}.service"], check=False)
+        if result.returncode != 0 or not wait_for_interface(name):
+            detail = str(result.stderr or result.stdout or "interface did not appear").strip()
+            logging.warning("transit interface %s failed after systemd restart: %s", name, detail)
+            ensure_clean_transit_interface(name, desired_transit_addresses(config))
+            return False
+        return True
     if shutil_which("wg-quick") and path.is_file():
-        if changed:
-            run_command(["wg-quick", "down", str(path)], check=False)
-        run_command(["wg-quick", "up", str(path)], check=False)
+        result = run_command(["wg-quick", "up", str(path)], check=False)
+        if result.returncode != 0 or not wait_for_interface(name):
+            detail = str(result.stderr or result.stdout or "interface did not appear").strip()
+            logging.warning("transit interface %s failed after wg-quick up: %s", name, detail)
+            ensure_clean_transit_interface(name, desired_transit_addresses(config))
+            return False
+        return True
+    return False
 
+
+
+def parse_uot_client_unit_name(unit_stem: str) -> tuple[str, str]:
+    prefix = "leikwan-uot-"
+    value = str(unit_stem or "").strip()
+    if not value.startswith(prefix):
+        return "", ""
+    remainder = value[len(prefix):]
+    interface_name, separator, endpoint_id = remainder.rpartition("-")
+    if separator == "" or interface_name == "":
+        return "", ""
+    return interface_name, endpoint_id
+
+
+def remove_uot_client_service_units_for_interface(interface_name: str) -> bool:
+    normalized = str(interface_name or "").strip()
+    if normalized == "":
+        return False
+    unit_root = pathlib.Path("/etc/systemd/system")
+    if not unit_root.exists():
+        return False
+    removed = False
+    for unit_path in unit_root.glob(f"leikwan-uot-{normalized}-*.service"):
+        unit_name = unit_path.name
+        if shutil_which("systemctl"):
+            run_command(["systemctl", "stop", unit_name], check=False)
+            run_command(["systemctl", "disable", unit_name], check=False)
+            run_command(["systemctl", "reset-failed", unit_name], check=False)
+        if unit_path.exists():
+            unit_path.unlink()
+            removed = True
+    return removed
+
+
+def terminate_conflicting_uot_clients(local_udp_port: int) -> None:
+    if os.name == "nt" or local_udp_port <= 0 or not shutil_which("pgrep"):
+        return
+    pattern = f"leikwan-uot.py client --listen-udp 127.0.0.1:{local_udp_port}"
+    result = run_command(["pgrep", "-f", pattern], check=False)
+    if result.returncode != 0:
+        return
+    for raw_pid in str(result.stdout or "").splitlines():
+        raw_pid = raw_pid.strip()
+        if raw_pid == "" or not raw_pid.isdigit():
+            continue
+        pid = int(raw_pid)
+        if pid <= 0 or pid == os.getpid():
+            continue
+        run_command(["kill", "-TERM", str(pid)], check=False)
 
 def ensure_uot_client_service(interface_name: str, leg: dict[str, Any]) -> None:
     if os.name == "nt":
@@ -321,6 +447,9 @@ RestartSec=3
 WantedBy=multi-user.target
 """
     changed = write_text_if_changed(unit_path, body)
+    if shutil_which("systemctl"):
+        run_command(["systemctl", "stop", f"{service_name}.service"], check=False)
+    terminate_conflicting_uot_clients(local_udp_port)
     if shutil_which("systemctl"):
         if changed:
             run_command(["systemctl", "daemon-reload"], check=False)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.04.19.1"
+INSTALLER_VERSION="2026.05.15.3"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -120,6 +120,22 @@ ensure_time_sync() {
   fi
 }
 
+current_installer_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$0" | awk '{print $1}'
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$0" | awk '{print $1}'
+    return 0
+  fi
+  python3 - "$0" <<'PY'
+import hashlib, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+print(hashlib.sha256(path.read_bytes()).hexdigest())
+PY
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --master) MASTER_URL="$2"; shift 2 ;;
@@ -152,7 +168,9 @@ ensure_mptcp_ready "client-agent host" "$REQUIRE_MPTCP" || {
 ensure_time_sync
 install_wireguard_tools
 
-mkdir -p "$CONFIG_DIR" "$BIN_DIR"
+STATE_DIR="/var/lib/leikwan-client-agent"
+INSTALLER_SHA256="$(current_installer_sha256)"
+mkdir -p "$CONFIG_DIR" "$BIN_DIR" "$STATE_DIR"
 
 download() {
   local url="$1"
@@ -181,18 +199,21 @@ download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
+download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64" "$STATE_DIR/leikwan-mptcp-relay"
 
 cat > "$CONFIG_DIR/config.json" <<JSON
 {
   "master_url": "$MASTER_URL",
+  "artifact_base_url": "$ARTIFACT_BASE",
   "client_id": $CLIENT_ID,
   "agent_token": "$AGENT_TOKEN",
-  "state_dir": "/var/lib/leikwan-client-agent",
+  "state_dir": "$STATE_DIR",
   "bond_bin": "/usr/local/bin/leikwan-bond",
   "bond_ingress_bin": "/usr/local/bin/leikwan-ingress",
   "mptcp_client_bin": "$BIN_DIR/leikwan-mptcp-client.py",
   "log_level": "INFO",
-  "installer_version": "$INSTALLER_VERSION"
+  "installer_version": "$INSTALLER_VERSION",
+  "installer_sha256": "$INSTALLER_SHA256"
 }
 JSON
 

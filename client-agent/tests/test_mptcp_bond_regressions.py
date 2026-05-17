@@ -1162,10 +1162,11 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             raise AssertionError(f"unexpected command: {parts}")
 
         with mock.patch.object(leikwan_mptcp_client.os, "name", "posix"):
-            with mock.patch.object(leikwan_mptcp_client, "shutil_which", return_value="/sbin/ip"):
-                with mock.patch.object(leikwan_mptcp_client, "run_command", side_effect=fake_run_command):
-                    with self.assertRaisesRegex(RuntimeError, "lw-mptcp-24-0"):
-                        leikwan_mptcp_client.configure_mptcp_policy(
+            with mock.patch.object(leikwan_mptcp_client, "running_kernel_supports_mptcp", return_value=True):
+                with mock.patch.object(leikwan_mptcp_client, "shutil_which", return_value="/sbin/ip"):
+                    with mock.patch.object(leikwan_mptcp_client, "run_command", side_effect=fake_run_command):
+                        with self.assertRaisesRegex(RuntimeError, "lw-mptcp-24-0"):
+                            leikwan_mptcp_client.configure_mptcp_policy(
                             {
                                 "manage_mptcp_endpoints": True,
                                 "subflow_limit": 5,
@@ -1217,9 +1218,10 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             raise AssertionError(f"unexpected command: {parts}")
 
         with mock.patch.object(leikwan_mptcp_client.os, "name", "posix"):
-            with mock.patch.object(leikwan_mptcp_client, "shutil_which", return_value="/sbin/ip"):
-                with mock.patch.object(leikwan_mptcp_client, "run_command", side_effect=fake_run_command):
-                    leikwan_mptcp_client.configure_mptcp_policy(
+            with mock.patch.object(leikwan_mptcp_client, "running_kernel_supports_mptcp", return_value=True):
+                with mock.patch.object(leikwan_mptcp_client, "shutil_which", return_value="/sbin/ip"):
+                    with mock.patch.object(leikwan_mptcp_client, "run_command", side_effect=fake_run_command):
+                        leikwan_mptcp_client.configure_mptcp_policy(
                         {
                             "manage_mptcp_endpoints": True,
                             "subflow_limit": 5,

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.04.27.1"
+AGENT_VERSION = "2026.05.16.4"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -65,6 +65,7 @@ DEFAULT_CONFIG = {
     "cloudflare_email": "",
     "cloudflare_global_key": "",
     "systemd_dir": "/etc/systemd/system",
+    "wireguard_config_dir": "/etc/wireguard",
     "state_dir": "/var/lib/leikwan-slave",
     "backend_host": "127.0.0.1",
     "backend_port_range_start": 20000,
@@ -830,6 +831,22 @@ class SlaveAgent:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    def latency_policy_state_path(self) -> Path:
+        return self.state_dir / "forward-chain-latency-state.json"
+
+    def load_latency_policy_state(self) -> dict[str, Any]:
+        path = self.latency_policy_state_path()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def save_latency_policy_state(self, payload: dict[str, Any]) -> None:
+        self.write_json(self.latency_policy_state_path(), payload)
+
     def cf_location_state_path(self) -> Path:
         return self.state_dir / "cf-location-best-ip.json"
 
@@ -899,6 +916,7 @@ class SlaveAgent:
         path_prefix: str,
         probe_target: str = "",
         timeout: float = 1.0,
+        settle_seconds: float = 0.9,
     ) -> tuple[bool, float | None, str | None]:
         effective_target = str(probe_target or "").strip()
         if effective_target == "":
@@ -938,32 +956,10 @@ class SlaveAgent:
             text=True,
         )
 
-        def process_error() -> str:
-            if process.stderr is None:
-                return f"wstunnel_exit_{process.returncode}"
-            output = process.stderr.read() or ""
-            lines = [line.strip() for line in output.splitlines() if line.strip() != ""]
-            return lines[-1] if lines else f"wstunnel_exit_{process.returncode}"
+        stderr_output = ""
 
-        try:
-            deadline = started + max(0.5, timeout)
-            last_error = "probe_timeout"
-            while time.time() < deadline:
-                if process.poll() is not None:
-                    return False, None, process_error()
-                try:
-                    with socket.create_connection(("127.0.0.1", local_port), timeout=0.2) as probe_sock:
-                        probe_sock.settimeout(0.2)
-                        probe_sock.sendall(b"X")
-                        time.sleep(0.05)
-                        if process.poll() is not None:
-                            return False, None, process_error()
-                        return True, round((time.time() - started) * 1000, 1), None
-                except Exception as exc:  # noqa: BLE001
-                    last_error = str(exc)
-                    time.sleep(0.05)
-            return False, None, last_error
-        finally:
+        def stop_and_collect() -> str:
+            nonlocal stderr_output
             if process.poll() is None:
                 process.terminate()
                 try:
@@ -971,9 +967,60 @@ class SlaveAgent:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=1.0)
+            if process.stderr is not None:
+                try:
+                    stderr_output += process.stderr.read() or ""
+                except Exception:  # noqa: BLE001
+                    pass
+            return stderr_output
+
+        def failure_from_output(output: str) -> str:
+            lower = output.lower()
+            markers = [
+                "failed to do websocket handshake",
+                "invalid status code",
+                "websocket handshake",
+                "http status",
+                " 520",
+                " 400",
+            ]
+            if any(marker in lower for marker in markers):
+                lines = [line.strip() for line in output.splitlines() if line.strip() != ""]
+                return lines[-1] if lines else "websocket_handshake_failed"
+            return ""
+
+        try:
+            deadline = started + max(0.5, timeout)
+            last_error = "probe_timeout"
+            while time.time() < deadline:
+                if process.poll() is not None:
+                    output = stop_and_collect()
+                    return False, None, failure_from_output(output) or f"wstunnel_exit_{process.returncode}"
+                try:
+                    with socket.create_connection(("127.0.0.1", local_port), timeout=0.2) as probe_sock:
+                        probe_sock.settimeout(0.2)
+                        settle_deadline = time.time() + max(0.1, min(3.0, settle_seconds))
+                        while time.time() < settle_deadline:
+                            if process.poll() is not None:
+                                output = stop_and_collect()
+                                return False, None, failure_from_output(output) or f"wstunnel_exit_{process.returncode}"
+                            time.sleep(0.05)
+                        output = stop_and_collect()
+                        failure = failure_from_output(output)
+                        if failure != "":
+                            return False, None, failure
+                        return True, round((time.time() - started) * 1000, 1), None
+                except Exception as exc:  # noqa: BLE001
+                    last_error = str(exc)
+                    time.sleep(0.05)
+            output = stop_and_collect()
+            return False, None, failure_from_output(output) or last_error
+        finally:
+            if process.poll() is None:
+                stop_and_collect()
 
     def expand_cf_candidates(self, cidrs: list[str], max_candidates: int) -> list[str]:
-        candidates: list[str] = []
+        candidate_iters: list[Any] = []
         for raw in cidrs:
             value = str(raw or "").strip()
             if value == "":
@@ -985,18 +1032,31 @@ class SlaveAgent:
             if network.version != 4:
                 continue
             if network.prefixlen == 32:
-                ip = str(network.network_address)
-                if ip not in candidates:
-                    candidates.append(ip)
+                candidate_iters.append(iter([str(network.network_address)]))
             else:
-                for host in network.hosts():
-                    ip = str(host)
-                    if ip not in candidates:
-                        candidates.append(ip)
+                candidate_iters.append((str(host) for host in network.hosts()))
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+        active_iters = candidate_iters
+        while active_iters and len(candidates) < max_candidates:
+            next_iters: list[Any] = []
+            progressed = False
+            for iterator in active_iters:
+                try:
+                    ip = next(iterator)
+                except StopIteration:
+                    continue
+                progressed = True
+                if ip not in seen:
+                    seen.add(ip)
+                    candidates.append(ip)
                     if len(candidates) >= max_candidates:
-                        return candidates
-            if len(candidates) >= max_candidates:
+                        break
+                next_iters.append(iterator)
+            if not progressed:
                 break
+            active_iters = next_iters
         return candidates[:max_candidates]
 
     def probe_cf_candidates(self, candidates: list[str], cf_mode: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1004,7 +1064,10 @@ class SlaveAgent:
         sni_host = str(cf_mode.get("sni_host", "") or "")
         path_prefix = str(cf_mode.get("path_prefix", "") or "")
         probe_target = str(cf_mode.get("probe_target", "") or "")
-        sample_count = max(1, min(3, int(cf_mode.get("probe_samples", 2) or 2)))
+        strict_probe_target = bool(probe_target) and not bool(cf_mode.get("allow_probe_target_failures", False))
+        default_samples = 3 if strict_probe_target else (1 if probe_target != "" else 2)
+        sample_count = max(1, min(5, int(cf_mode.get("probe_samples", default_samples) or default_samples)))
+        min_success_samples = max(1, min(sample_count, int(cf_mode.get("min_success_samples", default_samples if strict_probe_target else 1) or (default_samples if strict_probe_target else 1))))
         results: list[dict[str, Any]] = []
 
         for ip in candidates:
@@ -1012,13 +1075,26 @@ class SlaveAgent:
             failures = 0
             last_error = ""
             for _ in range(sample_count):
+                connect_latency_ms = self.tcp_ping(ip, port) if probe_target != "" else None
                 ok, latency_ms, error = self.probe_cf_websocket_path(ip, port, sni_host, path_prefix, probe_target)
-                if ok and latency_ms is not None:
-                    latencies.append(latency_ms)
+                if ok:
+                    effective_latency = connect_latency_ms if connect_latency_ms is not None else latency_ms
+                    if effective_latency is not None:
+                        latencies.append(effective_latency)
+                    else:
+                        failures += 1
+                        last_error = "latency_unavailable"
                 else:
                     failures += 1
                     last_error = error or "probe_failed"
-            if latencies:
+                    if strict_probe_target:
+                        # A CF edge that intermittently returns 400/520 or closes the
+                        # routed websocket path can still look excellent by TCP
+                        # connect time.  For bond/mux backends, one bad path sample is
+                        # enough to cause invalid frame/hello failures, so reject it
+                        # for this selection round and try the next edge.
+                        break
+            if latencies and len(latencies) >= min_success_samples and not (strict_probe_target and failures > 0):
                 avg_latency = round(sum(latencies) / len(latencies), 1)
                 jitter = round(max(latencies) - min(latencies), 1) if len(latencies) > 1 else 0.0
                 results.append(
@@ -1058,15 +1134,64 @@ class SlaveAgent:
         cached = state.get(cache_key, {}) if isinstance(state.get(cache_key), dict) else {}
         now = time.time()
         ttl = max(30, int(cf_mode.get("cache_ttl_seconds", 120) or 120))
-        if cached and (now - float(cached.get("last_probe_at", 0) or 0)) < ttl and str(cached.get("selected_ip", "")) != "":
-            return cached
+        validate_current = bool(cf_mode.get("validate_current", False))
+        probe_target = str(cf_mode.get("probe_target", "") or "").strip()
+        port = int(cf_mode.get("dial_port", 443) or 443)
+        sni_host = str(cf_mode.get("sni_host", "") or "")
+        path_prefix = str(cf_mode.get("path_prefix", "") or "")
+        cached_selected_ip = str(cached.get("selected_ip", "") or "").strip()
+        if cached and (now - float(cached.get("last_probe_at", 0) or 0)) < ttl and cached_selected_ip != "":
+            if probe_target != "":
+                ok, latency_ms, error = self.probe_cf_websocket_path(cached_selected_ip, port, sni_host, path_prefix, probe_target)
+                if ok:
+                    if latency_ms is not None:
+                        cached["last_latency_ms"] = latency_ms
+                    cached["last_probe_at"] = now
+                    state[cache_key] = cached
+                    self.save_cf_location_state(state)
+                    return cached
+                candidate_stats = cached.get("candidate_stats", {}) if isinstance(cached.get("candidate_stats"), dict) else {}
+                stats = candidate_stats.setdefault(cached_selected_ip, {})
+                stats["last_probe_at"] = now
+                stats["consecutive_failures"] = int(stats.get("consecutive_failures", 0) or 0) + 1
+                stats["cooldown_until"] = now + max(60, ttl)
+                stats["last_error"] = error or "probe_failed"
+                cached["candidate_stats"] = candidate_stats
+                cached["last_probe_at"] = 0.0
+                cached["consecutive_failures"] = int(cached.get("consecutive_failures", 0) or 0) + 1
+                cached["cooldown_until"] = stats["cooldown_until"]
+                state[cache_key] = cached
+                self.save_cf_location_state(state)
+            elif validate_current:
+                ok, latency_ms, error = self.probe_cf_websocket_path(cached_selected_ip, port, sni_host, path_prefix, probe_target)
+                if ok:
+                    if latency_ms is not None:
+                        cached["last_latency_ms"] = latency_ms
+                    cached["last_probe_at"] = now
+                    state[cache_key] = cached
+                    self.save_cf_location_state(state)
+                    return cached
+                candidate_stats = cached.get("candidate_stats", {}) if isinstance(cached.get("candidate_stats"), dict) else {}
+                stats = candidate_stats.setdefault(cached_selected_ip, {})
+                stats["last_probe_at"] = now
+                stats["consecutive_failures"] = int(stats.get("consecutive_failures", 0) or 0) + 1
+                stats["cooldown_until"] = now + max(60, ttl)
+                stats["last_error"] = error or "probe_failed"
+                cached["candidate_stats"] = candidate_stats
+                cached["last_probe_at"] = 0.0
+                cached["consecutive_failures"] = int(cached.get("consecutive_failures", 0) or 0) + 1
+                cached["cooldown_until"] = stats["cooldown_until"]
+                state[cache_key] = cached
+                self.save_cf_location_state(state)
+            else:
+                return cached
 
-        candidate_limit = max(1, min(8, int(cf_mode.get("max_candidates", 8) or 8)))
+        candidate_limit = max(1, min(32, int(cf_mode.get("max_candidates", 8) or 8)))
         improvement_ms = max(0, int(cf_mode.get("switch_improvement_ms", 15) or 15))
         cooldown_seconds = max(60, ttl)
         candidate_stats = cached.get("candidate_stats", {}) if isinstance(cached.get("candidate_stats"), dict) else {}
 
-        candidates = self.expand_cf_candidates(list(cf_mode.get("cidrs", [])), int(cf_mode.get("max_candidates", 32) or 32))
+        candidates = self.expand_cf_candidates(list(cf_mode.get("cidrs", [])), candidate_limit)
         filtered = [ip for ip in candidates if not self.candidate_on_cooldown(candidate_stats, ip, now)]
         filtered = filtered[:candidate_limit]
         results = self.probe_cf_candidates(filtered, cf_mode)
@@ -1098,9 +1223,15 @@ class SlaveAgent:
         selected = best
         current_ip = str(cached.get("selected_ip", "") or "")
         current_success = next((item for item in successes if item["ip"] == current_ip), None)
+        policy = cf_mode.get("forward_chain_latency_policy", {}) if isinstance(cf_mode.get("forward_chain_latency_policy", {}), dict) else {}
+        desired_latency = policy.get("desired_latency_ms")
+        desired_latency_ms = float(desired_latency) if desired_latency not in (None, "") else None
         if current_success is not None and current_ip != str(best["ip"]):
-            improvement = float(current_success["latency_ms"] or 0) - float(best["latency_ms"] or 0)
-            if improvement < improvement_ms:
+            current_latency = float(current_success["latency_ms"] or 0)
+            improvement = current_latency - float(best["latency_ms"] or 0)
+            if desired_latency_ms is not None and current_latency <= desired_latency_ms:
+                selected = current_success
+            elif improvement < improvement_ms:
                 selected = current_success
 
         state[cache_key] = {
@@ -1333,6 +1464,20 @@ class SlaveAgent:
             "clock_sync": local_clock,
         }
         payload["cf_location_stats"] = list(self.load_cf_location_state().values())
+        payload["forward_chain_remediation"] = [
+            {
+                "chain_key": str(chain_key),
+                "recommended_action": str(entry.get("recommended_action", "") or ""),
+                "action": str(entry.get("action", "") or ""),
+                "selected_candidate": str(entry.get("selected_candidate", "") or ""),
+                "best_candidate": str(entry.get("best_candidate", "") or ""),
+                "best_latency_ms": entry.get("best_latency_ms"),
+                "spread_ms": entry.get("spread_ms"),
+                "acceptable": bool(entry.get("acceptable", True)),
+            }
+            for chain_key, entry in self.load_latency_policy_state().items()
+            if isinstance(entry, dict)
+        ]
         _, response_headers = http_json_with_headers("POST", build_url(self.config["master_url"], "/api/node/heartbeat"), self.config["node_token"], payload)
         now = time.time()
         self.save_pull_state(
@@ -1518,18 +1663,65 @@ class SlaveAgent:
                 target = str(metadata.get("target", "")).strip()
                 relay_target = str(metadata.get("relay_target", target)).strip()
                 path_prefix = normalize_path_prefix(str(metadata.get("path_prefix", "")))
+                ingress_protocol = str(metadata.get("ingress_protocol", "wss_path_mux") or "wss_path_mux").strip() or "wss_path_mux"
+                backend_protocol = str(metadata.get("backend_protocol", "") or "").strip()
+                if backend_protocol == "":
+                    backend_protocol = "tcp_relay" if ingress_protocol == "plain_tcp_mux" else "wss_backend"
+                    metadata["backend_protocol"] = backend_protocol
+                    metadata_changed = True
+                backend_mode = str(metadata.get("backend_mode", "current_mode") or "current_mode").strip()
+                transport_mode = str(metadata.get("transport_mode", "tcp+udp") or "tcp+udp")
+                cf_mode = metadata.get("cf_mode", {})
+                if not isinstance(cf_mode, dict):
+                    cf_mode = {}
                 if target == "" or public_port <= 0 or endpoint_id <= 0:
                     logging.warning("skipping invalid runtime metadata for %s", service_name)
                     continue
 
-                if backend_port <= 0:
-                    backend_port = self.allocate_backend_port(service_name)
+                if self.backend_port_needs_reallocation(service_name, backend_port):
+                    old_backend_port = backend_port
+                    backend_port = self.allocate_backend_port(service_name, self.listener_ports())
                     metadata["backend_port"] = backend_port
                     metadata_changed = True
+                    if old_backend_port > 0:
+                        logging.warning(
+                            "service %s backend_port changed from %s to %s during reconciliation",
+                            service_name,
+                            old_backend_port,
+                            backend_port,
+                        )
 
-                if self.is_udp_uot_shadow_metadata(metadata):
+                if self.is_udp_uot_shadow_metadata(metadata) or backend_protocol == "tcp_relay":
                     unit_body = self.render_plain_tcp_backend_unit(service_name, backend_port, target)
                     expected_exec = "leikwan-ingress backend"
+                elif backend_mode == "cf_mode" and cf_mode != {}:
+                    selected_ip = str(metadata.get("selected_cf_ip", "") or "").strip()
+                    try:
+                        selection_mode = dict(cf_mode)
+                        selection_mode["probe_target"] = target
+                        selection_mode["validate_current"] = True
+                        selection = self.select_cf_location_ip(selection_mode)
+                        refreshed_ip = str(selection["selected_ip"])
+                        if refreshed_ip != "" and refreshed_ip != selected_ip:
+                            selected_ip = refreshed_ip
+                            metadata["selected_cf_ip"] = selected_ip
+                            metadata_changed = True
+                    except Exception:  # noqa: BLE001
+                        if selected_ip == "":
+                            logging.exception("failed to refresh cf selected ip for %s during reconciliation", service_name)
+                            selected_ip = str(cf_mode.get("dial_host", "") or "").strip()
+                    unit_body = self.render_cf_wss_backend_unit(
+                        service_name=service_name,
+                        backend_port=backend_port,
+                        target=target,
+                        selected_ip=selected_ip,
+                        dial_host=str(cf_mode.get("dial_host", "") or ""),
+                        remote_port=int(cf_mode.get("dial_port", 443) or 443),
+                        sni_host=str(cf_mode.get("sni_host", "") or ""),
+                        path_prefix=str(cf_mode.get("path_prefix", path_prefix) or path_prefix),
+                        transport_mode="tcp" if "udp" in transport_mode.lower() and "tcp" in transport_mode.lower() else transport_mode,
+                    )
+                    expected_exec = "wstunnel client"
                 else:
                     unit_body = self.render_backend_unit(service_name, backend_port, target, path_prefix)
                     expected_exec = "wstunnel server"
@@ -1650,6 +1842,9 @@ class SlaveAgent:
         self.apply_config_patch(management.get("agent_config_json"))
         explicit_request_token = str(management.get("agent_update_request_token", "") or "")
         auto_request_token = self.auto_update_request_token(management)
+        if bool(self.config.get("disable_auto_update", False)):
+            explicit_request_token = ""
+            auto_request_token = ""
 
         update_state = self.load_update_state()
         runtime_state = self.load_runtime_state()
@@ -1712,6 +1907,8 @@ class SlaveAgent:
 
     def auto_update_request_token(self, management: Any) -> str:
         if not isinstance(management, dict):
+            return ""
+        if bool(self.config.get("disable_auto_update", False)):
             return ""
 
         desired_agent_version = str(management.get("desired_agent_version", "") or "").strip()
@@ -1789,6 +1986,7 @@ class SlaveAgent:
             "usage_interval_seconds",
             "log_level",
             "udp_uot_sidepath",
+            "forward_chain_remediation",
         }
         changed = False
         changed_keys: set[str] = set()
@@ -2010,11 +2208,17 @@ class SlaveAgent:
         mptcp_underlay = payload.get("mptcp_underlay", {})
         if not isinstance(mptcp_underlay, dict):
             mptcp_underlay = {}
+        sidecar_uplink = payload.get("sidecar_uplink", {})
+        if not isinstance(sidecar_uplink, dict):
+            sidecar_uplink = {}
+        if sidecar_uplink.get("enabled") and str(sidecar_uplink.get("relay_target", "") or "").strip() != "":
+            target = str(sidecar_uplink.get("relay_target", "") or "").strip()
+        publish_bond_runtime = bool(payload.get("publish_bond_runtime", False)) or ingress_protocol == "plain_tcp_mux"
         metadata_path = self.metadata_path(service_name)
 
         self.cleanup_superseded_services_for_forward(int(task["forward_id"]), service_name)
 
-        if mptcp_underlay and mptcp_underlay.get("enabled"):
+        if mptcp_underlay and mptcp_underlay.get("enabled") and not publish_bond_runtime:
             metadata = {
                 "service_name": service_name,
                 "service_id": int(task["service_id"]),
@@ -2035,6 +2239,7 @@ class SlaveAgent:
                 "relay_client_service_name": "",
                 "relay_client_port": 0,
                 "mptcp_underlay": mptcp_underlay,
+                "sidecar_uplink": sidecar_uplink,
                 "filter_profile": str(payload.get("filter_profile", "off")),
                 "status": "active",
             }
@@ -2050,6 +2255,9 @@ class SlaveAgent:
                 "relay_client_service_name": None,
             }
 
+        if sidecar_uplink.get("enabled"):
+            self.apply_sidecar_uplink(service_name, sidecar_uplink)
+
         unit_path = self.service_unit_path(service_name)
         relay_unit_path = self.service_unit_path(relay_name)
         relay_client_unit_path = self.service_unit_path(relay_client_name)
@@ -2061,8 +2269,8 @@ class SlaveAgent:
         relay_client_port = int(existing.get("relay_client_port", 0) or 0)
 
         self.ensure_listener_route_available(public_port, path_prefix, service_name)
-        if backend_port <= 0:
-            backend_port = self.allocate_backend_port(service_name)
+        if self.backend_port_needs_reallocation(service_name, backend_port):
+            backend_port = self.allocate_backend_port(service_name, {public_port})
 
         use_plain_tcp_backend = backend_protocol == "tcp_relay"
         selection: dict[str, Any] | None = None
@@ -2150,6 +2358,7 @@ class SlaveAgent:
             "relay_client_service_name": relay_client_name if relay_protocols else "",
             "relay_client_port": relay_client_port if relay_protocols else 0,
             "mptcp_underlay": mptcp_underlay,
+            "sidecar_uplink": sidecar_uplink,
             "filter_profile": str(payload.get("filter_profile", "off")),
             "status": "active",
         }
@@ -2275,6 +2484,7 @@ class SlaveAgent:
                 run_command(f"systemctl disable {relay_client_name}.service", check=False)
         if base_targeted:
             self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
+            self.remove_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
 
         if not keep_files:
             relay_unit_path = self.service_unit_path(relay_name)
@@ -2332,6 +2542,7 @@ class SlaveAgent:
                 run_command(f"systemctl disable {relay_client_name}.service", check=False)
         if base_targeted:
             self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
+            self.remove_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
         for service_name in service_names:
             unit_path = self.service_unit_path(service_name)
             if unit_path.exists():
@@ -2577,14 +2788,43 @@ class SlaveAgent:
 
     @staticmethod
     def tcp_port_available(port: int) -> bool:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sockets: list[socket.socket] = []
         try:
-            sock.bind(("127.0.0.1", port))
-        except OSError:
-            return False
+            for host, family in (("127.0.0.1", socket.AF_INET), ("0.0.0.0", socket.AF_INET)):
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    sock.bind((host, port))
+                except OSError:
+                    sock.close()
+                    return False
+                sockets.append(sock)
+            return True
         finally:
-            sock.close()
-        return True
+            for sock in sockets:
+                sock.close()
+
+    def backend_port_needs_reallocation(self, service_name: str, backend_port: int) -> bool:
+        if backend_port <= 0:
+            return True
+        if backend_port in self.listener_ports():
+            logging.warning(
+                "service %s backend_port=%s collides with public listener port; reallocating",
+                service_name,
+                backend_port,
+            )
+            return True
+        if not self.tcp_port_available(backend_port):
+            current_cmdline = self.service_main_process_cmdline(service_name)
+            if current_cmdline and f":{backend_port}" in current_cmdline:
+                return False
+            logging.warning(
+                "service %s backend_port=%s is already bound by another process; reallocating",
+                service_name,
+                backend_port,
+            )
+            return True
+        return False
 
     def allocate_backend_port(self, service_name: str, reserved_ports: set[int] | None = None) -> int:
         start = int(self.config.get("backend_port_range_start", 20000))
@@ -2593,6 +2833,7 @@ class SlaveAgent:
             raise RuntimeError("invalid backend port range")
 
         used = self.used_backend_ports(service_name)
+        used.update(self.listener_ports())
         if reserved_ports:
             used.update(port for port in reserved_ports if port > 0)
         for port in range(start, end + 1):
@@ -2878,7 +3119,226 @@ WantedBy=multi-user.target
 """
 
     def wireguard_interface_path(self, interface_name: str) -> Path:
-        return Path("/etc/wireguard") / f"{interface_name}.conf"
+        return Path(str(self.config.get("wireguard_config_dir", "/etc/wireguard") or "/etc/wireguard")) / f"{interface_name}.conf"
+
+    def apply_sidecar_uplink(self, service_name: str, uplink: dict[str, Any]) -> None:
+        if not uplink.get("enabled") or not shutil.which("wg") or not shutil.which("wg-quick"):
+            return
+        self.ensure_wireguard_identity()
+        private_key = self.wireguard_private_key_path().read_text(encoding="utf-8").strip()
+        interface_name = str(uplink.get("interface_name", "") or service_name).strip()[:15]
+        local_address = str(uplink.get("local_address", "") or "").strip()
+        peer_address = str(uplink.get("peer_address", "") or "").strip()
+        peer_public_key = str(uplink.get("sidecar_peer_public_key", "") or "").strip()
+        endpoint_host = str(uplink.get("sidecar_endpoint_host", "") or "").strip()
+        endpoint_port = max(0, int(uplink.get("sidecar_endpoint_port", 0) or 0))
+        outer_transport = str(uplink.get("outer_transport", "udp") or "udp").strip().lower()
+        peer_tcp_fallback_port = max(0, int(uplink.get("peer_tcp_fallback_port", 0) or 0))
+        local_uot_udp_port = max(0, int(uplink.get("local_uot_udp_port", 0) or 0))
+        keepalive = max(0, int(uplink.get("peer_keepalive_seconds", 25) or 25))
+        if local_address == "" or peer_address == "" or peer_public_key == "":
+            return
+        if outer_transport == "tcp" and local_uot_udp_port > 0 and endpoint_host != "" and peer_tcp_fallback_port > 0:
+            self.ensure_sidecar_uot_client_service(interface_name, local_uot_udp_port, endpoint_host, peer_tcp_fallback_port)
+            endpoint_host = "127.0.0.1"
+            endpoint_port = local_uot_udp_port
+        else:
+            self.remove_sidecar_uot_client_service(interface_name)
+        endpoint = f"Endpoint = {endpoint_host}:{endpoint_port}\n" if endpoint_host != "" and endpoint_port > 0 else ""
+        keepalive_line = f"PersistentKeepalive = {keepalive}\n" if keepalive > 0 else ""
+        config = (
+            "[Interface]\n"
+            f"PrivateKey = {private_key}\n"
+            f"Address = {local_address}/32\n"
+            "\n"
+            "[Peer]\n"
+            f"PublicKey = {peer_public_key}\n"
+            f"{endpoint}"
+            f"AllowedIPs = {peer_address}/32\n"
+            f"{keepalive_line}"
+        )
+        path = self.wireguard_interface_path(interface_name)
+        changed = self.write_text_if_changed(path, config)
+        if shutil.which("systemctl"):
+            if changed:
+                run_command("systemctl daemon-reload", check=False)
+                run_command(f"systemctl enable wg-quick@{interface_name}.service", check=False)
+                run_command(f"systemctl restart wg-quick@{interface_name}.service", check=False)
+
+    def remove_sidecar_uplink(self, service_name: str, uplink: dict[str, Any] | None = None) -> None:
+        interface_name = str((uplink or {}).get("interface_name", "") or service_name).strip()[:15]
+        if interface_name == "":
+            return
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop wg-quick@{interface_name}.service", check=False)
+            run_command(f"systemctl disable wg-quick@{interface_name}.service", check=False)
+            run_command(f"systemctl reset-failed wg-quick@{interface_name}.service", check=False)
+        if shutil.which("wg-quick"):
+            run_command(f"wg-quick down {interface_name}", check=False)
+        if shutil.which("ip"):
+            run_command(f"ip link delete dev {interface_name}", check=False)
+        self.remove_sidecar_uot_client_service(interface_name)
+        path = self.wireguard_interface_path(interface_name)
+        if path.exists():
+            path.unlink()
+
+    def ensure_sidecar_uot_client_service(self, interface_name: str, listen_udp_port: int, remote_host: str, remote_tcp_port: int) -> None:
+        if listen_udp_port <= 0 or remote_tcp_port <= 0 or remote_host == "":
+            return
+        service_name = f"leikwan-uot-{interface_name}"
+        unit_path = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system")) / f"{service_name}.service"
+        body = f"""[Unit]
+Description=Leikwan UoT Client {service_name}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/leikwan-uot.py client --listen-udp 127.0.0.1:{listen_udp_port} --remote-tcp {remote_host}:{remote_tcp_port}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+        changed = self.write_text_if_changed(unit_path, body)
+        if shutil.which("systemctl"):
+            if changed:
+                run_command("systemctl daemon-reload", check=False)
+                run_command(f"systemctl enable {service_name}.service", check=False)
+                run_command(f"systemctl restart {service_name}.service", check=False)
+
+    def remove_sidecar_uot_client_service(self, interface_name: str) -> None:
+        service_name = f"leikwan-uot-{interface_name}"
+        unit_path = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system")) / f"{service_name}.service"
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop {service_name}.service", check=False)
+            run_command(f"systemctl disable {service_name}.service", check=False)
+            run_command("systemctl daemon-reload", check=False)
+        if unit_path.exists():
+            unit_path.unlink()
+
+    def evaluate_latency_policy_window(self, chain_key: str, policy: dict[str, Any], sample: dict[str, Any]) -> dict[str, Any]:
+        state = self.load_latency_policy_state()
+        chain_state = state.get(chain_key, {}) if isinstance(state.get(chain_key), dict) else {}
+        samples = chain_state.get("samples", []) if isinstance(chain_state.get("samples"), list) else []
+        window_seconds = max(10, int(policy.get("evaluation_window_seconds", 3600) or 3600))
+        timestamp = float(sample.get("timestamp", time.time()) or time.time())
+        record = {
+            "timestamp": timestamp,
+            "latency_ms": float(sample.get("latency_ms", 0.0) or 0.0),
+            "loss_ratio_percent": float(sample.get("loss_ratio_percent", 0.0) or 0.0),
+        }
+        samples.append(record)
+        cutoff = timestamp - window_seconds
+        samples = [item for item in samples if float(item.get("timestamp", 0.0) or 0.0) >= cutoff]
+        desired = policy.get("desired_latency_ms")
+        desired_latency = float(desired) if desired not in (None, "") else None
+        max_exceed_time = max(1.0, float(policy.get("max_exceed_time_seconds", 15) or 15))
+        max_exceed_ratio = max(0.0, min(100.0, float(policy.get("max_exceed_ratio_percent", 25) or 25)))
+        max_loss_ratio = max(0.0, min(100.0, float(policy.get("max_loss_ratio_percent", 2) or 2)))
+        exceeded = [item for item in samples if desired_latency is not None and float(item.get("latency_ms", 0.0) or 0.0) > desired_latency]
+        exceed_ratio = (len(exceeded) / len(samples) * 100.0) if samples else 0.0
+        continuous_exceed = 0.0
+        if exceeded:
+            tail = []
+            for item in reversed(samples):
+                if desired_latency is not None and float(item.get("latency_ms", 0.0) or 0.0) > desired_latency:
+                    tail.append(item)
+                else:
+                    break
+            if tail:
+                continuous_exceed = timestamp - float(tail[-1].get("timestamp", timestamp) or timestamp)
+        loss_ratio = max((float(item.get("loss_ratio_percent", 0.0) or 0.0) for item in samples), default=0.0)
+        acceptable = True
+        if desired_latency is not None and continuous_exceed > max_exceed_time:
+            acceptable = False
+        if exceed_ratio > max_exceed_ratio:
+            acceptable = False
+        if loss_ratio > max_loss_ratio:
+            acceptable = False
+        result = {
+            "acceptable": acceptable,
+            "recommended_action": "none" if acceptable else "change_sidepath",
+            "should_restart_wg": False,
+            "exceed_ratio_percent": round(exceed_ratio, 2),
+            "continuous_exceed_seconds": round(continuous_exceed, 2),
+            "loss_ratio_percent": round(loss_ratio, 2),
+            "samples": samples,
+            "last_switch_reason": "latency_policy" if not acceptable else "",
+        }
+        state[chain_key] = result
+        self.save_latency_policy_state(state)
+        return result
+
+    @staticmethod
+    def candidate_latency_summary(candidate_latencies_ms: dict[str, float | int | None]) -> dict[str, Any]:
+        usable: list[tuple[str, float]] = []
+        for key, value in candidate_latencies_ms.items():
+            if value in (None, ""):
+                continue
+            usable.append((str(key), float(value)))
+        usable.sort(key=lambda item: item[1])
+        if not usable:
+            return {
+                "best_candidate": "",
+                "best_latency_ms": None,
+                "current_latency_ms": None,
+                "spread_ms": None,
+            }
+        current_latency = None
+        for key, value in usable:
+            if key == "current":
+                current_latency = value
+                break
+        best_key, best_value = usable[0]
+        spread = None if current_latency is None else max(0.0, current_latency - best_value)
+        return {
+            "best_candidate": best_key,
+            "best_latency_ms": best_value,
+            "current_latency_ms": current_latency,
+            "spread_ms": spread,
+        }
+
+    def classify_forward_chain_remediation(
+        self,
+        chain_key: str,
+        policy: dict[str, Any],
+        current_sample: dict[str, Any],
+        candidate_latencies_ms: dict[str, float | int | None],
+    ) -> dict[str, Any]:
+        window = self.evaluate_latency_policy_window(chain_key, policy, current_sample)
+        summary = self.candidate_latency_summary(candidate_latencies_ms)
+        best_candidate = str(summary.get("best_candidate", "") or "")
+        best_latency_ms = summary.get("best_latency_ms")
+        spread_ms = summary.get("spread_ms")
+
+        decision = dict(window)
+        decision.update(
+            {
+                "action": "observe",
+                "selected_candidate": "current",
+                "best_candidate": best_candidate,
+                "best_latency_ms": best_latency_ms,
+                "spread_ms": spread_ms,
+            }
+        )
+
+        if bool(window.get("acceptable", True)):
+            decision["recommended_action"] = "none"
+            return decision
+
+        if best_candidate not in {"", "current"} and spread_ms is not None and spread_ms >= 40.0:
+            decision["action"] = "change_sidepath"
+            decision["selected_candidate"] = best_candidate
+            decision["recommended_action"] = "change_sidepath"
+            decision["should_restart_wg"] = False
+            return decision
+
+        decision["action"] = "escalate_sidecar_upstream"
+        decision["selected_candidate"] = "current"
+        decision["recommended_action"] = "escalate_sidecar_upstream"
+        decision["should_restart_wg"] = False
+        return decision
 
     def apply_mptcp_underlay(self, service_name: str, underlay: dict[str, Any]) -> None:
         if not shutil.which("wg") or not shutil.which("wg-quick"):
@@ -2906,6 +3366,10 @@ WantedBy=multi-user.target
             f"PrivateKey = {private_key}\n"
             f"ListenPort = {listen_port}\n"
             f"Address = {slave_address}/32\n"
+            f"PostUp = ip -4 route replace {client_address}/32 dev {interface_name} src {slave_address} initcwnd 80 initrwnd 80\n"
+            f"PostUp = ip -4 route replace {sidecar_address}/32 dev {interface_name} src {slave_address} initcwnd 80 initrwnd 80\n"
+            f"PostDown = ip -4 route del {client_address}/32 dev {interface_name} >/dev/null 2>&1 || true\n"
+            f"PostDown = ip -4 route del {sidecar_address}/32 dev {interface_name} >/dev/null 2>&1 || true\n"
             "PostUp = sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true\n"
             "PostUp = sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true\n"
             "\n"
@@ -2921,6 +3385,7 @@ WantedBy=multi-user.target
         )
         path = self.wireguard_interface_path(interface_name)
         changed = self.write_text_if_changed(path, config)
+        self.ensure_clean_mptcp_underlay(interface_name, underlay)
         if str(underlay.get("outer_transport", "udp") or "udp").strip().lower() == "tcp":
             self.ensure_uot_server_service(interface_name, int(underlay.get("fallback_tcp_port", 0) or 0), listen_port)
         if shutil.which("systemctl"):
@@ -2951,6 +3416,46 @@ WantedBy=multi-user.target
             if explicit != "":
                 return explicit[:15]
         return service_name.replace("wstunnel-svc-", "lwm")[:15]
+
+    def ensure_clean_mptcp_underlay(self, interface_name: str, underlay: dict[str, Any]) -> None:
+        normalized = str(interface_name or "").strip()[:15]
+        if normalized == "":
+            return
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop wg-quick@{normalized}.service", check=False)
+            run_command(f"systemctl reset-failed wg-quick@{normalized}.service", check=False)
+        if shutil.which("wg-quick"):
+            run_command(f"wg-quick down {normalized}", check=False)
+        if shutil.which("ip"):
+            run_command(f"ip link delete dev {normalized}", check=False)
+
+        desired_addresses = {
+            str(underlay.get("slave_address", "") or "").strip(),
+            str(underlay.get("client_address", "") or "").strip(),
+            str(underlay.get("sidecar_address", "") or "").strip(),
+        }
+        desired_addresses = {item for item in desired_addresses if item != ""}
+        if desired_addresses and shutil.which("ip"):
+            address_dump = run_command(["ip", "-o", "-4", "addr", "show"], check=False)
+            for raw_line in str(address_dump.stdout or "").splitlines():
+                parts = raw_line.split()
+                if len(parts) < 4:
+                    continue
+                iface = parts[1]
+                cidr = parts[3]
+                address = cidr.split("/", 1)[0].strip()
+                if address not in desired_addresses or iface == normalized:
+                    continue
+                if iface == "lo":
+                    continue
+                logging.warning("removing conflicting interface %s holding %s for %s", iface, address, normalized)
+                if shutil.which("systemctl"):
+                    run_command(f"systemctl stop wg-quick@{iface}.service", check=False)
+                    run_command(f"systemctl disable wg-quick@{iface}.service", check=False)
+                    run_command(f"systemctl reset-failed wg-quick@{iface}.service", check=False)
+                if shutil.which("wg-quick"):
+                    run_command(f"wg-quick down {iface}", check=False)
+                run_command(f"ip link delete dev {iface}", check=False)
 
     def cleanup_orphan_mptcp_underlays(self) -> None:
         if not shutil.which("wg"):

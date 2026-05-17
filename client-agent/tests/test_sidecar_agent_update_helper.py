@@ -55,6 +55,14 @@ class SidecarAgentUpdateHelperTests(unittest.TestCase):
             "artifacts/wstunnel/wstunnel_linux_amd64",
         )
 
+
+    def test_client_manifest_contains_mptcp_relay_artifact(self) -> None:
+        artifact_controller = (REPO_ROOT / "master" / "src" / "Controllers" / "ArtifactController.php").read_text(encoding="utf-8")
+        versions = json.loads((REPO_ROOT / "artifacts" / "versions.json").read_text(encoding="utf-8"))
+
+        self.assertIn("leikwan_mptcp_relay_linux_amd64", versions)
+        self.assertIn("'leikwan_mptcp_relay_linux_amd64'", artifact_controller)
+
     def test_sidecar_update_helper_stops_runtime_and_agent_services(self) -> None:
         source = (REPO_ROOT / "install" / "sidecar-agent-update.sh").read_text(encoding="utf-8")
 

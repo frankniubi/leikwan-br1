@@ -3,26 +3,32 @@ from __future__ import annotations
 
 import argparse
 import email.utils
+import contextlib
 import json
+import ipaddress
 import logging
 import os
 import pathlib
+import platform
 import re
 import shutil
 import socket
 import ssl
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.04.27.2"
+AGENT_VERSION = "2026.05.17.3"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
 UPDATE_STALE_SECONDS = 900
 INVALID_FORWARD_LOG_INTERVAL_SECONDS = 600
+SELF_LEG_FAST_PROBE_CACHE_TTL_SECONDS = 60.0
+SELF_LEG_FAST_PROBE_CACHE_MAX_LATENCY_MS = 80.0
 DEFAULT_MANAGED_CONFIG = {
     "state_dir": "/var/lib/leikwan-client-agent",
     "poll_interval_seconds": 30,
@@ -31,6 +37,9 @@ DEFAULT_MANAGED_CONFIG = {
     "wireguard_listen_port": 0,
     "wireguard_fallback_tcp_port": 0,
 }
+MPTCP_PROTOCOL = getattr(socket, "IPPROTO_MPTCP", 262)
+MPTCP_FALSE_VALUES = {"", "0", "false", "no", "off", "disabled"}
+
 
 
 def http_json(method: str, url: str, token: str, payload: dict | None = None) -> dict:
@@ -101,6 +110,7 @@ class ClientAgent:
         self.health_restart_after: dict[int, float] = {}
         self.health_reorder_after: dict[int, float] = {}
         self.invalid_forward_log_after: dict[int, float] = {}
+        self.self_leg_probe_cache: dict[str, dict] = {}
         logging.basicConfig(
             level=getattr(logging, str(self.config.get("log_level", "INFO")).upper(), logging.INFO),
             format="%(asctime)s %(levelname)s %(message)s",
@@ -225,8 +235,56 @@ class ClientAgent:
         return pathlib.Path(raw)
 
     @staticmethod
-    def running_kernel_supports_mptcp() -> bool:
-        return pathlib.Path("/proc/sys/net/mptcp/enabled").exists()
+    def mptcp_capability() -> dict:
+        sysctl_path = pathlib.Path("/proc/sys/net/mptcp/enabled")
+        sysctl_present = sysctl_path.exists()
+        sysctl_value = ""
+        sysctl_enabled = False
+        if sysctl_present:
+            try:
+                sysctl_value = sysctl_path.read_text(encoding="utf-8").strip().lower()
+            except OSError:
+                sysctl_value = ""
+            sysctl_enabled = sysctl_value not in MPTCP_FALSE_VALUES
+
+        socket_supported = False
+        socket_error = ""
+        if os.name != "nt":
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM, MPTCP_PROTOCOL):
+                    socket_supported = True
+            except OSError as exc:
+                socket_error = str(exc)
+
+        supported = socket_supported and (sysctl_enabled or not sysctl_present)
+        if supported:
+            reason = "mptcp_socket_available"
+        elif sysctl_present and not sysctl_enabled:
+            reason = f"net.mptcp.enabled={sysctl_value or 'unset'}"
+        elif socket_error:
+            reason = socket_error
+        else:
+            reason = "mptcp_socket_unavailable"
+
+        return {
+            "supported": supported,
+            "sysctl_present": sysctl_present,
+            "sysctl_enabled": sysctl_enabled,
+            "sysctl_value": sysctl_value,
+            "socket_supported": socket_supported,
+            "protocol": MPTCP_PROTOCOL,
+            "reason": reason,
+        }
+
+    @classmethod
+    def running_kernel_supports_mptcp(cls) -> bool:
+        return bool(cls.mptcp_capability().get("supported", False))
+
+    @staticmethod
+    def mptcp_tcp_fallback_allowed(mptcp: dict) -> bool:
+        if not isinstance(mptcp, dict):
+            return True
+        return str(mptcp.get("allow_tcp_fallback", True)).strip().lower() in {"1", "true", "yes", "on", "", "none"}
 
     def wireguard_dir(self) -> pathlib.Path:
         path = self.state_dir / "wireguard"
@@ -261,6 +319,9 @@ class ClientAgent:
         payload["wireguard_listen_port"] = self.wireguard_listen_port()
         payload["wireguard_fallback_tcp_port"] = self.wireguard_fallback_tcp_port()
         payload["install_forward_runtime_sha256"] = file_sha256(self.install_forward_runtime_path())
+        payload["mptcp_client_sha256"] = file_sha256(self.mptcp_client_path())
+        payload.setdefault("installer_sha256", str(self.config.get("installer_sha256", "") or ""))
+        payload["kernel_release"] = platform.release()
         return payload
 
     def ensure_wireguard_identity(self) -> str:
@@ -622,7 +683,7 @@ class ClientAgent:
                 mptcp = forward.get("mptcp", {})
                 if not isinstance(mptcp, dict):
                     mptcp = {}
-                allow_tcp_fallback = str(mptcp.get("allow_tcp_fallback", "")).strip().lower() in {"1", "true", "yes", "on"}
+                allow_tcp_fallback = self.mptcp_tcp_fallback_allowed(mptcp)
                 if not self.running_kernel_supports_mptcp() and not allow_tcp_fallback:
                     skipped_invalid_forward_ids.append(forward_id)
                     self.log_invalid_forward(
@@ -673,6 +734,12 @@ class ClientAgent:
                 "usage_bytes_in": usage_totals["bytes_in"],
                 "usage_bytes_out": usage_totals["bytes_out"],
                 "supports_mptcp": self.running_kernel_supports_mptcp(),
+                "mptcp_capability": self.mptcp_capability(),
+                "kernel_release": platform.release(),
+                "installer_version": str(self.config.get("installer_version", "") or ""),
+                "installer_sha256": str(self.config.get("installer_sha256", "") or ""),
+                "install_forward_runtime_sha256": file_sha256(self.install_forward_runtime_path()),
+                "mptcp_client_sha256": file_sha256(self.mptcp_client_path()),
                 "wireguard_public_key": wireguard_public_key,
                 "wireguard_listen_port": self.wireguard_listen_port(),
                 "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
@@ -792,7 +859,9 @@ class ClientAgent:
         desired_agent_version = str(client_meta.get("desired_agent_version", "") or "").strip()
         desired_agent_sha256 = str(client_meta.get("desired_agent_sha256", "") or "").strip().lower()
         desired_installer_version = str(client_meta.get("desired_installer_version", "") or "").strip()
+        desired_installer_sha256 = str(client_meta.get("desired_installer_sha256", "") or "").strip().lower()
         desired_bond_sha256 = str(client_meta.get("desired_bond_sha256", "") or "").strip().lower()
+        desired_mptcp_runtime_sha256 = str(client_meta.get("desired_mptcp_runtime_sha256", "") or "").strip().lower()
         mismatches: list[str] = []
 
         if desired_agent_version and desired_agent_version != AGENT_VERSION:
@@ -807,10 +876,19 @@ class ClientAgent:
         if desired_installer_version and local_installer_version != desired_installer_version:
             mismatches.append(f"installer={desired_installer_version}")
 
+        local_installer_sha256 = str(self.config.get("installer_sha256", "") or "").strip().lower()
+        if desired_installer_sha256 and local_installer_sha256 != desired_installer_sha256:
+            mismatches.append(f"installer_sha256={desired_installer_sha256}")
+
         if desired_bond_sha256:
             local_bond_sha256 = file_sha256(self.bond_binary_path()).lower()
             if local_bond_sha256 != desired_bond_sha256:
                 mismatches.append(f"bond={desired_bond_sha256}")
+
+        if desired_mptcp_runtime_sha256:
+            local_mptcp_runtime_sha256 = file_sha256(self.mptcp_client_path()).lower()
+            if local_mptcp_runtime_sha256 != desired_mptcp_runtime_sha256:
+                mismatches.append(f"mptcp_runtime={desired_mptcp_runtime_sha256}")
 
         if mismatches == []:
             return ""
@@ -988,10 +1066,17 @@ class ClientAgent:
             render_forward["candidate_pool"] = candidate_pool
         runtime_mode = self.choose_runtime_family(render_forward, self.running_kernel_supports_mptcp())
         if runtime_mode in {"bond", "mptcp"}:
+            mode = runtime_mode
             render_forward["mode"] = runtime_mode
-        if runtime_mode == "bond":
+
+        if mode == "bond":
             render_forward = self.apply_latency_target_candidate_escalation(render_forward)
             render_forward["endpoints"] = self.select_bond_runtime_endpoints(render_forward)
+        elif mode == "mptcp":
+            render_forward["candidate_pool"] = self.filter_mptcp_capable_candidates(
+                [item for item in render_forward.get("candidate_pool", []) if isinstance(item, dict)]
+            )
+            render_forward = self.apply_mptcp_runtime_health_policy(render_forward)
 
         rendered = render_forward_runtime(render_forward, self.semantic_agent_config())
         self.delete_nft_rules(forward_id)
@@ -1012,6 +1097,7 @@ class ClientAgent:
 
         units = [rendered] + [item for item in rendered.get("extra_units", []) if isinstance(item, dict)]
         persisted_units: list[dict] = []
+        mptcp_runtime_cleaned = False
         current_service_names = {str(unit.get("service_name", "") or "") for unit in units}
         for previous_unit in previous_units:
             previous_service_name = str(previous_unit.get("service_name", "") or "")
@@ -1044,7 +1130,11 @@ class ClientAgent:
                 files_changed = files_changed or file_changed
                 managed_paths.append(str(extra_path))
 
-            if unit_changed or script_changed or files_changed or not self.systemd_is_active(service_name):
+            service_active = self.systemd_is_active(service_name)
+            if unit_changed or script_changed or files_changed or not service_active:
+                if mode == "mptcp" and not mptcp_runtime_cleaned:
+                    self.cleanup_mptcp_forward_runtime(forward_id)
+                    mptcp_runtime_cleaned = True
                 subprocess.run("systemctl daemon-reload", shell=True, check=False)
                 subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
                 subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
@@ -1079,6 +1169,8 @@ class ClientAgent:
         applied[str(forward_id)] = {
             "units": persisted_units,
             "managed_paths": sorted(current_managed_paths),
+            "published_mode": self.normalize_mode(forward.get("mode", "single")),
+            "runtime_mode": mode,
             "updated_at": int(time.time()),
         }
         self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1143,6 +1235,9 @@ class ClientAgent:
                 continue
             subprocess.run(["systemctl", "stop", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
             subprocess.run(["systemctl", "disable", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "reset-failed", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["wg-quick", "down", iface], text=True, capture_output=True, check=False)
+            subprocess.run(["ip", "link", "delete", "dev", iface], text=True, capture_output=True, check=False)
             conf_path = pathlib.Path(f"/etc/wireguard/{iface}.conf")
             if conf_path.exists():
                 conf_path.unlink()
@@ -1174,7 +1269,7 @@ class ClientAgent:
                 continue
 
             endpoints = [endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
-            mode = self.normalize_mode(forward.get("mode", "single"))
+            mode = self.applied_runtime_mode(forward_id) or self.normalize_mode(forward.get("mode", "single"))
             if mode == "mptcp":
                 if self.mptcp_setup_in_progress(forward_id):
                     logging.info("forward %s mptcp setup-underlays still in progress; skipping health probe", forward_id)
@@ -1182,16 +1277,63 @@ class ClientAgent:
                 listen_port = int(forward.get("listen_port", 0) or 0)
                 local_ok, _, local_error = self.local_listener_present(listen_port, "tcp")
                 if not local_ok:
+                    active_age = self.service_active_age_seconds(service_name)
+                    if active_age is not None and active_age < 20.0:
+                        logging.info(
+                            "forward %s mptcp service started %.1fs ago; deferring local listener restart: %s",
+                            forward_id,
+                            active_age,
+                            local_error,
+                        )
+                        continue
                     self.restart_forward_service(forward_id, service_name, f"mptcp local listener probe failed: {local_error}")
                     continue
                 mptcp = forward.get("mptcp", {})
                 if not isinstance(mptcp, dict):
                     mptcp = {}
-                remote_hosts = self.mptcp_remote_hosts(mptcp)
-                remote_port = int(mptcp.get("sidecar_port", 0) or mptcp.get("remote_port", 0) or 0)
-                remote_ok, _, remote_error, _reachable_host = self.remote_tcp_probe_any(remote_hosts, remote_port)
-                if not remote_ok:
-                    self.restart_forward_service(forward_id, service_name, f"mptcp sidecar probe failed: {remote_error}")
+                candidates = self.mptcp_leg_candidates(forward, mptcp)
+                if candidates:
+                    ready_results = []
+                    refresh_needed = False
+                    for candidate in candidates:
+                        endpoint_id = int(candidate.get("endpoint_id", 0) or 0)
+                        previous_role = (
+                            self.load_bond_endpoint_health()
+                            .get(str(forward_id), {})
+                            .get(str(endpoint_id), {})
+                            .get("role", "healthy")
+                        )
+                        ready, latency_ms, error = self.remote_tcp_probe(
+                            str(candidate.get("host", "") or ""),
+                            int(candidate.get("port", 0) or 0),
+                        )
+                        ready_results.append(ready)
+                        updated = self.record_bond_endpoint_probe_result(
+                            forward_id,
+                            endpoint_id,
+                            ready,
+                            latency_ms,
+                            error,
+                            one_leg_rtt_ms=latency_ms,
+                        )
+                        if str(previous_role or "healthy") != str(updated.get("role", "healthy") or "healthy"):
+                            refresh_needed = True
+                    if not any(ready_results):
+                        logging.warning(
+                            "forward %s has a live local mptcp listener but all sidecar leg tcp probes failed; "
+                            "isolating failed legs and refreshing runtime instead of restarting",
+                            forward_id,
+                        )
+                        self.refresh_mptcp_runtime_endpoints(forward_id, dict(forward), service_name)
+                        continue
+                    if refresh_needed or not all(ready_results):
+                        self.refresh_mptcp_runtime_endpoints(forward_id, dict(forward), service_name)
+                else:
+                    remote_hosts = self.mptcp_remote_hosts(mptcp)
+                    remote_port = int(mptcp.get("sidecar_port", 0) or mptcp.get("remote_port", 0) or 0)
+                    remote_ok, _, remote_error, _reachable_host = self.remote_tcp_probe_any(remote_hosts, remote_port)
+                    if not remote_ok:
+                        self.restart_forward_service(forward_id, service_name, f"mptcp sidecar probe failed: {remote_error}")
                 continue
             listen_port = int(forward.get("listen_port", 0) or 0)
             local_ok, _, local_error = self.local_runtime_probe(
@@ -1210,6 +1352,7 @@ class ClientAgent:
                 bonding = {}
             plain_tcp_ingress = mode == "bond" and str(bonding.get("ingress_mode", "wss_path_mux")) == "plain_tcp_mux"
             backend_mode = str(forward.get("backend_mode", "current_mode") or "current_mode")
+            self_leg_primary = mode == "bond" and self.forward_has_selected_self_leg(forward_id, forward)
             for endpoint_index, endpoint in enumerate(endpoints):
                 if plain_tcp_ingress:
                     ready, latency_ms, error = self.remote_plain_tcp_ready_probe(
@@ -1256,14 +1399,22 @@ class ClientAgent:
                             error,
                         )
                     if str(previous_role or "healthy") != str(updated.get("role", "healthy") or "healthy"):
-                        self.refresh_bond_runtime_endpoints(forward_id, dict(forward), service_name)
+                        if not self_leg_primary:
+                            self.refresh_bond_runtime_endpoints(forward_id, dict(forward), service_name)
 
             if mode in {"race", "bond"}:
                 if not any(ready_results):
+                    if self_leg_primary:
+                        logging.warning(
+                            "forward %s has selected self-leg primary; slave helper ready probes all failed, "
+                            "quarantining helpers without restarting",
+                            forward_id,
+                        )
+                        continue
                     self.restart_forward_service(forward_id, service_name, "all slave endpoints failed ready probe")
                     continue
 
-                if mode == "bond" and plain_tcp_ingress:
+                if mode == "bond" and plain_tcp_ingress and not self_leg_primary:
                     live_matches = self.collect_live_bond_slave_connections(forward)
                     if live_matches is not None and live_matches == []:
                         self.restart_forward_service(
@@ -1282,6 +1433,34 @@ class ClientAgent:
                     self.reorder_forward_endpoints(forward_id, dict(forward), desired_order, service_name)
             elif not ready_results[0]:
                 self.restart_forward_service(forward_id, service_name, "primary slave endpoint failed ready probe")
+
+    def forward_has_selected_self_leg(self, forward_id: int, forward: dict) -> bool:
+        candidate_pool = [item for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
+        selected = next((item for item in candidate_pool if bool(item.get("selected_primary", False))), None)
+        if isinstance(selected, dict) and str(selected.get("candidate_kind", "") or "") == "self_leg":
+            return True
+        if selected is None and candidate_pool:
+            first = candidate_pool[0]
+            if str(first.get("candidate_kind", "") or "") == "self_leg" and bool(first.get("ready", True)):
+                return True
+
+        script_path = pathlib.Path(f"/usr/local/bin/leikwan-client-start-{int(forward_id)}.sh")
+        try:
+            script = script_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        return "display_host=self_leg" in script or "candidate_kind=self_leg" in script
+
+    def applied_runtime_mode(self, forward_id: int) -> str:
+        try:
+            payload = self.load_applied().get(str(int(forward_id)), {})
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict) and payload:
+            raw_mode = payload.get("runtime_mode") or payload.get("published_mode") or ""
+            if str(raw_mode).strip() != "":
+                return self.normalize_mode(raw_mode)
+        return ""
 
     @staticmethod
     def systemd_is_active(service_name: str) -> bool:
@@ -1315,6 +1494,32 @@ class ClientAgent:
             "connection reset by peer (os error 104)" in output
             or "broken pipe (os error 32)" in output
         )
+
+    @staticmethod
+    def service_active_age_seconds(service_name: str) -> float | None:
+        if not service_name.strip():
+            return None
+        result = subprocess.run(
+            ["systemctl", "show", service_name, "-p", "ActiveEnterTimestampMonotonic", "--value"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        try:
+            active_us = int(result.stdout.strip() or "0")
+        except ValueError:
+            return None
+        if active_us <= 0:
+            return None
+        try:
+            uptime_ticks = int(float(pathlib.Path("/proc/uptime").read_text(encoding="utf-8").split()[0]) * 1_000_000)
+        except (OSError, IndexError, ValueError):
+            return None
+        if uptime_ticks < active_us:
+            return None
+        return (uptime_ticks - active_us) / 1_000_000.0
 
     @staticmethod
     def mptcp_setup_in_progress(forward_id: int) -> bool:
@@ -1371,6 +1576,21 @@ class ClientAgent:
             break
         logging.info("refreshed %s to apply bond endpoint health policy", service_name)
 
+    def refresh_mptcp_runtime_endpoints(self, forward_id: int, forward: dict, service_name: str) -> None:
+        now = time.time()
+        next_allowed = self.health_reorder_after.get(forward_id, 0.0)
+        if now < next_allowed:
+            return
+
+        self.apply_forward(forward)
+        self.health_reorder_after[forward_id] = now + 30
+        for index, latest_forward in enumerate(self.latest_forwards):
+            if int(latest_forward.get("forward_id", 0) or 0) != forward_id:
+                continue
+            self.latest_forwards[index] = forward
+            break
+        logging.info("refreshed %s to apply mptcp leg health policy", service_name)
+
     def load_applied(self) -> dict:
         if not self.applied_path.exists():
             return {}
@@ -1416,6 +1636,7 @@ class ClientAgent:
         latency_ms: float | None,
         error: str | None,
         now: float | None = None,
+        one_leg_rtt_ms: float | None = None,
     ) -> dict:
         now = time.time() if now is None else now
         health = self.load_bond_endpoint_health()
@@ -1429,6 +1650,7 @@ class ClientAgent:
                 "probation_until": 0.0,
                 "last_error": "",
                 "last_latency_ms": None,
+                "one_leg_rtt_ms": None,
                 "quality_score": 1.0,
             },
         )
@@ -1438,6 +1660,8 @@ class ClientAgent:
             entry["consecutive_failures"] = 0
             entry["last_error"] = ""
             entry["last_latency_ms"] = latency_ms
+            if one_leg_rtt_ms is not None:
+                entry["one_leg_rtt_ms"] = one_leg_rtt_ms
             if latency_ms is None:
                 entry["quality_score"] = 1.0
             else:
@@ -1493,6 +1717,7 @@ class ClientAgent:
                 "probation_until": 0.0,
                 "last_error": "",
                 "last_latency_ms": None,
+                "one_leg_rtt_ms": None,
                 "quality_score": 1.0,
             },
         )
@@ -1506,6 +1731,22 @@ class ClientAgent:
         entry["quality_score"] = 0.0
         self.save_bond_endpoint_health(health)
         return entry
+
+    @staticmethod
+    def latency_first_primary_sort_key(endpoint: dict) -> tuple[float, float, int, int]:
+        rtt_value = 999999.0
+        for key in ("one_leg_rtt_ms", "latency_ewma_ms", "last_latency_ms"):
+            try:
+                candidate = float(endpoint.get(key))
+            except (TypeError, ValueError):
+                continue
+            if candidate > 0:
+                rtt_value = candidate
+                break
+        quality_score = float(endpoint.get("quality_score", 0.0) or 0.0)
+        dynamic_priority = int(endpoint.get("dynamic_priority", 0) or 0)
+        endpoint_id = int(endpoint.get("endpoint_id", 0) or 0)
+        return (rtt_value, -quality_score, dynamic_priority, endpoint_id)
 
     @staticmethod
     def cf_bond_runtime_health_entry(leg: dict, now: float) -> tuple[str, dict] | None:
@@ -1537,6 +1778,7 @@ class ClientAgent:
                 "probation_until": probation_until,
                 "last_error": runtime_reason,
                 "last_latency_ms": None,
+                "one_leg_rtt_ms": None,
                 "quality_score": 0.6 if role == "healthy" else (0.4 if role == "probation" else 0.0),
             },
         )
@@ -1549,6 +1791,259 @@ class ClientAgent:
         if not isinstance(bond, dict):
             return False
         return str(bond.get("policy_mode", "") or "").strip() == "latency_first"
+
+    @staticmethod
+    def latency_first_mptcp_enabled(forward: dict) -> bool:
+        if ClientAgent.normalize_mode(forward.get("mode", "single")) != "mptcp":
+            return False
+        mptcp = forward.get("mptcp", {})
+        if not isinstance(mptcp, dict):
+            mptcp = {}
+        return str(mptcp.get("policy_mode", "latency_first") or "latency_first").strip() == "latency_first"
+
+    @staticmethod
+    def endpoint_id_for_runtime(endpoint: dict, fallback_index: int) -> int:
+        try:
+            endpoint_id = int(endpoint.get("endpoint_id", 0) or 0)
+        except (TypeError, ValueError):
+            endpoint_id = 0
+        return endpoint_id if endpoint_id > 0 else fallback_index + 1
+
+    def mptcp_endpoint_health_snapshot(self, forward: dict, now: float) -> dict:
+        forward_id = int(forward.get("forward_id", 0) or 0)
+        if forward_id <= 0:
+            return {}
+        return self.load_bond_endpoint_health().get(str(forward_id), {})
+
+    def select_mptcp_runtime_endpoints(self, forward: dict, now: float | None = None) -> list[dict]:
+        now = time.time() if now is None else now
+        endpoints = [dict(endpoint) for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
+        if not endpoints:
+            return []
+
+        mptcp = forward.get("mptcp", {})
+        if not isinstance(mptcp, dict):
+            mptcp = {}
+        health = self.mptcp_endpoint_health_snapshot(forward, now)
+        base_priority = 10
+
+        decorated = []
+        for index, endpoint in enumerate(endpoints):
+            endpoint_id = self.endpoint_id_for_runtime(endpoint, index)
+            endpoint["endpoint_id"] = endpoint_id
+            entry = dict(health.get(str(endpoint_id), {}))
+            role = str(entry.get("role", "healthy") or "healthy")
+            quarantine_until = float(entry.get("quarantine_until", 0.0) or 0.0)
+            probation_until = float(entry.get("probation_until", 0.0) or 0.0)
+            if role == "quarantined" and quarantine_until <= now:
+                role = "probation"
+            if role == "probation" and probation_until <= now and int(entry.get("consecutive_successes", 0) or 0) >= 3:
+                role = "healthy"
+
+            endpoint["health_role"] = role
+            endpoint["quality_score"] = float(entry.get("quality_score", 1.0 if role == "healthy" else (0.5 if role == "probation" else 0.0)) or 0.0)
+            endpoint["one_leg_rtt_ms"] = entry.get("one_leg_rtt_ms")
+            endpoint["latency_ewma_ms"] = entry.get("latency_ewma_ms")
+            endpoint["last_latency_ms"] = entry.get("last_latency_ms")
+            if role == "healthy":
+                endpoint["dynamic_priority"] = base_priority
+            elif role == "probation":
+                endpoint["dynamic_priority"] = base_priority + 15
+            else:
+                endpoint["dynamic_priority"] = base_priority + 30
+            decorated.append(endpoint)
+
+        latency_first = self.latency_first_mptcp_enabled(forward)
+        if not latency_first:
+            preferred = [item for item in decorated if item["health_role"] != "quarantined"]
+            if preferred:
+                preferred.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+                return preferred
+            decorated.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+            return decorated[:1]
+
+        healthy = [item for item in decorated if item["health_role"] == "healthy"]
+        healthy.sort(key=self.latency_first_primary_sort_key)
+        probation = [item for item in decorated if item["health_role"] == "probation"]
+        probation.sort(key=self.latency_first_primary_sort_key)
+        quarantined = [item for item in decorated if item["health_role"] == "quarantined"]
+        quarantined.sort(key=self.latency_first_primary_sort_key)
+
+        active_limit = max(0, int(mptcp.get("active_leg_limit", 0) or 0))
+        selected = healthy or probation[:1] or quarantined[:1]
+        if active_limit > 0 and len(selected) > active_limit:
+            selected = selected[:active_limit]
+
+        for index, endpoint in enumerate(selected):
+            endpoint["leg_role"] = "primary" if index == 0 else "helper"
+        return selected
+
+    @staticmethod
+    def mptcp_underlay_leg_endpoint_id(leg: dict, endpoint_by_address: dict[str, int]) -> int:
+        try:
+            endpoint_id = int(leg.get("endpoint_id", 0) or 0)
+        except (TypeError, ValueError):
+            endpoint_id = 0
+        if endpoint_id > 0:
+            return endpoint_id
+        for key in ("address", "local_address", "client_address", "mptcp_remote_address", "peer_public_host", "peer_address"):
+            value = str(leg.get(key, "") or "").strip()
+            mapped = endpoint_by_address.get(value, 0)
+            if mapped > 0:
+                return mapped
+        return 0
+
+    def apply_mptcp_runtime_health_policy(self, forward: dict, now: float | None = None) -> dict:
+        if self.normalize_mode(forward.get("mode", "single")) != "mptcp":
+            return forward
+
+        now = time.time() if now is None else now
+        selected = self.select_mptcp_runtime_endpoints(forward, now=now)
+        if not selected:
+            return forward
+
+        selected_ids = {int(endpoint.get("endpoint_id", 0) or 0) for endpoint in selected}
+        selected_by_id = {int(endpoint.get("endpoint_id", 0) or 0): endpoint for endpoint in selected}
+        selected_rank = {int(endpoint.get("endpoint_id", 0) or 0): index for index, endpoint in enumerate(selected)}
+        endpoint_by_address: dict[str, int] = {}
+        for endpoint in selected:
+            endpoint_id = int(endpoint.get("endpoint_id", 0) or 0)
+            for key in ("host", "mptcp_remote_address", "peer_public_host"):
+                value = str(endpoint.get(key, "") or "").strip()
+                if endpoint_id > 0 and value != "":
+                    endpoint_by_address[value] = endpoint_id
+
+        next_forward = dict(forward)
+        next_forward["endpoints"] = selected
+        mptcp = dict(forward.get("mptcp", {}) if isinstance(forward.get("mptcp", {}), dict) else {})
+        mptcp.setdefault("policy_mode", "latency_first")
+
+        primary_leg: dict | None = None
+        primary_endpoint = selected[0] if selected else {}
+        filtered_underlays = []
+        used_underlay_keys: set[tuple[str, str]] = set()
+        raw_underlays = mptcp.get("underlays", [])
+        if isinstance(raw_underlays, list):
+            for raw_underlay in raw_underlays:
+                if not isinstance(raw_underlay, dict):
+                    continue
+                underlay = dict(raw_underlay)
+                raw_legs = underlay.get("legs", [])
+                if not isinstance(raw_legs, list):
+                    raw_legs = []
+                filtered_legs = []
+                for raw_leg in raw_legs:
+                    if not isinstance(raw_leg, dict):
+                        continue
+                    leg = dict(raw_leg)
+                    endpoint_id = self.mptcp_underlay_leg_endpoint_id(leg, endpoint_by_address)
+                    if endpoint_id <= 0 or endpoint_id not in selected_ids:
+                        continue
+                    selected_endpoint = selected_by_id.get(endpoint_id, {})
+                    for key in ("address", "local_address", "client_address", "peer_address", "mptcp_remote_address", "peer_public_host"):
+                        value = str(leg.get(key, "") or "").strip()
+                        if value != "":
+                            endpoint_by_address[value] = endpoint_id
+                    role = str(selected_endpoint.get("leg_role", "helper") or "helper")
+                    leg["endpoint_id"] = endpoint_id
+                    leg["leg_role"] = role
+                    leg["health_role"] = str(selected_endpoint.get("health_role", "healthy") or "healthy")
+                    # Keep helper subflows enabled for throughput. Quarantined legs are already filtered out.
+                    leg["backup_only"] = bool(leg.get("backup_only", False))
+                    if role == "primary" and primary_leg is None:
+                        primary_leg = dict(leg)
+                    filtered_legs.append(leg)
+                if filtered_legs:
+                    first_leg = filtered_legs[0]
+                    underlay_key = (
+                        str(first_leg.get("local_address", "") or "").strip(),
+                        str(first_leg.get("mptcp_remote_address", "") or "").strip(),
+                    )
+                    if underlay_key != ("", "") and underlay_key in used_underlay_keys:
+                        continue
+                    if underlay_key != ("", ""):
+                        used_underlay_keys.add(underlay_key)
+                    underlay["legs"] = filtered_legs
+                    filtered_underlays.append(underlay)
+        if filtered_underlays:
+            filtered_underlays.sort(
+                key=lambda underlay: min(
+                    selected_rank.get(int(leg.get("endpoint_id", 0) or 0), 999999)
+                    for leg in underlay.get("legs", [])
+                    if isinstance(leg, dict)
+                ) if isinstance(underlay.get("legs", []), list) and underlay.get("legs", []) else 999999
+            )
+
+        renamed_devices: dict[str, str] = {}
+        if filtered_underlays:
+            for index, underlay in enumerate(filtered_underlays):
+                if not isinstance(underlay, dict):
+                    continue
+                old_name = str(underlay.get("interface_name", "") or "").strip()
+                new_name = f"lw-mptcp-{int(forward.get('forward_id', 0) or 0)}-{index}"
+                if old_name != "" and new_name != "" and old_name != new_name:
+                    renamed_devices[old_name] = new_name
+                if new_name != "":
+                    underlay["interface_name"] = new_name
+            mptcp["underlays"] = filtered_underlays
+            first_underlay = filtered_underlays[0]
+            if isinstance(first_underlay, dict):
+                first_leg_list = first_underlay.get("legs", [])
+                if primary_leg is None and isinstance(first_leg_list, list) and first_leg_list:
+                    primary_leg = dict(first_leg_list[0])
+
+        filtered_mptcp_endpoints = []
+        used_mptcp_endpoint_keys: set[tuple[str, str]] = set()
+        raw_mptcp_endpoints = mptcp.get("mptcp_endpoints", [])
+        if isinstance(raw_mptcp_endpoints, list):
+            for index, raw_endpoint in enumerate(raw_mptcp_endpoints):
+                if not isinstance(raw_endpoint, dict):
+                    continue
+                endpoint = dict(raw_endpoint)
+                endpoint_id = self.mptcp_underlay_leg_endpoint_id(endpoint, endpoint_by_address)
+                if endpoint_id <= 0 and index < len(selected):
+                    endpoint_id = int(selected[index].get("endpoint_id", 0) or 0)
+                if endpoint_id <= 0 or endpoint_id not in selected_ids:
+                    continue
+                selected_endpoint = selected_by_id.get(endpoint_id, {})
+                endpoint["endpoint_id"] = endpoint_id
+                endpoint["leg_role"] = str(selected_endpoint.get("leg_role", "helper") or "helper")
+                endpoint["health_role"] = str(selected_endpoint.get("health_role", "healthy") or "healthy")
+                endpoint_key = (
+                    str(endpoint.get("address", "") or "").strip(),
+                    str(endpoint.get("dev", "") or "").strip(),
+                )
+                address_only = str(endpoint.get("address", "") or "").strip()
+                if address_only != "" and any(str(item.get("address", "") or "").strip() == address_only for item in filtered_mptcp_endpoints):
+                    continue
+                if endpoint_key != ("", "") and endpoint_key in used_mptcp_endpoint_keys:
+                    continue
+                if endpoint_key != ("", ""):
+                    used_mptcp_endpoint_keys.add(endpoint_key)
+                filtered_mptcp_endpoints.append(endpoint)
+        if filtered_mptcp_endpoints:
+            filtered_mptcp_endpoints.sort(key=lambda endpoint: selected_rank.get(int(endpoint.get("endpoint_id", 0) or 0), 999999))
+        if renamed_devices:
+            for endpoint in filtered_mptcp_endpoints:
+                if not isinstance(endpoint, dict):
+                    continue
+                dev = str(endpoint.get("dev", "") or "").strip()
+                if dev in renamed_devices:
+                    endpoint["dev"] = renamed_devices[dev]
+        if filtered_mptcp_endpoints:
+            mptcp["mptcp_endpoints"] = filtered_mptcp_endpoints
+
+        if primary_leg is not None:
+            remote_address = str(primary_leg.get("mptcp_remote_address", "") or "").strip()
+            if remote_address != "":
+                mptcp["sidecar_host"] = remote_address
+                mptcp["remote_host"] = remote_address
+
+        configured_subflows = max(1, int(mptcp.get("subflow_limit", len(selected)) or len(selected) or 1))
+        runtime_leg_count = len(filtered_mptcp_endpoints) or len(filtered_underlays) or len(selected)
+        mptcp["subflow_limit"] = max(1, min(configured_subflows, max(1, runtime_leg_count)))
+        next_forward["mptcp"] = mptcp
+        return next_forward
 
     def reconcile_cf_bond_runtime_health(self, forward: dict, now: float | None = None) -> dict:
         now = time.time() if now is None else now
@@ -1575,6 +2070,8 @@ class ClientAgent:
                 continue
             endpoint_id, entry = mapped
             previous = scoped.get(endpoint_id)
+            if isinstance(previous, dict) and entry.get("one_leg_rtt_ms") is None and previous.get("one_leg_rtt_ms") is not None:
+                entry["one_leg_rtt_ms"] = previous.get("one_leg_rtt_ms")
             if previous != entry:
                 scoped[endpoint_id] = entry
                 changed = True
@@ -1582,6 +2079,959 @@ class ClientAgent:
         if changed:
             self.save_bond_endpoint_health(health)
         return health
+
+    @staticmethod
+    def forward_has_mptcp_runtime_config(forward: dict) -> bool:
+        mptcp = forward.get("mptcp", {}) if isinstance(forward, dict) else {}
+        if not isinstance(mptcp, dict):
+            return False
+        token = str(mptcp.get("tcp_session_token", "") or "").strip()
+        if token == "":
+            return False
+        try:
+            port = int(mptcp.get("sidecar_port", 0) or mptcp.get("remote_port", 0) or 0)
+        except (TypeError, ValueError):
+            port = 0
+        return port > 0
+
+    def choose_runtime_family(self, forward: dict, mptcp_supported: bool) -> str:
+        requested_mode = self.normalize_mode(forward.get("mode", "single"))
+        runtime_preference = str(forward.get("runtime_preference", "single") or "single").strip()
+        if runtime_preference != "mptcp_preferred_bond_fallback":
+            return requested_mode
+
+        mptcp_runtime_ready = self.forward_has_mptcp_runtime_config(forward)
+        candidate_pool = [item for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
+        primary = next((item for item in candidate_pool if bool(item.get("selected_primary", False))), candidate_pool[0] if candidate_pool else None)
+        if isinstance(primary, dict) and str(primary.get("candidate_kind", "") or "") == "self_leg":
+            primary_caps = [str(value).strip().lower() for value in primary.get("runtime_capabilities", [])]
+            probe_transport = str(primary.get("probe_transport", "") or "").strip().lower()
+            try:
+                target_sidecar_bond_port = int(primary.get("target_sidecar_bond_port", 0) or 0)
+            except (TypeError, ValueError):
+                target_sidecar_bond_port = 0
+            # CF self-leg is a websocket landing leg into the sidecar bond
+            # backend.  Keeping the whole forward in MPTCP family makes the
+            # Rust relay speak its application-bond framing through that
+            # websocket leg and has reproduced long stalls/520s under live
+            # reverse-iperf traffic.  Use the mature bond runtime for this
+            # shape even when an MPTCP sidecar runtime is present; rented
+            # helpers can still be appended as normal slave-mediated bond legs.
+            if probe_transport == "cf_direct_wss" and target_sidecar_bond_port > 0:
+                return "bond"
+            if mptcp_supported and mptcp_runtime_ready and "mptcp" in primary_caps:
+                return "mptcp"
+            return "bond"
+        if mptcp_supported and mptcp_runtime_ready:
+            mptcp_capable = [
+                item
+                for item in candidate_pool
+                if "mptcp" in [str(value).strip().lower() for value in item.get("runtime_capabilities", [])]
+            ]
+            if mptcp_capable:
+                return "mptcp"
+        if requested_mode in {"bond", "mptcp"}:
+            return "bond"
+        return requested_mode if requested_mode != "single" else "bond"
+
+    def candidate_measured_rtt_ms(self, forward: dict, candidate: dict, now: float | None = None) -> float:
+        candidate_kind = str(candidate.get("candidate_kind", "") or "").strip()
+        if candidate_kind == "self_leg":
+            probe_transport = str(candidate.get("probe_transport", "") or "").strip().lower()
+            if probe_transport == "":
+                for key in ("measured_rtt_ms", "one_leg_rtt_ms", "latency_ewma_ms", "last_latency_ms"):
+                    try:
+                        value = float(candidate.get(key, 0) or 0)
+                    except (TypeError, ValueError):
+                        value = 0.0
+                    if value > 0:
+                        return value
+            # Self-leg reachability changes independently of the last
+            # panel/runtime ranking pass. Reprobe the live self-leg transport
+            # before trusting stale measured_rtt/last_latency fields.
+            try:
+                if probe_transport == "private_wg":
+                    wg = candidate.get("self_leg_wg", {}) if isinstance(candidate.get("self_leg_wg", {}), dict) else {}
+                    interface_name = str(wg.get("interface_name", "") or "").strip()
+                    if interface_name and not self.private_wg_interface_present(interface_name):
+                        candidate["probe_state"] = "private_wg_bootstrap"
+                        candidate["ready"] = True
+                        latency_ms = self.private_wg_self_leg_bootstrap_latency_ms(candidate)
+                        ok = True
+                        _error = None
+                    else:
+                        ok, latency_ms, _error = self.private_wg_self_leg_connect_probe(forward, candidate, timeout=3.0)
+                else:
+                    ok, latency_ms, _error = self.self_leg_direct_cf_connect_probe(forward, candidate, timeout=3.0)
+            except Exception as exc:  # noqa: BLE001
+                candidate["ready"] = False
+                candidate["last_error"] = str(exc)
+                return 999999.0
+            if ok and latency_ms is not None:
+                connect_ip = str(candidate.get("dial_connect_ip", "") or "").strip()
+                if connect_ip == "":
+                    connect_ip = self.resolve_self_leg_connect_ip(candidate, forward)
+                if connect_ip != "":
+                    candidate["dial_connect_ip"] = connect_ip
+                candidate["measured_rtt_ms"] = latency_ms
+                candidate["last_latency_ms"] = latency_ms
+                candidate["ready"] = True
+                candidate.pop("last_error", None)
+                return float(latency_ms)
+            candidate["ready"] = False
+            candidate["last_error"] = _error or "self_leg_probe_failed"
+            return 999999.0
+
+        for key in ("measured_rtt_ms", "one_leg_rtt_ms", "latency_ewma_ms", "last_latency_ms"):
+            try:
+                value = float(candidate.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value > 0:
+                return value
+
+
+        forward_id = int(forward.get("forward_id", 0) or 0)
+        endpoint_id = int(candidate.get("endpoint_id", 0) or 0)
+        if forward_id > 0 and endpoint_id > 0:
+            health = self.load_bond_endpoint_health().get(str(forward_id), {})
+            entry = health.get(str(endpoint_id), {}) if isinstance(health, dict) else {}
+            if isinstance(entry, dict):
+                for key in ("one_leg_rtt_ms", "latency_ewma_ms", "last_latency_ms"):
+                    try:
+                        value = float(entry.get(key, 0) or 0)
+                    except (TypeError, ValueError):
+                        value = 0.0
+                    if value > 0:
+                        candidate.setdefault(key, value)
+                        return value
+        return 999999.0
+
+    def select_forward_candidates(self, forward: dict, now: float | None = None) -> list[dict]:
+        candidates = [dict(item) for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
+        ready = [item for item in candidates if bool(item.get("ready", True))]
+        for item in ready:
+            item["measured_rtt_ms"] = self.candidate_measured_rtt_ms(forward, item, now=now)
+        ready = [item for item in ready if bool(item.get("ready", True))]
+        ready.sort(
+            key=lambda item: (
+                float(item.get("measured_rtt_ms", 999999.0) or 999999.0),
+                0 if str(item.get("candidate_kind", "") or "") == "self_leg" else 1,
+                int(item.get("origin_group_order", 999999) or 999999),
+                int(item.get("endpoint_id", 0) or 0),
+            )
+        )
+        for item in ready:
+            item.pop("selected_primary", None)
+        if ready:
+            ready[0]["selected_primary"] = True
+        return ready
+
+    @staticmethod
+    def filter_mptcp_capable_candidates(candidate_pool: list[dict]) -> list[dict]:
+        return [
+            dict(item)
+            for item in candidate_pool
+            if isinstance(item, dict)
+            and "mptcp" in [str(value).strip().lower() for value in item.get("runtime_capabilities", [])]
+        ]
+
+    def apply_latency_target_candidate_escalation(self, forward: dict) -> dict:
+        next_forward = dict(forward)
+        desired_latency_ms = float(forward.get("desired_latency_ms", 0) or 0)
+        helper_cap = max(0, int(forward.get("helper_group_cap", 0) or 0))
+        pool = [dict(item) for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
+        primary = next((item for item in pool if bool(item.get("selected_primary", False))), None)
+        if desired_latency_ms <= 0 or helper_cap <= 0 or primary is None:
+            next_forward["candidate_pool"] = pool
+            return next_forward
+        if str(primary.get("candidate_kind", "") or "") != "self_leg":
+            next_forward["candidate_pool"] = pool
+            return next_forward
+        primary_rtt = float(primary.get("measured_rtt_ms", 999999.0) or 999999.0)
+        if primary_rtt <= desired_latency_ms:
+            next_forward["candidate_pool"] = pool
+            return next_forward
+
+        chosen = 0
+        helpers = [item for item in pool if str(item.get("candidate_kind", "") or "") == "rented_group_leg" and bool(item.get("ready", True))]
+        helpers.sort(
+            key=lambda item: (
+                float(item.get("measured_rtt_ms", 999999.0) or 999999.0),
+                int(item.get("origin_group_order", 999999) or 999999),
+                int(item.get("endpoint_id", 0) or 0),
+            )
+        )
+        for helper in helpers:
+            if chosen >= helper_cap:
+                helper.pop("active_helper", None)
+                continue
+            helper["active_helper"] = True
+            chosen += 1
+        next_forward["candidate_pool"] = pool
+        return next_forward
+
+
+    @staticmethod
+    def private_wg_interface_present(interface_name: str) -> bool:
+        name = str(interface_name or "").strip()
+        if name == "" or os.name == "nt":
+            return False
+        return pathlib.Path(f"/sys/class/net/{name}").exists()
+
+    def private_wg_self_leg_bootstrap_latency_ms(self, candidate: dict) -> float:
+        try:
+            value = float(candidate.get("bootstrap_rtt_ms", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            value = 1.0
+        return max(0.1, value)
+
+    def private_wg_self_leg_connect_probe(self, forward: dict, candidate: dict, timeout: float = 3.0) -> tuple[bool, float | None, str | None]:
+        wg = candidate.get("self_leg_wg", {})
+        if not isinstance(wg, dict) or not bool(wg.get("enabled", True)):
+            return False, None, "self_leg_wg_missing"
+        host = str(wg.get("sidecar_address", "") or "").strip()
+        try:
+            port = int(candidate.get("target_sidecar_mptcp_port", 0) or candidate.get("target_sidecar_port", 0) or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if port <= 0:
+            mptcp = forward.get("mptcp", {}) if isinstance(forward.get("mptcp", {}), dict) else {}
+            try:
+                port = int(mptcp.get("sidecar_port", 0) or mptcp.get("remote_port", 0) or 0)
+            except (TypeError, ValueError):
+                port = 0
+        if host == "" or port <= 0:
+            return False, None, "self_leg_wg_target_missing"
+        probe = getattr(self, "private_wg_self_leg_probe", None)
+        probe_func = probe if callable(probe) else self.remote_tcp_probe
+        attempts = max(1, int((self.config if isinstance(getattr(self, "config", None), dict) else {}).get("self_leg_private_wg_probe_attempts", 3) or 3))
+        best_latency: float | None = None
+        last_error: str | None = None
+        for attempt in range(attempts):
+            ok, latency_ms, error = probe_func(host, port, timeout=timeout)
+            if ok:
+                if latency_ms is None:
+                    return True, None, None
+                if best_latency is None or float(latency_ms) < best_latency:
+                    best_latency = float(latency_ms)
+                continue
+            last_error = error or last_error or "self_leg_wg_probe_failed"
+            if attempt + 1 < attempts:
+                time.sleep(0.05)
+        if best_latency is not None:
+            return True, round(best_latency, 1), None
+        return False, None, last_error or "self_leg_wg_probe_failed"
+
+    def normalize_self_leg_runtime_shape(self, candidate: dict) -> dict:
+        if not isinstance(candidate, dict):
+            raise RuntimeError("self_leg_candidate_invalid")
+        if str(candidate.get("candidate_kind", "") or "") != "self_leg":
+            raise RuntimeError("self_leg_candidate_required")
+        shape = {
+            "candidate_kind": "self_leg",
+            "probe_transport": str(candidate.get("probe_transport", "") or "").strip(),
+            "dial_host": str(candidate.get("dial_host", "") or "").strip(),
+            "dial_connect_ip": str(candidate.get("dial_connect_ip", "") or "").strip(),
+            "dial_port": int(candidate.get("dial_port", 0) or 0),
+            "cf_sni_host": str(candidate.get("cf_sni_host", "") or candidate.get("sni_host", "") or "").strip(),
+            "path_prefix": str(candidate.get("path_prefix", "") or "").strip(),
+            "ingress_auth_token": str(candidate.get("ingress_auth_token", "") or ""),
+            "target_sidecar_host": str(candidate.get("target_sidecar_host", "") or "").strip(),
+            "target_sidecar_port": int(candidate.get("target_sidecar_port", 0) or 0),
+        }
+        if shape["probe_transport"] != "cf_direct_wss":
+            raise RuntimeError("self_leg_probe_transport_must_be_cf_direct_wss")
+        if shape["dial_host"] == "" or shape["dial_port"] <= 0 or shape["path_prefix"] == "":
+            raise RuntimeError("self_leg_direct_cf_fields_missing")
+        return shape
+
+    def resolve_self_leg_connect_ip_with_source(self, candidate: dict, forward: dict | None = None) -> tuple[str, str]:
+        explicit = str(candidate.get("dial_connect_ip", "") or "").strip()
+        dial_host = str(candidate.get("dial_host", "") or "").strip()
+        if dial_host == "":
+            return "", "missing"
+        if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", dial_host):
+            return dial_host, "dial_host"
+        config = self.config if isinstance(getattr(self, "config", None), dict) else {}
+        if "state_dir" in config:
+            state_dir = pathlib.Path(str(config.get("state_dir", "/var/lib/leikwan-client-agent")) or "/var/lib/leikwan-client-agent")
+            best_map_path = state_dir / "self_leg_cf_best_ips.json"
+            try:
+                best_map_raw = json.loads(best_map_path.read_text(encoding="utf-8"))
+            except Exception:
+                best_map_raw = {}
+            if isinstance(best_map_raw, dict):
+                forward_id = int((forward or {}).get("forward_id", 0) or 0)
+                path_prefix = str(candidate.get("path_prefix", "") or (forward or {}).get("path_prefix", "") or "").strip()
+                scoped = best_map_raw.get(str(forward_id), {}) if forward_id > 0 else {}
+                if isinstance(scoped, dict):
+                    candidates = scoped.get(path_prefix, [])
+                    if isinstance(candidates, list):
+                        for value in candidates:
+                            ip = str(value or "").strip()
+                            if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
+                                return ip, "best_map"
+        if explicit != "":
+            return explicit, "explicit"
+        published_candidates = candidate.get("self_leg_cf_candidates", [])
+        if isinstance(published_candidates, list):
+            for value in published_candidates:
+                ip = str(value or "").strip()
+                if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
+                    return ip, "published"
+        env_path = pathlib.Path(str(config.get("self_leg_best_ip_env", "/etc/wstunnel/best_ip.env")) or "/etc/wstunnel/best_ip.env")
+        try:
+            raw = env_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return "", "missing"
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("CURRENT_BEST_IP="):
+                value = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", value):
+                    return value, "env"
+        return "", "missing"
+
+    def resolve_self_leg_connect_ip(self, candidate: dict, forward: dict | None = None) -> str:
+        return self.resolve_self_leg_connect_ip_with_source(candidate, forward)[0]
+
+    def save_self_leg_best_ip_candidates(self, forward: dict, candidate: dict, ordered_candidates: list[str]) -> None:
+        forward_id = int((forward or {}).get("forward_id", 0) or 0)
+        path_prefix = str(candidate.get("path_prefix", "") or (forward or {}).get("path_prefix", "") or "").strip()
+        if forward_id <= 0 or path_prefix == "":
+            return
+        ordered: list[str] = []
+        for value in ordered_candidates:
+            ip = str(value or "").strip()
+            if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
+                continue
+            if ip not in ordered:
+                ordered.append(ip)
+        if ordered == []:
+            return
+        config = self.config if isinstance(getattr(self, "config", None), dict) else {}
+        if "state_dir" not in config:
+            return
+        state_dir = pathlib.Path(str(config.get("state_dir", "/var/lib/leikwan-client-agent")) or "/var/lib/leikwan-client-agent")
+        best_map_path = state_dir / "self_leg_cf_best_ips.json"
+        try:
+            best_map_raw = json.loads(best_map_path.read_text(encoding="utf-8"))
+        except Exception:
+            best_map_raw = {}
+        if not isinstance(best_map_raw, dict):
+            best_map_raw = {}
+        scoped = best_map_raw.get(str(forward_id), {})
+        if not isinstance(scoped, dict):
+            scoped = {}
+        scoped[path_prefix] = ordered[:8]
+        best_map_raw[str(forward_id)] = scoped
+        best_map_path.parent.mkdir(parents=True, exist_ok=True)
+        best_map_path.write_text(json.dumps(best_map_raw, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def expand_self_leg_cf_candidate_ips(candidate: dict, limit_default: int = 8) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        raw_cidrs = candidate.get("self_leg_cf_cidrs", [])
+        limit = max(1, min(32, int(candidate.get("self_leg_cf_max_candidates", limit_default) or limit_default)))
+        if isinstance(raw_cidrs, list):
+            candidate_iters = []
+            for raw in raw_cidrs:
+                value = str(raw or "").strip()
+                if value == "":
+                    continue
+                try:
+                    network = ipaddress.ip_network(value, strict=False)
+                except ValueError:
+                    continue
+                if network.version != 4:
+                    continue
+                if network.prefixlen == 32:
+                    candidate_iters.append(iter([str(network.network_address)]))
+                else:
+                    candidate_iters.append((str(host) for host in network.hosts()))
+            active_iters = candidate_iters
+            while active_iters and len(ordered) < limit:
+                next_iters = []
+                progressed = False
+                for iterator in active_iters:
+                    try:
+                        ip = next(iterator)
+                    except StopIteration:
+                        continue
+                    progressed = True
+                    if ip not in seen:
+                        seen.add(ip)
+                        ordered.append(ip)
+                        if len(ordered) >= limit:
+                            break
+                    next_iters.append(iterator)
+                if not progressed:
+                    break
+                active_iters = next_iters
+        return ordered[:limit]
+
+    def self_leg_candidate_edge_latency_ms(
+        self,
+        connect_ip: str,
+        port: int,
+        sni_host: str,
+        timeout: float = 3.0,
+    ) -> float | None:
+        curl_bin = shutil.which("curl")
+        if curl_bin:
+            connect_timeout = max(1, int(timeout))
+            max_time = max(connect_timeout + 2, int(timeout) + 2)
+            command = [
+                curl_bin,
+                "-k",
+                "-sS",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code} %{time_connect} %{time_appconnect}",
+                "--connect-timeout",
+                str(connect_timeout),
+                "--max-time",
+                str(max_time),
+            ]
+            server_name = str(sni_host or connect_ip).strip()
+            if server_name != "":
+                command.extend(["--resolve", f"{server_name}:{int(port)}:{connect_ip}"])
+                command.extend(["-H", f"Host: {server_name}"])
+            command.append(f"https://{server_name}:{int(port)}/_leikwan/healthz")
+            try:
+                result = subprocess.run(command, text=True, capture_output=True, timeout=max_time + 1, check=False)
+                output = (result.stdout or "").strip().split()
+                if len(output) >= 2:
+                    return round(float(output[1]) * 1000, 1)
+                if len(output) >= 3:
+                    return round(float(output[2]) * 1000, 1)
+            except Exception:
+                return None
+        started = time.time()
+        try:
+            with socket.create_connection((connect_ip, int(port)), timeout=timeout):
+                return round((time.time() - started) * 1000, 1)
+        except Exception:
+            return None
+
+    @staticmethod
+    def self_leg_websocket_handshake_error(log_text: str) -> str | None:
+        text = str(log_text or "")
+        if text == "":
+            return None
+        patterns = [
+            r"Invalid status code:\s*\d+",
+            r"failed to do websocket handshake[^\n]*",
+            r"websocket handshake[^\n]*(?:failed|error)[^\n]*",
+            r"HTTP status client error[^\n]*",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(0).strip()
+        return None
+
+    def probe_self_leg_bond_path(
+        self,
+        connect_ip: str,
+        port: int,
+        sni_host: str,
+        path_prefix: str,
+        target_port: int,
+        session_token: str,
+        bonding: dict,
+        timeout: float = 3.0,
+    ) -> tuple[bool, float | None, str | None]:
+        if str(session_token or "").strip() == "":
+            return False, None, "self_leg_bond_session_token_missing"
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_sock:
+            listen_sock.bind(("127.0.0.1", 0))
+            wstunnel_port = int(listen_sock.getsockname()[1])
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_sock:
+            listen_sock.bind(("127.0.0.1", 0))
+            bond_probe_port = int(listen_sock.getsockname()[1])
+
+        wstunnel_bin = str((self.config if isinstance(getattr(self, "config", None), dict) else {}).get("wstunnel_bin", "/usr/local/bin/wstunnel") or "/usr/local/bin/wstunnel").strip() or "/usr/local/bin/wstunnel"
+        bond_bin = str(self.bond_binary_path())
+        if not pathlib.Path(wstunnel_bin).exists():
+            return False, None, "wstunnel_bin_missing"
+        if not pathlib.Path(bond_bin).exists():
+            return False, None, f"bond_binary_missing:{bond_bin}"
+        normalized_path = "/".join(segment for segment in str(path_prefix).strip("/").split("/") if segment)
+        if normalized_path == "":
+            return False, None, "self_leg_path_prefix_missing"
+
+        wstunnel_command = [
+            wstunnel_bin,
+            "client",
+            "-L",
+            f"tcp://127.0.0.1:{wstunnel_port}:127.0.0.1:{int(target_port)}",
+            "--tls-sni-override",
+            sni_host,
+            "--http-headers",
+            f"Host: {sni_host}",
+            "--http-upgrade-path-prefix",
+            normalized_path,
+            f"wss://{connect_ip}:{int(port)}",
+        ]
+        leg_spec = f"tcp://127.0.0.1:{wstunnel_port}?priority=10&display_host=self_leg&role=primary"
+        bond_command = [
+            bond_bin,
+            "client",
+            "--protocol",
+            "tcp",
+            "--listen",
+            f"127.0.0.1:{bond_probe_port}",
+            "--legs",
+            leg_spec,
+            "--session-token",
+            str(session_token),
+            "--chunk-size",
+            str(int(bonding.get("chunk_size", 131072) or 131072)),
+            "--max-window-bytes",
+            str(int(bonding.get("max_window_bytes", 16777216) or 16777216)),
+            "--retransmit-ms",
+            str(int(bonding.get("retransmit_ms", 300) or 300)),
+            "--connect-timeout-ms",
+            str(int(bonding.get("connect_timeout_ms", 3000) or 3000)),
+            "--join-timeout-ms",
+            str(int(bonding.get("join_timeout_ms", 400) or 400)),
+            "--interactive-chunk-bytes",
+            str(int(bonding.get("interactive_chunk_bytes", 16 * 1024) or 16 * 1024)),
+            "--latency-guard-bytes",
+            str(int(bonding.get("latency_guard_bytes", 256 * 1024) or 256 * 1024)),
+            "--interactive-rtt-slack-ms",
+            str(int(bonding.get("interactive_rtt_slack_ms", 30) or 30)),
+            "--warmup-trigger-bytes",
+            str(int(bonding.get("warmup_trigger_bytes", 65536) or 65536)),
+            "--warmup-slice-bytes",
+            str(int(bonding.get("warmup_slice_bytes", 65536) or 65536)),
+            "--warmup-leg-delay-ms",
+            str(int(bonding.get("warmup_leg_delay_ms", 20) or 20)),
+            "--bulk-promote-bytes",
+            str(int(bonding.get("bulk_promote_bytes", 1048576) or 1048576)),
+            "--leg-cooldown-ms",
+            str(int(bonding.get("leg_cooldown_ms", 1800000) or 1800000)),
+        ]
+        if str(bonding.get("policy_mode", "") or "").strip() == "latency_first":
+            bond_command.insert(4, "--latency-first")
+
+        started = time.time()
+        wstunnel_log: pathlib.Path | None = None
+        bond_log: pathlib.Path | None = None
+        wstunnel_process: subprocess.Popen | None = None
+        bond_process: subprocess.Popen | None = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="leikwan-selfleg-bond-wstunnel-", suffix=".log", mode="w+", encoding="utf-8", delete=False) as wstunnel_handle, tempfile.NamedTemporaryFile(prefix="leikwan-selfleg-bond-", suffix=".log", mode="w+", encoding="utf-8", delete=False) as bond_handle:
+                wstunnel_log = pathlib.Path(wstunnel_handle.name)
+                bond_log = pathlib.Path(bond_handle.name)
+                wstunnel_process = subprocess.Popen(wstunnel_command, stdout=wstunnel_handle, stderr=wstunnel_handle, text=True)
+
+                def read_log(path: pathlib.Path | None, handle) -> str:
+                    with contextlib.suppress(Exception):
+                        handle.flush()
+                    if path is None:
+                        return ""
+                    try:
+                        return path.read_text(encoding="utf-8", errors="ignore")
+                    except OSError:
+                        return ""
+
+                def combined_error(default: str) -> str:
+                    output = read_log(wstunnel_log, wstunnel_handle) + "\n" + read_log(bond_log, bond_handle)
+                    handshake_error = self.self_leg_websocket_handshake_error(output)
+                    if handshake_error is not None:
+                        return handshake_error
+                    lines = [line.strip() for line in output.splitlines() if line.strip() != ""]
+                    return lines[-1] if lines else default
+
+                deadline = time.time() + max(1.0, timeout)
+                while time.time() < deadline:
+                    if wstunnel_process.poll() is not None:
+                        return False, None, combined_error(f"wstunnel_exit_{wstunnel_process.returncode}")
+                    try:
+                        with socket.create_connection(("127.0.0.1", wstunnel_port), timeout=0.15):
+                            break
+                    except Exception:
+                        time.sleep(0.05)
+                else:
+                    return False, None, combined_error("wstunnel_local_listener_timeout")
+
+                bond_process = subprocess.Popen(bond_command, stdout=bond_handle, stderr=bond_handle, text=True)
+                deadline = time.time() + max(1.0, timeout)
+                established_seen = False
+                while time.time() < deadline:
+                    if wstunnel_process.poll() is not None:
+                        return False, None, combined_error(f"wstunnel_exit_{wstunnel_process.returncode}")
+                    if bond_process.poll() is not None:
+                        return False, None, combined_error(f"bond_probe_exit_{bond_process.returncode}")
+                    output = read_log(bond_log, bond_handle)
+                    if "bond client TCP transport session established" in output:
+                        established_seen = True
+                        break
+                    time.sleep(0.05)
+                if not established_seen:
+                    return False, None, combined_error("self_leg_bond_probe_session_not_established")
+                return True, round((time.time() - started) * 1000, 1), None
+        finally:
+            for process in (bond_process, wstunnel_process):
+                if process is None:
+                    continue
+                with contextlib.suppress(Exception):
+                    if process.poll() is None:
+                        process.terminate()
+                with contextlib.suppress(Exception):
+                    process.wait(timeout=1.0)
+                with contextlib.suppress(Exception):
+                    if process.poll() is None:
+                        process.kill()
+            for path in (wstunnel_log, bond_log):
+                if path is not None:
+                    with contextlib.suppress(Exception):
+                        path.unlink()
+
+    def probe_self_leg_websocket_path(
+        self,
+        connect_ip: str,
+        port: int,
+        sni_host: str,
+        path_prefix: str,
+        target_port: int,
+        timeout: float = 3.0,
+    ) -> tuple[bool, float | None, str | None]:
+        wstunnel_bin = str((self.config if isinstance(getattr(self, "config", None), dict) else {}).get("wstunnel_bin", "/usr/local/bin/wstunnel") or "/usr/local/bin/wstunnel").strip() or "/usr/local/bin/wstunnel"
+        if not pathlib.Path(wstunnel_bin).exists():
+            return False, None, "wstunnel_bin_missing"
+        normalized_path = "/".join(segment for segment in str(path_prefix).strip("/").split("/") if segment)
+        if normalized_path == "":
+            return False, None, "self_leg_path_prefix_missing"
+        local_port = 0
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_sock:
+            listen_sock.bind(("127.0.0.1", 0))
+            local_port = int(listen_sock.getsockname()[1])
+        command = [
+            wstunnel_bin,
+            "client",
+            "-L",
+            f"tcp://127.0.0.1:{local_port}:127.0.0.1:{int(target_port)}",
+            "--tls-sni-override",
+            sni_host,
+            "--http-headers",
+            f"Host: {sni_host}",
+            "--http-upgrade-path-prefix",
+            normalized_path,
+            f"wss://{connect_ip}:{int(port)}",
+        ]
+        started = time.time()
+        log_path: pathlib.Path | None = None
+
+        with tempfile.NamedTemporaryFile(prefix="leikwan-selfleg-wstunnel-", suffix=".log", mode="w+", encoding="utf-8", delete=False) as log_handle:
+            log_path = pathlib.Path(log_handle.name)
+            process = subprocess.Popen(
+                command,
+                stdout=log_handle,
+                stderr=log_handle,
+                text=True,
+            )
+
+            def read_log() -> str:
+                with contextlib.suppress(Exception):
+                    log_handle.flush()
+                if log_path is None:
+                    return ""
+                try:
+                    return log_path.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    return ""
+
+            def process_error(default: str | None = None) -> str:
+                output = read_log()
+                handshake_error = self.self_leg_websocket_handshake_error(output)
+                if handshake_error is not None:
+                    return handshake_error
+                lines = [line.strip() for line in output.splitlines() if line.strip() != ""]
+                if lines:
+                    return lines[-1]
+                return default or f"wstunnel_exit_{process.returncode}"
+
+            try:
+                deadline = time.time() + max(1.0, timeout)
+                while time.time() < deadline:
+                    if process.poll() is not None:
+                        return False, None, process_error()
+                    try:
+                        with socket.create_connection(("127.0.0.1", local_port), timeout=0.2) as probe_sock:
+                            probe_sock.settimeout(0.2)
+                            grace_deadline = time.time() + min(max(0.8, timeout / 2.0), 1.8)
+                            saw_eof = False
+                            while time.time() < grace_deadline:
+                                handshake_error = self.self_leg_websocket_handshake_error(read_log())
+                                if handshake_error is not None:
+                                    return False, None, handshake_error
+                                if process.poll() is not None:
+                                    return False, None, process_error()
+                                try:
+                                    received = probe_sock.recv(1)
+                                except (socket.timeout, TimeoutError, BlockingIOError):
+                                    received = None
+                                if received == b"":
+                                    saw_eof = True
+                                    break
+                                time.sleep(0.1)
+                            handshake_error = self.self_leg_websocket_handshake_error(read_log())
+                            if handshake_error is not None:
+                                return False, None, handshake_error
+                            if saw_eof:
+                                return False, None, "wstunnel_probe_connection_closed"
+                            return True, round((time.time() - started) * 1000, 1), None
+                    except Exception:
+                        time.sleep(0.1)
+                return False, None, "wstunnel_local_listener_timeout"
+            finally:
+                with contextlib.suppress(Exception):
+                    process.terminate()
+                with contextlib.suppress(Exception):
+                    process.wait(timeout=1)
+                if log_path is not None:
+                    with contextlib.suppress(Exception):
+                        log_path.unlink()
+
+    def self_leg_probe_cache_key(self, forward: dict, candidate: dict, shape: dict, target_port: int) -> str:
+        forward_id = int((forward or {}).get("forward_id", 0) or 0)
+        published_candidates = [str(value or "").strip() for value in (candidate.get("self_leg_cf_candidates", []) if isinstance(candidate.get("self_leg_cf_candidates", []), list) else [])]
+        cidrs = [str(value or "").strip() for value in (candidate.get("self_leg_cf_cidrs", []) if isinstance(candidate.get("self_leg_cf_cidrs", []), list) else [])]
+        payload = {
+            "forward_id": forward_id,
+            "path_prefix": str(shape.get("path_prefix", "") or ""),
+            "dial_host": str(shape.get("dial_host", "") or ""),
+            "dial_port": int(shape.get("dial_port", 0) or 0),
+            "cf_sni_host": str(shape.get("cf_sni_host", "") or ""),
+            "target_port": int(target_port or 0),
+            "published_candidates": published_candidates,
+            "cidrs": cidrs,
+            "max_candidates": int(candidate.get("self_leg_cf_max_candidates", 0) or 0),
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    def self_leg_direct_cf_connect_probe(
+        self,
+        forward: dict,
+        candidate: dict,
+        timeout: float = 3.0,
+    ) -> tuple[bool, float | None, str | None]:
+        try:
+            shape = self.normalize_self_leg_runtime_shape(candidate)
+        except Exception as exc:  # noqa: BLE001
+            return False, None, str(exc)
+
+        connect_ip, connect_ip_source = self.resolve_self_leg_connect_ip_with_source(candidate, forward)
+        connect_ip = connect_ip or shape["dial_host"]
+        if connect_ip != "":
+            candidate["dial_connect_ip"] = connect_ip
+        target_port = int(candidate.get("target_sidecar_port", 0) or 0)
+        cache_key = self.self_leg_probe_cache_key(forward, candidate, shape, target_port)
+        cache_store = getattr(self, "self_leg_probe_cache", None)
+        if not isinstance(cache_store, dict):
+            cache_store = {}
+            self.self_leg_probe_cache = cache_store
+        cache_entry = cache_store.get(cache_key)
+        if isinstance(cache_entry, dict):
+            cached_at = float(cache_entry.get("ts", 0.0) or 0.0)
+            cached_result = cache_entry.get("result")
+            if isinstance(cached_result, list):
+                cached_result = tuple(cached_result)
+            cached_ok = bool(isinstance(cached_result, tuple) and len(cached_result) == 3 and bool(cached_result[0]))
+            cached_latency: float | None = None
+            if cached_ok:
+                try:
+                    cached_latency = float(cached_result[1]) if cached_result[1] is not None else None
+                except (TypeError, ValueError):
+                    cached_latency = None
+            # Reuse only fresh GOOD websocket-path observations.  Slow successful
+            # probes are deliberately not reused: a long-lived daemon had been
+            # sticking to a stale ~150ms self-leg observation while a fresh agent
+            # immediately found ~30ms candidates.  Fast observations are safe to
+            # reuse briefly to avoid re-render/restart churn between sync and
+            # health-refresh cycles.
+            cache_ttl = float((self.config if isinstance(getattr(self, "config", None), dict) else {}).get("self_leg_fast_probe_cache_ttl_seconds", SELF_LEG_FAST_PROBE_CACHE_TTL_SECONDS) or SELF_LEG_FAST_PROBE_CACHE_TTL_SECONDS)
+            max_fast_latency = float((self.config if isinstance(getattr(self, "config", None), dict) else {}).get("self_leg_fast_probe_cache_max_latency_ms", SELF_LEG_FAST_PROBE_CACHE_MAX_LATENCY_MS) or SELF_LEG_FAST_PROBE_CACHE_MAX_LATENCY_MS)
+            if (
+                cached_ok
+                and cached_latency is not None
+                and cached_latency > 0
+                and cached_latency <= max_fast_latency
+                and time.time() - cached_at <= cache_ttl
+            ):
+                cached_ip = str(cache_entry.get("best_ip", "") or "").strip()
+                if cached_ip != "":
+                    candidate["dial_connect_ip"] = cached_ip
+                return cached_result
+        if target_port > 0:
+            published_candidates = candidate.get("self_leg_cf_candidates", [])
+            probe_candidates = []
+            if isinstance(published_candidates, list):
+                for value in published_candidates:
+                    ip = str(value or "").strip()
+                    if ip != "" and ip not in probe_candidates:
+                        probe_candidates.append(ip)
+            expanded_candidates = self.expand_self_leg_cf_candidate_ips(candidate)
+            for ip in expanded_candidates:
+                if ip != "" and ip not in probe_candidates:
+                    probe_candidates.append(ip)
+            prefer_cached_ip = connect_ip_source in {"best_map", "explicit", "env", "dial_host"}
+            if connect_ip != "" and prefer_cached_ip:
+                probe_candidates = [ip for ip in probe_candidates if ip != connect_ip]
+                probe_candidates.insert(0, connect_ip)
+            if not probe_candidates:
+                probe_candidates.append(shape["dial_host"])
+
+            websocket_successes: list[tuple[str, float]] = []
+            bonding = forward.get("bonding", {}) if isinstance((forward or {}).get("bonding", {}), dict) else {}
+            bond_session_token = str(bonding.get("session_token", "") or "").strip()
+            use_bond_probe = bond_session_token != "" and int(candidate.get("target_sidecar_bond_port", 0) or target_port or 0) > 0
+            for probe_ip in probe_candidates:
+                if use_bond_probe:
+                    websocket_probe = self.probe_self_leg_bond_path(
+                        probe_ip,
+                        int(shape["dial_port"]),
+                        str(shape["cf_sni_host"] or shape["dial_host"]),
+                        str(shape["path_prefix"]),
+                        int(candidate.get("target_sidecar_bond_port", 0) or target_port),
+                        bond_session_token,
+                        bonding,
+                        timeout=timeout,
+                    )
+                else:
+                    websocket_probe = self.probe_self_leg_websocket_path(
+                        probe_ip,
+                        int(shape["dial_port"]),
+                        str(shape["cf_sni_host"] or shape["dial_host"]),
+                        str(shape["path_prefix"]),
+                        target_port,
+                        timeout=timeout,
+                    )
+                if websocket_probe[0] and websocket_probe[1] is not None:
+                    websocket_successes.append((probe_ip, float(websocket_probe[1])))
+
+            if websocket_successes:
+                best_ip, best_latency = websocket_successes[0]
+                prefer_cached_ip = connect_ip_source in {"best_map", "explicit", "env", "dial_host"}
+                preferred_ip = connect_ip if connect_ip != "" and prefer_cached_ip else ""
+                edge_successes: list[tuple[str, float]] = []
+                if len(websocket_successes) > 1:
+                    for probe_ip, websocket_latency in websocket_successes:
+                        edge_latency = self.self_leg_candidate_edge_latency_ms(
+                            probe_ip,
+                            int(shape["dial_port"]),
+                            str(shape["cf_sni_host"] or shape["dial_host"]),
+                            timeout=timeout,
+                        )
+                        if edge_latency is None or edge_latency <= 0:
+                            continue
+                        edge_successes.append((probe_ip, float(edge_latency)))
+                if edge_successes:
+                    best_edge_latency = min(latency_ms for _probe_ip, latency_ms in edge_successes)
+                    best_ip, best_latency = next((probe_ip, latency_ms) for probe_ip, latency_ms in edge_successes if latency_ms == best_edge_latency)
+                    if preferred_ip != "":
+                        preferred_match = next((item for item in edge_successes if item[0] == preferred_ip), None)
+                        if preferred_match is not None and preferred_match[1] <= best_edge_latency + 0.5:
+                            best_ip, best_latency = preferred_match
+                else:
+                    best_websocket_latency = min(latency_ms for _probe_ip, latency_ms in websocket_successes)
+                    best_ip, best_latency = next((probe_ip, latency_ms) for probe_ip, latency_ms in websocket_successes if latency_ms == best_websocket_latency)
+                    if preferred_ip != "":
+                        preferred_match = next((item for item in websocket_successes if item[0] == preferred_ip), None)
+                        if preferred_match is not None and preferred_match[1] <= best_websocket_latency + 0.5:
+                            best_ip, best_latency = preferred_match
+                candidate["dial_connect_ip"] = best_ip
+                ordered_candidates = [best_ip] + [ip for ip in probe_candidates if ip != best_ip]
+                try:
+                    self.save_self_leg_best_ip_candidates(forward, candidate, ordered_candidates)
+                except Exception:
+                    logging.exception("failed to persist self-leg best-ip candidates for forward %s", int((forward or {}).get("forward_id", 0) or 0))
+                cache_store[cache_key] = {
+                    "ts": time.time(),
+                    "best_ip": best_ip,
+                    "ordered_candidates": ordered_candidates,
+                    "result": [True, float(best_latency), None],
+                }
+                return True, float(best_latency), None
+
+        started = time.time()
+        curl_bin = shutil.which("curl")
+        if curl_bin:
+            connect_timeout = max(1, int(timeout))
+            max_time = max(connect_timeout + 2, int(timeout) + 2)
+            request_path = "/_leikwan/readyz/" + "/".join(
+                urllib.parse.quote(segment, safe="")
+                for segment in shape["path_prefix"].strip("/").split("/")
+                if segment != ""
+            )
+            command = [
+                curl_bin,
+                "-k",
+                "-sS",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code} %{time_connect} %{time_appconnect}",
+                "--connect-timeout",
+                str(connect_timeout),
+                "--max-time",
+                str(max_time),
+            ]
+            server_name = shape["cf_sni_host"] or shape["dial_host"]
+            connect_host = self.resolve_self_leg_connect_ip(candidate, forward) or shape["dial_host"]
+            if server_name != "":
+                command.extend(["--resolve", f"{server_name}:{shape['dial_port']}:{connect_host}"])
+                command.extend(["-H", f"Host: {server_name}"])
+                url_host = server_name
+            else:
+                url_host = connect_host
+            command.append(f"https://{url_host}:{shape['dial_port']}{request_path}")
+            result = subprocess.run(command, text=True, capture_output=True, timeout=max_time + 1, check=False)
+            output = (result.stdout or "").strip()
+            parts = output.split()
+            status = parts[0][-3:] if parts else ""
+            latency_ms: float | None = None
+            if len(parts) >= 2:
+                try:
+                    latency_ms = round(float(parts[1]) * 1000, 1)
+                except (TypeError, ValueError):
+                    latency_ms = None
+            if latency_ms is None and len(parts) >= 3:
+                try:
+                    latency_ms = round(float(parts[2]) * 1000, 1)
+                except (TypeError, ValueError):
+                    latency_ms = None
+            if latency_ms is None:
+                latency_ms = round((time.time() - started) * 1000, 1)
+            if status and status[0] in {"2", "3", "4"}:
+                cache_store[cache_key] = {
+                    "ts": time.time(),
+                    "best_ip": connect_host,
+                    "ordered_candidates": [connect_host],
+                    "result": [True, latency_ms, None],
+                }
+                return True, latency_ms, None
+            return False, None, (result.stderr or result.stdout or f"http_status_{status or 'missing'}").strip()
+
+        try:
+            connect_host = self.resolve_self_leg_connect_ip(candidate, forward) or shape["dial_host"]
+            with socket.create_connection((connect_host, shape["dial_port"]), timeout=timeout):
+                latency_ms = round((time.time() - started) * 1000, 1)
+                cache_store[cache_key] = {
+                    "ts": time.time(),
+                    "best_ip": connect_host,
+                    "ordered_candidates": [connect_host],
+                    "result": [True, latency_ms, None],
+                }
+                return True, latency_ms, None
+        except Exception as exc:  # noqa: BLE001
+            return False, None, str(exc)
 
     def cf_bond_one_leg_connect_probe(
         self,
@@ -1679,81 +3129,6 @@ class ClientAgent:
                     process.kill()
                     process.wait(timeout=1.0)
 
-    def choose_runtime_family(self, forward: dict, mptcp_supported: bool) -> str:
-        runtime_preference = str(forward.get("runtime_preference", "single") or "single").strip()
-        if runtime_preference != "mptcp_preferred_bond_fallback":
-            return self.normalize_mode(forward.get("mode", "single"))
-
-        candidate_pool = [item for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
-        primary = next((item for item in candidate_pool if bool(item.get("selected_primary", False))), candidate_pool[0] if candidate_pool else None)
-        if isinstance(primary, dict) and str(primary.get("candidate_kind", "") or "") == "self_leg":
-            return "bond"
-        if mptcp_supported:
-            return "mptcp"
-        return "bond"
-
-    def select_forward_candidates(self, forward: dict) -> list[dict]:
-        candidates = [dict(item) for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
-        ready = [item for item in candidates if bool(item.get("ready", True))]
-        ready.sort(key=lambda item: (float(item.get("measured_rtt_ms", 999999.0) or 999999.0), str(item.get("candidate_kind", ""))))
-        for index, item in enumerate(ready):
-            item["selected_primary"] = index == 0
-        return ready
-
-    def filter_mptcp_capable_candidates(self, candidate_pool: list[dict]) -> list[dict]:
-        return [
-            dict(item)
-            for item in candidate_pool
-            if isinstance(item, dict)
-            and str(item.get("candidate_kind", "") or "") != "self_leg"
-            and "mptcp" in list(item.get("runtime_capabilities", []))
-        ]
-
-    def apply_latency_target_candidate_escalation(self, forward: dict) -> dict:
-        next_forward = dict(forward)
-        desired_latency_ms = float(forward.get("desired_latency_ms", 0) or 0)
-        helper_cap = max(0, int(forward.get("helper_group_cap", 0) or 0))
-        pool = [dict(item) for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
-        primary = next((item for item in pool if bool(item.get("selected_primary", False))), None)
-        if desired_latency_ms <= 0 or helper_cap <= 0 or primary is None:
-            next_forward["candidate_pool"] = pool
-            return next_forward
-        if str(primary.get("candidate_kind", "") or "") != "self_leg":
-            next_forward["candidate_pool"] = pool
-            return next_forward
-        primary_rtt = float(primary.get("measured_rtt_ms", 999999.0) or 999999.0)
-        if primary_rtt <= desired_latency_ms:
-            next_forward["candidate_pool"] = pool
-            return next_forward
-        helpers = [item for item in pool if str(item.get("candidate_kind", "") or "") == "rented_group_leg" and bool(item.get("ready", True))]
-        helpers.sort(key=lambda item: (float(item.get("measured_rtt_ms", 999999.0) or 999999.0), int(item.get("origin_group_order", 999999) or 999999)))
-        chosen_group_keys = set()
-        chosen = 0
-        for helper in helpers:
-            group_key = str(helper.get("origin_group_key", "") or "")
-            if group_key != "" and group_key in chosen_group_keys:
-                continue
-            helper["active_helper"] = True
-            if group_key != "":
-                chosen_group_keys.add(group_key)
-            chosen += 1
-            if chosen >= helper_cap:
-                break
-        next_forward["candidate_pool"] = pool
-        return next_forward
-
-    def normalize_self_leg_runtime_shape(self, candidate: dict) -> dict:
-        return {
-            "candidate_kind": "self_leg",
-            "probe_transport": str(candidate.get("probe_transport", "") or ""),
-            "dial_host": str(candidate.get("dial_host", "") or ""),
-            "dial_port": int(candidate.get("dial_port", 0) or 0),
-            "cf_sni_host": str(candidate.get("cf_sni_host", "") or ""),
-            "path_prefix": str(candidate.get("path_prefix", "") or ""),
-            "target_sidecar_host": str(candidate.get("target_sidecar_host", "") or ""),
-            "target_sidecar_port": int(candidate.get("target_sidecar_port", 0) or 0),
-        }
-
     def select_bond_runtime_endpoints(self, forward: dict, now: float | None = None) -> list[dict]:
         now = time.time() if now is None else now
         endpoints = [dict(endpoint) for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
@@ -1777,6 +3152,9 @@ class ClientAgent:
 
             endpoint["health_role"] = role
             endpoint["quality_score"] = float(entry.get("quality_score", 1.0 if role == "healthy" else (0.5 if role == "probation" else 0.0)) or 0.0)
+            endpoint["one_leg_rtt_ms"] = entry.get("one_leg_rtt_ms")
+            endpoint["latency_ewma_ms"] = entry.get("latency_ewma_ms")
+            endpoint["last_latency_ms"] = entry.get("last_latency_ms")
             if role == "healthy":
                 endpoint["dynamic_priority"] = base_priority
             elif role == "probation":
@@ -1797,11 +3175,11 @@ class ClientAgent:
             return decorated[:1]
 
         healthy = [item for item in decorated if item["health_role"] == "healthy"]
-        healthy.sort(key=lambda item: (-float(item.get("quality_score", 0.0) or 0.0), int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+        healthy.sort(key=self.latency_first_primary_sort_key)
         probation = [item for item in decorated if item["health_role"] == "probation"]
-        probation.sort(key=lambda item: (-float(item.get("quality_score", 0.0) or 0.0), int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+        probation.sort(key=self.latency_first_primary_sort_key)
         quarantined = [item for item in decorated if item["health_role"] == "quarantined"]
-        quarantined.sort(key=lambda item: (-float(item.get("quality_score", 0.0) or 0.0), int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
+        quarantined.sort(key=self.latency_first_primary_sort_key)
 
         if healthy:
             selected = healthy[:3] if is_cf_bond else healthy
@@ -1832,7 +3210,7 @@ class ClientAgent:
                 local_status = subprocess.run(f"systemctl is-active {local_service_name}.service", shell=True, text=True, capture_output=True)
                 local_service_active = local_status.stdout.strip() == "active"
                 e2e_reachable, e2e_latency_ms, e2e_error = (False, None, "local service inactive")
-                mode = self.normalize_mode(forward.get("mode", "single"))
+                mode = self.applied_runtime_mode(forward_id) or self.normalize_mode(forward.get("mode", "single"))
                 if local_service_active:
                     if mode == "mptcp":
                         e2e_reachable, e2e_latency_ms, e2e_error = self.local_listener_present(int(forward.get("listen_port", 0)), "tcp")
@@ -1846,17 +3224,18 @@ class ClientAgent:
                     mptcp = forward.get("mptcp", {})
                     if not isinstance(mptcp, dict):
                         mptcp = {}
-                    port = int(mptcp.get("sidecar_port", 0) or mptcp.get("remote_port", 0) or 0)
-                    for index, host in enumerate(self.mptcp_remote_hosts(mptcp), start=1):
+                    for candidate in self.mptcp_leg_candidates(forward, mptcp):
+                        host = str(candidate.get("host", "") or "")
+                        port = int(candidate.get("port", 0) or 0)
                         reachable, latency_ms, err = self.remote_tcp_probe(host, port)
                         endpoint_results.append({
-                            "endpoint_id": index,
+                            "endpoint_id": int(candidate.get("endpoint_id", 0) or 0),
                             "host": host,
                             "port": port,
                             "reachable": reachable,
                             "latency_ms": latency_ms,
                             "error": err,
-                            "segment": "client_sidecar",
+                            "segment": "client_sidecar_mptcp_leg",
                         })
                 else:
                     bonding = forward.get("bonding", {})
@@ -1955,6 +3334,78 @@ class ClientAgent:
                     if isinstance(leg, dict):
                         add_host(leg.get("mptcp_remote_address"))
         return hosts
+
+    def mptcp_leg_candidates(self, forward: dict, mptcp: dict | None = None) -> list[dict]:
+        if mptcp is None:
+            raw_mptcp = forward.get("mptcp", {})
+            mptcp = raw_mptcp if isinstance(raw_mptcp, dict) else {}
+        remote_port = int(mptcp.get("sidecar_port", 0) or mptcp.get("remote_port", 0) or 0)
+        candidates: list[dict] = []
+        seen: set[tuple[int, str, int]] = set()
+        endpoints = [endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
+        endpoint_by_id = {self.endpoint_id_for_runtime(endpoint, index): dict(endpoint) for index, endpoint in enumerate(endpoints)}
+        endpoint_by_host = {str(endpoint.get("host", "") or "").strip(): endpoint_id for endpoint_id, endpoint in endpoint_by_id.items()}
+
+        underlays = mptcp.get("underlays", [])
+        if not isinstance(underlays, list) or not underlays:
+            underlay = mptcp.get("underlay", {})
+            underlays = [underlay] if isinstance(underlay, dict) else []
+
+        for underlay_index, underlay in enumerate(underlays):
+            if not isinstance(underlay, dict):
+                continue
+            legs = underlay.get("legs", [])
+            if not isinstance(legs, list):
+                continue
+            for leg_index, leg in enumerate(legs):
+                if not isinstance(leg, dict):
+                    continue
+                try:
+                    endpoint_id = int(leg.get("endpoint_id", 0) or 0)
+                except (TypeError, ValueError):
+                    endpoint_id = 0
+                if endpoint_id <= 0:
+                    endpoint_id = int(endpoint_by_host.get(str(leg.get("peer_public_host", "") or "").strip(), 0) or 0)
+                if endpoint_id <= 0:
+                    endpoint_id = len(candidates) + 1
+                host = str(leg.get("mptcp_remote_address", "") or "").strip()
+                if host == "":
+                    host = str(mptcp.get("sidecar_host") or mptcp.get("remote_host") or "").strip()
+                if host == "" or remote_port <= 0:
+                    continue
+                key = (endpoint_id, host, remote_port)
+                if key in seen:
+                    continue
+                seen.add(key)
+                endpoint = endpoint_by_id.get(endpoint_id, {})
+                candidates.append(
+                    {
+                        "endpoint_id": endpoint_id,
+                        "host": host,
+                        "port": remote_port,
+                        "underlay_index": underlay_index,
+                        "leg_index": leg_index,
+                        "endpoint": endpoint,
+                        "leg": dict(leg),
+                    }
+                )
+
+        if candidates == []:
+            for index, host in enumerate(self.mptcp_remote_hosts(mptcp), start=1):
+                if remote_port <= 0:
+                    continue
+                candidates.append(
+                    {
+                        "endpoint_id": index,
+                        "host": host,
+                        "port": remote_port,
+                        "underlay_index": -1,
+                        "leg_index": index - 1,
+                        "endpoint": endpoint_by_id.get(index, {}),
+                        "leg": {},
+                    }
+                )
+        return candidates
 
     @classmethod
     def remote_ready_probe(
@@ -2149,6 +3600,25 @@ class ClientAgent:
 
         return True, max_latency_ms, None
 
+    @staticmethod
+    def rendered_mptcp_subflow_limit(forward_id: int) -> int:
+        if forward_id <= 0:
+            return 0
+        config_path = pathlib.Path(f"/etc/leikwan/mptcp-forward-{forward_id}.json")
+        if not config_path.exists():
+            return 0
+        try:
+            decoded = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return 0
+        if not isinstance(decoded, dict):
+            return 0
+        try:
+            value = int(decoded.get("subflow_limit", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, value)
+
     def reconcile_global_mptcp_state(self, forwards: list[dict]) -> None:
         """Reconcile global MPTCP state.
 
@@ -2168,7 +3638,11 @@ class ClientAgent:
             mptcp = forward.get("mptcp", {})
             if not isinstance(mptcp, dict):
                 continue
-            total_subflow_limit = max(total_subflow_limit, max(1, int(mptcp.get("subflow_limit", 0) or 0)))
+            configured_limit = max(1, int(mptcp.get("subflow_limit", 0) or 0))
+            runtime_limit = self.rendered_mptcp_subflow_limit(int(forward.get("forward_id", 0) or 0))
+            if runtime_limit > 0:
+                configured_limit = min(configured_limit, runtime_limit)
+            total_subflow_limit = max(total_subflow_limit, configured_limit)
 
         if total_subflow_limit > 0:
             subprocess.run(
@@ -2213,7 +3687,8 @@ class ClientAgent:
         bond_available = self.binary_available(bond_bin)
         mptcp_client = self.mptcp_client_path()
         mptcp_client_present = mptcp_client.is_file()
-        mptcp_kernel_supported = self.running_kernel_supports_mptcp()
+        mptcp_capability = self.mptcp_capability()
+        mptcp_kernel_supported = bool(mptcp_capability.get("supported", False))
         wireguard_public_key = self.ensure_wireguard_identity()
         summary = {
             "ok": True,
@@ -2232,6 +3707,7 @@ class ClientAgent:
                 "mptcp_client_bin": str(mptcp_client),
                 "mptcp_client_bin_present": mptcp_client_present,
                 "mptcp_kernel_supported": mptcp_kernel_supported,
+                "mptcp_capability": mptcp_capability,
                 "wireguard_public_key_present": wireguard_public_key != "",
                 "wireguard_listen_port": self.wireguard_listen_port(),
                 "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
@@ -2278,8 +3754,19 @@ class ClientAgent:
                     summary["ok"] = False
                     summary["live_pull"]["mptcp_dependency_error"] = f"mptcp mode forwards require {mptcp_client}"
                 elif mptcp_forward_ids and not mptcp_kernel_supported:
-                    summary["ok"] = False
-                    summary["live_pull"]["mptcp_dependency_error"] = "mptcp mode forwards require a running kernel with CONFIG_MPTCP and /proc/sys/net/mptcp/enabled"
+                    fallback_forwards = [
+                        int(forward.get("forward_id", 0) or 0)
+                        for forward in forwards
+                        if (
+                            self.normalize_mode(forward.get("mode", "single")) == "mptcp"
+                            and self.mptcp_tcp_fallback_allowed(forward.get("mptcp", {}) if isinstance(forward.get("mptcp", {}), dict) else {})
+                        )
+                    ]
+                    if sorted(fallback_forwards) != sorted(mptcp_forward_ids):
+                        summary["ok"] = False
+                        summary["live_pull"]["mptcp_dependency_error"] = "mptcp mode forwards require a running kernel with CONFIG_MPTCP unless allow_tcp_fallback is enabled"
+                    else:
+                        summary["live_pull"]["mptcp_dependency_warning"] = "running kernel lacks MPTCP; configured forwards can run in TCP fallback mode"
             except Exception as exc:  # noqa: BLE001
                 summary["ok"] = False
                 summary["live_pull"] = {
