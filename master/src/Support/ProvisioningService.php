@@ -11,6 +11,8 @@ use Leikwan\Master\Support\ApiException;
 
 final class ProvisioningService
 {
+    public const DEFAULT_MAX_LEGS_USED = 4;
+
     private ?bool $nodeGroupIngressColumnsAvailable = null;
     private ?bool $nodeGroupDescriptionColumnAvailable = null;
     public function __construct(
@@ -365,6 +367,21 @@ final class ProvisioningService
         });
     }
 
+    private function defaultMaxLegsUsedForCombination(string $clientMode, string $runtimePreference, string $backendMode): int
+    {
+        $hybrid = ['bond', 'mptcp_preferred_bond_fallback'];
+        if (in_array($clientMode, ['bond'], true)) {
+            return self::DEFAULT_MAX_LEGS_USED;
+        }
+        if (in_array($runtimePreference, $hybrid, true)) {
+            return self::DEFAULT_MAX_LEGS_USED;
+        }
+        if ($backendMode === 'cf_mode') {
+            return self::DEFAULT_MAX_LEGS_USED;
+        }
+        return 0;
+    }
+
     /**
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
@@ -386,6 +403,9 @@ final class ProvisioningService
         $selfLegScope = trim((string) ($payload['self_leg_scope'] ?? 'none')) ?: 'none';
         $selfLegRole = trim((string) ($payload['self_leg_role'] ?? 'none')) ?: 'none';
         $helperGroupCap = max(0, (int) ($payload['helper_group_cap'] ?? 0));
+        if ($helperGroupCap <= 0) {
+            $helperGroupCap = $this->defaultMaxLegsUsedForCombination($clientMode, $runtimePreference, $backendMode);
+        }
         $helperEscalationPolicy = trim((string) ($payload['helper_escalation_policy'] ?? 'disabled')) ?: 'disabled';
         $bondIngressMode = $this->normalizeBondIngressMode((string) ($payload['bond_ingress_mode'] ?? 'plain_tcp_mux'));
         $isActive = !empty($payload['is_active']) ? 1 : 0;
