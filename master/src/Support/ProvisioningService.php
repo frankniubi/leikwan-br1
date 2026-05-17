@@ -481,6 +481,8 @@ final class ProvisioningService
             ]);
         }
 
+        $this->republishActiveForwardsForCombination($id);
+
         return $this->forwardCombinationById($id) ?? [];
     }
 
@@ -4397,6 +4399,33 @@ final class ProvisioningService
         );
         foreach ($rows as $row) {
             $this->reconcileForwardEndpoints((int) ($row['forward_id'] ?? 0));
+        }
+    }
+
+    public function republishActiveForwardsForCombination(int $combinationId): void
+    {
+        if ($combinationId <= 0) {
+            return;
+        }
+        $forwards = $this->db->fetchAll(
+            'SELECT f.id
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.forward_combination_id = :forward_combination_id
+               AND f.enabled = 1
+               AND s.status = "active"',
+            ['forward_combination_id' => $combinationId]
+        );
+        foreach ($forwards as $row) {
+            $forwardId = (int) ($row['id'] ?? 0);
+            if ($forwardId <= 0) {
+                continue;
+            }
+            try {
+                $this->reconcileForwardEndpoints($forwardId);
+            } catch (\Throwable $e) {
+                error_log('republishActiveForwardsForCombination failed for forward ' . $forwardId . ': ' . $e->getMessage());
+            }
         }
     }
 
