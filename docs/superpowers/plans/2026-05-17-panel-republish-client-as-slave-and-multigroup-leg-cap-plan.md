@@ -26,6 +26,82 @@
 
 ---
 
+## Execution Discipline / 执行纪律
+
+This section is binding for any AI worker (or human) executing this plan. Read it before starting Task 1 and re-read it whenever a task's stop condition is hit.
+
+### Global stop rule (when to stop and report)
+
+The worker MUST stop and report back to the user, instead of continuing, in any of the following situations:
+
+- The current task's "Stop condition" (see per-task table below) is met. Even if later tasks look easy, stop, hand back, wait for "go".
+- A regression test that was green at Step 0b becomes red after a change in this plan and the cause cannot be explained by the change in the active task within 15 minutes of investigation.
+- A file outside the explicit "Files:" list of the active task needs to be edited to make the active task pass. Stop, propose the new file in chat, wait for approval.
+- A schema change beyond Task 9's `MODIFY COLUMN ... DEFAULT 4 COMMENT '...'` is needed. Stop, do not invent ALTERs.
+- The branch state on origin has moved (someone else pushed). Stop, do not auto-merge or rebase silently.
+- Any test scaffold requires installing a new package, runtime, or system tool. Stop.
+- A Python or PHP version error appears that suggests the sandbox is mismatched with the panel target. Stop.
+
+### Anti-divergence rules / 不要自我发散
+
+These are explicit "do NOT" rules. They override any other instinct.
+
+- Do NOT introduce new admin form fields beyond the rename of "Helper Group Cap" → "Max Legs Used (cap)" and the new helper text. No new dropdowns, no new policy knobs.
+- Do NOT add new DB columns. Reuse `helper_group_cap`. Task 9 only adjusts default + comment.
+- Do NOT refactor surrounding methods. Touch only the lines named in the task. If the diff exceeds ~40 lines for a "fix"-type task or ~120 lines for a "feat"-type task, stop and ask.
+- Do NOT broaden CF Bond self-leg suppression to non-CF backends. Gate strictly on `backend_mode === 'cf_mode'`.
+- Do NOT change the meaning of `runtime_preference` values, do not add new ones (e.g. no `mptcp_only_self_leg`). Use the existing `mptcp_preferred_bond_fallback` plus the new `self_leg_mptcp_solo_allowed` flag.
+- Do NOT remove or rename `helper_group_cap` from payloads or DB. The new label `max_legs_used` is panel-facing only; the wire/DB key stays `helper_group_cap` for backward compatibility.
+- Do NOT add tenant-facing surfaces. Tenant visibility tests must keep passing as-is.
+- Do NOT touch slave-agent, sidecar-agent, Rust relay, Windows/Android/Desktop clients. If a regression there appears, stop.
+- Do NOT bump dependencies, lockfiles, build configs.
+- Do NOT change git config, force-push, rebase, or amend. One commit per task; never `--amend` after a hook fails.
+- Do NOT run `Republish All Forwards` against any live environment from inside the plan. The auto-republish wired in Task 2 is enough.
+- Do NOT add docstrings, type hints, or comments beyond what each task specifies.
+- Do NOT write end-to-end smoke tests or integration tests. Only the focused regressions named in each task.
+
+### Global acceptance criteria (must hold at the end of Task 10)
+
+Plan-level pass requires ALL of the following to be true simultaneously on `snapshot/upload-20260517-220609`:
+
+1. `git diff origin/snapshot/upload-20260517-220609..HEAD --stat` lists ONLY files declared under any task's "Files:" block (plus the plan doc itself).
+2. Every regression test named in this plan exits 0.
+3. Pre-existing tests captured at Step 0b still exit 0 (no regressions).
+4. `php -l` on every modified PHP file is `No syntax errors detected`.
+5. `python -m py_compile` on every modified Python file exits 0.
+6. The plan-level invariants below all hold (verifiable by re-running the named regression):
+   - Editing a forward combination via panel persists all six policy fields. (Task 1 regression)
+   - Saving a forward combination triggers `republishActiveForwardsForCombination` for every active forward bound to it. (Task 2 regression)
+   - For new bond / CF Bond / `mptcp_preferred_bond_fallback` combinations with empty cap input, stored cap is 4. (Task 3 regression)
+   - Admin form shows "Max Legs Used (cap)" with helper text "Default 4 for bond, CF Bond and MPTCP". (Task 4 regression)
+   - Candidate pool emitted to clients has `len(rented_helpers) <= max_legs_used` whenever cap > 0. (Task 5 regression)
+   - Self-leg under `backend_mode = cf_mode` carries `probe_transport = cf_direct_wss` and `self_leg_wg = null`. (Task 6 regression)
+   - Self-leg under `runtime_preference = mptcp_preferred_bond_fallback` carries `self_leg_mptcp_solo_allowed = true`. (Task 7 regression)
+   - Client-agent rendered MPTCP `subflow_limit` does not exceed `max_legs_used`. (Task 8 regression)
+7. No file under `slave-agent/`, `sidecar-agent/`, `relay-rust/`, `LeikwanBridge.Desktop/`, `windows-client/`, `android/` has been modified.
+8. Branch is pushed (no local-only commits) and the PR/handoff doc references the plan path.
+
+### Failure handling (when not to silently retry)
+
+- One regression failing twice in a row with the same error → stop and report. Do not "creatively" rewrite the test or the production code.
+- A `git push` rejected as non-fast-forward → stop. Do not force, do not auto-rebase. Ask user.
+- A migration runner error (`column already exists`, etc.) → stop. Do not switch to `IF NOT EXISTS` workarounds without approval.
+- A panel route returning 500 in manual smoke test → stop, attach the relevant log line, do not edit unrelated controllers to "smooth it out".
+
+### Time and step budgets per task (soft guardrails)
+
+| Bucket | Soft cap |
+| --- | --- |
+| Per-task wall time | 30 min |
+| Per-task net diff lines | "fix" tasks ≤ 40, "feat" tasks ≤ 120 |
+| Per-task new files | ≤ 2 (one production, one test) unless task names more |
+| Failed test re-runs without code change | ≤ 2 |
+| Task retries after a stop | 0 (always wait for user) |
+
+If a soft cap is exceeded, stop and report; do not silently push past it.
+
+---
+
 ## File Structure
 
 ### Control plane / schema
@@ -81,6 +157,36 @@
   - Adds a case where helpers are present but slower and self-leg is alone in the active set.
 - Create: `client-agent/tests/test_max_legs_cap_runtime.py`
   - Asserts `subflow_limit` rendered to MPTCP runtime never exceeds `max_legs_used`.
+
+---
+
+## Per-task Stop Conditions and 验收指标 (Acceptance Criteria)
+
+This table is the single source of truth for "when does the worker stop, and what proves the task is done?". It is binding alongside each task's step list.
+
+| # | Task | Stop condition (worker stops here, reports, waits) | 验收指标 / Acceptance criteria (must all hold) |
+| --- | --- | --- | --- |
+| 0 | Pre-flight | Step 0b finishes; any pre-existing failure is captured in chat. | `git status` clean on `snapshot/upload-20260517-220609`. All Step 0b commands exit 0 OR the failures are listed verbatim in chat before Task 1 begins. |
+| 1 | Persist policy fields on UPDATE | The new regression `forward_combination_save_update_persistence_regression_test.php` prints `ok`, the commit lands, and no other test regresses. Stop. | (a) Regression exits 0. (b) `UPDATE forward_combinations SET …` block contains all six column assignments. (c) `php -l` clean. (d) Diff limited to `ProvisioningService.php` + the new test. (e) Commit message exactly `fix(panel): persist self-leg/helper policy on forward combination edit`. |
+| 2 | Auto-republish on save | `forward_combination_save_auto_republish_regression_test.php` prints `ok` and Task 1's regression still passes. Stop. | (a) Method `public function republishActiveForwardsForCombination(int $combinationId): void` exists. (b) `saveForwardCombination()` calls it once at the end. (c) The query filters on `f.forward_combination_id`, `f.enabled = 1`, `s.status = "active"`. (d) Republish errors are caught with `try/catch` and logged via `error_log`, save still returns the combination row. (e) Existing republish wrapper regression `provisioning_republish_wrappers_regression_test.php` still passes. |
+| 3 | Default cap = 4 seeding | `forward_combination_default_max_legs_regression_test.php` prints `ok`. Stop. | (a) `public const DEFAULT_MAX_LEGS_USED = 4;` exists. (b) `defaultMaxLegsUsedForCombination()` returns 4 for `client_mode='bond'`, for `runtime_preference='mptcp_preferred_bond_fallback'`, for `backend_mode='cf_mode'`. (c) Returns 0 for everything else. (d) Seeding only fires when `helper_group_cap <= 0`. (e) Existing combos with explicit non-zero cap are unchanged. |
+| 4 | Admin form rename + default 4 | `admin_forward_combination_self_leg_policy_test.php` prints `ok`, including the new `Max Legs Used` and helper-text snippets. Stop. | (a) Form input still uses `name="helper_group_cap"`. (b) Visible label is `Max Legs Used (cap)`. (c) Helper text contains exact substring `Default 4 for bond, CF Bond and MPTCP`. (d) New combos render `value="4"` when `editing` is empty; edits keep DB value. (e) No other admin field renamed or removed. |
+| 5 | Cap rented pool | `provisioning_max_legs_cap_candidate_pool_regression_test.php` prints `ok`. Stop. | (a) `applyMaxLegsCapToPool(array $pool, int $cap): array` exists. (b) Self-leg items are preserved before the slice; rented items are sliced via `array_slice($pool, 0, $cap)`. (c) `cap <= 0` returns the pool unchanged. (d) Each emitted forward config has `'max_legs_used' => $maxLegs` mirrored from `helper_group_cap`. (e) Existing `provisioning_self_leg_payload_regression_test.php` and `provisioning_forward_combination_helper_groups_regression_test.php` still pass. |
+| 6 | CF IP for self-leg under CF Bond | `provisioning_self_leg_cf_bond_uses_cf_ip_regression_test.php` prints `ok` AND `provisioning_self_leg_wg_contract_regression_test.php` still passes. Stop. | (a) Source contains the literal sentinel comment `self_leg_cf_only_under_cf_bond`. (b) When `backend_mode === 'cf_mode'`: `probe_transport = 'cf_direct_wss'`, `self_leg_wg = null`, `runtime_capabilities = ['bond', 'mptcp']` (no `wireguard`). (c) When `backend_mode !== 'cf_mode'` and WG profile is available: `probe_transport = 'private_wg'`, `self_leg_wg` is the profile, `runtime_capabilities` includes `wireguard`. (d) No change to non-self-leg candidates. |
+| 7 | Self-leg-only MPTCP allowed | Both `provisioning_self_leg_mptcp_solo_regression_test.php` and `client-agent/tests/test_self_leg_mptcp_solo_runtime.py` pass. Stop. | (a) Self-leg payload carries `self_leg_mptcp_solo_allowed = true` iff `runtime_preference === 'mptcp_preferred_bond_fallback'`, `false` otherwise. (b) `client_agent.choose_runtime_family()` returns `"mptcp"` when primary is self-leg with `mptcp` capability and `mptcp_supported=True`. (c) `install_forward_runtime` renders a runnable MPTCP config with `subflow_limit = 1` when only self-leg is in the active set. (d) `test_runtime_preference_mptcp_bond_fallback` and `test_highloss_self_leg_runtime_regression` still green. |
+| 8 | Honor `max_legs_used` in client | `client-agent/tests/test_max_legs_cap_runtime.py` passes. Stop. | (a) Renderer slices `endpoints` to `max_legs_used` and clamps `subflow_limit` to `max_legs_used` when cap > 0. (b) `client_agent.select_forward_candidates()` slices `ready` to `max_legs_used` after sorting by latency. (c) When `max_legs_used <= 0`, behavior is unchanged from baseline. (d) Existing `test_mptcp_bond_regressions.py` still green. |
+| 9 | Schema comment + default | Migration applies cleanly OR is skipped per the team's choice. Stop either way. | (a) New migration file ends with the exact `MODIFY COLUMN helper_group_cap INT NOT NULL DEFAULT 4 COMMENT '...'`. (b) `master/migrations/schema.sql` matches. (c) No other column touched. (d) If the team chooses to skip Task 9, the worker MUST stop before creating the migration file and ask for confirmation; do not auto-skip. |
+| 10 | End-to-end verification | All commands in Step 1 of Task 10 exit 0. Stop. Manual Steps 2–4 are reported to user with raw outputs and NOT performed against production by the worker. | (a) Local test sweep is fully green. (b) Worker posts the raw outputs of Step 1 in chat. (c) Worker DOES NOT run Step 2/3/4 against any live environment; instead it posts the exact commands for the human operator to run. (d) Worker confirms the global acceptance criteria from "Execution Discipline" all hold. |
+
+### What "stop" means in practice
+
+When a stop condition is hit, the worker MUST in this exact order:
+
+1. Stage and commit only the files declared in the active task.
+2. Run `git status` and `git log --oneline -5` and post both outputs verbatim in chat.
+3. Push the branch via the sandbox push tool.
+4. Post a short status block: `Task <n>: <pass|blocked>` + the acceptance bullets that hold + any that don't.
+5. Wait for explicit user instruction. Do NOT begin the next task automatically.
 
 ---
 
