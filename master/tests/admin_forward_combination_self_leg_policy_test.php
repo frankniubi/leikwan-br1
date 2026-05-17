@@ -16,6 +16,9 @@ foreach ([
     'Max Legs Used',
     'Default 4 for bond, CF Bond and MPTCP',
     'name="helper_escalation_policy"',
+    'name="self_leg_cf_transport"',
+    'cf_wg (WG over CF IP)',
+    'Only effective when backend_mode = cf_mode',
     'helper_node_group_keys_text',
 ] as $snippet) {
     if (!str_contains($source, $snippet)) {

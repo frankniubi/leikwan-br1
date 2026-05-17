@@ -346,7 +346,11 @@ def selected_mptcp_self_leg_candidates(forward: dict) -> list[dict]:
         and candidate_kind(item) == "self_leg"
         and truthy(item.get("selected_primary", False))
         and "mptcp" in [str(value).strip().lower() for value in item.get("runtime_capabilities", [])]
-        and not (isinstance(item.get("self_leg_wg"), dict) and truthy(item.get("self_leg_wg", {}).get("enabled", True)))
+        and not (
+            isinstance(item.get("self_leg_wg"), dict)
+            and truthy(item.get("self_leg_wg", {}).get("enabled", True))
+            and str(item.get("self_leg_wg", {}).get("outer_transport", "udp") or "udp").strip().lower() != "wstunnel_udp"
+        )
     ]
     return selected[:1]
 
@@ -377,14 +381,18 @@ def self_leg_wg_underlay(candidate: dict, forward: dict) -> dict | None:
     client_address = str(wg.get("client_address", "") or "").strip()
     sidecar_address = str(wg.get("sidecar_address", "") or "").strip()
     sidecar_public_key = str(wg.get("sidecar_public_key", "") or "").strip()
+    outer_transport = str(wg.get("outer_transport", "udp") or "udp").strip().lower() or "udp"
     endpoint_host = str(wg.get("endpoint_host", "") or wg.get("sidecar_endpoint_host", "") or candidate.get("target_sidecar_host", "") or "").strip()
     endpoint_port = int_or_default(wg.get("endpoint_port") or wg.get("sidecar_endpoint_port"), 0)
+    if outer_transport == "wstunnel_udp" and forward_id > 0:
+        endpoint_host = "127.0.0.1"
+        endpoint_port = 40000 + (forward_id % 2000)
     if interface_name == "" or client_address == "" or sidecar_address == "" or sidecar_public_key == "" or endpoint_host == "" or endpoint_port <= 0:
         return None
     leg = {
         "forward_id": forward_id,
         "endpoint_id": int_or_default(candidate.get("endpoint_id"), 0),
-        "outer_transport": str(wg.get("outer_transport", "udp") or "udp").strip().lower() or "udp",
+        "outer_transport": outer_transport,
         "local_address": client_address,
         "peer_address": sidecar_address,
         "mptcp_remote_address": sidecar_address,
@@ -392,6 +400,10 @@ def self_leg_wg_underlay(candidate: dict, forward: dict) -> dict | None:
         "peer_public_host": endpoint_host,
         "peer_udp_port": endpoint_port,
         "peer_tcp_fallback_port": int_or_default(wg.get("fallback_tcp_port") or wg.get("peer_tcp_fallback_port"), 0),
+        "cf_dial_host": str(wg.get("cf_dial_host", "") or "").strip(),
+        "cf_dial_port": int_or_default(wg.get("cf_dial_port"), 0),
+        "cf_sni_host": str(wg.get("cf_sni_host", "") or "").strip(),
+        "cf_path_prefix": str(wg.get("cf_path_prefix", "") or "").strip(),
     }
     return {
         "type": "wireguard",
@@ -403,6 +415,8 @@ def self_leg_wg_underlay(candidate: dict, forward: dict) -> dict | None:
 
 
 def mptcp_self_leg_endpoint(candidate: dict, forward: dict, priority: int) -> dict | None:
+    if str(candidate.get("probe_transport", "") or "").strip().lower() == "cf_wg":
+        return None
     endpoint = self_leg_endpoint(candidate, forward)
     if endpoint is None:
         return None
@@ -895,7 +909,7 @@ WantedBy=multi-user.target
         # Check for Rust MPTCP relay binary
         rust_relay_path = "/var/lib/leikwan-client-agent/leikwan-mptcp-relay"
         lines = ["#!/usr/bin/env bash", "set -euo pipefail"]
-        if direct_self_leg_endpoints:
+        if direct_self_leg_endpoints or private_self_leg_underlays:
             lines.append("trap 'kill $(jobs -p) 2>/dev/null || true' EXIT")
         lines.append("unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy")
         lines.append("export NO_PROXY='*'")
@@ -914,6 +928,28 @@ WantedBy=multi-user.target
             )
         if direct_legs:
             append_wait_for_local_listener(lines, [int(leg["local_port"]) for leg in direct_legs])
+        cf_wg_ports = []
+        for underlay in private_self_leg_underlays:
+            if not isinstance(underlay, dict):
+                continue
+            for leg in underlay.get("legs", []):
+                if not isinstance(leg, dict):
+                    continue
+                if str(leg.get("outer_transport", "udp") or "udp").strip().lower() != "wstunnel_udp":
+                    continue
+                local_udp = int_or_default(leg.get("peer_udp_port"), 0)
+                cf_host = str(leg.get("cf_dial_host", "") or "").strip()
+                cf_port = int_or_default(leg.get("cf_dial_port"), 0)
+                cf_sni = str(leg.get("cf_sni_host", "") or sni).strip()
+                cf_path = str(leg.get("cf_path_prefix", "") or path_prefix).strip()
+                if local_udp <= 0 or cf_host == "" or cf_port <= 0:
+                    continue
+                lines.append(
+                    f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_host}:{cf_port}?timeout_sec=0 --tls-sni-override {cf_sni} --http-headers \"Host: {cf_sni}\" --http-upgrade-path-prefix \"{cf_path}\" wss://{cf_host}:{cf_port} &"
+                )
+                cf_wg_ports.append(local_udp)
+        if cf_wg_ports:
+            append_wait_for_local_listener(lines, cf_wg_ports)
         lines.append(f"/usr/bin/python3 {helper_path} --config {config_path} --setup-underlays || echo \"mptcp setup-underlays returned $?; continuing to runtime listener\" >&2")
         lines.append(f'RUST_RELAY="{rust_relay_path}"')
         lines.append(f'if [ -x "$RUST_RELAY" ]; then')

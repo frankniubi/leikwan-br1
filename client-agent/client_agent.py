@@ -2152,7 +2152,7 @@ class ClientAgent:
             # panel/runtime ranking pass. Reprobe the live self-leg transport
             # before trusting stale measured_rtt/last_latency fields.
             try:
-                if probe_transport == "private_wg":
+                if probe_transport in {"private_wg", "cf_wg"}:
                     wg = candidate.get("self_leg_wg", {}) if isinstance(candidate.get("self_leg_wg", {}), dict) else {}
                     interface_name = str(wg.get("interface_name", "") or "").strip()
                     if interface_name and not self.private_wg_interface_present(interface_name):
@@ -2345,7 +2345,7 @@ class ClientAgent:
             "target_sidecar_host": str(candidate.get("target_sidecar_host", "") or "").strip(),
             "target_sidecar_port": int(candidate.get("target_sidecar_port", 0) or 0),
         }
-        if shape["probe_transport"] != "cf_direct_wss":
+        if shape["probe_transport"] not in {"cf_direct_wss", "cf_wg"}:
             raise RuntimeError("self_leg_probe_transport_must_be_cf_direct_wss")
         if shape["dial_host"] == "" or shape["dial_port"] <= 0 or shape["path_prefix"] == "":
             raise RuntimeError("self_leg_direct_cf_fields_missing")
