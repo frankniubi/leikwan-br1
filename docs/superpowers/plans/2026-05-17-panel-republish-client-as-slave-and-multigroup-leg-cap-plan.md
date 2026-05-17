@@ -88,6 +88,15 @@ Plan-level pass requires ALL of the following to be true simultaneously on `snap
 - A migration runner error (`column already exists`, etc.) → stop. Do not switch to `IF NOT EXISTS` workarounds without approval.
 - A panel route returning 500 in manual smoke test → stop, attach the relevant log line, do not edit unrelated controllers to "smooth it out".
 
+### Live verification reset / 实时验证重置
+
+Before any verification step that exercises the client runtime (Task 10 Steps 4–5 on the real Linux client):
+
+- Tear down every existing MPTCP WireGuard interface (`lw-mptcp-<forward_id>-<n>`, `wg-quick@lw-mptcp-*.service`, related routes) BEFORE letting the client pull the new config. Do not "patch in place" against the old interfaces.
+- The auto-republish wired in Task 2 must rebuild every WG interface from scratch. Verification only counts on these freshly-created interfaces; any throughput or RTT data captured against the previous interfaces MUST be discarded.
+- Cleanup commands are listed in Task 10 Step 3. Do not improvise alternatives; do not skip, even if the existing interfaces "look healthy".
+- After the client agent restarts, wait for one full pull cycle and confirm that the new `lw-mptcp-*` interfaces carry endpoint IDs that match the freshly-emitted `candidate_pool` from the panel. Only then proceed to Step 4 (live pull verification) and Step 5 (iperf3).
+
 ### Time and step budgets per task (soft guardrails)
 
 | Bucket | Soft cap |
@@ -176,7 +185,7 @@ This table is the single source of truth for "when does the worker stop, and wha
 | 7 | Self-leg-only MPTCP allowed | Both `provisioning_self_leg_mptcp_solo_regression_test.php` and `client-agent/tests/test_self_leg_mptcp_solo_runtime.py` pass. Stop. | (a) Self-leg payload carries `self_leg_mptcp_solo_allowed = true` iff `runtime_preference === 'mptcp_preferred_bond_fallback'`, `false` otherwise. (b) `client_agent.choose_runtime_family()` returns `"mptcp"` when primary is self-leg with `mptcp` capability and `mptcp_supported=True`. (c) `install_forward_runtime` renders a runnable MPTCP config with `subflow_limit = 1` when only self-leg is in the active set. (d) `test_runtime_preference_mptcp_bond_fallback` and `test_highloss_self_leg_runtime_regression` still green. |
 | 8 | Honor `max_legs_used` in client | `client-agent/tests/test_max_legs_cap_runtime.py` passes. Stop. | (a) Renderer slices `endpoints` to `max_legs_used` and clamps `subflow_limit` to `max_legs_used` when cap > 0. (b) `client_agent.select_forward_candidates()` slices `ready` to `max_legs_used` after sorting by latency. (c) When `max_legs_used <= 0`, behavior is unchanged from baseline. (d) Existing `test_mptcp_bond_regressions.py` still green. |
 | 9 | Schema comment + default | Migration applies cleanly OR is skipped per the team's choice. Stop either way. | (a) New migration file ends with the exact `MODIFY COLUMN helper_group_cap INT NOT NULL DEFAULT 4 COMMENT '...'`. (b) `master/migrations/schema.sql` matches. (c) No other column touched. (d) If the team chooses to skip Task 9, the worker MUST stop before creating the migration file and ask for confirmation; do not auto-skip. |
-| 10 | End-to-end verification | All commands in Step 1 of Task 10 exit 0. Stop. Manual Steps 2–4 are reported to user with raw outputs and NOT performed against production by the worker. | (a) Local test sweep is fully green. (b) Worker posts the raw outputs of Step 1 in chat. (c) Worker DOES NOT run Step 2/3/4 against any live environment; instead it posts the exact commands for the human operator to run. (d) Worker confirms the global acceptance criteria from "Execution Discipline" all hold. |
+| 10 | End-to-end verification | All commands in Step 1 of Task 10 exit 0. Stop. Manual Steps 2–5 are reported to user with raw outputs and NOT performed against production by the worker. | (a) Local test sweep is fully green. (b) Worker posts the raw outputs of Step 1 in chat. (c) Worker DOES NOT run Step 2 / Step 3 / Step 4 / Step 5 against any live environment; instead it posts the exact commands for the human operator to run. (d) Worker confirms the global acceptance criteria from "Execution Discipline" all hold. (e) Step 3's cleanup MUST complete (`wg cleanup ok` + `wg conf cleanup ok`, no `STALE …` lines) before any Step 4 / Step 5 measurement is accepted; results captured against pre-existing `lw-mptcp-*` interfaces are invalid. |
 
 ### What "stop" means in practice
 
@@ -1121,14 +1130,55 @@ Expected: every assertion passes.
 3. Save.
 4. Tail panel logs: every active forward bound to that combination should emit a `republishForwardEndpoints` line within ~1 s.
 
-- [ ] **Step 3: Live client pull verification.**
+- [ ] **Step 3: Tear down previous MPTCP WG interfaces (mandatory before any live test).**
 
-On the real Linux client, after the auto-republish landed:
+> **Instruction:** Remove every previously-rendered MPTCP WireGuard interface on the test client and let the auto-republish from Task 2 rebuild fresh ones. All Step 4 / Step 5 measurements MUST run on these new WG interfaces. Any throughput, RTT or stability data captured against the old interfaces is to be discarded.
+
+On the real Linux client, run in this exact order:
+
+```bash
+# 1. Stop the client agent so it does not race the cleanup.
+sudo systemctl stop leikwan-client-agent.service
+
+# 2. Stop and disable every per-forward MPTCP WG unit.
+for unit in $(systemctl list-unit-files 'wg-quick@lw-mptcp-*.service' --no-legend | awk '{print $1}'); do
+    sudo systemctl stop "$unit" || true
+    sudo systemctl disable "$unit" || true
+done
+
+# 3. Remove the kernel WG interfaces themselves (covers any unit that did not clean up).
+for iface in $(ip -o link show | awk -F': ' '/lw-mptcp-/{print $2}' | cut -d@ -f1); do
+    sudo ip link del "$iface" || true
+done
+
+# 4. Drop the rendered config files so install_forward_runtime regenerates them from the panel pull.
+sudo rm -f /etc/wireguard/lw-mptcp-*.conf
+sudo rm -f /etc/leikwan/mptcp-forward-*.json
+sudo rm -f /var/lib/leikwan/last-pull-forward-*.json
+
+# 5. Confirm nothing is left.
+ip -o link show | grep -E 'lw-mptcp-' && echo 'STALE WG INTERFACE STILL PRESENT — STOP' || echo 'wg cleanup ok'
+ls /etc/wireguard/ | grep -E '^lw-mptcp-' && echo 'STALE WG CONF STILL PRESENT — STOP' || echo 'wg conf cleanup ok'
+
+# 6. Restart the client agent. The next pull cycle MUST recreate every interface from scratch.
+sudo systemctl start leikwan-client-agent.service
+```
+
+Expected:
+
+- Both `wg cleanup ok` and `wg conf cleanup ok` are printed.
+- Within ~30 s of the agent restart, fresh `lw-mptcp-<forward_id>-<n>` interfaces are present and the `endpoint_id` values inside `/etc/leikwan/mptcp-forward-*.json` match the freshly-emitted `candidate_pool` from the panel.
+- If any "STALE …" line is printed, **STOP** and report; do not proceed to Step 4 or Step 5.
+
+- [ ] **Step 4: Live client pull verification.**
+
+On the real Linux client, after the auto-republish landed AND Step 3's cleanup completed cleanly:
 
 ```bash
 sudo journalctl -u leikwan-client-agent.service --since '-2 min' -o short-iso | tail -n 80
 sudo cat /var/lib/leikwan/last-pull-forward-47.json 2>/dev/null | jq '.candidate_pool, .runtime_preference, .max_legs_used'
 sudo cat /etc/leikwan/mptcp-forward-47.json | jq '.subflow_limit, .direct_legs, .bond_mode'
+ip -o link show | awk -F': ' '/lw-mptcp-/{print $2}' | cut -d@ -f1
 ```
 
 Expected:
@@ -1137,14 +1187,15 @@ Expected:
 - `max_legs_used = 4`.
 - `subflow_limit <= 4`.
 - If self-leg was the lowest-RTT candidate at probe time, `direct_legs` is non-empty and `bond_mode = "tcp"`.
+- The `lw-mptcp-*` interface list matches the `endpoint_id` set published by the panel; no leftover interface from before Step 3.
 
-- [ ] **Step 4: iperf3 sanity check (existing convention).**
+- [ ] **Step 5: iperf3 sanity check (existing convention) — runs on the freshly-created WG interfaces only.**
 
 ```bash
 iperf3 -c 127.0.0.1 -p 11035 -R -b 300M -t 12 --connect-timeout 3000
 ```
 
-Expected: throughput materially higher than the previous `~8.66 Mbit/s` baseline recorded in the 2026-05-17 handover, or comparable on the helper path if self-leg lost the probe race.
+Expected: throughput materially higher than the previous `~8.66 Mbit/s` baseline recorded in the 2026-05-17 handover, or comparable on the helper path if self-leg lost the probe race. If the run lands on any pre-existing WG interface (i.e. Step 3 was skipped or partial), discard the result and re-do Step 3.
 
 ---
 
