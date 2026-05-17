@@ -213,6 +213,99 @@ class SlaveCfLocationSelectionTests(unittest.TestCase):
             self.assertEqual(metadata["ingress_protocol"], "plain_tcp_mux")
             self.assertEqual(metadata["selected_cf_ip"], "162.159.39.16")
 
+
+
+    def test_select_cf_location_ip_reprobes_fresh_cached_ip_when_current_path_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            agent.save_cf_location_state(
+                {
+                    "1": {
+                        "location_group_id": 1,
+                        "selected_ip": "162.159.36.11",
+                        "last_latency_ms": 34.0,
+                        "last_jitter_ms": 1.0,
+                        "last_probe_at": 100.0,
+                        "backup_ips": ["162.159.39.4"],
+                        "consecutive_failures": 0,
+                        "cooldown_until": 0,
+                        "candidate_stats": {},
+                    }
+                }
+            )
+            with mock.patch.object(slave_agent.time, "time", return_value=110.0),                  mock.patch.object(agent, "expand_cf_candidates", return_value=["162.159.36.11", "162.159.39.4"]),                  mock.patch.object(agent, "probe_cf_websocket_path", return_value=(False, None, "Invalid status code: 520")),                  mock.patch.object(
+                     agent,
+                     "probe_cf_candidates",
+                     return_value=[
+                         {"ip": "162.159.39.4", "ok": True, "latency_ms": 35.0, "jitter_ms": 1.0, "failures": 0, "error": ""},
+                     ],
+                 ):
+                selected = agent.select_cf_location_ip(
+                    {
+                        "location_group_id": 1,
+                        "cidrs": ["162.159.36.0/24", "162.159.39.0/24"],
+                        "dial_port": 2053,
+                        "sni_host": "nrt1.nbwly.com",
+                        "path_prefix": "07289d1f5ed25399",
+                        "probe_target": "127.0.0.1:8899",
+                        "validate_current": True,
+                        "switch_improvement_ms": 15,
+                        "cache_ttl_seconds": 120,
+                        "max_candidates": 8,
+                    }
+                )
+
+            self.assertEqual(selected["selected_ip"], "162.159.39.4")
+            state = agent.load_cf_location_state()["1"]
+            self.assertGreater(state["candidate_stats"]["162.159.36.11"]["cooldown_until"], 110.0)
+
+    def test_reconcile_runtime_refreshes_stale_selected_cf_ip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            agent.save_service_metadata(
+                "wstunnel-svc-2-317",
+                {
+                    "service_name": "wstunnel-svc-2-317",
+                    "service_id": 2,
+                    "forward_id": 47,
+                    "endpoint_id": 317,
+                    "listen_port": 7000,
+                    "backend_port": 24002,
+                    "target": "127.0.0.1:8899",
+                    "path_prefix": "07289d1f5ed25399",
+                    "route_key": "07289d1f5ed25399",
+                    "backend_mode": "cf_mode",
+                    "cf_mode": {
+                        "location_group_id": 1,
+                        "cidrs": ["162.159.39.0/24"],
+                        "probe_mode": "tcp",
+                        "dial_host": "185.220.238.143",
+                        "dial_port": 2053,
+                        "sni_host": "nrt1.nbwly.com",
+                        "path_prefix": "07289d1f5ed25399",
+                    },
+                    "selected_cf_ip": "162.159.36.11",
+                    "ingress_protocol": "plain_tcp_mux",
+                    "backend_protocol": "wss_backend",
+                    "ingress_auth_token": "token-123",
+                    "transport_mode": "tcp",
+                    "relay_protocols": [],
+                    "status": "active",
+                },
+            )
+
+            with mock.patch.object(agent, "select_cf_location_ip", return_value={"selected_ip": "162.159.39.4"}) as select_mock,                  mock.patch.object(agent, "ensure_nft_table"),                  mock.patch.object(agent, "cleanup_superseded_forward_services"),                  mock.patch.object(agent, "ensure_backend_service"),                  mock.patch.object(agent, "delete_nft_rules"),                  mock.patch.object(agent, "add_nft_rules"),                  mock.patch.object(agent, "sync_listener"):
+                agent.reconcile_runtime()
+
+            select_mock.assert_called_once()
+            selection_mode = select_mock.call_args.args[0]
+            self.assertEqual(selection_mode["probe_target"], "127.0.0.1:8899")
+            unit = agent.service_unit_path("wstunnel-svc-2-317").read_text(encoding="utf-8")
+            self.assertIn("wss://162.159.39.4:2053", unit)
+            self.assertNotIn("wss://162.159.36.11:2053", unit)
+            metadata = json.loads(agent.metadata_path("wstunnel-svc-2-317").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["selected_cf_ip"], "162.159.39.4")
+
     def test_select_cf_location_ip_keeps_cached_ip_when_improvement_below_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent = self.make_agent(tmp_dir)
@@ -342,6 +435,115 @@ class SlaveCfLocationSelectionTests(unittest.TestCase):
                         )
 
             self.assertEqual(selected["selected_ip"], "162.159.39.10")
+
+    def test_probe_target_cache_revalidates_by_default_and_switches_from_bad_cached_edge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            agent.save_cf_location_state(
+                {
+                    "1": {
+                        "location_group_id": 1,
+                        "selected_ip": "162.159.39.6",
+                        "last_latency_ms": 34.0,
+                        "last_jitter_ms": 1.0,
+                        "last_probe_at": 100.0,
+                        "backup_ips": ["162.159.39.4"],
+                        "consecutive_failures": 0,
+                        "cooldown_until": 0,
+                        "candidate_stats": {},
+                    }
+                }
+            )
+            with mock.patch.object(slave_agent.time, "time", return_value=110.0),                  mock.patch.object(agent, "expand_cf_candidates", return_value=["162.159.39.6", "162.159.39.4"]),                  mock.patch.object(agent, "probe_cf_websocket_path", return_value=(False, None, "Invalid status code: 520")) as validate_mock,                  mock.patch.object(
+                     agent,
+                     "probe_cf_candidates",
+                     return_value=[
+                         {"ip": "162.159.39.4", "ok": True, "latency_ms": 35.0, "jitter_ms": 1.0, "failures": 0, "error": ""},
+                     ],
+                 ):
+                selected = agent.select_cf_location_ip(
+                    {
+                        "location_group_id": 1,
+                        "cidrs": ["162.159.39.0/24"],
+                        "dial_port": 2053,
+                        "sni_host": "nrt1.nbwly.com",
+                        "path_prefix": "07289d1f5ed25399",
+                        "probe_target": "127.0.0.1:8899",
+                        "switch_improvement_ms": 15,
+                        "cache_ttl_seconds": 120,
+                        "max_candidates": 8,
+                    }
+                )
+
+            validate_mock.assert_called_once_with(
+                "162.159.39.6",
+                2053,
+                "nrt1.nbwly.com",
+                "07289d1f5ed25399",
+                "127.0.0.1:8899",
+            )
+            self.assertEqual(selected["selected_ip"], "162.159.39.4")
+            state = agent.load_cf_location_state()["1"]
+            self.assertGreater(state["candidate_stats"]["162.159.39.6"]["cooldown_until"], 110.0)
+
+    def test_probe_target_candidate_ranking_prefers_no_520_failures_before_lower_connect_latency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            with mock.patch.object(agent, "tcp_ping", side_effect=[30.0, 31.0, 40.0, 41.0]),                  mock.patch.object(
+                     agent,
+                     "probe_cf_websocket_path",
+                     side_effect=[
+                         (False, None, "Invalid status code: 520"),
+                         (True, 80.0, None),
+                         (True, 90.0, None),
+                         (True, 91.0, None),
+                     ],
+                 ):
+                results = agent.probe_cf_candidates(
+                    ["162.159.39.6", "162.159.39.4"],
+                    {
+                        "dial_port": 2053,
+                        "sni_host": "nrt1.nbwly.com",
+                        "path_prefix": "07289d1f5ed25399",
+                        "probe_target": "127.0.0.1:8899",
+                    },
+                )
+
+            self.assertEqual(results[0]["ip"], "162.159.39.4")
+            self.assertEqual(results[0]["failures"], 0)
+            self.assertEqual(results[1]["ip"], "162.159.39.6")
+            self.assertEqual(results[1]["failures"], 1)
+
+
+    def test_probe_target_default_requires_multiple_clean_samples_for_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            with mock.patch.object(agent, "tcp_ping", side_effect=[30.0, 30.0, 41.0, 42.0, 43.0]), mock.patch.object(
+                agent,
+                "probe_cf_websocket_path",
+                side_effect=[
+                    (True, 70.0, None),
+                    (False, None, "Invalid status code: 520"),
+                    (True, 90.0, None),
+                    (True, 91.0, None),
+                    (True, 92.0, None),
+                ],
+            ):
+                results = agent.probe_cf_candidates(
+                    ["162.159.39.4", "162.159.39.29"],
+                    {
+                        "dial_port": 2053,
+                        "sni_host": "nrt1.nbwly.com",
+                        "path_prefix": "07289d1f5ed25399",
+                        "probe_target": "127.0.0.1:8899",
+                    },
+                )
+
+            self.assertEqual(results[0]["ip"], "162.159.39.29")
+            self.assertTrue(results[0]["ok"])
+            rejected = next(item for item in results if item["ip"] == "162.159.39.4")
+            self.assertFalse(rejected["ok"])
+            self.assertEqual(rejected["failures"], 1)
 
     def test_probe_cf_candidates_uses_real_path_probe_samples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

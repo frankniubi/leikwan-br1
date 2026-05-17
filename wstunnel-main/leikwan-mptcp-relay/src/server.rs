@@ -133,8 +133,24 @@ fn handle_server_connection(
 
     // Check for bond session ID — if present, route to bond reassembly.
     if let Some(bond_id) = handshake.get("bond_session_id").and_then(|v| v.as_u64()) {
+        let leg_priority = handshake
+            .get("leg_priority")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as u32;
+        let leg_direct = handshake
+            .get("leg_direct")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         info!("bond leg from {} for session {:016x}", peer, bond_id);
-        return bond::handle_bond_leg(peer_stream, bond_id, target_addr, bond_registry, sock_config);
+        return bond::handle_bond_leg(
+            peer_stream,
+            bond_id,
+            target_addr,
+            bond_registry,
+            sock_config,
+            leg_priority,
+            leg_direct,
+        );
     }
 
     // Branch on protocol.

@@ -44,7 +44,19 @@ final class SidecarAgentController extends BaseController
             'wireguard_listen_port' => $request->input('wireguard_listen_port'),
             'wireguard_fallback_tcp_port' => $request->input('wireguard_fallback_tcp_port'),
         ]);
+        $directCfBackendForwardIds = [];
+        $rawDirectCfBackendForwardIds = $runtimeState['cf_direct_backend_forward_ids'] ?? [];
+        if (is_array($rawDirectCfBackendForwardIds)) {
+            foreach ($rawDirectCfBackendForwardIds as $rawForwardId) {
+                $directForwardId = (int) $rawForwardId;
+                if ($directForwardId > 0) {
+                    $directCfBackendForwardIds[$directForwardId] = true;
+                }
+            }
+        }
         $updateRequestToken = trim((string) ($point['agent_update_request_token'] ?? ''));
+        $sidecarAgentUpdatesEnabled = !in_array(strtolower(trim((string) ($runtimeState['sidecar_agent_update_enabled'] ?? ''))), ['0', 'false', 'no', 'off', ''], true);
+        $reportedAgentVersion = $version !== '' ? $version : (string) ($point['agent_version'] ?? '');
 
         $this->db->execute(
             'UPDATE sidecar_points
@@ -71,7 +83,11 @@ final class SidecarAgentController extends BaseController
         }
         $this->provisioning->recordAgentUsage('sidecar', (int) $point['id'], $usageBytesIn, $usageBytesOut);
         $this->provisioning->republishActiveForwardsForSidecarPoint((int) $point['id']);
-        $mptcpManagement = $this->provisioning->mptcpSidecarManagementForPoint((int) $point['id']);
+        $mptcpTemporarilyDisabled = $this->config->getBool('TEMP_DISABLE_MPTCP_RUNTIME', true);
+        $mptcpManagement = $mptcpTemporarilyDisabled
+            ? []
+            : $this->provisioning->mptcpSidecarManagementForPoint((int) $point['id']);
+        $sidecarUplinkManagement = $this->provisioning->slaveSidecarUplinkManagementForPoint((int) $point['id']);
         $pointId = (int) ($point['id'] ?? 0);
         $bondForwardIds = array_map(
             static fn(array $row): int => (int) ($row['id'] ?? 0),
@@ -93,8 +109,10 @@ final class SidecarAgentController extends BaseController
         );
         $cfRows = $this->db->fetchAll(
             'SELECT f.id, f.path_prefix, f.target_host, f.target_port, f.transport_mode,
-                    f.bond_remote_host, f.bond_remote_port
+                    f.bond_remote_host, f.bond_remote_port, f.backend_mode,
+                    fc.upstream_realization_mode AS chain_upstream_realization_mode
              FROM forwards f
+             LEFT JOIN forward_chains fc ON fc.id = f.forward_chain_id
              INNER JOIN services s ON s.id = f.service_id
              WHERE f.bond_sidecar_point_id = :point_id
                AND f.enabled = 1
@@ -108,7 +126,8 @@ final class SidecarAgentController extends BaseController
             ]
         );
         $hasBondRuntime = $bondForwardIds !== [];
-        $hasMptcpRuntime = !empty($mptcpManagement['underlays']) || !empty(($mptcpManagement['mptcp_policy']['endpoints'] ?? []));
+        $hasMptcpRuntime = !$mptcpTemporarilyDisabled
+            && (!empty($mptcpManagement['underlays']) || !empty(($mptcpManagement['mptcp_policy']['endpoints'] ?? [])));
         $bondListenPort = $this->sidecarBondListenPortForHeartbeat($point);
         $mptcpListenPort = $this->sidecarMptcpListenPortForHeartbeat(array_merge($point, [
             'agent_config_json' => json_encode($runtimeState, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
@@ -119,7 +138,7 @@ final class SidecarAgentController extends BaseController
             'listen_port' => $cfListenPort,
             'tls_cert_path' => (string) ($runtimeState['cf_tls_cert_path'] ?? '/etc/ssl/cf/fullchain.pem'),
             'tls_key_path' => (string) ($runtimeState['cf_tls_key_path'] ?? '/etc/ssl/cf/privkey.pem'),
-            'routes' => array_values(array_reduce($cfRows, static function (array $carry, array $row): array {
+            'routes' => array_values(array_reduce($cfRows, static function (array $carry, array $row) use ($directCfBackendForwardIds): array {
                 $forwardId = (int) ($row['id'] ?? 0);
                 $pathPrefix = (string) ($row['path_prefix'] ?? '');
                 $targetHost = trim((string) ($row['bond_remote_host'] ?? ''));
@@ -139,6 +158,7 @@ final class SidecarAgentController extends BaseController
                     'path_prefix' => $pathPrefix,
                     'target' => $target,
                     'transport_mode' => $transportMode,
+                    'backend_mode' => isset($directCfBackendForwardIds[$forwardId]) ? 'direct' : 'wstunnel',
                 ];
                 if (str_contains($transportMode, 'udp')) {
                     $carry[] = [
@@ -158,8 +178,8 @@ final class SidecarAgentController extends BaseController
             'agent_update_requested_at' => (string) ($point['agent_update_requested_at'] ?? ''),
             'desired_bond_version' => (string) ($bondBinary['version'] ?? ''),
             'desired_bond_sha256' => $desiredBondSha256,
-            'desired_sidecar_agent_version' => (string) ($sidecarAgent['version'] ?? ''),
-            'desired_sidecar_agent_sha256' => (string) ($sidecarAgent['sha256'] ?? ''),
+            'desired_sidecar_agent_version' => $sidecarAgentUpdatesEnabled ? (string) ($sidecarAgent['version'] ?? '') : $reportedAgentVersion,
+            'desired_sidecar_agent_sha256' => $sidecarAgentUpdatesEnabled ? (string) ($sidecarAgent['sha256'] ?? '') : '',
             'desired_sidecar_runtime_version' => (string) ($sidecarRuntime['version'] ?? ''),
             'desired_sidecar_runtime_sha256' => (string) ($sidecarRuntime['sha256'] ?? ''),
             'desired_installer_version' => (string) ($sidecarInstaller['version'] ?? ''),
@@ -169,6 +189,8 @@ final class SidecarAgentController extends BaseController
                 'state_dir' => '/var/lib/leikwan-sidecar-' . $pointId,
                 'runtime_config_path' => '/etc/leikwan-sidecar-' . $pointId . '/bond-runtime.json',
                 'udp_uot_sidepath' => $runtimeState['udp_uot_sidepath'] ?? null,
+                'managed_iperf3_ports' => $runtimeState['managed_iperf3_ports'] ?? [],
+                'disable_auto_update' => $runtimeState['disable_auto_update'] ?? null,
             ],
         ];
 
@@ -199,7 +221,24 @@ final class SidecarAgentController extends BaseController
                     'underlay' => $mptcpManagement['underlay'] ?? [],
                     'underlays' => $mptcpManagement['underlays'] ?? [],
                     'mptcp_policy' => $mptcpManagement['mptcp_policy'] ?? [],
+                    'forward_routes' => array_values(array_map(static function (array $row): array {
+                        $backendMode = (string) ($row['backend_mode'] ?? 'current_mode');
+                        $transportMode = strtolower((string) ($row['transport_mode'] ?? 'tcp'));
+                        return [
+                            'forward_id' => (int) ($row['id'] ?? 0),
+                            'backend_mode' => $backendMode,
+                            'transport_protocol' => str_contains($transportMode, 'udp') ? 'udp' : 'tcp',
+                            'target_mode' => $backendMode === 'cf_mode' ? 'cf_local_backend' : 'direct_target',
+                            'target_host' => $backendMode === 'cf_mode' ? '127.0.0.1' : trim((string) ($row['target_host'] ?? '')),
+                            'target_port' => $backendMode === 'cf_mode'
+                                ? ((int) ($row['bond_remote_port'] ?? 0) > 0 ? (int) ($row['bond_remote_port'] ?? 0) : (int) ($row['target_port'] ?? 0))
+                                : (int) ($row['target_port'] ?? 0),
+                            'upstream_realization_profile' => (string) ($row['chain_upstream_realization_mode'] ?? ''),
+                        ];
+                    }, $cfRows)),
                 ] : null,
+                'sidecar_uplinks' => $sidecarUplinkManagement['uplinks'] ?? [],
+                'self_leg_client_peers' => $this->provisioning->selfLegClientPeersForPoint($pointId),
                 'cf_runtime' => $cfRuntime,
             ],
         ]);

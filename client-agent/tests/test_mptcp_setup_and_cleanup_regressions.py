@@ -118,7 +118,7 @@ class MptcpSetupAndCleanupRegressions(unittest.TestCase):
         self.assertTrue(any("systemctl enable wg-quick@lw-mptcp-24-0.service" in line for line in command_strings))
         self.assertTrue(any("wg-quick up /etc/wireguard/lw-mptcp-24-0.conf" in line for line in command_strings))
 
-    def test_apply_wireguard_transit_underlay_single_raises_when_interface_never_appears(self) -> None:
+    def test_apply_wireguard_transit_underlay_single_skips_bad_interface_without_crashing(self) -> None:
         recorded = []
 
         def fake_run_command(parts, check=False):
@@ -137,14 +137,128 @@ class MptcpSetupAndCleanupRegressions(unittest.TestCase):
                     with mock.patch.object(leikwan_mptcp_client, "build_wireguard_interface_config", return_value="[Interface]\n"):
                         with mock.patch.object(leikwan_mptcp_client, "write_text_if_changed", return_value=False):
                             with mock.patch.object(leikwan_mptcp_client.time, "sleep"):
-                                with self.assertRaisesRegex(RuntimeError, "lw-mptcp-24-0"):
-                                    leikwan_mptcp_client.apply_wireguard_transit_underlay_single(
+                                result = leikwan_mptcp_client.apply_wireguard_transit_underlay_single(
+                                    {
+                                        "interface_name": "lw-mptcp-24-0",
+                                        "config_path": "/etc/wireguard/lw-mptcp-24-0.conf",
+                                        "legs": [],
+                                    }
+                                )
+
+        self.assertFalse(result)
+        command_strings = [" ".join(parts) for parts in recorded if isinstance(parts, list)]
+        self.assertTrue(any("ip link delete dev lw-mptcp-24-0" in line for line in command_strings))
+
+    def test_apply_wireguard_transit_underlay_keeps_uot_unit_when_wg_quick_succeeds(self) -> None:
+        recorded = []
+        removed = []
+
+        def fake_run_command(parts, check=False):
+            recorded.append(parts)
+            if parts[:4] == ["ip", "link", "show", "dev"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(leikwan_mptcp_client.os, "name", "posix"):
+            with mock.patch.object(
+                leikwan_mptcp_client,
+                "shutil_which",
+                side_effect=lambda cmd: "/usr/bin/" + cmd,
+            ):
+                with mock.patch.object(leikwan_mptcp_client, "run_command", side_effect=fake_run_command):
+                    with mock.patch.object(leikwan_mptcp_client, "build_wireguard_interface_config", return_value="[Interface]\n"):
+                        with mock.patch.object(leikwan_mptcp_client, "write_text_if_changed", return_value=False):
+                            with mock.patch.object(leikwan_mptcp_client.pathlib.Path, "is_file", return_value=True):
+                                with mock.patch.object(
+                                    leikwan_mptcp_client,
+                                    "remove_uot_client_service_units_for_interface",
+                                    side_effect=lambda iface: removed.append(iface) or True,
+                                ):
+                                    ok = leikwan_mptcp_client.apply_wireguard_transit_underlay_single(
                                         {
-                                            "interface_name": "lw-mptcp-24-0",
-                                            "config_path": "/etc/wireguard/lw-mptcp-24-0.conf",
-                                            "legs": [],
+                                            "interface_name": "lw-mptcp-47-3",
+                                            "config_path": "/etc/wireguard/lw-mptcp-47-3.conf",
+                                            "legs": [
+                                                {
+                                                    "endpoint_id": 320,
+                                                    "outer_transport": "udp",
+                                                    "local_address": "10.203.201.181",
+                                                    "peer_address": "10.203.201.182",
+                                                    "mptcp_remote_address": "10.203.201.183",
+                                                }
+                                            ],
                                         }
                                     )
+
+        self.assertTrue(ok)
+        self.assertEqual([], removed)
+        command_strings = [" ".join(parts) for parts in recorded if isinstance(parts, list)]
+        self.assertTrue(any("wg-quick up /etc/wireguard/lw-mptcp-47-3.conf" in line for line in command_strings))
+
+
+    def test_build_wireguard_interface_config_supports_client_self_leg_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            private_key = pathlib.Path(tmp_dir) / "private.key"
+            private_key.write_text("client-private\n", encoding="utf-8")
+            config = leikwan_mptcp_client.build_wireguard_interface_config(
+                {
+                    "mode": "client_self_leg",
+                    "interface_name": "lw-self-47",
+                    "local_private_key_path": str(private_key),
+                    "listen_port": 43047,
+                    "peer_keepalive_seconds": 25,
+                    "legs": [
+                        {
+                            "local_address": "10.204.47.1",
+                            "peer_address": "10.204.47.2",
+                            "mptcp_remote_address": "10.204.47.2",
+                            "peer_public_key": "sidecar-pub",
+                            "peer_public_host": "185.220.238.143",
+                            "peer_udp_port": 14969,
+                        }
+                    ],
+                }
+            )
+
+        self.assertIn("PrivateKey = client-private", config)
+        self.assertIn("ListenPort = 43047", config)
+        self.assertIn("Address = 10.204.47.1/32", config)
+        self.assertIn("PublicKey = sidecar-pub", config)
+        self.assertIn("Endpoint = 185.220.238.143:14969", config)
+        self.assertIn("AllowedIPs = 10.204.47.2/32", config)
+        self.assertIn("PersistentKeepalive = 25", config)
+        self.assertIn("PostUp = ip -4 route replace 10.204.47.2/32 dev lw-self-47 src 10.204.47.1", config)
+
+    def test_cleanup_stale_transit_interfaces_is_scoped_to_self_leg_forward(self) -> None:
+        recorded = []
+
+        def fake_run_command(parts, check=False):
+            recorded.append(parts)
+            if parts == ["wg", "show", "interfaces"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="lw-self-47 lw-self-48 lw-mptcp-47-0",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(leikwan_mptcp_client.os, "name", "posix"):
+            with mock.patch.object(
+                leikwan_mptcp_client,
+                "shutil_which",
+                side_effect=lambda cmd: "/usr/bin/" + cmd,
+            ):
+                with mock.patch.object(leikwan_mptcp_client, "run_command", side_effect=fake_run_command):
+                    with mock.patch.object(leikwan_mptcp_client.pathlib.Path, "exists", return_value=False):
+                        leikwan_mptcp_client.cleanup_stale_transit_interfaces(
+                            {"forward_id": 47},
+                            set(),
+                        )
+
+        command_strings = [" ".join(parts) for parts in recorded if isinstance(parts, list)]
+        self.assertTrue(any("wg-quick@lw-self-47.service" in line for line in command_strings))
+        self.assertFalse(any("wg-quick@lw-self-48.service" in line for line in command_strings))
+        self.assertTrue(any("wg-quick@lw-mptcp-47-0.service" in line for line in command_strings))
 
     def test_main_setup_underlays_only_applies_underlays(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

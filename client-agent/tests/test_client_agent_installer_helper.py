@@ -35,6 +35,15 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
             source,
         )
 
+
+    def test_installer_downloads_mptcp_relay_binary(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64" "$STATE_DIR/leikwan-mptcp-relay"',
+            source,
+        )
+
     def test_update_helper_stops_forward_services_before_reinstall(self) -> None:
         source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
 
