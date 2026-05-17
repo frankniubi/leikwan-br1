@@ -2528,8 +2528,14 @@ final class ProvisioningService
             $config = $this->buildClientConfig($forwardId);
             $config['service_status'] = (string) $forward['service_status'];
             $config['runtime_preference'] = (string) ($config['forward_combination_runtime_preference'] ?? 'single');
-            $config['helper_group_cap'] = max(0, (int) ($config['forward_combination_helper_group_cap'] ?? 0));
-            $config['candidate_pool'] = $this->buildForwardCandidatePool($config, $client, $deviceSession);
+            $maxLegs = max(0, (int) ($config['forward_combination_helper_group_cap'] ?? 0));
+            $config['helper_group_cap'] = $maxLegs;
+            $config['max_legs_used'] = $maxLegs;
+            $config += ['max_legs_used' => $maxLegs];
+            $config['candidate_pool'] = $this->applyMaxLegsCapToPool(
+                $this->buildForwardCandidatePool($config, $client, $deviceSession),
+                $maxLegs
+            );
             $config['endpoints'] = array_values(array_filter(
                 is_array($config['endpoints'] ?? null) ? $config['endpoints'] : [],
                 static function (mixed $endpoint): bool {
@@ -2582,6 +2588,27 @@ final class ProvisioningService
         }
 
         return $pool;
+    }
+
+    private function applyMaxLegsCapToPool(array $pool, int $cap): array
+    {
+        if ($cap <= 0) {
+            return $pool;
+        }
+        $selfLegs = [];
+        $rented = [];
+        foreach ($pool as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            if (($item['candidate_kind'] ?? '') === 'self_leg') {
+                $selfLegs[] = $item;
+            } else {
+                $rented[] = $item;
+            }
+        }
+        $rented = array_slice($pool, 0, $cap);
+        return array_merge($selfLegs, $rented);
     }
 
     /**
