@@ -2531,7 +2531,6 @@ final class ProvisioningService
             $maxLegs = max(0, (int) ($config['forward_combination_helper_group_cap'] ?? 0));
             $config['helper_group_cap'] = $maxLegs;
             $config['max_legs_used'] = $maxLegs;
-            $config += ['max_legs_used' => $maxLegs];
             $config['candidate_pool'] = $this->applyMaxLegsCapToPool(
                 $this->buildForwardCandidatePool($config, $client, $deviceSession),
                 $maxLegs
@@ -2607,7 +2606,7 @@ final class ProvisioningService
                 $rented[] = $item;
             }
         }
-        $rented = array_slice($pool, 0, $cap);
+        $rented = array_slice($rented, 0, $cap);
         return array_merge($selfLegs, $rented);
     }
 
@@ -2800,7 +2799,6 @@ final class ProvisioningService
             'self_leg_scope' => 'device_session',
             'self_leg_role' => 'latency_anchor',
             // Regression sentinel: 'probe_transport' => 'private_wg'
-            'probe_transport' => 'cf_direct_wss',
             'probe_transport' => $probeTransport,
             'dial_host' => $cfTarget['dial_host'],
             'dial_connect_ip' => (string) ($cfTarget['dial_connect_ip'] ?? ''),
@@ -2816,8 +2814,8 @@ final class ProvisioningService
             'target_sidecar_port' => $cfTarget['target_sidecar_port'],
             'target_sidecar_bond_port' => (int) ($config['bond_sidecar_port'] ?? $config['bond_remote_port'] ?? 0),
             'target_sidecar_mptcp_port' => (int) ($config['mptcp_sidecar_port'] ?? $config['bond_remote_port'] ?? 0),
-            'self_leg_wg' => null,
             'self_leg_wg' => $wgProfile,
+            'self_leg_mptcp_solo_allowed' => (string) ($config['runtime_preference'] ?? '') === 'mptcp_preferred_bond_fallback',
         ];
     }
 
