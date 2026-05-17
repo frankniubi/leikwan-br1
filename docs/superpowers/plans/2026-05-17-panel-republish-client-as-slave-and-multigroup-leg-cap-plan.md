@@ -4,7 +4,8 @@
 
 **Date:** 2026-05-17
 **Branch:** `master`
-**Status:** Tasks 1–10 landed on `master` (commits `066fcda`..`863b716`). Addendum Task 11 (WG-over-CF-IP self-leg) is pending.
+**Status:** Tasks 1-10 landed on `master` (commits `066fcda`..`863b716`). Addendum Task 11 (WG-over-CF-IP self-leg) completed on 2026-05-18 and landed with `feat(panel,client): add cf_wg self-leg transport for WG over CF IP under CF Bond`.
+**Artifact path:** `docs/superpowers/plans/2026-05-17-panel-republish-client-as-slave-and-multigroup-leg-cap-plan.md`
 
 **Goal:** Finish the panel side of the client-as-a-slave (private self-leg) feature so that:
 
