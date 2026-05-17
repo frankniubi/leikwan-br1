@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PASS_PANEL='Frank1212.'
+sshpass -p "$PASS_PANEL" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@10.0.10.196 'cd /www/wwwroot/v3.leikwanhost.com/leikwan-v3; echo ===findenv===; find /www/wwwroot/v3.leikwanhost.com -maxdepth 4 \( -name .env -o -name .env.local \) -print 2>/dev/null; echo ===envroot===; sed -n "1,80p" .env 2>/dev/null | sed -E "s/(DB_PASSWORD=).*/\1<redacted>/; s/(TOKEN|SECRET|KEY)([^=]*=).*/\1\2<redacted>/I"; echo ===masterenv===; sed -n "1,80p" master/.env 2>/dev/null | sed -E "s/(DB_PASSWORD=).*/\1<redacted>/; s/(TOKEN|SECRET|KEY)([^=]*=).*/\1\2<redacted>/I"; echo ===public-index-envpath===; grep -R "Bootstrap" -n master/public public 2>/dev/null | head -20'

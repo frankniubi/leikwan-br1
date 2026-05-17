@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 MPTCP_PROTOCOL = getattr(socket, "IPPROTO_MPTCP", 262)
+MPTCP_FALSE_VALUES = {"", "0", "false", "no", "off", "disabled"}
 HANDSHAKE_HEADER_BYTES = 4
 FRAME_HEADER_BYTES = 4
 DEFAULT_IDLE_TIMEOUT_SECONDS = 120
@@ -215,7 +216,10 @@ def build_wireguard_interface_config(config: dict[str, Any]) -> str:
                 route_lines.append(f"PostDown = ip -4 route del {route_target}/32 dev {interface_name} >/dev/null 2>&1 || true")
         if peer_public_key == "" or peer_host == "" or peer_port <= 0:
             continue
-        allowed_ips = [item for item in [peer_address, overlay_address] if item != ""]
+        allowed_ips = []
+        for item in [peer_address, overlay_address]:
+            if item != "" and item not in allowed_ips:
+                allowed_ips.append(item)
         peer_blocks.append(
             "[Peer]\n"
             f"PublicKey = {peer_public_key}\n"
@@ -239,6 +243,7 @@ def apply_wireguard_transit_underlays(underlays: list[dict[str, Any]], parent_co
     if os.name == "nt":
         return
     active_iface_names: set[str] = set()
+    failed_iface_names: set[str] = set()
     for underlay in underlays:
         if not isinstance(underlay, dict):
             continue
@@ -247,12 +252,18 @@ def apply_wireguard_transit_underlays(underlays: list[dict[str, Any]], parent_co
         for key in ("local_private_key_path", "initcwnd", "initrwnd"):
             if key not in merged and key in parent_config:
                 merged[key] = parent_config[key]
-        apply_wireguard_transit_underlay_single(merged)
         name = str(merged.get("interface_name", "") or "").strip()
-        if name:
-            active_iface_names.add(name)
-    # Clean up stale interfaces from previous config
+        if apply_wireguard_transit_underlay_single(merged):
+            if name:
+                active_iface_names.add(name)
+        elif name:
+            failed_iface_names.add(name)
+    # Clean up stale interfaces from previous config. Failed active interfaces are
+    # intentionally kept out of active_names so a bad leg cannot make the whole
+    # forward crash or leave a half-created stale link behind.
     cleanup_stale_transit_interfaces(parent_config, active_iface_names)
+    if failed_iface_names:
+        logging.warning("skipped failed MPTCP transit interfaces: %s", ", ".join(sorted(failed_iface_names)))
 
 
 def cleanup_stale_transit_interfaces(config: dict[str, Any], active_names: set[str]) -> None:
@@ -264,20 +275,30 @@ def cleanup_stale_transit_interfaces(config: dict[str, Any], active_names: set[s
         current_interfaces = result.stdout.strip().split()
     except Exception:
         return
+    removed_service_units = False
     scoped_prefixes: set[str] = set()
+    scoped_exact_names: set[str] = set()
     forward_id = int(config.get("forward_id", 0) or 0)
     if forward_id > 0:
         scoped_prefixes.add(f"lw-mptcp-{forward_id}-")
+        scoped_exact_names.add(f"lw-self-{forward_id}")
     for name in active_names:
+        if name.startswith("lw-self-"):
+            scoped_exact_names.add(name)
+            continue
         if not name.startswith("lw-mptcp-"):
             continue
         prefix = name.rsplit("-", 1)[0] + "-"
         scoped_prefixes.add(prefix)
     # Identify stale interfaces: match our naming patterns but not in active set
     for iface in current_interfaces:
-        if not iface.startswith("lw-mptcp-"):
-            continue
-        if scoped_prefixes and not any(iface.startswith(prefix) for prefix in scoped_prefixes):
+        if iface.startswith("lw-self-"):
+            if scoped_exact_names and iface not in scoped_exact_names:
+                continue
+        elif iface.startswith("lw-mptcp-"):
+            if scoped_prefixes and not any(iface.startswith(prefix) for prefix in scoped_prefixes):
+                continue
+        else:
             continue
         if iface in active_names:
             continue
@@ -290,9 +311,66 @@ def cleanup_stale_transit_interfaces(config: dict[str, Any], active_names: set[s
         conf_path = pathlib.Path(f"/etc/wireguard/{iface}.conf")
         if conf_path.exists():
             conf_path.unlink()
+        removed_service_units = remove_uot_client_service_units_for_interface(iface) or removed_service_units
+
+    unit_root = pathlib.Path("/etc/systemd/system")
+    if forward_id > 0 and unit_root.exists():
+        prefix = f"leikwan-uot-lw-mptcp-{forward_id}-"
+        for unit_path in unit_root.glob(f"{prefix}*.service"):
+            interface_name, _endpoint_id = parse_uot_client_unit_name(unit_path.stem)
+            if interface_name == "" or interface_name in active_names:
+                continue
+            removed_service_units = remove_uot_client_service_units_for_interface(interface_name) or removed_service_units
+
+    if removed_service_units and shutil_which("systemctl"):
+        run_command(["systemctl", "daemon-reload"], check=False)
 
 
-def ensure_clean_transit_interface(name: str) -> None:
+def desired_transit_addresses(config: dict[str, Any]) -> set[str]:
+    addresses: set[str] = set()
+    legs = config.get("legs", [])
+    if not isinstance(legs, list):
+        return addresses
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        for key in ("local_address", "peer_address", "mptcp_remote_address"):
+            value = str(leg.get(key, "") or "").strip()
+            if value != "":
+                addresses.add(value)
+    return addresses
+
+
+def remove_conflicting_transit_addresses(name: str, addresses: set[str]) -> None:
+    if os.name == "nt" or not addresses or not shutil_which("ip"):
+        return
+    result = run_command(["ip", "-o", "-4", "addr", "show"], check=False)
+    if result.returncode != 0:
+        return
+    for raw_line in str(result.stdout or "").splitlines():
+        parts = raw_line.split()
+        if len(parts) < 4:
+            continue
+        iface = parts[1]
+        if iface == name:
+            continue
+        addr = parts[3].split("/", 1)[0]
+        if addr not in addresses:
+            continue
+        logging.warning("removing conflicting transit interface %s holding %s for %s", iface, addr, name)
+        if shutil_which("systemctl"):
+            run_command(["systemctl", "stop", f"wg-quick@{iface}.service"], check=False)
+            run_command(["systemctl", "disable", f"wg-quick@{iface}.service"], check=False)
+            run_command(["systemctl", "reset-failed", f"wg-quick@{iface}.service"], check=False)
+        if shutil_which("wg-quick"):
+            run_command(["wg-quick", "down", iface], check=False)
+        run_command(["ip", "link", "delete", "dev", iface], check=False)
+        conf_path = pathlib.Path(f"/etc/wireguard/{iface}.conf")
+        if iface.startswith("lw-mptcp-") and conf_path.exists():
+            conf_path.unlink()
+
+
+def ensure_clean_transit_interface(name: str, addresses: set[str] | None = None) -> None:
     if name == "":
         return
     if shutil_which("systemctl"):
@@ -302,6 +380,7 @@ def ensure_clean_transit_interface(name: str) -> None:
         run_command(["wg-quick", "down", name], check=False)
     if shutil_which("ip"):
         run_command(["ip", "link", "delete", "dev", name], check=False)
+    remove_conflicting_transit_addresses(name, addresses or set())
 
 
 def wait_for_interface(name: str, timeout_seconds: float = 5.0) -> bool:
@@ -316,9 +395,9 @@ def wait_for_interface(name: str, timeout_seconds: float = 5.0) -> bool:
     return False
 
 
-def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> None:
+def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> bool:
     if os.name == "nt":
-        return
+        return True
     name = str(config.get("interface_name", "") or "").strip()
     if name == "":
         raise RuntimeError("wireguard underlay missing interface_name")
@@ -334,23 +413,30 @@ def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> None:
     path = pathlib.Path(path_value)
     config_text = build_wireguard_interface_config(config)
     changed = write_text_if_changed(path, config_text, mode=0o600)
-    ensure_clean_transit_interface(name)
+    ensure_clean_transit_interface(name, desired_transit_addresses(config))
     if shutil_which("wg-quick") and path.is_file():
         if name != "" and shutil_which("systemctl"):
             if changed:
                 run_command(["systemctl", "daemon-reload"], check=False)
             run_command(["systemctl", "enable", f"wg-quick@{name}.service"], check=False)
-        run_command(["wg-quick", "up", str(path)], check=False)
-        if not wait_for_interface(name):
-            raise RuntimeError(f"transit interface did not appear after wg-quick up: {name}")
-        return
+        result = run_command(["wg-quick", "up", str(path)], check=False)
+        if result.returncode != 0 or not wait_for_interface(name):
+            detail = str(result.stderr or result.stdout or "interface did not appear").strip()
+            logging.warning("transit interface %s failed after wg-quick up: %s", name, detail)
+            ensure_clean_transit_interface(name, desired_transit_addresses(config))
+            return False
+        return True
     if name != "" and shutil_which("systemctl"):
         if changed:
             run_command(["systemctl", "daemon-reload"], check=False)
         run_command(["systemctl", "enable", f"wg-quick@{name}.service"], check=False)
-        run_command(["systemctl", "restart", f"wg-quick@{name}.service"], check=False)
-        if not wait_for_interface(name):
-            raise RuntimeError(f"transit interface did not appear after restart: {name}")
+        result = run_command(["systemctl", "restart", f"wg-quick@{name}.service"], check=False)
+        if result.returncode != 0 or not wait_for_interface(name):
+            detail = str(result.stderr or result.stdout or "interface did not appear").strip()
+            logging.warning("transit interface %s failed after systemd restart: %s", name, detail)
+            ensure_clean_transit_interface(name, desired_transit_addresses(config))
+            return False
+        return True
 
 
 def ensure_uot_client_service(interface_name: str, leg: dict[str, Any]) -> None:
@@ -387,6 +473,38 @@ WantedBy=multi-user.target
             run_command(["systemctl", "daemon-reload"], check=False)
         run_command(["systemctl", "enable", f"{service_name}.service"], check=False)
         run_command(["systemctl", "restart", f"{service_name}.service"], check=False)
+
+
+def parse_uot_client_unit_name(unit_stem: str) -> tuple[str, str]:
+    prefix = "leikwan-uot-"
+    value = str(unit_stem or "").strip()
+    if not value.startswith(prefix):
+        return "", ""
+    remainder = value[len(prefix):]
+    interface_name, separator, endpoint_id = remainder.rpartition("-")
+    if separator == "" or interface_name == "":
+        return "", ""
+    return interface_name, endpoint_id
+
+
+def remove_uot_client_service_units_for_interface(interface_name: str) -> bool:
+    normalized = str(interface_name or "").strip()
+    if normalized == "":
+        return False
+    unit_root = pathlib.Path("/etc/systemd/system")
+    if not unit_root.exists():
+        return False
+    removed = False
+    for unit_path in unit_root.glob(f"leikwan-uot-{normalized}-*.service"):
+        unit_name = unit_path.name
+        if shutil_which("systemctl"):
+            run_command(["systemctl", "stop", unit_name], check=False)
+            run_command(["systemctl", "disable", unit_name], check=False)
+            run_command(["systemctl", "reset-failed", unit_name], check=False)
+        if unit_path.exists():
+            unit_path.unlink()
+            removed = True
+    return removed
 
 
 def terminate_conflicting_uot_clients(local_udp_port: int) -> None:
@@ -464,11 +582,20 @@ def apply_underlay(config: dict[str, Any]) -> None:
 def configure_mptcp_policy(config: dict[str, Any]) -> None:
     if os.name == "nt" or not truthy(config.get("manage_mptcp_endpoints", False)):
         return
+    if not running_kernel_supports_mptcp():
+        logging.info("running kernel lacks MPTCP; skipping ip mptcp endpoint policy")
+        return
     if not shutil_which("ip"):
         return
 
     subflow_limit = max(1, int(config.get("subflow_limit", 2) or 2))
-    run_command(["ip", "mptcp", "limits", "set", "subflow", str(subflow_limit), "add_addr_accepted", str(subflow_limit)], check=False)
+    limit_result = run_command(
+        ["ip", "mptcp", "limits", "set", "subflow", str(subflow_limit), "add_addr_accepted", str(subflow_limit)],
+        check=False,
+    )
+    if limit_result.returncode != 0:
+        detail = str(limit_result.stderr or limit_result.stdout or "unknown error").strip()
+        logging.warning("kernel rejected MPTCP subflow limit %s; continuing with kernel limit: %s", subflow_limit, detail)
 
     # Apply MPTCP and TCP sysctls from config
     add_addr_timeout = int(config.get("add_addr_timeout", 5) or 5)
@@ -660,11 +787,58 @@ def configure_mptcp_policy(config: dict[str, Any]) -> None:
         result = run_command(parts, check=False)
         if result.returncode != 0:
             detail = str(result.stderr or result.stdout or "unknown error").strip()
+            lower_detail = detail.lower()
+            if (
+                "too many addresses" in lower_detail
+                or "duplicate" in lower_detail
+                or "file exists" in lower_detail
+                or "object already exists" in lower_detail
+            ):
+                logging.warning(
+                    "kernel skipped extra/duplicate MPTCP endpoint %s on %s; continuing with existing endpoints: %s",
+                    desired_entry["address"],
+                    ep_dev or "default",
+                    detail,
+                )
+                continue
             raise RuntimeError(f"failed to add MPTCP endpoint {desired_entry['address']} on {ep_dev or 'default'}: {detail}")
 
 
+def mptcp_capability() -> dict[str, Any]:
+    sysctl_path = pathlib.Path("/proc/sys/net/mptcp/enabled")
+    sysctl_present = sysctl_path.exists()
+    sysctl_value = ""
+    sysctl_enabled = False
+    if sysctl_present:
+        try:
+            sysctl_value = sysctl_path.read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            sysctl_value = ""
+        sysctl_enabled = sysctl_value not in MPTCP_FALSE_VALUES
+
+    socket_supported = False
+    socket_error = ""
+    if os.name != "nt":
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM, MPTCP_PROTOCOL):
+                socket_supported = True
+        except OSError as exc:
+            socket_error = str(exc)
+
+    supported = socket_supported and (sysctl_enabled or not sysctl_present)
+    return {
+        "supported": supported,
+        "sysctl_present": sysctl_present,
+        "sysctl_enabled": sysctl_enabled,
+        "sysctl_value": sysctl_value,
+        "socket_supported": socket_supported,
+        "protocol": MPTCP_PROTOCOL,
+        "reason": "mptcp_socket_available" if supported else (f"net.mptcp.enabled={sysctl_value or 'unset'}" if sysctl_present and not sysctl_enabled else socket_error or "mptcp_socket_unavailable"),
+    }
+
+
 def running_kernel_supports_mptcp() -> bool:
-    return pathlib.Path("/proc/sys/net/mptcp/enabled").exists()
+    return bool(mptcp_capability().get("supported", False))
 
 
 def remote_host_candidates(config: dict[str, Any]) -> list[str]:

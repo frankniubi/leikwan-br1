@@ -1,0 +1,208 @@
+=== endpoint data ===
+316|47.116.11.144|316|wstunnel-svc-2-316|2f35a4d2c26fb846460aa07156eaec75bced6fdcced7b645b22e830ee863ce7e|162.159.39.4|7013
+317|47.116.104.15|317|wstunnel-svc-2-317|85553dabcea48c3f159383056a6e75957681ba8d7fde1f5d2cc2a2cca87bc7c9|162.159.39.4|7002
+318|101.133.142.65|318|wstunnel-svc-2-318|bd5eb739e2676216288eba117a8e893d767fe6f7edb2260a11a728f44f7e3307|162.159.39.2|7002
+319|47.116.134.3|319|wstunnel-svc-2-319|48d684c9ff3c574205a556230f438faa3faf89f9113b4a28057d16dd7b792a53|162.159.39.6|7002
+320|8.133.170.123|320|wstunnel-svc-2-320|a5216e9a1b67b4519013060c24e06ab3951755b32b68ee17f4122cceae637f72|162.159.39.4|7002
+=== ep=316 host=47.116.11.144 edge=162.159.39.4 backend=7013 target=22 mode=banner 2026-05-16T20:13:05-04:00 ===
+RESULT ep=316 target=22 ok=10 fail=0 min=60.2 avg=96.8 vals=[60.2, 100.8, 99.9, 100.0, 99.8, 99.9, 107.9, 99.8, 99.9, 100.0] errs=[]
+--- key bond ---
+[2026-05-17T00:13:05Z INFO  leikwan_bond::session] bond client TCP transport session established
+=== ep=316 host=47.116.11.144 edge=162.159.39.4 backend=7013 target=5201 mode=iperf 2026-05-16T20:13:09-04:00 ===
+RESULT ep=316 target=5201 intervals [7.86, 7.86, 4.19, 4.72, 4.72] max 7.86 avg 5.87
+iperf3: interrupt - the client has terminated
+Connecting to host 127.0.0.1, port 14316
+Reverse mode, remote host 127.0.0.1 is sending
+[  5] local 127.0.0.1 port 1578 connected to 127.0.0.1 port 14316
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-1.00   sec   960 KBytes  7.86 Mbits/sec                  
+[  5]   1.00-2.00   sec   960 KBytes  7.86 Mbits/sec                  
+[  5]   2.00-3.00   sec   512 KBytes  4.19 Mbits/sec                  
+[  5]   3.00-4.00   sec   576 KBytes  4.72 Mbits/sec                  
+[  5]   4.00-5.00   sec   576 KBytes  4.72 Mbits/sec                  
+[  5]   6.00-17.40  sec  0.00 Bytes  0.00 bits/sec                  
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-17.40  sec  0.00 Bytes  0.00 bits/sec                  sender
+[  5]   0.00-17.40  sec  4.19 MBytes  2.02 Mbits/sec                  receiver
+
+--- key bond ---
+[2026-05-17T00:13:09Z WARN  leikwan_bond::session] failed to connect initial bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144: failed to read bond frame header
+[2026-05-17T00:13:09Z WARN  leikwan_bond::session] failed to establish persistent bond TCP transport: no bond legs acknowledged the TCP transport; retrying
+[2026-05-17T00:13:10Z INFO  leikwan_bond::session] bond client TCP transport session established
+[2026-05-17T00:13:19Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:19Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:20Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:21Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:21Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:22Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:22Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:23Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:24Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:24Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:25Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:26Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:26Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:27Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:28Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25316?priority=10&endpoint_id=316&display_host=47.116.11.144 entering cooldown for 1s
+[2026-05-17T00:13:28Z WARN  leikwan_bond::session] bond tcp stream 2 local read failed: Connection reset by peer (os error 104)
+[2026-05-17T00:13:28Z INFO  leikwan_bond::session] transport 019e3347-987d-78a0-b424-5651a882770c lifecycle local_read_failed stream=2 error=Connection reset by peer (os error 104) opened=true local_eof=false inbound_next=12648448 inbound_acked=12648448 fin_offset=None writer_shutdown=false backlog=0 pending_chunks=0 pending_bytes=0 outbound_next=37 outbound_fin=None outbound_fin_acked=false preferred_leg=Some(0) close_deadline_armed=false
+=== ep=317 host=47.116.104.15 edge=162.159.39.4 backend=7002 target=22 mode=banner 2026-05-16T20:13:29-04:00 ===
+RESULT ep=317 target=22 ok=10 fail=0 min=98.9 avg=138.5 vals=[98.9, 139.7, 143.3, 143.9, 143.9, 140.5, 143.4, 143.9, 143.8, 143.9] errs=[]
+--- key bond ---
+[2026-05-17T00:13:30Z INFO  leikwan_bond::session] bond client TCP transport session established
+=== ep=317 host=47.116.104.15 edge=162.159.39.4 backend=7002 target=5201 mode=iperf 2026-05-16T20:13:34-04:00 ===
+RESULT ep=317 target=5201 intervals [17.8, 15.7, 3.93, 8.13, 9.7] max 17.8 avg 11.05
+iperf3: interrupt - the client has terminated
+Connecting to host 127.0.0.1, port 14317
+Reverse mode, remote host 127.0.0.1 is sending
+[  5] local 127.0.0.1 port 52944 connected to 127.0.0.1 port 14317
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-1.00   sec  2.12 MBytes  17.8 Mbits/sec                  
+[  5]   1.00-2.00   sec  1.88 MBytes  15.7 Mbits/sec                  
+[  5]   2.00-3.00   sec   480 KBytes  3.93 Mbits/sec                  
+[  5]   3.00-4.00   sec   992 KBytes  8.13 Mbits/sec                  
+[  5]   4.00-5.00   sec  1.16 MBytes  9.70 Mbits/sec                  
+[  5]   6.00-17.56  sec  0.00 Bytes  0.00 bits/sec                  
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-17.56  sec  0.00 Bytes  0.00 bits/sec                  sender
+[  5]   0.00-17.56  sec  7.62 MBytes  3.64 Mbits/sec                  receiver
+
+--- key bond ---
+[2026-05-17T00:13:34Z INFO  leikwan_bond::session] bond client TCP transport session established
+[2026-05-17T00:13:43Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:44Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:45Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:46Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:46Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:47Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:48Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:48Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:49Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:50Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:50Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:51Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:52Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:52Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+[2026-05-17T00:13:53Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25317?priority=10&endpoint_id=317&display_host=47.116.104.15 entering cooldown for 1s
+=== ep=318 host=101.133.142.65 edge=162.159.39.2 backend=7002 target=22 mode=banner 2026-05-16T20:13:54-04:00 ===
+RESULT ep=318 target=22 ok=10 fail=0 min=77.5 avg=115.6 vals=[77.5, 119.5, 119.8, 119.9, 120.0, 120.0, 119.9, 119.9, 119.9, 120.0] errs=[]
+--- key bond ---
+[2026-05-17T00:13:55Z INFO  leikwan_bond::session] bond client TCP transport session established
+=== ep=318 host=101.133.142.65 edge=162.159.39.2 backend=7002 target=5201 mode=iperf 2026-05-16T20:13:59-04:00 ===
+RESULT ep=318 target=5201 intervals [6.29, 5.24, 4.19, 3.93, 4.46] max 6.29 avg 4.82
+iperf3: interrupt - the client has terminated
+Connecting to host 127.0.0.1, port 14318
+Reverse mode, remote host 127.0.0.1 is sending
+[  5] local 127.0.0.1 port 42956 connected to 127.0.0.1 port 14318
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-1.00   sec   768 KBytes  6.29 Mbits/sec                  
+[  5]   1.00-2.00   sec   640 KBytes  5.24 Mbits/sec                  
+[  5]   2.00-3.00   sec   512 KBytes  4.19 Mbits/sec                  
+[  5]   3.00-4.00   sec   480 KBytes  3.93 Mbits/sec                  
+[  5]   4.00-5.00   sec   544 KBytes  4.46 Mbits/sec                  
+[  5]   6.00-15.87  sec  0.00 Bytes  0.00 bits/sec                  
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-15.87  sec  0.00 Bytes  0.00 bits/sec                  sender
+[  5]   0.00-15.87  sec  3.38 MBytes  1.78 Mbits/sec                  receiver
+
+--- key bond ---
+[2026-05-17T00:13:59Z WARN  leikwan_bond::session] failed to connect initial bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65: failed to read bond frame header
+[2026-05-17T00:13:59Z WARN  leikwan_bond::session] failed to establish persistent bond TCP transport: no bond legs acknowledged the TCP transport; retrying
+[2026-05-17T00:14:00Z WARN  leikwan_bond::session] failed to connect initial bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65: failed to read bond frame header
+[2026-05-17T00:14:00Z WARN  leikwan_bond::session] failed to establish persistent bond TCP transport: no bond legs acknowledged the TCP transport; retrying
+[2026-05-17T00:14:01Z INFO  leikwan_bond::session] bond client TCP transport session established
+[2026-05-17T00:14:10Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+[2026-05-17T00:14:10Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+[2026-05-17T00:14:11Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+[2026-05-17T00:14:12Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+[2026-05-17T00:14:12Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+[2026-05-17T00:14:13Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+[2026-05-17T00:14:14Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+[2026-05-17T00:14:14Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+[2026-05-17T00:14:15Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+[2026-05-17T00:14:16Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+[2026-05-17T00:14:17Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+[2026-05-17T00:14:17Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25318?priority=10&endpoint_id=318&display_host=101.133.142.65 entering cooldown for 1s
+=== ep=319 host=47.116.134.3 edge=162.159.39.6 backend=7002 target=22 mode=banner 2026-05-16T20:14:19-04:00 ===
+RESULT ep=319 target=22 ok=10 fail=0 min=119.9 avg=165.1 vals=[541.1, 123.9, 119.9, 124.8, 122.1, 124.0, 123.8, 124.1, 125.8, 121.8] errs=[]
+--- key bond ---
+[2026-05-17T00:14:19Z WARN  leikwan_bond::session] failed to connect initial bond leg tcp://127.0.0.1:23319?priority=10&endpoint_id=319&display_host=47.116.134.3: failed to read bond frame header
+[2026-05-17T00:14:19Z WARN  leikwan_bond::session] failed to establish persistent bond TCP transport: no bond legs acknowledged the TCP transport; retrying
+[2026-05-17T00:14:20Z INFO  leikwan_bond::session] bond client TCP transport session established
+=== ep=319 host=47.116.134.3 edge=162.159.39.6 backend=7002 target=5201 mode=iperf 2026-05-16T20:14:24-04:00 ===
+RESULT ep=319 target=5201 intervals [18.3, 6.82, 18.4, 15.5, 6.55] max 18.4 avg 13.11
+iperf3: interrupt - the client has terminated
+Connecting to host 127.0.0.1, port 14319
+Reverse mode, remote host 127.0.0.1 is sending
+[  5] local 127.0.0.1 port 59942 connected to 127.0.0.1 port 14319
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-1.00   sec  2.19 MBytes  18.3 Mbits/sec                  
+[  5]   1.00-2.00   sec   832 KBytes  6.82 Mbits/sec                  
+[  5]   2.00-3.00   sec  2.19 MBytes  18.4 Mbits/sec                  
+[  5]   3.00-4.00   sec  1.84 MBytes  15.5 Mbits/sec                  
+[  5]   4.00-5.00   sec   800 KBytes  6.55 Mbits/sec                  
+[  5]   6.00-17.56  sec  0.00 Bytes  0.00 bits/sec                  
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-17.56  sec  0.00 Bytes  0.00 bits/sec                  sender
+[  5]   0.00-17.56  sec  8.62 MBytes  4.12 Mbits/sec                  receiver
+
+--- key bond ---
+[2026-05-17T00:14:24Z INFO  leikwan_bond::session] bond client TCP transport session established
+[2026-05-17T00:14:33Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:34Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:35Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:35Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:36Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:37Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:37Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:38Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:39Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:39Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:40Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:41Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:41Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:42Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+[2026-05-17T00:14:43Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25319?priority=10&endpoint_id=319&display_host=47.116.134.3 entering cooldown for 1s
+=== ep=320 host=8.133.170.123 edge=162.159.39.4 backend=7002 target=22 mode=banner 2026-05-16T20:14:44-04:00 ===
+RESULT ep=320 target=22 ok=10 fail=0 min=65.0 avg=111.1 vals=[65.0, 98.6, 131.8, 95.9, 132.0, 132.0, 95.9, 95.7, 132.1, 131.8] errs=[]
+--- key bond ---
+[2026-05-17T00:14:44Z INFO  leikwan_bond::session] bond client TCP transport session established
+=== ep=320 host=8.133.170.123 edge=162.159.39.4 backend=7002 target=5201 mode=iperf 2026-05-16T20:14:48-04:00 ===
+RESULT ep=320 target=5201 intervals [6.29, 9.44, 8.39, 5.77, 3.41] max 9.44 avg 6.66
+iperf3: interrupt - the client has terminated
+Connecting to host 127.0.0.1, port 14320
+Reverse mode, remote host 127.0.0.1 is sending
+[  5] local 127.0.0.1 port 37274 connected to 127.0.0.1 port 14320
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-1.00   sec   768 KBytes  6.29 Mbits/sec                  
+[  5]   1.00-2.00   sec  1.12 MBytes  9.44 Mbits/sec                  
+[  5]   2.00-3.00   sec  1.00 MBytes  8.39 Mbits/sec                  
+[  5]   3.00-4.00   sec   704 KBytes  5.77 Mbits/sec                  
+[  5]   4.00-5.00   sec   416 KBytes  3.41 Mbits/sec                  
+[  5]   6.00-17.43  sec  0.00 Bytes  0.00 bits/sec                  
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-17.43  sec  0.00 Bytes  0.00 bits/sec                  sender
+[  5]   0.00-17.43  sec  5.06 MBytes  2.44 Mbits/sec                  receiver
+
+--- key bond ---
+[2026-05-17T00:14:49Z INFO  leikwan_bond::session] bond client TCP transport session established
+[2026-05-17T00:14:58Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:14:59Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:14:59Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:00Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:01Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:01Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:02Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:03Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:04Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:04Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:05Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:05Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:06Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:07Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s
+[2026-05-17T00:15:07Z WARN  leikwan_bond::session] bond leg tcp://127.0.0.1:25320?priority=10&endpoint_id=320&display_host=8.133.170.123 entering cooldown for 1s

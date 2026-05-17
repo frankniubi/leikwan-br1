@@ -265,7 +265,8 @@ final class ArtifactController extends BaseController
             'wstunnel_windows_amd64',
             'leikwan_bond_linux_amd64',
             'leikwan_bond_windows_amd64',
-            'leikwan_bond_android_arm64'
+            'leikwan_bond_android_arm64',
+            'leikwan_mptcp_relay_linux_amd64'
         );
         if (isset($manifest['windows_client_app']) && is_array($manifest['windows_client_app'])) {
             $manifest['windows_client_app']['artifact_url'] = (string) (($this->versions()['windows_client_app']['artifact_url'] ?? '') ?: $manifest['windows_client_app']['artifact_url']);

@@ -197,7 +197,10 @@ final class NodeController extends BaseController
         } elseif (is_array($group ?? null) && !empty($group['group_key'])) {
             $this->provisioning->reconcileActiveForwardsForGroup((string) $group['group_key']);
         }
-        $this->provisioning->republishActiveEndpointsForNode((int) $node['id']);
+        $this->provisioning->applyForwardChainRemediationSignals((int) $node['id'], $mergedCapabilities);
+        if (!array_key_exists('forward_chain_remediation', $body) || !is_array($body['forward_chain_remediation'])) {
+            $this->provisioning->republishActiveEndpointsForNode((int) $node['id']);
+        }
 
         return $this->json(['ok' => true]);
     }
@@ -277,6 +280,7 @@ final class NodeController extends BaseController
             'usage_interval_seconds',
             'log_level',
             'udp_uot_sidepath',
+            'forward_chain_remediation',
         ], null);
 
         foreach (array_keys($snapshot) as $key) {
@@ -336,6 +340,9 @@ final class NodeController extends BaseController
                     $config[$key] = $value;
                 }
             }
+        }
+        if (array_key_exists('forward_chain_remediation', $body) && is_array($body['forward_chain_remediation'])) {
+            $config['forward_chain_remediation'] = $body['forward_chain_remediation'];
         }
         foreach (['wireguard_listen_port', 'wireguard_fallback_tcp_port'] as $key) {
             if (array_key_exists($key, $body) && $body[$key] !== null && $body[$key] !== '') {
