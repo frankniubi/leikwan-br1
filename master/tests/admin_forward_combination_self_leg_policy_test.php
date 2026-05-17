@@ -13,6 +13,8 @@ foreach ([
     'name="self_leg_scope"',
     'name="self_leg_role"',
     'name="helper_group_cap"',
+    'Max Legs Used',
+    'Default 4 for bond, CF Bond and MPTCP',
     'name="helper_escalation_policy"',
     'helper_node_group_keys_text',
 ] as $snippet) {
