@@ -5,7 +5,11 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from test_client_agent_mptcp_health_grace import load_module
+try:
+    from test_client_agent_mptcp_health_grace import load_module
+except ModuleNotFoundError:  # dotted unittest invocation from repo root
+    import importlib
+    load_module = importlib.import_module("client-agent.tests.test_client_agent_mptcp_health_grace").load_module
 
 
 client_agent_module = load_module(
@@ -270,6 +274,56 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             restart_mock.assert_not_called()
             refresh_mock.assert_called_once()
             entry = agent.load_bond_endpoint_health()["26"]["185"]
+            self.assertEqual(entry["role"], "quarantined")
+
+
+    def test_self_leg_selected_cf_bond_does_not_restart_when_slave_helpers_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            forward = {
+                "forward_id": 47,
+                "service_status": "active",
+                "listen_port": 11035,
+                "mode": "bond",
+                "backend_mode": "cf_mode",
+                "runtime_preference": "mptcp_preferred_bond_fallback",
+                "path_prefix": "07289d1f5ed25399",
+                "candidate_pool": [
+                    {
+                        "candidate_kind": "self_leg",
+                        "selected_primary": True,
+                        "probe_transport": "cf_direct_wss",
+                        "target_sidecar_bond_port": 8899,
+                    }
+                ],
+                "endpoints": [
+                    {
+                        "endpoint_id": 316,
+                        "host": "47.116.11.144",
+                        "port": 7000,
+                        "ingress_auth_token": "token-1",
+                    },
+                ],
+                "bonding": {
+                    "ingress_mode": "plain_tcp_mux",
+                    "route_key": "07289d1f5ed25399",
+                    "ws_priority": 10,
+                    "session_token": "session-token-1",
+                },
+            }
+
+            with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                with mock.patch.object(agent, "local_runtime_probe", return_value=(True, 1.0, None)):
+                    with mock.patch.object(agent, "remote_plain_tcp_ready_probe", return_value=(False, None, "empty_plain_tcp_probe_response")):
+                        with mock.patch.object(agent, "cf_bond_one_leg_connect_probe", side_effect=AssertionError("failed helper should not be promoted to one-leg bond probe")):
+                            with mock.patch.object(agent, "restart_forward_service") as restart_mock:
+                                with mock.patch.object(agent, "refresh_bond_runtime_endpoints") as refresh_mock:
+                                    with mock.patch.object(agent, "collect_live_bond_slave_connections", return_value=[]):
+                                        agent.ensure_runtime_health([forward])
+
+            restart_mock.assert_not_called()
+            refresh_mock.assert_not_called()
+            entry = agent.load_bond_endpoint_health()["47"]["316"]
             self.assertEqual(entry["role"], "quarantined")
 
     def test_service_status_matches_bond_restart_rule_for_connection_reset_warning(self) -> None:

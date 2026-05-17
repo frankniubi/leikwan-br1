@@ -26,11 +26,15 @@ pub struct BondLeg {
     pub local_addr: SocketAddr,
     pub peer_addr: SocketAddr,
     pub dev: String,
+    pub priority: u32,
+    pub direct: bool,
 }
 
 struct LegWriter {
     stream: TcpStream,
     dev: String,
+    priority: u32,
+    direct: bool,
     /// Consecutive timeout count. If > threshold, leg is "benched" temporarily.
     timeouts: u32,
     /// If true, this leg is excluded from distribution until cooldown resets.
@@ -106,7 +110,12 @@ pub fn bond_relay_tcp(
     let _timeout = Duration::from_millis(config.connect_timeout_ms);
 
     for leg in legs {
-        match mptcp::mptcp_connect_bound(leg.local_addr, leg.peer_addr, &sock_config) {
+        let connect_result = if leg.direct {
+            TcpStream::connect(leg.peer_addr)
+        } else {
+            mptcp::mptcp_connect_bound(leg.local_addr, leg.peer_addr, &sock_config)
+        };
+        match connect_result {
             Ok(mut stream) => {
                 stream.set_nodelay(true).ok();
                 // Send handshake with bond_session_id.
@@ -115,6 +124,8 @@ pub fn bond_relay_tcp(
                     &config.tcp_session_token,
                     config.forward_id,
                     bond_session_id,
+                    leg.priority,
+                    leg.direct,
                 ) {
                     warn!("bond leg {} handshake failed: {}", leg.dev, e);
                     continue;
@@ -123,6 +134,8 @@ pub fn bond_relay_tcp(
                 connected_legs.push(LegWriter {
                     stream,
                     dev: leg.dev.clone(),
+                    priority: leg.priority,
+                    direct: leg.direct,
                     timeouts: 0,
                     benched: false,
                     cooldown: 0,
@@ -182,6 +195,20 @@ pub fn bond_relay_tcp(
         let mut local_rd = local_rd;
         let mut buf = vec![0u8; chunk_size];
         let mut rr_idx: usize = 0;
+
+        fn leg_attempt_order(legs: &[LegWriter], rr_idx: usize) -> Vec<usize> {
+            let leg_count = legs.len();
+            let mut order: Vec<usize> = (0..leg_count).collect();
+            if legs.iter().any(|leg| leg.direct) {
+                order.sort_by_key(|idx| {
+                    let leg = &legs[*idx];
+                    (leg.priority, if leg.direct { 0_u8 } else { 1_u8 }, (*idx + leg_count - (rr_idx % leg_count)) % leg_count)
+                });
+                return order;
+            }
+            order.sort_by_key(|idx| (*idx + leg_count - (rr_idx % leg_count)) % leg_count);
+            order
+        }
 
         // Set short write timeouts on all legs.
         {
@@ -247,9 +274,10 @@ pub fn bond_relay_tcp(
             }
 
             let mut sent = false;
-            // First pass: try non-benched legs.
-            for attempt in 0..leg_count {
-                let idx = (rr_idx + attempt) % leg_count;
+            // First pass: try non-benched legs. Direct/self legs have the lowest
+            // priority value and are attempted first for every frame; slave
+            // transit legs become helpers when the direct leg is congested.
+            for idx in leg_attempt_order(&legs_guard, rr_idx) {
                 if legs_guard[idx].benched {
                     continue;
                 }
@@ -306,8 +334,7 @@ pub fn bond_relay_tcp(
                 for leg in legs_guard.iter_mut() {
                     leg.stream.set_write_timeout(Some(Duration::from_millis(200))).ok();
                 }
-                for attempt in 0..leg_count {
-                    let idx = (rr_idx + attempt) % leg_count;
+                for idx in leg_attempt_order(&legs_guard, rr_idx) {
                     if legs_guard[idx].stream.write_all(&frame).is_ok() {
                         rr_idx = idx + 1;
                         sent = true;
@@ -449,12 +476,16 @@ fn send_bond_handshake(
     token: &str,
     forward_id: u64,
     bond_session_id: u64,
+    leg_priority: u32,
+    leg_direct: bool,
 ) -> Result<()> {
     let hs = serde_json::json!({
         "protocol": "tcp",
         "session_token": token,
         "forward_id": forward_id,
         "bond_session_id": bond_session_id,
+        "leg_priority": leg_priority,
+        "leg_direct": leg_direct,
     });
     let bytes = serde_json::to_vec(&hs)?;
     let len = (bytes.len() as u32).to_be_bytes();
@@ -471,11 +502,17 @@ pub struct BondSessionRegistry {
     sessions: Mutex<HashMap<u64, Arc<BondSession>>>,
 }
 
+struct ServerLegWriter {
+    stream: TcpStream,
+    priority: u32,
+    direct: bool,
+}
+
 pub(crate) struct BondSession {
     target_wr: Mutex<TcpStream>,
     reassembly: Mutex<ReassemblyState>,
     reassembly_notify: Condvar,
-    legs_wr: Mutex<Vec<TcpStream>>,
+    legs_wr: Mutex<Vec<ServerLegWriter>>,
     send_seq: AtomicU32,
     shutdown: AtomicBool,
     /// How many legs have connected so far.
@@ -539,6 +576,8 @@ pub fn handle_bond_leg(
     target_addr: SocketAddr,
     registry: &Arc<BondSessionRegistry>,
     sock_config: &crate::mptcp::SocketConfig,
+    leg_priority: u32,
+    leg_direct: bool,
 ) -> Result<()> {
     let leg_peer = leg_stream
         .peer_addr()
@@ -568,7 +607,12 @@ pub fn handle_bond_leg(
     {
         let leg_wr = leg_stream.try_clone()?;
         let mut legs = session.legs_wr.lock().unwrap();
-        legs.push(leg_wr);
+        legs.push(ServerLegWriter {
+            stream: leg_wr,
+            priority: leg_priority,
+            direct: leg_direct,
+        });
+        legs.sort_by_key(|leg| (leg.priority, if leg.direct { 0_u8 } else { 1_u8 }));
     }
 
     if is_first {
@@ -658,7 +702,7 @@ fn bond_server_backward(session: Arc<BondSession>) {
     {
         let legs = session.legs_wr.lock().unwrap();
         for leg in legs.iter() {
-            leg.set_write_timeout(Some(Duration::from_millis(50))).ok();
+            leg.stream.set_write_timeout(Some(Duration::from_millis(50))).ok();
         }
     }
 
@@ -675,7 +719,7 @@ fn bond_server_backward(session: Arc<BondSession>) {
                 let eof = encode_frame(EOF_SEQ, &[]);
                 let mut legs = session.legs_wr.lock().unwrap();
                 for leg in legs.iter_mut() {
-                    let _ = leg.write_all(&eof);
+                    let _ = leg.stream.write_all(&eof);
                 }
                 break;
             }
@@ -690,9 +734,18 @@ fn bond_server_backward(session: Arc<BondSession>) {
                 }
 
                 let mut sent = false;
-                for attempt in 0..leg_count {
-                    let idx = (rr_idx + attempt) % leg_count;
-                    match legs[idx].write_all(&frame) {
+                let priority_first = legs.iter().any(|leg| leg.direct);
+                let mut order: Vec<usize> = (0..leg_count).collect();
+                if priority_first {
+                    order.sort_by_key(|idx| {
+                        let leg = &legs[*idx];
+                        (leg.priority, if leg.direct { 0_u8 } else { 1_u8 }, (*idx + leg_count - (rr_idx % leg_count)) % leg_count)
+                    });
+                } else {
+                    order.sort_by_key(|idx| (*idx + leg_count - (rr_idx % leg_count)) % leg_count);
+                }
+                for idx in order {
+                    match legs[idx].stream.write_all(&frame) {
                         Ok(_) => {
                             rr_idx = idx + 1;
                             sent = true;
@@ -711,9 +764,17 @@ fn bond_server_backward(session: Arc<BondSession>) {
                     std::thread::sleep(Duration::from_millis(10));
                     let mut legs = session.legs_wr.lock().unwrap();
                     let leg_count = legs.len();
-                    for attempt in 0..leg_count {
-                        let idx = (rr_idx + attempt) % leg_count;
-                        if legs[idx].write_all(&frame).is_ok() {
+                    let mut order: Vec<usize> = (0..leg_count).collect();
+                    if legs.iter().any(|leg| leg.direct) {
+                        order.sort_by_key(|idx| {
+                            let leg = &legs[*idx];
+                            (leg.priority, if leg.direct { 0_u8 } else { 1_u8 }, (*idx + leg_count - (rr_idx % leg_count)) % leg_count)
+                        });
+                    } else {
+                        order.sort_by_key(|idx| (*idx + leg_count - (rr_idx % leg_count)) % leg_count);
+                    }
+                    for idx in order {
+                        if legs[idx].stream.write_all(&frame).is_ok() {
                             rr_idx = idx + 1;
                             sent = true;
                             break;
@@ -816,8 +877,42 @@ fn bond_server_drain(session: Arc<BondSession>) {
 /// Each underlay has `local_address` (bind addr) and `mptcp_remote_address`
 /// (peer sidecar addr). Combined with `remote_port` from config.
 pub fn derive_bond_legs_from_config(config: &ClientConfig) -> Vec<BondLeg> {
-    let port = config.remote_port;
+    let port = if config.relay_port > 0 { config.relay_port } else { config.remote_port };
     let mut legs = Vec::new();
+
+    for direct_leg in &config.direct_legs {
+        let host = direct_leg
+            .get("local_host")
+            .and_then(|v| v.as_str())
+            .unwrap_or("127.0.0.1");
+        let port = match direct_leg.get("local_port").and_then(|v| v.as_u64()) {
+            Some(value) if value > 0 && value <= u16::MAX as u64 => value as u16,
+            _ => continue,
+        };
+        let priority = direct_leg
+            .get("priority")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1) as u32;
+        let display_host = direct_leg
+            .get("display_host")
+            .and_then(|v| v.as_str())
+            .unwrap_or("self_leg");
+        let local_addr: SocketAddr = match "0.0.0.0:0".parse() {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        let peer_addr: SocketAddr = match format!("{}:{}", host, port).parse() {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        legs.push(BondLeg {
+            local_addr,
+            peer_addr,
+            dev: display_host.to_string(),
+            priority,
+            direct: true,
+        });
+    }
 
     for underlay in &config.underlays {
         let iface = underlay
@@ -849,13 +944,66 @@ pub fn derive_bond_legs_from_config(config: &ClientConfig) -> Vec<BondLeg> {
                 Err(_) => continue,
             };
 
+            let priority = leg
+                .get("priority")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10 + legs.len() as u64) as u32;
+
             legs.push(BondLeg {
                 local_addr,
                 peer_addr,
                 dev: iface.to_string(),
+                priority,
+                direct: false,
             });
         }
     }
 
+    legs.sort_by_key(|leg| (leg.priority, if leg.direct { 0 } else { 1 }, leg.dev.clone()));
     legs
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ClientConfig;
+
+    #[test]
+    fn derive_bond_legs_prefers_direct_cf_leg_before_slave_underlays() {
+        let config: ClientConfig = serde_json::from_value(serde_json::json!({
+            "forward_id": 47,
+            "listen_port": 11035,
+            "transport": "tcp",
+            "remote_host": "127.0.0.1",
+            "remote_port": 39999,
+            "relay_port": 8898,
+            "bond_mode": "tcp",
+            "tcp_session_token": "tcp-token",
+            "udp_session_token": "udp-token",
+            "direct_legs": [
+                {"candidate_kind": "self_leg", "local_host": "127.0.0.1", "local_port": 39999, "priority": 1, "display_host": "self_leg"}
+            ],
+            "underlays": [
+                {
+                    "interface_name": "lw-mptcp-47-0",
+                    "legs": [
+                        {"local_address": "10.203.201.181", "mptcp_remote_address": "10.203.201.183", "priority": 10}
+                    ]
+                }
+            ]
+        })).expect("client config");
+
+        let legs = derive_bond_legs_from_config(&config);
+
+        assert_eq!(2, legs.len());
+        assert!(legs[0].direct);
+        assert_eq!("self_leg", legs[0].dev);
+        assert_eq!(1, legs[0].priority);
+        assert_eq!("127.0.0.1:39999".parse::<SocketAddr>().unwrap(), legs[0].peer_addr);
+        assert!(!legs[1].direct);
+        assert_eq!("lw-mptcp-47-0", legs[1].dev);
+        assert_eq!("10.203.201.183:8898".parse::<SocketAddr>().unwrap(), legs[1].peer_addr);
+        assert!(legs[1].priority > legs[0].priority);
+    }
 }

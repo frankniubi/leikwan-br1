@@ -57,7 +57,7 @@ def _leg_query_params(priority: int, endpoint: dict | None = None) -> str:
     if isinstance(endpoint, dict):
         endpoint_id = int_or_default(endpoint.get("endpoint_id"), 0)
         node_id = int_or_default(endpoint.get("node_id"), 0)
-        host = str(endpoint.get("host", "") or "").strip()
+        host = str(endpoint.get("display_host", "") or endpoint.get("host", "") or "").strip()
         leg_role = str(endpoint.get("leg_role", "") or "").strip()
         if endpoint_id > 0:
             params.append(f"endpoint_id={endpoint_id}")
@@ -264,6 +264,170 @@ WantedBy=multi-user.target
     }
 
 
+
+
+def candidate_kind(candidate: dict) -> str:
+    return str(candidate.get("candidate_kind", "") or "").strip().lower()
+
+
+def selected_self_leg_candidates(forward: dict) -> list[dict]:
+    raw_pool = forward.get("candidate_pool", [])
+    if not isinstance(raw_pool, list):
+        return []
+    selected = [
+        dict(item)
+        for item in raw_pool
+        if isinstance(item, dict)
+        and candidate_kind(item) == "self_leg"
+        and truthy(item.get("selected_primary", False))
+    ]
+    if selected:
+        return selected
+    return [dict(item) for item in raw_pool if isinstance(item, dict) and candidate_kind(item) == "self_leg"][:1]
+
+
+def self_leg_endpoint(candidate: dict, forward: dict) -> dict | None:
+    host = str(candidate.get("dial_connect_ip", "") or candidate.get("dial_host", "") or "").strip()
+    port = int_or_default(candidate.get("dial_port"), 0)
+    if host == "" or port <= 0:
+        return None
+    path_prefix = str(candidate.get("path_prefix", "") or forward.get("path_prefix", "") or "").strip()
+    if path_prefix == "":
+        return None
+    sni_host = str(candidate.get("cf_sni_host", "") or candidate.get("sni_host", "") or forward.get("sni", "") or host).strip()
+    return {
+        "candidate_kind": "self_leg",
+        "endpoint_id": int_or_default(candidate.get("endpoint_id"), 0),
+        "host": host,
+        "port": port,
+        "display_host": "self_leg",
+        "dial_connect_ip": str(candidate.get("dial_connect_ip", "") or "").strip(),
+        "cdn_host": sni_host,
+        "cf_sni_host": sni_host,
+        "path_prefix": path_prefix,
+        "leg_role": "primary",
+        "supports_quic_leg": False,
+        "dynamic_priority": max(1, int_or_default(candidate.get("dynamic_priority"), 10)),
+        "health_role": str(candidate.get("health_role", "healthy") or "healthy"),
+        "target_sidecar_port": int_or_default(
+            candidate.get("target_sidecar_bond_port") or candidate.get("target_sidecar_port"),
+            0,
+        ),
+        "target_sidecar_bond_port": int_or_default(candidate.get("target_sidecar_bond_port"), 0),
+        "target_sidecar_mptcp_port": int_or_default(candidate.get("target_sidecar_mptcp_port"), 0),
+    }
+
+
+
+def selected_mptcp_self_leg_candidates(forward: dict) -> list[dict]:
+    raw_pool = forward.get("candidate_pool", [])
+    if not isinstance(raw_pool, list):
+        return []
+    selected = [
+        dict(item)
+        for item in raw_pool
+        if isinstance(item, dict)
+        and candidate_kind(item) == "self_leg"
+        and truthy(item.get("selected_primary", False))
+        and "mptcp" in [str(value).strip().lower() for value in item.get("runtime_capabilities", [])]
+        and not (isinstance(item.get("self_leg_wg"), dict) and truthy(item.get("self_leg_wg", {}).get("enabled", True)))
+    ]
+    return selected[:1]
+
+
+def selected_private_wg_self_leg_candidates(forward: dict) -> list[dict]:
+    raw_pool = forward.get("candidate_pool", [])
+    if not isinstance(raw_pool, list):
+        return []
+    selected = [
+        dict(item)
+        for item in raw_pool
+        if isinstance(item, dict)
+        and candidate_kind(item) == "self_leg"
+        and truthy(item.get("selected_primary", False))
+        and "mptcp" in [str(value).strip().lower() for value in item.get("runtime_capabilities", [])]
+        and isinstance(item.get("self_leg_wg"), dict)
+        and truthy(item.get("self_leg_wg", {}).get("enabled", True))
+    ]
+    return selected[:1]
+
+
+def self_leg_wg_underlay(candidate: dict, forward: dict) -> dict | None:
+    wg = candidate.get("self_leg_wg", {})
+    if not isinstance(wg, dict) or not truthy(wg.get("enabled", True)):
+        return None
+    forward_id = int_or_default(forward.get("forward_id"), int_or_default(candidate.get("forward_id"), 0))
+    interface_name = str(wg.get("interface_name", "") or (f"lw-self-{forward_id}" if forward_id > 0 else "")).strip()[:15]
+    client_address = str(wg.get("client_address", "") or "").strip()
+    sidecar_address = str(wg.get("sidecar_address", "") or "").strip()
+    sidecar_public_key = str(wg.get("sidecar_public_key", "") or "").strip()
+    endpoint_host = str(wg.get("endpoint_host", "") or wg.get("sidecar_endpoint_host", "") or candidate.get("target_sidecar_host", "") or "").strip()
+    endpoint_port = int_or_default(wg.get("endpoint_port") or wg.get("sidecar_endpoint_port"), 0)
+    if interface_name == "" or client_address == "" or sidecar_address == "" or sidecar_public_key == "" or endpoint_host == "" or endpoint_port <= 0:
+        return None
+    leg = {
+        "forward_id": forward_id,
+        "endpoint_id": int_or_default(candidate.get("endpoint_id"), 0),
+        "outer_transport": str(wg.get("outer_transport", "udp") or "udp").strip().lower() or "udp",
+        "local_address": client_address,
+        "peer_address": sidecar_address,
+        "mptcp_remote_address": sidecar_address,
+        "peer_public_key": sidecar_public_key,
+        "peer_public_host": endpoint_host,
+        "peer_udp_port": endpoint_port,
+        "peer_tcp_fallback_port": int_or_default(wg.get("fallback_tcp_port") or wg.get("peer_tcp_fallback_port"), 0),
+    }
+    return {
+        "type": "wireguard",
+        "mode": "client_self_leg",
+        "interface_name": interface_name,
+        "peer_keepalive_seconds": int_or_default(wg.get("persistent_keepalive") or wg.get("peer_keepalive_seconds"), 25),
+        "legs": [leg],
+    }
+
+
+def mptcp_self_leg_endpoint(candidate: dict, forward: dict, priority: int) -> dict | None:
+    endpoint = self_leg_endpoint(candidate, forward)
+    if endpoint is None:
+        return None
+    endpoint["priority"] = priority
+    endpoint["dynamic_priority"] = priority
+    endpoint["mptcp_direct"] = True
+    endpoint["target_sidecar_host"] = str(candidate.get("target_sidecar_host", "") or "").strip()
+    endpoint["target_sidecar_port"] = int_or_default(
+        candidate.get("target_sidecar_port") or candidate.get("target_sidecar_mptcp_port"),
+        0,
+    )
+    return endpoint
+
+
+def append_wstunnel_direct_leg(
+    lines: list[str],
+    endpoint: dict,
+    local_port: int,
+    remote_target: str,
+    default_sni: str,
+    default_path_prefix: str,
+) -> None:
+    host = str(endpoint.get("host", "") or "").strip()
+    port = int_or_default(endpoint.get("port"), 0)
+    if host == "" or port <= 0:
+        return
+    leg_path_prefix = endpoint_path_prefix(endpoint, default_path_prefix)
+    leg_sni = endpoint_sni(endpoint, default_sni)
+    lines.append(
+        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{local_port}:{remote_target} "
+        f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
+        f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
+    )
+
+
+def endpoint_path_prefix(endpoint: dict, default_path_prefix: str) -> str:
+    return str(endpoint.get("path_prefix", "") or default_path_prefix or "").strip()
+
+
+def endpoint_sni(endpoint: dict, default_sni: str) -> str:
+    return str(endpoint.get("cf_sni_host", "") or endpoint.get("sni_host", "") or endpoint.get("cdn_host", "") or default_sni or endpoint.get("host", "") or "").strip()
 def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     forward_id = int(forward["forward_id"])
     listen_port = int(forward["listen_port"])
@@ -279,6 +443,12 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     bond = bonding_config(forward)
     mptcp = mptcp_config(forward)
     bond_remote_target = str(bond.get("remote_target", "")).strip()
+    if bond_remote_target == "" and str(forward.get("backend_mode", "") or "").strip().lower() == "cf_mode":
+        fallback_port = int_or_default(forward.get("bond_sidecar_port"), 0)
+        if fallback_port <= 0:
+            fallback_port = int_or_default(forward.get("bond_remote_port"), 0)
+        if fallback_port > 0:
+            bond_remote_target = f"127.0.0.1:{fallback_port}"
     bond_session_token = str(bond.get("session_token", "")).strip()
     bond_udp_session_token = str(bond.get("udp_session_token", "")).strip()
     bond_bin = str(agent_config.get("bond_bin", "/usr/local/bin/leikwan-bond")).strip() or "/usr/local/bin/leikwan-bond"
@@ -355,6 +525,14 @@ WantedBy=multi-user.target
     if mode == "bond":
         if bond_remote_target == "":
             raise RuntimeError("bond mode missing bonding.remote_target")
+        self_leg_endpoints = [
+            endpoint
+            for candidate in selected_self_leg_candidates(forward)
+            for endpoint in [self_leg_endpoint(candidate, forward)]
+            if endpoint is not None
+        ]
+        if self_leg_endpoints:
+            endpoints = self_leg_endpoints + endpoints
         if endpoints == []:
             raise RuntimeError("bond mode requires at least one endpoint")
         sidepath = udp_uot_sidepath_settings(forward, agent_config)
@@ -381,6 +559,7 @@ WantedBy=multi-user.target
         use_local_rate_limit = speed_limit_mbps if not truthy(bond.get("disable_local_rate_limit", True)) else None
         ws_priority = int_or_default(bond.get("ws_priority"), 10)
         join_timeout_ms = adaptive_join_timeout_ms(bond, endpoints)
+        single_leg_fast_path = len(endpoints) == 1 and primary_transport in ("tcp", "tcp+udp")
         selected_quic_legs = select_active_quic_legs(endpoints, bond)
         use_wss_as_active_legs = selected_quic_legs == []
         interactive_chunk_bytes = int_or_default(bond.get("interactive_chunk_bytes"), 16 * 1024)
@@ -389,10 +568,11 @@ WantedBy=multi-user.target
         warmup_trigger_bytes = int_or_default(bond.get("warmup_trigger_bytes"), 65536)
         warmup_slice_bytes = int_or_default(bond.get("warmup_slice_bytes"), 65536)
         warmup_leg_delay_ms = int_or_default(bond.get("warmup_leg_delay_ms"), 20)
-        bulk_promote_bytes = int_or_default(bond.get("bulk_promote_bytes"), 262144)
-        leg_cooldown_ms = int_or_default(bond.get("leg_cooldown_ms"), 1800000)
         policy_mode = str(bond.get("policy_mode", "") or "").strip()
         latency_first = policy_mode == "latency_first"
+        default_bulk_promote_bytes = 1 << 30 if latency_first else 262144
+        bulk_promote_bytes = int_or_default(bond.get("bulk_promote_bytes"), default_bulk_promote_bytes)
+        leg_cooldown_ms = int_or_default(bond.get("leg_cooldown_ms"), 1800000)
         udp_primary_only = truthy(bond.get("udp_primary_only", False))
         ingress_mode = str(bond.get("ingress_mode", "wss_path_mux")).strip() or "wss_path_mux"
         route_key = str(bond.get("route_key", path_prefix)).strip() or path_prefix
@@ -409,7 +589,17 @@ WantedBy=multi-user.target
                 port = endpoint["port"]
                 tcp_back = base + index
                 ingress_auth_token = str(endpoint.get("ingress_auth_token", "") or bond.get("ingress_auth_token", "")).strip()
-                if ingress_mode == "plain_tcp_mux":
+                leg_path_prefix = endpoint_path_prefix(endpoint, path_prefix)
+                leg_sni = endpoint_sni(endpoint, sni)
+                if candidate_kind(endpoint) == "self_leg":
+                    direct_target_port = int_or_default(endpoint.get("target_sidecar_port"), 0)
+                    direct_target = f"127.0.0.1:{direct_target_port}" if direct_target_port > 0 else bond_remote_target
+                    lines.append(
+                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{direct_target} "
+                        f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
+                        f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
+                    )
+                elif ingress_mode == "plain_tcp_mux":
                     if ingress_auth_token == "":
                         raise RuntimeError("bond mode plain_tcp_mux requires ingress_auth_token")
                     lines.append(
@@ -419,8 +609,8 @@ WantedBy=multi-user.target
                 else:
                     lines.append(
                         f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{bond_remote_target} "
-                        f"--tls-sni-override {sni} --http-headers \"Host: {sni}\" "
-                        f"--http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &"
+                        f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
+                        f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
                     )
                 tcp_ready_ports.append(tcp_back)
                 endpoint_priority = int_or_default(endpoint.get("dynamic_priority"), ws_priority)
@@ -428,9 +618,11 @@ WantedBy=multi-user.target
                     tcp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{tcp_back}", endpoint_priority, endpoint))
             append_wait_for_local_listener(lines, tcp_ready_ports)
             tcp_latency_flags = "--latency-first " if latency_first else ""
+            single_leg_fast_path_flag = "--single-leg-fast-path " if single_leg_fast_path else ""
             lines.append(
                 f"{bond_bin} client --protocol tcp --listen {tcp_listen_host}:{tcp_listen_port} "
                 f"{tcp_latency_flags}"
+                f"{single_leg_fast_path_flag}"
                 f"--legs '{','.join(tcp_leg_targets)}' --session-token '{bond_session_token}' "
                 f"--chunk-size {int(bond.get('chunk_size', 65536) or 65536)} "
                 f"--max-window-bytes {int(bond.get('max_window_bytes', 8388608) or 8388608)} "
@@ -463,7 +655,17 @@ WantedBy=multi-user.target
                 port = endpoint["port"]
                 udp_back = base + 200 + index
                 ingress_auth_token = str(endpoint.get("ingress_auth_token", "") or bond.get("ingress_auth_token", "")).strip()
-                if ingress_mode == "plain_tcp_mux":
+                leg_path_prefix = endpoint_path_prefix(endpoint, path_prefix)
+                leg_sni = endpoint_sni(endpoint, sni)
+                if candidate_kind(endpoint) == "self_leg":
+                    direct_target_port = int_or_default(endpoint.get("target_sidecar_port"), 0)
+                    direct_target = f"127.0.0.1:{direct_target_port}" if direct_target_port > 0 else bond_remote_target
+                    lines.append(
+                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{udp_back}:{direct_target} "
+                        f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
+                        f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
+                    )
+                elif ingress_mode == "plain_tcp_mux":
                     if ingress_auth_token == "":
                         raise RuntimeError("bond mode plain_tcp_mux requires ingress_auth_token")
                     lines.append(
@@ -473,8 +675,8 @@ WantedBy=multi-user.target
                 else:
                     lines.append(
                         f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{udp_back}:{bond_remote_target} "
-                        f"--tls-sni-override {sni} --http-headers \"Host: {sni}\" "
-                        f"--http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &"
+                        f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
+                        f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
                     )
                 udp_ready_ports.append(udp_back)
                 endpoint_priority = int_or_default(endpoint.get("dynamic_priority"), ws_priority)
@@ -557,12 +759,62 @@ WantedBy=multi-user.target
 
         helper_path = str(agent_config.get("mptcp_client_bin", "/usr/local/bin/leikwan-mptcp-client.py")).strip() or "/usr/local/bin/leikwan-mptcp-client.py"
         config_path = f"/etc/leikwan/mptcp-forward-{forward_id}.json"
+        sidecar_relay_host = remote_host
+        sidecar_relay_port = remote_port
+        private_self_leg_underlays = [
+            underlay
+            for candidate in selected_private_wg_self_leg_candidates(forward)
+            for underlay in [self_leg_wg_underlay(candidate, forward)]
+            if underlay is not None
+        ]
+        if private_self_leg_underlays:
+            first_leg = private_self_leg_underlays[0].get("legs", [{}])[0]
+            if isinstance(first_leg, dict):
+                private_remote_host = str(first_leg.get("mptcp_remote_address", "") or first_leg.get("peer_address", "") or "").strip()
+                if private_remote_host != "":
+                    remote_host = private_remote_host
+            selected_private_candidate = selected_private_wg_self_leg_candidates(forward)[0]
+            private_remote_port = int_or_default(
+                selected_private_candidate.get("target_sidecar_mptcp_port")
+                or selected_private_candidate.get("target_sidecar_port")
+                or remote_port,
+                remote_port,
+            )
+            if private_remote_port > 0:
+                remote_port = private_remote_port
+        direct_self_leg_endpoints = [
+            endpoint
+            for index, candidate in enumerate(selected_mptcp_self_leg_candidates(forward))
+            for endpoint in [mptcp_self_leg_endpoint(candidate, forward, index + 1)]
+            if endpoint is not None
+        ]
+        direct_leg_base = 39000 + ((forward_id * 97) % 2000)
+        direct_legs = []
+        for index, endpoint in enumerate(direct_self_leg_endpoints):
+            local_port = direct_leg_base + index
+            direct_legs.append({
+                "candidate_kind": "self_leg",
+                "endpoint_id": int_or_default(endpoint.get("endpoint_id"), 0),
+                "host": str(endpoint["host"]),
+                "port": int(endpoint["port"]),
+                "local_host": "127.0.0.1",
+                "local_port": local_port,
+                "priority": int_or_default(endpoint.get("dynamic_priority"), index + 1),
+                "display_host": "self_leg",
+                "leg_role": "primary" if index == 0 else "helper",
+            })
+        if direct_legs:
+            remote_host = "127.0.0.1"
+            remote_port = int(direct_legs[0]["local_port"])
+
         config_payload = {
             "forward_id": forward_id,
             "listen_port": listen_port,
             "transport": transport,
             "remote_host": remote_host,
             "remote_port": remote_port,
+            "relay_host": sidecar_relay_host,
+            "relay_port": sidecar_relay_port,
             "tcp_session_token": tcp_session_token,
             "udp_session_token": udp_session_token,
             "udp_mode": str(mptcp.get("udp_mode", "stream_compat") or "stream_compat"),
@@ -573,14 +825,17 @@ WantedBy=multi-user.target
             "relay_idle_timeout_seconds": int_or_default(mptcp.get("relay_idle_timeout_seconds"), 120),
             "tcp_congestion_control": str(mptcp.get("tcp_congestion_control", "bbr") or "bbr"),
             "socket_buffer_bytes": int_or_default(mptcp.get("socket_buffer_bytes"), 8388608),
+            "policy_mode": str(mptcp.get("policy_mode", "latency_first") or "latency_first"),
             "initcwnd": int_or_default(mptcp.get("initcwnd"), 80),
             "initrwnd": int_or_default(mptcp.get("initrwnd"), 80),
             "add_addr_timeout": int_or_default(mptcp.get("add_addr_timeout"), 5),
             "tcp_wmem_max": int_or_default(mptcp.get("tcp_wmem_max"), 16777216),
             "tcp_rmem_max": int_or_default(mptcp.get("tcp_rmem_max"), 16777216),
             "speed_limit_mbps": speed_limit_mbps,
+            "bond_mode": "tcp" if direct_legs else str(mptcp.get("bond_mode", "") or ""),
+            "direct_legs": direct_legs,
             "endpoints": endpoints,
-            "allow_tcp_fallback": truthy(mptcp.get("allow_tcp_fallback", False)),
+            "allow_tcp_fallback": truthy(mptcp.get("allow_tcp_fallback", True)),
             "manage_mptcp_endpoints": truthy(mptcp.get("manage_mptcp_endpoints", True)),
             "mptcp_endpoint_device": str(mptcp.get("mptcp_endpoint_device", "") or ""),
             "mptcp_endpoint_id_base": int_or_default(mptcp.get("mptcp_endpoint_id_base"), 0),
@@ -593,27 +848,51 @@ WantedBy=multi-user.target
             config_payload["underlay"].setdefault("listen_port", int_or_default(agent_config.get("wireguard_listen_port"), 0))
 
         # Inject private key and listen port into each underlay for multi-interface mode
-        raw_underlays = mptcp.get("underlays", [])
+        raw_underlays = []
+        if private_self_leg_underlays:
+            raw_underlays.extend(private_self_leg_underlays)
+        mptcp_underlays = mptcp.get("underlays", [])
+        if isinstance(mptcp_underlays, list):
+            raw_underlays.extend(mptcp_underlays)
         if isinstance(raw_underlays, list):
             base_listen_port = int_or_default(agent_config.get("wireguard_listen_port"), 0)
-            privkey_path = str(pathlib.Path(str(agent_config.get("state_dir", "/var/lib/leikwan-client-agent"))) / "wireguard" / "private.key")
+            forward_id_for_port = int_or_default(forward.get("forward_id"), 0)
+            privkey_path = (pathlib.PurePosixPath(str(agent_config.get("state_dir", "/var/lib/leikwan-client-agent")).replace("\\", "/")) / "wireguard" / "private.key").as_posix()
             injected_underlays = []
+            port_stride = max(1, len(raw_underlays) or 1)
+            port_base = base_listen_port + max(0, (forward_id_for_port - 1)) * port_stride if base_listen_port > 0 and forward_id_for_port > 0 and not private_self_leg_underlays else base_listen_port
             for idx, raw_ul in enumerate(raw_underlays):
                 if not isinstance(raw_ul, dict):
                     continue
                 ul = dict(raw_ul)
                 ul["local_private_key_path"] = privkey_path
-                ul.setdefault("listen_port", base_listen_port + idx if base_listen_port > 0 else 0)
+                ul.setdefault("listen_port", port_base + idx if port_base > 0 else 0)
                 injected_underlays.append(ul)
             config_payload["underlays"] = injected_underlays
 
         # Check for Rust MPTCP relay binary
         rust_relay_path = "/var/lib/leikwan-client-agent/leikwan-mptcp-relay"
         lines = ["#!/usr/bin/env bash", "set -euo pipefail"]
+        if direct_self_leg_endpoints:
+            lines.append("trap 'kill $(jobs -p) 2>/dev/null || true' EXIT")
         lines.append("unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy")
         lines.append("export NO_PROXY='*'")
         lines.append("export no_proxy='*'")
-        lines.append(f"/usr/bin/python3 {helper_path} --config {config_path} --setup-underlays")
+        for index, endpoint in enumerate(direct_self_leg_endpoints):
+            direct_target_port = int_or_default(endpoint.get("target_sidecar_port"), 0)
+            if direct_target_port <= 0:
+                direct_target_port = sidecar_relay_port if sidecar_relay_port > 0 else 0
+            append_wstunnel_direct_leg(
+                lines,
+                endpoint,
+                direct_leg_base + index,
+                f"127.0.0.1:{direct_target_port}",
+                sni,
+                path_prefix,
+            )
+        if direct_legs:
+            append_wait_for_local_listener(lines, [int(leg["local_port"]) for leg in direct_legs])
+        lines.append(f"/usr/bin/python3 {helper_path} --config {config_path} --setup-underlays || echo \"mptcp setup-underlays returned $?; continuing to runtime listener\" >&2")
         lines.append(f'RUST_RELAY="{rust_relay_path}"')
         lines.append(f'if [ -x "$RUST_RELAY" ]; then')
         lines.append(f'    exec "$RUST_RELAY" client --config {config_path}')
