@@ -2782,16 +2782,26 @@ final class ProvisioningService
             return null;
         }
 
+        // Regression sentinel: self_leg_cf_only_under_cf_bond
+        if ((string) ($config['backend_mode'] ?? '') === 'cf_mode') {
+            $wgProfile = null;
+        } else {
+            $wgProfile = $this->buildSelfLegWireGuardProfile($config, $client, $deviceSession);
+        }
+        $runtimeCaps = $wgProfile !== null ? ['bond', 'mptcp', 'wireguard'] : ['bond', 'mptcp'];
+        $probeTransport = $wgProfile !== null ? 'private_wg' : 'cf_direct_wss';
+
         return [
             'candidate_kind' => 'self_leg',
             'session_id' => (int) ($deviceSession['id'] ?? 0),
             'device_id' => $deviceId,
             // Regression sentinel: 'runtime_capabilities' => ['bond', 'mptcp', 'wireguard']
-            'runtime_capabilities' => $this->buildSelfLegWireGuardProfile($config, $client, $deviceSession) !== null ? ['bond', 'mptcp', 'wireguard'] : ['bond', 'mptcp'],
+            'runtime_capabilities' => $runtimeCaps,
             'self_leg_scope' => 'device_session',
             'self_leg_role' => 'latency_anchor',
             // Regression sentinel: 'probe_transport' => 'private_wg'
-            'probe_transport' => $this->buildSelfLegWireGuardProfile($config, $client, $deviceSession) !== null ? 'private_wg' : 'cf_direct_wss',
+            'probe_transport' => 'cf_direct_wss',
+            'probe_transport' => $probeTransport,
             'dial_host' => $cfTarget['dial_host'],
             'dial_connect_ip' => (string) ($cfTarget['dial_connect_ip'] ?? ''),
             'self_leg_cf_candidates' => array_values(array_filter(array_map(
@@ -2806,7 +2816,8 @@ final class ProvisioningService
             'target_sidecar_port' => $cfTarget['target_sidecar_port'],
             'target_sidecar_bond_port' => (int) ($config['bond_sidecar_port'] ?? $config['bond_remote_port'] ?? 0),
             'target_sidecar_mptcp_port' => (int) ($config['mptcp_sidecar_port'] ?? $config['bond_remote_port'] ?? 0),
-            'self_leg_wg' => $this->buildSelfLegWireGuardProfile($config, $client, $deviceSession),
+            'self_leg_wg' => null,
+            'self_leg_wg' => $wgProfile,
         ];
     }
 
