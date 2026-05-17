@@ -39,6 +39,22 @@ def mptcp_config(forward: dict) -> dict:
     return config if isinstance(config, dict) else {}
 
 
+def render_mptcp_runtime_config(forward: dict) -> dict:
+    mptcp = dict(mptcp_config(forward))
+    raw_endpoints = mptcp.get("mptcp_endpoints", [])
+    endpoints = [dict(item) for item in raw_endpoints if isinstance(item, dict)] if isinstance(raw_endpoints, list) else []
+    max_legs = int_or_default(forward.get("max_legs_used", forward.get("helper_group_cap", 0)), 0)
+    if max_legs > 0:
+        endpoints = endpoints[:max_legs]
+    configured = int_or_default(mptcp.get("subflow_limit"), max(1, len(endpoints) or 1))
+    if max_legs > 0:
+        configured = min(configured, max_legs)
+    return {
+        "subflow_limit": max(1, configured),
+        "mptcp_endpoints": endpoints,
+    }
+
+
 def truthy(value: object) -> bool:
     if isinstance(value, bool):
         return value
@@ -807,6 +823,12 @@ WantedBy=multi-user.target
             remote_host = "127.0.0.1"
             remote_port = int(direct_legs[0]["local_port"])
 
+        runtime_mptcp = render_mptcp_runtime_config(forward)
+        rendered_mptcp_endpoints = runtime_mptcp["mptcp_endpoints"]
+        rendered_subflow_limit = int_or_default(runtime_mptcp.get("subflow_limit"), 1)
+        if direct_legs and not endpoints:
+            rendered_subflow_limit = 1
+
         config_payload = {
             "forward_id": forward_id,
             "listen_port": listen_port,
@@ -820,7 +842,7 @@ WantedBy=multi-user.target
             "udp_mode": str(mptcp.get("udp_mode", "stream_compat") or "stream_compat"),
             "path_manager": str(mptcp.get("path_manager", "fullmesh") or "fullmesh"),
             "scheduler": str(mptcp.get("scheduler", "default") or "default"),
-            "subflow_limit": int_or_default(mptcp.get("subflow_limit"), max(1, len(endpoints))) if endpoints else int_or_default(mptcp.get("subflow_limit"), 2),
+            "subflow_limit": rendered_subflow_limit,
             "connect_timeout_ms": int_or_default(mptcp.get("connect_timeout_ms"), 3000),
             "relay_idle_timeout_seconds": int_or_default(mptcp.get("relay_idle_timeout_seconds"), 120),
             "tcp_congestion_control": str(mptcp.get("tcp_congestion_control", "bbr") or "bbr"),
@@ -839,7 +861,7 @@ WantedBy=multi-user.target
             "manage_mptcp_endpoints": truthy(mptcp.get("manage_mptcp_endpoints", True)),
             "mptcp_endpoint_device": str(mptcp.get("mptcp_endpoint_device", "") or ""),
             "mptcp_endpoint_id_base": int_or_default(mptcp.get("mptcp_endpoint_id_base"), 0),
-            "mptcp_endpoints": mptcp.get("mptcp_endpoints", []),
+            "mptcp_endpoints": rendered_mptcp_endpoints,
             "underlay": dict(mptcp.get("underlay", {})) if isinstance(mptcp.get("underlay", {}), dict) else {},
             "underlays": [],
         }

@@ -2117,6 +2117,8 @@ class ClientAgent:
             # reverse-iperf traffic.  Use the mature bond runtime for this
             # shape even when an MPTCP sidecar runtime is present; rented
             # helpers can still be appended as normal slave-mediated bond legs.
+            if bool(primary.get("self_leg_mptcp_solo_allowed", False)) and mptcp_supported and "mptcp" in primary_caps:
+                return "mptcp"
             if probe_transport == "cf_direct_wss" and target_sidecar_bond_port > 0:
                 return "bond"
             if mptcp_supported and mptcp_runtime_ready and "mptcp" in primary_caps:
@@ -2221,6 +2223,9 @@ class ClientAgent:
                 int(item.get("endpoint_id", 0) or 0),
             )
         )
+        max_legs = int(forward.get("max_legs_used", forward.get("helper_group_cap", 0)) or 0)
+        if max_legs > 0:
+            ready = ready[:max_legs]
         for item in ready:
             item.pop("selected_primary", None)
         if ready:
