@@ -407,6 +407,13 @@ final class ProvisioningService
             $helperGroupCap = $this->defaultMaxLegsUsedForCombination($clientMode, $runtimePreference, $backendMode);
         }
         $helperEscalationPolicy = trim((string) ($payload['helper_escalation_policy'] ?? 'disabled')) ?: 'disabled';
+        $selfLegCfTransport = strtolower(trim((string) ($payload['self_leg_cf_transport'] ?? 'cf_direct')));
+        if (!in_array($selfLegCfTransport, ['cf_direct', 'cf_wg'], true)) {
+            $selfLegCfTransport = 'cf_direct';
+        }
+        if ($backendMode !== 'cf_mode') {
+            $selfLegCfTransport = 'cf_direct';
+        }
         $bondIngressMode = $this->normalizeBondIngressMode((string) ($payload['bond_ingress_mode'] ?? 'plain_tcp_mux'));
         $isActive = !empty($payload['is_active']) ? 1 : 0;
         $sortOrder = (int) ($payload['sort_order'] ?? 100);
@@ -448,6 +455,7 @@ final class ProvisioningService
             'self_leg_role' => $selfLegRole,
             'helper_group_cap' => $helperGroupCap,
             'helper_escalation_policy' => $helperEscalationPolicy,
+            'self_leg_cf_transport' => $selfLegCfTransport,
             'bond_ingress_mode' => $bondIngressMode,
             'is_active' => $isActive,
             'sort_order' => $sortOrder,
@@ -473,6 +481,7 @@ final class ProvisioningService
                      self_leg_role = :self_leg_role,
                      helper_group_cap = :helper_group_cap,
                      helper_escalation_policy = :helper_escalation_policy,
+                     self_leg_cf_transport = :self_leg_cf_transport,
                      bond_ingress_mode = :bond_ingress_mode,
                      is_active = :is_active,
                      sort_order = :sort_order,
@@ -2528,6 +2537,7 @@ final class ProvisioningService
             $config = $this->buildClientConfig($forwardId);
             $config['service_status'] = (string) $forward['service_status'];
             $config['runtime_preference'] = (string) ($config['forward_combination_runtime_preference'] ?? 'single');
+            $config['self_leg_cf_transport'] = (string) ($config['forward_combination_self_leg_cf_transport'] ?? 'cf_direct');
             $maxLegs = max(0, (int) ($config['forward_combination_helper_group_cap'] ?? 0));
             $config['helper_group_cap'] = $maxLegs;
             $config['max_legs_used'] = $maxLegs;
@@ -2783,12 +2793,30 @@ final class ProvisioningService
 
         // Regression sentinel: self_leg_cf_only_under_cf_bond
         if ((string) ($config['backend_mode'] ?? '') === 'cf_mode') {
+            $cfBond = true;
+        } else {
+            $cfBond = false;
+        }
+        $cfTransport = strtolower((string) ($config['self_leg_cf_transport'] ?? 'cf_direct'));
+        $wantCfWg = $cfBond && $cfTransport === 'cf_wg';
+        if ($cfBond && !$wantCfWg) {
             $wgProfile = null;
         } else {
             $wgProfile = $this->buildSelfLegWireGuardProfile($config, $client, $deviceSession);
         }
+        if ($wantCfWg && $wgProfile !== null) {
+            $wgProfile['outer_transport'] = 'wstunnel_udp';
+            $wgProfile['cf_dial_host'] = (string) ($cfTarget['dial_host'] ?? ($config['bond_sidecar_host'] ?? ''));
+            $wgProfile['cf_dial_port'] = (int) ($cfTarget['dial_port'] ?? ($config['bond_sidecar_cf_listen_port'] ?? 443)) ?: 443;
+            $wgProfile['cf_sni_host'] = (string) ($cfTarget['cf_sni_host'] ?? ($config['bond_sidecar_cf_sni_host'] ?? $config['sni'] ?? ''));
+            $wgProfile['cf_path_prefix'] = (string) ($config['path_prefix'] ?? '/');
+            $wgProfile['interface_name'] = 'lw-cfwg-' . (int) ($config['forward_id'] ?? 0);
+        }
         $runtimeCaps = $wgProfile !== null ? ['bond', 'mptcp', 'wireguard'] : ['bond', 'mptcp'];
         $probeTransport = $wgProfile !== null ? 'private_wg' : 'cf_direct_wss';
+        if ($wantCfWg && $wgProfile !== null) {
+            $probeTransport = $wgProfile !== null ? 'cf_wg' : 'cf_direct_wss';
+        }
 
         return [
             'candidate_kind' => 'self_leg',
@@ -3058,6 +3086,7 @@ final class ProvisioningService
                      combo.self_leg_role AS forward_combination_self_leg_role,
                      combo.helper_group_cap AS forward_combination_helper_group_cap,
                      combo.helper_escalation_policy AS forward_combination_helper_escalation_policy,
+                     combo.self_leg_cf_transport AS forward_combination_self_leg_cf_transport,
                      f.backend_mode,
                      f.forward_combination_id,
                      f.cf_location_group_id,
@@ -3179,6 +3208,7 @@ final class ProvisioningService
             'forward_combination_self_leg_role' => (string) ($forward['forward_combination_self_leg_role'] ?? 'none'),
             'forward_combination_helper_group_cap' => (int) ($forward['forward_combination_helper_group_cap'] ?? 0),
             'forward_combination_helper_escalation_policy' => (string) ($forward['forward_combination_helper_escalation_policy'] ?? 'disabled'),
+            'forward_combination_self_leg_cf_transport' => (string) ($forward['forward_combination_self_leg_cf_transport'] ?? 'cf_direct'),
             'forward_combination_helper_node_group_keys' => $this->forwardCombinationHelperNodeGroupKeys((int) ($forward['forward_combination_id'] ?? 0)),
             'backend_mode' => (string) ($forward['backend_mode'] ?? 'current_mode'),
             'cf_location_group_id' => $forward['cf_location_group_id'] !== null ? (int) $forward['cf_location_group_id'] : null,
