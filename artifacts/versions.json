@@ -46,8 +46,8 @@
     "version": "2026.05.17.3",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "b0acd5a0c3624c1a204eeba2ba4df918afaadd8fe99028bcf0ed92ca02a3514d",
-    "size_bytes": 181400
+    "sha256": "8d6f19849d01a624ee6a6cc13cc8ff31d7cc571b43ea30a0fbeab72620bc93fa",
+    "size_bytes": 191067
   },
   "client_agent_installer": {
     "version": "2026.05.15.3",
@@ -145,7 +145,7 @@
     "version": "2026.05.17.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "7efda44f1148d624ad8f5abe59b31b7919387fc612d6636a9c309e00742ba83d",
-    "size_bytes": 52260
+    "sha256": "f88c4c2f763a0d58ba49a4ea4f1a874eecac51cf3a54a4bc84c63bb22f5f9c24",
+    "size_bytes": 56592
   }
 }
