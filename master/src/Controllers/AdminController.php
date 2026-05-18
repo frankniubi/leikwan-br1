@@ -1740,6 +1740,25 @@ final class AdminController extends BaseController
             }
         }
 
+        $candidateNodes = [];
+        $activeDonors = [];
+        $pinnedNodeIds = [];
+        if ($editing !== null) {
+            $combinationIdForEdit = (int) ($editing['id'] ?? 0);
+            $candidateNodes = $this->provisioning?->candidateNodesForCombination($combinationIdForEdit) ?? [];
+            $activeDonors = $this->provisioning?->activeDonorsForCombination($combinationIdForEdit) ?? [];
+            $pinnedRows = $this->db->fetchAll(
+                'SELECT node_id FROM forward_combination_slaves WHERE forward_combination_id = :forward_combination_id AND selection_kind = :selection_kind AND is_active = 1 ORDER BY sort_order ASC, node_id ASC',
+                ['forward_combination_id' => $combinationIdForEdit, 'selection_kind' => 'admin_pin']
+            );
+            foreach ($pinnedRows as $pinnedRow) {
+                $nodeId = (int) ($pinnedRow['node_id'] ?? 0);
+                if ($nodeId > 0) {
+                    $pinnedNodeIds[] = $nodeId;
+                }
+            }
+        }
+
         $groupOptions = '';
         foreach ($groups as $group) {
             $selected = (string) ($editing['node_group_key'] ?? '') === (string) ($group['group_key'] ?? '') ? ' selected' : '';
@@ -1809,6 +1828,72 @@ final class AdminController extends BaseController
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
+        $slaveOptions = '';
+        foreach ($candidateNodes as $node) {
+            $nodeId = (int) ($node['id'] ?? 0);
+            if ($nodeId <= 0) {
+                continue;
+            }
+            $label = trim((string) ($node['name'] ?? ('node #' . $nodeId)));
+            $groupKey = trim((string) ($node['node_group_key'] ?? $node['group_key'] ?? ''));
+            if ($groupKey !== '') {
+                $label .= ' [' . $groupKey . ']';
+            }
+            $host = trim((string) (($node['public_ip'] ?? '') ?: ($node['public_host'] ?? '')));
+            if ($host !== '') {
+                $label .= ' ' . $host;
+            }
+            $selected = in_array($nodeId, $pinnedNodeIds, true) ? ' selected' : '';
+            $slaveOptions .= '<option value="' . $nodeId . '"' . $selected . '>' . $this->escape($label) . '</option>';
+        }
+        if ($slaveOptions === '') {
+            $slaveOptions = '<option value="" disabled>No eligible slave nodes for the selected helper groups yet</option>';
+        }
+
+        $liveDonationRows = '';
+        foreach ($activeDonors as $donor) {
+            $donorId = (int) ($donor['id'] ?? 0);
+            if ($donorId <= 0) {
+                continue;
+            }
+            $comboId = (int) ($donor['forward_combination_id'] ?? ($editing['id'] ?? 0));
+            $clientLabel = trim((string) (($donor['client_name'] ?? '') ?: ('client #' . (int) ($donor['client_id'] ?? 0))));
+            $endpointSummary = 'redacted endpoint';
+            $liveDonationRows .= '<tr>'
+                . '<td>' . $this->escape($clientLabel) . '</td>'
+                . '<td>' . $this->escape((string) ($donor['state'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($donor['last_measured_latency_ms'] ?? '')) . '</td>'
+                . '<td>' . $this->escape($endpointSummary) . '</td>'
+                . '<td><form method="post" action="/admin/forward-combinations/' . $comboId . '/donations/' . $donorId . '/revoke" class="inline">'
+                . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                . '<button class="button danger" type="submit">Revoke</button></form></td>'
+                . '</tr>';
+        }
+        if ($liveDonationRows === '') {
+            $liveDonationRows = '<tr><td colspan="5" class="muted">No active donated client-as-a-slave rows yet.</td></tr>';
+        }
+
+        $donationSection = '
+                  <div class="card" style="margin-top:16px;">
+                    <h3>Public donation</h3>
+                    <p class="muted">Allow opted-in client self-leg capacity to become a public donated slave for this forward combination only. The donation gate is based on slave -&gt; sidecar -&gt; endpoint RTT.</p>
+                    <div class="form-grid">
+                      <div class="field"><label>Desired latency (ms)</label><input type="number" name="desired_latency_ms" min="0" value="' . $this->escape((string) ($editing['desired_latency_ms'] ?? 0)) . '"><p class="muted">Donation gate is 75% of this value.</p></div>
+                      <div class="field"><label>Allow public client-as-a-slave donation</label><select name="allow_public_self_leg_donation"><option value="0"' . (((int) ($editing['allow_public_self_leg_donation'] ?? 0)) === 0 ? ' selected' : '') . '>No</option><option value="1"' . (((int) ($editing['allow_public_self_leg_donation'] ?? 0)) === 1 ? ' selected' : '') . '>Yes</option></select></div>
+                      <div class="field"><label>Qualify window (s)</label><input type="number" name="donation_qualify_window_seconds" min="5" value="' . $this->escape((string) ($editing['donation_qualify_window_seconds'] ?? 60)) . '"></div>
+                      <div class="field"><label>Revoke window (s)</label><input type="number" name="donation_revoke_window_seconds" min="5" value="' . $this->escape((string) ($editing['donation_revoke_window_seconds'] ?? 30)) . '"></div>
+                      <div class="field"><label>Minimum open inbound ports</label><input type="number" name="donation_min_open_ports" min="0" value="' . $this->escape((string) ($editing['donation_min_open_ports'] ?? 1)) . '"></div>
+                    </div>
+                  </div>';
+
+        $slavePickerSection = '
+                  <div class="card" style="margin-top:16px;">
+                    <h3>Slaves</h3>
+                    <div class="field"><label>Admin-pinned rented slaves</label><select name="combination_slaves[]" multiple size="10">' . $slaveOptions . '</select><p class="muted">Default 4. The runtime keeps only the fastest N slaves in the active chain, where speed = slave -&gt; sidecar -&gt; endpoint RTT.</p></div>
+                    <h3 style="margin-top:18px;">Live donations</h3>
+                    <div class="table-wrap"><table><thead><tr><th>Client</th><th>State</th><th>RTT</th><th>Endpoint</th><th>Action</th></tr></thead><tbody>' . $liveDonationRows . '</tbody></table></div>
+                  </div>';
+
         $previewLabel = (string) ($editing['tenant_label'] ?? 'SHA -> NRT');
         $previewDescription = (string) ($editing['tenant_description'] ?? 'Best for Japan');
         $previewBadge = (string) ($editing['tenant_badge'] ?? 'Recommended');
@@ -1851,6 +1936,8 @@ final class AdminController extends BaseController
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>inactive</option></select></div>
                   </div>
                   <div class="field" style="margin-top:14px;"><label>Helper Node Group Keys</label><textarea name="helper_node_group_keys_text" placeholder="shanghai-a&#10;shanghai-b&#10;guangzhou-a">' . $this->escape($helperNodeGroupKeysText) . '</textarea><p class="muted">One node group key per line, ordered by priority.</p></div>
+                  ' . $donationSection . '
+                  ' . $slavePickerSection . '
                   <div class="field" style="margin-top:14px;"><label>Notes</label><textarea name="notes">' . $this->escape((string) ($editing['notes'] ?? '')) . '</textarea></div>
                   <div class="card" style="margin-top:16px;">
                     <h3 style="margin-bottom:8px;">Tenant sees:</h3>
@@ -1890,12 +1977,34 @@ final class AdminController extends BaseController
         }
         try {
             SessionAuth::validateCsrf($request);
-            $this->provisioning?->saveForwardCombination($request->body());
+            $saved = $this->provisioning?->saveForwardCombination($request->body());
+            $savedId = is_array($saved) ? (int) ($saved['id'] ?? 0) : 0;
+            $body = is_array($request->body()) ? $request->body() : [];
+            $this->provisioning?->saveCombinationAdminPinnedSlaves(
+                $savedId,
+                is_array($body['combination_slaves'] ?? null) ? $body['combination_slaves'] : []
+            );
             SessionAuth::flash('success', 'Forward combination saved.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to save forward combination: ' . $this->displayThrowableMessage($throwable));
         }
         return Response::redirect('/admin/forward-combinations');
+    }
+
+    public function revokeDonation(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->provisioning?->revokeDonationManually($this->idParam($params), $this->idParam($params, 'donationId'));
+            SessionAuth::flash('success', 'Donation revoked.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to revoke donation: ' . $this->displayThrowableMessage($throwable));
+        }
+        return Response::redirect('/admin/forward-combinations?edit=' . $this->idParam($params));
     }
 
     public function sidecarsPage(Request $request, array $params): Response
