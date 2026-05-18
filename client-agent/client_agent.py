@@ -2155,8 +2155,20 @@ class ClientAgent:
                 if probe_transport in {"private_wg", "cf_wg"}:
                     wg = candidate.get("self_leg_wg", {}) if isinstance(candidate.get("self_leg_wg", {}), dict) else {}
                     interface_name = str(wg.get("interface_name", "") or "").strip()
+                    outer_transport = str(wg.get("outer_transport", "udp") or "udp").strip().lower()
+                    forward_id = int(forward.get("forward_id", candidate.get("forward_id", 0)) or 0)
+                    cf_wg_udp_tunnel_ready = True
+                    if probe_transport == "cf_wg" and outer_transport == "wstunnel_udp" and forward_id > 0:
+                        local_udp_port = 40000 + (forward_id % 2000)
+                        cf_wg_udp_tunnel_ready = self.local_listener_present(local_udp_port, "udp")[0]
                     if interface_name and not self.private_wg_interface_present(interface_name):
                         candidate["probe_state"] = "private_wg_bootstrap"
+                        candidate["ready"] = True
+                        latency_ms = self.private_wg_self_leg_bootstrap_latency_ms(candidate)
+                        ok = True
+                        _error = None
+                    elif probe_transport == "cf_wg" and outer_transport == "wstunnel_udp" and not cf_wg_udp_tunnel_ready:
+                        candidate["probe_state"] = "cf_wg_udp_tunnel_bootstrap"
                         candidate["ready"] = True
                         latency_ms = self.private_wg_self_leg_bootstrap_latency_ms(candidate)
                         ok = True
