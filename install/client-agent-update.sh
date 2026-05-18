@@ -4,6 +4,7 @@ CONFIG_PATH="/etc/leikwan-client-agent/config.json"
 REQUEST_TOKEN=""
 STATE_PATH=""
 SERVICE_NAME="leikwan-client-agent"
+UPDATE_UNIT_PREFIX="leikwan-client-agent-update"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -102,7 +103,7 @@ write_update_state "running"
 
 if command -v systemctl >/dev/null 2>&1; then
   systemctl stop "${SERVICE_NAME}.service" || true
-  mapfile -t FORWARD_UNITS < <(systemctl list-units 'leikwan-client-*.service' --all --no-legend --no-pager 2>/dev/null | awk '{print $1}' | grep -v "^${SERVICE_NAME}\.service$" || true)
+  mapfile -t FORWARD_UNITS < <(systemctl list-units 'leikwan-client-*.service' --all --no-legend --no-pager 2>/dev/null | awk '{ unit=$1; if (unit !~ /^[[:alnum:]_.@-]+\.service$/) { sub(/^[^[:alnum:]_.@-]+/, "", unit); if (unit == "") unit=$2 } print unit }' | grep -E '^leikwan-client-[^[:space:]]+\.service$' | grep -v "^${SERVICE_NAME}\.service$" | grep -v "^${UPDATE_UNIT_PREFIX}" || true)
   for unit in "${FORWARD_UNITS[@]}"; do
     [[ -n "${unit}" ]] || continue
     systemctl stop "$unit" || true
