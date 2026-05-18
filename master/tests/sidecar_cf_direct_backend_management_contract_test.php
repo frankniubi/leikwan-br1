@@ -15,7 +15,7 @@ if (!is_string($source) || $source === '') {
 foreach ([
     '$directCfBackendForwardIds = []',
     '$rawDirectCfBackendForwardIds = $runtimeState[\'cf_direct_backend_forward_ids\'] ?? []',
-    'use ($directCfBackendForwardIds)',
+    'use ($directCfBackendForwardIds, $sidecarWireguardListenPort)',
     "'backend_mode' => isset(\$directCfBackendForwardIds[\$forwardId]) ? 'direct' : 'wstunnel'",
 ] as $snippet) {
     if (!str_contains($source, $snippet)) {
