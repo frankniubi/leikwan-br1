@@ -75,6 +75,19 @@ class CfWgSelfLegTests(unittest.TestCase):
         self.assertTrue(selected[0]["selected_primary"])
         self.assertTrue(selected[0]["ready"])
 
+    def test_cf_wg_bond_mode_without_mptcp_token_falls_back_to_bond_family(self) -> None:
+        agent = client_agent.ClientAgent.__new__(client_agent.ClientAgent)
+        family = client_agent.ClientAgent.choose_runtime_family(
+            agent,
+            {
+                "mode": "bond",
+                "runtime_preference": "mptcp_preferred_bond_fallback",
+                "candidate_pool": [self._candidate()],
+            },
+            mptcp_supported=True,
+        )
+        self.assertEqual("bond", family)
+
     def test_cf_wg_self_leg_renders_wstunnel_udp_before_wg_up(self) -> None:
         forward = {
             "forward_id": 47,
