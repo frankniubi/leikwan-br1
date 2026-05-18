@@ -2809,7 +2809,13 @@ final class ProvisioningService
             $wgProfile['cf_dial_host'] = (string) ($cfTarget['dial_host'] ?? ($config['bond_sidecar_host'] ?? ''));
             $wgProfile['cf_dial_port'] = (int) ($cfTarget['dial_port'] ?? ($config['bond_sidecar_cf_listen_port'] ?? 443)) ?: 443;
             $wgProfile['cf_sni_host'] = (string) ($cfTarget['cf_sni_host'] ?? ($config['bond_sidecar_cf_sni_host'] ?? $config['sni'] ?? ''));
-            $wgProfile['cf_path_prefix'] = (string) ($config['path_prefix'] ?? '/');
+            // Regression sentinel: cf_wg_path_prefix_uses_cfwg_suffix
+            // The bond `path_prefix` resolves on the sidecar to a TCP-only bond
+            // backend; routing WG datagrams to it silently drops them.
+            // The matching `<path>.cfwg` route published by SidecarAgentController
+            // forwards WG UDP to the sidecar's wireguard_listen_port.
+            $cfBasePathPrefix = (string) ($config['path_prefix'] ?? '/');
+            $wgProfile['cf_path_prefix'] = $cfBasePathPrefix . '.cfwg';
             $wgProfile['interface_name'] = 'lw-cfwg-' . (int) ($config['forward_id'] ?? 0);
         }
         $runtimeCaps = $wgProfile !== null ? ['bond', 'mptcp', 'wireguard'] : ['bond', 'mptcp'];
