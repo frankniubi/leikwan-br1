@@ -10,6 +10,8 @@
 
 ---
 
+**Reliability amendment, 2026-05-19:** This design uses **client self-leg donor identity**, not a rented `nodes` identity. A donated client is represented by a dedicated `forward_combination_self_leg_donors` table keyed by `(forward_combination_id, client_id, desktop_client_session_id/device_id)`. Rented slaves still use `nodes` + `service_endpoints`; donated self-leg candidates are emitted directly into `candidate_pool` as `candidate_kind = 'donated_slave_leg'` and count against `helper_group_cap`. Sidecar and slave agents receive explicit probe/policy payloads from the panel; they do not infer donation policy from unrelated runtime fields. Security claims are limited to panel/API/UI/log redaction and CF/WSS masking where configured; phase one does **not** promise that low-level runtime tools can hide endpoint IP:PORT.
+
 ## 1. Problem Statement
 
 ### Feature 1 — "Donate your client-as-a-slave to all users who can use this forward combination"
@@ -115,9 +117,13 @@ These rules are non-negotiable for any implementer.
 8. **Fastest-4 selection uses RTT for `slave -> sidecar -> endpoint`** (the
    real chain), not raw client-to-slave latency. `4` is a default cap; the
    stored knob is `helper_group_cap` (label "Max Legs Used (cap)").
-9. **Donation never overrides `helper_group_cap`.** A donated client counts
-   against the cap exactly like any other slave candidate.
-10. **No tenant-visible surface change.** Tenants still see "Forward
+9. **Donation never overrides `helper_group_cap`.** A donated client self-leg
+   counts against the cap exactly like any other slave candidate.
+10. **Donor identity is client self-leg, not `nodes`.** Rented slaves remain
+    `nodes` rows. Donated clients are tracked in
+    `forward_combination_self_leg_donors`; do not create fake node rows for
+    clients.
+11. **No tenant-visible surface change.** Tenants still see "Forward
     Combination" only.
 
 ---
@@ -152,8 +158,8 @@ These rules are non-negotiable for any implementer.
 |    + donation_revoke_window_seconds (new)                          |
 |    helper_group_cap (existing, default 4) <- "Max Legs Used (cap)" |
 |                                                                    |
-|  forward_combination_slaves (new): explicit slave/donor pinning    |
-|  forward_combination_donations (new): runtime donation state       |
+|  forward_combination_slaves (new): explicit rented slave pinning  |
+|  forward_combination_self_leg_donors (new): client donor state     |
 +--------------------------------------------------------------------+
             |                       ^
             | publish/republish     | heartbeat (measured RTT,
@@ -165,7 +171,7 @@ These rules are non-negotiable for any implementer.
 |  + listens on inbound     |
 |     port; sidecar probes  |
 |     reachability          |
-|  + reports donation_eligible
+|  + reports donation_self_check
 +--------------------------+
             ^                       |
             | task pull             v
@@ -214,7 +220,8 @@ CREATE TABLE IF NOT EXISTS forward_combination_slaves (
     forward_combination_id BIGINT UNSIGNED NOT NULL,
     node_id BIGINT UNSIGNED NOT NULL,
     selection_kind VARCHAR(32) NOT NULL DEFAULT 'admin_pin',
-        -- 'admin_pin' | 'donated_self_leg'
+        -- phase one values: 'admin_pin'. Donated client self-legs live in
+        -- forward_combination_self_leg_donors, not this node table.
     sort_order INT NOT NULL DEFAULT 0,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL,
@@ -230,18 +237,26 @@ CREATE TABLE IF NOT EXISTS forward_combination_slaves (
 
 Migration file: `master/migrations/20260518_add_forward_combination_slaves.sql`.
 
-### 6.3 New table `forward_combination_donations`
+### 6.3 New table `forward_combination_self_leg_donors`
 
-Runtime donation ledger. One row per (combination, donor node, donor session).
+Runtime ledger for valid **client self-leg donors**. This is the source of truth
+for "valid client's client-as-a-slave" capacity. It deliberately references
+`clients` / `desktop_client_sessions`, not `nodes`, because the donor identity is
+the client self-leg.
 
 ```sql
-CREATE TABLE IF NOT EXISTS forward_combination_donations (
+CREATE TABLE IF NOT EXISTS forward_combination_self_leg_donors (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     forward_combination_id BIGINT UNSIGNED NOT NULL,
-    node_id BIGINT UNSIGNED NOT NULL,
+    client_id BIGINT UNSIGNED NOT NULL,
     desktop_client_session_id BIGINT UNSIGNED NULL,
+    device_id VARCHAR(191) NULL,
     state VARCHAR(32) NOT NULL DEFAULT 'qualifying',
         -- 'qualifying' | 'active' | 'revoked' | 'cooldown'
+    donor_public_host VARCHAR(255) NULL,
+    donor_public_port INT NULL,
+    donor_transport VARCHAR(32) NOT NULL DEFAULT 'tcp',
+        -- 'tcp' | 'udp' | 'tcp+udp' | 'cf_wss' | 'cf_wg'
     last_measured_latency_ms DECIMAL(10,2) NULL,
     qualify_started_at DATETIME NULL,
     activated_at DATETIME NULL,
@@ -251,22 +266,31 @@ CREATE TABLE IF NOT EXISTS forward_combination_donations (
         -- 'admin_disabled' | 'cap_full'
     open_ports_json TEXT NULL,
         -- JSON array of {protocol, port, last_probe_at, ok}
+    last_self_check_json JSON NULL,
+    last_reverse_probe_json JSON NULL,
+    last_heartbeat_at DATETIME NULL,
+    owner_opt_in TINYINT(1) NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
-    CONSTRAINT fk_fc_donations_combo
+    CONSTRAINT fk_fc_self_leg_donors_combo
       FOREIGN KEY (forward_combination_id) REFERENCES forward_combinations(id) ON DELETE CASCADE,
-    CONSTRAINT fk_fc_donations_node
-      FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
-    INDEX idx_fc_donations_state (forward_combination_id, state, updated_at),
-    INDEX idx_fc_donations_node (node_id, state)
+    CONSTRAINT fk_fc_self_leg_donors_client
+      FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+    CONSTRAINT fk_fc_self_leg_donors_desktop_session
+      FOREIGN KEY (desktop_client_session_id) REFERENCES desktop_client_sessions(id) ON DELETE SET NULL,
+    UNIQUE KEY uniq_fc_self_leg_donor_session (forward_combination_id, client_id, desktop_client_session_id, device_id),
+    INDEX idx_fc_self_leg_donors_state (forward_combination_id, state, updated_at),
+    INDEX idx_fc_self_leg_donors_client (client_id, state),
+    INDEX idx_fc_self_leg_donors_endpoint (donor_public_host, donor_public_port)
 );
 ```
 
-Migration file: `master/migrations/20260518_add_forward_combination_donations.sql`.
+Migration file: `master/migrations/20260518_add_forward_combination_self_leg_donors.sql`.
 
-When a donation reaches `state = 'active'`, provisioning **also** writes a row
-into `forward_combination_slaves` with `selection_kind = 'donated_self_leg'`
-so the existing chain-builder picks it up uniformly.
+When a donation reaches `state = 'active'`, provisioning **does not** write a
+fake node row and does not insert a `forward_combination_slaves` row. Instead,
+active rows from this donor table are merged into the per-combination fastest-N
+candidate set and emitted to consumers as `candidate_kind = 'donated_slave_leg'`.
 
 ### 6.4 Heartbeat payload extensions (slave-agent)
 
@@ -330,11 +354,11 @@ Rendered for any combination:
 - A **multi-select** widget listing nodes whose `group_key` belongs to one
   of the helper-group keys for this combination, plus the combination's
   primary `node_group_key`.
-  - Filter chips: `Active`, `Degraded`, `Donor (donated_self_leg)`.
+  - Filter chips: `Active`, `Degraded`, `Admin pinned`. Donors are shown in the separate Live donations table, not inside the node picker.
   - Selection persists into `forward_combination_slaves` with
     `selection_kind = 'admin_pin'`.
-- A read-only table below: **Live donations** (`forward_combination_donations`
-  rows where `state = 'active'`). Columns: node name, last RTT, qualifying
+- A read-only table below: **Live donations** (`forward_combination_self_leg_donors`
+  rows where `state = 'active'`). Columns: client name/session/device, donor endpoint (redacted by default), last RTT, qualifying
   since, open ports, action button **Revoke**.
 - The "Max Legs Used (cap)" field already on this page (existing
   `helper_group_cap`) keeps its meaning. New helper text:
@@ -365,7 +389,9 @@ Rendered for any combination:
 ```
 
 State transitions are computed by a **panel worker**, not the slave-agent.
-Worker tick = `60 s` (matches existing SSL task worker cadence).
+Worker tick = `60 s` (matches existing SSL task worker cadence). The worker reads
+and writes `forward_combination_self_leg_donors`; the donor-side agent only
+reports raw measurements for the panel's active policy payload.
 
 ### Qualify gate (transition `none -> qualifying -> active`)
 
@@ -373,17 +399,17 @@ All must be true:
 
 1. `forward_combinations.allow_public_self_leg_donation = 1`.
 2. `forward_combinations.desired_latency_ms > 0`.
-3. The donor node's last `donation_self_check` reports
+3. The donor row's latest `donation_self_check` reports
    `measured_chain_latency_ms <= floor(desired_latency_ms * 0.75)`
    for `donation_qualify_window_seconds` continuously.
-4. The donor node's last `donation_self_check` reports at least
+4. The donor row's latest `donation_self_check` reports at least
    `donation_min_open_ports` open inbound ports.
-5. The donor node has a healthy heartbeat in the last `120 s`.
-6. The donor node is not at `state = 'cooldown'` (cooldown = `300 s`).
+5. The donor client session has a healthy heartbeat in the last `120 s`.
+6. The donor row has `owner_opt_in = 1` and is not at `state = 'cooldown'`
+   (cooldown = `300 s`).
 
-When all hold, transition to `active`, write a `forward_combination_slaves`
-row with `selection_kind = 'donated_self_leg'`, and call
-`republishActiveForwardsForCombination($combinationId)`.
+When all hold, transition the `forward_combination_self_leg_donors` row to
+`active` and call `republishActiveForwardsForCombination($combinationId)`.
 
 ### Revoke gate (transition `active -> cooldown`)
 
@@ -392,12 +418,13 @@ Any one triggers revoke:
 - `measured_chain_latency_ms > desired_latency_ms` for
   `donation_revoke_window_seconds`.
 - Two consecutive port-probe failures.
-- The donor's `desktop_client_sessions` row expires.
-- Admin clears `allow_public_self_leg_donation`.
+- The donor's `desktop_client_sessions` row expires or the donor device
+  heartbeat is stale.
+- Admin clears `allow_public_self_leg_donation` or clears the donor row's
+  `owner_opt_in`.
 
-On revoke: set `state = 'cooldown'`, set `revoked_at`/`revoke_reason`,
-delete the matching `forward_combination_slaves` row, call
-`republishActiveForwardsForCombination`.
+On revoke: set `state = 'cooldown'`, set `revoked_at`/`revoke_reason`, remove
+the donor from candidate emission, and call `republishActiveForwardsForCombination`.
 
 ### Hysteresis
 
@@ -447,12 +474,13 @@ Either probe failing twice in a row revokes donation (rule 5 in §3).
 
 The candidate set for a combination is the union of:
 
-1. Members of every **helper group** referenced by
+1. Rented node members of every **helper group** referenced by
    `forward_combination_helper_groups`.
-2. Explicitly pinned slaves from `forward_combination_slaves` with
+2. Explicitly pinned rented nodes from `forward_combination_slaves` with
    `selection_kind = 'admin_pin'`.
-3. Active donors from `forward_combination_slaves` with
-   `selection_kind = 'donated_self_leg'`.
+3. Active client self-leg donors from
+   `forward_combination_self_leg_donors` where `state = 'active'` and
+   `owner_opt_in = 1`.
 
 ### 10.2 Ranking signal
 
@@ -467,28 +495,31 @@ Use the **slave-to-sidecar-to-endpoint** RTT, already collected today:
 ### 10.3 Selection algorithm (per combination)
 
 ```
-candidates = active_nodes(combination_id)
-candidates = filter(n -> n.last_chain_latency_ms is not null)
-candidates = sort_by(n -> (n.last_chain_latency_ms ascending,
-                           -n.delivered_ewma,
-                           n.id))
+candidates = rented_nodes(combination_id) UNION active_self_leg_donors(combination_id)
+candidates = filter(c -> c.last_chain_latency_ms is not null)
+candidates = sort_by(c -> (c.last_chain_latency_ms ascending,
+                           -c.delivered_ewma,
+                           c.stable_id))
 selected   = take(candidates, helper_group_cap or 4)
 ```
 
 Tie-breakers (when RTT is missing or equal):
 
 - Higher `delivered_ewma` wins.
-- Lower `node_id` wins (deterministic).
+- Lower stable id wins (`node_id` for rented nodes, donor table `id` for client self-leg donors).
 
 ### 10.4 Per-forward propagation
 
 All forwards under one combination receive **the same** `selected` list.
 
-The existing `reconcileForwardEndpoints(forwardId)` already builds endpoint
-rows per forward. We change `pickNodesForGroups` to delegate to a new
-`pickFastestSlavesForCombination(int $combinationId, int $cap)` whenever
-the forward has a `forward_combination_id`. The legacy code path stays for
-forwards without a combination.
+The existing `reconcileForwardEndpoints(forwardId)` still builds
+`service_endpoints` rows for rented `nodes` only. We add
+`pickFastestSlavesForCombination(int $combinationId, int $cap)` for the unified
+ranking. When the selected item is a rented node, reconciliation materializes it
+as a `service_endpoints` row. When the selected item is a client self-leg donor,
+provisioning emits it directly into `candidate_pool` as
+`candidate_kind = 'donated_slave_leg'`; it is not represented as a fake node.
+The legacy code path stays for forwards without a combination.
 
 ### 10.5 Recompute trigger
 
@@ -496,7 +527,7 @@ Recompute the selection when any of the following happen:
 
 - `helper_group_cap` is changed for the combination.
 - `forward_combination_slaves` rows for the combination change.
-- A donor enters or leaves `state = 'active'`.
+- A row in `forward_combination_self_leg_donors` enters or leaves `state = 'active'`.
 - `desired_latency_ms` changes.
 - A node's `last_chain_latency_ms` changes by more than
   `switch_improvement_ms` (existing knob, default 15).
@@ -513,16 +544,22 @@ have from the 2026-05-17 plan.
 1. **Loader**: extend `forwardCombinationById` to hydrate the new fields.
 2. **Saver**: extend `saveForwardCombination` to persist the new fields and
    call `republishActiveForwardsForCombination` (already present).
-3. **Slave selection**: replace, for combination-bound forwards, the
-   `pickNodesForGroups` call inside `reconcileForwardEndpoints` with
-   `pickFastestSlavesForCombination($combinationId, $maxLegsUsed)`.
+3. **Slave selection**: for combination-bound forwards, call
+   `pickFastestSlavesForCombination($combinationId, $maxLegsUsed)` and keep the
+   legacy `pickNodesForGroups` path for non-combination forwards. Rented results
+   become `service_endpoints`; client self-leg donor results become direct
+   `candidate_pool` entries.
 4. **Donation worker hook**: a new public method
    `evaluateDonationStateForCombination(int $combinationId): void` runs from
    a CLI (`master/scripts/evaluate_donations.php`) and is wired into a
    systemd timer (mirror the SSL task worker).
-5. **Candidate pool emission**: when emitting `candidate_pool` for the
+5. **Agent payloads**: publish explicit `donation_policy` data to donor-side
+   slave-agent/self-leg runtimes and explicit `donation_reverse_probe_targets`
+   to sidecar management payloads.
+6. **Candidate pool emission**: when emitting `candidate_pool` for the
    client-agent, mark donor candidates with `candidate_kind =
-   'donated_slave_leg'` so the client-agent can debug.
+   'donated_slave_leg'` so the client-agent can debug and count them against
+   `helper_group_cap`.
 
 ### Worker entry point
 
@@ -533,46 +570,96 @@ Add `master/scripts/evaluate_donations.php` and the systemd unit:
 
 ## 12. Slave-Agent Changes
 
-### 12.1 New self-check loop
+### 12.1 New donation policy payload
+
+Task publish / management payloads for donor-capable forwards include a
+`donation_policy` object:
+
+```json
+{
+  "forward_combination_id": 12,
+  "desired_latency_ms": 60,
+  "donation_gate_ratio": 0.75,
+  "donation_qualify_window_seconds": 60,
+  "donation_revoke_window_seconds": 30,
+  "donation_min_open_ports": 1,
+  "donor_client_id": 44,
+  "desktop_client_session_id": 123,
+  "device_id": "stable-device-id"
+}
+```
+
+The slave-agent must treat absence of `donation_policy` as donation disabled for
+that forward.
+
+### 12.2 New self-check loop
 
 A new background coroutine in `slave-agent/slave_agent.py`:
 
-- Every `30 s`, for each active forward whose combination has
-  `desired_latency_ms > 0`:
-  - Probe `slave -> sidecar -> endpoint` RTT (existing CF probe path
-    already exists; extend for `current_mode` if needed).
+- Every `30 s`, for each active forward whose payload has
+  `donation_policy.desired_latency_ms > 0`:
+  - Probe `slave -> sidecar -> endpoint` RTT (existing CF probe path already
+    exists; extend for `current_mode` if needed).
   - Probe each listener for outside-in reachability (TCP, and UDP when
     `transport_mode in {udp, tcp+udp}`).
   - Cache the most recent result.
 - On heartbeat, attach `donation_self_check[]`.
 
-### 12.2 No new task type
+### 12.3 No new decision authority
 
-Donation is **a panel-side decision**. Slave-agent only reports facts; it
-does not declare itself donor.
+Donation is **a panel-side decision**. Slave-agent only reports facts for the
+specific policy payload the panel sent; it does not declare itself donor.
 
 ---
 
 ## 13. Sidecar-Agent Changes
 
-- Extend `bond_leg_reputation` reporting block in heartbeat with a new
-  `donation_reverse_probe[]` array, one entry per active forward, carrying:
-  - `node_id`
-  - `forward_id`
-  - `protocol` (`tcp` / `udp`)
-  - `ok`
-  - `latency_ms`
-  - `checked_at`
+### 13.1 New reverse-probe target payload
+
+The panel adds `donation_reverse_probe_targets[]` to sidecar management payloads.
+Each entry is explicit; sidecar-agent does not infer targets from route files:
+
+```json
+{
+  "forward_combination_id": 12,
+  "donor_id": 55,
+  "client_id": 44,
+  "forward_id": 47,
+  "protocol": "tcp",
+  "public_host": "example-donor-edge",
+  "public_port": 24443,
+  "expected_transport": "cf_wss"
+}
+```
+
+### 13.2 New reverse-port probe loop
+
+Add a sidecar function/loop that consumes `donation_reverse_probe_targets[]` and
+reports `donation_reverse_probe[]` on heartbeat, one entry per target:
+
+- `forward_combination_id`
+- `donor_id`
+- `client_id`
+- `forward_id`
+- `protocol` (`tcp` / `udp`)
+- `ok`
+- `latency_ms`
+- `checked_at`
+
+Probe interval is `60 s`, non-overlapping per target, and failures are rate
+limited in logs.
 
 ## 14. Client-Agent Changes (Linux phase one)
 
-- The donor's client-agent needs **no new code path**: the slave-agent
-  embedded inside the donor box already publishes the open listener.
-  Donation eligibility is computed centrally.
-- The consumer's client-agent: when receiving a `candidate_pool` entry with
-  `candidate_kind = 'donated_slave_leg'`, treat it identically to a
-  rented helper leg (same probing, same reputation accounting). The runtime
-  family selection is unchanged.
+The consumer's client-agent: when receiving a `candidate_pool` entry with
+`candidate_kind = 'donated_slave_leg'`, treat it identically to a rented helper
+leg for selection, MPTCP capability filtering, and latency target escalation.
+Add only a small `donor=true|false` log decoration for operator clarity. The
+runtime family selection is unchanged.
+
+The donor-side client self-leg identity is maintained by the panel donor table
+and donor-side policy payload; do not add a second client-agent donation decision
+path in phase one.
 
 ## 15. Observability
 
@@ -580,16 +667,16 @@ Admin panel additions:
 
 1. **Donation list view** under
    `/admin/forward-combinations/{id}/donations`:
-   - donor node name + public IP
+   - donor client/session/device plus redacted endpoint summary
    - state, last RTT, donation threshold, qualify_started_at, activated_at,
      revoked_at, revoke_reason
    - open ports JSON
 2. **Per-forward chain view**: extend the existing forward-detail page with
    the `selected` list (fastest-4) and per-slave latency. Show whether the
-   slot came from `admin_pin`, `helper_group`, or `donated_self_leg`.
+   slot came from `admin_pin`, `helper_group`, or `donated_slave_leg`.
 3. **Logs**: panel writes one line to `error_log` on each
    donation state transition (qualify, activate, revoke, cooldown). Format:
-   `donation_state donor=<node_id> combo=<id> from=<state> to=<state> reason=<reason>`.
+   `donation_state donor=<donor_id> client=<client_id> combo=<id> from=<state> to=<state> reason=<reason>`.
 
 ## 16. Failure Modes
 
@@ -600,10 +687,10 @@ Admin panel additions:
 | Sidecar reverse probe fails twice | Revoke active donor, set `revoke_reason = 'port_probe_failed'`. |
 | `desired_latency_ms` set to `0` | Donation worker treats combination as "donation disabled"; revoke any active donors with `revoke_reason = 'admin_disabled'`. |
 | `helper_group_cap = 0` | Treat as unlimited; do not slice the chain. |
-| Selected donor's heartbeat ages out (>120 s) | Revoke with `revoke_reason = 'session_ended'`. |
-| Multiple donors qualify; cap is 4 | Pick the four fastest by RTT; remaining donors stay `active` in DB but are not in the chain (informational); recompute when chain changes. |
+| Selected donor client's heartbeat/session ages out (>120 s) | Revoke with `revoke_reason = 'session_ended'`. |
+| Multiple self-leg donors qualify; cap is 4 | Pick the four fastest by RTT across rented nodes + donors; remaining donors stay `active` in DB but are not emitted in the chain (informational); recompute when chain changes. |
 | Admin manually revokes donor via panel | Set `state = 'revoked'` (terminal until manual re-enable), set `revoke_reason = 'admin_disabled'`. |
-| Two donors have identical RTT | Tie-break on `delivered_ewma` desc, then `node_id` asc. |
+| Two donors have identical RTT | Tie-break on `delivered_ewma` desc, then donor table `id` asc. |
 
 ## 17. Rollout Plan
 
@@ -617,15 +704,20 @@ disclosure (off by default).
 
 ## 18. Security Considerations
 
-- Donor traffic is mediated by the sidecar; the donor can never see the
-  consumer's plaintext target. (Sidecar already terminates the consumer
-  side and re-dials the target.)
-- The donor's home IP is exposed only to the **sidecar**, never directly
-  to consumers. Consumers see the donor as just another slave node.
-- Donation requires admin opt-in **and** donor admin opt-in (the donor
-  service's existing `sharing_mode` must permit sharing). The new
-  combination-level switch is **additive** to the donor-side switch, not a
-  replacement.
+- Donor traffic is mediated by the sidecar; the donor should not receive the
+  consumer's plaintext target from the panel. (Sidecar already terminates the
+  consumer side and re-dials the target.)
+- IP hiding is **best-effort in phase one**. Prefer CF/WSS or CF-WG donor
+  endpoints and redact donor endpoint values in panel UI, logs, exported configs,
+  and docs. Do not claim that `wg show`, local runtime JSON, or packet captures
+  can hide an endpoint IP:PORT by design.
+- If a direct donor endpoint is emitted to a consumer client, that endpoint may
+  be visible on that consumer machine. That is acceptable only when the donor row
+  explicitly opted in and the admin understands the exposure; otherwise require a
+  CF-masked endpoint.
+- Donation requires combination-level admin opt-in **and** donor-row opt-in
+  (`owner_opt_in = 1`). The new combination-level switch is additive to the
+  donor-side row, not a replacement.
 - Revocation is fast-path: `next heartbeat + 60 s worker tick` worst case.
 
 ## 19. Decision Boundary Summary
