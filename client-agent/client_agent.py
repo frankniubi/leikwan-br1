@@ -2117,10 +2117,10 @@ class ClientAgent:
             # reverse-iperf traffic.  Use the mature bond runtime for this
             # shape even when an MPTCP sidecar runtime is present; rented
             # helpers can still be appended as normal slave-mediated bond legs.
-            if bool(primary.get("self_leg_mptcp_solo_allowed", False)) and mptcp_supported and "mptcp" in primary_caps:
-                return "mptcp"
             if probe_transport == "cf_direct_wss" and target_sidecar_bond_port > 0:
                 return "bond"
+            if bool(primary.get("self_leg_mptcp_solo_allowed", False)) and mptcp_supported and "mptcp" in primary_caps and (requested_mode == "mptcp" or mptcp_runtime_ready):
+                return "mptcp"
             if mptcp_supported and mptcp_runtime_ready and "mptcp" in primary_caps:
                 return "mptcp"
             return "bond"
