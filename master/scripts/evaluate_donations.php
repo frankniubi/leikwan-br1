@@ -6,7 +6,7 @@ use Leikwan\Master\Bootstrap;
 require_once __DIR__ . '/../src/Bootstrap.php';
 
 spl_autoload_register(static function (string $class): void {
-    $prefix = 'Leikwan\Master\';
+    $prefix = 'Leikwan\\Master\\';
     if (!str_starts_with($class, $prefix)) {
         return;
     }
