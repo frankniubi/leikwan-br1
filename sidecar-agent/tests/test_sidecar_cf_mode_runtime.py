@@ -101,6 +101,15 @@ class SidecarCfModeRuntimeTests(unittest.TestCase):
                             "target": "127.0.0.1:8999",
                             "transport_mode": "tcp",
                         },
+                        {
+                            "forward_id": 49,
+                            "service_name": "cf-forward-49-cfwg",
+                            "path_prefix": "base.cfwg",
+                            "target": "127.0.0.1:14969",
+                            "transport_mode": "udp",
+                            "shadow_route_key": "base.cfwg",
+                            "backend_mode": "wstunnel",
+                        },
                     ],
                 },
             }
@@ -111,8 +120,14 @@ class SidecarCfModeRuntimeTests(unittest.TestCase):
             mptcp_routes = json.loads((agent.state_dir / "mptcp-forward-routes.json").read_text(encoding="utf-8"))["routes"]
             base_backend = next(route["backend_port"] for route in cf_routes if route["service_name"] == "cf-forward-49")
             uot_backend = next(route["backend_port"] for route in cf_routes if route["service_name"] == "cf-forward-49-uot")
+            cfwg_backend = next(route["backend_port"] for route in cf_routes if route["service_name"] == "cf-forward-49-cfwg")
             self.assertNotEqual(base_backend, uot_backend)
+            self.assertNotEqual(base_backend, cfwg_backend)
             self.assertEqual(mptcp_routes[0]["target_port"], base_backend)
+            cfwg_unit = (agent.state_dir / "cf-forward-49-cfwg.service.preview").read_text(encoding="utf-8")
+            self.assertIn("wstunnel server ws://127.0.0.1:", cfwg_unit)
+            self.assertIn("--restrict-to 127.0.0.1:14969", cfwg_unit)
+            self.assertIn("--restrict-http-upgrade-path-prefix base.cfwg", cfwg_unit)
 
 
 if __name__ == "__main__":

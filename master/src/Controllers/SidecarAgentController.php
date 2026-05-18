@@ -213,7 +213,8 @@ final class SidecarAgentController extends BaseController
                         'path_prefix' => $pathPrefix . '.cfwg',
                         'target' => '127.0.0.1:' . $sidecarWireguardListenPort,
                         'transport_mode' => 'udp',
-                        'backend_mode' => 'direct',
+                        'shadow_route_key' => $pathPrefix . '.cfwg',
+                        'backend_mode' => 'wstunnel',
                     ];
                 }
                 return $carry;
