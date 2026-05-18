@@ -8,16 +8,18 @@
 **Artifact path:** `docs/superpowers/plans/2026-05-18-client-donation-and-fastest-slave-selection-plan.md`
 **Design doc:** `docs/superpowers/specs/2026-05-18-client-donation-and-fastest-slave-selection-design.md`
 
+**Reliability amendment, 2026-05-19:** Donor identity is **client self-leg**, not `nodes`; create `forward_combination_self_leg_donors` as the valid client-as-a-slave donor table; add explicit panel payloads for donor-side self-check and sidecar reverse-probe targets; adjust security/IP-hiding claims to best-effort redaction + CF masking; and keep donated self-leg candidates out of fake `service_endpoints` rows.
+
 **Goal:** Land two related features in one phased rollout:
 
 1. **Donate Your Client-as-a-Slave** — admin opts a forward combination into
    public client-as-a-slave donation. A donor's client-agent is auto-published
-   as a slave for that combination only when its measured
+   as a donor candidate for that combination only when its measured
    `slave -> sidecar -> endpoint` RTT is at or below 75% of the admin's
    desired latency AND it has at least one open inbound port. Withdraw on any
    gate failure.
 2. **Multiple slaves per forward combination, fastest-4 chain** — admin picks
-   multiple slaves (rented + donated + admin-pinned) for one forward
+   multiple slaves (rented nodes + client self-leg donors + admin-pinned nodes) for one forward
    combination. The runtime keeps only the **4 fastest** in the active chain,
    measured by `slave -> sidecar -> endpoint` RTT. All forwards under a
    forward combination share the same slave selection.
@@ -26,7 +28,7 @@
 
 - Topology stays `client -> slave -> sidecar -> target`. No new bypass.
 - Donation is per forward combination, never global.
-- Donation is panel-decided; slaves only report raw measurements.
+- Donation is panel-decided; agents only report raw measurements for explicit panel policy/probe payloads.
 - Fastest-N selection is per combination, not per forward.
 - The cap reuses the existing `helper_group_cap` column (label "Max Legs
   Used (cap)") with default `4`. **No new cap column.**
@@ -37,7 +39,7 @@
 - PHP panel: `master/src/Support/ProvisioningService.php`,
   `master/src/Controllers/AdminController.php`,
   `master/src/Controllers/NodeController.php` (heartbeat ingest),
-  `master/src/Controllers/SidecarAgentController.php` (sidecar heartbeat).
+  `master/src/Controllers/SidecarAgentController.php` (sidecar heartbeat + probe targets).
 - MySQL migrations under `master/migrations/`.
 - Slave-agent: `slave-agent/slave_agent.py`.
 - Sidecar-agent: `sidecar-agent/sidecar_agent.py`.
@@ -127,9 +129,9 @@ Plan-level pass requires all to be true simultaneously on `master`:
      from 2026-05-17 plan still passes)
    - Combination-bound forwards select up to `helper_group_cap` slaves
      ranked by `last_chain_latency_ms`. (Task 5 regression)
-   - `forward_combination_slaves` rows survive the slave-agent's heartbeat
-     ingest path with `selection_kind = 'admin_pin'`. (Task 4 regression)
-   - The donation worker activates a donor exactly when all six gates of
+   - admin-pinned `forward_combination_slaves` rows and active self-leg donor rows
+     survive heartbeat ingest paths without being conflated. (Task 4 regression)
+   - The donation worker activates a client self-leg donor exactly when all gates of
      §8 hold. (Task 8 regression)
    - The donation worker revokes a donor on any of the four revoke triggers.
      (Task 9 regression)
@@ -174,7 +176,7 @@ If a soft cap is exceeded, stop and report; do not silently push past it.
 
 - Create: `master/migrations/20260518_add_forward_combination_donation_and_latency.sql`
 - Create: `master/migrations/20260518_add_forward_combination_slaves.sql`
-- Create: `master/migrations/20260518_add_forward_combination_donations.sql`
+- Create: `master/migrations/20260518_add_forward_combination_self_leg_donors.sql`
 - Modify: `master/migrations/schema.sql` (mirror all three)
 
 ### Panel + provisioning
@@ -186,6 +188,8 @@ If a soft cap is exceeded, stop and report; do not silently push past it.
     inside `reconcileForwardEndpoints` with the new picker.
   - Add `evaluateDonationStateForCombination(int $combinationId): void`.
   - Add `recordDonationSelfCheck(int $nodeId, array $payload): void`.
+  - Add `donationPolicyForForward(array $forward): array` for donor-side payloads.
+  - Add `donationReverseProbeTargetsForPoint(int $sidecarPointId): array`.
   - Add `recordDonationReverseProbe(int $sidecarPointId, array $payload): void`.
 - Modify: `master/src/Controllers/AdminController.php`
   - Render donation policy section on combination edit form.
@@ -236,14 +240,15 @@ If a soft cap is exceeded, stop and report; do not silently push past it.
 - Create: `master/tests/forward_combination_donation_columns_schema_regression_test.php`
 - Create: `master/tests/forward_combination_donation_columns_persistence_regression_test.php`
 - Create: `master/tests/forward_combination_slaves_table_schema_regression_test.php`
-- Create: `master/tests/forward_combination_donations_table_schema_regression_test.php`
+- Create: `master/tests/forward_combination_self_leg_donors_table_schema_regression_test.php`
 - Create: `master/tests/admin_combination_multi_slave_picker_regression_test.php`
 - Create: `master/tests/provisioning_pick_fastest_slaves_for_combination_regression_test.php`
 - Create: `master/tests/node_heartbeat_donation_self_check_ingest_regression_test.php`
-- Create: `master/tests/sidecar_heartbeat_donation_reverse_probe_ingest_regression_test.php`
 - Create: `master/tests/donation_worker_qualify_to_active_regression_test.php`
 - Create: `master/tests/donation_worker_revoke_paths_regression_test.php`
 - Create: `slave-agent/tests/test_donation_self_check_payload.py`
+- Create: `master/tests/provisioning_donation_policy_payload_regression_test.php`
+- Create: `master/tests/sidecar_donation_reverse_probe_payload_regression_test.php`
 - Create: `sidecar-agent/tests/test_donation_reverse_probe_payload.py`
 - Create: `client-agent/tests/test_donated_slave_leg_consumed_as_helper.py`
 
@@ -257,18 +262,18 @@ what proves the task is done?". It is binding alongside each task's step list.
 | # | Task | Stop condition | 验收指标 / Acceptance criteria |
 | --- | --- | --- | --- |
 | 0 | Pre-flight | Step 0b finishes; any pre-existing failure is captured in chat. | `git status` clean on `master`. All Step 0b commands exit 0 OR the failures are listed verbatim in chat before Task 1 begins. |
-| 1 | Add migrations + schema mirrors | All three new migration files exist and `schema.sql` includes mirrored DDL. The schema regression tests for the three new shapes print `ok`. Stop. | (a) `forward_combination_donation_columns_schema_regression_test.php` passes (5 columns + comments). (b) `forward_combination_slaves_table_schema_regression_test.php` passes (table + indexes). (c) `forward_combination_donations_table_schema_regression_test.php` passes (table + state column + indexes). (d) `schema.sql` mirrors all three. (e) No other column or table touched. |
-| 2 | Persist 5 new combination columns end-to-end | `forward_combination_donation_columns_persistence_regression_test.php` prints `ok`. The earlier `forward_combination_save_update_persistence_regression_test.php` (from 2026-05-17 plan) still passes. Stop. | (a) `saveForwardCombination()` reads + writes `desired_latency_ms`, `allow_public_self_leg_donation`, `donation_qualify_window_seconds`, `donation_revoke_window_seconds`, `donation_min_open_ports`. (b) Both UPDATE and INSERT branches include them. (c) `forwardCombinationById()` returns them. (d) Defaults match design (`0`, `0`, `60`, `30`, `1`). (e) `desired_latency_ms` is clamped to `>= 0`. (f) `allow_public_self_leg_donation` is normalized to `0` or `1`. |
-| 3 | Admin combination edit form: donation section | `master/tests/admin_forward_combination_self_leg_policy_test.php` (extended) prints `ok` plus the new section snippets. Stop. | (a) Form renders `name="desired_latency_ms"`, `name="allow_public_self_leg_donation"`, `name="donation_qualify_window_seconds"`, `name="donation_revoke_window_seconds"`, `name="donation_min_open_ports"`. (b) Helper text includes the literal substring `Donation gate is 75% of this value`. (c) Section is hidden when `client_mode === 'single'`. (d) POST handler validates `desired_latency_ms >= 0`. (e) "Max Legs Used (cap)" helper text is updated to mention `slave -> sidecar -> endpoint` RTT. (f) Existing tenant tests still pass. |
-| 4 | Multi-slave picker UI + persistence | `admin_combination_multi_slave_picker_regression_test.php` prints `ok`. Stop. | (a) Combination edit form renders a multi-select listing nodes whose `group_key` matches the combination's `node_group_key` or any helper-group key. (b) POST handler diffs `forward_combination_slaves` rows with `selection_kind = 'admin_pin'`: insert added, soft-disable removed (set `is_active = 0`). (c) Donor rows (`selection_kind = 'donated_self_leg'`) are NOT touched by admin save. (d) Save calls `republishActiveForwardsForCombination($id)` (existing helper). (e) Form renders a read-only "Live donations" table from `forward_combination_donations` where `state = 'active'`, with a Revoke button posting to `/admin/forward-combinations/{id}/donations/{donationId}/revoke`. |
-| 5 | `pickFastestSlavesForCombination` + reconcile integration | `provisioning_pick_fastest_slaves_for_combination_regression_test.php` prints `ok`. Existing `provisioning_forward_combination_helper_groups_regression_test.php` still passes. Stop. | (a) `pickFastestSlavesForCombination(int $combinationId, int $cap): array` exists and returns at most `cap` rows when cap > 0. (b) Source query unions: helper-group nodes + active `forward_combination_slaves` rows where `is_active = 1`. (c) Sort: `last_chain_latency_ms ASC NULLS LAST`, then `delivered_ewma DESC`, then `node_id ASC`. (d) `cap = 0` returns the full ranked list (unbounded). (e) `reconcileForwardEndpoints()` calls the new picker only when `forward_combination_id` is set; otherwise legacy `pickNodesForGroups` path runs unchanged. (f) All forwards under one combination receive the same selected node set within one panel pass (proven by reconciling 2 forwards in one combination and asserting identical node_id sets). |
-| 6 | Slave heartbeat ingest: `donation_self_check` | `node_heartbeat_donation_self_check_ingest_regression_test.php` prints `ok`. Existing node heartbeat tests still pass. Stop. | (a) `NodeController::heartbeat` reads `donation_self_check` from request body when present. (b) Calls `ProvisioningService::recordDonationSelfCheck(int $nodeId, array $payload): void`. (c) Persists most-recent self-check into `node_donation_self_check_state` (a JSON column on `nodes` OR a new lightweight table — see Step 6.1). (d) Pre-existing fields (`status`, `cpu_usage`, etc.) keep their values. (e) Empty / missing array is a no-op (no error). |
-| 7 | Sidecar heartbeat ingest: `donation_reverse_probe` | `sidecar_heartbeat_donation_reverse_probe_ingest_regression_test.php` prints `ok`. Existing `sidecar_heartbeat_republish_gate_regression_test.php` still passes. Stop. | (a) `SidecarAgentController::heartbeat` reads `donation_reverse_probe` when present. (b) Calls `ProvisioningService::recordDonationReverseProbe(int $sidecarPointId, array $payload): void`. (c) Persists per-(node_id, forward_id, protocol) the most-recent `ok`/`latency_ms`/`checked_at` to a state column or table. (d) Existing republish-gate sentinels still match. (e) Empty / missing array is a no-op. |
-| 8 | Donation worker: qualify → active path | `donation_worker_qualify_to_active_regression_test.php` prints `ok`. Stop. | (a) `evaluateDonationStateForCombination(int $combinationId): void` exists. (b) Function transitions `qualifying -> active` exactly when ALL of: `allow_public_self_leg_donation = 1`, `desired_latency_ms > 0`, last `donation_self_check.measured_chain_latency_ms <= floor(desired_latency_ms * 0.75)` for `donation_qualify_window_seconds`, last `donation_self_check.open_ports` count `>= donation_min_open_ports`, last sidecar reverse probe for that (node, forward, protocol) is `ok = true`, donor heartbeat is `<= 120 s` old. (c) On activation: writes a `forward_combination_slaves` row with `selection_kind = 'donated_self_leg'`, sets `donations.activated_at`, calls `republishActiveForwardsForCombination`. (d) Activation is idempotent (re-running the worker does NOT spam republishes). (e) The threshold `0.75` is encoded as a class constant `DONATION_GATE_RATIO = 0.75` for easy auditing. |
-| 9 | Donation worker: revoke paths | `donation_worker_revoke_paths_regression_test.php` prints `ok`. Stop. | (a) Revoke triggers when `measured_chain_latency_ms > desired_latency_ms` for `donation_revoke_window_seconds` (sets `revoke_reason = 'latency_above_target'`). (b) Revoke triggers on two consecutive sidecar reverse-probe failures (`'port_probe_failed'`). (c) Revoke triggers when donor's `desktop_client_sessions` row expires (`'session_ended'`). (d) Revoke triggers when admin clears `allow_public_self_leg_donation` (`'admin_disabled'`). (e) Each revoke deletes the matching `forward_combination_slaves` row. (f) Cooldown is `300 s`; donor cannot re-qualify within cooldown. (g) Manual admin revoke from §7.2 sets `state = 'revoked'` (terminal until manual re-enable), distinct from `'cooldown'`. (h) All transitions emit one `error_log` line with the donation_state format from §15. |
-| 10 | Slave-agent self-check loop | `slave-agent/tests/test_donation_self_check_payload.py` passes. Stop. | (a) New coroutine `donation_self_check_loop` runs every 30 s. (b) For each active forward whose combination has `desired_latency_ms > 0`, probes slave→sidecar→endpoint RTT through the existing CF probe path; for `current_mode` extends with a TCP-connect probe via the sidecar's published listener. (c) Probes outside-in TCP reachability via the existing wstunnel/CF return path; for UDP only when `transport_mode in {udp, tcp+udp}`. (d) Heartbeat payload includes `donation_self_check[]` shaped per design §6.4. (e) Loop never blocks the main heartbeat loop more than 5 s. (f) Failures are logged at `WARNING` and become `ok = false` entries, not exceptions. |
-| 11 | Sidecar-agent reverse-probe | `sidecar-agent/tests/test_donation_reverse_probe_payload.py` passes. Stop. | (a) Sidecar adds a per-active-forward background loop that, for each slave currently bound, attempts a TCP connect to `slave_public_ip:listen_port` (and UDP echo when applicable). (b) Result attached to heartbeat as `donation_reverse_probe[]` per design §13. (c) Probe interval is `60 s` and never overlaps itself for the same target. (d) Existing CF/MPTCP probe loops are not regressed (gated by `republish` test). (e) Probe failures are logged once per minute, not on every retry. |
-| 12 | Client-agent: consume donor candidates | `client-agent/tests/test_donated_slave_leg_consumed_as_helper.py` passes. Existing client-agent self-leg / runtime-preference tests still pass. Stop. | (a) When `candidate_pool` contains a `candidate_kind = 'donated_slave_leg'` entry, it is treated identically to `rented_group_leg` for `select_forward_candidates`, `apply_latency_target_candidate_escalation`, and `filter_mptcp_capable_candidates`. (b) Logs include a `donor=true` flag in the leg-info line. (c) `selected_primary` selection respects existing latency rules; donor entries are not preferred over rented helpers solely because they are donor. (d) `subflow_limit` honors `max_legs_used` and donor entries count against it. (e) No new runtime-family branches introduced. |
+| 1 | Add migrations + schema mirrors | All three new migration files exist and `schema.sql` includes mirrored DDL. The schema regression tests for the three new shapes print `ok`. Stop. | (a) donation columns test passes. (b) `forward_combination_slaves` test proves admin-pinned rented node table only. (c) `forward_combination_self_leg_donors` test proves client/session/device donor table. (d) `schema.sql` mirrors all three. (e) No fake donor node row or fake service endpoint requirement. |
+| 2 | Persist 5 new combination columns end-to-end | `forward_combination_donation_columns_persistence_regression_test.php` prints `ok`. The earlier save/update regression still passes. Stop. | Save/load persists `desired_latency_ms`, `allow_public_self_leg_donation`, `donation_qualify_window_seconds`, `donation_revoke_window_seconds`, `donation_min_open_ports`; defaults and clamps match design. |
+| 3 | Admin combination edit form: donation section | `master/tests/admin_forward_combination_self_leg_policy_test.php` prints `ok` plus the new section snippets. Stop. | Form renders all 5 fields, helper text includes `Donation gate is 75% of this value`, hides section for single mode, and keeps tenant tests passing. |
+| 4 | Multi-slave picker UI + persistence | `admin_combination_multi_slave_picker_regression_test.php` prints `ok`. Stop. | Admin can pin/unpin rented node rows in `forward_combination_slaves`; client self-leg donor rows in `forward_combination_self_leg_donors` are untouched except explicit Revoke; Live donations table shows active donors. |
+| 5 | `pickFastestSlavesForCombination` + reconcile/candidate integration | `provisioning_pick_fastest_slaves_for_combination_regression_test.php` prints `ok`; helper-group regression still passes. Stop. | Unified ranking includes rented helper nodes, admin-pinned nodes, and active self-leg donors; rented nodes materialize as `service_endpoints`; donors emit as `candidate_kind = 'donated_slave_leg'`; cap and sort order hold. |
+| 6 | Slave heartbeat ingest: `donation_self_check` | `node_heartbeat_donation_self_check_ingest_regression_test.php` prints `ok`. Existing node heartbeat tests still pass. Stop. | `NodeController::heartbeat` reads `donation_self_check`, calls `recordDonationSelfCheck`, persists latest facts for donor evaluation, and missing arrays are no-op. |
+| 7 | Sidecar heartbeat ingest + target payload: `donation_reverse_probe` | `sidecar_donation_reverse_probe_payload_regression_test.php` prints `ok`; sidecar republish-gate regression still passes. Stop. | Panel sends explicit `donation_reverse_probe_targets[]`, ingests `donation_reverse_probe[]`, stores latest facts on donor rows, and preserves existing sidecar heartbeat behavior. |
+| 8 | Donation worker: qualify -> active path | `donation_worker_qualify_to_active_regression_test.php` prints `ok`. Stop. | Worker activates `forward_combination_self_leg_donors` rows exactly when all gates pass; it does not write fake nodes or fake service endpoints; activation is idempotent. |
+| 9 | Donation worker: revoke paths | `donation_worker_revoke_paths_regression_test.php` prints `ok`. Stop. | Revoke updates donor rows/cooldown/manual terminal state, removes donors from future candidate emission, and does not delete `forward_combination_slaves` rows. |
+| 10 | Slave-agent self-check loop + panel donation policy payload | `provisioning_donation_policy_payload_regression_test.php` and `slave-agent/tests/test_donation_self_check_payload.py` pass. Stop. | Panel emits explicit `donation_policy`; slave-agent reports `donation_self_check[]` only for active policy payloads and does not block heartbeat. |
+| 11 | Sidecar-agent reverse-probe from explicit targets | `sidecar-agent/tests/test_donation_reverse_probe_payload.py` passes. Stop. | Sidecar consumes panel `donation_reverse_probe_targets[]`, probes without overlap, rate-limits failures, and reports `donation_reverse_probe[]`. |
+| 12 | Client-agent: consume donor candidates | `client-agent/tests/test_donated_slave_leg_consumed_as_helper.py` passes. Existing client-agent self-leg / runtime-preference tests still pass. Stop. | `donated_slave_leg` is treated like `rented_group_leg` for selection/escalation/MPTCP filtering, donor logs are labeled, and donor entries count against `max_legs_used`. |
 
 ### What "stop" means in practice
 
@@ -329,11 +334,11 @@ blamed on this plan.
 
 - Create: `master/migrations/20260518_add_forward_combination_donation_and_latency.sql`
 - Create: `master/migrations/20260518_add_forward_combination_slaves.sql`
-- Create: `master/migrations/20260518_add_forward_combination_donations.sql`
+- Create: `master/migrations/20260518_add_forward_combination_self_leg_donors.sql`
 - Modify: `master/migrations/schema.sql`
 - Create: `master/tests/forward_combination_donation_columns_schema_regression_test.php`
 - Create: `master/tests/forward_combination_slaves_table_schema_regression_test.php`
-- Create: `master/tests/forward_combination_donations_table_schema_regression_test.php`
+- Create: `master/tests/forward_combination_self_leg_donors_table_schema_regression_test.php`
 
 - [ ] **Step 1: Write the three schema regression tests first (failing).**
 
@@ -372,7 +377,7 @@ echo "ok\n";
 ```
 
 Repeat the same shape for the `forward_combination_slaves` and
-`forward_combination_donations` tests, asserting `CREATE TABLE`, columns,
+`forward_combination_self_leg_donors` tests, asserting `CREATE TABLE`, columns,
 indexes, and FK names from §6.2 / §6.3.
 
 - [ ] **Step 2: Confirm all three regressions fail.**
@@ -380,7 +385,7 @@ indexes, and FK names from §6.2 / §6.3.
 ```bash
 php master/tests/forward_combination_donation_columns_schema_regression_test.php
 php master/tests/forward_combination_slaves_table_schema_regression_test.php
-php master/tests/forward_combination_donations_table_schema_regression_test.php
+php master/tests/forward_combination_self_leg_donors_table_schema_regression_test.php
 ```
 
 Expected: each FAIL with the first missing snippet.
@@ -397,7 +402,7 @@ migrations.
 ```bash
 php master/tests/forward_combination_donation_columns_schema_regression_test.php
 php master/tests/forward_combination_slaves_table_schema_regression_test.php
-php master/tests/forward_combination_donations_table_schema_regression_test.php
+php master/tests/forward_combination_self_leg_donors_table_schema_regression_test.php
 ```
 
 Expected: all `ok`.
@@ -405,7 +410,7 @@ Expected: all `ok`.
 - [ ] **Step 6: Commit.**
 
 ```bash
-git add master/migrations master/tests/forward_combination_donation_columns_schema_regression_test.php master/tests/forward_combination_slaves_table_schema_regression_test.php master/tests/forward_combination_donations_table_schema_regression_test.php
+git add master/migrations master/tests/forward_combination_donation_columns_schema_regression_test.php master/tests/forward_combination_slaves_table_schema_regression_test.php master/tests/forward_combination_self_leg_donors_table_schema_regression_test.php
 git commit -m "feat(panel): add migrations for client donation + multi-slave picker"
 ```
 
@@ -487,7 +492,7 @@ group ordering.
     from helper-group + primary-group nodes.
   - POST handler diffs `forward_combination_slaves` rows: insert new with
     `selection_kind='admin_pin'`, soft-disable removed (`is_active=0`).
-  - Donor rows (`selection_kind='donated_self_leg'`) are untouched.
+  - Client self-leg donor rows in `forward_combination_self_leg_donors` are untouched by multi-slave save.
   - Save calls `republishActiveForwardsForCombination($id)`.
   - "Live donations" read-only table renders with a Revoke button posting
     to `/admin/forward-combinations/{id}/donations/{donationId}/revoke`.
@@ -510,9 +515,10 @@ $this->router->add('POST', '/admin/forward-combinations/{id}/donations/{donation
 
 ---
 
-### Task 5: `pickFastestSlavesForCombination` + reconcile integration
+### Task 5: `pickFastestSlavesForCombination` + reconcile/candidate integration
 
-**Why:** This is the runtime fastest-N selector.
+**Why:** This is the runtime fastest-N selector across rented nodes and client
+self-leg donors.
 
 **Files:**
 
@@ -524,32 +530,47 @@ $this->router->add('POST', '/admin/forward-combinations/{id}/donations/{donation
     `pickFastestSlavesForCombination(int $combinationId, int $cap): array`.
   - Source contains the literal sentinel comment
     `fastest_slave_per_combination_selector`.
+  - Source union includes rented helper-group nodes, admin-pinned nodes from
+    `forward_combination_slaves`, and active client self-leg donors from
+    `forward_combination_self_leg_donors`.
   - Sort order is `last_chain_latency_ms ASC NULLS LAST`, then
-    `delivered_ewma DESC`, then `node_id ASC`.
+    `delivered_ewma DESC`, then stable id ASC (`node_id` for rented nodes,
+    donor table `id` for donors).
   - `cap = 0` returns the full ranked list.
-  - `reconcileForwardEndpoints()` calls the new picker only when
-    `forward_combination_id IS NOT NULL`.
-  - Two forwards under the same combination yield the same node-id set.
+  - `reconcileForwardEndpoints()` materializes only selected rented/admin-pinned
+    node rows into `service_endpoints`.
+  - `buildForwardCandidatePool()` emits selected active donors as
+    `candidate_kind = 'donated_slave_leg'` without inserting fake node rows.
+  - Two forwards under the same combination yield the same selected candidate
+    set within one panel pass.
 - [ ] **Step 2:** Implement the method:
-  - Source query unions:
+  - Rented source query:
     - nodes whose `node_groups.group_key` is in
       `forward_combination_helper_groups.node_group_key` for this combo, OR
       equals the combination's `node_group_key`.
     - nodes referenced from `forward_combination_slaves` where
-      `is_active = 1`.
-  - Filter on `nodes.status IN ('active', 'degraded')`.
-  - Project `nodes.id`, `last_chain_latency_ms` (latest from
-    `node_heartbeats.payload_json -> '$.forward_chain_remediation[*].best_latency_ms'`
-    OR a precomputed cache column — the test should be agnostic via
-    fake DB rows), `delivered_ewma` (from `bond_leg_reputation_current`).
+      `is_active = 1` and `selection_kind = 'admin_pin'`.
+  - Donor source query:
+    - rows from `forward_combination_self_leg_donors` where
+      `state = 'active'`, `owner_opt_in = 1`, and endpoint fields are present.
+  - Filter rented nodes on `nodes.status IN ('active', 'degraded')`.
+  - Project a normalized row shape with `candidate_source` = `rented_node` or
+    `self_leg_donor`, `stable_id`, `node_id` nullable, `donor_id` nullable,
+    `client_id` nullable, endpoint host/port, `last_chain_latency_ms`, and
+    `delivered_ewma`.
   - `ORDER BY` with the specified tie-breakers.
   - `LIMIT $cap` when `$cap > 0`.
 - [ ] **Step 3:** Patch `reconcileForwardEndpoints()` to call the new picker
-  for combination-bound forwards. Keep the legacy path intact.
-- [ ] **Step 4:** Confirm regression passes; re-run helper-groups + non-
+  for combination-bound forwards and only reconcile `candidate_source =
+  'rented_node'` rows to `service_endpoints`. Keep the legacy path intact.
+- [ ] **Step 4:** Patch `buildForwardCandidatePool()` to append selected
+  `candidate_source = 'self_leg_donor'` rows as `candidate_kind =
+  'donated_slave_leg'`, with runtime capabilities matching rented helpers and
+  `donor_id` / `donor_client_id` for observability.
+- [ ] **Step 5:** Confirm regression passes; re-run helper-groups + non-
   structural-update regressions.
-- [ ] **Step 5:** Commit
-  `feat(panel): pick fastest 4 slaves per forward combination via slave-to-sidecar-to-endpoint RTT`.
+- [ ] **Step 6:** Commit
+  `feat(panel): pick fastest slaves across rented nodes and self-leg donors`.
 
 ---
 
@@ -592,28 +613,28 @@ the choice in the commit body.
 
 - Modify: `master/src/Controllers/SidecarAgentController.php`
 - Modify: `master/src/Support/ProvisioningService.php`
-- Create: `master/tests/sidecar_heartbeat_donation_reverse_probe_ingest_regression_test.php`
+- Create: `master/tests/sidecar_donation_reverse_probe_payload_regression_test.php`
 
 - [ ] **Step 1:** Write failing regression asserting:
   - `recordDonationReverseProbe(int $sidecarPointId, array $payload): void`
     exists.
-  - `SidecarAgentController::heartbeat` calls it when
-    `donation_reverse_probe` is present.
-  - Persists the most-recent `(node_id, forward_id, protocol)` tuple to a
-    state column.
-- [ ] **Step 2:** Storage decision: store latest probes in
-  `sidecar_points.agent_config_json -> '$.donation_reverse_probe'` (already
-  used for other rolling fingerprints) keyed by
-  `node_id + forward_id + protocol`. Cap retention to last 5 results per
-  key.
+  - `donationReverseProbeTargetsForPoint(int $sidecarPointId): array` exists
+    and returns explicit target rows from active `forward_combination_self_leg_donors`.
+  - `SidecarAgentController::heartbeat` reads `donation_reverse_probe` when
+    present and includes `donation_reverse_probe_targets` in the management
+    payload.
+  - Empty / missing probe arrays are a no-op.
+  - Existing republish-gate sentinels still match.
+- [ ] **Step 2:** Store latest probe facts into
+  `forward_combination_self_leg_donors.last_reverse_probe_json` and update
+  `last_heartbeat_at`; do not hide them in unrelated sidecar config JSON.
 - [ ] **Step 3:** Implement and verify.
-- [ ] **Step 4:** Re-run 2026-05-17 + Task 0b regressions.
-- [ ] **Step 5:** Commit
-  `feat(panel): ingest donation_reverse_probe from sidecar heartbeat`.
+- [ ] **Step 4:** Commit
+  `feat(panel): send sidecar donation probe targets and ingest results`.
 
 ---
 
-### Task 8: Donation worker — qualify → active path
+### Task 8: Donation worker ? qualify ? active path
 
 **Files:**
 
@@ -625,11 +646,16 @@ the choice in the commit body.
 
 - [ ] **Step 1:** Write failing regression asserting:
   - `evaluateDonationStateForCombination(int $combinationId): void` exists.
-  - Class constant `DONATION_GATE_RATIO = 0.75` is declared.
-  - Activation requires all 6 gates from §8 of the design.
-  - On activation: writes `forward_combination_slaves` row with
-    `selection_kind = 'donated_self_leg'`, sets `donations.activated_at`,
-    calls `republishActiveForwardsForCombination`.
+  - Class constant `DONATION_GATE_RATIO = 0.75` is declared with sentinel
+    `donation_qualify_gate_ratio`.
+  - Activation reads/writes `forward_combination_self_leg_donors`, not
+    `nodes` and not fake `service_endpoints`.
+  - Activation requires all gates from the design: combination opt-in,
+    `desired_latency_ms > 0`, continuous RTT under threshold, enough open
+    ports, successful sidecar reverse probe, healthy donor client session /
+    heartbeat, `owner_opt_in = 1`, and not in cooldown.
+  - On activation: sets the donor row `state = 'active'`, sets
+    `activated_at`, and calls `republishActiveForwardsForCombination`.
   - Re-running the worker is idempotent (no second republish).
 - [ ] **Step 2:** Implement.
 - [ ] **Step 3:** Add `master/scripts/evaluate_donations.php` (CLI entry,
@@ -637,68 +663,88 @@ the choice in the commit body.
 - [ ] **Step 4:** Add the systemd unit + timer (60s tick).
 - [ ] **Step 5:** Re-run regression.
 - [ ] **Step 6:** Commit
-  `feat(panel): donation worker qualify-to-active state machine`.
+  `feat(panel): donation worker activates client self-leg donors`.
 
 ---
 
-### Task 9: Donation worker — revoke paths
+### Task 9: Donation worker ? revoke paths
 
 **Files:**
 
 - Modify: `master/src/Support/ProvisioningService.php`
 - Create: `master/tests/donation_worker_revoke_paths_regression_test.php`
 
-- [ ] **Step 1:** Write failing regression asserting all four revoke
-  triggers, the cooldown timer, the manual-revoke terminal state, and the
-  `error_log` line format `donation_state donor=<id> combo=<id> from=<s> to=<s> reason=<r>`.
-- [ ] **Step 2:** Implement.
+- [ ] **Step 1:** Write failing regression asserting all revoke triggers, the
+  cooldown timer, the manual-revoke terminal state, and the error log line format
+  `donation_state donor=<donor_id> client=<client_id> combo=<id> from=<s> to=<s> reason=<r>`.
+- [ ] **Step 2:** Implement revoke by updating
+  `forward_combination_self_leg_donors` (`state`, `revoked_at`,
+  `revoke_reason`) and removing the donor from future candidate emission. Do
+  not delete or mutate `forward_combination_slaves` rows.
 - [ ] **Step 3:** Re-run Task 8 regression to confirm no regression.
 - [ ] **Step 4:** Commit
-  `feat(panel): donation worker revoke + cooldown + manual revoke`.
+  `feat(panel): revoke and cooldown client self-leg donors`.
 
 ---
 
-### Task 10: Slave-agent self-check loop
+### Task 10: Slave-agent self-check loop + panel donation policy payload
 
 **Files:**
 
+- Modify: `master/src/Support/ProvisioningService.php`
 - Modify: `slave-agent/slave_agent.py`
+- Create: `master/tests/provisioning_donation_policy_payload_regression_test.php`
 - Create: `slave-agent/tests/test_donation_self_check_payload.py`
 
-- [ ] **Step 1:** Write failing pytest asserting the heartbeat payload
-  contains a well-formed `donation_self_check[]` after the loop runs once
-  with mocked probe results.
-- [ ] **Step 2:** Implement the coroutine. Reuse the existing CF probe
-  helper (`probe_cf_websocket_path`) for `cf_mode`. For `current_mode`,
-  fall back to a TCP connect through the sidecar's published listener
-  using the existing `bond_protocols` configuration.
-- [ ] **Step 3:** Add the outside-in port reachability probe (TCP, plus UDP
-  echo when transport supports UDP). Use the existing wstunnel/CF return
-  path; do not add new outbound channels.
-- [ ] **Step 4:** Attach `donation_self_check[]` to `send_heartbeat`.
-- [ ] **Step 5:** Re-run regression + Task 0b slave-agent regressions.
-- [ ] **Step 6:** Commit
-  `feat(slave-agent): emit donation_self_check on heartbeat`.
+- [ ] **Step 1:** Write failing PHP regression asserting panel publish payloads
+  include a `donation_policy` object for donor-capable forwards with:
+  `forward_combination_id`, `desired_latency_ms`, `donation_gate_ratio`,
+  `donation_qualify_window_seconds`, `donation_revoke_window_seconds`,
+  `donation_min_open_ports`, `donor_client_id`, `desktop_client_session_id`,
+  and `device_id`. Assert absent/zero policy disables donation.
+- [ ] **Step 2:** Write failing Python regression asserting the heartbeat payload
+  contains a well-formed `donation_self_check[]` after the loop runs once with
+  mocked probe results and an active `donation_policy` payload.
+- [ ] **Step 3:** Implement the panel payload helper. Keep it additive to
+  existing publish payloads and do not change runtime-preference meanings.
+- [ ] **Step 4:** Implement the slave-agent coroutine. Reuse the existing CF
+  probe helper (`probe_cf_websocket_path`) for `cf_mode`. For `current_mode`,
+  fall back to a TCP connect through the sidecar's published listener using the
+  existing `bond_protocols` configuration.
+- [ ] **Step 5:** Add the outside-in port reachability probe (TCP, plus UDP echo
+  when transport supports UDP). Use the existing wstunnel/CF return path; do not
+  add new outbound channels.
+- [ ] **Step 6:** Attach `donation_self_check[]` to `send_heartbeat`.
+- [ ] **Step 7:** Re-run regressions + Task 0b slave-agent regressions.
+- [ ] **Step 8:** Commit
+  `feat(slave-agent): report donation self-check from panel policy payload`.
 
 ---
 
-### Task 11: Sidecar-agent reverse-port probe
+### Task 11: Sidecar-agent reverse-port probe from explicit targets
 
 **Files:**
 
+- Modify: `master/src/Controllers/SidecarAgentController.php`
 - Modify: `sidecar-agent/sidecar_agent.py`
 - Create: `sidecar-agent/tests/test_donation_reverse_probe_payload.py`
 
-- [ ] **Step 1:** Write failing pytest asserting the heartbeat payload
-  contains `donation_reverse_probe[]` after one probe pass with mocked
+- [ ] **Step 1:** Write failing Python regression asserting the sidecar stores
+  `donation_reverse_probe_targets[]` from management and attaches
+  `donation_reverse_probe[]` to heartbeat after one probe pass with mocked
   results.
-- [ ] **Step 2:** Implement a 60s loop that, per active forward, attempts
-  TCP connect to `slave_public_ip:listen_port`; UDP echo where applicable.
-- [ ] **Step 3:** Attach the array to the existing heartbeat payload.
-- [ ] **Step 4:** Re-run regression + Task 0b sidecar regressions
+- [ ] **Step 2:** Implement a sidecar function/loop that consumes explicit
+  target entries from the panel. Each target includes `donor_id`, `client_id`,
+  `forward_combination_id`, `forward_id`, `protocol`, `public_host`, and
+  `public_port`.
+- [ ] **Step 3:** Probe interval is `60 s` and never overlaps itself for the
+  same `(donor_id, protocol)` target. Probe failures are logged once per minute,
+  not on every retry.
+- [ ] **Step 4:** Attach the array to the existing heartbeat payload.
+- [ ] **Step 5:** Re-run regression + Task 0b sidecar regressions
   (`test_sidecar_cf_mode_runtime`).
-- [ ] **Step 5:** Commit
-  `feat(sidecar-agent): emit donation_reverse_probe on heartbeat`.
+- [ ] **Step 6:** Commit
+  `feat(sidecar-agent): probe donation endpoints from panel targets`.
 
 ---
 
@@ -721,10 +767,12 @@ the choice in the commit body.
   - Log lines from the helper code path include the substring
     `donor=true` for donor entries and `donor=false` otherwise.
 - [ ] **Step 2:** Implement minimal, additive changes:
-  - Add `donated_slave_leg` to the set of recognized helper kinds
-    everywhere `rented_group_leg` is checked.
-  - Add a small `is_donor_candidate(item)` helper used only for log
-    decoration.
+  - Add `donated_slave_leg` to the set of recognized helper kinds everywhere
+    `rented_group_leg` is checked (`apply_latency_target_candidate_escalation`
+    is the known current explicit check).
+  - Add a small `is_donor_candidate(item)` helper used only for log decoration.
+  - Do not add donor-side client-agent decision logic; donor validity comes
+    from `forward_combination_self_leg_donors` and panel payloads.
 - [ ] **Step 3:** Re-run Task 0b client-agent regressions.
 - [ ] **Step 4:** Commit
   `feat(client-agent): consume donated_slave_leg as standard helper candidate`.
@@ -738,15 +786,16 @@ the choice in the commit body.
 ```bash
 php master/tests/forward_combination_donation_columns_schema_regression_test.php
 php master/tests/forward_combination_slaves_table_schema_regression_test.php
-php master/tests/forward_combination_donations_table_schema_regression_test.php
+php master/tests/forward_combination_self_leg_donors_table_schema_regression_test.php
 php master/tests/forward_combination_donation_columns_persistence_regression_test.php
 php master/tests/admin_forward_combination_self_leg_policy_test.php
 php master/tests/admin_combination_multi_slave_picker_regression_test.php
 php master/tests/provisioning_pick_fastest_slaves_for_combination_regression_test.php
 php master/tests/node_heartbeat_donation_self_check_ingest_regression_test.php
-php master/tests/sidecar_heartbeat_donation_reverse_probe_ingest_regression_test.php
+php master/tests/sidecar_donation_reverse_probe_payload_regression_test.php
 php master/tests/donation_worker_qualify_to_active_regression_test.php
 php master/tests/donation_worker_revoke_paths_regression_test.php
+php master/tests/provisioning_donation_policy_payload_regression_test.php
 php master/tests/forward_combination_save_update_persistence_regression_test.php
 php master/tests/forward_combination_save_auto_republish_regression_test.php
 php master/tests/forward_combination_default_max_legs_regression_test.php
@@ -782,7 +831,7 @@ Post these exact commands for the human operator and stop.
 # 1. Apply migrations on staging
 mysql -u <user> -p <db> < master/migrations/20260518_add_forward_combination_donation_and_latency.sql
 mysql -u <user> -p <db> < master/migrations/20260518_add_forward_combination_slaves.sql
-mysql -u <user> -p <db> < master/migrations/20260518_add_forward_combination_donations.sql
+mysql -u <user> -p <db> < master/migrations/20260518_add_forward_combination_self_leg_donors.sql
 
 # 2. Install donation worker timer
 sudo cp deploy/systemd/leikwan-donation-worker.service /etc/systemd/system/
@@ -794,14 +843,14 @@ sudo systemctl enable --now leikwan-donation-worker.timer
 #    - Set desired_latency_ms=60 in admin panel.
 #    - Tick "Allow public client-as-a-slave donation".
 #    - Confirm a qualifying client transitions to 'active' within 60 s.
-#    - Confirm forward_combination_slaves gains a donated_self_leg row.
+#    - Confirm `forward_combination_self_leg_donors` transitions the donor row to `active`.
 #    - Confirm a non-qualifying client never reaches 'active'.
 
 # 4. Smoke test: multi-slave picker
 #    - Pick 6 nodes for one combination.
 #    - Set helper_group_cap = 4.
-#    - Confirm only the 4 fastest (by last_chain_latency_ms) appear in
-#      service_endpoints across every forward of that combination.
+#    - Confirm only the 4 fastest (by last_chain_latency_ms) appear across rented
+#      service_endpoints plus donated_slave_leg candidate_pool entries for every forward of that combination.
 ```
 
 - [ ] **Step 3:** Worker confirms global acceptance criteria and posts a
@@ -855,10 +904,12 @@ the named functions (the regressions assert their presence):
 
 | Sentinel | Where |
 | --- | --- |
+| `self_leg_donor_identity_table` | schema regression for `forward_combination_self_leg_donors` |
 | `donation_qualify_gate_ratio` | `evaluateDonationStateForCombination` |
 | `fastest_slave_per_combination_selector` | `pickFastestSlavesForCombination` |
+| `donation_policy_payload` | `donationPolicyForForward` / publish payload helper |
 | `donation_self_check_ingest` | `recordDonationSelfCheck` |
-| `donation_reverse_probe_ingest` | `recordDonationReverseProbe` |
+| `donation_reverse_probe_ingest` | `recordDonationReverseProbe` and `donationReverseProbeTargetsForPoint` |
 | `donor_candidate_consumed_as_helper` | client-agent helper-kind check |
 
 These keep grep-driven audits cheap.
