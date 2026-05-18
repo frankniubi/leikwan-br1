@@ -157,6 +157,11 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     helper_escalation_policy VARCHAR(64) NOT NULL DEFAULT 'disabled',
     self_leg_cf_transport VARCHAR(16) NOT NULL DEFAULT 'cf_direct'
         COMMENT 'Self-leg transport under CF Bond. Values: cf_direct (default) | cf_wg.',
+    desired_latency_ms INT NOT NULL DEFAULT 0,
+    allow_public_self_leg_donation TINYINT(1) NOT NULL DEFAULT 0,
+    donation_qualify_window_seconds INT NOT NULL DEFAULT 60,
+    donation_revoke_window_seconds INT NOT NULL DEFAULT 30,
+    donation_min_open_ports INT NOT NULL DEFAULT 1,
     bond_ingress_mode VARCHAR(32) NOT NULL DEFAULT 'plain_tcp_mux',
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     sort_order INT NOT NULL DEFAULT 100,
@@ -178,6 +183,60 @@ CREATE TABLE IF NOT EXISTS forward_combination_helper_groups (
     CONSTRAINT fk_forward_combination_helper_groups_combo FOREIGN KEY (forward_combination_id) REFERENCES forward_combinations(id) ON DELETE CASCADE,
     INDEX idx_forward_combination_helper_groups_combo (forward_combination_id, sort_order),
     INDEX idx_forward_combination_helper_groups_group (node_group_key)
+);
+
+
+CREATE TABLE IF NOT EXISTS forward_combination_slaves (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    forward_combination_id BIGINT UNSIGNED NOT NULL,
+    node_id BIGINT UNSIGNED NOT NULL,
+    selection_kind VARCHAR(32) NOT NULL DEFAULT 'admin_pin',
+    sort_order INT NOT NULL DEFAULT 0,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_fc_slaves_combo
+      FOREIGN KEY (forward_combination_id) REFERENCES forward_combinations(id) ON DELETE CASCADE,
+    CONSTRAINT fk_fc_slaves_node
+      FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    UNIQUE KEY uniq_fc_slave_node (forward_combination_id, node_id, selection_kind),
+    INDEX idx_fc_slaves_combo (forward_combination_id, is_active, sort_order),
+    INDEX idx_fc_slaves_node (node_id, is_active)
+);
+
+CREATE TABLE IF NOT EXISTS forward_combination_self_leg_donors (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    forward_combination_id BIGINT UNSIGNED NOT NULL,
+    client_id BIGINT UNSIGNED NOT NULL,
+    desktop_client_session_id BIGINT UNSIGNED NULL,
+    device_id VARCHAR(191) NULL,
+    state VARCHAR(32) NOT NULL DEFAULT 'qualifying'
+        COMMENT 'self_leg_donor_identity_table: qualifying | active | revoked | cooldown',
+    donor_public_host VARCHAR(255) NULL,
+    donor_public_port INT NULL,
+    donor_transport VARCHAR(32) NOT NULL DEFAULT 'tcp',
+    last_measured_latency_ms DECIMAL(10,2) NULL,
+    qualify_started_at DATETIME NULL,
+    activated_at DATETIME NULL,
+    revoked_at DATETIME NULL,
+    revoke_reason VARCHAR(64) NULL,
+    open_ports_json TEXT NULL,
+    last_self_check_json JSON NULL,
+    last_reverse_probe_json JSON NULL,
+    last_heartbeat_at DATETIME NULL,
+    owner_opt_in TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_fc_self_leg_donors_combo
+      FOREIGN KEY (forward_combination_id) REFERENCES forward_combinations(id) ON DELETE CASCADE,
+    CONSTRAINT fk_fc_self_leg_donors_client
+      FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+    CONSTRAINT fk_fc_self_leg_donors_desktop_session
+      FOREIGN KEY (desktop_client_session_id) REFERENCES desktop_client_sessions(id) ON DELETE SET NULL,
+    UNIQUE KEY uniq_fc_self_leg_donor_session (forward_combination_id, client_id, desktop_client_session_id, device_id),
+    INDEX idx_fc_self_leg_donors_state (forward_combination_id, state, updated_at),
+    INDEX idx_fc_self_leg_donors_client (client_id, state),
+    INDEX idx_fc_self_leg_donors_endpoint (donor_public_host, donor_public_port)
 );
 
 CREATE TABLE IF NOT EXISTS service_plans (

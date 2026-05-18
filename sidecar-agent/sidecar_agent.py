@@ -9,6 +9,7 @@ import logging
 import os
 import pathlib
 import shutil
+import socket
 import subprocess
 import time
 import urllib.error
@@ -271,6 +272,24 @@ class SidecarAgent:
 
     def save_pull_state(self, payload: dict) -> None:
         self.pull_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def donation_reverse_probe_targets_path(self) -> pathlib.Path:
+        return self.state_dir / "donation-reverse-probe-targets.json"
+
+    def load_donation_reverse_probe_targets(self) -> list[dict]:
+        path = self.donation_reverse_probe_targets_path()
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            logging.warning("invalid donation reverse probe targets file: %s", path)
+            return []
+        targets = payload.get("targets", []) if isinstance(payload, dict) else payload
+        return [item for item in targets if isinstance(item, dict)] if isinstance(targets, list) else []
+
+    def save_donation_reverse_probe_targets(self, targets: list[dict]) -> None:
+        self.donation_reverse_probe_targets_path().write_text(json.dumps({"targets": targets}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     def sidecar_uplink_state_path(self) -> pathlib.Path:
         return self.state_dir / "slave-sidecar-uplink-state.json"
@@ -811,6 +830,8 @@ WantedBy=multi-user.target
         return pathlib.Path(f"/etc/systemd/system/{service_name}.service")
 
     def systemd_is_active(self, service_name: str | None = None) -> bool:
+        if os.name == "nt":
+            return True
         unit_name = service_name or self.service_name()
         result = subprocess.run(
             f"systemctl is-active {unit_name}.service",
@@ -822,15 +843,17 @@ WantedBy=multi-user.target
         return result.stdout.strip() == "active"
 
     def disable_runtime(self, service_name: str, unit_path: pathlib.Path, start_script_path: pathlib.Path | None = None, runtime_config_path: pathlib.Path | None = None) -> None:
-        subprocess.run(f"systemctl stop {service_name}.service", shell=True, check=False)
-        subprocess.run(f"systemctl disable {service_name}.service", shell=True, check=False)
+        if os.name != "nt":
+            subprocess.run(f"systemctl stop {service_name}.service", shell=True, check=False)
+            subprocess.run(f"systemctl disable {service_name}.service", shell=True, check=False)
         if unit_path.exists():
             unit_path.unlink()
         if start_script_path is not None and start_script_path.exists():
             start_script_path.unlink()
         if runtime_config_path is not None and runtime_config_path.exists():
             runtime_config_path.unlink()
-        subprocess.run("systemctl daemon-reload", shell=True, check=False)
+        if os.name != "nt":
+            subprocess.run("systemctl daemon-reload", shell=True, check=False)
 
     def ensure_relay_binary(self) -> None:
         """Download Rust MPTCP relay binary from Panel if not present."""
@@ -857,10 +880,14 @@ WantedBy=multi-user.target
         self.apply_management(management)
 
     def apply_management(self, management: dict) -> None:
+        donation_reverse_probe_targets = management.get("donation_reverse_probe_targets", [])
+        if isinstance(donation_reverse_probe_targets, list):
+            self.save_donation_reverse_probe_targets([item for item in donation_reverse_probe_targets if isinstance(item, dict)])
         config_patch = dict(management.get("config_patch", {})) if isinstance(management.get("config_patch", {}), dict) else {}
         if config_patch != {}:
             self.apply_config_patch(config_patch)
-        self.apply_managed_iperf3_servers()
+        if os.name != "nt":
+            self.apply_managed_iperf3_servers()
 
         explicit_request_token = str(management.get("agent_update_request_token", "") or "")
         auto_request_token = self.auto_update_request_token(management)
@@ -1110,11 +1137,12 @@ WantedBy=multi-user.target
                     cf_routes_path,
                 )
                 unit_changed = write_text_if_changed(cf_unit_path, unit_body)
-                if unit_changed:
-                    subprocess.run("systemctl daemon-reload", shell=True, check=False)
-                if unit_changed or not self.systemd_is_active(cf_service_name):
-                    subprocess.run(f"systemctl enable {cf_service_name}.service", shell=True, check=False)
-                    subprocess.run(f"systemctl restart {cf_service_name}.service", shell=True, check=False)
+                if os.name != "nt":
+                    if unit_changed:
+                        subprocess.run("systemctl daemon-reload", shell=True, check=False)
+                    if unit_changed or not self.systemd_is_active(cf_service_name):
+                        subprocess.run(f"systemctl enable {cf_service_name}.service", shell=True, check=False)
+                        subprocess.run(f"systemctl restart {cf_service_name}.service", shell=True, check=False)
 
         if bond_runtime is not None:
             bond_forward_ids = [
@@ -1161,11 +1189,12 @@ RestartSec=5
 WantedBy=multi-user.target
 """
             unit_changed = write_text_if_changed(primary_unit_path, unit_body)
-            if unit_changed or runtime_changed or start_script_changed:
-                subprocess.run("systemctl daemon-reload", shell=True, check=False)
-            if unit_changed or runtime_changed or start_script_changed or not self.systemd_is_active(primary_service_name):
-                subprocess.run(f"systemctl enable {primary_service_name}.service", shell=True, check=False)
-                subprocess.run(f"systemctl restart {primary_service_name}.service", shell=True, check=False)
+            if os.name != "nt":
+                if unit_changed or runtime_changed or start_script_changed:
+                    subprocess.run("systemctl daemon-reload", shell=True, check=False)
+                if unit_changed or runtime_changed or start_script_changed or not self.systemd_is_active(primary_service_name):
+                    subprocess.run(f"systemctl enable {primary_service_name}.service", shell=True, check=False)
+                    subprocess.run(f"systemctl restart {primary_service_name}.service", shell=True, check=False)
         else:
             self.disable_runtime(primary_service_name, primary_unit_path, primary_start_script, primary_runtime_path)
 
@@ -1231,11 +1260,12 @@ RestartSec=3
 WantedBy=multi-user.target
 """
             unit_changed = write_text_if_changed(udp_unit_path, unit_body)
-            if unit_changed or runtime_changed or start_changed:
-                subprocess.run("systemctl daemon-reload", shell=True, check=False)
-            if unit_changed or runtime_changed or start_changed or not self.systemd_is_active(udp_service_name):
-                subprocess.run(f"systemctl enable {udp_service_name}.service", shell=True, check=False)
-                subprocess.run(f"systemctl restart {udp_service_name}.service", shell=True, check=False)
+            if os.name != "nt":
+                if unit_changed or runtime_changed or start_changed:
+                    subprocess.run("systemctl daemon-reload", shell=True, check=False)
+                if unit_changed or runtime_changed or start_changed or not self.systemd_is_active(udp_service_name):
+                    subprocess.run(f"systemctl enable {udp_service_name}.service", shell=True, check=False)
+                    subprocess.run(f"systemctl restart {udp_service_name}.service", shell=True, check=False)
         else:
             self.disable_runtime(udp_service_name, udp_unit_path, udp_start_script, udp_runtime_path)
 
@@ -1306,19 +1336,73 @@ RestartSec=5
 WantedBy=multi-user.target
 """
             unit_changed = write_text_if_changed(secondary_unit_path, unit_body)
-            if unit_changed or runtime_changed or start_script_changed:
-                subprocess.run("systemctl daemon-reload", shell=True, check=False)
-            if unit_changed or runtime_changed or start_script_changed or not self.systemd_is_active(secondary_service_name):
-                subprocess.run(f"systemctl enable {secondary_service_name}.service", shell=True, check=False)
-                subprocess.run(f"systemctl restart {secondary_service_name}.service", shell=True, check=False)
+            if os.name != "nt":
+                if unit_changed or runtime_changed or start_script_changed:
+                    subprocess.run("systemctl daemon-reload", shell=True, check=False)
+                if unit_changed or runtime_changed or start_script_changed or not self.systemd_is_active(secondary_service_name):
+                    subprocess.run(f"systemctl enable {secondary_service_name}.service", shell=True, check=False)
+                    subprocess.run(f"systemctl restart {secondary_service_name}.service", shell=True, check=False)
         else:
             self.disable_runtime(secondary_service_name, secondary_unit_path, secondary_start_script, secondary_runtime_path)
             self.cleanup_stale_mptcp_transit_interfaces(point_id)
 
-    def heartbeat_once(self) -> None:
+    def probe_donation_target(self, target: dict) -> dict:
+        host = str(target.get("public_host", "") or "").strip()
+        port = int(target.get("public_port", 0) or 0)
+        protocol = str(target.get("protocol", "tcp") or "tcp").strip().lower()
+        started = time.time()
+        ok = False
+        error = ""
+        if host == "" or port <= 0:
+            error = "missing_target"
+        elif protocol == "udp":
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.settimeout(1.0)
+                    sock.sendto(b"leikwan-donation-probe", (host, port))
+                    ok = True
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)
+        else:
+            try:
+                with socket.create_connection((host, port), timeout=1.0):
+                    ok = True
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)
+        result = {
+            "ok": ok,
+            "latency_ms": round((time.time() - started) * 1000, 1) if ok else None,
+            "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if error:
+            result["error"] = error[:200]
+        return result
+
+    def build_donation_reverse_probe_payload(self) -> list[dict]:
+        # donation_reverse_probe_loop
+        reports: list[dict] = []
+        now = time.time()
+        for target in self.load_donation_reverse_probe_targets():
+            donor_id = int(target.get("donor_id", 0) or 0)
+            protocol = str(target.get("protocol", "tcp") or "tcp").strip().lower()
+            if donor_id <= 0:
+                continue
+            result = self.probe_donation_target(target)
+            report = dict(target)
+            report.update(result)
+            report["donor_id"] = donor_id
+            report["protocol"] = protocol
+            reports.append(report)
+            if not bool(report.get("ok", False)):
+                last_key = f"_donation_probe_log_{donor_id}_{protocol}"
+                last_logged = float(getattr(self, last_key, 0.0) or 0.0)
+                if now - last_logged >= 60.0:
+                    logging.warning("donation reverse probe failed donor=%s protocol=%s error=%s", donor_id, protocol, report.get("error", ""))
+                    setattr(self, last_key, now)
+        return reports
+
+    def build_heartbeat_payload(self) -> dict:
         stats = self.load_runtime_stats()
-        master = str(self.config.get("master_url", "")).rstrip("/")
-        token = str(self.config.get("agent_token", ""))
         wireguard_public_key = self.ensure_wireguard_identity()
         local_clock = self.time_sync_state()
         payload = {
@@ -1335,6 +1419,15 @@ WantedBy=multi-user.target
         bond_leg_reputation = self.load_bond_leg_reputation_snapshot()
         if bond_leg_reputation is not None:
             payload["bond_leg_reputation"] = bond_leg_reputation
+        donation_reverse_probe = self.build_donation_reverse_probe_payload()
+        if donation_reverse_probe:
+            payload["donation_reverse_probe"] = donation_reverse_probe
+        return payload
+
+    def heartbeat_once(self) -> None:
+        master = str(self.config.get("master_url", "")).rstrip("/")
+        token = str(self.config.get("agent_token", ""))
+        payload = self.build_heartbeat_payload()
         response, response_headers = http_json_with_headers("POST", f"{master}/api/sidecar/heartbeat", token, payload)
         management = response.get("management", {})
         if not isinstance(management, dict):

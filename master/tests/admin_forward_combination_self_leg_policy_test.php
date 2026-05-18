@@ -20,6 +20,15 @@ foreach ([
     'cf_wg (WG over CF IP)',
     'Only effective when backend_mode = cf_mode',
     'helper_node_group_keys_text',
+
+    'Public donation',
+    'name="desired_latency_ms"',
+    'name="allow_public_self_leg_donation"',
+    'name="donation_qualify_window_seconds"',
+    'name="donation_revoke_window_seconds"',
+    'name="donation_min_open_ports"',
+    'Donation gate is 75% of this value',
+    'slave -&gt; sidecar -&gt; endpoint RTT',
 ] as $snippet) {
     if (!str_contains($source, $snippet)) {
         fail('missing admin snippet: ' . $snippet);

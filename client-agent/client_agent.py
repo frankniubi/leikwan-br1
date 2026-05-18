@@ -39,6 +39,7 @@ DEFAULT_MANAGED_CONFIG = {
 }
 MPTCP_PROTOCOL = getattr(socket, "IPPROTO_MPTCP", 262)
 MPTCP_FALSE_VALUES = {"", "0", "false", "no", "off", "disabled"}
+HELPER_CANDIDATE_KINDS = {"rented_group_leg", "donated_slave_leg"}  # donor_candidate_consumed_as_helper
 
 
 
@@ -2312,6 +2313,14 @@ class ClientAgent:
             and "mptcp" in [str(value).strip().lower() for value in item.get("runtime_capabilities", [])]
         ]
 
+    @staticmethod
+    def is_donor_candidate(item: dict) -> bool:
+        return str(item.get("candidate_kind", "") or "") == "donated_slave_leg"
+
+    @staticmethod
+    def donor_log_label(item: dict) -> str:
+        return "donor=true" if ClientAgent.is_donor_candidate(item) else "donor=false"
+
     @classmethod
     def strip_runtime_observation_fields(cls, forward: dict) -> dict:
         next_forward = dict(forward)
@@ -2385,7 +2394,7 @@ class ClientAgent:
             return next_forward
 
         chosen = 0
-        helpers = [item for item in pool if str(item.get("candidate_kind", "") or "") == "rented_group_leg" and bool(item.get("ready", True))]
+        helpers = [item for item in pool if str(item.get("candidate_kind", "") or "") in HELPER_CANDIDATE_KINDS and bool(item.get("ready", True))]
         helpers.sort(
             key=lambda item: (
                 float(item.get("measured_rtt_ms", 999999.0) or 999999.0),

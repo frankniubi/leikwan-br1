@@ -197,6 +197,9 @@ final class NodeController extends BaseController
         } elseif (is_array($group ?? null) && !empty($group['group_key'])) {
             $this->provisioning->reconcileActiveForwardsForGroup((string) $group['group_key']);
         }
+        if (array_key_exists('donation_self_check', $body) && is_array($body['donation_self_check'])) {
+            $this->provisioning->recordDonationSelfCheck((int) $node['id'], $body);
+        }
         $this->provisioning->applyForwardChainRemediationSignals((int) $node['id'], $mergedCapabilities);
         if (!array_key_exists('forward_chain_remediation', $body) || !is_array($body['forward_chain_remediation'])) {
             $this->provisioning->republishActiveEndpointsForNode((int) $node['id']);

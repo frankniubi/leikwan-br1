@@ -1432,7 +1432,84 @@ class SlaveAgent:
                 hosts.append(normalized)
         return hosts or ["::", "0.0.0.0"]
 
-    def send_heartbeat(self) -> None:
+    def build_donation_self_check_payload(self) -> list[dict[str, Any]]:
+        # donation_self_check_loop
+        checks: list[dict[str, Any]] = []
+        for metadata in self.load_all_service_metadata():
+            if not isinstance(metadata, dict):
+                continue
+            policy = metadata.get("donation_policy")
+            if not isinstance(policy, dict):
+                continue
+            combination_id = int(policy.get("forward_combination_id", 0) or 0)
+            desired_latency = int(policy.get("desired_latency_ms", 0) or 0)
+            if combination_id <= 0 or desired_latency <= 0:
+                continue
+            latency_ms = self.probe_donation_chain_latency_ms(metadata)
+            open_ports = self.probe_donation_open_ports(metadata)
+            listen_port = int(metadata.get("listen_port", 0) or 0)
+            item = {
+                "forward_combination_id": combination_id,
+                "forward_id": int(metadata.get("forward_id", 0) or 0),
+                "endpoint_id": int(metadata.get("endpoint_id", 0) or 0),
+                "donor_client_id": int(policy.get("donor_client_id", 0) or 0),
+                "desktop_client_session_id": int(policy.get("desktop_client_session_id", 0) or 0),
+                "device_id": str(policy.get("device_id", "") or ""),
+                "measured_chain_latency_ms": latency_ms,
+                "measure_window_seconds": int(policy.get("donation_qualify_window_seconds", 60) or 60),
+                "open_ports": open_ports,
+                "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            public_host = str(self.config.get("public_ip", "") or metadata.get("public_host", "") or "").strip()
+            if public_host != "":
+                item["public_host"] = public_host
+            if listen_port > 0:
+                item["public_port"] = listen_port
+            checks.append(item)
+        return checks
+
+    def probe_donation_chain_latency_ms(self, metadata: dict[str, Any]) -> float | None:
+        cf_mode = metadata.get("cf_mode") if isinstance(metadata.get("cf_mode"), dict) else {}
+        if isinstance(cf_mode, dict) and cf_mode:
+            host = str(cf_mode.get("dial_connect_ip", "") or cf_mode.get("dial_host", "") or "").strip()
+            port = int(cf_mode.get("dial_port", 0) or 0)
+            sni = str(cf_mode.get("sni_host", "") or "").strip()
+            path_prefix = str(cf_mode.get("path_prefix", "") or metadata.get("path_prefix", "") or "").strip()
+            target = str(cf_mode.get("probe_target", "") or "").strip()
+            if host != "" and port > 0:
+                ok, latency_ms, _error = self.probe_cf_websocket_path(host, port, sni, path_prefix, target, timeout=1.0)
+                if ok and latency_ms is not None:
+                    return latency_ms
+                ping_ms = self.tcp_ping(host, port, timeout=1.0)
+                if ping_ms is not None:
+                    return ping_ms
+        target = str(metadata.get("target", "") or "").strip()
+        host = ""
+        port = 0
+        if ":" in target:
+            host_part, port_part = target.rsplit(":", 1)
+            host = host_part.strip().strip("[]")
+            try:
+                port = int(port_part)
+            except ValueError:
+                port = 0
+        if host != "" and port > 0:
+            return self.tcp_ping(host, port, timeout=1.0)
+        return None
+
+    def probe_donation_open_ports(self, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        listen_port = int(metadata.get("listen_port", 0) or 0)
+        transport_mode = str(metadata.get("transport_mode", "tcp") or "tcp").lower()
+        results: list[dict[str, Any]] = []
+        if listen_port <= 0:
+            return results
+        tcp_ok = self.tcp_ping("127.0.0.1", listen_port, timeout=0.5) is not None
+        results.append({"protocol": "tcp", "port": listen_port, "ok": tcp_ok})
+        if "udp" in transport_mode:
+            results.append({"protocol": "udp", "port": listen_port, "ok": True})
+        return results
+
+    def build_heartbeat_payload(self) -> dict[str, Any]:
         self.ensure_machine_id()
         self.refresh_network_identity()
         wireguard_public_key = self.ensure_wireguard_identity()
@@ -1478,6 +1555,13 @@ class SlaveAgent:
             for chain_key, entry in self.load_latency_policy_state().items()
             if isinstance(entry, dict)
         ]
+        donation_self_check = self.build_donation_self_check_payload()
+        if donation_self_check:
+            payload["donation_self_check"] = donation_self_check
+        return payload
+
+    def send_heartbeat(self) -> None:
+        payload = self.build_heartbeat_payload()
         _, response_headers = http_json_with_headers("POST", build_url(self.config["master_url"], "/api/node/heartbeat"), self.config["node_token"], payload)
         now = time.time()
         self.save_pull_state(

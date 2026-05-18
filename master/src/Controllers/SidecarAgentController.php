@@ -22,6 +22,7 @@ final class SidecarAgentController extends BaseController
     public function heartbeat(Request $request, array $params): Response
     {
         $point = Auth::requireSidecarPointAgent($request, $this->db);
+        $body = is_array($request->body()) ? $request->body() : [];
         $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
         $sidecarAgent = $this->artifactMetadata('sidecar_agent');
         $sidecarRuntime = $this->artifactMetadata('mptcp_sidecar_runtime');
@@ -106,6 +107,9 @@ final class SidecarAgentController extends BaseController
         $reputation = $request->input('bond_leg_reputation', []);
         if (is_array($reputation) && $reputation !== []) {
             (new BondLegReputationService($this->db))->ingestSidecarSnapshot((int) $point['id'], $reputation);
+        }
+        if (array_key_exists('donation_reverse_probe', $body) && is_array($body['donation_reverse_probe'])) {
+            $this->provisioning->recordDonationReverseProbe((int) $point['id'], $body);
         }
         $this->provisioning->recordAgentUsage('sidecar', (int) $point['id'], $usageBytesIn, $usageBytesOut);
         if ($shouldRepublish) {
@@ -287,6 +291,7 @@ final class SidecarAgentController extends BaseController
                 ] : null,
                 'sidecar_uplinks' => $sidecarUplinkManagement['uplinks'] ?? [],
                 'self_leg_client_peers' => $this->provisioning->selfLegClientPeersForPoint($pointId),
+                'donation_reverse_probe_targets' => $this->provisioning->donationReverseProbeTargetsForPoint($pointId),
                 'cf_runtime' => $cfRuntime,
             ],
         ]);
