@@ -12,6 +12,9 @@ use Leikwan\Master\Support\ApiException;
 final class ProvisioningService
 {
     public const DEFAULT_MAX_LEGS_USED = 4;
+    // donation_qualify_gate_ratio
+    public const DONATION_GATE_RATIO = 0.75;
+
 
     private ?bool $nodeGroupIngressColumnsAvailable = null;
     private ?bool $nodeGroupDescriptionColumnAvailable = null;
@@ -414,6 +417,14 @@ final class ProvisioningService
         if ($backendMode !== 'cf_mode') {
             $selfLegCfTransport = 'cf_direct';
         }
+        $desiredLatencyMs = max(0, (int) ($payload['desired_latency_ms'] ?? 0));
+        $allowPublicSelfLegDonation = !in_array(strtolower(trim((string) ($payload['allow_public_self_leg_donation'] ?? '0'))), ['0', 'false', 'no', 'off', ''], true) ? 1 : 0;
+        $donationQualifyWindowSeconds = max(5, (int) ($payload['donation_qualify_window_seconds'] ?? 60));
+        $donationRevokeWindowSeconds = max(5, (int) ($payload['donation_revoke_window_seconds'] ?? 30));
+        $donationMinOpenPorts = max(0, (int) ($payload['donation_min_open_ports'] ?? 1));
+        if (!in_array($clientMode, ['bond', 'mptcp'], true)) {
+            $allowPublicSelfLegDonation = 0;
+        }
         $bondIngressMode = $this->normalizeBondIngressMode((string) ($payload['bond_ingress_mode'] ?? 'plain_tcp_mux'));
         $isActive = !empty($payload['is_active']) ? 1 : 0;
         $sortOrder = (int) ($payload['sort_order'] ?? 100);
@@ -456,6 +467,11 @@ final class ProvisioningService
             'helper_group_cap' => $helperGroupCap,
             'helper_escalation_policy' => $helperEscalationPolicy,
             'self_leg_cf_transport' => $selfLegCfTransport,
+            'desired_latency_ms' => $desiredLatencyMs,
+            'allow_public_self_leg_donation' => $allowPublicSelfLegDonation,
+            'donation_qualify_window_seconds' => $donationQualifyWindowSeconds,
+            'donation_revoke_window_seconds' => $donationRevokeWindowSeconds,
+            'donation_min_open_ports' => $donationMinOpenPorts,
             'bond_ingress_mode' => $bondIngressMode,
             'is_active' => $isActive,
             'sort_order' => $sortOrder,
@@ -482,6 +498,11 @@ final class ProvisioningService
                      helper_group_cap = :helper_group_cap,
                      helper_escalation_policy = :helper_escalation_policy,
                      self_leg_cf_transport = :self_leg_cf_transport,
+                     desired_latency_ms = :desired_latency_ms,
+                     allow_public_self_leg_donation = :allow_public_self_leg_donation,
+                     donation_qualify_window_seconds = :donation_qualify_window_seconds,
+                     donation_revoke_window_seconds = :donation_revoke_window_seconds,
+                     donation_min_open_ports = :donation_min_open_ports,
                      bond_ingress_mode = :bond_ingress_mode,
                      is_active = :is_active,
                      sort_order = :sort_order,
@@ -666,6 +687,144 @@ final class ProvisioningService
         unset($row);
 
         return $rows;
+    }
+
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function candidateNodesForCombination(int $combinationId): array
+    {
+        if ($combinationId <= 0) {
+            return [];
+        }
+        $combination = $this->forwardCombinationById($combinationId) ?? [];
+        $groupKeys = array_values(array_unique(array_filter(array_merge(
+            [trim((string) ($combination['node_group_key'] ?? ''))],
+            array_map(static fn(mixed $value): string => trim((string) $value), (array) ($combination['helper_node_group_keys'] ?? []))
+        ), static fn(string $value): bool => $value !== '')));
+        if ($groupKeys === []) {
+            return [];
+        }
+
+        $params = ['active' => 'active', 'degraded' => 'degraded'];
+        $placeholders = [];
+        foreach ($groupKeys as $idx => $groupKey) {
+            $key = 'group_key_' . $idx;
+            $placeholders[] = ':' . $key;
+            $params[$key] = $groupKey;
+        }
+        return $this->db->fetchAll(
+            'SELECT n.*, g.group_key AS node_group_key
+             FROM nodes n
+             LEFT JOIN node_groups g ON g.id = n.group_id
+             WHERE (n.status = :active OR n.status = :degraded)
+               AND g.group_key IN (' . implode(', ', $placeholders) . ')
+             ORDER BY g.group_key ASC, n.current_load ASC, n.last_heartbeat_at DESC, n.id ASC',
+            $params
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function activeDonorsForCombination(int $combinationId): array
+    {
+        if ($combinationId <= 0) {
+            return [];
+        }
+        return $this->db->fetchAll(
+            'SELECT d.*, c.name AS client_name
+             FROM forward_combination_self_leg_donors d
+             LEFT JOIN clients c ON c.id = d.client_id
+             WHERE d.forward_combination_id = :forward_combination_id
+             ORDER BY FIELD(d.state, \'active\', \'qualifying\', \'cooldown\', \'revoked\'), d.last_measured_latency_ms ASC, d.id ASC',
+            ['forward_combination_id' => $combinationId]
+        );
+    }
+
+    /**
+     * @param array<int, mixed> $nodeIds
+     */
+    public function saveCombinationAdminPinnedSlaves(int $combinationId, array $nodeIds): void
+    {
+        if ($combinationId <= 0) {
+            return;
+        }
+        $normalized = [];
+        foreach ($nodeIds as $nodeId) {
+            $id = (int) $nodeId;
+            if ($id > 0 && !in_array($id, $normalized, true)) {
+                $normalized[] = $id;
+            }
+        }
+        $this->db->execute(
+            'UPDATE forward_combination_slaves
+             SET is_active = :inactive, updated_at = :updated_at
+             WHERE forward_combination_id = :forward_combination_id
+               AND selection_kind = :selection_kind',
+            [
+                'inactive' => 0,
+                'updated_at' => $this->now(),
+                'forward_combination_id' => $combinationId,
+                'selection_kind' => 'admin_pin',
+            ]
+        );
+        $sortOrder = 10;
+        foreach ($normalized as $nodeId) {
+            $existing = $this->db->fetchOne(
+                'SELECT id FROM forward_combination_slaves
+                 WHERE forward_combination_id = :forward_combination_id
+                   AND node_id = :node_id
+                   AND selection_kind = :selection_kind
+                 LIMIT 1',
+                [
+                    'forward_combination_id' => $combinationId,
+                    'node_id' => $nodeId,
+                    'selection_kind' => 'admin_pin',
+                ]
+            );
+            if (is_array($existing)) {
+                $this->db->execute(
+                    'UPDATE forward_combination_slaves
+                     SET is_active = :active, sort_order = :sort_order, updated_at = :updated_at
+                     WHERE id = :id',
+                    [
+                        'id' => (int) ($existing['id'] ?? 0),
+                        'active' => 1,
+                        'sort_order' => $sortOrder,
+                        'updated_at' => $this->now(),
+                    ]
+                );
+            } else {
+                $this->db->insert('forward_combination_slaves', [
+                    'forward_combination_id' => $combinationId,
+                    'node_id' => $nodeId,
+                    'selection_kind' => 'admin_pin',
+                    'sort_order' => $sortOrder,
+                    'is_active' => 1,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+            }
+            $sortOrder += 10;
+        }
+        $this->republishActiveForwardsForCombination($combinationId);
+    }
+
+    public function revokeDonationManually(int $combinationId, int $donationId): void
+    {
+        if ($combinationId <= 0 || $donationId <= 0) {
+            return;
+        }
+        $donor = $this->db->fetchOne(
+            'SELECT * FROM forward_combination_self_leg_donors WHERE id = :id AND forward_combination_id = :forward_combination_id LIMIT 1',
+            ['id' => $donationId, 'forward_combination_id' => $combinationId]
+        );
+        if (!is_array($donor)) {
+            return;
+        }
+        $this->transitionDonationState($donor, 'revoked', 'admin_disabled');
     }
 
     /**
@@ -2580,6 +2739,15 @@ final class ProvisioningService
                 continue;
             }
             $originGroupKey = trim((string) ($endpoint['origin_group_key'] ?? $endpoint['node_group_key'] ?? $endpoint['group_key'] ?? ''));
+            $endpointRtt = null;
+            foreach (['last_chain_latency_ms', 'one_leg_rtt_ms', 'latency_ewma_ms', 'last_latency_ms'] as $latencyKey) {
+                if (array_key_exists($latencyKey, $endpoint)) {
+                    $endpointRtt = $this->nullableFloat($endpoint[$latencyKey]);
+                    if ($endpointRtt !== null) {
+                        break;
+                    }
+                }
+            }
             $pool[] = [
                 'candidate_kind' => 'rented_group_leg',
                 'endpoint_id' => (int) ($endpoint['endpoint_id'] ?? 0),
@@ -2588,12 +2756,38 @@ final class ProvisioningService
                 'runtime_capabilities' => ['bond', 'mptcp'],
                 'host' => (string) ($endpoint['host'] ?? ''),
                 'port' => (int) ($endpoint['port'] ?? 0),
+                'measured_rtt_ms' => $endpointRtt,
+                'last_latency_ms' => $endpointRtt,
             ];
         }
 
         $selfLeg = $this->buildSelfLegCandidate($config, $client, $deviceSession);
         if ($selfLeg !== null) {
             array_unshift($pool, $selfLeg);
+        }
+
+        $combinationId = (int) ($config['forward_combination_id'] ?? 0);
+        if ($combinationId > 0) {
+            $cap = max(0, (int) ($config['max_legs_used'] ?? $config['helper_group_cap'] ?? 0));
+            foreach ($this->pickFastestSlavesForCombination($combinationId, $cap) as $candidate) {
+                if (($candidate['candidate_source'] ?? '') !== 'self_leg_donor') {
+                    continue;
+                }
+                $pool[] = [
+                    'candidate_kind' => 'donated_slave_leg',
+                    'endpoint_id' => 900000 + (int) ($candidate['donor_id'] ?? 0),
+                    'donor_id' => (int) ($candidate['donor_id'] ?? 0),
+                    'donor_client_id' => (int) ($candidate['client_id'] ?? 0),
+                    'runtime_capabilities' => ['bond', 'mptcp'],
+                    'host' => (string) ($candidate['host'] ?? ''),
+                    'port' => (int) ($candidate['port'] ?? 0),
+                    'measured_rtt_ms' => $candidate['last_chain_latency_ms'] ?? null,
+                    'last_latency_ms' => $candidate['last_chain_latency_ms'] ?? null,
+                    'origin_group_key' => 'donated_self_leg',
+                    'origin_group_order' => 500000,
+                    'ready' => true,
+                ];
+            }
         }
 
         return $pool;
@@ -3093,6 +3287,11 @@ final class ProvisioningService
                      combo.helper_group_cap AS forward_combination_helper_group_cap,
                      combo.helper_escalation_policy AS forward_combination_helper_escalation_policy,
                      combo.self_leg_cf_transport AS forward_combination_self_leg_cf_transport,
+                     combo.desired_latency_ms AS forward_combination_desired_latency_ms,
+                     combo.allow_public_self_leg_donation AS forward_combination_allow_public_self_leg_donation,
+                     combo.donation_qualify_window_seconds AS forward_combination_donation_qualify_window_seconds,
+                     combo.donation_revoke_window_seconds AS forward_combination_donation_revoke_window_seconds,
+                     combo.donation_min_open_ports AS forward_combination_donation_min_open_ports,
                      f.backend_mode,
                      f.forward_combination_id,
                      f.cf_location_group_id,
@@ -3215,6 +3414,11 @@ final class ProvisioningService
             'forward_combination_helper_group_cap' => (int) ($forward['forward_combination_helper_group_cap'] ?? 0),
             'forward_combination_helper_escalation_policy' => (string) ($forward['forward_combination_helper_escalation_policy'] ?? 'disabled'),
             'forward_combination_self_leg_cf_transport' => (string) ($forward['forward_combination_self_leg_cf_transport'] ?? 'cf_direct'),
+            'desired_latency_ms' => (int) ($forward['forward_combination_desired_latency_ms'] ?? 0),
+            'allow_public_self_leg_donation' => (int) ($forward['forward_combination_allow_public_self_leg_donation'] ?? 0),
+            'donation_qualify_window_seconds' => (int) ($forward['forward_combination_donation_qualify_window_seconds'] ?? 60),
+            'donation_revoke_window_seconds' => (int) ($forward['forward_combination_donation_revoke_window_seconds'] ?? 30),
+            'donation_min_open_ports' => (int) ($forward['forward_combination_donation_min_open_ports'] ?? 1),
             'forward_combination_helper_node_group_keys' => $this->forwardCombinationHelperNodeGroupKeys((int) ($forward['forward_combination_id'] ?? 0)),
             'backend_mode' => (string) ($forward['backend_mode'] ?? 'current_mode'),
             'cf_location_group_id' => $forward['cf_location_group_id'] !== null ? (int) $forward['cf_location_group_id'] : null,
@@ -3274,6 +3478,9 @@ final class ProvisioningService
                     'weight' => (int) $endpoint['weight'],
                     'health_status' => (string) $endpoint['health_status'],
                     'supports_quic_leg' => $this->nodeSupportsBondQuic($nodeConfig, (string) ($endpoint['node_agent_version'] ?? '')),
+                    'origin_group_key' => (string) ($endpoint['origin_group_key'] ?? $endpoint['node_group_key'] ?? $endpoint['group_key'] ?? ''),
+                    'last_chain_latency_ms' => $this->nullableFloat($endpoint['last_chain_latency_ms'] ?? $endpoint['best_latency_ms'] ?? null),
+                    'delivered_ewma' => $this->nullableFloat($endpoint['delivered_ewma'] ?? null),
                 ];
                 if ($publishesBondRuntime && $bondIngressMode === 'plain_tcp_mux') {
                     $item['ingress_protocol'] = 'plain_tcp_mux';
@@ -4782,7 +4989,18 @@ final class ProvisioningService
         $groupKeys = $this->orderedHelperGroupKeysForForward($forward);
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
         $desiredCount = $this->panelManagedEndpointCount($clientMode, $groupKeys, (int) ($forward['service_id'] ?? 0) ?: null);
-        $desiredNodes = $this->pickNodesForGroups($groupKeys, $desiredCount, (int) ($forward['service_id'] ?? 0) ?: null);
+        $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
+        if ($combinationId > 0) {
+            $combination = $this->forwardCombinationById($combinationId) ?? [];
+            $selectorCap = max(0, (int) ($combination['helper_group_cap'] ?? 0));
+            $selectedSlaves = $this->pickFastestSlavesForCombination($combinationId, $selectorCap);
+            $desiredNodes = array_values(array_map(
+                static fn(array $candidate): array => is_array($candidate['row'] ?? null) ? $candidate['row'] : [],
+                array_filter($selectedSlaves, static fn(array $candidate): bool => ($candidate['candidate_source'] ?? '') === 'rented_node')
+            ));
+        } else {
+            $desiredNodes = $this->pickNodesForGroups($groupKeys, $desiredCount, (int) ($forward['service_id'] ?? 0) ?: null);
+        }
         $reachableNodes = [];
         foreach ($desiredNodes as $node) {
             $publicHost = $this->resolveNodePublicHost($node);
@@ -4993,7 +5211,166 @@ final class ProvisioningService
                 'node_id' => (int) ($node['id'] ?? 0),
                 'public_port' => (int) ($forward['public_port'] ?? 0),
             ]) : null,
+            'donation_policy' => $this->donationPolicyForForward($forward),
         ];
+    }
+
+
+    public function evaluateDonationStateForCombination(int $combinationId): void
+    {
+        if ($combinationId <= 0) {
+            return;
+        }
+        $combination = $this->forwardCombinationById($combinationId);
+        if (!is_array($combination)) {
+            return;
+        }
+        $donors = $this->db->fetchAll(
+            'SELECT d.*, cds.last_seen_at AS device_last_seen_at, cds.last_heartbeat_at AS device_last_heartbeat_at, dcs.expires_at AS desktop_expires_at
+             FROM forward_combination_self_leg_donors d
+             LEFT JOIN client_device_sessions cds ON cds.client_id = d.client_id AND cds.device_id = d.device_id
+             LEFT JOIN desktop_client_sessions dcs ON dcs.id = d.desktop_client_session_id
+             WHERE d.forward_combination_id = :forward_combination_id
+             ORDER BY d.id ASC',
+            ['forward_combination_id' => $combinationId]
+        );
+        foreach ($donors as $donor) {
+            $this->evaluateDonationRow($combination, $donor);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $combination
+     * @param array<string, mixed> $donor
+     */
+    private function evaluateDonationRow(array $combination, array $donor): void
+    {
+        $state = (string) ($donor['state'] ?? 'qualifying');
+        if ($state === 'revoked') {
+            return;
+        }
+        $allow = (int) ($combination['allow_public_self_leg_donation'] ?? 0) === 1;
+        $desired = (int) ($combination['desired_latency_ms'] ?? 0);
+        if (!$allow || $desired <= 0 || (int) ($donor['owner_opt_in'] ?? 1) !== 1) {
+            if ($state === 'active') {
+                $this->transitionDonationState($donor, 'cooldown', 'admin_disabled');
+            }
+            return;
+        }
+        if ($state === 'cooldown') {
+            $revokedAt = strtotime((string) ($donor['revoked_at'] ?? '')) ?: 0;
+            if ($revokedAt > 0 && time() - $revokedAt < 300) {
+                return;
+            }
+        }
+        if (!$this->donorSessionHealthy($donor)) {
+            if ($state === 'active') {
+                $this->transitionDonationState($donor, 'cooldown', 'session_ended');
+            }
+            return;
+        }
+        $latency = $this->nullableFloat($donor['last_measured_latency_ms'] ?? null);
+        $openPorts = $this->decodedOpenPorts($donor['open_ports_json'] ?? null);
+        $reverseOk = $this->lastReverseProbeOk($donor['last_reverse_probe_json'] ?? null);
+        $minPorts = max(0, (int) ($combination['donation_min_open_ports'] ?? 1));
+        $openCount = count(array_filter($openPorts, static fn(array $port): bool => !empty($port['ok'])));
+        if ($state === 'active') {
+            if ($latency !== null && $latency > $desired) {
+                $this->transitionDonationState($donor, 'cooldown', 'latency_above_target');
+                return;
+            }
+            if ($openCount < $minPorts || !$reverseOk) {
+                $this->transitionDonationState($donor, 'cooldown', 'port_probe_failed');
+                return;
+            }
+            return;
+        }
+        if ($state === 'cooldown') {
+            $this->db->execute(
+                'UPDATE forward_combination_self_leg_donors SET state = :qualifying, qualify_started_at = NULL, revoke_reason = NULL, updated_at = :updated_at WHERE id = :id',
+                ['id' => (int) ($donor['id'] ?? 0), 'qualifying' => 'qualifying', 'updated_at' => $this->now()]
+            );
+            $donor['state'] = 'qualifying';
+            $donor['qualify_started_at'] = null;
+        }
+        $threshold = floor($desired * self::DONATION_GATE_RATIO);
+        if ($latency === null || $latency > $threshold || $openCount < $minPorts || !$reverseOk) {
+            return;
+        }
+        $qualifyStarted = strtotime((string) ($donor['qualify_started_at'] ?? '')) ?: 0;
+        if ($qualifyStarted <= 0) {
+            $this->db->execute(
+                'UPDATE forward_combination_self_leg_donors SET state = :state, qualify_started_at = :qualify_started_at, updated_at = :updated_at WHERE id = :id',
+                ['id' => (int) ($donor['id'] ?? 0), 'state' => 'qualifying', 'qualify_started_at' => $this->now(), 'updated_at' => $this->now()]
+            );
+            return;
+        }
+        $window = max(5, (int) ($combination['donation_qualify_window_seconds'] ?? 60));
+        if (time() - $qualifyStarted >= $window) {
+            $this->transitionDonationState($donor, 'active', 'qualified');
+        }
+    }
+
+    /** @param array<string, mixed> $donor */
+    private function donorSessionHealthy(array $donor): bool
+    {
+        $cutoff = time() - 120;
+        foreach (['device_last_heartbeat_at', 'device_last_seen_at', 'last_heartbeat_at'] as $key) {
+            $ts = strtotime((string) ($donor[$key] ?? '')) ?: 0;
+            if ($ts >= $cutoff) {
+                return true;
+            }
+        }
+        $expires = strtotime((string) ($donor['desktop_expires_at'] ?? '')) ?: 0;
+        return $expires > time();
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function decodedOpenPorts(mixed $json): array
+    {
+        $decoded = is_string($json) && $json !== '' ? json_decode($json, true) : [];
+        return is_array($decoded) ? array_values(array_filter($decoded, 'is_array')) : [];
+    }
+
+    private function lastReverseProbeOk(mixed $json): bool
+    {
+        $decoded = is_string($json) && $json !== '' ? json_decode($json, true) : [];
+        return is_array($decoded) && !empty($decoded['ok']);
+    }
+
+    /** @param array<string, mixed> $donor */
+    private function transitionDonationState(array $donor, string $toState, string $reason): void
+    {
+        $fromState = (string) ($donor['state'] ?? 'qualifying');
+        if ($fromState === $toState) {
+            return;
+        }
+        $params = [
+            'id' => (int) ($donor['id'] ?? 0),
+            'state' => $toState,
+            'active' => 'active',
+            'cooldown' => 'cooldown',
+            'revoked' => 'revoked',
+            'updated_at' => $this->now(),
+        ];
+        $sets = ['state = :state', 'updated_at = :updated_at'];
+        if ($toState === 'active') {
+            // state = :active
+            $sets[] = 'activated_at = :activated_at';
+            $sets[] = 'revoked_at = NULL';
+            $sets[] = 'revoke_reason = NULL';
+            $params['activated_at'] = $this->now();
+        }
+        if (in_array($toState, ['cooldown', 'revoked'], true)) {
+            // state = :cooldown / state = :revoked
+            $sets[] = 'revoked_at = :revoked_at';
+            $sets[] = 'revoke_reason = :revoke_reason';
+            $params['revoked_at'] = $this->now();
+            $params['revoke_reason'] = $reason;
+        }
+        $this->db->execute('UPDATE forward_combination_self_leg_donors SET ' . implode(', ', $sets) . ' WHERE id = :id', $params);
+        error_log('donation_state donor=' . (int) ($donor['id'] ?? 0) . ' client=' . (int) ($donor['client_id'] ?? 0) . ' combo=' . (int) ($donor['forward_combination_id'] ?? 0) . ' from=' . $fromState . ' to=' . $toState . ' reason=' . $reason);
+        $this->republishActiveForwardsForCombination((int) ($donor['forward_combination_id'] ?? 0));
     }
 
     /**
@@ -5095,6 +5472,188 @@ final class ProvisioningService
 
         $sql .= ' ORDER BY n.current_load ASC, n.last_heartbeat_at DESC, n.id ASC LIMIT ' . max(1, $count);
         return $this->db->fetchAll($sql, $params);
+    }
+
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function pickFastestSlavesForCombination(int $combinationId, int $cap): array
+    {
+        // fastest_slave_per_combination_selector
+        if ($combinationId <= 0) {
+            return [];
+        }
+        $combination = $this->forwardCombinationById($combinationId);
+        if (!is_array($combination)) {
+            return [];
+        }
+        $groupKeys = array_values(array_unique(array_filter(array_merge(
+            [trim((string) ($combination['node_group_key'] ?? ''))],
+            array_map(static fn(mixed $value): string => trim((string) $value), (array) ($combination['helper_node_group_keys'] ?? []))
+        ), static fn(string $value): bool => $value !== '')));
+        $candidates = [];
+        $seenNodes = [];
+        if ($groupKeys !== []) {
+            $params = ['active' => 'active', 'degraded' => 'degraded'];
+            $placeholders = [];
+            foreach ($groupKeys as $idx => $groupKey) {
+                $key = 'group_key_' . $idx;
+                $placeholders[] = ':' . $key;
+                $params[$key] = $groupKey;
+            }
+            $rows = $this->db->fetchAll(
+                'SELECT n.*, g.group_key AS node_group_key
+                 FROM nodes n
+                 LEFT JOIN node_groups g ON g.id = n.group_id
+                 WHERE (n.status = :active OR n.status = :degraded)
+                   AND g.group_key IN (' . implode(', ', $placeholders) . ')
+                 ORDER BY n.id ASC',
+                $params
+            );
+            foreach ($rows as $row) {
+                $nodeId = (int) ($row['id'] ?? 0);
+                if ($nodeId <= 0 || isset($seenNodes[$nodeId])) {
+                    continue;
+                }
+                $seenNodes[$nodeId] = true;
+                $candidates[] = $this->normalizeRentedSlaveCandidate($row, false);
+            }
+        }
+
+        $pinnedRows = $this->db->fetchAll(
+            'SELECT n.*, g.group_key AS node_group_key, fcs.sort_order AS pin_sort_order
+             FROM forward_combination_slaves fcs
+             INNER JOIN nodes n ON n.id = fcs.node_id
+             LEFT JOIN node_groups g ON g.id = n.group_id
+             WHERE fcs.forward_combination_id = :forward_combination_id
+               AND fcs.is_active = 1
+               AND fcs.selection_kind = :selection_kind
+               AND (n.status = :active OR n.status = :degraded)
+             ORDER BY fcs.sort_order ASC, n.id ASC',
+            [
+                'forward_combination_id' => $combinationId,
+                'selection_kind' => 'admin_pin',
+                'active' => 'active',
+                'degraded' => 'degraded',
+            ]
+        );
+        foreach ($pinnedRows as $row) {
+            $nodeId = (int) ($row['id'] ?? 0);
+            if ($nodeId <= 0) {
+                continue;
+            }
+            if (isset($seenNodes[$nodeId])) {
+                continue;
+            }
+            $seenNodes[$nodeId] = true;
+            $candidates[] = $this->normalizeRentedSlaveCandidate($row, true);
+        }
+
+        $donorRows = $this->db->fetchAll(
+            'SELECT d.*
+             FROM forward_combination_self_leg_donors d
+             WHERE d.forward_combination_id = :forward_combination_id
+               AND d.state = :state
+               AND d.owner_opt_in = 1
+               AND d.donor_public_host IS NOT NULL
+               AND d.donor_public_port IS NOT NULL
+             ORDER BY d.id ASC',
+            ['forward_combination_id' => $combinationId, 'state' => 'active']
+        );
+        foreach ($donorRows as $row) {
+            $host = trim((string) ($row['donor_public_host'] ?? ''));
+            $port = (int) ($row['donor_public_port'] ?? 0);
+            if ($host === '' || $port <= 0) {
+                continue;
+            }
+            $candidates[] = [
+                'candidate_source' => 'self_leg_donor',
+                'stable_id' => (int) ($row['id'] ?? 0),
+                'node_id' => null,
+                'donor_id' => (int) ($row['id'] ?? 0),
+                'client_id' => (int) ($row['client_id'] ?? 0),
+                'host' => $host,
+                'port' => $port,
+                'donor_transport' => (string) ($row['donor_transport'] ?? 'tcp'),
+                'last_chain_latency_ms' => $this->nullableFloat($row['last_measured_latency_ms'] ?? null),
+                'delivered_ewma' => 0.0,
+                'row' => $row,
+            ];
+        }
+
+        usort($candidates, static function (array $left, array $right): int {
+            $leftLatency = $left['last_chain_latency_ms'];
+            $rightLatency = $right['last_chain_latency_ms'];
+            if ($leftLatency === null && $rightLatency !== null) {
+                return 1;
+            }
+            if ($leftLatency !== null && $rightLatency === null) {
+                return -1;
+            }
+            if ($leftLatency !== null && $rightLatency !== null) {
+                $cmp = ((float) $leftLatency) <=> ((float) $rightLatency);
+                if ($cmp !== 0) {
+                    return $cmp;
+                }
+            }
+            $ewmaCmp = ((float) ($right['delivered_ewma'] ?? 0.0)) <=> ((float) ($left['delivered_ewma'] ?? 0.0));
+            if ($ewmaCmp !== 0) {
+                return $ewmaCmp;
+            }
+            return ((int) ($left['stable_id'] ?? 0)) <=> ((int) ($right['stable_id'] ?? 0));
+        });
+
+        return $cap > 0 ? array_slice($candidates, 0, $cap) : $candidates;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function normalizeRentedSlaveCandidate(array $row, bool $adminPinned): array
+    {
+        $latency = null;
+        $agentConfig = $this->decodeJsonAssoc($row['agent_config_json'] ?? null);
+        foreach (['last_chain_latency_ms', 'best_latency_ms', 'last_latency_ms'] as $key) {
+            if (array_key_exists($key, $row)) {
+                $latency = $this->nullableFloat($row[$key]);
+                if ($latency !== null) {
+                    break;
+                }
+            }
+            if (array_key_exists($key, $agentConfig)) {
+                $latency = $this->nullableFloat($agentConfig[$key]);
+                if ($latency !== null) {
+                    break;
+                }
+            }
+        }
+        $delivered = $this->nullableFloat($row['delivered_ewma'] ?? ($agentConfig['delivered_ewma'] ?? 0)) ?? 0.0;
+        return [
+            'candidate_source' => 'rented_node',
+            'selection_kind' => $adminPinned ? 'admin_pin' : 'helper_group',
+            'stable_id' => (int) ($row['id'] ?? 0),
+            'node_id' => (int) ($row['id'] ?? 0),
+            'donor_id' => null,
+            'client_id' => null,
+            'host' => $this->resolveNodePublicHost($row),
+            'port' => 0,
+            'last_chain_latency_ms' => $latency,
+            'delivered_ewma' => $delivered,
+            'row' => $row,
+        ];
+    }
+
+    private function nullableFloat(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (!is_numeric($value)) {
+            return null;
+        }
+        return (float) $value;
     }
 
     /**
@@ -6161,6 +6720,225 @@ final class ProvisioningService
             $protocols
         );
         return in_array('quic', $normalized, true);
+    }
+
+
+    /**
+     * @param array<string, mixed> $forward
+     * @return array<string, mixed>
+     */
+    public function donationPolicyForForward(array $forward): array
+    {
+        // donation_policy_payload
+        $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
+        $desiredLatency = (int) ($forward['desired_latency_ms'] ?? $forward['forward_combination_desired_latency_ms'] ?? 0);
+        $allow = (int) ($forward['allow_public_self_leg_donation'] ?? $forward['forward_combination_allow_public_self_leg_donation'] ?? 0);
+        if ($combinationId <= 0 || $desiredLatency <= 0 || $allow !== 1) {
+            return [];
+        }
+        return [
+            'forward_combination_id' => $combinationId,
+            'desired_latency_ms' => $desiredLatency,
+            'donation_gate_ratio' => self::DONATION_GATE_RATIO,
+            'donation_qualify_window_seconds' => max(5, (int) ($forward['donation_qualify_window_seconds'] ?? $forward['forward_combination_donation_qualify_window_seconds'] ?? 60)),
+            'donation_revoke_window_seconds' => max(5, (int) ($forward['donation_revoke_window_seconds'] ?? $forward['forward_combination_donation_revoke_window_seconds'] ?? 30)),
+            'donation_min_open_ports' => max(0, (int) ($forward['donation_min_open_ports'] ?? $forward['forward_combination_donation_min_open_ports'] ?? 1)),
+            'donor_client_id' => (int) ($forward['line_client_id'] ?? 0),
+            'desktop_client_session_id' => (int) ($forward['desktop_client_session_id'] ?? 0),
+            'device_id' => (string) ($forward['device_id'] ?? ''),
+        ];
+    }
+
+    public function recordDonationSelfCheck(int $nodeId, array $payload): void
+    {
+        // donation_self_check_ingest
+        if ($nodeId <= 0) {
+            return;
+        }
+        $items = is_array($payload['donation_self_check'] ?? null) ? $payload['donation_self_check'] : $payload;
+        if (isset($items['forward_combination_id'])) {
+            $items = [$items];
+        }
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $combinationId = (int) ($item['forward_combination_id'] ?? 0);
+            if ($combinationId <= 0) {
+                continue;
+            }
+            $donorId = (int) ($item['donor_id'] ?? 0);
+            $clientId = (int) ($item['donor_client_id'] ?? $item['client_id'] ?? 0);
+            $desktopSessionId = (int) ($item['desktop_client_session_id'] ?? 0);
+            $deviceId = trim((string) ($item['device_id'] ?? ''));
+            if ($donorId <= 0 && $clientId <= 0 && $deviceId === '') {
+                continue;
+            }
+
+            $donor = $this->findOrCreateSelfLegDonorFromSelfCheck($combinationId, $donorId, $clientId, $desktopSessionId, $deviceId, $item);
+            if (!is_array($donor)) {
+                continue;
+            }
+
+            $openPorts = is_array($item['open_ports'] ?? null) ? $item['open_ports'] : [];
+            $this->db->execute(
+                'UPDATE forward_combination_self_leg_donors
+                 SET last_self_check_json = :last_self_check_json,
+                     last_measured_latency_ms = :last_measured_latency_ms,
+                     open_ports_json = :open_ports_json,
+                     donor_public_host = COALESCE(NULLIF(:donor_public_host, \'\'), donor_public_host),
+                     donor_public_port = COALESCE(NULLIF(:donor_public_port, 0), donor_public_port),
+                     last_heartbeat_at = :last_heartbeat_at,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                [
+                    'id' => (int) ($donor['id'] ?? 0),
+                    'last_self_check_json' => json_encode($item, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'last_measured_latency_ms' => $this->nullableFloat($item['measured_chain_latency_ms'] ?? null),
+                    'open_ports_json' => json_encode($openPorts, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'donor_public_host' => trim((string) ($item['public_host'] ?? '')),
+                    'donor_public_port' => max(0, (int) ($item['public_port'] ?? 0)),
+                    'last_heartbeat_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]
+            );
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $item
+     * @return array<string, mixed>|null
+     */
+    private function findOrCreateSelfLegDonorFromSelfCheck(int $combinationId, int $donorId, int $clientId, int $desktopSessionId, string $deviceId, array $item): ?array
+    {
+        if ($donorId > 0) {
+            $donor = $this->db->fetchOne(
+                'SELECT * FROM forward_combination_self_leg_donors WHERE id = :id AND forward_combination_id = :forward_combination_id LIMIT 1',
+                ['id' => $donorId, 'forward_combination_id' => $combinationId]
+            );
+            return is_array($donor) ? $donor : null;
+        }
+        if ($clientId <= 0) {
+            return null;
+        }
+
+        $params = [
+            'forward_combination_id' => $combinationId,
+            'client_id' => $clientId,
+        ];
+        $conditions = ['forward_combination_id = :forward_combination_id', 'client_id = :client_id'];
+        if ($desktopSessionId > 0) {
+            $conditions[] = 'desktop_client_session_id = :desktop_client_session_id';
+            $params['desktop_client_session_id'] = $desktopSessionId;
+        } else {
+            $conditions[] = 'desktop_client_session_id IS NULL';
+        }
+        if ($deviceId !== '') {
+            $conditions[] = 'device_id = :device_id';
+            $params['device_id'] = $deviceId;
+        } else {
+            $conditions[] = '(device_id IS NULL OR device_id = \'\')';
+        }
+
+        $donor = $this->db->fetchOne(
+            'SELECT * FROM forward_combination_self_leg_donors WHERE ' . implode(' AND ', $conditions) . ' LIMIT 1',
+            $params
+        );
+        if (is_array($donor)) {
+            return $donor;
+        }
+
+        $host = trim((string) ($item['public_host'] ?? ''));
+        $port = max(0, (int) ($item['public_port'] ?? 0));
+        $id = $this->db->insert('forward_combination_self_leg_donors', [
+            'forward_combination_id' => $combinationId,
+            'client_id' => $clientId,
+            'desktop_client_session_id' => $desktopSessionId > 0 ? $desktopSessionId : null,
+            'device_id' => $deviceId !== '' ? $deviceId : null,
+            'state' => 'qualifying',
+            'donor_public_host' => $host !== '' ? $host : null,
+            'donor_public_port' => $port > 0 ? $port : null,
+            'donor_transport' => trim((string) ($item['donor_transport'] ?? 'tcp')) ?: 'tcp',
+            'owner_opt_in' => 1,
+            'created_at' => $this->now(),
+            'updated_at' => $this->now(),
+        ]);
+        return $this->db->fetchOne('SELECT * FROM forward_combination_self_leg_donors WHERE id = :id LIMIT 1', ['id' => $id]);
+    }
+
+    public function recordDonationReverseProbe(int $sidecarPointId, array $payload): void
+    {
+        if ($sidecarPointId <= 0) {
+            return;
+        }
+        $items = is_array($payload['donation_reverse_probe'] ?? null) ? $payload['donation_reverse_probe'] : $payload;
+        if (isset($items['donor_id'])) {
+            $items = [$items];
+        }
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $donorId = (int) ($item['donor_id'] ?? 0);
+            if ($donorId <= 0) {
+                continue;
+            }
+            $this->db->execute(
+                'UPDATE forward_combination_self_leg_donors
+                 SET last_reverse_probe_json = :last_reverse_probe_json,
+                     last_heartbeat_at = :last_heartbeat_at,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                [
+                    'id' => $donorId,
+                    'last_reverse_probe_json' => json_encode($item, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'last_heartbeat_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]
+            );
+        }
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function donationReverseProbeTargetsForPoint(int $sidecarPointId): array
+    {
+        if ($sidecarPointId <= 0) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT d.*, f.id AS forward_id
+             FROM forward_combination_self_leg_donors d
+             INNER JOIN forward_combinations fc ON fc.id = d.forward_combination_id
+             LEFT JOIN forwards f ON f.forward_combination_id = fc.id AND f.enabled = 1
+             WHERE fc.sidecar_point_id = :sidecar_point_id
+               AND d.state = :state
+               AND d.owner_opt_in = 1
+               AND d.donor_public_host IS NOT NULL
+               AND d.donor_public_port IS NOT NULL
+             ORDER BY d.id ASC, f.id ASC',
+            ['sidecar_point_id' => $sidecarPointId, 'state' => 'active']
+        );
+        $targets = [];
+        foreach ($rows as $row) {
+            $host = trim((string) ($row['donor_public_host'] ?? ''));
+            $port = (int) ($row['donor_public_port'] ?? 0);
+            if ($host === '' || $port <= 0) {
+                continue;
+            }
+            $targets[] = [
+                'forward_combination_id' => (int) ($row['forward_combination_id'] ?? 0),
+                'donor_id' => (int) ($row['id'] ?? 0),
+                'client_id' => (int) ($row['client_id'] ?? 0),
+                'forward_id' => (int) ($row['forward_id'] ?? 0),
+                'protocol' => str_contains((string) ($row['donor_transport'] ?? 'tcp'), 'udp') ? 'udp' : 'tcp',
+                'public_host' => $host,
+                'public_port' => $port,
+                'expected_transport' => (string) ($row['donor_transport'] ?? 'tcp'),
+            ];
+        }
+        return $targets;
     }
 
     /**

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run LeiKwan donation worker every minute
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+Unit=leikwan-donation-worker.service
+
+[Install]
+WantedBy=timers.target
