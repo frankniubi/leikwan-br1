@@ -75,6 +75,31 @@ class CfWgSelfLegTests(unittest.TestCase):
         self.assertTrue(selected[0]["selected_primary"])
         self.assertTrue(selected[0]["ready"])
 
+    def test_existing_cf_wg_interface_without_udp_tunnel_still_bootstraps_self_leg(self) -> None:
+        agent = client_agent.ClientAgent.__new__(client_agent.ClientAgent)
+        agent.private_wg_interface_present = lambda _interface_name: True
+        agent.local_listener_present = lambda _port, _transport="tcp", _timeout=2.5: (False, None, "listener_not_found")
+        agent.private_wg_self_leg_connect_probe = lambda _forward, _candidate, timeout=3.0: (False, None, "connection refused")
+        selected = agent.select_forward_candidates(
+            {
+                "forward_id": 47,
+                "candidate_pool": [
+                    self._candidate(),
+                    {
+                        "candidate_kind": "rented_group_leg",
+                        "endpoint_id": 320,
+                        "measured_rtt_ms": 70.0,
+                        "ready": True,
+                        "runtime_capabilities": ["bond", "mptcp"],
+                    },
+                ],
+            }
+        )
+        self.assertEqual("self_leg", selected[0]["candidate_kind"])
+        self.assertEqual("cf_wg_udp_tunnel_bootstrap", selected[0]["probe_state"])
+        self.assertTrue(selected[0]["selected_primary"])
+        self.assertTrue(selected[0]["ready"])
+
     def test_cf_wg_bond_mode_without_mptcp_token_falls_back_to_bond_family(self) -> None:
         agent = client_agent.ClientAgent.__new__(client_agent.ClientAgent)
         family = client_agent.ClientAgent.choose_runtime_family(
