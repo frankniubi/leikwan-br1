@@ -106,6 +106,7 @@ class CfWgSelfLegTests(unittest.TestCase):
         }
         rendered = install_runtime.render_forward_runtime(forward, {})
         self.assertIn("wstunnel client -L udp://127.0.0.1:", rendered["start_script"])
+        self.assertIn('ss -lun "sport = :$port"', rendered["start_script"])
         self.assertIn("wss://104.16.0.5:443", rendered["start_script"])
 
         config_file = next(file for file in rendered["files"] if file["path"] == "/etc/leikwan/mptcp-forward-47.json")
