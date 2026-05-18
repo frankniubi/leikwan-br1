@@ -50,6 +50,19 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn("systemctl list-units 'leikwan-client-*.service'", source)
         self.assertIn("systemctl stop \"$unit\"", source)
 
+    def test_update_helper_does_not_stop_its_own_transient_update_unit(self) -> None:
+        source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
+
+        self.assertIn('UPDATE_UNIT_PREFIX="leikwan-client-agent-update"', source)
+        self.assertIn('grep -v "^${UPDATE_UNIT_PREFIX}"', source)
+
+    def test_update_helper_handles_systemctl_marker_rows(self) -> None:
+        source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
+
+        self.assertIn('if (unit !~ /^[[:alnum:]_.@-]+\\.service$/', source)
+        self.assertIn('sub(/^[^[:alnum:]_.@-]+/, "", unit)', source)
+        self.assertIn("grep -E '^leikwan-client-[^[:space:]]+\\.service$'", source)
+
     def test_installer_ensures_time_sync(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 
