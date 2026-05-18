@@ -58,6 +58,32 @@ final class SidecarAgentController extends BaseController
         $sidecarAgentUpdatesEnabled = !in_array(strtolower(trim((string) ($runtimeState['sidecar_agent_update_enabled'] ?? ''))), ['0', 'false', 'no', 'off', ''], true);
         $reportedAgentVersion = $version !== '' ? $version : (string) ($point['agent_version'] ?? '');
 
+        // Regression sentinel: sidecar_heartbeat_republish_gate
+        // Republish is expensive (re-queues per-forward provision_tasks for every
+        // endpoint of every active forward bound to this sidecar). Heartbeats fire
+        // every ~30 s, so doing it unconditionally saturates the panel uplink on
+        // sites with many forwards. Only republish when the sidecar's WG identity
+        // actually changed, with a periodic safety-net force interval.
+        $existingFingerprint = trim((string) ($existingAgentConfig['last_heartbeat_fingerprint'] ?? ''));
+        $existingFingerprintAt = (int) ($existingAgentConfig['last_heartbeat_republish_at'] ?? 0);
+        $forceIntervalSeconds = max(60, (int) ($this->config->getInt('SIDECAR_REPUBLISH_FORCE_INTERVAL_SECONDS', 600) ?? 600));
+        $wgFingerprintInputs = [
+            (string) ($runtimeState['wireguard_public_key'] ?? ''),
+            (string) ((int) ($runtimeState['wireguard_listen_port'] ?? 0)),
+            (string) ((int) ($runtimeState['wireguard_fallback_tcp_port'] ?? 0)),
+        ];
+        $wgFingerprint = sha1(implode(':', $wgFingerprintInputs));
+        $now = time();
+        $shouldRepublish = ($wgFingerprint !== $existingFingerprint)
+            || ($existingFingerprintAt <= 0)
+            || (($now - $existingFingerprintAt) >= $forceIntervalSeconds);
+        $runtimeState['last_heartbeat_fingerprint'] = $wgFingerprint;
+        if ($shouldRepublish) {
+            $runtimeState['last_heartbeat_republish_at'] = $now;
+        } elseif ($existingFingerprintAt > 0) {
+            $runtimeState['last_heartbeat_republish_at'] = $existingFingerprintAt;
+        }
+
         $this->db->execute(
             'UPDATE sidecar_points
              SET agent_version = :agent_version,
@@ -82,7 +108,9 @@ final class SidecarAgentController extends BaseController
             (new BondLegReputationService($this->db))->ingestSidecarSnapshot((int) $point['id'], $reputation);
         }
         $this->provisioning->recordAgentUsage('sidecar', (int) $point['id'], $usageBytesIn, $usageBytesOut);
-        $this->provisioning->republishActiveForwardsForSidecarPoint((int) $point['id']);
+        if ($shouldRepublish) {
+            $this->provisioning->republishActiveForwardsForSidecarPoint((int) $point['id']);
+        }
         $mptcpTemporarilyDisabled = $this->config->getBool('TEMP_DISABLE_MPTCP_RUNTIME', true);
         $mptcpManagement = $mptcpTemporarilyDisabled
             ? []
@@ -110,9 +138,11 @@ final class SidecarAgentController extends BaseController
         $cfRows = $this->db->fetchAll(
             'SELECT f.id, f.path_prefix, f.target_host, f.target_port, f.transport_mode,
                     f.bond_remote_host, f.bond_remote_port, f.backend_mode,
-                    fc.upstream_realization_mode AS chain_upstream_realization_mode
+                    fc.upstream_realization_mode AS chain_upstream_realization_mode,
+                    combo.self_leg_cf_transport AS forward_combination_self_leg_cf_transport
              FROM forwards f
              LEFT JOIN forward_chains fc ON fc.id = f.forward_chain_id
+             LEFT JOIN forward_combinations combo ON combo.id = f.forward_combination_id
              INNER JOIN services s ON s.id = f.service_id
              WHERE f.bond_sidecar_point_id = :point_id
                AND f.enabled = 1
@@ -133,12 +163,16 @@ final class SidecarAgentController extends BaseController
             'agent_config_json' => json_encode($runtimeState, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
         ]));
         $cfListenPort = max(1, (int) ($point['cf_listen_port'] ?? 443));
+        $sidecarWireguardListenPort = (int) ($runtimeState['wireguard_listen_port'] ?? 0);
+        if ($sidecarWireguardListenPort <= 0) {
+            $sidecarWireguardListenPort = $mptcpListenPort > 0 ? $mptcpListenPort : 0;
+        }
         $cfRuntime = $cfRows === [] ? null : [
             'listen_host' => (string) ($point['bind_host'] ?? '0.0.0.0'),
             'listen_port' => $cfListenPort,
             'tls_cert_path' => (string) ($runtimeState['cf_tls_cert_path'] ?? '/etc/ssl/cf/fullchain.pem'),
             'tls_key_path' => (string) ($runtimeState['cf_tls_key_path'] ?? '/etc/ssl/cf/privkey.pem'),
-            'routes' => array_values(array_reduce($cfRows, static function (array $carry, array $row) use ($directCfBackendForwardIds): array {
+            'routes' => array_values(array_reduce($cfRows, static function (array $carry, array $row) use ($directCfBackendForwardIds, $sidecarWireguardListenPort): array {
                 $forwardId = (int) ($row['id'] ?? 0);
                 $pathPrefix = (string) ($row['path_prefix'] ?? '');
                 $targetHost = trim((string) ($row['bond_remote_host'] ?? ''));
@@ -167,6 +201,19 @@ final class SidecarAgentController extends BaseController
                         'path_prefix' => $pathPrefix . '.uot',
                         'target' => '127.0.0.1:8999',
                         'transport_mode' => 'tcp',
+                    ];
+                }
+                // Regression sentinel: cf_wg_route_publishes_wg_listen_port
+                $selfLegCfTransport = strtolower(trim((string) ($row['forward_combination_self_leg_cf_transport'] ?? 'cf_direct')));
+                $backendModeRaw = strtolower(trim((string) ($row['backend_mode'] ?? '')));
+                if ($selfLegCfTransport === 'cf_wg' && $backendModeRaw === 'cf_mode' && $sidecarWireguardListenPort > 0 && $pathPrefix !== '') {
+                    $carry[] = [
+                        'forward_id' => $forwardId,
+                        'service_name' => 'cf-forward-' . $forwardId . '-cfwg',
+                        'path_prefix' => $pathPrefix . '.cfwg',
+                        'target' => '127.0.0.1:' . $sidecarWireguardListenPort,
+                        'transport_mode' => 'udp',
+                        'backend_mode' => 'direct',
                     ];
                 }
                 return $carry;
