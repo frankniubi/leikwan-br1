@@ -100,13 +100,16 @@ Evidence in code:
          'path_prefix' => $pathPrefix . '.cfwg',
          'target' => '127.0.0.1:' . $sidecarWireguardListenPort,
          'transport_mode' => 'udp',
-         'backend_mode' => 'direct',
+         'shadow_route_key' => $pathPrefix . '.cfwg',
+         'backend_mode' => 'wstunnel',
      ];
      ```
 
-     The `direct` `backend_mode` is what makes
-     `sidecar_agent.apply_management.cf_runtime` skip the wstunnel server unit and use the WG
-     listen port as the literal backend (see `if direct_backend:` branch).
+     The `wstunnel` backend mode is intentional: `sidecar_agent.apply_management.cf_runtime` must
+     start a local `wstunnel server` backend for this route, because the sidecar mux itself is a TCP
+     websocket path mux. The mux connects to that local TCP wstunnel backend, and wstunnel then
+     forwards UDP datagrams to the sidecar WG listen port. Do not point the mux directly at the UDP
+     WireGuard port.
 
 2. **Panel selects the new path for the cf_wg client renderer** by setting
    `wgProfile['cf_path_prefix'] = $config['path_prefix'] . '.cfwg'` inside
@@ -228,7 +231,7 @@ The branch `fix/sh36-cfwg-route-and-heartbeat-republish-gate` already contains d
     - Create `master/tests/sidecar_cfwg_route_publishes_wg_listen_port_regression_test.php`
       asserting that when `forward_combination_self_leg_cf_transport = 'cf_wg'` and `backend_mode
       = 'cf_mode'`, the heartbeat controller emits a route `cf-forward-<id>-cfwg` with
-      `path_prefix` ending `.cfwg`, `transport_mode = 'udp'`, `backend_mode = 'direct'`, and a
+      `path_prefix` ending `.cfwg`, `transport_mode = 'udp'`, `backend_mode = 'wstunnel'`, `shadow_route_key = <path>.cfwg`, and a
       target host:port that uses the sidecar's WG listen port.
     - Update `master/tests/provisioning_self_leg_cf_wg_transport_regression_test.php` to additionally
       assert `cf_path_prefix` carries the `.cfwg` suffix.

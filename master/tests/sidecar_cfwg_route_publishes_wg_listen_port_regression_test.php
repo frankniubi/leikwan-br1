@@ -22,7 +22,8 @@ foreach ([
     "\$pathPrefix . '.cfwg'",
     "'127.0.0.1:' . \$sidecarWireguardListenPort",
     "'transport_mode' => 'udp'",
-    "'backend_mode' => 'direct'",
+    "'shadow_route_key' => \$pathPrefix . '.cfwg'",
+    "'backend_mode' => 'wstunnel'",
     "\$selfLegCfTransport === 'cf_wg'",
     "\$backendModeRaw === 'cf_mode'",
 ] as $snippet) {
