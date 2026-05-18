@@ -145,7 +145,7 @@
     "version": "2026.05.17.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "b7ace791c18bb1462c7fa2976d0629b643c2ed451948f1622e8bd2ee850b1e67",
-    "size_bytes": 51088
+    "sha256": "7efda44f1148d624ad8f5abe59b31b7919387fc612d6636a9c309e00742ba83d",
+    "size_bytes": 52260
   }
 }
