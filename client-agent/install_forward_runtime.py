@@ -387,7 +387,17 @@ def self_leg_wg_underlay(candidate: dict, forward: dict) -> dict | None:
     outer_transport = str(wg.get("outer_transport", "udp") or "udp").strip().lower() or "udp"
     endpoint_host = str(wg.get("endpoint_host", "") or wg.get("sidecar_endpoint_host", "") or candidate.get("target_sidecar_host", "") or "").strip()
     endpoint_port = int_or_default(wg.get("endpoint_port") or wg.get("sidecar_endpoint_port"), 0)
+    cf_wg_target_host = str(wg.get("cf_target_host", "") or "127.0.0.1").strip()
+    cf_wg_target_port = endpoint_port
     if outer_transport == "wstunnel_udp" and forward_id > 0:
+        cf_candidates = candidate.get("self_leg_cf_candidates", [])
+        if isinstance(cf_candidates, list):
+            preferred_cf_host = next((str(value).strip() for value in cf_candidates if str(value).strip()), "")
+            if preferred_cf_host != "":
+                wg["cf_dial_host"] = preferred_cf_host
+        explicit_cf_connect_ip = str(candidate.get("dial_connect_ip", "") or "").strip()
+        if explicit_cf_connect_ip != "":
+            wg["cf_dial_host"] = explicit_cf_connect_ip
         endpoint_host = "127.0.0.1"
         endpoint_port = 40000 + (forward_id % 2000)
     if interface_name == "" or client_address == "" or sidecar_address == "" or sidecar_public_key == "" or endpoint_host == "" or endpoint_port <= 0:
@@ -407,14 +417,19 @@ def self_leg_wg_underlay(candidate: dict, forward: dict) -> dict | None:
         "cf_dial_port": int_or_default(wg.get("cf_dial_port"), 0),
         "cf_sni_host": str(wg.get("cf_sni_host", "") or "").strip(),
         "cf_path_prefix": str(wg.get("cf_path_prefix", "") or "").strip(),
+        "cf_target_host": cf_wg_target_host,
+        "cf_target_port": cf_wg_target_port,
     }
-    return {
+    underlay = {
         "type": "wireguard",
         "mode": "client_self_leg",
         "interface_name": interface_name,
         "peer_keepalive_seconds": int_or_default(wg.get("persistent_keepalive") or wg.get("peer_keepalive_seconds"), 25),
         "legs": [leg],
     }
+    if outer_transport == "wstunnel_udp":
+        underlay["prefer_mptcp_endpoint"] = True
+    return underlay
 
 
 def mptcp_self_leg_endpoint(candidate: dict, forward: dict, priority: int) -> dict | None:
@@ -841,10 +856,50 @@ WantedBy=multi-user.target
             remote_port = int(direct_legs[0]["local_port"])
 
         runtime_mptcp = render_mptcp_runtime_config(forward)
-        rendered_mptcp_endpoints = runtime_mptcp["mptcp_endpoints"]
+        helper_mptcp_endpoints = [
+            dict(endpoint)
+            for endpoint in runtime_mptcp["mptcp_endpoints"]
+            if isinstance(endpoint, dict)
+        ]
+        rendered_mptcp_endpoints = helper_mptcp_endpoints
+        preferred_private_mptcp_endpoints = []
+        for underlay in private_self_leg_underlays:
+            if not isinstance(underlay, dict) or not truthy(underlay.get("prefer_mptcp_endpoint", False)):
+                continue
+            legs = underlay.get("legs", [])
+            first_leg = legs[0] if isinstance(legs, list) and legs and isinstance(legs[0], dict) else {}
+            local_address = str(first_leg.get("local_address", "") or "").split("/", 1)[0].strip()
+            if local_address == "":
+                continue
+            preferred_private_mptcp_endpoints.append({
+                "endpoint_id": int_or_default(first_leg.get("endpoint_id"), 0),
+                "address": local_address,
+                "dev": str(underlay.get("interface_name", "") or "").strip(),
+                "subflow": True,
+                "signal": False,
+                "backup_only": False,
+                "leg_role": "primary",
+                "health_role": "healthy",
+            })
+        if preferred_private_mptcp_endpoints:
+            primary_addresses = {str(endpoint.get("address", "") or "").split("/", 1)[0].strip() for endpoint in preferred_private_mptcp_endpoints}
+            standby_helper_mptcp_endpoints = []
+            for endpoint in helper_mptcp_endpoints:
+                address = str(endpoint.get("address", "") or "").split("/", 1)[0].strip()
+                if address != "" and address in primary_addresses:
+                    continue
+                standby_endpoint = dict(endpoint)
+                standby_endpoint.setdefault("subflow", True)
+                standby_endpoint["backup_only"] = True
+                standby_endpoint["leg_role"] = "standby"
+                standby_endpoint.setdefault("health_role", "healthy")
+                standby_helper_mptcp_endpoints.append(standby_endpoint)
+            rendered_mptcp_endpoints = preferred_private_mptcp_endpoints + standby_helper_mptcp_endpoints
         rendered_subflow_limit = int_or_default(runtime_mptcp.get("subflow_limit"), 1)
         if direct_legs and not endpoints:
             rendered_subflow_limit = 1
+        if preferred_private_mptcp_endpoints:
+            rendered_subflow_limit = max(1, len(rendered_mptcp_endpoints))
 
         config_payload = {
             "forward_id": forward_id,
@@ -892,7 +947,26 @@ WantedBy=multi-user.target
             raw_underlays.extend(private_self_leg_underlays)
         mptcp_underlays = mptcp.get("underlays", [])
         if isinstance(mptcp_underlays, list):
-            raw_underlays.extend(mptcp_underlays)
+            for raw_underlay in mptcp_underlays:
+                if not isinstance(raw_underlay, dict):
+                    continue
+                underlay = dict(raw_underlay)
+                if preferred_private_mptcp_endpoints:
+                    underlay.setdefault("mode", "slave_transit")
+                    standby_legs = []
+                    raw_legs = underlay.get("legs", [])
+                    if isinstance(raw_legs, list):
+                        for raw_leg in raw_legs:
+                            if not isinstance(raw_leg, dict):
+                                continue
+                            leg = dict(raw_leg)
+                            leg["backup_only"] = True
+                            leg["leg_role"] = "standby"
+                            leg.setdefault("health_role", "healthy")
+                            standby_legs.append(leg)
+                    if standby_legs:
+                        underlay["legs"] = standby_legs
+                raw_underlays.append(underlay)
         if isinstance(raw_underlays, list):
             base_listen_port = int_or_default(agent_config.get("wireguard_listen_port"), 0)
             forward_id_for_port = int_or_default(forward.get("forward_id"), 0)
@@ -945,10 +1019,12 @@ WantedBy=multi-user.target
                 cf_port = int_or_default(leg.get("cf_dial_port"), 0)
                 cf_sni = str(leg.get("cf_sni_host", "") or sni).strip()
                 cf_path = str(leg.get("cf_path_prefix", "") or path_prefix).strip()
-                if local_udp <= 0 or cf_host == "" or cf_port <= 0:
+                cf_target_host = str(leg.get("cf_target_host", "") or "127.0.0.1").strip()
+                cf_target_port = int_or_default(leg.get("cf_target_port"), 0)
+                if local_udp <= 0 or cf_host == "" or cf_port <= 0 or cf_target_host == "" or cf_target_port <= 0:
                     continue
                 lines.append(
-                    f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_host}:{cf_port}?timeout_sec=0 --tls-sni-override {cf_sni} --http-headers \"Host: {cf_sni}\" --http-upgrade-path-prefix \"{cf_path}\" wss://{cf_host}:{cf_port} &"
+                    f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 --tls-sni-override {cf_sni} --http-headers \"Host: {cf_sni}\" --http-upgrade-path-prefix \"{cf_path}\" wss://{cf_host}:{cf_port} &"
                 )
                 cf_wg_ports.append(local_udp)
         if cf_wg_ports:

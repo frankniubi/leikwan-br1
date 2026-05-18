@@ -222,6 +222,47 @@ class SelfLegBestIpOverrideTests(unittest.TestCase):
         self.assertEqual(50.6, latency_ms)
         self.assertIsNone(error)
 
+    def test_selected_cf_wg_self_leg_carries_best_map_connect_ip_for_runtime_render(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_dir = pathlib.Path(tmp_dir)
+            (state_dir / 'self_leg_cf_best_ips.json').write_text(
+                '{"47": {"07289d1f5ed25399": ["162.159.39.5", "162.159.39.4"]}}\n',
+                encoding='utf-8',
+            )
+            agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)
+            agent.config = {'state_dir': str(state_dir)}
+            agent.private_wg_interface_present = lambda _interface_name: True
+            agent.local_listener_present = lambda _port, _transport='tcp', _timeout=2.5: (True, 0.2, '')
+            agent.private_wg_self_leg_connect_probe = lambda _forward, _candidate, timeout=3.0: (True, 40.0, None)
+            selected = client_agent_module.ClientAgent.select_forward_candidates(
+                agent,
+                {
+                    'forward_id': 47,
+                    'path_prefix': '07289d1f5ed25399',
+                    'candidate_pool': [
+                        {
+                            'candidate_kind': 'self_leg',
+                            'probe_transport': 'cf_wg',
+                            'dial_host': 'nrt1.nbwly.com',
+                            'dial_port': 2053,
+                            'cf_sni_host': 'nrt1.nbwly.com',
+                            'path_prefix': '07289d1f5ed25399',
+                            'runtime_capabilities': ['bond', 'mptcp', 'wireguard'],
+                            'self_leg_cf_candidates': ['162.159.39.4', '104.16.0.3'],
+                            'self_leg_wg': {
+                                'enabled': True,
+                                'outer_transport': 'wstunnel_udp',
+                                'interface_name': 'lw-cfwg-47',
+                                'sidecar_address': '10.204.53.42',
+                            },
+                            'target_sidecar_mptcp_port': 8898,
+                        },
+                    ],
+                },
+            )
+        self.assertEqual('self_leg', selected[0]['candidate_kind'])
+        self.assertEqual('162.159.39.5', selected[0].get('dial_connect_ip'))
+
     def test_selected_self_leg_carries_resolved_connect_ip_for_runtime_render(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             env_path = pathlib.Path(tmp_dir) / 'best_ip.env'
