@@ -3,8 +3,8 @@
     "version": "2026.05.16.4",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "1e1cebff9900a718b0899772f50e663675e2889d096045adf2310805c0981f68",
-    "size_bytes": 176773
+    "sha256": "66f8d879c67f6147077e6f5e284dc3dbc73c8b16f5b4659f6c7bbe3582113f50",
+    "size_bytes": 181235
   },
   "slave_installer": {
     "version": "2026.04.24.1",
@@ -46,8 +46,8 @@
     "version": "2026.05.17.3",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "8d6f19849d01a624ee6a6cc13cc8ff31d7cc571b43ea30a0fbeab72620bc93fa",
-    "size_bytes": 191067
+    "sha256": "75354f40397f64d78e334e256615547d7f44203fe920323fba90610753ccec5f",
+    "size_bytes": 191482
   },
   "client_agent_installer": {
     "version": "2026.05.15.3",
@@ -61,8 +61,8 @@
     "version": "2026.05.17.1",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "70413f1157b7d9380597e9ce500f190f657df23d096ddc333f6a94d40639ebaa",
-    "size_bytes": 73267
+    "sha256": "8fffe1d45da0ae2345cf0e1c623e4375cad931ca9152fc056c757ca6c978b2cd",
+    "size_bytes": 79183
   },
   "mptcp_client_runtime": {
     "version": "2026.05.17.1",
