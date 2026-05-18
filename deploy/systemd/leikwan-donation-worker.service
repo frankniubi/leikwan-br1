@@ -4,7 +4,5 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/var/www/leikwan/master
-ExecStart=/usr/bin/php /var/www/leikwan/master/scripts/evaluate_donations.php
-User=www-data
-Group=www-data
+WorkingDirectory=/www/wwwroot/v3.leikwanhost.com/leikwan-v3/master
+ExecStart=/usr/bin/php /www/wwwroot/v3.leikwanhost.com/leikwan-v3/master/scripts/evaluate_donations.php
