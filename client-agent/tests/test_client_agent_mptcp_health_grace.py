@@ -94,6 +94,34 @@ class ClientAgentMptcpHealthGraceTests(unittest.TestCase):
 
         restart_mock.assert_not_called()
 
+    def test_auto_update_request_token_can_be_disabled_for_live_runtime_experiments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "client_id": 123,
+                        "agent_token": "token",
+                        "state_dir": str(pathlib.Path(tmp_dir) / "state"),
+                        "installer_version": "2026.04.19.1",
+                        "disable_auto_update": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = client_agent_module.ClientAgent(config_path)
+
+            token = agent.auto_update_request_token(
+                {
+                    "desired_agent_version": "2099.01.01.1",
+                    "desired_agent_sha256": "0" * 64,
+                    "desired_installer_version": "2099.01.01.1",
+                }
+            )
+
+        self.assertEqual("", token)
+
     def test_apply_management_state_ignores_stale_explicit_update_when_versions_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = pathlib.Path(tmp_dir) / "config.json"

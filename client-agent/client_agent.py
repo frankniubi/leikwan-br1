@@ -856,6 +856,8 @@ class ClientAgent:
             return
 
     def auto_update_request_token(self, client_meta: dict) -> str:
+        if str(self.config.get("disable_auto_update", "") or "").lower() in {"1", "true", "yes", "on"}:
+            return ""
         desired_agent_version = str(client_meta.get("desired_agent_version", "") or "").strip()
         desired_agent_sha256 = str(client_meta.get("desired_agent_sha256", "") or "").strip().lower()
         desired_installer_version = str(client_meta.get("desired_installer_version", "") or "").strip()
@@ -1078,6 +1080,7 @@ class ClientAgent:
             )
             render_forward = self.apply_mptcp_runtime_health_policy(render_forward)
 
+        render_forward = self.strip_runtime_observation_fields(render_forward)
         rendered = render_forward_runtime(render_forward, self.semantic_agent_config())
         self.delete_nft_rules(forward_id)
         self.add_nft_rules(forward_id, int(forward.get("listen_port", 0) or 0), transport)
@@ -1293,6 +1296,12 @@ class ClientAgent:
                     mptcp = {}
                 candidates = self.mptcp_leg_candidates(forward, mptcp)
                 if candidates:
+                    selected_self_leg_primary = self.forward_has_selected_self_leg(forward_id, forward)
+                    cf_wg_candidates = [
+                        candidate
+                        for candidate in candidates
+                        if str(candidate.get("leg", {}).get("outer_transport", "") or "").strip().lower() == "wstunnel_udp"
+                    ]
                     ready_results = []
                     refresh_needed = False
                     for candidate in candidates:
@@ -1319,6 +1328,13 @@ class ClientAgent:
                         if str(previous_role or "healthy") != str(updated.get("role", "healthy") or "healthy"):
                             refresh_needed = True
                     if not any(ready_results):
+                        if selected_self_leg_primary:
+                            logging.warning(
+                                "forward %s has selected cf_wg self-leg primary; helper mptcp probes all failed, "
+                                "keeping current runtime shape",
+                                forward_id,
+                            )
+                            continue
                         logging.warning(
                             "forward %s has a live local mptcp listener but all sidecar leg tcp probes failed; "
                             "isolating failed legs and refreshing runtime instead of restarting",
@@ -1327,6 +1343,12 @@ class ClientAgent:
                         self.refresh_mptcp_runtime_endpoints(forward_id, dict(forward), service_name)
                         continue
                     if refresh_needed or not all(ready_results):
+                        if (selected_self_leg_primary or cf_wg_candidates) and any(ready_results):
+                            logging.info(
+                                "forward %s selected self-leg remains reachable; deferring helper-only mptcp health refresh",
+                                forward_id,
+                            )
+                            continue
                         self.refresh_mptcp_runtime_endpoints(forward_id, dict(forward), service_name)
                 else:
                     remote_hosts = self.mptcp_remote_hosts(mptcp)
@@ -2175,6 +2197,19 @@ class ClientAgent:
                         _error = None
                     else:
                         ok, latency_ms, _error = self.private_wg_self_leg_connect_probe(forward, candidate, timeout=3.0)
+                        if (
+                            not ok
+                            and probe_transport == "cf_wg"
+                            and outer_transport == "wstunnel_udp"
+                            and interface_name
+                            and cf_wg_udp_tunnel_ready
+                        ):
+                            candidate["probe_state"] = "cf_wg_probe_transient"
+                            candidate["ready"] = True
+                            candidate["last_error"] = _error or "self_leg_wg_probe_failed"
+                            latency_ms = self.private_wg_self_leg_bootstrap_latency_ms(candidate)
+                            ok = True
+                            _error = None
                 else:
                     ok, latency_ms, _error = self.self_leg_direct_cf_connect_probe(forward, candidate, timeout=3.0)
             except Exception as exc:  # noqa: BLE001
@@ -2187,11 +2222,20 @@ class ClientAgent:
                     connect_ip = self.resolve_self_leg_connect_ip(candidate, forward)
                 if connect_ip != "":
                     candidate["dial_connect_ip"] = connect_ip
-                candidate["measured_rtt_ms"] = latency_ms
-                candidate["last_latency_ms"] = latency_ms
+                reported_latency_ms = float(latency_ms)
+                if probe_transport == "cf_wg":
+                    candidate["cf_wg_probe_latency_ms"] = reported_latency_ms
+                    candidate["measured_rtt_ms"] = self.private_wg_self_leg_bootstrap_latency_ms(candidate)
+                    candidate["last_latency_ms"] = reported_latency_ms
+                    candidate["probe_state"] = candidate.get("probe_state", "cf_wg_probe_ok")
+                    candidate["ready"] = True
+                    candidate.pop("last_error", None)
+                    return float(candidate["measured_rtt_ms"])
+                candidate["measured_rtt_ms"] = reported_latency_ms
+                candidate["last_latency_ms"] = reported_latency_ms
                 candidate["ready"] = True
                 candidate.pop("last_error", None)
-                return float(latency_ms)
+                return reported_latency_ms
             candidate["ready"] = False
             candidate["last_error"] = _error or "self_leg_probe_failed"
             return 999999.0
@@ -2225,6 +2269,11 @@ class ClientAgent:
         candidates = [dict(item) for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
         ready = [item for item in candidates if bool(item.get("ready", True))]
         for item in ready:
+            if str(item.get("candidate_kind", "") or "") == "self_leg" and str(item.get("probe_transport", "") or "").strip().lower() == "cf_wg":
+                connect_ip = self.resolve_self_leg_connect_ip(item, forward)
+                if connect_ip != "":
+                    item["dial_connect_ip"] = connect_ip
+        for item in ready:
             item["measured_rtt_ms"] = self.candidate_measured_rtt_ms(forward, item, now=now)
         ready = [item for item in ready if bool(item.get("ready", True))]
         ready.sort(
@@ -2240,8 +2289,18 @@ class ClientAgent:
             ready = ready[:max_legs]
         for item in ready:
             item.pop("selected_primary", None)
+            item.pop("leg_role", None)
+            item.pop("backup_only", None)
         if ready:
             ready[0]["selected_primary"] = True
+            if self.normalize_mode(forward.get("mode", "single")) == "mptcp":
+                for index, item in enumerate(ready):
+                    if index == 0:
+                        item["leg_role"] = "primary"
+                        item["backup_only"] = False
+                    else:
+                        item["leg_role"] = "standby" if str(ready[0].get("candidate_kind", "") or "") == "self_leg" else "helper"
+                        item["backup_only"] = item["leg_role"] == "standby"
         return ready
 
     @staticmethod
@@ -2252,6 +2311,61 @@ class ClientAgent:
             if isinstance(item, dict)
             and "mptcp" in [str(value).strip().lower() for value in item.get("runtime_capabilities", [])]
         ]
+
+    @classmethod
+    def strip_runtime_observation_fields(cls, forward: dict) -> dict:
+        next_forward = dict(forward)
+        observation_keys = {
+            "quality_score",
+            "one_leg_rtt_ms",
+            "latency_ewma_ms",
+            "last_latency_ms",
+            "dynamic_priority",
+        }
+        endpoints = []
+        for endpoint in next_forward.get("endpoints", []):
+            if not isinstance(endpoint, dict):
+                continue
+            cleaned = dict(endpoint)
+            for key in observation_keys:
+                cleaned.pop(key, None)
+            endpoints.append(cleaned)
+        if endpoints:
+            next_forward["endpoints"] = endpoints
+
+        mptcp = next_forward.get("mptcp", {})
+        if isinstance(mptcp, dict):
+            mptcp_copy = dict(mptcp)
+            mptcp_endpoints = []
+            for endpoint in mptcp_copy.get("mptcp_endpoints", []):
+                if not isinstance(endpoint, dict):
+                    continue
+                cleaned = dict(endpoint)
+                for key in observation_keys:
+                    cleaned.pop(key, None)
+                mptcp_endpoints.append(cleaned)
+            if mptcp_endpoints:
+                mptcp_copy["mptcp_endpoints"] = mptcp_endpoints
+            underlays = []
+            for underlay in mptcp_copy.get("underlays", []):
+                if not isinstance(underlay, dict):
+                    continue
+                underlay_copy = dict(underlay)
+                legs = []
+                for leg in underlay_copy.get("legs", []):
+                    if not isinstance(leg, dict):
+                        continue
+                    cleaned = dict(leg)
+                    for key in observation_keys:
+                        cleaned.pop(key, None)
+                    legs.append(cleaned)
+                if legs:
+                    underlay_copy["legs"] = legs
+                underlays.append(underlay_copy)
+            if underlays:
+                mptcp_copy["underlays"] = underlays
+            next_forward["mptcp"] = mptcp_copy
+        return next_forward
 
     def apply_latency_target_candidate_escalation(self, forward: dict) -> dict:
         next_forward = dict(forward)
