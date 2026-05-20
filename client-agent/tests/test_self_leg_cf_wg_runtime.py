@@ -476,6 +476,42 @@ class CfWgSelfLegTests(unittest.TestCase):
         leg = payload["underlays"][0]["legs"][0]
         self.assertEqual("162.159.39.5", leg["cf_dial_host"])
 
+    def test_cf_wg_self_leg_uses_watchdog_pin_before_ordered_cf_candidates(self) -> None:
+        candidate = self._candidate()
+        candidate["self_leg_cf_candidates"] = ["162.159.39.5", "104.16.0.5"]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_dir = pathlib.Path(tmp_dir)
+            pin_dir = state_dir / "cfwg-watchdog-pin"
+            pin_dir.mkdir(parents=True)
+            (pin_dir / "47.json").write_text(
+                json.dumps({"cf_dial_host_pin": "104.16.0.5", "expires_at": 2000}),
+                encoding="utf-8",
+            )
+            forward = {
+                "forward_id": 47,
+                "listen_port": 11035,
+                "mode": "mptcp",
+                "transport": "tcp",
+                "target": "127.0.0.1:5201",
+                "path_prefix": "/tokyo",
+                "sni": "edge.example.test",
+                "mptcp": {
+                    "tcp_session_token": "tcp-token",
+                    "sidecar_host": "127.0.0.1",
+                    "sidecar_port": 8898,
+                },
+                "candidate_pool": [candidate],
+            }
+
+            rendered = install_runtime.render_forward_runtime(forward, {"state_dir": str(state_dir), "now": 1000})
+
+        self.assertIn("wss://104.16.0.5:443", rendered["start_script"])
+        self.assertNotIn("wss://162.159.39.5:443", rendered["start_script"])
+        config_file = next(file for file in rendered["files"] if file["path"] == "/etc/leikwan/mptcp-forward-47.json")
+        payload = json.loads(config_file["content"])
+        leg = payload["underlays"][0]["legs"][0]
+        self.assertEqual("104.16.0.5", leg["cf_dial_host"])
+
     def test_cf_wg_self_leg_prefers_ordered_cf_candidate_ip_for_dial(self) -> None:
         candidate = self._candidate()
         candidate["self_leg_cf_candidates"] = ["162.159.39.5", "104.16.0.5"]

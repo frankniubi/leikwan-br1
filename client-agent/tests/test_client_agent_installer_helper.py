@@ -12,6 +12,14 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn("leikwan-client-agent-update", source)
         self.assertIn("download_atomic \"$ARTIFACT_BASE/artifacts/client-agent-update.sh\"", source)
 
+
+    def test_update_helper_uses_artifact_base_when_present(self) -> None:
+        source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
+
+        self.assertIn('ARTIFACT_BASE=$(python3 - "${CONFIG_PATH}"', source)
+        self.assertIn('${ARTIFACT_BASE%/}/artifacts/install-client-agent.sh', source)
+        self.assertIn('--artifact-base "${ARTIFACT_BASE}"', source)
+
     def test_update_helper_stops_running_agent_before_reinstall(self) -> None:
         source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
 
@@ -26,6 +34,14 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn("download_atomic()", source)
         self.assertIn("download_atomic \"$ARTIFACT_BASE/artifacts/client-agent-update.sh\" \"$BIN_DIR/leikwan-client-agent-update\"", source)
         self.assertIn("if [[ \"${LEIKWAN_SKIP_UPDATE_HELPER:-0}\" != \"1\" ]]; then", source)
+
+    def test_installer_downloads_cfwg_latency_watchdog_module(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'download_atomic "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"',
+            source,
+        )
 
     def test_installer_downloads_bond_binary(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")

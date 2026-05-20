@@ -261,6 +261,7 @@ abstract class BaseController
     {
         return 'curl -fsSL ' . $this->artifactBaseUrl() . '/artifacts/install-client-agent.sh | bash -s -- --master '
             . $this->agentBaseUrl()
+            . ' --artifact-base ' . $this->artifactBaseUrl()
             . ' --client-id ' . (int) ($client['id'] ?? 0)
             . ' --agent-token ' . (string) ($client['agent_token'] ?? '');
     }

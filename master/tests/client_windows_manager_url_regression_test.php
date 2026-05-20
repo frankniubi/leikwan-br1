@@ -41,13 +41,18 @@ namespace {
         {
             return $this->clientWindowsManagerUrlForClient($client);
         }
+
+        public function linuxInstallCommandForClient(array $client): string
+        {
+            return $this->clientAgentInstallCommand($client);
+        }
     }
 
     $envPath = tempnam(sys_get_temp_dir(), 'lw-base-controller-');
     if ($envPath === false) {
         fail('failed to create temp env');
     }
-    file_put_contents($envPath, "AGENT_API_URL=https://panel.example.com\nARTIFACT_BASE_URL=https://panel.example.com\n");
+    file_put_contents($envPath, "AGENT_API_URL=https://panel.example.com\nARTIFACT_BASE_URL=https://artifacts.example.com\n");
 
     $controller = new BaseControllerProbe(new Config($envPath), new Database());
 
@@ -71,8 +76,19 @@ namespace {
         'agent_token' => '',
     ]);
 
-    if ($fallback !== 'https://panel.example.com/artifacts/manage-client.ps1') {
+    if ($fallback !== 'https://artifacts.example.com/artifacts/manage-client.ps1') {
         fail('expected fallback manager url without query string');
+    }
+
+    $linuxCommand = $controller->linuxInstallCommandForClient([
+        'id' => 42,
+        'agent_token' => 'tok-42',
+    ]);
+    if (!str_contains($linuxCommand, 'curl -fsSL https://artifacts.example.com/artifacts/install-client-agent.sh')) {
+        fail('expected Linux installer download to use artifact base URL');
+    }
+    if (!str_contains($linuxCommand, '--master https://panel.example.com --artifact-base https://artifacts.example.com')) {
+        fail('expected Linux installer command to pass separate panel and artifact base URLs');
     }
 
     echo "ok\n";

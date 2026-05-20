@@ -22,6 +22,14 @@ print(data.get("master_url", ""))
 PY
 )
 
+ARTIFACT_BASE=$(python3 - "${CONFIG_PATH}" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+print(data.get("artifact_base_url") or data.get("master_url", ""))
+PY
+)
+
 AGENT_TOKEN=$(python3 - "${CONFIG_PATH}" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -113,6 +121,10 @@ path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf
 PY
 }
 
+if [[ -z "${ARTIFACT_BASE}" ]]; then
+  ARTIFACT_BASE="${MASTER_URL}"
+fi
+
 if [[ -z "${MASTER_URL}" || -z "${AGENT_TOKEN}" || -z "${SERVICE_NAME}" ]]; then
   write_update_state "error" "sidecar agent config missing required fields in ${CONFIG_PATH}"
   echo "sidecar agent config missing required fields in ${CONFIG_PATH}" >&2
@@ -127,16 +139,16 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl stop "${AGENT_SERVICE_NAME}.service" || true
 fi
 
-if ! curl --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -fsSL "${MASTER_URL%/}/artifacts/install-bond-sidecar.sh" -o /tmp/leikwan-install-bond-sidecar.sh; then
+if ! curl --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -fsSL "${ARTIFACT_BASE%/}/artifacts/install-bond-sidecar.sh" -o /tmp/leikwan-install-bond-sidecar.sh; then
   if command -v systemctl >/dev/null 2>&1; then
     systemctl start "${AGENT_SERVICE_NAME}.service" || true
   fi
-  write_update_state "error" "failed to download install-bond-sidecar.sh from ${MASTER_URL%/}/artifacts/install-bond-sidecar.sh"
+  write_update_state "error" "failed to download install-bond-sidecar.sh from ${ARTIFACT_BASE%/}/artifacts/install-bond-sidecar.sh"
   exit 1
 fi
 
 chmod +x /tmp/leikwan-install-bond-sidecar.sh
-if LEIKWAN_SKIP_UPDATE_HELPER=1 /tmp/leikwan-install-bond-sidecar.sh --master "${MASTER_URL}" --agent-token "${AGENT_TOKEN}" --config-dir "${CONFIG_DIR}" --service-name "${SERVICE_NAME}" --skip-mptcp-check; then
+if LEIKWAN_SKIP_UPDATE_HELPER=1 /tmp/leikwan-install-bond-sidecar.sh --master "${MASTER_URL}" --artifact-base "${ARTIFACT_BASE}" --agent-token "${AGENT_TOKEN}" --config-dir "${CONFIG_DIR}" --service-name "${SERVICE_NAME}" --skip-mptcp-check; then
   write_update_state "success"
 else
   status=$?

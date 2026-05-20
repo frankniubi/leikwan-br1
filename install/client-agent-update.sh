@@ -22,6 +22,14 @@ print(data.get("master_url", ""))
 PY
 )
 
+ARTIFACT_BASE=$(python3 - "${CONFIG_PATH}" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+print(data.get("artifact_base_url") or data.get("master_url", ""))
+PY
+)
+
 CLIENT_ID=$(python3 - "${CONFIG_PATH}" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -93,6 +101,10 @@ path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf
 PY
 }
 
+if [[ -z "${ARTIFACT_BASE}" ]]; then
+  ARTIFACT_BASE="${MASTER_URL}"
+fi
+
 if [[ -z "${MASTER_URL}" || -z "${CLIENT_ID}" || -z "${AGENT_TOKEN}" ]]; then
   write_update_state "error" "client agent config missing required fields in ${CONFIG_PATH}"
   echo "client agent config missing required fields in ${CONFIG_PATH}" >&2
@@ -110,16 +122,16 @@ if command -v systemctl >/dev/null 2>&1; then
   done
 fi
 
-if ! curl --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -fsSL "${MASTER_URL%/}/artifacts/install-client-agent.sh" -o /tmp/leikwan-install-client-agent.sh; then
+if ! curl --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -fsSL "${ARTIFACT_BASE%/}/artifacts/install-client-agent.sh" -o /tmp/leikwan-install-client-agent.sh; then
   if command -v systemctl >/dev/null 2>&1; then
     systemctl start "${SERVICE_NAME}.service" || true
   fi
-  write_update_state "error" "failed to download install-client-agent.sh from ${MASTER_URL%/}/artifacts/install-client-agent.sh"
+  write_update_state "error" "failed to download install-client-agent.sh from ${ARTIFACT_BASE%/}/artifacts/install-client-agent.sh"
   exit 1
 fi
 
 chmod +x /tmp/leikwan-install-client-agent.sh
-if LEIKWAN_SKIP_UPDATE_HELPER=1 /tmp/leikwan-install-client-agent.sh --master "${MASTER_URL}" --client-id "${CLIENT_ID}" --agent-token "${AGENT_TOKEN}" --config-dir "/etc/leikwan-client-agent"; then
+if LEIKWAN_SKIP_UPDATE_HELPER=1 /tmp/leikwan-install-client-agent.sh --master "${MASTER_URL}" --artifact-base "${ARTIFACT_BASE}" --client-id "${CLIENT_ID}" --agent-token "${AGENT_TOKEN}" --config-dir "/etc/leikwan-client-agent"; then
   write_update_state "success"
 else
   status=$?

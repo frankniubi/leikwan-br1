@@ -2090,8 +2090,9 @@ final class TenantController extends BaseController
                 'created_at' => gmdate('Y-m-d H:i:s'),
             ]);
 
-            $masterUrl = (string) ($this->config->get('AGENT_API_URL', $this->config->get('APP_URL', '')) ?? '');
-            $installCmd = 'curl -fsSL ' . $masterUrl . '/artifacts/install-slave.sh | bash -s -- --master ' . $masterUrl . ' --token ' . $token;
+            $masterUrl = $this->agentBaseUrl();
+            $artifactUrl = $this->artifactBaseUrl();
+            $installCmd = 'curl -fsSL ' . $artifactUrl . '/artifacts/install-slave.sh | bash -s -- --master ' . $masterUrl . ' --artifact-base ' . $artifactUrl . ' --token ' . $token;
             SessionAuth::flash('success', 'Enrollment token generated (valid 24h). Install command: <code>' . $this->escape($installCmd) . '</code>');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to generate token: ' . $this->displayThrowableMessage($throwable));

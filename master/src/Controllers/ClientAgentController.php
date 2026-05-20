@@ -32,6 +32,7 @@ final class ClientAgentController extends BaseController
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
         $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
         $mptcpRuntime = $this->artifactMetadata('mptcp_client_runtime');
+        $cfwgLatencyWatchdog = $this->artifactMetadata('cfwg_latency_watchdog');
         $desiredBondSha256 = (string) ($bondBinary['binary_sha256'] ?? $bondBinary['sha256'] ?? '');
         $updateRequestToken = trim((string) ($client['agent_update_request_token'] ?? ''));
         if ($updateRequestToken === '') {
@@ -58,6 +59,8 @@ final class ClientAgentController extends BaseController
                 'desired_bond_sha256' => $desiredBondSha256,
                 'desired_mptcp_runtime_version' => (string) ($mptcpRuntime['version'] ?? ''),
                 'desired_mptcp_runtime_sha256' => (string) ($mptcpRuntime['sha256'] ?? ''),
+                'desired_cfwg_watchdog_version' => (string) ($cfwgLatencyWatchdog['version'] ?? ''),
+                'desired_cfwg_watchdog_sha256' => (string) ($cfwgLatencyWatchdog['sha256'] ?? ''),
                 'online_device_limit' => max(1, (int) ($client['online_device_limit'] ?? 1)),
                 'active_online_devices' => $deviceSessionService->activeCountForClient((int) $client['id']),
                 'current_device_id' => $deviceId,
@@ -83,6 +86,7 @@ final class ClientAgentController extends BaseController
         $runtimeState = $this->mergeRuntimeState($existingAgentConfig, [
             'supports_mptcp' => $request->input('supports_mptcp'),
             'wireguard_public_key' => $request->input('wireguard_public_key'),
+            'cfwg_watchdog_sha256' => $request->input('cfwg_watchdog_sha256'),
             'wireguard_listen_port' => $request->input('wireguard_listen_port'),
             'wireguard_fallback_tcp_port' => $request->input('wireguard_fallback_tcp_port'),
         ]);
@@ -234,23 +238,100 @@ final class ClientAgentController extends BaseController
             $stored = [];
         }
 
-        $snapshot = array_fill_keys([
-            'master_url',
+        $managedKeys = [
             'state_dir',
             'poll_interval_seconds',
             'health_check_interval_seconds',
             'log_level',
             'udp_uot_sidepath',
-        ], null);
+            'cfwg_latency_watchdog',
+        ];
+        $snapshot = array_fill_keys(array_merge(['master_url'], $managedKeys), null);
         $snapshot['master_url'] = $this->agentBaseUrl();
+        $snapshot['artifact_base_url'] = $this->artifactBaseUrl();
 
-        foreach (['state_dir', 'poll_interval_seconds', 'health_check_interval_seconds', 'log_level', 'udp_uot_sidepath'] as $key) {
+        foreach ($managedKeys as $key) {
             if (array_key_exists($key, $stored)) {
                 $snapshot[$key] = $stored[$key];
             }
         }
+        $snapshot['cfwg_latency_watchdog'] = $this->mergeCfwgLatencyWatchdogDefaults(
+            is_array($snapshot['cfwg_latency_watchdog']) ? $snapshot['cfwg_latency_watchdog'] : []
+        );
 
         return $snapshot;
+    }
+
+    /**
+     * @param array<string, mixed> $stored
+     * @return array<string, mixed>
+     */
+    private function mergeCfwgLatencyWatchdogDefaults(array $stored): array
+    {
+        $defaults = $this->defaultCfwgLatencyWatchdogConfig();
+        foreach ($defaults as $key => $value) {
+            if (!array_key_exists($key, $stored)) {
+                $stored[$key] = $value;
+            }
+        }
+        if (!is_array($stored['baseline_rtt_ms'] ?? null)) {
+            $stored['baseline_rtt_ms'] = $defaults['baseline_rtt_ms'];
+        } else {
+            foreach ($defaults['baseline_rtt_ms'] as $forwardId => $rttMs) {
+                if (!array_key_exists((string) $forwardId, $stored['baseline_rtt_ms'])) {
+                    $stored['baseline_rtt_ms'][(string) $forwardId] = $rttMs;
+                }
+            }
+        }
+        if (!is_array($stored['restart_actions'] ?? null) || $stored['restart_actions'] === []) {
+            $stored['restart_actions'] = $defaults['restart_actions'];
+        }
+        return $stored;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function defaultCfwgLatencyWatchdogConfig(): array
+    {
+        $enabled = $this->config->getBool('CFWG_LATENCY_WATCHDOG_ENABLED', true);
+        $forwardIds = [];
+        foreach (explode(',', (string) ($this->config->get('CFWG_LATENCY_WATCHDOG_FORWARD_IDS', '47') ?? '47')) as $rawForwardId) {
+            $forwardId = (int) trim($rawForwardId);
+            if ($forwardId > 0 && !in_array($forwardId, $forwardIds, true)) {
+                $forwardIds[] = $forwardId;
+            }
+        }
+        $baselineRtt = [];
+        foreach (explode(',', (string) ($this->config->get('CFWG_LATENCY_WATCHDOG_BASELINES', '47:31') ?? '47:31')) as $rawPair) {
+            $parts = array_map('trim', explode(':', $rawPair, 2));
+            if (count($parts) !== 2) {
+                continue;
+            }
+            $forwardId = (int) $parts[0];
+            $rttMs = (float) $parts[1];
+            if ($forwardId > 0 && $rttMs > 0) {
+                $baselineRtt[(string) $forwardId] = $rttMs;
+            }
+        }
+
+        return [
+            'enabled' => $enabled,
+            'forward_ids' => $forwardIds,
+            'probe_interval_seconds' => $this->config->getInt('CFWG_LATENCY_WATCHDOG_PROBE_INTERVAL_SECONDS', 5),
+            'window_samples' => $this->config->getInt('CFWG_LATENCY_WATCHDOG_WINDOW_SAMPLES', 3),
+            'dwell_windows' => $this->config->getInt('CFWG_LATENCY_WATCHDOG_DWELL_WINDOWS', 2),
+            'critical_rtt_ms' => $this->config->getInt('CFWG_LATENCY_WATCHDOG_CRITICAL_RTT_MS', 55),
+            'critical_rtt_delta_ms' => $this->config->getInt('CFWG_LATENCY_WATCHDOG_CRITICAL_RTT_DELTA_MS', 10),
+            'baseline_rtt_ms' => $baselineRtt,
+            'relative_degradation_factor' => (float) ($this->config->get('CFWG_LATENCY_WATCHDOG_RELATIVE_FACTOR', '1.35') ?? '1.35'),
+            'min_relative_degradation_ms' => $this->config->getInt('CFWG_LATENCY_WATCHDOG_MIN_RELATIVE_DELTA_MS', 8),
+            'critical_loss_pct' => (float) ($this->config->get('CFWG_LATENCY_WATCHDOG_CRITICAL_LOSS_PCT', '0.34') ?? '0.34'),
+            'cooldown_seconds' => $this->config->getInt('CFWG_LATENCY_WATCHDOG_COOLDOWN_SECONDS', 240),
+            'ping_timeout_seconds' => $this->config->getInt('CFWG_LATENCY_WATCHDOG_PING_TIMEOUT_SECONDS', 1),
+            'restart_actions' => ['wstunnel', 'wireguard'],
+            'state_write_interval_seconds' => $this->config->getInt('CFWG_LATENCY_WATCHDOG_STATE_WRITE_INTERVAL_SECONDS', 15),
+        ];
     }
 
     /**
@@ -266,7 +347,7 @@ final class ClientAgentController extends BaseController
                 $merged[$boolKey] = !in_array(strtolower(trim((string) $input[$boolKey])), ['0', 'false', 'no', 'off'], true);
             }
         }
-        foreach (['wireguard_public_key'] as $stringKey) {
+        foreach (['wireguard_public_key', 'cfwg_watchdog_sha256'] as $stringKey) {
             if (array_key_exists($stringKey, $input)) {
                 $value = trim((string) ($input[$stringKey] ?? ''));
                 if ($value !== '') {

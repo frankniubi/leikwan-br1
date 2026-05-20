@@ -5,6 +5,7 @@ import argparse
 import email.utils
 import contextlib
 import hashlib
+import importlib.util
 import json
 import ipaddress
 import logging
@@ -16,13 +17,14 @@ import shutil
 import socket
 import ssl
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.05.17.5"
+AGENT_VERSION = "2026.05.20.1"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -113,6 +115,7 @@ class ClientAgent:
         self.health_reorder_after: dict[int, float] = {}
         self.invalid_forward_log_after: dict[int, float] = {}
         self.self_leg_probe_cache: dict[str, dict] = {}
+        self._cfwg_latency_watchdog = None
         logging.basicConfig(
             level=getattr(logging, str(self.config.get("log_level", "INFO")).upper(), logging.INFO),
             format="%(asctime)s %(levelname)s %(message)s",
@@ -833,7 +836,42 @@ class ClientAgent:
                     logging.exception("health check failed: %s", exc)
                 next_health = now + int(self.config.get("health_check_interval_seconds", 20))
 
+            try:
+                self.run_cfwg_latency_watchdog(self.latest_forwards)
+            except Exception as exc:  # noqa: BLE001
+                logging.exception("cfwg latency watchdog failed: %s", exc)
+
             time.sleep(5)
+
+    def run_cfwg_latency_watchdog(self, forwards: list[dict]) -> None:
+        watchdog_config = self.config.get("cfwg_latency_watchdog", {})
+        if not isinstance(watchdog_config, dict):
+            watchdog_config = {}
+        if not bool(watchdog_config.get("enabled", False)):
+            return
+        try:
+            from cfwg_latency_watchdog import CfwgLatencyWatchdog
+        except Exception:
+            module_path = pathlib.Path(__file__).with_name("cfwg_latency_watchdog.py")
+            try:
+                spec = importlib.util.spec_from_file_location("cfwg_latency_watchdog", module_path)
+                if spec is None or spec.loader is None:
+                    raise RuntimeError(f"cannot load {module_path}")
+                module = importlib.util.module_from_spec(spec)
+                sys.modules["cfwg_latency_watchdog"] = module
+                spec.loader.exec_module(module)
+                CfwgLatencyWatchdog = module.CfwgLatencyWatchdog
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("cfwg latency watchdog enabled but module unavailable: %s", exc)
+                return
+        if self._cfwg_latency_watchdog is None:
+            self._cfwg_latency_watchdog = CfwgLatencyWatchdog(
+                state_dir=self.state_dir,
+                config=watchdog_config,
+            )
+        else:
+            self._cfwg_latency_watchdog.update_config(watchdog_config)
+        self._cfwg_latency_watchdog.tick(forwards)
 
     def local_refresh_request_token_path(self) -> pathlib.Path:
         return self.state_dir / "runtime-refresh-request.json"
@@ -983,6 +1021,7 @@ class ClientAgent:
         usage_totals = self.collect_usage_totals()
         wireguard_public_key = self.ensure_wireguard_identity()
         local_clock = self.time_sync_state()
+        cfwg_watchdog_path = pathlib.Path(__file__).with_name("cfwg_latency_watchdog.py")
         http_json(
             "POST",
             f"{master}/api/client/heartbeat",
@@ -998,6 +1037,7 @@ class ClientAgent:
                 "installer_sha256": str(self.config.get("installer_sha256", "") or ""),
                 "install_forward_runtime_sha256": file_sha256(self.install_forward_runtime_path()),
                 "mptcp_client_sha256": file_sha256(self.mptcp_client_path()),
+                "cfwg_watchdog_sha256": file_sha256(cfwg_watchdog_path) if cfwg_watchdog_path.is_file() else "",
                 "wireguard_public_key": wireguard_public_key,
                 "wireguard_listen_port": self.wireguard_listen_port(),
                 "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
@@ -1123,6 +1163,7 @@ class ClientAgent:
         desired_installer_sha256 = str(client_meta.get("desired_installer_sha256", "") or "").strip().lower()
         desired_bond_sha256 = str(client_meta.get("desired_bond_sha256", "") or "").strip().lower()
         desired_mptcp_runtime_sha256 = str(client_meta.get("desired_mptcp_runtime_sha256", "") or "").strip().lower()
+        desired_cfwg_watchdog_sha256 = str(client_meta.get("desired_cfwg_watchdog_sha256", "") or "").strip().lower()
         mismatches: list[str] = []
 
         if desired_agent_version and desired_agent_version != AGENT_VERSION:
@@ -1151,6 +1192,15 @@ class ClientAgent:
             if local_mptcp_runtime_sha256 != desired_mptcp_runtime_sha256:
                 mismatches.append(f"mptcp_runtime={desired_mptcp_runtime_sha256}")
 
+        if desired_cfwg_watchdog_sha256:
+            local_cfwg_watchdog_path = pathlib.Path(__file__).with_name("cfwg_latency_watchdog.py")
+            if local_cfwg_watchdog_path.is_file():
+                local_cfwg_watchdog_sha256 = file_sha256(local_cfwg_watchdog_path).lower()
+            else:
+                local_cfwg_watchdog_sha256 = ""
+            if local_cfwg_watchdog_sha256 != desired_cfwg_watchdog_sha256:
+                mismatches.append(f"cfwg_watchdog={desired_cfwg_watchdog_sha256}")
+
         if mismatches == []:
             return ""
 
@@ -1165,11 +1215,14 @@ class ClientAgent:
 
         allowed_keys = {
             "master_url",
+            "artifact_base_url",
+            "disable_auto_update",
             "poll_interval_seconds",
             "health_check_interval_seconds",
             "log_level",
             "state_dir",
             "udp_uot_sidepath",
+            "cfwg_latency_watchdog",
         }
         config_changed = False
         for key, value in patch.items():
@@ -1341,7 +1394,15 @@ class ClientAgent:
         previous = applied.get(str(forward_id), {})
         previous_runtime_present = self.applied_forward_runtime_is_present(previous) if isinstance(previous, dict) and previous else False
         rendered_unchanged = isinstance(previous, dict) and str(previous.get("rendered_signature", "") or "") == rendered_signature
-        if not force_runtime_restart and rendered_unchanged and previous_runtime_present:
+        if rendered_unchanged and previous_runtime_present:
+            if force_runtime_restart:
+                service_name = str(rendered.get("service_name", "") or f"leikwan-client-{forward_id}")
+                subprocess.run("systemctl daemon-reload", shell=True, check=False)
+                subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
+                subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
+                self.persist_forward_apply_signatures(forward_id, contract_signature, rendered_signature)
+                logging.info("forward %s rendered runtime unchanged; restarted service only", forward_id)
+                return
             self.persist_forward_apply_signatures(forward_id, contract_signature, rendered_signature)
             logging.debug("forward %s rendered runtime unchanged; recorded signature and skipped no-op apply", forward_id)
             return
