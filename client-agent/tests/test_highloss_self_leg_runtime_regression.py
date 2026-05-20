@@ -151,8 +151,11 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
                 "47": {
                     "units": [{"service_name": "leikwan-client-47", "managed_paths": []}],
                     "managed_paths": [str(tmp / "mptcp-forward-47.json")],
+                    "published_mode": "mptcp",
+                    "runtime_mode": "mptcp",
                 }
             }
+            agent.previous_mptcp_underlay_interfaces = lambda previous: []
             agent.write_text_if_changed = lambda *args, **kwargs: False
             agent.systemd_is_active = lambda service_name: True
             agent.applied_path = tmp / "applied.json"

@@ -25,7 +25,7 @@ foreach ([
     "\$probeTransport = \$wgProfile !== null ? 'cf_wg' : 'cf_direct_wss';",
     "'lw-cfwg-' . (int) (\$config['forward_id'] ?? 0)",
     'cf_wg_path_prefix_uses_cfwg_suffix',
-    "\$wgProfile['cf_path_prefix'] = \$cfBasePathPrefix . '.cfwg';",
+    "\$cfWgPathPrefix = str_ends_with(\$cfBasePathPrefix, '.cfwg') ? \$cfBasePathPrefix : \$cfBasePathPrefix . '.cfwg';",
 ] as $snippet) {
     if (strpos($source, $snippet) === false) {
         fail('missing cf_wg snippet: ' . $snippet);
