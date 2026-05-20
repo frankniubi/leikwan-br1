@@ -2028,6 +2028,7 @@ class SlaveAgent:
 
         allowed_keys = {
             "master_url",
+            "artifact_base_url",
             "name",
             "region",
             "group_key",

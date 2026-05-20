@@ -71,8 +71,9 @@ class SlaveUdpUotShadowRouteTests(unittest.TestCase):
             "sidecar_port": 8999,
         }
 
-        agent.apply_config_patch({"udp_uot_sidepath": sidepath})
+        agent.apply_config_patch({"artifact_base_url": "https://artifacts.example.com", "udp_uot_sidepath": sidepath})
         persisted = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["artifact_base_url"], "https://artifacts.example.com")
         self.assertEqual(persisted["udp_uot_sidepath"], sidepath)
 
         agent.apply_config_patch({"udp_uot_sidepath": None})
