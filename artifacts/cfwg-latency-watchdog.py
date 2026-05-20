@@ -382,7 +382,16 @@ class CfwgLatencyWatchdog:
             elif normalized in {"wireguard", "wg"}:
                 if interface_name and not wireguard_restarted:
                     wg_service = f"wg-quick@{interface_name}.service"
-                    self.command_runner(["systemctl", "restart", wg_service])
+                    result = self.command_runner(["systemctl", "restart", wg_service])
+                    if result.returncode != 0:
+                        logging.warning(
+                            "cfwg latency watchdog systemd WireGuard restart failed for %s: %s",
+                            interface_name,
+                            (result.stderr or result.stdout or "unknown error").strip(),
+                        )
+                        self.command_runner(["wg-quick", "down", interface_name])
+                        self.command_runner(["wg-quick", "up", f"/etc/wireguard/{interface_name}.conf"])
+                        self.command_runner(["systemctl", "reset-failed", wg_service])
                     executed.append(wg_service)
                     wireguard_restarted = True
             elif normalized == "client_agent":
@@ -488,6 +497,19 @@ class CfwgLatencyWatchdog:
                     best_value = float(best)
                     if best_value > 0:
                         state.best_rtt_ms = best_value
+                elif isinstance(raw_state.get("samples"), list):
+                    legacy_rtts: list[float] = []
+                    for raw_sample in raw_state.get("samples", []):
+                        if not isinstance(raw_sample, dict) or not bool(raw_sample.get("ok", False)):
+                            continue
+                        sample_rtt = raw_sample.get("rtt_ms")
+                        if sample_rtt is None:
+                            continue
+                        sample_rtt_value = float(sample_rtt)
+                        if sample_rtt_value > 0:
+                            legacy_rtts.append(sample_rtt_value)
+                    if legacy_rtts:
+                        state.best_rtt_ms = min(legacy_rtts)
                 state.last_restart_at = float(raw_state.get("last_restart_at", 0.0) or 0.0)
                 state.bad_windows = max(0, int(raw_state.get("bad_windows", 0) or 0))
                 state.last_event = str(raw_state.get("last_event", "") or "")
