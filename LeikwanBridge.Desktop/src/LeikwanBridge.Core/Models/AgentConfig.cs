@@ -77,6 +77,9 @@ public sealed class AgentConfig
     [JsonPropertyName("wg_bin")]
     public string WgBin { get; set; } = "";
 
+    [JsonPropertyName("wireguard_bin")]
+    public string WireguardBin { get; set; } = "";
+
     [JsonPropertyName("wireguard_listen_port")]
     public int WireguardListenPort { get; set; }
 
@@ -140,6 +143,13 @@ public sealed class AgentConfig
         if (!string.IsNullOrWhiteSpace(WgBin))
             return WgBin;
         return Path.Combine(AppContext.BaseDirectory, "bin", "wg.exe");
+    }
+
+    public string GetEffectiveWireguardBin()
+    {
+        if (!string.IsNullOrWhiteSpace(WireguardBin))
+            return WireguardBin;
+        return Path.Combine(AppContext.BaseDirectory, "bin", "wireguard.exe");
     }
 
     public int GetEffectiveWireguardListenPort()

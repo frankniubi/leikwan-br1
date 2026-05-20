@@ -42,4 +42,7 @@ public sealed class ForwardConfig
 
     [JsonPropertyName("mptcp")]
     public MptcpConfig? Mptcp { get; set; }
+
+    [JsonPropertyName("self_leg_wg")]
+    public SelfLegWgConfig? SelfLegWg { get; set; }
 }
