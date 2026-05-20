@@ -107,6 +107,51 @@ class CfwgLatencyWatchdogTests(unittest.TestCase):
             self.assertNotIn(["systemctl", "restart", "wg-quick@lw-cfwg-47.service"], runner.commands)
 
 
+
+    def test_wireguard_restart_falls_back_to_wg_quick_when_systemd_restart_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            runtime_dir = base / "etc" / "leikwan"
+            self._write_runtime(runtime_dir)
+            clock = FakeClock()
+
+            class FailingWireGuardSystemdRunner(FakeRunner):
+                def __call__(self, command: list[str]):
+                    self.commands.append(list(command))
+                    if command[:1] == ["ping"]:
+                        latency = self.latencies.pop(0)
+                        return watchdog_module.CommandResult(returncode=0, stdout=f"time={latency:.1f} ms\n", stderr="")
+                    if command == ["systemctl", "restart", "wg-quick@lw-cfwg-47.service"]:
+                        return watchdog_module.CommandResult(returncode=1, stdout="", stderr="unit failed")
+                    return watchdog_module.CommandResult(returncode=0, stdout="", stderr="")
+
+            runner = FailingWireGuardSystemdRunner([70.0, 70.0, 70.0])
+            watchdog = watchdog_module.CfwgLatencyWatchdog(
+                state_dir=base / "state",
+                config={
+                    "enabled": True,
+                    "forward_ids": [47],
+                    "probe_interval_seconds": 0,
+                    "window_samples": 3,
+                    "critical_rtt_ms": 45,
+                    "dwell_windows": 1,
+                    "cooldown_seconds": 300,
+                    "restart_actions": ["wireguard"],
+                },
+                command_runner=runner,
+                time_fn=clock.now,
+                runtime_config_dir=runtime_dir,
+            )
+
+            for _ in range(3):
+                watchdog.tick([{"forward_id": 47, "service_status": "active"}])
+                clock.advance(1)
+
+            self.assertIn(["systemctl", "restart", "wg-quick@lw-cfwg-47.service"], runner.commands)
+            self.assertIn(["wg-quick", "down", "lw-cfwg-47"], runner.commands)
+            self.assertIn(["wg-quick", "up", "/etc/wireguard/lw-cfwg-47.conf"], runner.commands)
+            self.assertIn(["systemctl", "reset-failed", "wg-quick@lw-cfwg-47.service"], runner.commands)
+
     def test_restart_action_can_restart_wstunnel_and_wireguard_units(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = pathlib.Path(tmp)
@@ -167,6 +212,39 @@ class CfwgLatencyWatchdogTests(unittest.TestCase):
 
             state = json.loads((base / "state" / "cfwg-latency-watchdog-state.json").read_text(encoding="utf-8"))
             self.assertLessEqual(state["47"]["best_rtt_ms"], 31.0)
+
+
+    def test_loads_best_rtt_from_legacy_state_without_best_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            state_dir = base / "state"
+            state_dir.mkdir()
+            (state_dir / "cfwg-latency-watchdog-state.json").write_text(
+                json.dumps(
+                    {
+                        "47": {
+                            "last_restart_at": 0,
+                            "bad_windows": 0,
+                            "last_event": "restart_client_service",
+                            "samples": [
+                                {"at": 1, "ok": True, "rtt_ms": 31.0},
+                                {"at": 2, "ok": True, "rtt_ms": 33.0},
+                                {"at": 3, "ok": False, "rtt_ms": None},
+                            ],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            watchdog = watchdog_module.CfwgLatencyWatchdog(
+                state_dir=state_dir,
+                config={"enabled": True},
+                command_runner=FakeRunner([]),
+                runtime_config_dir=base / "etc" / "leikwan",
+            )
+
+            self.assertEqual(31.0, watchdog.states[47].best_rtt_ms)
 
 
     def test_persisted_best_rtt_detects_regression_after_agent_restart(self) -> None:

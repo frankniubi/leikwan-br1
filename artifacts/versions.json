@@ -153,7 +153,7 @@
     "version": "2026.05.20.1",
     "path": "client-agent/cfwg_latency_watchdog.py",
     "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
-    "sha256": "c5792a4c6093e9dfbb8ac40a6b5115e2c86e4b92ce05ee2e6f792c6182291345",
-    "size_bytes": 25506
+    "sha256": "5979698d0a29e9e47c0c3215a8b40782327f74f3c6158c8bc7b9f2a862f496bd",
+    "size_bytes": 26895
   }
 }
