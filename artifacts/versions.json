@@ -43,11 +43,11 @@
     "install_url": "/artifacts/uninstall-bond-sidecar.sh"
   },
   "client_agent": {
-    "version": "2026.05.17.3",
+    "version": "2026.05.17.5",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "75354f40397f64d78e334e256615547d7f44203fe920323fba90610753ccec5f",
-    "size_bytes": 191482
+    "sha256": "338d75e75481a7c9f98980e1b06b5152b2acb1dc21c6bdb77362c4c2221938ad",
+    "size_bytes": 209532
   },
   "client_agent_installer": {
     "version": "2026.05.15.3",
@@ -58,11 +58,11 @@
     "size_bytes": 7069
   },
   "sidecar_agent": {
-    "version": "2026.05.17.1",
+    "version": "2026.05.17.2",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "8fffe1d45da0ae2345cf0e1c623e4375cad931ca9152fc056c757ca6c978b2cd",
-    "size_bytes": 79183
+    "sha256": "43e65f0487fe1d937359271cb06ac7a16c53ce6737b3d9a434263556509133c1",
+    "size_bytes": 79827
   },
   "mptcp_client_runtime": {
     "version": "2026.05.17.1",
@@ -145,7 +145,7 @@
     "version": "2026.05.17.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "f88c4c2f763a0d58ba49a4ea4f1a874eecac51cf3a54a4bc84c63bb22f5f9c24",
-    "size_bytes": 56592
+    "sha256": "fefe46a91c8dc88e82e590c6ee2e64dc847d86edd20a5547d74718720b7bf4f6",
+    "size_bytes": 57537
   }
 }

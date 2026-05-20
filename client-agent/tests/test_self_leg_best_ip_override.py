@@ -1,4 +1,5 @@
-﻿import importlib.util
+import importlib.util
+import json
 import pathlib
 import sys
 import tempfile
@@ -68,6 +69,90 @@ class SelfLegBestIpOverrideTests(unittest.TestCase):
             )
         self.assertEqual('162.159.39.4', resolved)
 
+    def test_forward_specific_best_ip_map_is_scoped_by_port_and_wss_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_dir = pathlib.Path(tmp_dir)
+            best_map = state_dir / 'self_leg_cf_best_ips.json'
+            best_map.write_text(
+                '{"47": {'
+                '"07289d1f5ed25399": ["162.159.39.4"], '
+                '"2053|07289d1f5ed25399.cfwg": ["162.159.39.5"]'
+                '}}\n',
+                encoding='utf-8',
+            )
+            agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)
+            agent.config = {'state_dir': str(state_dir)}
+            resolved = client_agent_module.ClientAgent.resolve_self_leg_connect_ip(
+                agent,
+                {
+                    'candidate_kind': 'self_leg',
+                    'probe_transport': 'cf_wg',
+                    'dial_host': 'nrt1.nbwly.com',
+                    'dial_port': 2053,
+                    'path_prefix': '07289d1f5ed25399.cfwg',
+                },
+                {'forward_id': 47},
+            )
+        self.assertEqual('162.159.39.5', resolved)
+
+    def test_saved_best_ip_map_uses_port_and_wss_path_key_for_cf_wg(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_dir = pathlib.Path(tmp_dir)
+            agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)
+            agent.config = {'state_dir': str(state_dir)}
+            client_agent_module.ClientAgent.save_self_leg_best_ip_candidates(
+                agent,
+                {'forward_id': 47},
+                {
+                    'candidate_kind': 'self_leg',
+                    'probe_transport': 'cf_wg',
+                    'dial_port': 2053,
+                    'path_prefix': '07289d1f5ed25399.cfwg',
+                },
+                ['162.159.39.5'],
+            )
+            payload = json.loads((state_dir / 'self_leg_cf_best_ips.json').read_text(encoding='utf-8'))
+        self.assertEqual(['162.159.39.5'], payload['47']['2053|07289d1f5ed25399.cfwg'])
+    def test_cf_wg_probe_cache_key_is_scoped_by_port_and_wss_path(self) -> None:
+        agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)
+        key_443 = client_agent_module.ClientAgent.self_leg_probe_cache_key(
+            agent,
+            {'forward_id': 47},
+            {
+                'candidate_kind': 'self_leg',
+                'probe_transport': 'cf_wg',
+                'dial_port': 443,
+                'path_prefix': '07289d1f5ed25399.cfwg',
+                'self_leg_cf_candidates': ['162.159.39.5'],
+            },
+            {
+                'path_prefix': '07289d1f5ed25399.cfwg',
+                'dial_host': 'nrt1.nbwly.com',
+                'dial_port': 443,
+                'cf_sni_host': 'nrt1.nbwly.com',
+            },
+            14969,
+        )
+        key_2053 = client_agent_module.ClientAgent.self_leg_probe_cache_key(
+            agent,
+            {'forward_id': 47},
+            {
+                'candidate_kind': 'self_leg',
+                'probe_transport': 'cf_wg',
+                'dial_port': 2053,
+                'path_prefix': '07289d1f5ed25399.cfwg',
+                'self_leg_cf_candidates': ['162.159.39.5'],
+            },
+            {
+                'path_prefix': '07289d1f5ed25399.cfwg',
+                'dial_host': 'nrt1.nbwly.com',
+                'dial_port': 2053,
+                'cf_sni_host': 'nrt1.nbwly.com',
+            },
+            14969,
+        )
+        self.assertNotEqual(key_443, key_2053)
+        self.assertIn('2053|07289d1f5ed25399.cfwg', key_2053)
 
     def test_self_leg_probe_rejects_late_websocket_520_after_local_listener_opens(self) -> None:
         class FakeSocket:
@@ -226,7 +311,7 @@ class SelfLegBestIpOverrideTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_dir = pathlib.Path(tmp_dir)
             (state_dir / 'self_leg_cf_best_ips.json').write_text(
-                '{"47": {"07289d1f5ed25399": ["162.159.39.5", "162.159.39.4"]}}\n',
+                '{"47": {"2053|07289d1f5ed25399.cfwg": ["162.159.39.5", "162.159.39.4"]}}\n',
                 encoding='utf-8',
             )
             agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)

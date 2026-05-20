@@ -398,6 +398,22 @@ def self_leg_wg_underlay(candidate: dict, forward: dict) -> dict | None:
         explicit_cf_connect_ip = str(candidate.get("dial_connect_ip", "") or "").strip()
         if explicit_cf_connect_ip != "":
             wg["cf_dial_host"] = explicit_cf_connect_ip
+        cf_dial_port = int_or_default(
+            candidate.get("dial_port")
+            or wg.get("cf_dial_port")
+            or candidate.get("cf_dial_port")
+            or forward.get("bond_sidecar_cf_listen_port")
+            or forward.get("cf_listen_port"),
+            0,
+        )
+        if cf_dial_port > 0:
+            wg["cf_dial_port"] = cf_dial_port
+        cf_sni_host = str(candidate.get("cf_sni_host", "") or candidate.get("sni_host", "") or wg.get("cf_sni_host", "") or forward.get("sni", "") or "").strip()
+        if cf_sni_host != "":
+            wg["cf_sni_host"] = cf_sni_host
+        base_path = str(candidate.get("cf_path_prefix", "") or wg.get("cf_path_prefix", "") or candidate.get("path_prefix", "") or forward.get("path_prefix", "") or "").strip().strip("/")
+        if base_path != "":
+            wg["cf_path_prefix"] = base_path if base_path.endswith(".cfwg") else base_path + ".cfwg"
         endpoint_host = "127.0.0.1"
         endpoint_port = 40000 + (forward_id % 2000)
     if interface_name == "" or client_address == "" or sidecar_address == "" or sidecar_public_key == "" or endpoint_host == "" or endpoint_port <= 0:
@@ -1018,7 +1034,7 @@ WantedBy=multi-user.target
                 cf_host = str(leg.get("cf_dial_host", "") or "").strip()
                 cf_port = int_or_default(leg.get("cf_dial_port"), 0)
                 cf_sni = str(leg.get("cf_sni_host", "") or sni).strip()
-                cf_path = str(leg.get("cf_path_prefix", "") or path_prefix).strip()
+                cf_path = str(leg.get("cf_path_prefix", "") or path_prefix).strip().strip("/")
                 cf_target_host = str(leg.get("cf_target_host", "") or "127.0.0.1").strip()
                 cf_target_port = int_or_default(leg.get("cf_target_port"), 0)
                 if local_udp <= 0 or cf_host == "" or cf_port <= 0 or cf_target_host == "" or cf_target_port <= 0:

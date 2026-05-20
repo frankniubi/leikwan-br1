@@ -78,5 +78,100 @@ class SidecarSelfLegWireGuardTests(unittest.TestCase):
             self.assertTrue(any("wg-quick@lw-self-47.service" in line for line in command_strings))
 
 
+    def test_apply_management_restarts_unchanged_inactive_self_leg_peer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = pathlib.Path(tmp_dir)
+            config_path = tmp / "agent.json"
+            config_path.write_text(
+                "{\"state_dir\": \"%s\", \"service_name\": \"leikwan-bond-sidecar-5\"}" % str(tmp).replace("\\", "\\\\"),
+                encoding="utf-8",
+            )
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+            (tmp / "wireguard").mkdir(parents=True, exist_ok=True)
+            (tmp / "wireguard" / "private.key").write_text("sidecar-private\n", encoding="utf-8")
+            (tmp / "wireguard" / "public.key").write_text("sidecar-public\n", encoding="utf-8")
+            commands = []
+
+            def fake_run(args, **kwargs):
+                commands.append(args if isinstance(args, list) else str(args))
+                return SimpleNamespace(returncode=0, stdout="inactive", stderr="")
+
+            with mock.patch.object(sidecar_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+                with mock.patch.object(sidecar_agent_module, "write_text_if_changed", return_value=False):
+                    with mock.patch.object(agent, "systemd_is_active", return_value=False):
+                        with mock.patch.object(sidecar_agent_module.subprocess, "run", side_effect=fake_run):
+                            agent.apply_management(
+                                {
+                                    "config_patch": {"managed_iperf3_ports": []},
+                                    "self_leg_client_peers": [
+                                        {
+                                            "enabled": True,
+                                            "forward_id": 47,
+                                            "client_id": 3,
+                                            "interface_name": "lw-self-47",
+                                            "listen_port": 14969,
+                                            "sidecar_address": "10.204.47.2",
+                                            "client_address": "10.204.47.1",
+                                            "client_public_key": "client-pub",
+                                            "persistent_keepalive": 25,
+                                        }
+                                    ],
+                                    "bond_runtime": None,
+                                    "mptcp_runtime": None,
+                                }
+                            )
+
+            command_strings = [" ".join(cmd) if isinstance(cmd, list) else cmd for cmd in commands]
+            self.assertTrue(any("enable wg-quick@lw-self-47.service" in line for line in command_strings))
+            self.assertTrue(any("restart wg-quick@lw-self-47.service" in line for line in command_strings))
+
+    def test_apply_management_restarts_unchanged_inactive_slave_sidecar_uplink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = pathlib.Path(tmp_dir)
+            config_path = tmp / "agent.json"
+            config_path.write_text(
+                "{\"state_dir\": \"%s\", \"service_name\": \"leikwan-bond-sidecar-5\"}" % str(tmp).replace("\\", "\\\\"),
+                encoding="utf-8",
+            )
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+            (tmp / "wireguard").mkdir(parents=True, exist_ok=True)
+            (tmp / "wireguard" / "private.key").write_text("sidecar-private\n", encoding="utf-8")
+            (tmp / "wireguard" / "public.key").write_text("sidecar-public\n", encoding="utf-8")
+            commands = []
+
+            def fake_run(args, **kwargs):
+                commands.append(args if isinstance(args, list) else str(args))
+                return SimpleNamespace(returncode=0, stdout="inactive", stderr="")
+
+            with mock.patch.object(sidecar_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+                with mock.patch.object(sidecar_agent_module, "write_text_if_changed", return_value=False):
+                    with mock.patch.object(agent, "systemd_is_active", return_value=False):
+                        with mock.patch.object(sidecar_agent_module.subprocess, "run", side_effect=fake_run):
+                            agent.apply_management(
+                                {
+                                    "config_patch": {"managed_iperf3_ports": []},
+                                    "sidecar_uplinks": [
+                                        {
+                                            "enabled": True,
+                                            "interface_name": "lw-sc-5-0",
+                                            "listen_port": 14983,
+                                            "local_address": "10.203.201.135",
+                                            "peer_address": "10.203.201.134",
+                                            "slave_peer_public_key": "slave-pub",
+                                            "outer_transport": "udp",
+                                            "peer_keepalive_seconds": 0,
+                                        }
+                                    ],
+                                    "bond_runtime": None,
+                                    "mptcp_runtime": None,
+                                }
+                            )
+
+            command_strings = [" ".join(cmd) if isinstance(cmd, list) else cmd for cmd in commands]
+            self.assertTrue(any("enable wg-quick@lw-sc-5-0.service" in line for line in command_strings))
+            self.assertTrue(any("restart wg-quick@lw-sc-5-0.service" in line for line in command_strings))
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -34,6 +34,344 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
         )
         return client_agent_module.ClientAgent(config_path)
 
+
+    def test_sync_once_skips_noop_apply_when_forward_contract_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            managed_path = state_dir / "forward-47.conf"
+            managed_path.write_text("stable\n", encoding="utf-8")
+            forward = {
+                "forward_id": 47,
+                "service_status": "active",
+                "listen_port": 11035,
+                "mode": "single",
+                "transport": "tcp",
+                "target": "127.0.0.1:5201",
+                "endpoints": [{"endpoint_id": 317, "host": "47.116.104.15", "port": 7000}],
+            }
+            signature = agent.forward_contract_signature(forward)
+            agent.applied_path.write_text(
+                json.dumps(
+                    {
+                        "47": {
+                            "units": [{"service_name": "leikwan-client-47", "managed_paths": [str(managed_path)]}],
+                            "managed_paths": [str(managed_path)],
+                            "published_mode": "single",
+                            "runtime_mode": "single",
+                            "contract_signature": signature,
+                            "rendered_signature": "existing",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(client_agent_module, "http_json_with_headers", return_value=({"forwards": [forward], "client": {"id": 123}}, {})):
+                with mock.patch.object(client_agent_module, "http_json", return_value={}):
+                    with mock.patch.object(agent, "apply_management_state"):
+                        with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                            with mock.patch.object(agent, "apply_forward") as apply_mock:
+                                with mock.patch.object(agent, "reconcile_global_mptcp_state"):
+                                    with mock.patch.object(agent, "run_diagnostics_if_requested"):
+                                        with mock.patch.object(agent, "collect_usage_totals", return_value={"bytes_in": 0, "bytes_out": 0}):
+                                            with mock.patch.object(agent, "ensure_wireguard_identity", return_value=""):
+                                                with mock.patch.object(agent, "time_sync_state", return_value={"status": "ok"}):
+                                                    agent.sync_once()
+
+            apply_mock.assert_not_called()
+            state = agent.load_pull_state()
+            self.assertEqual([47], state["noop_forward_ids"])
+            self.assertEqual([47], state["applied_forward_ids"])
+
+    def test_apply_forward_records_new_contract_when_rendered_runtime_is_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            service_path = state_dir / "leikwan-client-47.service"
+            script_path = state_dir / "start-47.sh"
+            service_path.write_text("unit\n", encoding="utf-8")
+            script_path.write_text("#!/bin/sh\n", encoding="utf-8")
+            forward = {
+                "forward_id": 47,
+                "service_status": "active",
+                "listen_port": 11035,
+                "mode": "single",
+                "transport": "tcp",
+                "target": "127.0.0.1:5201",
+                "sni": "example.test",
+                "path_prefix": "/route",
+                "endpoints": [{"endpoint_id": 317, "host": "47.116.104.15", "port": 7000}],
+                "last_seen_at": 100,
+            }
+            rendered = {
+                "service_name": "leikwan-client-47",
+                "service_path": str(service_path),
+                "service_unit": "unit\n",
+                "start_script_path": str(script_path),
+                "start_script": "#!/bin/sh\n",
+            }
+            old_contract = "old-contract"
+            new_contract = agent.forward_contract_signature(forward)
+            rendered_signature = client_agent_module.ClientAgent.rendered_runtime_signature(rendered, "single", "tcp", 11035)
+            agent.applied_path.write_text(
+                json.dumps(
+                    {
+                        "47": {
+                            "units": [{"service_name": "leikwan-client-47", "managed_paths": [str(service_path), str(script_path)]}],
+                            "managed_paths": [str(service_path), str(script_path)],
+                            "published_mode": "single",
+                            "runtime_mode": "single",
+                            "contract_signature": old_contract,
+                            "rendered_signature": rendered_signature,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict("sys.modules", {"install_forward_runtime": mock.Mock(render_forward_runtime=mock.Mock(return_value=rendered))}):
+                with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                    with mock.patch.object(agent, "delete_nft_rules") as delete_nft:
+                        with mock.patch.object(agent, "add_nft_rules") as add_nft:
+                            with mock.patch.object(client_agent_module.subprocess, "run") as run_mock:
+                                agent.apply_forward(forward, contract_signature=new_contract)
+
+            delete_nft.assert_not_called()
+            add_nft.assert_not_called()
+            run_mock.assert_not_called()
+            applied = agent.load_applied()["47"]
+            self.assertEqual(new_contract, applied["contract_signature"])
+            self.assertEqual(rendered_signature, applied["rendered_signature"])
+
+
+    def test_forward_apply_noop_requires_mptcp_underlay_interfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            service_path = state_dir / "leikwan-client-47.service"
+            config_path = state_dir / "mptcp-forward-47.json"
+            service_path.write_text("unit\n", encoding="utf-8")
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "underlays": [
+                            {"interface_name": "lw-cfwg-47", "legs": [{"endpoint_id": 0, "outer_transport": "wstunnel_udp"}]},
+                            {"interface_name": "lw-mptcp-47-0", "legs": [{"endpoint_id": 317, "outer_transport": "udp"}]},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent.applied_path.write_text(
+                json.dumps(
+                    {
+                        "47": {
+                            "units": [{"service_name": "leikwan-client-47", "managed_paths": [str(service_path), str(config_path)]}],
+                            "managed_paths": [str(service_path), str(config_path)],
+                            "published_mode": "mptcp",
+                            "runtime_mode": "mptcp",
+                            "contract_signature": "same-contract",
+                            "rendered_signature": "same-render",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                with mock.patch.object(agent, "private_wg_interface_present", side_effect=lambda name: name == "lw-cfwg-47"):
+                    self.assertFalse(agent.forward_apply_is_noop(47, "same-contract"))
+
+                with mock.patch.object(agent, "private_wg_interface_present", return_value=True):
+                    self.assertTrue(agent.forward_apply_is_noop(47, "same-contract"))
+
+    def test_forward_apply_noop_ignores_missing_standby_mptcp_underlay_interfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            service_path = state_dir / "leikwan-client-47.service"
+            config_path = state_dir / "mptcp-forward-47.json"
+            service_path.write_text("unit\n", encoding="utf-8")
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "underlays": [
+                            {
+                                "interface_name": "lw-cfwg-47",
+                                "legs": [{"endpoint_id": 0, "outer_transport": "wstunnel_udp", "leg_role": "primary"}],
+                            },
+                            {
+                                "interface_name": "lw-mptcp-47-0",
+                                "legs": [{"endpoint_id": 317, "outer_transport": "udp", "leg_role": "standby", "backup_only": True}],
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent.applied_path.write_text(
+                json.dumps(
+                    {
+                        "47": {
+                            "units": [{"service_name": "leikwan-client-47", "managed_paths": [str(service_path), str(config_path)]}],
+                            "managed_paths": [str(service_path), str(config_path)],
+                            "published_mode": "mptcp",
+                            "runtime_mode": "mptcp",
+                            "contract_signature": "same-contract",
+                            "rendered_signature": "same-render",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                with mock.patch.object(agent, "private_wg_interface_present", side_effect=lambda name: name == "lw-cfwg-47"):
+                    self.assertTrue(agent.forward_apply_is_noop(47, "same-contract"))
+
+
+    def test_apply_forward_skips_unchanged_mptcp_when_only_standby_underlay_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            tmp = pathlib.Path(tmp_dir)
+            service_path = tmp / "leikwan-client-47.service"
+            script_path = tmp / "start-47.sh"
+            config_path = tmp / "mptcp-forward-47.json"
+            service_path.write_text("unit\n", encoding="utf-8")
+            script_path.write_text("#!/bin/sh\n", encoding="utf-8")
+            config_payload = {
+                "underlays": [
+                    {"interface_name": "lw-cfwg-47", "legs": [{"endpoint_id": 0, "outer_transport": "wstunnel_udp", "leg_role": "primary"}]},
+                    {"interface_name": "lw-mptcp-47-0", "legs": [{"endpoint_id": 317, "outer_transport": "udp", "leg_role": "standby", "backup_only": True}]},
+                ]
+            }
+            config_text = json.dumps(config_payload, ensure_ascii=False, indent=2) + "\n"
+            config_path.write_text(config_text, encoding="utf-8")
+            rendered = {
+                "service_name": "leikwan-client-47",
+                "service_path": str(service_path),
+                "service_unit": "unit\n",
+                "start_script_path": str(script_path),
+                "start_script": "#!/bin/sh\n",
+                "files": [{"path": str(config_path), "content": config_text, "mode": 0o600}],
+            }
+            forward = {
+                "forward_id": 47,
+                "service_status": "active",
+                "listen_port": 11035,
+                "mode": "mptcp",
+                "transport": "tcp",
+                "target": "127.0.0.1:5201",
+                "endpoints": [{"endpoint_id": 317, "host": "47.116.104.15", "port": 7000}],
+                "mptcp": {"subflow_limit": 2},
+            }
+            rendered_signature = client_agent_module.ClientAgent.rendered_runtime_signature(rendered, "mptcp", "tcp", 11035)
+            contract_signature = agent.forward_contract_signature(forward)
+            agent.applied_path.write_text(
+                json.dumps(
+                    {
+                        "47": {
+                            "units": [{"service_name": "leikwan-client-47", "managed_paths": [str(service_path), str(script_path), str(config_path)]}],
+                            "managed_paths": [str(service_path), str(script_path), str(config_path)],
+                            "published_mode": "mptcp",
+                            "runtime_mode": "mptcp",
+                            "contract_signature": contract_signature,
+                            "rendered_signature": rendered_signature,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict("sys.modules", {"install_forward_runtime": mock.Mock(render_forward_runtime=mock.Mock(return_value=rendered))}):
+                with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                    with mock.patch.object(agent, "private_wg_interface_present", side_effect=lambda name: name == "lw-cfwg-47"):
+                        with mock.patch.object(agent, "cleanup_mptcp_forward_runtime") as cleanup_mock:
+                            with mock.patch.object(client_agent_module.subprocess, "run") as run_mock:
+                                agent.apply_forward(forward, contract_signature=contract_signature)
+
+            cleanup_mock.assert_not_called()
+            run_mock.assert_not_called()
+
+
+    def test_refresh_mptcp_runtime_endpoints_forces_runtime_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            agent.latest_forwards = [{"forward_id": 47, "mode": "mptcp"}]
+            forward = {"forward_id": 47, "mode": "mptcp", "listen_port": 11035}
+            with mock.patch.object(agent, "apply_forward") as apply_mock:
+                agent.refresh_mptcp_runtime_endpoints(47, forward, "leikwan-client-47")
+
+            apply_mock.assert_called_once_with(forward, force_runtime_restart=True)
+
+    def test_forward_contract_signature_ignores_observation_only_latency_churn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            base = {
+                "forward_id": 47,
+                "service_status": "active",
+                "listen_port": 11035,
+                "mode": "mptcp",
+                "transport": "tcp",
+                "target": "185.220.238.143:5201",
+                "candidate_pool": [
+                    {
+                        "candidate_kind": "self_leg",
+                        "probe_transport": "cf_wg",
+                        "runtime_capabilities": ["mptcp"],
+                        "measured_rtt_ms": 32.0,
+                        "cf_wg_probe_latency_ms": 360.0,
+                        "health_role": "healthy",
+                        "last_error": "",
+                    },
+                    {
+                        "candidate_kind": "rented_group_leg",
+                        "endpoint_id": 317,
+                        "host": "47.116.104.15",
+                        "port": 7000,
+                        "runtime_capabilities": ["mptcp"],
+                        "one_leg_rtt_ms": 97.0,
+                        "quality_score": 0.51,
+                    },
+                ],
+            }
+            changed = json.loads(json.dumps(base))
+            changed["candidate_pool"][0]["measured_rtt_ms"] = 41.0
+            changed["candidate_pool"][0]["cf_wg_probe_latency_ms"] = 280.0
+            changed["candidate_pool"][1]["one_leg_rtt_ms"] = 88.0
+            changed["candidate_pool"][1]["quality_score"] = 0.73
+
+            self.assertEqual(agent.forward_contract_signature(base), agent.forward_contract_signature(changed))
+    def test_mptcp_forward_contract_signature_includes_cf_port_and_wss_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            base = {
+                "forward_id": 47,
+                "service_status": "active",
+                "listen_port": 11035,
+                "mode": "mptcp",
+                "transport": "tcp",
+                "target": "127.0.0.1:5201",
+                "candidate_pool": [
+                    {
+                        "candidate_kind": "self_leg",
+                        "probe_transport": "cf_wg",
+                        "dial_host": "nrt1.nbwly.com",
+                        "dial_port": 2053,
+                        "cf_path_prefix": "tokyo.cfwg",
+                        "runtime_capabilities": ["bond", "mptcp", "wireguard"],
+                    }
+                ],
+            }
+            changed_port = json.loads(json.dumps(base))
+            changed_port["candidate_pool"][0]["dial_port"] = 443
+            changed_path = json.loads(json.dumps(base))
+            changed_path["candidate_pool"][0]["cf_path_prefix"] = "tokyo-alt.cfwg"
+
+            self.assertNotEqual(agent.forward_contract_signature(base), agent.forward_contract_signature(changed_port))
+            self.assertNotEqual(agent.forward_contract_signature(base), agent.forward_contract_signature(changed_path))
+
     def test_bond_endpoint_becomes_quarantined_after_three_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent = self.make_agent(tmp_dir)
