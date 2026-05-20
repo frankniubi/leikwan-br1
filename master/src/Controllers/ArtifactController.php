@@ -118,6 +118,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('sidecar-agent/sidecar_agent.py', 'text/x-python; charset=utf-8');
     }
 
+    public function cfwgLatencyWatchdog(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('client-agent/cfwg_latency_watchdog.py', 'text/x-python; charset=utf-8');
+    }
+
     public function installForwardRuntime(Request $request, array $params): Response
     {
         return $this->serveRepoFile('client-agent/install_forward_runtime.py', 'text/x-python; charset=utf-8');
@@ -251,6 +256,7 @@ final class ArtifactController extends BaseController
             'bond_sidecar_installer',
             'bond_sidecar_uninstaller',
             'client_agent',
+            'cfwg_latency_watchdog',
             'client_agent_installer',
             'mptcp_client_runtime',
             'uot_runtime',

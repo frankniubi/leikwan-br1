@@ -68,6 +68,24 @@ def int_or_default(value: object, default: int) -> int:
         return default
 
 
+def cfwg_watchdog_pin(forward_id: int, agent_config: dict) -> str:
+    if forward_id <= 0:
+        return ""
+    state_dir = pathlib.Path(str(agent_config.get("state_dir", "/var/lib/leikwan-client-agent") or "/var/lib/leikwan-client-agent"))
+    path = state_dir / "cfwg-watchdog-pin" / f"{forward_id}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    now = float(agent_config.get("now", 0) or 0)
+    expires_at = float(payload.get("expires_at", 0) or 0)
+    if expires_at > 0 and now > 0 and expires_at <= now:
+        return ""
+    return str(payload.get("cf_dial_host_pin", "") or "").strip()
+
+
 def _leg_query_params(priority: int, endpoint: dict | None = None) -> str:
     params = [f"priority={priority}"]
     if isinstance(endpoint, dict):
@@ -375,7 +393,9 @@ def selected_private_wg_self_leg_candidates(forward: dict) -> list[dict]:
     return selected[:1]
 
 
-def self_leg_wg_underlay(candidate: dict, forward: dict) -> dict | None:
+def self_leg_wg_underlay(candidate: dict, forward: dict, agent_config: dict | None = None) -> dict | None:
+    if agent_config is None:
+        agent_config = {}
     wg = candidate.get("self_leg_wg", {})
     if not isinstance(wg, dict) or not truthy(wg.get("enabled", True)):
         return None
@@ -398,6 +418,9 @@ def self_leg_wg_underlay(candidate: dict, forward: dict) -> dict | None:
         explicit_cf_connect_ip = str(candidate.get("dial_connect_ip", "") or "").strip()
         if explicit_cf_connect_ip != "":
             wg["cf_dial_host"] = explicit_cf_connect_ip
+        pinned_cf_connect_ip = cfwg_watchdog_pin(forward_id, agent_config)
+        if pinned_cf_connect_ip != "":
+            wg["cf_dial_host"] = pinned_cf_connect_ip
         cf_dial_port = int_or_default(
             candidate.get("dial_port")
             or wg.get("cf_dial_port")
@@ -828,7 +851,7 @@ WantedBy=multi-user.target
         private_self_leg_underlays = [
             underlay
             for candidate in selected_private_wg_self_leg_candidates(forward)
-            for underlay in [self_leg_wg_underlay(candidate, forward)]
+            for underlay in [self_leg_wg_underlay(candidate, forward, agent_config)]
             if underlay is not None
         ]
         if private_self_leg_underlays:

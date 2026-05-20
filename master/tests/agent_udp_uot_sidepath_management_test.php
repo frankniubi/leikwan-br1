@@ -95,7 +95,7 @@ namespace {
     if ($envPath === false) {
         fail('failed to create temp env file');
     }
-    file_put_contents($envPath, "AGENT_API_URL=https://panel.example.com\nDEFAULT_TLS_CERT_REF=default-edge-cert\n");
+    file_put_contents($envPath, "AGENT_API_URL=https://panel.example.com\nARTIFACT_BASE_URL=https://artifacts.example.com\nDEFAULT_TLS_CERT_REF=default-edge-cert\n");
 
     $config = new Config($envPath);
     $db = new Database();
@@ -110,11 +110,22 @@ namespace {
         'sidecar_port' => 8999,
         'reorder_window_packets' => 4096,
     ];
+    $cfwgWatchdog = [
+        'enabled' => true,
+        'forward_ids' => [47],
+        'critical_rtt_ms' => 55,
+        'critical_rtt_delta_ms' => 12,
+        'baseline_rtt_ms' => ['47' => 31],
+        'restart_actions' => ['wstunnel', 'wireguard'],
+        'window_samples' => 3,
+        'dwell_windows' => 1,
+    ];
 
     $clientConfig = call_private($clientController, 'authoritativeAgentConfig', [
         'agent_config_json' => json_encode([
             'poll_interval_seconds' => 60,
             'udp_uot_sidepath' => $sidepath,
+            'cfwg_latency_watchdog' => $cfwgWatchdog,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
     ]);
 
@@ -126,6 +137,42 @@ namespace {
     }
     if (($clientConfig['udp_uot_sidepath'] ?? null) !== $sidepath) {
         fail('expected authoritative client config to preserve udp_uot_sidepath');
+    }
+    foreach ($cfwgWatchdog as $key => $value) {
+        if (($clientConfig['cfwg_latency_watchdog'][$key] ?? null) !== $value) {
+            fail('expected authoritative client config to preserve cfwg_latency_watchdog key ' . $key);
+        }
+    }
+
+    $partialClientConfig = call_private($clientController, 'authoritativeAgentConfig', [
+        'agent_config_json' => json_encode([
+            'cfwg_latency_watchdog' => [
+                'enabled' => true,
+                'forward_ids' => [47],
+                'critical_rtt_ms' => 45,
+            ],
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+    ]);
+    if (($partialClientConfig['cfwg_latency_watchdog']['critical_rtt_delta_ms'] ?? null) !== 10) {
+        fail('expected default cfwg latency watchdog policy to add 10ms delta detection');
+    }
+    if (($partialClientConfig['cfwg_latency_watchdog']['baseline_rtt_ms']['47'] ?? null) !== 31.0) {
+        fail('expected default cfwg latency watchdog policy to seed forward 47 baseline at 31ms');
+    }
+    if (($partialClientConfig['cfwg_latency_watchdog']['restart_actions'] ?? null) !== ['wstunnel', 'wireguard']) {
+        fail('expected default cfwg latency watchdog policy to restart wstunnel and WireGuard');
+    }
+    if (($clientConfig['artifact_base_url'] ?? null) !== 'https://artifacts.example.com') {
+        fail('expected authoritative client config to include artifact_base_url');
+    }
+
+    $pullRef = new ReflectionMethod($clientController, 'pullConfigs');
+    $controllerSource = (string) file_get_contents($pullRef->getFileName());
+    if (!str_contains($controllerSource, "desired_cfwg_watchdog_sha256")) {
+        fail('expected client pull response to publish desired_cfwg_watchdog_sha256');
+    }
+    if (!str_contains($controllerSource, "cfwg_latency_watchdog") || !str_contains($controllerSource, "critical_rtt_delta_ms") || !str_contains($controllerSource, "baseline_rtt_ms")) {
+        fail('expected client pull response to provide a default cfwg latency watchdog policy');
     }
 
     $nodeConfig = call_private($nodeController, 'authoritativeAgentConfig', [

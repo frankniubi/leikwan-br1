@@ -566,7 +566,7 @@ WantedBy=multi-user.target
 
     def apply_config_patch(self, patch: dict) -> None:
         changed = False
-        for key in ("service_name", "runtime_config_path", "state_dir"):
+        for key in ("service_name", "runtime_config_path", "state_dir", "artifact_base_url"):
             if key not in patch:
                 continue
             value = str(patch.get(key, "") or "").strip()

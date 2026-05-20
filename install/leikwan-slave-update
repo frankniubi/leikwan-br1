@@ -22,6 +22,13 @@ data = json.loads(path.read_text(encoding="utf-8"))
 print(data.get("master_url", ""))
 PY
 )
+ARTIFACT_BASE=$(python3 - <<'PY' "${CONFIG_PATH}"
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+print(data.get("artifact_base_url") or data.get("master_url", ""))
+PY
+)
 STATE_DIR=$(python3 - <<'PY' "${CONFIG_PATH}"
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -74,21 +81,25 @@ path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 PY
 }
+if [[ -z "${ARTIFACT_BASE}" ]]; then
+  ARTIFACT_BASE="${MASTER_URL}"
+fi
+
 if [[ -z "${MASTER_URL}" ]]; then
   write_update_state "error" "master_url missing in ${CONFIG_PATH}"
   echo "master_url missing in ${CONFIG_PATH}" >&2
   exit 1
 fi
-if ! curl --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -fsSL "${MASTER_URL%/}/artifacts/install-slave.sh" -o /tmp/leikwan-install-slave.sh; then
-  write_update_state "error" "failed to download install-slave.sh from ${MASTER_URL%/}/artifacts/install-slave.sh"
+if ! curl --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -fsSL "${ARTIFACT_BASE%/}/artifacts/install-slave.sh" -o /tmp/leikwan-install-slave.sh; then
+  write_update_state "error" "failed to download install-slave.sh from ${ARTIFACT_BASE%/}/artifacts/install-slave.sh"
   exit 1
 fi
 chmod +x /tmp/leikwan-install-slave.sh
 if [[ "${MODE}" == "check" ]]; then
-  exec /tmp/leikwan-install-slave.sh --check-update --config "${CONFIG_PATH}"
+  exec /tmp/leikwan-install-slave.sh --check-update --config "${CONFIG_PATH}" --artifact-base "${ARTIFACT_BASE}"
 fi
 write_update_state "running"
-if /tmp/leikwan-install-slave.sh --update --config "${CONFIG_PATH}"; then
+if /tmp/leikwan-install-slave.sh --update --config "${CONFIG_PATH}" --artifact-base "${ARTIFACT_BASE}"; then
   write_update_state "success"
 else
   status=$?
