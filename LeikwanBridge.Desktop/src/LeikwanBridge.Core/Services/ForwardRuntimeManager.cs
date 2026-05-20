@@ -15,6 +15,7 @@ public class ForwardRuntimeManager : IDisposable
     private readonly ProcessSupervisor _supervisor;
     private readonly BondRuntimeBuilder _bondBuilder;
     private readonly BondEndpointHealthService _bondEndpointHealth;
+    private readonly WireGuardTunnelService? _wgTunnelService;
     private readonly StateManager _stateManager;
     private readonly Func<string, bool> _binaryExists;
     private readonly Func<int, bool> _portListeningProbe;
@@ -23,6 +24,7 @@ public class ForwardRuntimeManager : IDisposable
         AgentConfig config,
         ProcessSupervisor supervisor,
         StateManager stateManager,
+        WireGuardTunnelService? wgTunnelService = null,
         Func<string, bool>? binaryExists = null,
         Func<int, bool>? portListeningProbe = null)
     {
@@ -30,6 +32,7 @@ public class ForwardRuntimeManager : IDisposable
         _supervisor = supervisor;
         _bondBuilder = new BondRuntimeBuilder(config);
         _bondEndpointHealth = new BondEndpointHealthService(stateManager);
+        _wgTunnelService = wgTunnelService;
         _stateManager = stateManager;
         _binaryExists = binaryExists ?? File.Exists;
         _portListeningProbe = portListeningProbe ?? NetworkProbe.IsPortListening;
@@ -66,6 +69,21 @@ public class ForwardRuntimeManager : IDisposable
         // Stop existing processes
         _supervisor.StopAll(forwardId);
         WaitForPortsReleased(PortsForReleaseWait(previousState, forward.ListenPort), TimeSpan.FromSeconds(3));
+
+        // WireGuard self-leg: bring up tunnel before bond runtime if configured
+        bool wgSelfLegActive = false;
+        if (mode == "bond" && forward.SelfLegWg is { Enabled: true } wgConfig && _wgTunnelService != null)
+        {
+            Log.Information("forward {ForwardId}: attempting WireGuard self-leg tunnel ({Interface})",
+                forwardId, wgConfig.InterfaceName);
+            wgSelfLegActive = _wgTunnelService.BringUp(forwardId, wgConfig);
+
+            if (wgSelfLegActive)
+            {
+                // Inject sidecar private IP as a high-priority bond leg endpoint
+                forward = InjectWgSelfLegEndpoint(forward, wgConfig);
+            }
+        }
 
         BondRuntimeBuilder.RuntimeSpec spec;
         try
@@ -241,6 +259,63 @@ public class ForwardRuntimeManager : IDisposable
             Endpoints = selectedEndpoints,
             Bonding = forward.Bonding,
             Mptcp = forward.Mptcp,
+            SelfLegWg = forward.SelfLegWg,
+        };
+    }
+
+    /// <summary>
+    /// Injects the WireGuard self-leg sidecar private address as a high-priority bond leg endpoint.
+    /// The WG tunnel provides a direct path to the sidecar, so no wstunnel wrapper is needed —
+    /// the bond runtime connects directly to the sidecar bond backend via the tunnel IP.
+    /// </summary>
+    private static ForwardConfig InjectWgSelfLegEndpoint(ForwardConfig forward, SelfLegWgConfig wgConfig)
+    {
+        var sidecarIp = wgConfig.SidecarAddress.Split('/')[0];
+        int bondPort = wgConfig.SidecarBondPort > 0
+            ? wgConfig.SidecarBondPort
+            : forward.Bonding?.SidecarPort ?? 0;
+
+        if (bondPort <= 0)
+        {
+            Log.Warning("forward {ForwardId}: WG self-leg active but no sidecar bond port configured, " +
+                "cannot inject WG endpoint into bond runtime", forward.ForwardId);
+            return forward;
+        }
+
+        var wgEndpoint = new EndpointConfig
+        {
+            EndpointId = -1, // synthetic endpoint
+            Host = sidecarIp,
+            Port = bondPort,
+            DynamicPriority = 0, // highest priority (lowest value wins)
+            LegRole = "primary",
+            HealthRole = "healthy",
+            QualityScore = 1.0,
+            SupportsQuicLeg = false, // WG leg is plain TCP through the tunnel
+        };
+
+        var endpoints = new List<EndpointConfig> { wgEndpoint };
+        endpoints.AddRange(forward.Endpoints);
+
+        Log.Information("forward {ForwardId}: injected WG self-leg endpoint {Ip}:{Port} as primary bond leg",
+            forward.ForwardId, sidecarIp, bondPort);
+
+        return new ForwardConfig
+        {
+            ForwardId = forward.ForwardId,
+            ServiceStatus = forward.ServiceStatus,
+            Mode = forward.Mode,
+            BackendMode = forward.BackendMode,
+            ListenPort = forward.ListenPort,
+            Target = forward.Target,
+            Sni = forward.Sni,
+            PathPrefix = forward.PathPrefix,
+            Transport = forward.Transport,
+            SpeedLimitMbps = forward.SpeedLimitMbps,
+            Endpoints = endpoints,
+            Bonding = forward.Bonding,
+            Mptcp = forward.Mptcp,
+            SelfLegWg = forward.SelfLegWg,
         };
     }
 
