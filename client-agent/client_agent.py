@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import email.utils
 import contextlib
+import hashlib
 import json
 import ipaddress
 import logging
@@ -21,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.05.17.3"
+AGENT_VERSION = "2026.05.17.5"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -325,6 +326,220 @@ class ClientAgent:
         payload["kernel_release"] = platform.release()
         return payload
 
+    @classmethod
+    def strip_apply_observation_fields(cls, value: object) -> object:
+        observation_keys = {
+            "quality_score",
+            "one_leg_rtt_ms",
+            "latency_ewma_ms",
+            "last_latency_ms",
+            "measured_rtt_ms",
+            "cf_wg_probe_latency_ms",
+            "dynamic_priority",
+            "health_role",
+            "probe_state",
+            "last_error",
+            "last_probe_at",
+            "last_seen_at",
+            "last_heartbeat_at",
+            "updated_at",
+        }
+        if isinstance(value, dict):
+            return {
+                str(key): cls.strip_apply_observation_fields(item)
+                for key, item in value.items()
+                if str(key) not in observation_keys
+            }
+        if isinstance(value, list):
+            return [cls.strip_apply_observation_fields(item) for item in value]
+        return value
+
+    @staticmethod
+    def stable_json_hash(payload: object) -> str:
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def forward_contract_signature(self, forward: dict) -> str:
+        config = self.config if isinstance(getattr(self, "config", None), dict) else {}
+        client_id = int(config.get("client_id", 0) or 0)
+        configured_wg_port = int(config.get("wireguard_listen_port", 0) or 0)
+        wireguard_listen_port = configured_wg_port if configured_wg_port > 0 else 43000 + (client_id % 1000)
+        configured_fallback_port = int(config.get("wireguard_fallback_tcp_port", 0) or 0)
+        wireguard_fallback_tcp_port = configured_fallback_port if configured_fallback_port > 0 else wireguard_listen_port + 10000
+        bond_bin = pathlib.Path(str(config.get("bond_bin", "/usr/local/bin/leikwan-bond") or "/usr/local/bin/leikwan-bond"))
+        mptcp_client = pathlib.Path(str(config.get("mptcp_client_bin", "/usr/local/bin/leikwan-mptcp-client.py") or "/usr/local/bin/leikwan-mptcp-client.py"))
+        runtime_inputs = {
+            "agent_version": AGENT_VERSION,
+            "agent_sha256": file_sha256(pathlib.Path(__file__).resolve()),
+            "install_forward_runtime_sha256": file_sha256(self.install_forward_runtime_path()),
+            "mptcp_client_sha256": file_sha256(mptcp_client),
+            "bond_bin": str(bond_bin),
+            "mptcp_client_bin": str(mptcp_client),
+            "state_dir": str(getattr(self, "state_dir", config.get("state_dir", "/var/lib/leikwan-client-agent"))),
+            "wireguard_listen_port": wireguard_listen_port,
+            "wireguard_fallback_tcp_port": wireguard_fallback_tcp_port,
+            "kernel_supports_mptcp": self.running_kernel_supports_mptcp(),
+        }
+        normalized_forward = self.strip_apply_observation_fields(forward)
+        return self.stable_json_hash(
+            {
+                "forward": normalized_forward,
+                "runtime_inputs": runtime_inputs,
+            }
+        )
+
+    @staticmethod
+    def rendered_runtime_signature(rendered: dict, mode: str, transport: str, listen_port: int) -> str:
+        units = [rendered] + [item for item in rendered.get("extra_units", []) if isinstance(item, dict)]
+        normalized_units = []
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            normalized_files = []
+            for file_entry in unit.get("files", []):
+                if not isinstance(file_entry, dict):
+                    continue
+                normalized_files.append(
+                    {
+                        "path": str(file_entry.get("path", "") or ""),
+                        "content": str(file_entry.get("content", "") or ""),
+                        "mode": file_entry.get("mode"),
+                    }
+                )
+            normalized_units.append(
+                {
+                    "service_name": str(unit.get("service_name", "") or ""),
+                    "service_path": str(unit.get("service_path", "") or ""),
+                    "service_unit": str(unit.get("service_unit", "") or ""),
+                    "start_script_path": str(unit.get("start_script_path", "") or ""),
+                    "start_script": str(unit.get("start_script", "") or ""),
+                    "files": normalized_files,
+                }
+            )
+        return ClientAgent.stable_json_hash(
+            {
+                "mode": mode,
+                "transport": transport,
+                "listen_port": listen_port,
+                "units": normalized_units,
+            }
+        )
+
+    @staticmethod
+    def rendered_managed_paths(rendered: dict) -> set[str]:
+        units = [rendered] + [item for item in rendered.get("extra_units", []) if isinstance(item, dict)]
+        paths: set[str] = set()
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            service_path = str(unit.get("service_path", "") or "").strip()
+            if service_path != "":
+                paths.add(service_path)
+            start_script_path = str(unit.get("start_script_path", "") or "").strip()
+            if start_script_path != "":
+                paths.add(start_script_path)
+            for file_entry in unit.get("files", []):
+                if not isinstance(file_entry, dict):
+                    continue
+                extra_path = str(file_entry.get("path", "") or "").strip()
+                if extra_path != "":
+                    paths.add(extra_path)
+        return paths
+
+    @staticmethod
+    def mptcp_underlay_requires_presence(underlay: dict) -> bool:
+        if not isinstance(underlay, dict):
+            return False
+        legs = underlay.get("legs", [])
+        if not isinstance(legs, list) or not legs:
+            return True
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            role = str(leg.get("leg_role", "") or "").strip().lower()
+            if role == "standby" or bool(leg.get("backup_only", False)):
+                continue
+            return True
+        return False
+
+    def previous_mptcp_underlay_interfaces(self, previous: dict) -> list[str]:
+        if not isinstance(previous, dict):
+            return []
+        runtime_mode = self.normalize_mode(previous.get("runtime_mode") or previous.get("published_mode") or "")
+        if runtime_mode != "mptcp":
+            return []
+        raw_paths = previous.get("managed_paths", [])
+        paths = [str(item) for item in raw_paths if str(item).strip() != ""] if isinstance(raw_paths, list) else []
+        interfaces: set[str] = set()
+        for raw_path in paths:
+            if not raw_path.endswith(".json"):
+                continue
+            path = pathlib.Path(raw_path)
+            if not path.exists():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            underlays = payload.get("underlays", [])
+            if not isinstance(underlays, list) or not underlays:
+                underlay = payload.get("underlay", {})
+                underlays = [underlay] if isinstance(underlay, dict) else []
+            for underlay in underlays:
+                if not isinstance(underlay, dict) or not self.mptcp_underlay_requires_presence(underlay):
+                    continue
+                interface_name = str(underlay.get("interface_name", "") or "").strip()
+                if interface_name != "":
+                    interfaces.add(interface_name)
+        return sorted(interfaces)
+
+    def applied_forward_runtime_is_present(self, previous: dict) -> bool:
+        raw_units = previous.get("units", []) if isinstance(previous, dict) else []
+        units = [item for item in raw_units if isinstance(item, dict)] if isinstance(raw_units, list) else []
+        if not units:
+            return False
+        for unit in units:
+            service_name = str(unit.get("service_name", "") or "").strip()
+            if service_name == "" or not self.systemd_is_active(service_name):
+                return False
+        raw_paths = previous.get("managed_paths", []) if isinstance(previous, dict) else []
+        paths = [str(item) for item in raw_paths if str(item).strip() != ""] if isinstance(raw_paths, list) else []
+        if not paths:
+            return False
+        if not all(pathlib.Path(path).exists() for path in paths):
+            return False
+        for interface_name in self.previous_mptcp_underlay_interfaces(previous):
+            if not self.private_wg_interface_present(interface_name):
+                return False
+        return True
+
+    def persist_forward_apply_signatures(
+        self,
+        forward_id: int,
+        contract_signature: str,
+        rendered_signature: str | None = None,
+    ) -> None:
+        applied = self.load_applied()
+        previous = applied.get(str(forward_id), {})
+        if not isinstance(previous, dict):
+            return
+        previous["contract_signature"] = contract_signature
+        if rendered_signature is not None:
+            previous["rendered_signature"] = rendered_signature
+        previous["updated_at"] = int(time.time())
+        applied[str(forward_id)] = previous
+        self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def forward_apply_is_noop(self, forward_id: int, contract_signature: str) -> bool:
+        previous = self.load_applied().get(str(forward_id), {})
+        if not isinstance(previous, dict):
+            return False
+        if str(previous.get("contract_signature", "") or "") != contract_signature:
+            return False
+        return self.applied_forward_runtime_is_present(previous)
+
     def ensure_wireguard_identity(self) -> str:
         private_key_path = self.wireguard_private_key_path()
         public_key_path = self.wireguard_public_key_path()
@@ -620,6 +835,39 @@ class ClientAgent:
 
             time.sleep(5)
 
+    def local_refresh_request_token_path(self) -> pathlib.Path:
+        return self.state_dir / "runtime-refresh-request.json"
+
+    def consume_local_refresh_requests(self) -> set[int]:
+        path = self.local_refresh_request_token_path()
+        if not path.exists():
+            return set()
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return set()
+        if not isinstance(payload, dict):
+            return set()
+        forward_ids = payload.get("forward_ids", [])
+        if not isinstance(forward_ids, list):
+            return set()
+        applied = self.load_applied()
+        force_ids: set[int] = set()
+        for raw_forward_id in forward_ids:
+            try:
+                forward_id = int(raw_forward_id)
+            except (TypeError, ValueError):
+                continue
+            if forward_id <= 0:
+                continue
+            token = str(payload.get(str(forward_id), "") or payload.get("token", "") or "")
+            if token == "" or str(applied.get(f"_last_runtime_refresh_{forward_id}", "") or "") == token:
+                continue
+            force_ids.add(forward_id)
+            applied[f"_last_runtime_refresh_{forward_id}"] = token
+        if force_ids:
+            self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+        return force_ids
     def sync_once(self) -> None:
         master = self.config["master_url"].rstrip("/")
         token = self.config["agent_token"]
@@ -628,6 +876,7 @@ class ClientAgent:
         self.latest_forwards = [forward for forward in forwards if isinstance(forward, dict)]
         client_meta = payload.get("client", {})
         applied_forward_ids: list[int] = []
+        noop_forward_ids: list[int] = []
         skipped_invalid_forward_ids: list[int] = []
         inactive_forward_ids: list[int] = []
         try:
@@ -637,6 +886,7 @@ class ClientAgent:
         master = self.config["master_url"].rstrip("/")
         token = self.config["agent_token"]
         desired_ids = set()
+        force_runtime_refresh_ids = self.consume_local_refresh_requests()
         for forward in forwards:
             forward_id = int(forward["forward_id"])
             mode = self.normalize_mode(forward.get("mode", "single"))
@@ -697,7 +947,14 @@ class ClientAgent:
                     continue
             desired_ids.add(forward_id)
             try:
-                self.apply_forward(forward)
+                contract_signature = self.forward_contract_signature(forward)
+                force_runtime_restart = forward_id in force_runtime_refresh_ids
+                if not force_runtime_restart and self.forward_apply_is_noop(forward_id, contract_signature):
+                    noop_forward_ids.append(forward_id)
+                    applied_forward_ids.append(forward_id)
+                    logging.debug("forward %s unchanged; skipping no-op runtime apply", forward_id)
+                    continue
+                self.apply_forward(forward, contract_signature=contract_signature, force_runtime_restart=force_runtime_restart)
                 applied_forward_ids.append(forward_id)
             except Exception as exc:  # noqa: BLE001
                 logging.exception(
@@ -762,6 +1019,7 @@ class ClientAgent:
                 "client_id": int(client_meta.get("id", self.config.get("client_id", 0)) or 0),
                 "forwards_total": len(self.latest_forwards),
                 "applied_forward_ids": applied_forward_ids,
+                "noop_forward_ids": noop_forward_ids,
                 "invalid_forward_ids": skipped_invalid_forward_ids,
                 "inactive_forward_ids": inactive_forward_ids,
                 "agent_update_request_token": str(client_meta.get("agent_update_request_token", "") or ""),
@@ -1041,7 +1299,7 @@ class ClientAgent:
         self.usage_state_path.write_text(json.dumps(usage_state, ensure_ascii=False, indent=2), encoding="utf-8")
         return totals
 
-    def apply_forward(self, forward: dict) -> None:
+    def apply_forward(self, forward: dict, contract_signature: str | None = None, force_runtime_restart: bool = False) -> None:
         from install_forward_runtime import render_forward_runtime  # local helper
 
         forward_id = int(forward["forward_id"])
@@ -1050,14 +1308,6 @@ class ClientAgent:
         endpoints = [endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
         bond_bin = self.bond_binary_path()
         mptcp_client = self.mptcp_client_path()
-        logging.info(
-            "applying forward %s mode=%s transport=%s endpoints=%s target=%s",
-            forward_id,
-            mode,
-            transport,
-            len(endpoints),
-            str(forward.get("target", "")),
-        )
         if mode == "bond" and not self.binary_available(bond_bin):
             logging.warning("forward %s requested bond mode but bond binary is missing at %s", forward_id, bond_bin)
         if mode == "mptcp" and not mptcp_client.is_file():
@@ -1083,10 +1333,30 @@ class ClientAgent:
 
         render_forward = self.strip_runtime_observation_fields(render_forward)
         rendered = render_forward_runtime(render_forward, self.semantic_agent_config())
-        self.delete_nft_rules(forward_id)
-        self.add_nft_rules(forward_id, int(forward.get("listen_port", 0) or 0), transport)
+        listen_port = int(forward.get("listen_port", 0) or 0)
+        rendered_signature = self.rendered_runtime_signature(rendered, mode, transport, listen_port)
+        if contract_signature is None:
+            contract_signature = self.forward_contract_signature(forward)
         applied = self.load_applied()
         previous = applied.get(str(forward_id), {})
+        previous_runtime_present = self.applied_forward_runtime_is_present(previous) if isinstance(previous, dict) and previous else False
+        rendered_unchanged = isinstance(previous, dict) and str(previous.get("rendered_signature", "") or "") == rendered_signature
+        if not force_runtime_restart and rendered_unchanged and previous_runtime_present:
+            self.persist_forward_apply_signatures(forward_id, contract_signature, rendered_signature)
+            logging.debug("forward %s rendered runtime unchanged; recorded signature and skipped no-op apply", forward_id)
+            return
+        runtime_reapply_needed = force_runtime_restart
+
+        logging.info(
+            "applying forward %s mode=%s transport=%s endpoints=%s target=%s",
+            forward_id,
+            mode,
+            transport,
+            len(endpoints),
+            str(forward.get("target", "")),
+        )
+        self.delete_nft_rules(forward_id)
+        self.add_nft_rules(forward_id, listen_port, transport)
         previous_units: list[dict] = []
         previous_managed_paths: list[str] = []
         if isinstance(previous, dict):
@@ -1135,7 +1405,7 @@ class ClientAgent:
                 managed_paths.append(str(extra_path))
 
             service_active = self.systemd_is_active(service_name)
-            if unit_changed or script_changed or files_changed or not service_active:
+            if unit_changed or script_changed or files_changed or not service_active or runtime_reapply_needed:
                 if mode == "mptcp" and not mptcp_runtime_cleaned:
                     self.cleanup_mptcp_forward_runtime(forward_id)
                     mptcp_runtime_cleaned = True
@@ -1175,6 +1445,8 @@ class ClientAgent:
             "managed_paths": sorted(current_managed_paths),
             "published_mode": self.normalize_mode(forward.get("mode", "single")),
             "runtime_mode": mode,
+            "contract_signature": contract_signature,
+            "rendered_signature": rendered_signature,
             "updated_at": int(time.time()),
         }
         self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1328,6 +1600,11 @@ class ClientAgent:
                         )
                         if str(previous_role or "healthy") != str(updated.get("role", "healthy") or "healthy"):
                             refresh_needed = True
+                    cf_wg_ready = any(
+                        ready
+                        for candidate, ready in zip(candidates, ready_results)
+                        if candidate in cf_wg_candidates
+                    )
                     if not any(ready_results):
                         if selected_self_leg_primary:
                             logging.warning(
@@ -1605,7 +1882,7 @@ class ClientAgent:
         if now < next_allowed:
             return
 
-        self.apply_forward(forward)
+        self.apply_forward(forward, force_runtime_restart=True)
         self.health_reorder_after[forward_id] = now + 30
         for index, latest_forward in enumerate(self.latest_forwards):
             if int(latest_forward.get("forward_id", 0) or 0) != forward_id:
@@ -2342,6 +2619,17 @@ class ClientAgent:
         if endpoints:
             next_forward["endpoints"] = endpoints
 
+        candidate_pool = []
+        for candidate in next_forward.get("candidate_pool", []):
+            if not isinstance(candidate, dict):
+                continue
+            cleaned = dict(candidate)
+            for key in observation_keys | {"measured_rtt_ms", "cf_wg_probe_latency_ms", "health_role", "probe_state", "last_error"}:
+                cleaned.pop(key, None)
+            candidate_pool.append(cleaned)
+        if candidate_pool:
+            next_forward["candidate_pool"] = candidate_pool
+
         mptcp = next_forward.get("mptcp", {})
         if isinstance(mptcp, dict):
             mptcp_copy = dict(mptcp)
@@ -2486,6 +2774,81 @@ class ClientAgent:
             raise RuntimeError("self_leg_direct_cf_fields_missing")
         return shape
 
+    @staticmethod
+    def normalized_self_leg_cf_path_key(path_prefix: str) -> str:
+        return "/".join(segment for segment in str(path_prefix or "").strip().strip("/").split("/") if segment)
+
+    @staticmethod
+    def self_leg_cf_dial_port(candidate: dict, forward: dict | None = None) -> int:
+        forward = forward or {}
+        wg = candidate.get("self_leg_wg", {}) if isinstance(candidate.get("self_leg_wg", {}), dict) else {}
+        for value in (
+            candidate.get("dial_port"),
+            wg.get("cf_dial_port"),
+            candidate.get("cf_dial_port"),
+            forward.get("bond_sidecar_cf_listen_port"),
+            forward.get("cf_listen_port"),
+        ):
+            try:
+                port = int(value or 0)
+            except (TypeError, ValueError):
+                port = 0
+            if port > 0:
+                return port
+        return 0
+
+    @staticmethod
+    def self_leg_cf_wss_path_prefix(candidate: dict, forward: dict | None = None) -> str:
+        forward = forward or {}
+        wg = candidate.get("self_leg_wg", {}) if isinstance(candidate.get("self_leg_wg", {}), dict) else {}
+        probe_transport = str(candidate.get("probe_transport", "") or "").strip().lower()
+        if probe_transport == "cf_wg":
+            path_prefix = str(
+                wg.get("cf_path_prefix", "")
+                or candidate.get("cf_path_prefix", "")
+                or candidate.get("path_prefix", "")
+                or forward.get("path_prefix", "")
+                or ""
+            ).strip()
+            if path_prefix != "" and not path_prefix.endswith(".cfwg"):
+                path_prefix += ".cfwg"
+            return path_prefix
+        return str(
+            candidate.get("cf_path_prefix", "")
+            or candidate.get("path_prefix", "")
+            or forward.get("path_prefix", "")
+            or ""
+        ).strip()
+
+    @classmethod
+    def self_leg_cf_best_ip_map_keys(cls, candidate: dict, forward: dict | None = None) -> list[str]:
+        path_prefix = cls.self_leg_cf_wss_path_prefix(candidate, forward)
+        normalized_path = cls.normalized_self_leg_cf_path_key(path_prefix)
+        port = cls.self_leg_cf_dial_port(candidate, forward)
+        keys: list[str] = []
+
+        def add_key(value: str) -> None:
+            value = str(value or "").strip()
+            if value != "" and value not in keys:
+                keys.append(value)
+
+        if port > 0:
+            # CF edge reachability is scoped by both the public CF port and the
+            # websocket route path.  A best IP for 443/<path> can be invalid for
+            # 2053/<path>.cfwg, so new cache entries are always port+path keyed.
+            add_key(f"{port}|{normalized_path}" if normalized_path != "" else "")
+            if path_prefix != "" and path_prefix != normalized_path:
+                add_key(f"{port}|{path_prefix}")
+            return keys
+
+        # Backward compatibility for old cache files written before CF route
+        # identity included the port.  Only use these when the candidate does
+        # not publish a CF port, otherwise path-only entries are ambiguous.
+        add_key(normalized_path)
+        if path_prefix != "" and path_prefix != normalized_path:
+            add_key(path_prefix)
+        return keys
+
     def resolve_self_leg_connect_ip_with_source(self, candidate: dict, forward: dict | None = None) -> tuple[str, str]:
         explicit = str(candidate.get("dial_connect_ip", "") or "").strip()
         dial_host = str(candidate.get("dial_host", "") or "").strip()
@@ -2503,15 +2866,15 @@ class ClientAgent:
                 best_map_raw = {}
             if isinstance(best_map_raw, dict):
                 forward_id = int((forward or {}).get("forward_id", 0) or 0)
-                path_prefix = str(candidate.get("path_prefix", "") or (forward or {}).get("path_prefix", "") or "").strip()
                 scoped = best_map_raw.get(str(forward_id), {}) if forward_id > 0 else {}
                 if isinstance(scoped, dict):
-                    candidates = scoped.get(path_prefix, [])
-                    if isinstance(candidates, list):
-                        for value in candidates:
-                            ip = str(value or "").strip()
-                            if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
-                                return ip, "best_map"
+                    for map_key in self.self_leg_cf_best_ip_map_keys(candidate, forward):
+                        candidates = scoped.get(map_key, [])
+                        if isinstance(candidates, list):
+                            for value in candidates:
+                                ip = str(value or "").strip()
+                                if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
+                                    return ip, "best_map"
         if explicit != "":
             return explicit, "explicit"
         published_candidates = candidate.get("self_leg_cf_candidates", [])
@@ -2538,8 +2901,8 @@ class ClientAgent:
 
     def save_self_leg_best_ip_candidates(self, forward: dict, candidate: dict, ordered_candidates: list[str]) -> None:
         forward_id = int((forward or {}).get("forward_id", 0) or 0)
-        path_prefix = str(candidate.get("path_prefix", "") or (forward or {}).get("path_prefix", "") or "").strip()
-        if forward_id <= 0 or path_prefix == "":
+        map_keys = self.self_leg_cf_best_ip_map_keys(candidate, forward)
+        if forward_id <= 0 or map_keys == []:
             return
         ordered: list[str] = []
         for value in ordered_candidates:
@@ -2564,7 +2927,7 @@ class ClientAgent:
         scoped = best_map_raw.get(str(forward_id), {})
         if not isinstance(scoped, dict):
             scoped = {}
-        scoped[path_prefix] = ordered[:8]
+        scoped[map_keys[0]] = ordered[:8]
         best_map_raw[str(forward_id)] = scoped
         best_map_path.parent.mkdir(parents=True, exist_ok=True)
         best_map_path.write_text(json.dumps(best_map_raw, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2943,8 +3306,14 @@ class ClientAgent:
         forward_id = int((forward or {}).get("forward_id", 0) or 0)
         published_candidates = [str(value or "").strip() for value in (candidate.get("self_leg_cf_candidates", []) if isinstance(candidate.get("self_leg_cf_candidates", []), list) else [])]
         cidrs = [str(value or "").strip() for value in (candidate.get("self_leg_cf_cidrs", []) if isinstance(candidate.get("self_leg_cf_cidrs", []), list) else [])]
+        shape_candidate = dict(candidate)
+        if str(shape.get("path_prefix", "") or "").strip() != "":
+            shape_candidate["path_prefix"] = str(shape.get("path_prefix", "") or "").strip()
+        if int(shape.get("dial_port", 0) or 0) > 0:
+            shape_candidate["dial_port"] = int(shape.get("dial_port", 0) or 0)
         payload = {
             "forward_id": forward_id,
+            "cf_route_key": self.self_leg_cf_best_ip_map_keys(shape_candidate, forward)[:1],
             "path_prefix": str(shape.get("path_prefix", "") or ""),
             "dial_host": str(shape.get("dial_host", "") or ""),
             "dial_port": int(shape.get("dial_port", 0) or 0),
@@ -3834,7 +4203,7 @@ class ClientAgent:
             "ok": True,
             "agent_version": AGENT_VERSION,
             "config_path": str(self.config_path),
-            "state_dir": str(self.state_dir),
+            "state_dir": str(getattr(self, "state_dir", "/var/lib/leikwan-client-agent")),
             "master_url": str(self.config.get("master_url", "")),
             "client_id": int(self.config.get("client_id", 0) or 0),
             "service_active": self.systemd_is_active("leikwan-client-agent"),

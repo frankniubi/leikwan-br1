@@ -2998,6 +2998,7 @@ final class ProvisioningService
         } else {
             $wgProfile = $this->buildSelfLegWireGuardProfile($config, $client, $deviceSession);
         }
+        $cfWgPathPrefix = null;
         if ($wantCfWg && $wgProfile !== null) {
             $wgProfile['outer_transport'] = 'wstunnel_udp';
             $wgProfile['cf_dial_host'] = (string) ($cfTarget['dial_host'] ?? ($config['bond_sidecar_host'] ?? ''));
@@ -3007,9 +3008,11 @@ final class ProvisioningService
             // The bond `path_prefix` resolves on the sidecar to a TCP-only bond
             // backend; routing WG datagrams to it silently drops them.
             // The matching `<path>.cfwg` route published by SidecarAgentController
-            // forwards WG UDP to the sidecar's wireguard_listen_port.
-            $cfBasePathPrefix = (string) ($config['path_prefix'] ?? '/');
-            $wgProfile['cf_path_prefix'] = $cfBasePathPrefix . '.cfwg';
+            // forwards WG UDP to the sidecar's wireguard_listen_port. CF routing
+            // is identified by the panel's public CF port plus this WSS path.
+            $cfBasePathPrefix = trim((string) ($config['path_prefix'] ?? '/'));
+            $cfWgPathPrefix = str_ends_with($cfBasePathPrefix, '.cfwg') ? $cfBasePathPrefix : $cfBasePathPrefix . '.cfwg';
+            $wgProfile['cf_path_prefix'] = $cfWgPathPrefix;
             $wgProfile['interface_name'] = 'lw-cfwg-' . (int) ($config['forward_id'] ?? 0);
         }
         $runtimeCaps = $wgProfile !== null ? ['bond', 'mptcp', 'wireguard'] : ['bond', 'mptcp'];
@@ -3030,6 +3033,8 @@ final class ProvisioningService
             'probe_transport' => $probeTransport,
             'dial_host' => $cfTarget['dial_host'],
             'dial_connect_ip' => (string) ($cfTarget['dial_connect_ip'] ?? ''),
+            'cf_path_prefix' => $cfWgPathPrefix ?? null,
+            'cf_sni_host' => (string) ($cfTarget['cf_sni_host'] ?? ''),
             'self_leg_cf_candidates' => array_values(array_filter(array_map(
                 static fn(mixed $value): string => trim((string) $value),
                 (array) ($cfTarget['self_leg_cf_candidates'] ?? [])
@@ -6952,6 +6957,7 @@ final class ProvisioningService
         }
         $rows = $this->db->fetchAll(
             'SELECT f.id AS forward_id, f.line_client_id, c.agent_config_json AS client_agent_config_json,
+                    combo.self_leg_cf_transport AS forward_combination_self_leg_cf_transport,
                     sp.agent_config_json AS sidecar_agent_config_json, sp.mptcp_listen_port, sp.bond_listen_port
              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
@@ -6984,12 +6990,32 @@ final class ProvisioningService
             if ($listenPort <= 0) {
                 $listenPort = (int) ($row['mptcp_listen_port'] ?? $row['bond_listen_port'] ?? 0);
             }
+            // Regression sentinel: cf_wg_sidecar_peer_uses_lw_cfwg_interface
+            $selfLegCfTransport = strtolower(trim((string) ($row['forward_combination_self_leg_cf_transport'] ?? 'cf_direct')));
+            $hasCfWgClientPeer = $selfLegCfTransport === 'cf_wg';
+            if ($hasCfWgClientPeer) {
+                $legacyInterfaceName = 'lw-self-' . $forwardId;
+                $peers[] = [
+                    'enabled' => false,
+                    'mode' => 'client_self_leg',
+                    'forward_id' => $forwardId,
+                    'client_id' => $clientId,
+                    'interface_name' => $legacyInterfaceName,
+                    'listen_port' => $listenPort,
+                    'sidecar_address' => $addresses['sidecar_address'],
+                    'client_address' => $addresses['client_address'],
+                    'client_public_key' => $clientPublicKey,
+                    'sidecar_public_key' => $sidecarPublicKey,
+                    'persistent_keepalive' => max(0, (int) ($this->config->getInt('SELF_LEG_WG_KEEPALIVE_SECONDS', 25) ?? 25)),
+                ];
+            }
+            $interfaceName = $selfLegCfTransport === 'cf_wg' ? 'lw-cfwg-' . $forwardId : 'lw-self-' . $forwardId;
             $peers[] = [
                 'enabled' => true,
                 'mode' => 'client_self_leg',
                 'forward_id' => $forwardId,
                 'client_id' => $clientId,
-                'interface_name' => 'lw-self-' . $forwardId,
+                'interface_name' => $interfaceName,
                 'listen_port' => $listenPort,
                 'sidecar_address' => $addresses['sidecar_address'],
                 'client_address' => $addresses['client_address'],

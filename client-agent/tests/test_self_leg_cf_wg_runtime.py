@@ -362,6 +362,46 @@ class CfWgSelfLegTests(unittest.TestCase):
         )
         self.assertEqual("bond", family)
 
+    def test_cf_wg_self_leg_falls_back_to_panel_cf_port_and_cfwg_path(self) -> None:
+        candidate = self._candidate()
+        candidate["dial_port"] = 2053
+        candidate["cf_sni_host"] = "nrt1.nbwly.com"
+        candidate["cf_path_prefix"] = "tokyo-panel-path.cfwg"
+        wg = candidate["self_leg_wg"]
+        wg.pop("cf_dial_port", None)
+        wg.pop("cf_sni_host", None)
+        wg.pop("cf_path_prefix", None)
+        forward = {
+            "forward_id": 47,
+            "listen_port": 11035,
+            "mode": "mptcp",
+            "transport": "tcp",
+            "target": "127.0.0.1:5201",
+            "path_prefix": "tokyo-panel-path",
+            "sni": "nrt1.nbwly.com",
+            "bond_sidecar_cf_listen_port": 443,
+            "mptcp": {
+                "tcp_session_token": "tcp-token",
+                "sidecar_host": "127.0.0.1",
+                "sidecar_port": 8898,
+            },
+            "candidate_pool": [candidate],
+        }
+
+        rendered = install_runtime.render_forward_runtime(forward, {})
+
+        self.assertIn("wss://104.16.0.5:2053", rendered["start_script"])
+        self.assertNotIn("wss://104.16.0.5:443", rendered["start_script"])
+        self.assertIn('--tls-sni-override nrt1.nbwly.com', rendered["start_script"])
+        self.assertIn('--http-upgrade-path-prefix "tokyo-panel-path.cfwg"', rendered["start_script"])
+        self.assertNotIn('--http-upgrade-path-prefix "/tokyo-panel-path.cfwg"', rendered["start_script"])
+        config_file = next(file for file in rendered["files"] if file["path"] == "/etc/leikwan/mptcp-forward-47.json")
+        payload = json.loads(config_file["content"])
+        leg = payload["underlays"][0]["legs"][0]
+        self.assertEqual(2053, leg["cf_dial_port"])
+        self.assertEqual("nrt1.nbwly.com", leg["cf_sni_host"])
+        self.assertEqual("tokyo-panel-path.cfwg", leg["cf_path_prefix"])
+
     def test_cf_wg_self_leg_renders_wstunnel_udp_before_wg_up(self) -> None:
         forward = {
             "forward_id": 47,
@@ -384,6 +424,8 @@ class CfWgSelfLegTests(unittest.TestCase):
         self.assertNotIn("udp://127.0.0.1:40047:104.16.0.5:443?timeout_sec=0", rendered["start_script"])
         self.assertIn('ss -lun "sport = :$port"', rendered["start_script"])
         self.assertIn("wss://104.16.0.5:443", rendered["start_script"])
+        self.assertIn('--http-upgrade-path-prefix "tokyo.cfwg"', rendered["start_script"])
+        self.assertNotIn('--http-upgrade-path-prefix "/tokyo.cfwg"', rendered["start_script"])
 
         config_file = next(file for file in rendered["files"] if file["path"] == "/etc/leikwan/mptcp-forward-47.json")
         payload = json.loads(config_file["content"])
