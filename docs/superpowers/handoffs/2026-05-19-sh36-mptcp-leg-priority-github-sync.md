@@ -135,3 +135,37 @@ cp -a /root/leikwan-mptcp-leg-priority-sh36-20260519-005901/install_forward_runt
 chmod 0755 /usr/local/bin/leikwan-client-agent.py /usr/local/bin/install_forward_runtime.py
 systemctl restart leikwan-client-agent.service
 ```
+
+## 2026-05-19 no-op apply loop completion
+
+Follow-up result:
+
+- Panel sync target `root@10.0.10.196:/www/wwwroot/v3.leikwanhost.com/leikwan-v3` updated with:
+  - `client-agent/client_agent.py` SHA256 `3311d805ef92701e8ba6a3301cf04229778df2946af019ebff4f9b28d917fcaf`
+  - `client-agent/install_forward_runtime.py` SHA256 `f92ccd2d8640f8ecfef5eec1c4c5cf1e002ccf285ee127133d28ab967fc05a31`
+  - `sidecar-agent/sidecar_agent.py` SHA256 `43e65f0487fe1d937359271cb06ac7a16c53ce6737b3d9a434263556509133c1`
+  - `master/src/Support/ProvisioningService.php` SHA256 `806016e27e08d729692d8681ba2c00b4b2133f91cdd351cf36eb2f27ead9fa0b`
+- Panel backup: `/root/leikwan-noop-apply-panel-20260519-210156`.
+- sh36 target `root@114.80.33.50` updated directly because hostname SSH intermittently reset and WSL was unavailable.
+- sh36 backup: `/root/leikwan-noop-apply-sh36-20260519-210654`.
+- sh36 final installed hashes:
+  - `/usr/local/bin/leikwan-client-agent.py` SHA256 `3311d805ef92701e8ba6a3301cf04229778df2946af019ebff4f9b28d917fcaf`
+  - `/usr/local/bin/install_forward_runtime.py` SHA256 `f92ccd2d8640f8ecfef5eec1c4c5cf1e002ccf285ee127133d28ab967fc05a31`
+- sh36 verification after restart and one full poll interval:
+  - `leikwan-client-agent.service` active.
+  - `config_pull_state.json`: `applied_forward_ids=[47,59]`, `noop_forward_ids=[47,59]`, `agent_version=2026.05.17.5`.
+  - `journalctl --since '90 seconds ago'` had no `applying forward` / `applied forward` lines, proving the noisy reapply loop stopped after the new signatures were recorded.
+  - forward 47 runtime still rendered CF-WG primary + standby helper:
+    - endpoint 0 `10.204.53.41 dev lw-cfwg-47`, `leg_role=primary`, `backup_only=false`
+    - endpoint 1 `10.203.201.133 dev lw-mptcp-47-0`, `leg_role=standby`, `backup_only=true`
+    - kernel MPTCP: `lw-cfwg-47` primary, `lw-mptcp-47-0` backup.
+
+Local verification:
+
+- `py -3 -m py_compile client-agent/client_agent.py client-agent/install_forward_runtime.py client-agent/leikwan_mptcp_client.py sidecar-agent/sidecar_agent.py`: pass.
+- `py -3 -m unittest discover -s client-agent/tests -p 'test_*.py'`: `Ran 201 tests ... OK`.
+- `py -3 -m unittest discover -s sidecar-agent/tests -p 'test_*.py'`: `Ran 29 tests ... OK`.
+- `php -l master/src/Support/ProvisioningService.php`: pass.
+- `php -l master/src/Controllers/SidecarAgentController.php`: pass.
+- `php master/tests/provisioning_self_leg_cf_wg_transport_regression_test.php`: `ok`.
+- `php master/tests/bond_versions_manifest_regression_test.php` still fails because existing dirty checkout has `artifacts/versions.json` bond version `0.1.16` while `wstunnel-main/leikwan-bond/Cargo.toml` says `0.1.15`; this is unrelated to the no-op apply-loop fix and predates this completion.

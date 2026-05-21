@@ -201,6 +201,92 @@ class SlavePlainTcpMuxTests(unittest.TestCase):
         self.assertIn("systemctl enable wstunnel-svc-1-184.service", commands)
         self.assertIn("systemctl restart wstunnel-svc-1-184.service", commands)
 
+    def test_ensure_backend_service_tolerates_transient_systemd_enable_failure(self) -> None:
+        agent = self.make_agent()
+        commands: list[str] = []
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            result = Result()
+            if command == "systemctl enable wstunnel-svc-1-184.service":
+                result.returncode = 1
+                result.stderr = "Reload daemon failed: Connection timed out"
+                if check:
+                    raise RuntimeError(result.stderr)
+            return result
+
+        with mock.patch.object(slave_agent_module.shutil, "which", return_value="/bin/systemctl"):
+            with mock.patch.object(agent, "systemd_is_active", return_value=False):
+                with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                    agent.ensure_backend_service("wstunnel-svc-1-184", unit_changed=True)
+
+        self.assertIn("systemctl daemon-reload", commands)
+        self.assertIn("systemctl enable wstunnel-svc-1-184.service", commands)
+        self.assertIn("systemctl start wstunnel-svc-1-184.service", commands)
+
+    def test_sync_listener_tolerates_transient_systemd_enable_failure(self) -> None:
+        agent = self.make_agent()
+        service_name = slave_agent_module.safe_name(2, 456)
+        agent.write_json(
+            agent.metadata_path(service_name),
+            {
+                "service_name": service_name,
+                "service_id": 2,
+                "forward_id": 47,
+                "endpoint_id": 456,
+                "listen_port": 7000,
+                "backend_port": 7001,
+                "target": "127.0.0.1:8899",
+                "path_prefix": "07289d1f5ed25399",
+                "route_key": "07289d1f5ed25399",
+                "ingress_protocol": "plain_tcp_mux",
+                "ingress_auth_token": "token-456",
+                "backend_protocol": "wss_backend",
+                "transport_mode": "tcp",
+                "relay_protocols": [],
+                "relay_target": "",
+                "relay_service_name": "",
+                "relay_client_service_name": "",
+                "relay_client_port": 0,
+                "mptcp_underlay": {},
+                "filter_profile": "off",
+                "status": "active",
+            },
+        )
+        commands: list[str] = []
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            result = Result()
+            if command == "systemctl enable leikwan-tcp-mux-7000.service":
+                result.returncode = 1
+                result.stderr = "Transport endpoint is not connected"
+                if check:
+                    raise RuntimeError(result.stderr)
+            return result
+
+        with mock.patch.object(slave_agent_module.shutil, "which", return_value="/bin/systemctl"):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                agent.sync_listener(7000)
+
+        routes_path = agent.listener_routes_path(7000)
+        self.assertTrue(routes_path.exists())
+        self.assertIn("systemctl daemon-reload", commands)
+        self.assertIn("systemctl enable leikwan-tcp-mux-7000.service", commands)
+        self.assertIn("systemctl restart leikwan-tcp-mux-7000.service", commands)
+
     def test_publish_task_never_allocates_backend_on_public_listener_port(self) -> None:
         agent = self.make_agent()
         agent.config["backend_port_range_start"] = 7000

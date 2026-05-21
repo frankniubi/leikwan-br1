@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.04.24.1"
+INSTALLER_VERSION="2026.05.20.1"
 MASTER_URL=""
+ARTIFACT_BASE=""
 TOKEN=""
 GROUP_KEY="default"
 REGION="unknown"
@@ -171,6 +172,7 @@ PY
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --master) MASTER_URL="$2"; shift 2 ;;
+    --artifact-base) ARTIFACT_BASE="$2"; shift 2 ;;
     --token) TOKEN="$2"; shift 2 ;;
     --group) GROUP_KEY="$2"; shift 2 ;;
     --region) REGION="$2"; shift 2 ;;
@@ -237,6 +239,9 @@ if [[ "$MODE" != "install" ]]; then
   if [[ -z "$MASTER_URL" ]]; then
     MASTER_URL="$(json_config_value master_url)"
   fi
+  if [[ -z "$ARTIFACT_BASE" ]]; then
+    ARTIFACT_BASE="$(json_config_value artifact_base_url)"
+  fi
   if [[ -z "$TOKEN" ]]; then
     TOKEN="$(json_config_value enrollment_token)"
   fi
@@ -258,6 +263,10 @@ if [[ "$MODE" != "install" ]]; then
     fi
     exit 0
   fi
+fi
+
+if [[ -z "$ARTIFACT_BASE" ]]; then
+  ARTIFACT_BASE="$MASTER_URL"
 fi
 
 if [[ -z "$MASTER_URL" || -z "$TOKEN" ]]; then
@@ -302,14 +311,14 @@ ensure_time_sync
 install_wireguard_tools
 
 mkdir -p "$CONFIG_DIR" "$BIN_DIR"
-download_atomic "$MASTER_URL/artifacts/slave-agent.py" "$BIN_DIR/leikwan-slave-agent.py"
-download_atomic "$MASTER_URL/artifacts/slave-agent-update.sh" "$BIN_DIR/leikwan-slave-update"
-download_atomic "$MASTER_URL/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
-download_atomic "$MASTER_URL/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
-download_atomic "$MASTER_URL/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
+download_atomic "$ARTIFACT_BASE/artifacts/slave-agent.py" "$BIN_DIR/leikwan-slave-agent.py"
+download_atomic "$ARTIFACT_BASE/artifacts/slave-agent-update.sh" "$BIN_DIR/leikwan-slave-update"
+download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
+download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
+download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
 
 # --- WireGuard watchdog ---
-download_atomic "$MASTER_URL/artifacts/leikwan-wg-watchdog.sh" "$BIN_DIR/leikwan-wg-watchdog.sh"
+download_atomic "$ARTIFACT_BASE/artifacts/leikwan-wg-watchdog.sh" "$BIN_DIR/leikwan-wg-watchdog.sh"
 cat > /etc/systemd/system/leikwan-wg-watchdog.service <<'WDUNIT'
 [Unit]
 Description=Leikwan WireGuard Watchdog
@@ -339,24 +348,25 @@ if running_kernel_has_mptcp; then
   SUPPORTS_MPTCP=true
 fi
 
-python3 - <<'PY' "$CONFIG_PATH" "$MASTER_URL" "$TOKEN" "$GROUP_KEY" "$REGION" "$PUBLIC_IP" "$SUPPORTS_MPTCP" "$TLS_MODE" "$TLS_DOMAIN" "$TLS_EMAIL" "$TLS_WILDCARD" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "$CLOUDFLARE_EMAIL" "$CLOUDFLARE_GLOBAL_KEY" "$INSTALLER_VERSION"
+python3 - <<'PY' "$CONFIG_PATH" "$MASTER_URL" "$ARTIFACT_BASE" "$TOKEN" "$GROUP_KEY" "$REGION" "$PUBLIC_IP" "$SUPPORTS_MPTCP" "$TLS_MODE" "$TLS_DOMAIN" "$TLS_EMAIL" "$TLS_WILDCARD" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "$CLOUDFLARE_EMAIL" "$CLOUDFLARE_GLOBAL_KEY" "$INSTALLER_VERSION"
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 master_url = sys.argv[2]
-token = sys.argv[3]
-group_key = sys.argv[4]
-region = sys.argv[5]
-public_ip = sys.argv[6]
-supports_mptcp = sys.argv[7].strip().lower() == "true"
-tls_mode = sys.argv[8]
-tls_domain = sys.argv[9]
-tls_email = sys.argv[10]
-tls_wildcard = int(sys.argv[11] or "0")
-tls_cert_path = sys.argv[12]
-tls_key_path = sys.argv[13]
-cloudflare_email = sys.argv[14]
-cloudflare_global_key = sys.argv[15]
-installer_version = sys.argv[16]
+artifact_base_url = sys.argv[3]
+token = sys.argv[4]
+group_key = sys.argv[5]
+region = sys.argv[6]
+public_ip = sys.argv[7]
+supports_mptcp = sys.argv[8].strip().lower() == "true"
+tls_mode = sys.argv[9]
+tls_domain = sys.argv[10]
+tls_email = sys.argv[11]
+tls_wildcard = int(sys.argv[12] or "0")
+tls_cert_path = sys.argv[13]
+tls_key_path = sys.argv[14]
+cloudflare_email = sys.argv[15]
+cloudflare_global_key = sys.argv[16]
+installer_version = sys.argv[17]
 payload = {}
 if path.exists():
     try:
@@ -367,6 +377,7 @@ if path.exists():
         payload = {}
 payload.update({
     "master_url": master_url,
+    "artifact_base_url": artifact_base_url,
     "enrollment_token": token,
     "group_key": group_key,
     "region": region,

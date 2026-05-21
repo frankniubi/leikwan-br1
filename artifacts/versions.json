@@ -1,18 +1,18 @@
 {
   "slave_agent": {
-    "version": "2026.05.16.4",
+    "version": "2026.05.21.4",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "66f8d879c67f6147077e6f5e284dc3dbc73c8b16f5b4659f6c7bbe3582113f50",
-    "size_bytes": 181235
+    "sha256": "19b29e994366791f4ba9343b27b3cdfe0b0d2fed88f0f0446412ed50332f8927",
+    "size_bytes": 192225
   },
   "slave_installer": {
-    "version": "2026.04.24.1",
+    "version": "2026.05.20.1",
     "path": "install/install-slave.sh",
     "install_url": "/artifacts/install-slave.sh",
     "remote_install_url": "/artifacts/remote-install-slave.sh",
-    "sha256": "97e113e2e9059f6f7a71c003ed289a109b3776575b7d2d843b572efcb684711f",
-    "size_bytes": 12949
+    "sha256": "7c6ba7f222349bbce14431f0c11ff513c81d14ef6d0b02c720ced070f948b49b",
+    "size_bytes": 13744
   },
   "client_installer": {
     "version": "2026.05.12.1",
@@ -31,7 +31,7 @@
     "install_url": "/artifacts/manage-client.ps1"
   },
   "bond_sidecar_installer": {
-    "version": "2026.05.13.1",
+    "version": "2026.04.26.1",
     "path": "install/install-bond-sidecar.sh",
     "install_url": "/artifacts/install-bond-sidecar.sh",
     "sha256": "3e8a16fb79e3f5c9d9311e0e1184a0fdab747f4ac77987b8580e3c08bea69d4c",
@@ -43,33 +43,34 @@
     "install_url": "/artifacts/uninstall-bond-sidecar.sh"
   },
   "client_agent": {
-    "version": "2026.05.17.3",
+    "version": "2026.05.20.1",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "75354f40397f64d78e334e256615547d7f44203fe920323fba90610753ccec5f",
-    "size_bytes": 191482
+    "sha256": "a4d169aec1fdfb9140dd1f0101e67767b5f18ef2bd16c45d11a511932e61d46f",
+    "size_bytes": 208575
   },
   "client_agent_installer": {
-    "version": "2026.05.15.3",
+    "version": "2026.05.20.1",
     "path": "install/install-client-agent.sh",
     "install_url": "/artifacts/install-client-agent.sh",
     "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "06544241cff358c15f2b6fbdf1b54523ec3677e05692cb475c4d0f645a426d98",
-    "size_bytes": 7069
+    "sha256": "9a74d45a3b4131f0266027a443833b217a2f3a897d6b09c0bed0a359232944d7",
+    "size_bytes": 7173,
+    "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
-    "version": "2026.05.17.1",
+    "version": "2026.05.17.2",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "8fffe1d45da0ae2345cf0e1c623e4375cad931ca9152fc056c757ca6c978b2cd",
-    "size_bytes": 79183
+    "sha256": "94a182673f6001e206acb3a3289afc0b39c24aad377d3f7572fcb7def0eee345",
+    "size_bytes": 79848
   },
   "mptcp_client_runtime": {
-    "version": "2026.05.17.1",
+    "version": "2026.05.21.1",
     "path": "client-agent/leikwan_mptcp_client.py",
     "artifact_url": "/artifacts/leikwan-mptcp-client.py",
-    "sha256": "5f150daeeaa8f354036c14761b7beeb54e3518d2177a08db41d8219bf19cd3f7",
-    "size_bytes": 50810
+    "sha256": "195e4fc094d99bb610ae6fb10de8568cc13931e1934f8e79e6cceeeda8774212",
+    "size_bytes": 49717
   },
   "uot_runtime": {
     "version": "2026.04.08.1",
@@ -142,10 +143,17 @@
     "artifact_url": "/artifacts/leikwan-bridge-setup.exe"
   },
   "install_forward_runtime": {
-    "version": "2026.05.17.1",
+    "version": "2026.05.21.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "f88c4c2f763a0d58ba49a4ea4f1a874eecac51cf3a54a4bc84c63bb22f5f9c24",
-    "size_bytes": 56592
+    "sha256": "64829f1fe7c5b7a6233aea4f1142f2cac6f110a026c162eccfe7d73378f87e20",
+    "size_bytes": 68262
+  },
+  "cfwg_latency_watchdog": {
+    "version": "2026.05.20.1",
+    "path": "client-agent/cfwg_latency_watchdog.py",
+    "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
+    "sha256": "ae9f8b50f15a29da1dab24820736e772e814d029efadabeb8e533a1f55f8c59c",
+    "size_bytes": 26349
   }
 }

@@ -63,6 +63,14 @@ class SidecarAgentUpdateHelperTests(unittest.TestCase):
         self.assertIn("leikwan_mptcp_relay_linux_amd64", versions)
         self.assertIn("'leikwan_mptcp_relay_linux_amd64'", artifact_controller)
 
+
+    def test_sidecar_update_helper_uses_artifact_base_when_present(self) -> None:
+        source = (REPO_ROOT / "install" / "sidecar-agent-update.sh").read_text(encoding="utf-8")
+
+        self.assertIn('ARTIFACT_BASE=$(python3 - "${CONFIG_PATH}"', source)
+        self.assertIn('${ARTIFACT_BASE%/}/artifacts/install-bond-sidecar.sh', source)
+        self.assertIn('--artifact-base "${ARTIFACT_BASE}"', source)
+
     def test_sidecar_update_helper_stops_runtime_and_agent_services(self) -> None:
         source = (REPO_ROOT / "install" / "sidecar-agent-update.sh").read_text(encoding="utf-8")
 
@@ -70,6 +78,29 @@ class SidecarAgentUpdateHelperTests(unittest.TestCase):
         self.assertIn('systemctl stop "${SERVICE_NAME}.service"', source)
         self.assertIn('systemctl stop "${MPTCP_SERVICE_NAME}.service"', source)
         self.assertIn('systemctl stop "${AGENT_SERVICE_NAME}.service"', source)
+
+
+    def test_sidecar_agent_config_patch_accepts_artifact_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(pathlib.Path(tmp_dir) / "state"),
+                        "service_name": "leikwan-bond-sidecar-5",
+                        "runtime_config_path": str(pathlib.Path(tmp_dir) / "runtime.json"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+
+            agent.apply_config_patch({"artifact_base_url": "https://artifacts.example.com"})
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual("https://artifacts.example.com", saved["artifact_base_url"])
 
     def test_sidecar_agent_requests_self_update_for_bond_sha_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

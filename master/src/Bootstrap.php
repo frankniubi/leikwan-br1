@@ -104,6 +104,8 @@ final class Bootstrap
         $this->router->add('GET', '/admin', [$admin, 'dashboard']);
         $this->router->add('POST', '/admin/republish/all', [$admin, 'republishAllForwards']);
         $this->router->add('POST', '/admin/provision-tasks/purge-stale', [$admin, 'purgeStaleProvisionTasks']);
+        $this->router->add('POST', '/admin/provision-queue/repair', [$admin, 'repairProvisionQueue']);
+        $this->router->add('POST', '/admin/provision-queue/republish-endpoint', [$admin, 'republishProvisionEndpoint']);
         $this->router->add('GET', '/admin/diagnostics', [$admin, 'diagnosticsPage']);
         $this->router->add('GET', '/admin/tenants', [$admin, 'tenantsPage']);
         $this->router->add('GET', '/admin/registration', [$admin, 'tenantRegistrationPage']);
@@ -231,6 +233,7 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/sidecar-manifest.json', [$artifacts, 'sidecarManifest']);
         $this->router->add('GET', '/artifacts/client-manifest.json', [$artifacts, 'clientManifest']);
         $this->router->add('GET', '/artifacts/client-agent.py', [$artifacts, 'clientAgent']);
+        $this->router->add('GET', '/artifacts/cfwg-latency-watchdog.py', [$artifacts, 'cfwgLatencyWatchdog']);
         $this->router->add('GET', '/artifacts/sidecar-agent.py', [$artifacts, 'sidecarAgent']);
         $this->router->add('GET', '/artifacts/install-forward-runtime.py', [$artifacts, 'installForwardRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-mptcp-client.py', [$artifacts, 'mptcpClientRuntime']);
