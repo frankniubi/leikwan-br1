@@ -263,6 +263,30 @@ final class AdminController extends BaseController
         return $this->adminPage('Diagnostics', $body, $viewer, 'overview');
     }
 
+
+    public function republishProvisionEndpoint(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $nodeId = (int) $request->input('repair_node_id', 0);
+            $forwardId = (int) $request->input('repair_forward_id', 0);
+            $endpointId = (int) $request->input('repair_endpoint_id', 0);
+            if ($this->provisioning === null || !$this->provisioning->republishActiveEndpoint($nodeId, $forwardId, $endpointId)) {
+                throw new ApiException('endpoint_not_found_or_inactive', 404);
+            }
+            SessionAuth::flash('success', 'Republished endpoint. node=' . $nodeId . ' forward=' . $forwardId . ' endpoint=' . $endpointId);
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to republish endpoint: ' . $this->displayThrowableMessage($throwable));
+        }
+
+        return Response::redirect('/admin');
+    }
+
     public function purgeStaleProvisionTasks(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
@@ -310,6 +334,123 @@ final class AdminController extends BaseController
         }
 
         return Response::redirect('/admin');
+    }
+
+
+    public function repairProvisionQueue(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $nodeId = (int) $request->input('repair_node_id', 2);
+            $mode = (string) $request->input('repair_mode', 'reclaim_expired_running');
+            if (!in_array($mode, ['reclaim_expired_running', 'collapse_duplicate_pending'], true)) {
+                $mode = 'reclaim_expired_running';
+            }
+
+            $affected = 0;
+            if ($mode === 'reclaim_expired_running') {
+                $affected = $this->reclaimExpiredRunningProvisionTasks($nodeId);
+                SessionAuth::flash('success', 'Provision queue repair reclaimed expired running task(s). node=' . ($nodeId > 0 ? $nodeId : 'all') . ' affected=' . $affected);
+            } else {
+                $affected = $this->collapseDuplicatePendingProvisionTasks($nodeId);
+                SessionAuth::flash('success', 'Provision queue repair collapsed duplicate pending task(s). node=' . ($nodeId > 0 ? $nodeId : 'all') . ' affected=' . $affected);
+            }
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to repair provision queue: ' . $this->displayThrowableMessage($throwable));
+        }
+
+        return Response::redirect('/admin');
+    }
+
+    private function reclaimExpiredRunningProvisionTasks(int $nodeId): int
+    {
+        $params = [
+            'pending_status' => 'pending',
+            'running_status' => 'running',
+            'updated_at' => gmdate('Y-m-d H:i:s'),
+            'error_message' => 'reclaimed expired running task by admin queue repair',
+            'now' => gmdate('Y-m-d H:i:s'),
+        ];
+        $nodeFilter = '';
+        if ($nodeId > 0) {
+            $nodeFilter = ' AND node_id = :repair_node_id';
+            $params['repair_node_id'] = $nodeId;
+        }
+
+        return $this->db->execute(
+            'UPDATE provision_tasks
+             SET status = :pending_status,
+                 lease_expires_at = NULL,
+                 attempt_count = GREATEST(attempt_count - 1, 0),
+                 updated_at = :updated_at,
+                 error_message = :error_message
+             WHERE status = :running_status
+               AND lease_expires_at IS NOT NULL
+               AND lease_expires_at < :now' . $nodeFilter,
+            $params
+        );
+    }
+
+    private function collapseDuplicatePendingProvisionTasks(int $nodeId): int
+    {
+        $now = gmdate('Y-m-d H:i:s');
+        $resultJson = json_encode([
+            'note' => 'superseded_by_admin_queue_repair',
+            'node_id' => $nodeId > 0 ? $nodeId : null,
+            'mode' => 'collapse_duplicate_pending',
+            'collapsed_at' => $now,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        $innerNodeFilter = '';
+        $outerNodeFilter = '';
+        $params = [
+            'completed_status' => 'completed',
+            'result_json' => $resultJson,
+            'updated_at' => $now,
+            'group_pending_status' => 'pending',
+            'task_pending_status' => 'pending',
+        ];
+        if ($nodeId > 0) {
+            $innerNodeFilter = ' AND node_id = :group_node_id';
+            $outerNodeFilter = ' AND t.node_id = :task_node_id';
+            $params['group_node_id'] = $nodeId;
+            $params['task_node_id'] = $nodeId;
+        }
+
+        return $this->db->execute(
+            'UPDATE provision_tasks
+             SET status = :completed_status,
+                 result_json = :result_json,
+                 error_message = NULL,
+                 lease_expires_at = NULL,
+                 updated_at = :updated_at
+             WHERE id IN (
+                 SELECT id FROM (
+                     SELECT t.id
+                     FROM provision_tasks t
+                     INNER JOIN (
+                         SELECT node_id, action, service_id, forward_id, endpoint_id, MAX(id) AS keep_id
+                         FROM provision_tasks
+                         WHERE status = :group_pending_status' . $innerNodeFilter . '
+                         GROUP BY node_id, action, service_id, forward_id, endpoint_id
+                         HAVING COUNT(*) > 1
+                     ) duplicate_groups
+                       ON duplicate_groups.node_id = t.node_id
+                      AND duplicate_groups.action = t.action
+                      AND duplicate_groups.service_id = t.service_id
+                      AND duplicate_groups.forward_id = t.forward_id
+                      AND duplicate_groups.endpoint_id = t.endpoint_id
+                     WHERE t.status = :task_pending_status
+                       AND t.id <> duplicate_groups.keep_id' . $outerNodeFilter . '
+                 ) duplicate_pending_rows
+             )',
+            $params
+        );
     }
 
     /**
@@ -383,6 +524,27 @@ final class AdminController extends BaseController
                   <option value="60">60 min</option>
                 </select>
                 <button type="submit" class="button danger" onclick="return confirm(\'Delete stale pending tasks only?\');">Purge stale pending</button>
+              </form>
+              <form class="actions" method="post" action="/admin/provision-queue/repair" style="margin-top:14px;">
+                <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                <label class="muted" for="repair-node-id">Repair node</label>
+                <input id="repair-node-id" name="repair_node_id" type="number" min="0" value="2" style="max-width:90px;">
+                <label class="muted" for="repair-mode">Mode</label>
+                <select id="repair-mode" name="repair_mode">
+                  <option value="reclaim_expired_running" selected>Reclaim expired running</option>
+                  <option value="collapse_duplicate_pending">Collapse duplicate pending</option>
+                </select>
+                <button type="submit" class="button secondary" onclick="return confirm(\'Repair provision queue rows without deleting history?\');">Repair queue</button>
+              </form>
+              <form class="actions" method="post" action="/admin/provision-queue/republish-endpoint" style="margin-top:14px;">
+                <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                <label class="muted" for="republish-node-id">Republish node</label>
+                <input id="republish-node-id" name="repair_node_id" type="number" min="1" value="2" style="max-width:90px;">
+                <label class="muted" for="republish-forward-id">Forward</label>
+                <input id="republish-forward-id" name="repair_forward_id" type="number" min="1" value="47" style="max-width:90px;">
+                <label class="muted" for="republish-endpoint-id">Endpoint</label>
+                <input id="republish-endpoint-id" name="repair_endpoint_id" type="number" min="1" value="456" style="max-width:90px;">
+                <button type="submit" class="button secondary" onclick="return confirm(\'Republish this one endpoint only?\');">Republish endpoint</button>
               </form>
             </section>';
     }

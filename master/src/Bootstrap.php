@@ -104,6 +104,8 @@ final class Bootstrap
         $this->router->add('GET', '/admin', [$admin, 'dashboard']);
         $this->router->add('POST', '/admin/republish/all', [$admin, 'republishAllForwards']);
         $this->router->add('POST', '/admin/provision-tasks/purge-stale', [$admin, 'purgeStaleProvisionTasks']);
+        $this->router->add('POST', '/admin/provision-queue/repair', [$admin, 'repairProvisionQueue']);
+        $this->router->add('POST', '/admin/provision-queue/republish-endpoint', [$admin, 'republishProvisionEndpoint']);
         $this->router->add('GET', '/admin/diagnostics', [$admin, 'diagnosticsPage']);
         $this->router->add('GET', '/admin/tenants', [$admin, 'tenantsPage']);
         $this->router->add('GET', '/admin/registration', [$admin, 'tenantRegistrationPage']);

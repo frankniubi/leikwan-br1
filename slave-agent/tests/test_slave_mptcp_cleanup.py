@@ -108,6 +108,57 @@ class SlaveMptcpCleanupTests(unittest.TestCase):
         remove_uot_mock.assert_any_call("lwf19n5")
         remove_uot_mock.assert_any_call("lwm38")
 
+    def test_apply_mptcp_underlay_force_reloads_when_live_peers_are_stale(self) -> None:
+        agent = self.make_agent()
+        commands = []
+        written = []
+
+        def fake_run_command(command: str, check: bool = True):
+            commands.append(command)
+            if command == "wg show lwf47n2 peers":
+                return SimpleNamespace(returncode=0, stdout="client-pub\nstale-sidecar-pub\n", stderr="")
+            if command == "systemctl restart wg-quick@lwf47n2.service":
+                return SimpleNamespace(returncode=1, stdout="", stderr="Failed to restart: Transport endpoint is not connected")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        def fake_write(path, content):
+            written.append(str(path))
+            return False
+
+        private_key_path = agent.wireguard_private_key_path()
+        private_key_path.parent.mkdir(parents=True, exist_ok=True)
+        private_key_path.write_text("slave-private\n", encoding="utf-8")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run_command):
+                with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                    with mock.patch.object(agent, "ensure_clean_mptcp_underlay"):
+                        with mock.patch.object(agent, "write_text_if_changed", side_effect=fake_write):
+                            with mock.patch.object(agent, "ensure_uot_server_service"):
+                                agent.apply_mptcp_underlay(
+                                    "wstunnel-svc-2-456",
+                                    {
+                                        "enabled": True,
+                                        "interface_name": "lwf47n2",
+                                        "listen_port": 7329,
+                                        "slave_address": "10.203.201.134",
+                                        "client_address": "10.203.201.133",
+                                        "sidecar_address": "10.203.201.135",
+                                        "client_public_key": "client-pub",
+                                        "sidecar_public_key": "sidecar-pub",
+                                        "sidecar_endpoint_host": "185.220.238.143",
+                                        "sidecar_endpoint_port": 14974,
+                                        "peer_keepalive_seconds": 25,
+                                    },
+                                )
+
+        self.assertTrue(any(path.endswith("lwf47n2.conf") for path in written))
+        self.assertIn("wg show lwf47n2 peers", commands)
+        self.assertIn("systemctl restart wg-quick@lwf47n2.service", commands)
+        self.assertIn("wg-quick down lwf47n2", commands)
+        self.assertIn("ip link delete dev lwf47n2", commands)
+        self.assertIn("wg-quick up lwf47n2", commands)
+
     def test_install_slave_script_supports_update_mode(self) -> None:
         source = (REPO_ROOT / "install" / "install-slave.sh").read_text(encoding="utf-8")
 

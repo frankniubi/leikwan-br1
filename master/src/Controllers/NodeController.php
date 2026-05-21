@@ -369,6 +369,7 @@ final class NodeController extends BaseController
     public function pullTasks(Request $request, array $params): Response
     {
         $node = Auth::requireNode($request, $this->db);
+        $this->reclaimExpiredProvisionTaskLeases((int) $node['id']);
         $limit = min(100, max(1, (int) $request->input('limit', $this->config->getInt('MAX_TASK_BATCH', 20))));
         $tasks = $this->db->fetchAll(
             'SELECT *
@@ -437,6 +438,35 @@ final class NodeController extends BaseController
                 'desired_installer_sha256' => (string) ($slaveInstaller['sha256'] ?? ''),
             ],
         ]);
+    }
+
+    private function reclaimExpiredProvisionTaskLeases(int $nodeId): void
+    {
+        if ($nodeId <= 0) {
+            return;
+        }
+
+        $now = gmdate('Y-m-d H:i:s');
+        $this->db->execute(
+            'UPDATE provision_tasks
+             SET status = :pending_status,
+                 lease_expires_at = NULL,
+                 attempt_count = GREATEST(attempt_count - 1, 0),
+                 updated_at = :updated_at,
+                 error_message = :error_message
+             WHERE node_id = :node_id
+               AND status = :running_status
+               AND lease_expires_at IS NOT NULL
+               AND lease_expires_at < :now',
+            [
+                'node_id' => $nodeId,
+                'pending_status' => 'pending',
+                'running_status' => 'running',
+                'now' => $now,
+                'updated_at' => $now,
+                'error_message' => 'lease expired; reclaimed for retry',
+            ]
+        );
     }
 
     public function ackTask(Request $request, array $params): Response
