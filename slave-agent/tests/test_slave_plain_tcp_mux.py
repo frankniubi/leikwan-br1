@@ -287,6 +287,59 @@ class SlavePlainTcpMuxTests(unittest.TestCase):
         self.assertIn("systemctl enable leikwan-tcp-mux-7000.service", commands)
         self.assertIn("systemctl restart leikwan-tcp-mux-7000.service", commands)
 
+    def test_publish_task_applies_mptcp_underlay_even_when_backend_start_transiently_fails(self) -> None:
+        agent = self.make_agent()
+        task = {
+            "service_id": 2,
+            "forward_id": 47,
+            "endpoint_id": 456,
+            "payload": {},
+        }
+        payload = {
+            "target": "127.0.0.1:8899",
+            "listen_port": 7000,
+            "path_prefix": "07289d1f5ed25399",
+            "route_key": "07289d1f5ed25399",
+            "transport_mode": "tcp",
+            "ingress_protocol": "plain_tcp_mux",
+            "backend_protocol": "wss_backend",
+            "backend_mode": "cf_mode",
+            "cf_mode": {
+                "dial_host": "185.220.238.143",
+                "dial_port": 2053,
+                "sni_host": "nrt1.nbwly.com",
+                "path_prefix": "07289d1f5ed25399",
+            },
+            "mptcp_underlay": {
+                "enabled": True,
+                "interface_name": "lwf47n2",
+                "client_address": "10.203.201.133",
+                "slave_address": "10.203.201.134",
+                "sidecar_address": "10.203.201.135",
+            },
+        }
+        applied: list[str] = []
+
+        def fake_ensure_backend_service(*args, **kwargs):
+            raise RuntimeError(
+                "command failed: systemctl start wstunnel-svc-2-456.service\n"
+                "stderr=Failed to start wstunnel-svc-2-456.service: Transport endpoint is not connected"
+            )
+
+        with mock.patch.object(agent, "select_cf_location_ip", return_value={"selected_ip": "162.159.39.4"}):
+            with mock.patch.object(agent, "ensure_backend_service", side_effect=fake_ensure_backend_service):
+                with mock.patch.object(agent, "apply_mptcp_underlay", side_effect=lambda service, underlay: applied.append(service)):
+                    with mock.patch.object(agent, "ensure_nft_table"):
+                        with mock.patch.object(agent, "delete_nft_rules"):
+                            with mock.patch.object(agent, "add_nft_rules"):
+                                with mock.patch.object(agent, "sync_listener"):
+                                    with mock.patch.object(agent, "write_filter_marker", return_value={"filter_profile": "off"}):
+                                        result = agent.publish_task(task, payload)
+
+        self.assertTrue(result["wstunnel_start_deferred"])
+        self.assertEqual(["wstunnel-svc-2-456"], applied)
+
+
     def test_publish_task_never_allocates_backend_on_public_listener_port(self) -> None:
         agent = self.make_agent()
         agent.config["backend_port_range_start"] = 7000
