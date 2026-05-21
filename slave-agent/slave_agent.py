@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.05.16.4"
+AGENT_VERSION = "2026.05.21.3"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -154,6 +154,42 @@ def run_command(command: str, check: bool = True) -> subprocess.CompletedProcess
     if check and result.returncode != 0:
         raise RuntimeError(f"command failed: {command}\nstdout={result.stdout}\nstderr={result.stderr}")
     return result
+
+
+def is_transient_systemd_error(detail: str) -> bool:
+    text = str(detail or "").lower()
+    return any(item in text for item in (
+        "transport endpoint is not connected",
+        "connection timed out",
+        "failed to connect to bus",
+        "system has not been booted with systemd",
+    ))
+
+
+
+def wireguard_peers_match_config(interface_name: str, expected_public_keys: list[str]) -> bool:
+    expected = {str(item or "").strip() for item in expected_public_keys if str(item or "").strip() != ""}
+    if interface_name == "" or not expected:
+        return False
+    result = run_command(f"wg show {interface_name} peers", check=False)
+    if int(getattr(result, "returncode", 0) or 0) != 0:
+        return False
+    actual = {item.strip() for item in str(getattr(result, "stdout", "") or "").split() if item.strip() != ""}
+    return expected.issubset(actual)
+
+def run_systemctl_tolerating_transient(command: str) -> bool:
+    result = run_command(command, check=False)
+    if int(getattr(result, "returncode", 0) or 0) == 0:
+        return True
+    detail = str(getattr(result, "stderr", "") or getattr(result, "stdout", "") or "")
+    if is_transient_systemd_error(detail):
+        logging.warning("transient systemd failure ignored for %s: %s", command, detail.strip())
+        return False
+    raise RuntimeError(
+        f"command failed: {command}\n"
+        f"stdout={getattr(result, 'stdout', '')}\n"
+        f"stderr={getattr(result, 'stderr', '')}"
+    )
 
 
 def build_url(base_url: str, path: str, query: dict[str, Any] | None = None) -> str:
@@ -3005,8 +3041,8 @@ class SlaveAgent:
                 run_command(f"systemctl disable {stale_service_name}.service", check=False)
                 stale_unit_path.unlink()
             if unit_changed:
-                run_command("systemctl daemon-reload")
-            run_command(f"systemctl enable {service_name}.service")
+                run_systemctl_tolerating_transient("systemctl daemon-reload")
+            run_systemctl_tolerating_transient(f"systemctl enable {service_name}.service")
             if unit_changed:
                 run_command(f"systemctl restart {service_name}.service")
             else:
@@ -3027,8 +3063,8 @@ class SlaveAgent:
             if expected_exec_substring not in current_cmdline:
                 unit_changed = True
         if unit_changed:
-            run_command("systemctl daemon-reload")
-        run_command(f"systemctl enable {service_name}.service")
+            run_systemctl_tolerating_transient("systemctl daemon-reload")
+        run_systemctl_tolerating_transient(f"systemctl enable {service_name}.service")
         if unit_changed and is_active:
             run_command(f"systemctl restart {service_name}.service")
         elif not is_active:
@@ -3471,13 +3507,29 @@ WantedBy=multi-user.target
         path = self.wireguard_interface_path(interface_name)
         changed = self.write_text_if_changed(path, config)
         self.ensure_clean_mptcp_underlay(interface_name, underlay)
+        if not changed and not wireguard_peers_match_config(interface_name, [client_public_key, sidecar_public_key]):
+            logging.warning("mptcp underlay %s live peers differ from rendered config; forcing wg-quick reload", interface_name)
+            changed = True
         if str(underlay.get("outer_transport", "udp") or "udp").strip().lower() == "tcp":
             self.ensure_uot_server_service(interface_name, int(underlay.get("fallback_tcp_port", 0) or 0), listen_port)
         if shutil.which("systemctl"):
             if changed:
                 run_command("systemctl daemon-reload", check=False)
             run_command(f"systemctl enable wg-quick@{interface_name}.service", check=False)
-            run_command(f"systemctl restart wg-quick@{interface_name}.service", check=False)
+            if changed:
+                result = run_command(f"systemctl restart wg-quick@{interface_name}.service", check=False)
+                detail = str(getattr(result, "stderr", "") or getattr(result, "stdout", "") or "")
+                if int(getattr(result, "returncode", 0) or 0) != 0 and is_transient_systemd_error(detail):
+                    logging.warning("transient systemd restart failure for %s; reloading directly with wg-quick", interface_name)
+                    run_command(f"wg-quick down {interface_name}", check=False)
+                    run_command(f"ip link delete dev {interface_name}", check=False)
+                    run_command(f"wg-quick up {interface_name}")
+                elif int(getattr(result, "returncode", 0) or 0) != 0:
+                    raise RuntimeError(
+                        f"command failed: systemctl restart wg-quick@{interface_name}.service\n"
+                        f"stdout={getattr(result, 'stdout', '')}\n"
+                        f"stderr={getattr(result, 'stderr', '')}"
+                    )
 
     def remove_mptcp_underlay(self, service_name: str, underlay: dict[str, Any] | None = None) -> None:
         interface_name = self.mptcp_underlay_interface_name(service_name, underlay)

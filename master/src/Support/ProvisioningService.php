@@ -4554,6 +4554,7 @@ final class ProvisioningService
      */
     private function queueTask(int $nodeId, string $action, int $serviceId, int $forwardId, int $endpointId, array $payload): void
     {
+        $this->collapsePendingProvisionTasksForNode($nodeId, $action, $serviceId, $forwardId, $endpointId);
         $this->db->insert('provision_tasks', [
             'node_id' => $nodeId,
             'action' => $action,
@@ -4569,6 +4570,55 @@ final class ProvisioningService
             'created_at' => $this->now(),
             'updated_at' => $this->now(),
         ]);
+    }
+
+    private function collapsePendingProvisionTasksForNode(
+        int $nodeId,
+        string $action,
+        int $serviceId,
+        int $forwardId,
+        int $endpointId
+    ): void {
+        if ($nodeId <= 0 || $action === '' || $serviceId <= 0 || $forwardId <= 0 || $endpointId <= 0) {
+            return;
+        }
+
+        $now = gmdate('Y-m-d H:i:s');
+        $resultJson = json_encode([
+            'note' => 'superseded_by_new_publish_task',
+            'node_id' => $nodeId,
+            'action' => $action,
+            'service_id' => $serviceId,
+            'forward_id' => $forwardId,
+            'endpoint_id' => $endpointId,
+            'collapsed_at' => $now,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        $this->db->execute(
+            'UPDATE provision_tasks
+             SET status = :completed_status,
+                 result_json = :result_json,
+                 error_message = NULL,
+                 lease_expires_at = NULL,
+                 updated_at = :updated_at
+             WHERE node_id = :node_id
+               AND action = :action
+               AND service_id = :service_id
+               AND forward_id = :forward_id
+               AND endpoint_id = :endpoint_id
+               AND status = :pending_status',
+            [
+                'completed_status' => 'completed',
+                'pending_status' => 'pending',
+                'result_json' => $resultJson,
+                'updated_at' => $now,
+                'node_id' => $nodeId,
+                'action' => $action,
+                'service_id' => $serviceId,
+                'forward_id' => $forwardId,
+                'endpoint_id' => $endpointId,
+            ]
+        );
     }
 
     private function normalizeMalformedRepublishFailure(int $nodeId, int $forwardId, int $serviceEndpointId): void
@@ -4680,6 +4730,66 @@ final class ProvisioningService
                 $payload
             );
         }
+    }
+
+
+    public function republishActiveEndpoint(int $nodeId, int $forwardId, int $endpointId): bool
+    {
+        if ($nodeId <= 0 || $forwardId <= 0 || $endpointId <= 0) {
+            return false;
+        }
+
+        $row = $this->db->fetchOne(
+            'SELECT e.*,
+                    f.*,
+                    e.id AS service_endpoint_id,
+                    s.status AS service_status
+             FROM service_endpoints e
+             INNER JOIN forwards f ON f.id = e.forward_id
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE e.id = :endpoint_id
+               AND e.node_id = :node_id
+               AND e.forward_id = :forward_id
+               AND e.health_status <> :deleted
+               AND e.health_status <> :deleting
+               AND f.enabled = 1
+               AND s.status = :service_status
+             LIMIT 1',
+            [
+                'endpoint_id' => $endpointId,
+                'node_id' => $nodeId,
+                'forward_id' => $forwardId,
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+                'service_status' => 'active',
+            ]
+        );
+        if (!is_array($row)) {
+            return false;
+        }
+
+        $node = $this->db->fetchOne('SELECT * FROM nodes WHERE id = :id LIMIT 1', ['id' => $nodeId]);
+        if (!is_array($node)) {
+            return false;
+        }
+
+        $publicHost = $this->resolveNodePublicHost($node);
+        if ($publicHost === '') {
+            return false;
+        }
+        $node['resolved_public_host'] = $publicHost;
+        $this->normalizeMalformedRepublishFailure($nodeId, $forwardId, $endpointId);
+        $payload = $this->publishTaskPayloadForForward($row, $node, $endpointId);
+        $this->queueTask(
+            $nodeId,
+            'publish',
+            (int) ($row['service_id'] ?? 0),
+            $forwardId,
+            $endpointId,
+            $payload
+        );
+
+        return true;
     }
 
     public function republishActiveForwardsForSidecarPoint(int $pointId): void
