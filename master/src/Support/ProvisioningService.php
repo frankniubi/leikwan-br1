@@ -2819,6 +2819,114 @@ final class ProvisioningService
      * @return array<int, array<string, mixed>>
      */
 
+    private function truthyValue(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    private function autoCfwgPath(int $forwardId, string $legType, int $nodeId = 0): string
+    {
+        if ($forwardId <= 0) {
+            return '';
+        }
+        $stableLegType = str_replace('-', '_', strtolower(trim($legType)));
+        if ($stableLegType === '') {
+            return '';
+        }
+        $stableNodeId = max(0, $nodeId);
+        $digest = hash('sha256', 'leikwan-cfwg-path-v1:' . $stableLegType . ':forward:' . $forwardId . ':node:' . $stableNodeId);
+        $h8 = substr($digest, 0, 8);
+        $h12 = substr($digest, 0, 12);
+        $major = (string) ((($forwardId * 7 + 2) % 20) + 1);
+        $minor = (string) (($forwardId * 13 + 5) % 99);
+        $episode = (string) ((($forwardId * 3 + 1) % 500) + 1);
+        $templates = [
+            'assets/v' . $major . '.' . $minor . '/chunk-' . $h8 . '.ts',
+            'cdn/releases/' . $h8 . '/update-' . $major . '.' . $minor . '.bin',
+            'media/stream-' . $h8 . '.m3u8',
+            'files/' . $h8 . '/Windows-' . $major . '.' . $minor . '.iso',
+            'static/js/' . $h8 . '.chunk.js',
+            'api/v2/telemetry/' . $h12,
+            'download/' . $h8 . '/package-' . $major . '.' . $minor . '.deb',
+            'content/' . $h8 . '/episode-' . $episode . '.mp4',
+        ];
+        return $templates[$forwardId % count($templates)];
+    }
+
+    private function nodeSupportsCfwgRelay(mixed $nodeConfig, string $nodeAgentVersion): bool
+    {
+        $decoded = $this->decodeJsonAssoc($nodeConfig);
+        if ($nodeAgentVersion !== '' && version_compare($nodeAgentVersion, '2026.05.21.4', '<')) {
+            return false;
+        }
+        return $this->truthyValue($decoded['supports_cfwg_relay'] ?? false);
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     * @return array<string, mixed>|null
+     */
+    private function cfwgRelayEndpointForConfig(array $config): ?array
+    {
+        if (strtolower(trim((string) ($config['self_leg_cf_transport'] ?? ''))) !== 'cf_wg') {
+            return null;
+        }
+        foreach ((array) ($config['endpoints'] ?? []) as $endpoint) {
+            if (!is_array($endpoint)) {
+                continue;
+            }
+            if (!$this->truthyValue($endpoint['supports_cfwg_relay'] ?? false)) {
+                continue;
+            }
+            $host = trim((string) ($endpoint['host'] ?? $endpoint['public_host'] ?? ''));
+            $port = (int) ($endpoint['port'] ?? $endpoint['public_port'] ?? 0);
+            $nodeId = (int) ($endpoint['node_id'] ?? 0);
+            if ($host === '' || $port <= 0 || $port < $this->mptcpSlavePortRangeStart() || $port > $this->mptcpSlavePortRangeEnd()) {
+                continue;
+            }
+            return [
+                'endpoint_id' => (int) ($endpoint['endpoint_id'] ?? $endpoint['id'] ?? 0),
+                'node_id' => $nodeId,
+                'host' => $host,
+                'port' => $port,
+                'sni_host' => trim((string) ($endpoint['cdn_host'] ?? $config['sni'] ?? $config['sni_host'] ?? $host)),
+            ];
+        }
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     * @param array<string, mixed> $relayEndpoint
+     * @param string $cfWgPathPrefix
+     * @return array<string, mixed>
+     */
+    private function buildCfwgSlaveRelayConfig(array $config, array $relayEndpoint, string $cfWgPathPrefix): array
+    {
+        $forwardId = (int) ($config['forward_id'] ?? $config['id'] ?? 0);
+        $clientId = (int) ($config['line_client_id'] ?? 0);
+        $nodeId = (int) ($relayEndpoint['node_id'] ?? 0);
+        $addresses = $this->selfLegWireGuardAddressing($forwardId, $clientId, $nodeId);
+        return [
+            'enabled' => true,
+            'path_algorithm' => 'cfwg-relay-v1',
+            'slave_host' => (string) ($relayEndpoint['host'] ?? ''),
+            'slave_port' => (int) ($relayEndpoint['port'] ?? 0),
+            'slave_sni_host' => (string) ($relayEndpoint['sni_host'] ?? ''),
+            'slave_path_prefix' => $this->autoCfwgPath($forwardId, 'slave_relay', $nodeId),
+            'node_id' => $nodeId,
+            'endpoint_id' => (int) ($relayEndpoint['endpoint_id'] ?? 0),
+            'client_address' => $addresses['client_address'],
+            'sidecar_address' => $addresses['sidecar_address'],
+            'cf_target_host' => '127.0.0.1',
+            'cf_target_port' => (int) ($config['bond_sidecar_wireguard_listen_port'] ?? 0),
+            'cf_path_prefix' => $cfWgPathPrefix,
+        ];
+    }
+
     /**
      * @param array<string, mixed> $config
      * @return array<int, string>
@@ -3014,6 +3122,10 @@ final class ProvisioningService
             $cfWgPathPrefix = str_ends_with($cfBasePathPrefix, '.cfwg') ? $cfBasePathPrefix : $cfBasePathPrefix . '.cfwg';
             $wgProfile['cf_path_prefix'] = $cfWgPathPrefix;
             $wgProfile['interface_name'] = 'lw-cfwg-' . (int) ($config['forward_id'] ?? 0);
+            $relayEndpoint = $this->cfwgRelayEndpointForConfig($config);
+            if ($relayEndpoint !== null) {
+                $wgProfile['slave_relay'] = $this->buildCfwgSlaveRelayConfig($config, $relayEndpoint, $cfWgPathPrefix);
+            }
         }
         $runtimeCaps = $wgProfile !== null ? ['bond', 'mptcp', 'wireguard'] : ['bond', 'mptcp'];
         $probeTransport = $wgProfile !== null ? 'private_wg' : 'cf_direct_wss';
@@ -3107,9 +3219,9 @@ final class ProvisioningService
     /**
      * @return array{subnet:string,client_address:string,sidecar_address:string}
      */
-    private function selfLegWireGuardAddressing(int $forwardId, int $clientId): array
+    private function selfLegWireGuardAddressing(int $forwardId, int $clientId, int $salt = 0): array
     {
-        $stableId = max(1, ($forwardId * 1024) + $clientId);
+        $stableId = max(1, ($forwardId * 1024) + $clientId + (max(0, $salt) * 131072));
         $bucket = intdiv($stableId - 1, 60);
         $networkBase = (($stableId - 1) % 60) * 4;
         $octet3 = 1 + ($bucket % 250);
@@ -3432,6 +3544,7 @@ final class ProvisioningService
             'mptcp_sidecar_port' => $effectiveMptcpSidecarPort > 0 ? $effectiveMptcpSidecarPort : null,
             'bond_sidecar_cf_listen_port' => (int) ($forward['bond_sidecar_cf_listen_port'] ?? 0) > 0 ? (int) ($forward['bond_sidecar_cf_listen_port'] ?? 0) : null,
             'bond_sidecar_cf_sni_host' => (string) ($pointConfig['cf_sni_host'] ?? $pointConfig['cf_sni'] ?? ''),
+            'bond_sidecar_wireguard_listen_port' => (int) ($pointConfig['wireguard_listen_port'] ?? 0),
             'bond_sidecar_approved_upstream_realizations' => $this->approvedCfUpstreamRealizations($pointConfig),
             'bond_sidecar_point_agent_config_json' => (string) ($forward['bond_sidecar_point_agent_config_json'] ?? ''),
             'line_client_agent_config_json' => (string) ($forward['line_client_agent_config_json'] ?? ''),
@@ -3482,7 +3595,10 @@ final class ProvisioningService
                     'priority' => (int) $endpoint['priority'],
                     'weight' => (int) $endpoint['weight'],
                     'health_status' => (string) $endpoint['health_status'],
+                    'node_id' => (int) ($endpoint['node_id'] ?? 0),
+                    'node_agent_version' => (string) ($endpoint['node_agent_version'] ?? ''),
                     'supports_quic_leg' => $this->nodeSupportsBondQuic($nodeConfig, (string) ($endpoint['node_agent_version'] ?? '')),
+                    'supports_cfwg_relay' => $this->nodeSupportsCfwgRelay($nodeConfig, (string) ($endpoint['node_agent_version'] ?? '')),
                     'origin_group_key' => (string) ($endpoint['origin_group_key'] ?? $endpoint['node_group_key'] ?? $endpoint['group_key'] ?? ''),
                     'last_chain_latency_ms' => $this->nullableFloat($endpoint['last_chain_latency_ms'] ?? $endpoint['best_latency_ms'] ?? null),
                     'delivered_ewma' => $this->nullableFloat($endpoint['delivered_ewma'] ?? null),
@@ -5298,7 +5414,7 @@ final class ProvisioningService
                 ? ($directSidecarTarget['host'] . ':' . $directSidecarTarget['port'])
                 : ((string) ($forward['target_host'] ?? '') . ':' . (int) ($forward['target_port'] ?? 0));
         }
-        return [
+        $payload = [
             'listen_port' => (int) ($forward['public_port'] ?? 0),
             'target' => $publishTarget,
             'origin_group_key' => (string) ($node['node_group_key'] ?? $node['group_key'] ?? ''),
@@ -5328,6 +5444,37 @@ final class ProvisioningService
             ]) : null,
             'donation_policy' => $this->donationPolicyForForward($forward),
         ];
+
+        $nodeConfig = $this->decodeJsonAssoc($node['agent_config_json'] ?? null);
+        if (
+            $this->nodeSupportsCfwgRelay($nodeConfig, (string) ($node['agent_version'] ?? $node['node_agent_version'] ?? ''))
+            && strtolower(trim((string) ($forward['self_leg_cf_transport'] ?? $forward['forward_combination_self_leg_cf_transport'] ?? ''))) === 'cf_wg'
+            && (int) ($forward['public_port'] ?? 0) >= $this->mptcpSlavePortRangeStart()
+            && (int) ($forward['public_port'] ?? 0) <= $this->mptcpSlavePortRangeEnd()
+        ) {
+            $point = (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0
+                ? $this->db->fetchOne('SELECT agent_config_json, sidecar_host, listen_port, bond_listen_port, mptcp_listen_port FROM sidecar_points WHERE id = :id LIMIT 1', ['id' => (int) $forward['bond_sidecar_point_id']])
+                : null;
+            $pointConfig = $this->decodeJsonAssoc(is_array($point) ? ($point['agent_config_json'] ?? null) : null);
+            $cfBasePathPrefix = trim((string) ($forward['path_prefix'] ?? '/'));
+            $cfWgPathPrefix = str_ends_with($cfBasePathPrefix, '.cfwg') ? $cfBasePathPrefix : $cfBasePathPrefix . '.cfwg';
+            $wireguardListenPort = (int) ($pointConfig['wireguard_listen_port'] ?? 0);
+            if ($wireguardListenPort > 0) {
+                $payload['cfwg_relay'] = [
+                    'enabled' => true,
+                    'path_algorithm' => 'cfwg-relay-v1',
+                    'slave_path_prefix' => $this->autoCfwgPath((int) ($forward['id'] ?? $forward['forward_id'] ?? 0), 'slave_relay', (int) ($node['id'] ?? $node['node_id'] ?? 0)),
+                    'cf_target_host' => '127.0.0.1',
+                    'cf_target_port' => $wireguardListenPort,
+                    'cf_dial_host' => (string) (($payload['cf_mode']['dial_host'] ?? '') ?: ($forward['bond_sidecar_host'] ?? $forward['bond_remote_host'] ?? '')),
+                    'cf_dial_port' => (int) (($payload['cf_mode']['dial_port'] ?? 0) ?: ($forward['bond_sidecar_cf_listen_port'] ?? 443)),
+                    'cf_sni_host' => (string) (($payload['cf_mode']['sni_host'] ?? '') ?: ($forward['sni'] ?? $forward['sni_host'] ?? '')),
+                    'cf_path_prefix' => $cfWgPathPrefix,
+                ];
+            }
+        }
+
+        return $payload;
     }
 
 

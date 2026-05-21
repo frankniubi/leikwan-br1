@@ -86,6 +86,51 @@ def cfwg_watchdog_pin(forward_id: int, agent_config: dict) -> str:
     return str(payload.get("cf_dial_host_pin", "") or "").strip()
 
 
+def auto_cfwg_path(forward_id: int, leg_type: str, node_id: int = 0) -> str:
+    """Generate a deterministic camouflage URL path for cfwg WSS legs.
+
+    Camouflage matters because these paths are visible in the websocket HTTP
+    upgrade request; keep them looking like ordinary CDN asset URLs instead of
+    internal tunnel names.  The salt includes the forward id, leg type, and
+    stable node id so the direct and slave-relay legs do not collide, and so
+    endpoint-row churn does not rename a relay path.  The template index is
+    deterministic for operator debugging while the hash gives per-forward
+    uniqueness.
+
+    Do not change the salt or reorder existing templates casually: that renames
+    existing WSS routes and requires a coordinated panel/slave/client rollout.
+    Add new templates only at the end if a future algorithm version is created.
+    """
+    if forward_id <= 0:
+        return ""
+    import hashlib
+
+    stable_node_id = max(0, int_or_default(node_id, 0))
+    stable_leg_type = str(leg_type or "").strip().lower().replace("-", "_")
+    if stable_leg_type == "":
+        return ""
+    digest = hashlib.sha256(
+        f"leikwan-cfwg-path-v1:{stable_leg_type}:forward:{forward_id}:node:{stable_node_id}".encode("utf-8")
+    ).hexdigest()
+
+    h8 = digest[:8]
+    h12 = digest[:12]
+    v_major = str((forward_id * 7 + 2) % 20 + 1)
+    v_minor = str((forward_id * 13 + 5) % 99)
+    episode = str((forward_id * 3 + 1) % 500 + 1)
+    templates = [
+        f"assets/v{v_major}.{v_minor}/chunk-{h8}.ts",
+        f"cdn/releases/{h8}/update-{v_major}.{v_minor}.bin",
+        f"media/stream-{h8}.m3u8",
+        f"files/{h8}/Windows-{v_major}.{v_minor}.iso",
+        f"static/js/{h8}.chunk.js",
+        f"api/v2/telemetry/{h12}",
+        f"download/{h8}/package-{v_major}.{v_minor}.deb",
+        f"content/{h8}/episode-{episode}.mp4",
+    ]
+    return templates[forward_id % len(templates)]
+
+
 def _leg_query_params(priority: int, endpoint: dict | None = None) -> str:
     params = [f"priority={priority}"]
     if isinstance(endpoint, dict):
@@ -435,7 +480,10 @@ def self_leg_wg_underlay(candidate: dict, forward: dict, agent_config: dict | No
         if cf_sni_host != "":
             wg["cf_sni_host"] = cf_sni_host
         base_path = str(candidate.get("cf_path_prefix", "") or wg.get("cf_path_prefix", "") or candidate.get("path_prefix", "") or forward.get("path_prefix", "") or "").strip().strip("/")
-        if base_path != "":
+        if base_path == "" and truthy(wg.get("auto_camouflage_paths", False)):
+            base_path = auto_cfwg_path(forward_id, "direct", int_or_default(candidate.get("node_id"), int_or_default(candidate.get("endpoint_node_id"), 0)))
+            wg["cf_path_prefix"] = base_path
+        elif base_path != "":
             wg["cf_path_prefix"] = base_path if base_path.endswith(".cfwg") else base_path + ".cfwg"
         endpoint_host = "127.0.0.1"
         endpoint_port = 40000 + (forward_id % 2000)

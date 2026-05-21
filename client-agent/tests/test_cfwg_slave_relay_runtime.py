@@ -213,5 +213,69 @@ class CfwgSlaveRelayTests(unittest.TestCase):
         self.assertIn("10.204.1.1/32", wg_conf)
 
 
+class CfwgAutoPathTests(unittest.TestCase):
+    def test_auto_path_generates_deterministic_output(self) -> None:
+        path1 = install_runtime.auto_cfwg_path(47, "direct")
+        path2 = install_runtime.auto_cfwg_path(47, "direct")
+        self.assertEqual(path1, path2)
+
+    def test_auto_path_direct_and_relay_never_collide(self) -> None:
+        for fwd_id in range(1, 200):
+            direct = install_runtime.auto_cfwg_path(fwd_id, "direct")
+            relay = install_runtime.auto_cfwg_path(fwd_id, "slave_relay")
+            self.assertNotEqual(direct, relay, f"collision for forward_id={fwd_id}")
+
+    def test_auto_path_different_forwards_produce_different_paths(self) -> None:
+        paths = set()
+        for fwd_id in range(1, 200):
+            path = install_runtime.auto_cfwg_path(fwd_id, "slave_relay")
+            self.assertNotIn(path, paths, f"duplicate path for forward_id={fwd_id}")
+            paths.add(path)
+
+    def test_auto_path_node_id_changes_relay_path_without_endpoint_row_churn(self) -> None:
+        self.assertEqual(
+            install_runtime.auto_cfwg_path(47, "slave_relay", 12),
+            install_runtime.auto_cfwg_path(47, "slave_relay", 12),
+        )
+        self.assertNotEqual(
+            install_runtime.auto_cfwg_path(47, "slave_relay", 12),
+            install_runtime.auto_cfwg_path(47, "slave_relay", 13),
+        )
+
+    def test_auto_path_looks_like_cdn_traffic(self) -> None:
+        for fwd_id in [1, 47, 100, 255]:
+            path = install_runtime.auto_cfwg_path(fwd_id, "slave_relay")
+            for keyword in ["wg", "wireguard", "tunnel", "vpn", "cfwg"]:
+                self.assertNotIn(keyword, path.lower())
+            self.assertTrue(
+                any(path.endswith(ext) for ext in [".ts", ".bin", ".m3u8", ".iso", ".js", ".deb", ".mp4"])
+                or "/telemetry/" in path,
+                f"path does not look like CDN traffic: {path}",
+            )
+
+    def test_direct_auto_camouflage_is_opt_in_and_only_when_no_existing_path(self) -> None:
+        candidate = CfwgSlaveRelayTests()._candidate()
+        candidate["self_leg_wg"].pop("cf_path_prefix")
+        candidate.pop("cf_path_prefix", None)
+        candidate.pop("path_prefix", None)
+        forward = {"forward_id": 47}
+        result = install_runtime.self_leg_wg_underlay(candidate, forward)
+        self.assertEqual("", result["legs"][0]["cf_path_prefix"])
+
+        candidate["self_leg_wg"]["auto_camouflage_paths"] = True
+        result = install_runtime.self_leg_wg_underlay(candidate, forward)
+        path = result["legs"][0]["cf_path_prefix"]
+        self.assertEqual(install_runtime.auto_cfwg_path(47, "direct"), path)
+        self.assertNotIn("cfwg", path.lower())
+
+    def test_slave_relay_missing_path_is_not_client_generated(self) -> None:
+        candidate = CfwgSlaveRelayTests()._candidate()
+        candidate["self_leg_wg"]["slave_relay"]["slave_path_prefix"] = ""
+        forward = {"forward_id": 47}
+        result = install_runtime.self_leg_slave_relay_wg_underlay(candidate, forward)
+        self.assertIsNone(result)
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.05.21.3"
+AGENT_VERSION = "2026.05.21.4"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -300,6 +300,18 @@ def udp_uot_shadow_service_name(service_name: str) -> str:
 def udp_uot_base_service_name(service_name: str) -> str:
     suffix = "-udp-uot"
     value = str(service_name).strip()
+    if value.endswith(suffix):
+        return value[: -len(suffix)]
+    return value
+
+
+def cfwg_relay_service_name(base_service_name: str) -> str:
+    return f"{auxiliary_service_family_base_name(base_service_name)}-cfwg-relay"
+
+
+def auxiliary_service_family_base_name(service_name: str) -> str:
+    value = udp_uot_base_service_name(str(service_name).strip())
+    suffix = "-cfwg-relay"
     if value.endswith(suffix):
         return value[: -len(suffix)]
     return value
@@ -1385,6 +1397,7 @@ class SlaveAgent:
             "supports_quic": bool(self.config.get("supports_quic", False)),
             "supports_bond_hybrid": bool(self.config.get("supports_bond_hybrid", True)),
             "supports_sidecar_quic": bool(self.config.get("supports_sidecar_quic", True)),
+            "supports_cfwg_relay": bool(self.config.get("supports_cfwg_relay", True)),
             "bond_protocols": list(self.config.get("bond_protocols", ["tcp"])),
             "hybrid_modes": list(self.config.get("hybrid_modes", ["quic_ws"])),
             "wireguard_public_key": wireguard_public_key,
@@ -1571,6 +1584,7 @@ class SlaveAgent:
             "supports_quic": bool(self.config.get("supports_quic", False)),
             "supports_bond_hybrid": bool(self.config.get("supports_bond_hybrid", True)),
             "supports_sidecar_quic": bool(self.config.get("supports_sidecar_quic", True)),
+            "supports_cfwg_relay": bool(self.config.get("supports_cfwg_relay", True)),
             "bond_protocols": list(self.config.get("bond_protocols", ["tcp"])),
             "hybrid_modes": list(self.config.get("hybrid_modes", ["quic_ws"])),
             "wireguard_public_key": wireguard_public_key,
@@ -2568,6 +2582,8 @@ class SlaveAgent:
         cfwg_relay = payload.get("cfwg_relay", {})
         if isinstance(cfwg_relay, dict) and truthy(cfwg_relay.get("enabled", False)):
             self.ensure_cfwg_relay_service(task, payload, metadata, cfwg_relay, service_name, public_port)
+        else:
+            self.remove_cfwg_relay_service(task, payload, service_name)
 
         if mptcp_underlay:
             self.apply_mptcp_underlay(service_name, mptcp_underlay)
@@ -2778,9 +2794,10 @@ class SlaveAgent:
         if forward_id <= 0 or keep_service_name.strip() == "":
             return
 
-        keep_base_service_name = udp_uot_base_service_name(keep_service_name)
+        keep_base_service_name = auxiliary_service_family_base_name(keep_service_name)
         keep_shadow_service_name = udp_uot_shadow_service_name(keep_base_service_name)
-        keep_service_names = {keep_base_service_name, keep_shadow_service_name}
+        keep_cfwg_relay_service_name = cfwg_relay_service_name(keep_base_service_name)
+        keep_service_names = {keep_base_service_name, keep_shadow_service_name, keep_cfwg_relay_service_name}
         stale_metadata: list[dict[str, Any]] = []
         for metadata in self.load_all_service_metadata():
             if not self.metadata_is_active(metadata):
@@ -2815,7 +2832,7 @@ class SlaveAgent:
             service_name = str(metadata.get("service_name", "")).strip()
             if forward_id <= 0 or endpoint_id <= 0 or service_name == "":
                 continue
-            family_base_service_name = udp_uot_base_service_name(service_name)
+            family_base_service_name = auxiliary_service_family_base_name(service_name)
             candidates.append((metadata, family_base_service_name))
             current = keepers.get(forward_id)
             if current is None or endpoint_id > current[0]:
@@ -2829,7 +2846,8 @@ class SlaveAgent:
                 continue
             keeper_base_service_name = keeper[1]
             keeper_shadow_service_name = udp_uot_shadow_service_name(keeper_base_service_name)
-            if service_name in {keeper_base_service_name, keeper_shadow_service_name}:
+            keeper_cfwg_relay_service_name = cfwg_relay_service_name(keeper_base_service_name)
+            if service_name in {keeper_base_service_name, keeper_shadow_service_name, keeper_cfwg_relay_service_name}:
                 continue
             if family_base_service_name == keeper_base_service_name:
                 continue
@@ -2864,9 +2882,12 @@ class SlaveAgent:
 
         base_service_name = safe_name(int(task["service_id"]), int(task["endpoint_id"]))
         shadow_service_name = udp_uot_shadow_service_name(base_service_name)
+        cfwg_service_name = cfwg_relay_service_name(base_service_name)
         names = [base_service_name]
         if self.load_service_metadata(shadow_service_name) is not None or self.udp_uot_sidepath_enabled(task, payload):
             names.append(shadow_service_name)
+        if self.load_service_metadata(cfwg_service_name) is not None:
+            names.append(cfwg_service_name)
         return names
 
     def is_udp_uot_shadow_metadata(self, metadata: dict[str, Any]) -> bool:
@@ -2891,6 +2912,23 @@ class SlaveAgent:
                 "forward_id": int(task.get("forward_id", 0) or 0),
                 "endpoint_id": int(task.get("endpoint_id", 0) or 0),
                 "payload": shadow_payload,
+            }
+        )
+
+    def remove_cfwg_relay_service(self, task: dict[str, Any], payload: dict[str, Any], base_service_name: str) -> None:
+        relay_service = cfwg_relay_service_name(base_service_name)
+        relay_metadata = self.load_service_metadata(relay_service)
+        if relay_metadata is None:
+            return
+        relay_payload = dict(payload)
+        relay_payload["listen_port"] = int(relay_metadata.get("listen_port", payload.get("listen_port", 0)) or 0)
+        self.destroy_service(
+            {
+                "service_name": relay_service,
+                "service_id": int(task.get("service_id", 0) or 0),
+                "forward_id": int(task.get("forward_id", 0) or 0),
+                "endpoint_id": int(task.get("endpoint_id", 0) or 0),
+                "payload": relay_payload,
             }
         )
 
@@ -3282,7 +3320,12 @@ WantedBy=multi-user.target
         # Target for wstunnel: the sidecar WG endpoint host:port
         target = f"{cf_target_host}:{cf_target_port}"
 
-        relay_service = f"{parent_service_name}-cfwg-relay"
+        relay_service = cfwg_relay_service_name(parent_service_name)
+        self.ensure_listener_route_available(public_port, slave_path_prefix, relay_service)
+        logging.info(
+            "cfwg relay service %s: slave_path=%s cf_path=%s target=%s",
+            relay_service, slave_path_prefix, cf_path_prefix, target,
+        )
         existing = self.load_service_metadata(relay_service) or {}
         backend_port = int(existing.get("backend_port", 0) or 0)
         if self.backend_port_needs_reallocation(relay_service, backend_port):
@@ -4028,6 +4071,7 @@ WantedBy=multi-user.target
                 "supports_quic": bool(self.config.get("supports_quic", False)),
                 "supports_bond_hybrid": bool(self.config.get("supports_bond_hybrid", True)),
                 "supports_sidecar_quic": bool(self.config.get("supports_sidecar_quic", True)),
+                "supports_cfwg_relay": bool(self.config.get("supports_cfwg_relay", True)),
                 "bond_protocols": list(self.config.get("bond_protocols", ["tcp"])),
                 "hybrid_modes": list(self.config.get("hybrid_modes", ["quic_ws"])),
             },

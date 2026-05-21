@@ -3,8 +3,8 @@
     "version": "2026.05.21.4",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "71c6f82836dd12c44fc56218fc7839b16756ea135041a56ec24d94a23f121a7b",
-    "size_bytes": 185819
+    "sha256": "19b29e994366791f4ba9343b27b3cdfe0b0d2fed88f0f0446412ed50332f8927",
+    "size_bytes": 192225
   },
   "slave_installer": {
     "version": "2026.05.20.1",
@@ -146,14 +146,14 @@
     "version": "2026.05.21.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "6842fd27229ef3d15a3da9c9bec6c136cc536436d43f7e38ff107a93444e0cf8",
-    "size_bytes": 64703
+    "sha256": "64829f1fe7c5b7a6233aea4f1142f2cac6f110a026c162eccfe7d73378f87e20",
+    "size_bytes": 68262
   },
   "cfwg_latency_watchdog": {
     "version": "2026.05.20.1",
     "path": "client-agent/cfwg_latency_watchdog.py",
     "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
-    "sha256": "5979698d0a29e9e47c0c3215a8b40782327f74f3c6158c8bc7b9f2a862f496bd",
-    "size_bytes": 26895
+    "sha256": "ae9f8b50f15a29da1dab24820736e772e814d029efadabeb8e533a1f55f8c59c",
+    "size_bytes": 26349
   }
 }
