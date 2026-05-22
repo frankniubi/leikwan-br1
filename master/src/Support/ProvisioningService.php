@@ -6634,6 +6634,14 @@ final class ProvisioningService
                 ];
             }, $underlayLegs, array_keys($underlayLegs))),
             'token_expires_at' => $expiresAt,
+            // Slave pre-connect relay: when enabled, client connects to slave's
+            // relay port via plain TCP. The slave handles MPTCP to sidecar.
+            'slave_relay_host' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && $underlayLegs !== []
+                ? (string) ($underlayLegs[0]['slave_address'] ?? '')
+                : '',
+            'slave_relay_port' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && $underlayLegs !== []
+                ? $this->stablePreconnectRelayPort((int) ($forward['id'] ?? 0), (int) ($underlayLegs[0]['node_id'] ?? 0))
+                : 0,
         ];
     }
 
@@ -6762,6 +6770,18 @@ final class ProvisioningService
     private function stableLocalUotUdpPort(int $forwardId, int $nodeId): int
     {
         return 45000 + abs((($forwardId * 257) + ($nodeId * 17)) % 15000);
+    }
+
+    /**
+     * Stable relay port for the slave pre-connect MPTCP relay.
+     * Uses port range 38000-39999 to avoid collisions with backend ports (20000-40000).
+     */
+    private function stablePreconnectRelayPort(int $forwardId, int $nodeId): int
+    {
+        $rangeStart = max(1, (int) ($this->config->getInt('PRECONNECT_RELAY_PORT_RANGE_START', 38000) ?? 38000));
+        $rangeEnd = max($rangeStart, (int) ($this->config->getInt('PRECONNECT_RELAY_PORT_RANGE_END', 39999) ?? 39999));
+        $rangeSize = max(1, ($rangeEnd - $rangeStart) + 1);
+        return $rangeStart + abs((($forwardId * 131) + ($nodeId * 37)) % $rangeSize);
     }
 
     /**
@@ -7314,6 +7334,14 @@ final class ProvisioningService
             'slave_address' => $addresses['slave_address'],
             'sidecar_address' => $addresses['sidecar_address'],
             'subnet' => $addresses['subnet'],
+            // Slave pre-connect relay: slave opens MPTCP to sidecar on behalf of client.
+            // Client only needs plain TCP to the slave's relay port.
+            'slave_preconnect' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false),
+            'preconnect_relay_port' => $this->stablePreconnectRelayPort($forwardId, $nodeId),
+            'sidecar_mptcp_port' => (int) ($point['mptcp_listen_port'] ?? $point['bond_listen_port'] ?? $point['listen_port'] ?? 0),
+            'tcp_session_token' => trim((string) ($forward['tcp_session_token'] ?? $forward['session_token'] ?? '')),
+            'udp_session_token' => trim((string) ($forward['udp_session_token'] ?? $forward['session_token'] ?? '')),
+            'forward_id' => $forwardId,
         ];
     }
 
