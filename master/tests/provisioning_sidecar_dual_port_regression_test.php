@@ -157,5 +157,46 @@ namespace {
         fail('expected buildMptcpClientConfig remote_port 14969, got ' . var_export($mptcpConfig['remote_port'] ?? null, true));
     }
 
+
+
+    putenv('MPTCP_SLAVE_PRECONNECT=true');
+    putenv('MPTCP_PRECONNECT_RELAY_PORT_RANGE_START=7000');
+    putenv('MPTCP_PRECONNECT_RELAY_PORT_RANGE_END=9000');
+    $forwardWithEndpoint = $forward + [
+        'bond_sidecar_point_agent_config_json' => json_encode([
+            'wireguard_public_key' => 'sidecar-public-key',
+            'wireguard_listen_port' => 14969,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+    ];
+    $endpoints = [[
+        'id' => 179,
+        'node_id' => 5,
+        'node_name' => 'gz-node',
+        'public_host' => '8.8.8.8',
+        'public_ip' => '8.8.8.8',
+        'public_port' => 7001,
+        'node_agent_config_json' => json_encode([
+            'wireguard_public_key' => 'slave-public-key',
+            'wireguard_listen_port' => 7001,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+    ]];
+    $preconnectConfig = call_private($service, 'buildMptcpClientConfig', $forwardWithEndpoint, $endpoints);
+    if (($preconnectConfig['slave_relay_host'] ?? '') === '') {
+        fail('expected buildMptcpClientConfig to publish slave_relay_host when MPTCP_SLAVE_PRECONNECT=true');
+    }
+    $slaveRelayPort = (int) ($preconnectConfig['slave_relay_port'] ?? 0);
+    if ($slaveRelayPort < 7000 || $slaveRelayPort > 9000) {
+        fail('expected slave_relay_port to stay within 7000-9000, got ' . var_export($slaveRelayPort, true));
+    }
+    $slaveUotRelayPort = (int) ($preconnectConfig['slave_uot_relay_port'] ?? 0);
+    if ($slaveUotRelayPort < 7000 || $slaveUotRelayPort > 9000) {
+        fail('expected slave_uot_relay_port to stay within 7000-9000, got ' . var_export($slaveUotRelayPort, true));
+    }
+    if ($slaveUotRelayPort === $slaveRelayPort) {
+        fail('expected slave_uot_relay_port to be distinct from slave_relay_port');
+    }
+    putenv('MPTCP_SLAVE_PRECONNECT');
+    putenv('MPTCP_PRECONNECT_RELAY_PORT_RANGE_START');
+    putenv('MPTCP_PRECONNECT_RELAY_PORT_RANGE_END');
     echo "ok\n";
 }

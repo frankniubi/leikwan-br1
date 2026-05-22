@@ -133,6 +133,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('client-agent/leikwan_mptcp_client.py', 'text/x-python; charset=utf-8');
     }
 
+    public function slavePreconnectRelay(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('slave-agent/preconnect_relay.py', 'text/x-python; charset=utf-8');
+    }
+
     public function uotRuntime(Request $request, array $params): Response
     {
         return $this->serveRepoFile('client-agent/leikwan_uot.py', 'text/x-python; charset=utf-8');
@@ -229,7 +234,7 @@ final class ArtifactController extends BaseController
     {
         return Response::json(200, [
             'component' => 'slave',
-            'manifest' => $this->manifestFor('slave_agent', 'slave_installer', 'wstunnel_linux_amd64', 'wstunnel_linux_arm64', 'leikwan_leg_relay_linux_amd64'),
+            'manifest' => $this->manifestFor('slave_agent', 'slave_preconnect_relay', 'slave_installer', 'wstunnel_linux_amd64', 'wstunnel_linux_arm64', 'leikwan_leg_relay_linux_amd64'),
         ]);
     }
 

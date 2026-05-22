@@ -22,9 +22,23 @@ public sealed class MptcpRuntimeBuilder
     {
         var mptcp = forward.Mptcp ?? throw new InvalidOperationException("mptcp mode missing mptcp config");
         // Windows cannot bring up the panel-published Linux/WireGuard underlay.
-        // Prefer the public relay endpoint and let the portable relay use TCP fallback.
-        var remoteHost = FirstNonEmpty(mptcp.RelayHost, mptcp.RemoteHost, mptcp.SidecarHost);
-        var remotePort = FirstPositive(mptcp.RelayPort, mptcp.RemotePort, mptcp.SidecarPort);
+        // If a slave pre-connect relay is available, prefer it — the relay handles
+        // MPTCP to sidecar on our behalf. Client only needs plain TCP.
+        var slaveRelayHost = (mptcp.SlaveRelayHost ?? "").Trim();
+        var slaveRelayPort = mptcp.SlaveRelayPort;
+        string remoteHost;
+        int remotePort;
+        if (!string.IsNullOrWhiteSpace(slaveRelayHost) && slaveRelayPort > 0)
+        {
+            remoteHost = slaveRelayHost;
+            remotePort = slaveRelayPort;
+        }
+        else
+        {
+            // Fallback: use the public relay endpoint with TCP fallback.
+            remoteHost = FirstNonEmpty(mptcp.RelayHost, mptcp.RemoteHost, mptcp.SidecarHost);
+            remotePort = FirstPositive(mptcp.RelayPort, mptcp.RemotePort, mptcp.SidecarPort);
+        }
         if (string.IsNullOrWhiteSpace(remoteHost) || remotePort <= 0)
             throw new InvalidOperationException("mptcp mode missing sidecar host/port");
 
@@ -113,6 +127,12 @@ public sealed class MptcpRuntimeBuilder
             ["underlays"] = mptcp.Underlays,
             ["stats_path"] = statsPath,
             ["windows_compatibility_mode"] = true,
+            // Slave pre-connect relay: when available, Windows client connects
+            // via plain TCP to the slave relay (no MPTCP kernel support needed).
+            ["slave_relay_host"] = FirstNonEmpty(mptcp.SlaveRelayHost),
+            ["slave_relay_port"] = mptcp.SlaveRelayPort,
+            ["slave_uot_relay_host"] = FirstNonEmpty(mptcp.SlaveUotRelayHost, mptcp.SlaveRelayHost),
+            ["slave_uot_relay_port"] = mptcp.SlaveUotRelayPort,
         };
     }
 

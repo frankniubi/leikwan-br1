@@ -54,6 +54,18 @@ class ArtifactVersionsConsistencyTests(unittest.TestCase):
         self.assertEqual(digest, cfwg_watchdog["sha256"])
         self.assertEqual(watchdog_path.stat().st_size, cfwg_watchdog["size_bytes"])
 
+    def test_mptcp_preconnect_artifact_hashes_are_current(self) -> None:
+        versions_path = REPO_ROOT / "artifacts" / "versions.json"
+
+        import hashlib
+        versions = json.loads(versions_path.read_text(encoding="utf-8"))
+        for key in ("mptcp_client_runtime", "install_forward_runtime", "slave_preconnect_relay"):
+            artifact = versions[key]
+            artifact_path = REPO_ROOT / artifact["path"]
+            digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+            self.assertEqual(digest, artifact["sha256"], key)
+            self.assertEqual(artifact_path.stat().st_size, artifact["size_bytes"], key)
+
 
 if __name__ == "__main__":
     unittest.main()

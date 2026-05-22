@@ -16,6 +16,14 @@ pub struct ClientConfig {
     pub relay_host: String,
     #[serde(default)]
     pub relay_port: u16,
+    #[serde(default)]
+    pub slave_relay_host: String,
+    #[serde(default)]
+    pub slave_relay_port: u16,
+    #[serde(default)]
+    pub slave_uot_relay_host: String,
+    #[serde(default)]
+    pub slave_uot_relay_port: u16,
 
     #[serde(default)]
     pub bond_mode: String,

@@ -33,4 +33,18 @@ if (($versions['slave_agent']['version'] ?? null) !== $slaveMatch[1]) {
     fail('slave_agent.version must match slave_agent.py AGENT_VERSION');
 }
 
+if (($versions['slave_preconnect_relay']['path'] ?? null) !== 'slave-agent/preconnect_relay.py') {
+    fail('slave_preconnect_relay artifact must point to slave-agent/preconnect_relay.py');
+}
+
+$installSlave = file_get_contents($repoRoot . '/install/install-slave.sh');
+if (!is_string($installSlave) || !str_contains($installSlave, 'leikwan-preconnect-relay.py')) {
+    fail('install-slave.sh must install the preconnect relay helper');
+}
+
+$bootstrap = file_get_contents($repoRoot . '/master/src/Bootstrap.php');
+if (!is_string($bootstrap) || !str_contains($bootstrap, '/artifacts/leikwan-preconnect-relay.py')) {
+    fail('Bootstrap must expose the preconnect relay artifact route');
+}
+
 echo "ok\n";

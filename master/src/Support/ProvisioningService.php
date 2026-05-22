@@ -6587,6 +6587,14 @@ final class ProvisioningService
         if ($underlayLegs !== []) {
             $defaultRemoteHost = (string) ($underlayLegs[0]['sidecar_address'] ?? $defaultRemoteHost);
         }
+        $slavePreconnectEnabled = $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && $underlayLegs !== [];
+        $slaveRelayHost = $slavePreconnectEnabled ? (string) ($underlayLegs[0]['slave_address'] ?? '') : '';
+        $slaveRelayPort = $slavePreconnectEnabled
+            ? $this->stablePreconnectRelayPort((int) ($forward['id'] ?? 0), (int) ($underlayLegs[0]['node_id'] ?? 0))
+            : 0;
+        $slaveUotRelayPort = $slavePreconnectEnabled
+            ? $this->stablePreconnectUotPort((int) ($forward['id'] ?? 0), (int) ($underlayLegs[0]['node_id'] ?? 0))
+            : 0;
 
         return [
             'enabled' => true,
@@ -6634,6 +6642,12 @@ final class ProvisioningService
                 ];
             }, $underlayLegs, array_keys($underlayLegs))),
             'token_expires_at' => $expiresAt,
+            // Slave pre-connect relay: when enabled, client connects to slave's
+            // relay port via plain TCP/UoT. The slave handles MPTCP to sidecar.
+            'slave_relay_host' => $slaveRelayHost,
+            'slave_relay_port' => $slaveRelayPort,
+            'slave_uot_relay_host' => $slaveRelayHost,
+            'slave_uot_relay_port' => $slaveUotRelayPort,
         ];
     }
 
@@ -6762,6 +6776,26 @@ final class ProvisioningService
     private function stableLocalUotUdpPort(int $forwardId, int $nodeId): int
     {
         return 45000 + abs((($forwardId * 257) + ($nodeId * 17)) % 15000);
+    }
+
+    /**
+     * Stable relay port for the slave pre-connect MPTCP relay.
+     * Defaults to the same 7000-9000 slave ingress envelope required for this deployment.
+     */
+    private function stablePreconnectRelayPort(int $forwardId, int $nodeId): int
+    {
+        $rangeStart = max(1, (int) ($this->config->getInt('MPTCP_PRECONNECT_RELAY_PORT_RANGE_START', $this->mptcpSlavePortRangeStart()) ?? $this->mptcpSlavePortRangeStart()));
+        $rangeEnd = max($rangeStart, (int) ($this->config->getInt('MPTCP_PRECONNECT_RELAY_PORT_RANGE_END', $this->mptcpSlavePortRangeEnd()) ?? $this->mptcpSlavePortRangeEnd()));
+        $rangeSize = max(1, ($rangeEnd - $rangeStart) + 1);
+        return $rangeStart + abs((($forwardId * 131) + ($nodeId * 37)) % $rangeSize);
+    }
+
+    private function stablePreconnectUotPort(int $forwardId, int $nodeId): int
+    {
+        $rangeStart = max(1, (int) ($this->config->getInt('MPTCP_PRECONNECT_RELAY_PORT_RANGE_START', $this->mptcpSlavePortRangeStart()) ?? $this->mptcpSlavePortRangeStart()));
+        $rangeEnd = max($rangeStart, (int) ($this->config->getInt('MPTCP_PRECONNECT_RELAY_PORT_RANGE_END', $this->mptcpSlavePortRangeEnd()) ?? $this->mptcpSlavePortRangeEnd()));
+        $rangeSize = max(1, ($rangeEnd - $rangeStart) + 1);
+        return $rangeStart + abs(((($forwardId * 131) + ($nodeId * 37) + 1) % $rangeSize));
     }
 
     /**
@@ -7297,6 +7331,15 @@ final class ProvisioningService
         $sidecarListenPort = $this->sidecarWireguardListenPort(is_array($point) ? $point : [], $sidecarConfig);
         $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $sidecarConfig);
         $sidecarLegPort = $this->stableSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $forwardId, $nodeId);
+        $slavePreconnect = $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false);
+        $preconnectTcpToken = '';
+        $preconnectUdpToken = '';
+        if ($slavePreconnect) {
+            $tokenSecret = $this->bondTokenSecret($forward);
+            ['issued_at' => $issuedAt, 'expires_at' => $expiresAt] = $this->bondTokenTimestamps();
+            $preconnectTcpToken = $this->buildBondSessionToken($forward, $tokenSecret, $issuedAt, $expiresAt, 'tcp');
+            $preconnectUdpToken = $this->buildBondSessionToken($forward, $tokenSecret, $issuedAt, $expiresAt, 'udp');
+        }
 
         return [
             'enabled' => true,
@@ -7314,6 +7357,16 @@ final class ProvisioningService
             'slave_address' => $addresses['slave_address'],
             'sidecar_address' => $addresses['sidecar_address'],
             'subnet' => $addresses['subnet'],
+            // Slave pre-connect relay: slave opens MPTCP to sidecar on behalf of client.
+            // Client only needs plain TCP to the slave's relay port.
+            'slave_preconnect' => $slavePreconnect,
+            'preconnect_relay_port' => $this->stablePreconnectRelayPort($forwardId, $nodeId),
+            'preconnect_uot_port' => $this->stablePreconnectUotPort($forwardId, $nodeId),
+            'sidecar_mptcp_port' => (int) ($point['mptcp_listen_port'] ?? $point['bond_listen_port'] ?? $point['listen_port'] ?? 0),
+            'tcp_session_token' => $preconnectTcpToken,
+            'udp_session_token' => $preconnectUdpToken,
+            'forward_id' => $forwardId,
+            'transport' => (string) ($forward['transport_mode'] ?? 'tcp'),
         ];
     }
 

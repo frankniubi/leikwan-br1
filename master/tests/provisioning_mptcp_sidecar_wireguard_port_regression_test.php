@@ -96,7 +96,7 @@ namespace Leikwan\Master\Database {
                 return $client === null ? null : ['agent_config_json' => $client['agent_config_json'] ?? null];
             }
 
-            if (str_contains($normalized, 'SELECT agent_config_json, sidecar_host, listen_port FROM sidecar_points WHERE id = :id LIMIT 1')) {
+            if (str_contains($normalized, 'FROM sidecar_points WHERE id = :id LIMIT 1')) {
                 $point = $this->findById('sidecar_points', (int) ($params['id'] ?? 0));
                 if ($point === null) {
                     return null;
@@ -105,6 +105,8 @@ namespace Leikwan\Master\Database {
                     'agent_config_json' => $point['agent_config_json'] ?? null,
                     'sidecar_host' => $point['sidecar_host'] ?? '',
                     'listen_port' => $point['listen_port'] ?? 0,
+                    'bond_listen_port' => $point['bond_listen_port'] ?? 0,
+                    'mptcp_listen_port' => $point['mptcp_listen_port'] ?? 0,
                 ];
             }
 
@@ -247,6 +249,7 @@ namespace {
         'service_id' => 1,
         'line_client_id' => 1,
         'bond_sidecar_point_id' => 4,
+        'transport_mode' => 'tcp+udp',
     ];
     $node = [
         'id' => 5,
@@ -268,6 +271,9 @@ namespace {
     }
     if (($underlay['sidecar_endpoint_port'] ?? null) !== 14985) {
         fail('expected slave underlay to derive sidecar_endpoint_port 14985 from sidecar wireguard listen port, got ' . var_export($underlay['sidecar_endpoint_port'] ?? null, true));
+    }
+    if (($underlay['transport'] ?? null) !== 'tcp+udp') {
+        fail('expected slave underlay to carry forward transport tcp+udp, got ' . var_export($underlay['transport'] ?? null, true));
     }
 
     $management = $service->mptcpSidecarManagementForPoint(4);

@@ -181,6 +181,46 @@ public sealed class ForwardRuntimeManagerTests
         Assert.False(root.GetProperty("manage_mptcp_endpoints").GetBoolean());
     }
 
+
+    [Fact]
+    public void ApplyForward_MptcpSlavePreconnect_PrefersSlaveRelayAndKeepsUdpTransport()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
+        config.MptcpRelayBin = @"C:\leikwan\bin\leikwan-mptcp-relay.exe";
+        var manager = new ForwardRuntimeManager(
+            config,
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+
+        var forward = CreateMptcpForward();
+        forward.Transport = "tcp+udp";
+        forward.Mptcp!.SidecarHost = "10.203.201.135";
+        forward.Mptcp.SidecarPort = 14969;
+        forward.Mptcp.SlaveRelayHost = "10.203.201.134";
+        forward.Mptcp.SlaveRelayPort = 8076;
+        forward.Mptcp.SlaveUotRelayHost = "10.203.201.134";
+        forward.Mptcp.SlaveUotRelayPort = 8077;
+
+        manager.ApplyForward(forward);
+
+        var runtimeConfigPath = Path.Combine(tempDir.Path, "runtime", "mptcp-forward-24.json");
+        using var document = JsonDocument.Parse(File.ReadAllText(runtimeConfigPath));
+        var root = document.RootElement;
+        Assert.Equal("10.203.201.134", root.GetProperty("remote_host").GetString());
+        Assert.Equal(8076, root.GetProperty("remote_port").GetInt32());
+        Assert.Equal("10.203.201.134", root.GetProperty("slave_relay_host").GetString());
+        Assert.Equal(8076, root.GetProperty("slave_relay_port").GetInt32());
+        Assert.Equal("10.203.201.134", root.GetProperty("slave_uot_relay_host").GetString());
+        Assert.Equal(8077, root.GetProperty("slave_uot_relay_port").GetInt32());
+        Assert.Equal("tcp+udp", root.GetProperty("transport").GetString());
+    }
+
     [Fact]
     public void ApplyForward_Mptcp_WaitsForLocalListenPortReadiness()
     {

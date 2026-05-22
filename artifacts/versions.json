@@ -1,10 +1,10 @@
 {
   "slave_agent": {
-    "version": "2026.05.21.5",
+    "version": "2026.05.22.1",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "3463d7660e03b54c8ecac81f52ca6c5c2f36da0eb613d2f9b9f8053d6437abe5",
-    "size_bytes": 184758
+    "sha256": "6bc45be0f8b0bd37bdec5b6e590588a6a54d93a84bbd4b50eb52837cab6fdb59",
+    "size_bytes": 191694
   },
   "slave_installer": {
     "version": "2026.05.20.1",
@@ -66,11 +66,11 @@
     "size_bytes": 79848
   },
   "mptcp_client_runtime": {
-    "version": "2026.05.17.1",
+    "version": "2026.05.22.1",
     "path": "client-agent/leikwan_mptcp_client.py",
     "artifact_url": "/artifacts/leikwan-mptcp-client.py",
-    "sha256": "5f150daeeaa8f354036c14761b7beeb54e3518d2177a08db41d8219bf19cd3f7",
-    "size_bytes": 50810
+    "sha256": "2151a96d615a06fd39f796f9b0fc9bc3fe507ee36dec2e00d5ad05f14d8fe673",
+    "size_bytes": 54325
   },
   "uot_runtime": {
     "version": "2026.04.08.1",
@@ -145,11 +145,11 @@
     "size_bytes": 8335360
   },
   "install_forward_runtime": {
-    "version": "2026.05.20.1",
+    "version": "2026.05.22.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "7e5ba21e76283abe4c34cd39f9d3bb9bcde7d852686f056d0b10855193c8a5d5",
-    "size_bytes": 58810
+    "sha256": "d840392a637a6e99073b3294247ed87f8777552bd0cb58cb2ce2c0e216829de7",
+    "size_bytes": 59197
   },
   "cfwg_latency_watchdog": {
     "version": "2026.05.20.1",
@@ -165,5 +165,12 @@
     "sha256": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
     "size_bytes": 2605056,
     "platform": "windows-amd64"
+  },
+  "slave_preconnect_relay": {
+    "version": "2026.05.22.1",
+    "path": "slave-agent/preconnect_relay.py",
+    "artifact_url": "/artifacts/leikwan-preconnect-relay.py",
+    "sha256": "fcb7d862446dabfdc8c2fa0a42b3363c2e9137646e4f45bd541118b0660b9b3f",
+    "size_bytes": 17495
   }
 }
