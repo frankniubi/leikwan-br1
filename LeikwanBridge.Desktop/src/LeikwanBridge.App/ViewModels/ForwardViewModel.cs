@@ -36,7 +36,7 @@ public partial class ForwardViewModel : ObservableObject
             Mode = "single";
         }
 
-        IsMptcpFallback = config.Mode?.ToLowerInvariant() is "mptcp" or "mptcp-wireguard";
+        IsMptcpFallback = false;
         ModeDisplay = ModeNormalizer.DisplayName(Mode, IsMptcpFallback);
     }
 

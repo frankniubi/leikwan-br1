@@ -90,10 +90,12 @@ class WindowsClientSetupInstallerTests(unittest.TestCase):
             self.assertTrue((install_dir / "leikwan-bond.exe").is_file())
             self.assertTrue((install_dir / "leikwan-ingress.exe").is_file())
             self.assertTrue((install_dir / "leikwan-uot-bond.exe").is_file())
+            self.assertTrue((install_dir / "leikwan-mptcp-relay.exe").is_file())
             self.assertTrue((bin_dir / "wstunnel.exe").is_file())
             self.assertTrue((bin_dir / "leikwan-bond.exe").is_file())
             self.assertTrue((bin_dir / "leikwan-ingress.exe").is_file())
             self.assertTrue((bin_dir / "leikwan-uot-bond.exe").is_file())
+            self.assertTrue((bin_dir / "leikwan-mptcp-relay.exe").is_file())
 
             manifest_path = install_dir / "install-manifest.json"
             self.assertTrue(manifest_path.is_file())
@@ -103,6 +105,7 @@ class WindowsClientSetupInstallerTests(unittest.TestCase):
             self.assertEqual(manifest["bond_sha256"], self.sha256(bin_dir / "leikwan-bond.exe"))
             self.assertEqual(manifest["ingress_sha256"], self.sha256(bin_dir / "leikwan-ingress.exe"))
             self.assertEqual(manifest["uot_bond_sha256"], self.sha256(bin_dir / "leikwan-uot-bond.exe"))
+            self.assertEqual(manifest["mptcp_relay_sha256"], self.sha256(bin_dir / "leikwan-mptcp-relay.exe"))
             self.assertEqual(manifest["wstunnel_sha256"], self.sha256(bin_dir / "wstunnel.exe"))
 
             self.assertTrue((desktop_dir / "LeiKwan Bridge.lnk").is_file())

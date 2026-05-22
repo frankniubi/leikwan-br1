@@ -126,6 +126,8 @@ namespace {
             'poll_interval_seconds' => 60,
             'udp_uot_sidepath' => $sidepath,
             'cfwg_latency_watchdog' => $cfwgWatchdog,
+            'runtime_refresh' => ['forward_ids' => [47], 'token' => 'runtime-refresh-test'],
+            'cfwg_edge_pins' => ['47' => '162.159.39.4'],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
     ]);
 
@@ -137,6 +139,12 @@ namespace {
     }
     if (($clientConfig['udp_uot_sidepath'] ?? null) !== $sidepath) {
         fail('expected authoritative client config to preserve udp_uot_sidepath');
+    }
+    if (($clientConfig['runtime_refresh']['token'] ?? null) !== 'runtime-refresh-test') {
+        fail('expected authoritative client config to preserve runtime_refresh');
+    }
+    if (($clientConfig['cfwg_edge_pins']['47'] ?? null) !== '162.159.39.4') {
+        fail('expected authoritative client config to preserve cfwg_edge_pins');
     }
     foreach ($cfwgWatchdog as $key => $value) {
         if (($clientConfig['cfwg_latency_watchdog'][$key] ?? null) !== $value) {

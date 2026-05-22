@@ -39,7 +39,7 @@ public sealed class HeartbeatService
             AgentVersion = MasterApiClient.AgentVersion,
             UsageBytesIn = Math.Max(0, bytesIn),
             UsageBytesOut = Math.Max(0, bytesOut),
-            SupportsMptcp = false, // Windows doesn't support kernel MPTCP
+            SupportsMptcp = true, // Windows supports MPTCP forwards via bundled portable relay compatibility mode
             WireguardPublicKey = _wireguardPublicKey,
             WireguardListenPort = _wireguardListenPort,
             WireguardFallbackTcpPort = _wireguardFallbackTcpPort,
