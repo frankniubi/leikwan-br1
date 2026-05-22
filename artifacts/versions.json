@@ -1,10 +1,10 @@
 {
   "slave_agent": {
-    "version": "2026.05.22.1",
+    "version": "2026.05.22.2",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "6bc45be0f8b0bd37bdec5b6e590588a6a54d93a84bbd4b50eb52837cab6fdb59",
-    "size_bytes": 191694
+    "sha256": "26874fff9542f5a507b777c10d18ad2885f217f956098871b3071e677d37eb68",
+    "size_bytes": 195533
   },
   "slave_installer": {
     "version": "2026.05.20.1",
@@ -69,8 +69,8 @@
     "version": "2026.05.22.1",
     "path": "client-agent/leikwan_mptcp_client.py",
     "artifact_url": "/artifacts/leikwan-mptcp-client.py",
-    "sha256": "2151a96d615a06fd39f796f9b0fc9bc3fe507ee36dec2e00d5ad05f14d8fe673",
-    "size_bytes": 54325
+    "sha256": "482e46fa35189ce1b1f76a3a085d3ea8a13c751cf0274a039388b796e8ba9ee4",
+    "size_bytes": 53158
   },
   "uot_runtime": {
     "version": "2026.04.08.1",
@@ -148,8 +148,8 @@
     "version": "2026.05.22.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "d840392a637a6e99073b3294247ed87f8777552bd0cb58cb2ce2c0e216829de7",
-    "size_bytes": 59197
+    "sha256": "fb2bca6a644c5dd2c3c3914f7cfa9edf93863e86732bc5794bbbb3d9d255d45c",
+    "size_bytes": 67510
   },
   "cfwg_latency_watchdog": {
     "version": "2026.05.20.1",

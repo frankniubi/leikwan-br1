@@ -91,6 +91,51 @@ def cfwg_watchdog_pin(forward_id: int, agent_config: dict) -> str:
     return str(payload.get("cf_dial_host_pin", "") or "").strip()
 
 
+def auto_cfwg_path(forward_id: int, leg_type: str, node_id: int = 0) -> str:
+    """Generate a deterministic camouflage URL path for cfwg WSS legs.
+
+    Camouflage matters because these paths are visible in the websocket HTTP
+    upgrade request; keep them looking like ordinary CDN asset URLs instead of
+    internal tunnel names.  The salt includes the forward id, leg type, and
+    stable node id so the direct and slave-relay legs do not collide, and so
+    endpoint-row churn does not rename a relay path.  The template index is
+    deterministic for operator debugging while the hash gives per-forward
+    uniqueness.
+
+    Do not change the salt or reorder existing templates casually: that renames
+    existing WSS routes and requires a coordinated panel/slave/client rollout.
+    Add new templates only at the end if a future algorithm version is created.
+    """
+    if forward_id <= 0:
+        return ""
+    import hashlib
+
+    stable_node_id = max(0, int_or_default(node_id, 0))
+    stable_leg_type = str(leg_type or "").strip().lower().replace("-", "_")
+    if stable_leg_type == "":
+        return ""
+    digest = hashlib.sha256(
+        f"leikwan-cfwg-path-v1:{stable_leg_type}:forward:{forward_id}:node:{stable_node_id}".encode("utf-8")
+    ).hexdigest()
+
+    h8 = digest[:8]
+    h12 = digest[:12]
+    v_major = str((forward_id * 7 + 2) % 20 + 1)
+    v_minor = str((forward_id * 13 + 5) % 99)
+    episode = str((forward_id * 3 + 1) % 500 + 1)
+    templates = [
+        f"assets/v{v_major}.{v_minor}/chunk-{h8}.ts",
+        f"cdn/releases/{h8}/update-{v_major}.{v_minor}.bin",
+        f"media/stream-{h8}.m3u8",
+        f"files/{h8}/Windows-{v_major}.{v_minor}.iso",
+        f"static/js/{h8}.chunk.js",
+        f"api/v2/telemetry/{h12}",
+        f"download/{h8}/package-{v_major}.{v_minor}.deb",
+        f"content/{h8}/episode-{episode}.mp4",
+    ]
+    return templates[forward_id % len(templates)]
+
+
 def _leg_query_params(priority: int, endpoint: dict | None = None) -> str:
     params = [f"priority={priority}"]
     if isinstance(endpoint, dict):
@@ -440,7 +485,10 @@ def self_leg_wg_underlay(candidate: dict, forward: dict, agent_config: dict | No
         if cf_sni_host != "":
             wg["cf_sni_host"] = cf_sni_host
         base_path = str(candidate.get("cf_path_prefix", "") or wg.get("cf_path_prefix", "") or candidate.get("path_prefix", "") or forward.get("path_prefix", "") or "").strip().strip("/")
-        if base_path != "":
+        if base_path == "" and truthy(wg.get("auto_camouflage_paths", False)):
+            base_path = auto_cfwg_path(forward_id, "direct", int_or_default(candidate.get("node_id"), int_or_default(candidate.get("endpoint_node_id"), 0)))
+            wg["cf_path_prefix"] = base_path
+        elif base_path != "":
             wg["cf_path_prefix"] = base_path if base_path.endswith(".cfwg") else base_path + ".cfwg"
         endpoint_host = "127.0.0.1"
         endpoint_port = 40000 + (forward_id % 2000)
@@ -473,6 +521,121 @@ def self_leg_wg_underlay(candidate: dict, forward: dict, agent_config: dict | No
     }
     if outer_transport == "wstunnel_udp":
         underlay["prefer_mptcp_endpoint"] = True
+    return underlay
+
+
+def self_leg_slave_relay_wg_underlay(candidate: dict, forward: dict, agent_config: dict | None = None) -> dict | None:
+    """Build an additional cfwg underlay that tunnels WG UDP through the slave's CF WSS mux.
+
+    Traffic flow: client -> wstunnel WSS -> slave (CF-fronted WSS mux, different path)
+                  -> slave local wstunnel backend -> CF -> sidecar WG endpoint.
+
+    This provides a stable backup leg for clients without a direct AS4134 route to CF TYO,
+    because the slave already has a stable route and the WG handshake/rekeying jitter only
+    affects the direct cfwg leg.
+
+    Configuration lives inside ``candidate["self_leg_wg"]["slave_relay"]`` dict:
+      - enabled: bool (default False)
+      - slave_host: str — the slave's public host (CF-fronted or direct)
+      - slave_port: int — the slave's WSS mux listen port (same port CF tunnels to)
+      - slave_path_prefix: str — distinct path to differentiate from other traffic
+                                  (e.g. "Windows-9.1.iso" or "index.m3u8")
+      - slave_sni_host: str — SNI to use when connecting to the slave through CF
+      - local_udp_port_offset: int — offset from base udp port (default 1)
+    """
+    if agent_config is None:
+        agent_config = {}
+    wg = candidate.get("self_leg_wg", {})
+    if not isinstance(wg, dict) or not truthy(wg.get("enabled", True)):
+        return None
+    slave_relay = wg.get("slave_relay", {})
+    if not isinstance(slave_relay, dict) or not truthy(slave_relay.get("enabled", False)):
+        return None
+
+    forward_id = int_or_default(forward.get("forward_id"), int_or_default(candidate.get("forward_id"), 0))
+    if forward_id <= 0:
+        return None
+
+    # Slave relay connection parameters
+    slave_host = str(slave_relay.get("slave_host", "") or "").strip()
+    slave_port = int_or_default(slave_relay.get("slave_port"), 0)
+    slave_path_prefix = str(slave_relay.get("slave_path_prefix", "") or "").strip().strip("/")
+    slave_sni_host = str(
+        slave_relay.get("slave_sni_host", "")
+        or slave_relay.get("sni_host", "")
+        or candidate.get("cf_sni_host", "")
+        or forward.get("sni", "")
+        or ""
+    ).strip()
+
+    if slave_host == "" or slave_port <= 0 or slave_path_prefix == "":
+        return None
+
+    # WG identity — same keys/addresses as the primary cfwg but on a separate interface
+    client_address = str(wg.get("client_address", "") or "").strip()
+    sidecar_address = str(wg.get("sidecar_address", "") or "").strip()
+    sidecar_public_key = str(wg.get("sidecar_public_key", "") or "").strip()
+
+    # Slave relay has its own overlay addresses to avoid conflicts with the direct leg
+    relay_client_address = str(slave_relay.get("client_address", "") or "").strip() or client_address
+    relay_sidecar_address = str(slave_relay.get("sidecar_address", "") or "").strip() or sidecar_address
+
+    if relay_client_address == "" or relay_sidecar_address == "" or sidecar_public_key == "":
+        return None
+
+    # Interface name: lw-cfsr-{forward_id} (cfsr = cf slave relay), max 15 chars
+    interface_name = str(slave_relay.get("interface_name", "") or "").strip()
+    if interface_name == "":
+        interface_name = f"lw-cfsr-{forward_id}"
+    interface_name = interface_name[:15]
+
+    # Local UDP port for the wstunnel client listener (the WG endpoint connects here)
+    local_udp_port_offset = int_or_default(slave_relay.get("local_udp_port_offset"), 1)
+    base_udp_port = 40000 + (forward_id % 2000)
+    local_udp_port = base_udp_port + local_udp_port_offset
+
+    # The wstunnel target is the sidecar WG endpoint (same as direct cfwg, reached via slave relay)
+    cf_target_host = str(wg.get("cf_target_host", "") or "127.0.0.1").strip()
+    cf_target_port = int_or_default(wg.get("endpoint_port") or wg.get("sidecar_endpoint_port"), 0)
+    if cf_target_port <= 0:
+        cf_target_port = int_or_default(slave_relay.get("cf_target_port"), 0)
+    if cf_target_port <= 0:
+        return None
+
+    leg = {
+        "forward_id": forward_id,
+        "endpoint_id": int_or_default(candidate.get("endpoint_id"), 0),
+        "outer_transport": "wstunnel_udp_via_slave",
+        "local_address": relay_client_address,
+        "peer_address": relay_sidecar_address,
+        "mptcp_remote_address": relay_sidecar_address,
+        "peer_public_key": sidecar_public_key,
+        "peer_public_host": "127.0.0.1",
+        "peer_udp_port": local_udp_port,
+        "peer_tcp_fallback_port": 0,
+        # Slave relay wstunnel connection parameters (client -> slave)
+        "slave_dial_host": slave_host,
+        "slave_dial_port": slave_port,
+        "slave_sni_host": slave_sni_host,
+        "slave_path_prefix": slave_path_prefix,
+        # CF target for documentation/debugging (slave -> sidecar via CF)
+        "cf_target_host": cf_target_host,
+        "cf_target_port": cf_target_port,
+    }
+
+    underlay = {
+        "type": "wireguard",
+        "mode": "client_self_leg_slave_relay",
+        "interface_name": interface_name,
+        "peer_keepalive_seconds": int_or_default(
+            slave_relay.get("persistent_keepalive")
+            or wg.get("persistent_keepalive")
+            or wg.get("peer_keepalive_seconds"),
+            25,
+        ),
+        "legs": [leg],
+        "prefer_mptcp_endpoint": True,
+    }
     return underlay
 
 
@@ -859,6 +1022,11 @@ WantedBy=multi-user.target
             for underlay in [self_leg_wg_underlay(candidate, forward, agent_config)]
             if underlay is not None
         ]
+        # Append slave-relayed cfwg underlays (route WG UDP through slave's CF mux)
+        for candidate in selected_private_wg_self_leg_candidates(forward):
+            slave_relay_underlay = self_leg_slave_relay_wg_underlay(candidate, forward, agent_config)
+            if slave_relay_underlay is not None:
+                private_self_leg_underlays.append(slave_relay_underlay)
         if private_self_leg_underlays:
             first_leg = private_self_leg_underlays[0].get("legs", [{}])[0]
             if isinstance(first_leg, dict):
@@ -1073,6 +1241,28 @@ WantedBy=multi-user.target
                     continue
                 lines.append(
                     f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 --tls-sni-override {cf_sni} --http-headers \"Host: {cf_sni}\" --http-upgrade-path-prefix \"{cf_path}\" wss://{cf_host}:{cf_port} &"
+                )
+                cf_wg_ports.append(local_udp)
+        # Slave-relayed cfwg legs: route WG UDP through the slave's CF WSS mux
+        for underlay in private_self_leg_underlays:
+            if not isinstance(underlay, dict):
+                continue
+            for leg in underlay.get("legs", []):
+                if not isinstance(leg, dict):
+                    continue
+                if str(leg.get("outer_transport", "udp") or "udp").strip().lower() != "wstunnel_udp_via_slave":
+                    continue
+                local_udp = int_or_default(leg.get("peer_udp_port"), 0)
+                slave_host = str(leg.get("slave_dial_host", "") or "").strip()
+                slave_port = int_or_default(leg.get("slave_dial_port"), 0)
+                slave_sni = str(leg.get("slave_sni_host", "") or sni).strip()
+                slave_path = str(leg.get("slave_path_prefix", "") or "").strip().strip("/")
+                cf_target_host = str(leg.get("cf_target_host", "") or "127.0.0.1").strip()
+                cf_target_port = int_or_default(leg.get("cf_target_port"), 0)
+                if local_udp <= 0 or slave_host == "" or slave_port <= 0 or slave_path == "" or cf_target_host == "" or cf_target_port <= 0:
+                    continue
+                lines.append(
+                    f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 --tls-sni-override {slave_sni} --http-headers \"Host: {slave_sni}\" --http-upgrade-path-prefix \"{slave_path}\" wss://{slave_host}:{slave_port} &"
                 )
                 cf_wg_ports.append(local_udp)
         if cf_wg_ports:

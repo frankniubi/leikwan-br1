@@ -365,8 +365,9 @@ class SlavePlainTcpMuxTests(unittest.TestCase):
                                     with mock.patch.object(agent, "write_filter_marker", return_value={"filter_profile": "off"}):
                                         result = agent.publish_task(task, payload)
 
-        self.assertIn("wstunnel_start_deferred", result)
+        self.assertTrue(result["wstunnel_start_deferred"])
         self.assertEqual(["wstunnel-svc-2-456"], applied)
+
 
     def test_publish_task_never_allocates_backend_on_public_listener_port(self) -> None:
         agent = self.make_agent()
