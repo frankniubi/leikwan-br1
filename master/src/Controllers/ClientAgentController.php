@@ -245,6 +245,8 @@ final class ClientAgentController extends BaseController
             'log_level',
             'udp_uot_sidepath',
             'cfwg_latency_watchdog',
+            'runtime_refresh',
+            'cfwg_edge_pins',
         ];
         $snapshot = array_fill_keys(array_merge(['master_url'], $managedKeys), null);
         $snapshot['master_url'] = $this->agentBaseUrl();

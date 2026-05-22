@@ -7,7 +7,7 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class WindowsForwardPolicyTests
 {
     [Fact]
-    public void FilterSupportedForwards_KeepsOnlyBondAndSingle()
+    public void FilterSupportedForwards_KeepsSingleBondAndMptcp()
     {
         var forwards = new[]
         {
@@ -19,7 +19,7 @@ public sealed class WindowsForwardPolicyTests
 
         var filtered = WindowsForwardPolicy.FilterSupportedForwards(forwards);
 
-        Assert.Equal([23, 26], filtered.Select(forward => forward.ForwardId).ToArray());
+        Assert.Equal([23, 24, 26], filtered.Select(forward => forward.ForwardId).ToArray());
     }
 
     private static ForwardConfig CreateForward(int forwardId, string mode)

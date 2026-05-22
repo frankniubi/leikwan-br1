@@ -74,6 +74,9 @@ public sealed class AgentConfig
     [JsonPropertyName("uot_bond_bin")]
     public string UotBondBin { get; set; } = "";
 
+    [JsonPropertyName("mptcp_relay_bin")]
+    public string MptcpRelayBin { get; set; } = "";
+
     [JsonPropertyName("wg_bin")]
     public string WgBin { get; set; } = "";
 
@@ -133,6 +136,13 @@ public sealed class AgentConfig
         if (!string.IsNullOrWhiteSpace(UotBondBin))
             return UotBondBin;
         return Path.Combine(AppContext.BaseDirectory, "bin", "leikwan-uot-bond.exe");
+    }
+
+    public string GetEffectiveMptcpRelayBin()
+    {
+        if (!string.IsNullOrWhiteSpace(MptcpRelayBin))
+            return MptcpRelayBin;
+        return Path.Combine(AppContext.BaseDirectory, "bin", "leikwan-mptcp-relay.exe");
     }
 
     public string GetEffectiveWgBin()

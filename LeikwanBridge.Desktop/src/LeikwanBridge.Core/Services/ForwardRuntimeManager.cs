@@ -15,6 +15,7 @@ public class ForwardRuntimeManager : IDisposable
     private readonly ProcessSupervisor _supervisor;
     private readonly BondRuntimeBuilder _bondBuilder;
     private readonly BondEndpointHealthService _bondEndpointHealth;
+    private readonly MptcpRuntimeBuilder _mptcpBuilder;
     private readonly StateManager _stateManager;
     private readonly Func<string, bool> _binaryExists;
     private readonly Func<int, bool> _portListeningProbe;
@@ -29,6 +30,7 @@ public class ForwardRuntimeManager : IDisposable
         _config = config;
         _supervisor = supervisor;
         _bondBuilder = new BondRuntimeBuilder(config);
+        _mptcpBuilder = new MptcpRuntimeBuilder(config);
         _bondEndpointHealth = new BondEndpointHealthService(stateManager);
         _stateManager = stateManager;
         _binaryExists = binaryExists ?? File.Exists;
@@ -52,13 +54,6 @@ public class ForwardRuntimeManager : IDisposable
         var forwardId = forward.ForwardId;
         var mode = ModeNormalizer.Normalize(forward.Mode);
 
-        // MPTCP on Windows => Bond fallback
-        if (mode == "mptcp")
-        {
-            Log.Warning("forward {ForwardId}: mptcp mode on Windows, falling back to bond", forwardId);
-            forward = MptcpFallbackService.ConvertToBond(forward);
-            mode = "bond";
-        }
 
         Log.Information("applying forward {ForwardId} mode={Mode} transport={Transport} endpoints={Count}",
             forwardId, mode, forward.Transport, forward.Endpoints.Count);
@@ -74,6 +69,7 @@ public class ForwardRuntimeManager : IDisposable
             {
                 "bond" => _bondBuilder.Build(WithSelectedBondRuntimeEndpoints(forward)),
                 "race" => _bondBuilder.BuildRace(forward),
+                "mptcp" => _mptcpBuilder.Build(forward),
                 _ => _bondBuilder.BuildSingle(forward),
             };
         }
@@ -81,6 +77,14 @@ public class ForwardRuntimeManager : IDisposable
         {
             Log.Error(ex, "failed to build runtime spec for forward {ForwardId}", forwardId);
             return;
+        }
+
+        foreach (var file in spec.GeneratedFiles ?? [])
+        {
+            var directory = Path.GetDirectoryName(file.FilePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+            File.WriteAllText(file.FilePath, file.Content);
         }
 
         foreach (var process in spec.Processes.Where(p => p.RequiredForReadiness))
@@ -98,14 +102,6 @@ public class ForwardRuntimeManager : IDisposable
             Log.Error("forward {ForwardId}: required leg ports did not become ready", forwardId);
             _supervisor.StopAll(forwardId);
             return;
-        }
-
-        foreach (var file in spec.GeneratedFiles ?? [])
-        {
-            var directory = Path.GetDirectoryName(file.FilePath);
-            if (!string.IsNullOrWhiteSpace(directory))
-                Directory.CreateDirectory(directory);
-            File.WriteAllText(file.FilePath, file.Content);
         }
 
         foreach (var process in spec.Processes.Where(p => !p.RequiredForReadiness))

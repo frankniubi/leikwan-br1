@@ -6,6 +6,8 @@ use std::path::Path;
 #[allow(dead_code)]
 pub struct ClientConfig {
     pub forward_id: u64,
+    #[serde(default = "default_listen_host")]
+    pub listen_host: String,
     pub listen_port: u16,
     pub transport: String,
     pub remote_host: String,
@@ -93,6 +95,10 @@ pub struct ServerConfig {
 
 // ---- default value functions ----
 
+fn default_listen_host() -> String {
+    "0.0.0.0".to_string()
+}
+
 fn default_udp_mode() -> String {
     "stream_compat".to_string()
 }
@@ -157,4 +163,23 @@ pub fn load_server_config<P: AsRef<Path>>(path: P) -> anyhow::Result<ServerConfi
     let config: ServerConfig = serde_json::from_str(&data)
         .map_err(|e| anyhow::anyhow!("failed to parse server config: {}", e))?;
     Ok(config)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_config_defaults_to_public_listen_host() {
+        let config: ClientConfig = serde_json::from_value(serde_json::json!({
+            "forward_id": 24,
+            "listen_port": 11023,
+            "transport": "tcp+udp",
+            "remote_host": "127.0.0.1",
+            "remote_port": 14969
+        })).expect("client config");
+
+        assert_eq!("0.0.0.0", config.listen_host);
+    }
 }

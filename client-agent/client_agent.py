@@ -1223,6 +1223,8 @@ class ClientAgent:
             "state_dir",
             "udp_uot_sidepath",
             "cfwg_latency_watchdog",
+            "runtime_refresh",
+            "cfwg_edge_pins",
         }
         config_changed = False
         for key, value in patch.items():

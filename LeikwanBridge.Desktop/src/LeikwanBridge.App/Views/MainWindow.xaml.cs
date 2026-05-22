@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -48,7 +48,8 @@ public partial class MainWindow : Window
             if (await TryApplyPendingUpdateAsync())
                 return;
             TryAutoConnect();
-            await CheckForUpdatesAsync();
+            if (WindowsAppUpdateService.ShouldCheckForUpdatesOnStartup(App.Config))
+                await CheckForUpdatesAsync();
         };
         StateChanged += OnWindowStateChanged;
     }

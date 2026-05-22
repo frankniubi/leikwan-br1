@@ -73,6 +73,11 @@ def cfwg_watchdog_pin(forward_id: int, agent_config: dict) -> str:
         return ""
     state_dir = pathlib.Path(str(agent_config.get("state_dir", "/var/lib/leikwan-client-agent") or "/var/lib/leikwan-client-agent"))
     path = state_dir / "cfwg-watchdog-pin" / f"{forward_id}.json"
+    pins = agent_config.get("cfwg_edge_pins", {})
+    if isinstance(pins, dict):
+        pinned = str(pins.get(str(forward_id), "") or pins.get(forward_id, "") or "").strip()
+        if pinned != "":
+            return pinned
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
