@@ -4733,6 +4733,45 @@ final class ProvisioningService
     }
 
 
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function activeEndpointPublishPayload(int $nodeId, int $forwardId, int $endpointId): ?array
+    {
+        $row = $this->db->fetchOne(
+            'SELECT f.*, s.client_token, combo.runtime_preference AS forward_combination_runtime_preference, combo.self_leg_cf_transport AS forward_combination_self_leg_cf_transport, sp.mptcp_listen_port AS mptcp_sidecar_port, sp.bond_listen_port AS sidecar_bond_listen_port, sp.listen_port AS sidecar_listen_port, sp.agent_config_json AS bond_sidecar_point_agent_config_json, e.id AS endpoint_id, e.node_id, e.public_host AS endpoint_public_host, e.public_port AS endpoint_public_port, n.agent_config_json AS node_agent_config_json, n.public_ip AS node_public_ip, n.name AS node_name
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             INNER JOIN service_endpoints e ON e.forward_id = f.id
+             INNER JOIN nodes n ON n.id = e.node_id
+             LEFT JOIN forward_combinations combo ON combo.id = f.forward_combination_id
+             LEFT JOIN sidecar_points sp ON sp.id = f.bond_sidecar_point_id
+             WHERE n.id = :node_id AND f.id = :forward_id AND e.id = :endpoint_id
+               AND f.enabled = 1
+               AND e.health_status NOT IN (:deleted, :deleting)
+             LIMIT 1',
+            [
+                'node_id' => $nodeId,
+                'forward_id' => $forwardId,
+                'endpoint_id' => $endpointId,
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+            ]
+        );
+        if ($row === null) {
+            return null;
+        }
+
+        $node = [
+            'id' => (int) ($row['node_id'] ?? 0),
+            'name' => (string) ($row['node_name'] ?? ''),
+            'public_ip' => (string) ($row['node_public_ip'] ?? ''),
+            'agent_config_json' => $row['node_agent_config_json'] ?? null,
+        ];
+
+        return $this->publishTaskPayloadForForward($row, $node, $endpointId);
+    }
+
     public function republishActiveEndpoint(int $nodeId, int $forwardId, int $endpointId): bool
     {
         if ($nodeId <= 0 || $forwardId <= 0 || $endpointId <= 0) {
