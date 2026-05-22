@@ -72,4 +72,17 @@ public sealed class MptcpConfig
 
     [JsonPropertyName("underlays")]
     public List<UnderlayConfig> Underlays { get; set; } = [];
+
+    /// <summary>
+    /// Slave pre-connect relay host. When set, the client connects to the slave's
+    /// local relay via plain TCP instead of opening MPTCP directly to sidecar.
+    /// </summary>
+    [JsonPropertyName("slave_relay_host")]
+    public string SlaveRelayHost { get; set; } = "";
+
+    /// <summary>
+    /// Slave pre-connect relay port.
+    /// </summary>
+    [JsonPropertyName("slave_relay_port")]
+    public int SlaveRelayPort { get; set; }
 }

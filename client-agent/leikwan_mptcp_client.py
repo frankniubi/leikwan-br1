@@ -867,6 +867,41 @@ def remote_host_candidates(config: dict[str, Any]) -> list[str]:
     return hosts
 
 
+async def open_slave_relay_stream(
+    host: str,
+    port: int,
+    connect_timeout_ms: int,
+    tcp_congestion_control: str | None = None,
+    socket_buffer_bytes: int = 0,
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Connect to the slave's pre-connect relay via plain TCP.
+
+    The slave relay handles MPTCP to sidecar on our behalf. No MPTCP socket
+    or handshake is needed from the client — just a plain TCP connection.
+    This simplifies the client and moves failure diagnosis to the slave.
+    """
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+
+    last_error: Exception | None = None
+    for family, socktype, _proto, _canonname, sockaddr in infos:
+        sock: socket.socket | None = None
+        try:
+            sock = socket.socket(family, socktype, socket.IPPROTO_TCP)
+            tune_socket(sock, tcp_congestion_control, socket_buffer_bytes)
+            sock.settimeout(max(0.2, connect_timeout_ms / 1000))
+            await asyncio.to_thread(sock.connect, sockaddr)
+            sock.setblocking(False)
+            return await asyncio.open_connection(sock=sock)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if sock is not None:
+                with contextlib_suppress():
+                    sock.close()
+
+    raise RuntimeError(f"unable to connect to slave relay [{host}]:{port}: {last_error}")
+
+
 async def open_remote_stream(
     hosts: list[str],
     port: int,
@@ -988,25 +1023,46 @@ async def relay_tcp(local_reader: asyncio.StreamReader, local_writer: asyncio.St
     tcp_congestion_control = str(config.get("tcp_congestion_control", "bbr") or "bbr").strip()
     socket_buffer_bytes = int(config.get("socket_buffer_bytes", 0) or 0)
     tune_socket(local_writer.get_extra_info("socket"), tcp_congestion_control, socket_buffer_bytes)
-    remote_reader, remote_writer = await open_remote_stream(
-        remote_host_candidates(config),
-        int(config["remote_port"]),
-        int(config.get("connect_timeout_ms", 3000) or 3000),
-        truthy(config.get("allow_tcp_fallback", False)),
-        tcp_congestion_control,
-        socket_buffer_bytes,
-    )
-    await send_handshake(
-        remote_writer,
-        {
-            "protocol": "tcp",
-            "session_token": str(config.get("tcp_session_token", "") or ""),
-            "forward_id": int(config.get("forward_id", 0) or 0),
-        },
-    )
+
+    # Slave pre-connect mode: connect to slave relay via plain TCP (no MPTCP, no handshake)
+    slave_relay_host = str(config.get("slave_relay_host", "") or "").strip()
+    slave_relay_port = int(config.get("slave_relay_port", 0) or 0)
+    use_slave_preconnect = slave_relay_host != "" and slave_relay_port > 0
+
+    if use_slave_preconnect:
+        remote_reader, remote_writer = await open_slave_relay_stream(
+            slave_relay_host,
+            slave_relay_port,
+            int(config.get("connect_timeout_ms", 3000) or 3000),
+            tcp_congestion_control,
+            socket_buffer_bytes,
+        )
+        logging.info(
+            "tcp relay %s connected via slave preconnect relay=%s:%s (forward_id=%s)",
+            conn_id, slave_relay_host, slave_relay_port, config.get("forward_id"),
+        )
+        # No handshake needed — slave relay handles it
+    else:
+        remote_reader, remote_writer = await open_remote_stream(
+            remote_host_candidates(config),
+            int(config["remote_port"]),
+            int(config.get("connect_timeout_ms", 3000) or 3000),
+            truthy(config.get("allow_tcp_fallback", False)),
+            tcp_congestion_control,
+            socket_buffer_bytes,
+        )
+        await send_handshake(
+            remote_writer,
+            {
+                "protocol": "tcp",
+                "session_token": str(config.get("tcp_session_token", "") or ""),
+                "forward_id": int(config.get("forward_id", 0) or 0),
+            },
+        )
+        logging.info("tcp relay %s connected remote=%s:%s", conn_id, remote_host_candidates(config), int(config["remote_port"]))
+
     local_to_remote_started = asyncio.Event()
     remote_to_local_started = asyncio.Event()
-    logging.info("tcp relay %s connected remote=%s:%s", conn_id, remote_host_candidates(config), int(config["remote_port"]))
     try:
         await asyncio.gather(
             pipe(

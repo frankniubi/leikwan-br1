@@ -3543,9 +3543,139 @@ WantedBy=multi-user.target
                         f"stdout={getattr(result, 'stdout', '')}\n"
                         f"stderr={getattr(result, 'stderr', '')}"
                     )
+        # Start the pre-connect relay if configured (slave_preconnect mode)
+        if underlay.get("slave_preconnect"):
+            self.ensure_preconnect_relay(service_name, underlay)
+
+    # ---- Slave Pre-Connect MPTCP Relay ----
+
+    def preconnect_relay_service_name(self, service_name: str) -> str:
+        return f"leikwan-preconnect-{service_name.replace('wstunnel-svc-', '')}"
+
+    def preconnect_relay_config_path(self, service_name: str) -> Path:
+        return self.state_dir / f"preconnect-{service_name.replace('wstunnel-svc-', '')}.json"
+
+    def preconnect_relay_bin_path(self) -> str:
+        # Prefer co-located script next to slave_agent.py
+        candidate = Path(__file__).parent / "preconnect_relay.py"
+        if candidate.is_file():
+            return str(candidate)
+        return "/usr/local/bin/leikwan-preconnect-relay.py"
+
+    def ensure_preconnect_relay(self, service_name: str, underlay: dict[str, Any]) -> dict[str, Any]:
+        """Start/update the pre-connect MPTCP relay for a published service.
+
+        The relay listens on the slave WG address and relays client TCP
+        connections to the sidecar via MPTCP. This moves MPTCP session
+        management from the client to the slave.
+        """
+        if not underlay.get("slave_preconnect"):
+            return {}
+
+        slave_address = str(underlay.get("slave_address", "") or "").strip()
+        sidecar_address = str(underlay.get("sidecar_address", "") or "").strip()
+        relay_port = int(underlay.get("preconnect_relay_port", 0) or 0)
+        sidecar_port = int(underlay.get("sidecar_mptcp_port", 0) or 0)
+        session_token = str(underlay.get("tcp_session_token", "") or "").strip()
+        forward_id = int(underlay.get("forward_id", 0) or 0)
+
+        if slave_address == "" or sidecar_address == "" or relay_port <= 0 or sidecar_port <= 0:
+            logging.warning("preconnect relay: missing required fields for %s", service_name)
+            return {}
+
+        relay_service = self.preconnect_relay_service_name(service_name)
+        config_path = self.preconnect_relay_config_path(service_name)
+        relay_bin = self.preconnect_relay_bin_path()
+
+        # Write relay config
+        relay_config = {
+            "listen_host": slave_address,
+            "listen_port": relay_port,
+            "health_port": relay_port + 1,
+            "sidecar_host": sidecar_address,
+            "sidecar_port": sidecar_port,
+            "tcp_session_token": session_token,
+            "udp_session_token": str(underlay.get("udp_session_token", session_token) or session_token),
+            "forward_id": forward_id,
+            "transport": str(underlay.get("transport", "tcp") or "tcp"),
+            "max_connections": int(underlay.get("preconnect_max_connections", 256) or 256),
+            "connect_timeout_s": int(underlay.get("preconnect_connect_timeout_s", 5) or 5),
+            "tcp_congestion": str(underlay.get("tcp_congestion", "bbr") or "bbr"),
+            "socket_buffer_bytes": int(underlay.get("socket_buffer_bytes", 8 * 1024 * 1024) or 8 * 1024 * 1024),
+            "log_level": str(self.config.get("log_level", "INFO")),
+        }
+        config_changed = self.write_text_if_changed(
+            config_path,
+            json.dumps(relay_config, ensure_ascii=False, indent=2) + "\n",
+        )
+
+        # Write systemd unit
+        unit_path = Path(str(self.config.get("systemd_dir", "/etc/systemd/system"))) / f"{relay_service}.service"
+        unit_body = (
+            f"[Unit]\n"
+            f"Description=Leikwan Pre-Connect MPTCP Relay ({service_name})\n"
+            f"After=network.target\n"
+            f"\n"
+            f"[Service]\n"
+            f"Type=simple\n"
+            f"ExecStart=/usr/bin/python3 {relay_bin} --config {config_path}\n"
+            f"Restart=always\n"
+            f"RestartSec=3\n"
+            f"StandardOutput=journal\n"
+            f"StandardError=journal\n"
+            f"\n"
+            f"[Install]\n"
+            f"WantedBy=multi-user.target\n"
+        )
+        unit_changed = self.write_text_if_changed(unit_path, unit_body)
+
+        if shutil.which("systemctl"):
+            if unit_changed or config_changed:
+                run_command("systemctl daemon-reload", check=False)
+            run_systemctl_tolerating_transient(f"systemctl enable {relay_service}.service")
+            if unit_changed or config_changed:
+                run_systemctl_tolerating_transient(f"systemctl restart {relay_service}.service")
+            elif not self.is_service_active(relay_service):
+                run_systemctl_tolerating_transient(f"systemctl start {relay_service}.service")
+
+        logging.info(
+            "preconnect relay %s: listen=%s:%d sidecar=%s:%d forward_id=%d",
+            relay_service, slave_address, relay_port, sidecar_address, sidecar_port, forward_id,
+        )
+        return {
+            "relay_service": relay_service,
+            "relay_host": slave_address,
+            "relay_port": relay_port,
+            "health_port": relay_port + 1,
+        }
+
+    def stop_preconnect_relay(self, service_name: str) -> None:
+        """Stop and disable the pre-connect relay for a service."""
+        relay_service = self.preconnect_relay_service_name(service_name)
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop {relay_service}.service", check=False)
+            run_command(f"systemctl disable {relay_service}.service", check=False)
+            run_command(f"systemctl reset-failed {relay_service}.service", check=False)
+
+        unit_path = Path(str(self.config.get("systemd_dir", "/etc/systemd/system"))) / f"{relay_service}.service"
+        if unit_path.exists():
+            unit_path.unlink()
+
+        config_path = self.preconnect_relay_config_path(service_name)
+        if config_path.exists():
+            config_path.unlink()
+
+    def is_service_active(self, service_name: str) -> bool:
+        if not shutil.which("systemctl"):
+            return False
+        result = run_command(f"systemctl is-active {service_name}.service", check=False)
+        return str(getattr(result, "stdout", "") or "").strip() == "active"
+
+    # ---- End Pre-Connect Relay ----
 
     def remove_mptcp_underlay(self, service_name: str, underlay: dict[str, Any] | None = None) -> None:
         interface_name = self.mptcp_underlay_interface_name(service_name, underlay)
+        self.stop_preconnect_relay(service_name)
         if shutil.which("systemctl"):
             run_command(f"systemctl stop wg-quick@{interface_name}.service", check=False)
             run_command(f"systemctl disable wg-quick@{interface_name}.service", check=False)
