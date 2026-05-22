@@ -1,5 +1,6 @@
 using LeikwanBridge.App.ViewModels;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services;
 using System.Reflection;
 using Xunit;
 
@@ -187,6 +188,77 @@ public sealed class MainViewModelTests
         Assert.False(vm.ShowUpdatePrompt);
     }
 
+
+    [Fact]
+    public void ApplyForwardSnapshot_BuildsConnectionQualityOverviewForMptcpWireGuardLegs()
+    {
+        var vm = new MainViewModel();
+        var forward = CreateMptcpForwardWithWireGuardLegs();
+
+        vm.ApplyForwardSnapshot([forward], _ => true);
+
+        var quality = Assert.Single(vm.ConnectionQualityForwards);
+        Assert.Equal(47, quality.ForwardId);
+        Assert.Equal("MPTCP", quality.ModeDisplay);
+        Assert.Equal("Running", quality.StatusText);
+        Assert.Contains("1 WG leg", quality.SummaryText);
+        var leg = Assert.Single(quality.Legs);
+        Assert.Equal("WG slave transit", leg.Kind);
+        Assert.Equal("10.203.201.133 -> 10.203.201.134 -> 10.203.201.135", leg.RouteText);
+        Assert.Equal("111.231.3.220:7329", leg.RemoteText);
+    }
+
+    [Fact]
+    public void ApplyForwardSnapshot_BuildsConnectionQualityOverviewForBondHealth()
+    {
+        var vm = new MainViewModel();
+        var stateDir = Path.Combine(Path.GetTempPath(), "leikwan-quality-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stateDir);
+        try
+        {
+            var stateManager = new StateManager(stateDir);
+            stateManager.SaveBondEndpointHealth(new Dictionary<string, Dictionary<string, BondEndpointHealthEntry>>
+            {
+                ["59"] = new()
+                {
+                    ["457"] = new BondEndpointHealthEntry
+                    {
+                        Role = "healthy",
+                        LastLatencyMs = 12.4,
+                        QualityScore = 0.938,
+                        ConsecutiveSuccesses = 4,
+                    },
+                    ["458"] = new BondEndpointHealthEntry
+                    {
+                        Role = "quarantined",
+                        LastError = "probe_failed",
+                        QualityScore = 0.0,
+                        ConsecutiveFailures = 3,
+                    },
+                },
+            });
+
+            vm.ApplyForwardSnapshot([CreateBondForwardWithEndpoints()], _ => true, stateManager);
+
+            var quality = Assert.Single(vm.ConnectionQualityForwards);
+            Assert.Equal(59, quality.ForwardId);
+            Assert.Equal("Bond", quality.ModeDisplay);
+            Assert.Contains("2 legs", quality.SummaryText);
+            Assert.Contains("best 12.4 ms", quality.SummaryText);
+            Assert.Equal(2, quality.Legs.Count);
+            Assert.Equal("healthy", quality.Legs[0].Role);
+            Assert.Equal("12.4 ms", quality.Legs[0].LatencyText);
+            Assert.Equal("94%", quality.Legs[0].QualityText);
+            Assert.Equal("quarantined", quality.Legs[1].Role);
+            Assert.Equal("probe_failed", quality.Legs[1].IssueText);
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir))
+                Directory.Delete(stateDir, recursive: true);
+        }
+    }
+
     [Fact]
     public void ApplyForwardSnapshot_AutoSelectsMptcpFilter_WhenMptcpForwardExists()
     {
@@ -201,6 +273,8 @@ public sealed class MainViewModelTests
         Assert.Equal("MPTCP", vm.ActiveModeFilter);
         Assert.Single(vm.VisibleForwards);
         Assert.Equal(24, vm.VisibleForwards[0].ForwardId);
+        Assert.Equal("MPTCP", vm.VisibleForwards[0].ModeDisplay);
+        Assert.False(vm.VisibleForwards[0].IsMptcpFallback);
         Assert.NotNull(vm.SelectedForward);
         Assert.Equal(24, vm.SelectedForward!.ForwardId);
     }
@@ -257,6 +331,83 @@ public sealed class MainViewModelTests
 
         Assert.Equal("DashConnected", vm.ConnectionStatus);
         Assert.NotEqual("Never", vm.LastSyncTime);
+    }
+
+
+    private static ForwardConfig CreateMptcpForwardWithWireGuardLegs()
+    {
+        return new ForwardConfig
+        {
+            ForwardId = 47,
+            Mode = "mptcp",
+            ListenPort = 11047,
+            Target = "193.227.109.82:5201",
+            Transport = "tcp",
+            Endpoints =
+            [
+                new EndpointConfig
+                {
+                    EndpointId = 457,
+                    Host = "111.231.3.220",
+                    Port = 7329,
+                },
+            ],
+            Mptcp = new MptcpConfig
+            {
+                Enabled = true,
+                SidecarHost = "10.203.201.135",
+                SidecarPort = 8898,
+                Underlays =
+                [
+                    new UnderlayConfig
+                    {
+                        Type = "wireguard",
+                        Mode = "slave_transit",
+                        Legs =
+                        [
+                            new UnderlayLeg
+                            {
+                                EndpointId = 457,
+                                LocalAddress = "10.203.201.133",
+                                PeerAddress = "10.203.201.134",
+                                MptcpRemoteAddress = "10.203.201.135",
+                                PeerPublicHost = "111.231.3.220",
+                                PeerUdpPort = 7329,
+                            },
+                        ],
+                    },
+                ],
+            },
+        };
+    }
+
+    private static ForwardConfig CreateBondForwardWithEndpoints()
+    {
+        return new ForwardConfig
+        {
+            ForwardId = 59,
+            Mode = "bond",
+            ListenPort = 11059,
+            Target = "193.227.109.82:5201",
+            Transport = "tcp+udp",
+            Endpoints =
+            [
+                new EndpointConfig
+                {
+                    EndpointId = 457,
+                    Host = "111.231.3.220",
+                    Port = 7329,
+                    HealthRole = "healthy",
+                },
+                new EndpointConfig
+                {
+                    EndpointId = 458,
+                    Host = "111.231.3.221",
+                    Port = 7330,
+                    HealthRole = "healthy",
+                },
+            ],
+        };
     }
 
     private static ForwardConfig CreateForward(int forwardId, string mode)

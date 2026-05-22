@@ -4,25 +4,26 @@ using Serilog;
 namespace LeikwanBridge.Core.Services;
 
 /// <summary>
-/// Converts an MPTCP forward config to Bond mode for Windows (which lacks kernel MPTCP).
-/// Port of client_agent.py:_mptcp_to_bond_fallback() (line 717).
+/// Converts an MPTCP forward config to Bond mode when the portable MPTCP relay cannot be used.
 /// </summary>
 public static class MptcpFallbackService
 {
     public static ForwardConfig ConvertToBond(ForwardConfig forward)
     {
-        Log.Information("forward {ForwardId}: converting mptcp to bond fallback (Windows lacks kernel MPTCP)",
+        Log.Information("forward {ForwardId}: converting mptcp to bond fallback",
             forward.ForwardId);
 
         var mptcp = forward.Mptcp ?? new MptcpConfig();
 
         var sidecarHost = FirstNonEmpty(
             mptcp.SidecarHost,
-            mptcp.RemoteHost
+            mptcp.RemoteHost,
+            mptcp.RelayHost
         );
         var sidecarPort = FirstPositive(
             mptcp.SidecarPort,
-            mptcp.RemotePort
+            mptcp.RemotePort,
+            mptcp.RelayPort
         );
         var tcpToken = FirstNonEmpty(mptcp.TcpSessionToken, mptcp.SessionToken);
         var udpToken = FirstNonEmpty(mptcp.UdpSessionToken, tcpToken);

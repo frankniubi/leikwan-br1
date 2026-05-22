@@ -4,6 +4,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LeikwanBridge.App.Services;
+using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using Serilog;
@@ -44,6 +45,7 @@ public partial class MainViewModel : ObservableObject
 
     public ObservableCollection<ForwardViewModel> Forwards { get; } = [];
     public ObservableCollection<ForwardViewModel> VisibleForwards { get; } = [];
+    public ObservableCollection<ConnectionQualityForwardViewModel> ConnectionQualityForwards { get; } = [];
     public ObservableCollection<string> AvailableModeFilters { get; } = ["All"];
     public ObservableCollection<DesktopClientChoice> AvailableClientChoices { get; } = [];
     public ObservableCollection<string> LogEntries { get; } = [];
@@ -323,16 +325,22 @@ public partial class MainViewModel : ObservableObject
     public WindowsClientAppArtifact? AvailableUpdateArtifact => _availableUpdateArtifact;
     public int VisibleForwardCount => VisibleForwards.Count;
 
-    public void ApplyForwardSnapshot(IEnumerable<ForwardConfig> forwards, Func<int, bool> isRunning)
+    public void ApplyForwardSnapshot(IEnumerable<ForwardConfig> forwards, Func<int, bool> isRunning, StateManager? stateManager = null)
     {
+        var snapshot = forwards.ToList();
+        var qualityStateManager = stateManager ?? _stateManager;
+
         Forwards.Clear();
-        foreach (var forward in forwards)
+        ConnectionQualityForwards.Clear();
+        foreach (var forward in snapshot)
         {
+            var running = isRunning(forward.ForwardId);
             var vm = new ForwardViewModel(forward)
             {
-                IsRunning = isRunning(forward.ForwardId),
+                IsRunning = running,
             };
             Forwards.Add(vm);
+            ConnectionQualityForwards.Add(BuildConnectionQuality(forward, running, qualityStateManager));
         }
 
         RebuildAvailableModeFilters();
@@ -342,6 +350,163 @@ public partial class MainViewModel : ObservableObject
         RebuildVisibleForwards();
         ActiveForwardCount = Forwards.Count;
     }
+
+    private static ConnectionQualityForwardViewModel BuildConnectionQuality(ForwardConfig forward, bool isRunning, StateManager? stateManager)
+    {
+        var normalizedMode = NormalizeModeOrSingle(forward.Mode);
+        var result = new ConnectionQualityForwardViewModel
+        {
+            ForwardId = forward.ForwardId,
+            ModeDisplay = ModeNormalizer.DisplayName(normalizedMode, false),
+            StatusText = isRunning ? "Running" : "Stopped",
+            SummaryText = BuildQualitySummary(forward, normalizedMode, stateManager),
+        };
+
+        foreach (var leg in BuildQualityLegs(forward, normalizedMode, stateManager))
+            result.Legs.Add(leg);
+
+        return result;
+    }
+
+    private static string BuildQualitySummary(ForwardConfig forward, string normalizedMode, StateManager? stateManager)
+    {
+        if (normalizedMode == "mptcp")
+        {
+            var wgLegCount = EnumerateWireGuardUnderlayLegs(forward).Count();
+            if (wgLegCount > 0)
+                return $"{wgLegCount} WG {Plural(wgLegCount, "leg", "legs")}";
+        }
+
+        var count = forward.Endpoints.Count;
+        var parts = new List<string> { $"{count} {Plural(count, "leg", "legs")}" };
+        if (normalizedMode == "bond")
+        {
+            var health = LoadForwardBondHealth(stateManager, forward.ForwardId);
+            var bestLatency = health.Values
+                .Select(entry => entry.LastLatencyMs)
+                .Where(latency => latency.HasValue)
+                .Select(latency => latency!.Value)
+                .DefaultIfEmpty(double.NaN)
+                .Min();
+            if (!double.IsNaN(bestLatency))
+                parts.Add($"best {FormatLatency(bestLatency)}");
+        }
+
+        return string.Join(", ", parts);
+    }
+
+    private static IEnumerable<ConnectionQualityLegViewModel> BuildQualityLegs(ForwardConfig forward, string normalizedMode, StateManager? stateManager)
+    {
+        if (normalizedMode == "mptcp")
+        {
+            foreach (var (_, leg) in EnumerateWireGuardUnderlayLegs(forward))
+            {
+                yield return new ConnectionQualityLegViewModel
+                {
+                    Kind = "WG slave transit",
+                    RouteText = JoinNonEmpty(" -> ", leg.LocalAddress, leg.PeerAddress, leg.MptcpRemoteAddress),
+                    RemoteText = FormatHostPort(leg.PeerPublicHost, leg.PeerUdpPort),
+                };
+            }
+
+            yield break;
+        }
+
+        var bondHealth = normalizedMode == "bond"
+            ? LoadForwardBondHealth(stateManager, forward.ForwardId)
+            : [];
+
+        foreach (var endpoint in forward.Endpoints)
+        {
+            bondHealth.TryGetValue(endpoint.EndpointId.ToString(), out var health);
+            var role = FirstNonEmpty(health?.Role, endpoint.HealthRole);
+            var quality = health?.QualityScore ?? endpoint.QualityScore;
+            yield return new ConnectionQualityLegViewModel
+            {
+                Kind = normalizedMode == "bond" ? "Bond leg" : "Endpoint",
+                Role = role,
+                RemoteText = FormatHostPort(FirstNonEmpty(endpoint.CdnHost, endpoint.Host), endpoint.Port),
+                LatencyText = health?.LastLatencyMs is double latency ? FormatLatency(latency) : "",
+                QualityText = quality >= 0 ? $"{Math.Round(quality * 100):0}%" : "",
+                IssueText = health?.LastError ?? "",
+            };
+        }
+    }
+
+    private static IEnumerable<(UnderlayConfig Underlay, UnderlayLeg Leg)> EnumerateWireGuardUnderlayLegs(ForwardConfig forward)
+    {
+        foreach (var underlay in EnumerateUnderlays(forward.Mptcp))
+        {
+            if (!string.Equals(underlay.Type, "wireguard", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            foreach (var leg in underlay.Legs)
+                yield return (underlay, leg);
+        }
+    }
+
+    private static IEnumerable<UnderlayConfig> EnumerateUnderlays(MptcpConfig? mptcp)
+    {
+        if (mptcp == null)
+            yield break;
+
+        if (mptcp.Underlay != null)
+            yield return mptcp.Underlay;
+
+        foreach (var underlay in mptcp.Underlays)
+            yield return underlay;
+    }
+
+    private static Dictionary<string, BondEndpointHealthEntry> LoadForwardBondHealth(StateManager? stateManager, int forwardId)
+    {
+        if (stateManager == null)
+            return [];
+
+        return stateManager.LoadBondEndpointHealth().TryGetValue(forwardId.ToString(), out var health)
+            ? health
+            : [];
+    }
+
+    private static string NormalizeModeOrSingle(string? mode)
+    {
+        try
+        {
+            return ModeNormalizer.Normalize(mode ?? "single");
+        }
+        catch
+        {
+            return "single";
+        }
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                return value.Trim();
+        }
+
+        return "";
+    }
+
+    private static string JoinNonEmpty(string separator, params string?[] values)
+    {
+        return string.Join(separator, values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim()));
+    }
+
+    private static string FormatHostPort(string host, int port)
+    {
+        return string.IsNullOrWhiteSpace(host)
+            ? ""
+            : port > 0 ? $"{host}:{port}" : host;
+    }
+
+    private static string FormatLatency(double latencyMs) => $"{latencyMs:0.#} ms";
+
+    private static string Plural(int count, string singular, string plural) => count == 1 ? singular : plural;
 
     private void OnForwardsUpdated(List<ForwardConfig> forwards)
     {

@@ -575,7 +575,7 @@ pub fn handle_bond_leg(
     bond_session_id: u64,
     target_addr: SocketAddr,
     registry: &Arc<BondSessionRegistry>,
-    sock_config: &crate::mptcp::SocketConfig,
+    _sock_config: &crate::mptcp::SocketConfig,
     leg_priority: u32,
     leg_direct: bool,
 ) -> Result<()> {
@@ -597,7 +597,7 @@ pub fn handle_bond_leg(
             #[cfg(target_os = "linux")]
             {
                 use std::os::unix::io::AsRawFd;
-                crate::mptcp::tune_fd(target_stream.as_raw_fd(), sock_config);
+                crate::mptcp::tune_fd(target_stream.as_raw_fd(), _sock_config);
             }
             registry.get_or_create(bond_session_id, target_stream)
         }

@@ -22,9 +22,39 @@ pub fn run_client(config: ClientConfig) -> Result<()> {
     run_client_arc(Arc::new(config))
 }
 
-/// Run the client TCP relay (shared config).
+/// Run the client relay (shared config).
 pub fn run_client_arc(config: Arc<ClientConfig>) -> Result<()> {
-    let listen_addr: SocketAddr = format!("127.0.0.1:{}", config.listen_port).parse()?;
+    let wants_tcp = transport_includes_tcp(&config.transport);
+    let wants_udp = transport_includes_udp(&config.transport);
+
+    if !wants_tcp && !wants_udp {
+        return Err(anyhow::anyhow!(
+            "nothing to listen for; transport must include tcp and/or udp"
+        ));
+    }
+
+    if wants_udp {
+        let cfg = Arc::clone(&config);
+        if wants_tcp {
+            std::thread::spawn(move || {
+                if let Err(e) = run_udp_client(cfg) {
+                    error!("UDP client relay failed: {}", e);
+                }
+            });
+        } else {
+            return run_udp_client(cfg);
+        }
+    }
+
+    if wants_tcp {
+        return run_tcp_client_arc(config);
+    }
+
+    Ok(())
+}
+
+fn run_tcp_client_arc(config: Arc<ClientConfig>) -> Result<()> {
+    let listen_addr = listen_addr(&config)?;
     let listener = TcpListener::bind(listen_addr)?;
     info!(
         "client relay listening on {} (forward_id={})",
@@ -48,6 +78,24 @@ pub fn run_client_arc(config: Arc<ClientConfig>) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn listen_addr(config: &ClientConfig) -> Result<SocketAddr> {
+    let host = config.listen_host.trim();
+    let host = if host.is_empty() { "0.0.0.0" } else { host };
+    Ok(format!("{}:{}", host, config.listen_port).parse()?)
+}
+
+fn normalized_transport(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn transport_includes_tcp(value: &str) -> bool {
+    matches!(normalized_transport(value).as_str(), "tcp" | "tcp+udp")
+}
+
+fn transport_includes_udp(value: &str) -> bool {
+    matches!(normalized_transport(value).as_str(), "udp" | "tcp+udp")
 }
 
 fn handle_client_connection(local_stream: TcpStream, config: &ClientConfig) -> Result<()> {
@@ -273,7 +321,7 @@ struct UdpRelayState {
 /// opens an MPTCP stream to the remote sidecar with a `"udp"` protocol handshake.
 /// Datagrams are length-framed inside the MPTCP stream in both directions.
 pub fn run_udp_client(config: Arc<ClientConfig>) -> Result<()> {
-    let listen_addr: SocketAddr = format!("127.0.0.1:{}", config.listen_port).parse()?;
+    let listen_addr = listen_addr(&config)?;
     let udp_sock = UdpSocket::bind(listen_addr)?;
 
     // Set large UDP socket buffers to absorb bursts while MPTCP writes block.
@@ -544,5 +592,42 @@ fn reap_idle_associations(state: Arc<UdpRelayState>, idle_timeout: Duration) {
                 // Dropping _assoc.sender disconnects the channel → writer thread exits.
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_config(transport: &str) -> ClientConfig {
+        serde_json::from_value(serde_json::json!({
+            "forward_id": 24,
+            "listen_host": "0.0.0.0",
+            "listen_port": 11023,
+            "transport": transport,
+            "remote_host": "127.0.0.1",
+            "remote_port": 14969
+        })).expect("client config")
+    }
+
+    #[test]
+    fn listener_address_uses_configured_listen_host() {
+        let config = parse_config("tcp");
+
+        assert_eq!(
+            "0.0.0.0:11023".parse::<SocketAddr>().unwrap(),
+            listen_addr(&config).expect("listen addr")
+        );
+    }
+
+    #[test]
+    fn transport_helpers_enable_tcp_and_udp_for_tcp_udp_mode() {
+        assert!(transport_includes_tcp("tcp+udp"));
+        assert!(transport_includes_udp("tcp+udp"));
+        assert!(transport_includes_tcp("tcp"));
+        assert!(!transport_includes_udp("tcp"));
+        assert!(!transport_includes_tcp("udp"));
+        assert!(transport_includes_udp("udp"));
     }
 }

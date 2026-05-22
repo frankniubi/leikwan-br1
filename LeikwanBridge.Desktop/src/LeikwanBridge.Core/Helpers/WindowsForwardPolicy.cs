@@ -7,7 +7,7 @@ public static class WindowsForwardPolicy
     public static bool IsSupportedOnWindows(ForwardConfig forward)
     {
         var mode = ModeNormalizer.Normalize(forward.Mode);
-        return mode is "single" or "bond";
+        return mode is "single" or "bond" or "mptcp";
     }
 
     public static List<ForwardConfig> FilterSupportedForwards(IEnumerable<ForwardConfig> forwards)

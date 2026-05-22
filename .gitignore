@@ -68,3 +68,4 @@ node_modules/
 # Ad-hoc local backups.
 *.bak
 *.bak-*
+/artifacts/windows/_manual_install_stage/

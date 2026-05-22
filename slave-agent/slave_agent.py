@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.05.21.3"
+AGENT_VERSION = "2026.05.21.5"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -2420,7 +2420,19 @@ class SlaveAgent:
             unit_body = self.render_backend_unit(service_name, backend_port, target, path_prefix)
             expected_exec = "wstunnel server"
         unit_changed = self.write_text_if_changed(unit_path, unit_body)
-        self.ensure_backend_service(service_name, unit_changed, expected_exec_substring=expected_exec)
+        backend_start_deferred = False
+        try:
+            self.ensure_backend_service(service_name, unit_changed, expected_exec_substring=expected_exec)
+        except RuntimeError as exc:
+            if mptcp_underlay and mptcp_underlay.get("enabled") and is_transient_systemd_error(str(exc)):
+                backend_start_deferred = True
+                logging.warning(
+                    "transient backend systemd failure ignored for %s before applying mptcp underlay: %s",
+                    service_name,
+                    exc,
+                )
+            else:
+                raise
 
         relay_changed = False
         relay_client_changed = False
@@ -2572,6 +2584,7 @@ class SlaveAgent:
             "mux_service": plain_tcp_mux_service_name(public_port) if ingress_protocol == "plain_tcp_mux" else mux_service_name(public_port),
             "relay_service_name": relay_name if relay_protocols else None,
             "relay_client_service_name": relay_client_name if relay_protocols else None,
+            "wstunnel_start_deferred": backend_start_deferred,
         }
 
     def stop_service(self, task: dict[str, Any], keep_files: bool) -> dict[str, Any]:
@@ -3066,9 +3079,9 @@ class SlaveAgent:
             run_systemctl_tolerating_transient("systemctl daemon-reload")
         run_systemctl_tolerating_transient(f"systemctl enable {service_name}.service")
         if unit_changed and is_active:
-            run_command(f"systemctl restart {service_name}.service")
+            run_systemctl_tolerating_transient(f"systemctl restart {service_name}.service")
         elif not is_active:
-            run_command(f"systemctl start {service_name}.service")
+            run_systemctl_tolerating_transient(f"systemctl start {service_name}.service")
 
     def service_main_process_cmdline(self, service_name: str) -> str:
         if not shutil.which("systemctl"):

@@ -87,6 +87,27 @@ public sealed class WindowsAppUpdateServiceTests
 
 
     [Fact]
+    public void ShouldCheckForUpdatesOnStartup_ReturnsFalse_WhenAutomaticUpdatesDisabled()
+    {
+        var config = new AgentConfig
+        {
+            MasterUrl = "https://v3-mirror.leikwanhost.com",
+            DisableAutoUpdates = true,
+        };
+
+        Assert.False(WindowsAppUpdateService.ShouldCheckForUpdatesOnStartup(config));
+    }
+
+    [Theory]
+    [InlineData("0.1.17", "0.1.17.0")]
+    [InlineData("0.1.17.0", "0.1.17")]
+    public void IsRemoteVersionNewer_TreatsEquivalentVersionWidthsAsSame(string remoteVersion, string localVersion)
+    {
+        Assert.False(WindowsAppUpdateService.IsRemoteVersionNewer(remoteVersion, localVersion));
+    }
+
+
+    [Fact]
     public void HasPendingUpdate_ReturnsTrue_WhenConfigContainsInstallerPathAndVersion()
     {
         var config = new AgentConfig

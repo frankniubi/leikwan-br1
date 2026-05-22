@@ -10,11 +10,39 @@ public sealed class WindowsAppUpdateService
 
     public static bool IsRemoteVersionNewer(string remoteVersion, string localVersion)
     {
-        if (!Version.TryParse(remoteVersion, out var remote))
+        if (!TryParseComparableVersion(remoteVersion, out var remote))
             return false;
-        if (!Version.TryParse(localVersion, out var local))
+        if (!TryParseComparableVersion(localVersion, out var local))
             return false;
         return remote > local;
+    }
+
+    public static bool ShouldCheckForUpdatesOnStartup(AgentConfig config)
+    {
+        return !config.DisableAutoUpdates
+            && !string.IsNullOrWhiteSpace(config.MasterUrl);
+    }
+
+    private static bool TryParseComparableVersion(string version, out Version parsed)
+    {
+        parsed = new Version(0, 0, 0, 0);
+        var normalized = (version ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+            return false;
+
+        var metadataIndex = normalized.IndexOfAny(['+', '-']);
+        if (metadataIndex >= 0)
+            normalized = normalized[..metadataIndex];
+
+        if (!Version.TryParse(normalized, out var value))
+            return false;
+
+        parsed = new Version(
+            value.Major,
+            value.Minor,
+            value.Build >= 0 ? value.Build : 0,
+            value.Revision >= 0 ? value.Revision : 0);
+        return true;
     }
 
     public static string BuildCachedInstallerPath(string installRoot, string version)

@@ -1,10 +1,10 @@
 {
   "slave_agent": {
-    "version": "2026.05.21.3",
+    "version": "2026.05.21.5",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "425b12b725ffc018d97ce00359c35860483aad37467071e0426710247102bc51",
-    "size_bytes": 180180
+    "sha256": "3463d7660e03b54c8ecac81f52ca6c5c2f36da0eb613d2f9b9f8053d6437abe5",
+    "size_bytes": 184758
   },
   "slave_installer": {
     "version": "2026.05.20.1",
@@ -46,8 +46,8 @@
     "version": "2026.05.20.1",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "a8ed2c66985d19e8e6200d547765a8ee62d8b65ecb09ade7394991f0a9df6e88",
-    "size_bytes": 212941
+    "sha256": "6cb1632cc388ae84db065acee51818c75f6bb144e0c37ec8a924ea7417be4b1a",
+    "size_bytes": 213004
   },
   "client_agent_installer": {
     "version": "2026.05.20.1",
@@ -138,16 +138,18 @@
     "platform": "linux-amd64"
   },
   "windows_client_app": {
-    "version": "0.1.17",
+    "version": "0.1.18.1",
     "path": "artifacts/windows/leikwan-bridge-setup.exe",
-    "artifact_url": "/artifacts/leikwan-bridge-setup.exe"
+    "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
+    "sha256": "9781bfb726f3b13fc1d33285dc0877c533074b5b636a58032bf25b6d7fa370f1",
+    "size_bytes": 8335360
   },
   "install_forward_runtime": {
     "version": "2026.05.20.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "2397f7151979cfff82ee785e1e84b7a743c875fdd1576f245189f2ea17faf8ec",
-    "size_bytes": 58579
+    "sha256": "7e5ba21e76283abe4c34cd39f9d3bb9bcde7d852686f056d0b10855193c8a5d5",
+    "size_bytes": 58810
   },
   "cfwg_latency_watchdog": {
     "version": "2026.05.20.1",
@@ -155,5 +157,13 @@
     "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
     "sha256": "5979698d0a29e9e47c0c3215a8b40782327f74f3c6158c8bc7b9f2a862f496bd",
     "size_bytes": 26895
+  },
+  "leikwan_mptcp_relay_windows_amd64": {
+    "version": "0.1.0",
+    "path": "artifacts/wstunnel/leikwan-mptcp-relay_windows_amd64.exe",
+    "artifact_url": "/artifacts/wstunnel/leikwan-mptcp-relay_windows_amd64.exe",
+    "sha256": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
+    "size_bytes": 2605056,
+    "platform": "windows-amd64"
   }
 }

@@ -3,6 +3,7 @@ param(
     [string]$BondExe = "wstunnel-main/target/release/leikwan-bond.exe",
     [string]$IngressExe = "wstunnel-main/target/release/leikwan-ingress.exe",
     [string]$UotBondExe = "wstunnel-main/target/release/leikwan-uot-bond.exe",
+    [string]$MptcpRelayExe = "wstunnel-main/target/x86_64-pc-windows-msvc/release/leikwan-mptcp-relay.exe",
     [string]$WstunnelExe = "wstunnel.exe",
     [string]$OutputSetup = "artifacts/windows/leikwan-bridge-setup.exe",
     [string]$StageDir = "artifacts/windows/_setup_stage"
@@ -23,6 +24,7 @@ Require-File $appExe
 Require-File $BondExe
 Require-File $IngressExe
 Require-File $UotBondExe
+Require-File $MptcpRelayExe
 Require-File $WstunnelExe
 
 if (Test-Path -LiteralPath $StageDir) {
@@ -37,6 +39,7 @@ Copy-Item -LiteralPath $appExe -Destination (Join-Path $payloadDir "leikwan-clie
 Copy-Item -LiteralPath $BondExe -Destination (Join-Path $binDir "leikwan-bond.exe") -Force
 Copy-Item -LiteralPath $IngressExe -Destination (Join-Path $binDir "leikwan-ingress.exe") -Force
 Copy-Item -LiteralPath $UotBondExe -Destination (Join-Path $binDir "leikwan-uot-bond.exe") -Force
+Copy-Item -LiteralPath $MptcpRelayExe -Destination (Join-Path $binDir "leikwan-mptcp-relay.exe") -Force
 Copy-Item -LiteralPath $WstunnelExe -Destination (Join-Path $binDir "wstunnel.exe") -Force
 
 $installScript = @'
@@ -114,6 +117,11 @@ $sourceUotBond = Resolve-PayloadFile -Name "leikwan-uot-bond.exe" -Candidates @(
     (Join-Path $payloadDir "bin\leikwan-uot-bond.exe"),
     (Join-Path $payloadDir "leikwan-uot-bond.exe")
 )
+$sourceMptcpRelay = Resolve-PayloadFile -Name "leikwan-mptcp-relay.exe" -Candidates @(
+    (Join-Path $payloadDir "app\bin\leikwan-mptcp-relay.exe"),
+    (Join-Path $payloadDir "bin\leikwan-mptcp-relay.exe"),
+    (Join-Path $payloadDir "leikwan-mptcp-relay.exe")
+)
 $appSupportFiles = @(
     "CommunityToolkit.Mvvm.dll",
     "LeikwanBridge.App.deps.json",
@@ -153,7 +161,8 @@ $backupTargets = @(
     "wstunnel.exe",
     "leikwan-bond.exe",
     "leikwan-ingress.exe",
-    "leikwan-uot-bond.exe"
+    "leikwan-uot-bond.exe",
+    "leikwan-mptcp-relay.exe"
 )
 
 $existing = @()
@@ -195,12 +204,14 @@ Copy-Item -LiteralPath $sourceWstunnel -Destination (Join-Path $targetBin "wstun
 Copy-Item -LiteralPath $sourceBond -Destination (Join-Path $targetBin "leikwan-bond.exe") -Force
 Copy-Item -LiteralPath $sourceIngress -Destination (Join-Path $targetBin "leikwan-ingress.exe") -Force
 Copy-Item -LiteralPath $sourceUotBond -Destination (Join-Path $targetBin "leikwan-uot-bond.exe") -Force
+Copy-Item -LiteralPath $sourceMptcpRelay -Destination (Join-Path $targetBin "leikwan-mptcp-relay.exe") -Force
 
 # Keep root-level copies for backward compatibility with older local layouts.
 Copy-Item -LiteralPath $sourceWstunnel -Destination (Join-Path $installDir "wstunnel.exe") -Force
 Copy-Item -LiteralPath $sourceBond -Destination (Join-Path $installDir "leikwan-bond.exe") -Force
 Copy-Item -LiteralPath $sourceIngress -Destination (Join-Path $installDir "leikwan-ingress.exe") -Force
 Copy-Item -LiteralPath $sourceUotBond -Destination (Join-Path $installDir "leikwan-uot-bond.exe") -Force
+Copy-Item -LiteralPath $sourceMptcpRelay -Destination (Join-Path $installDir "leikwan-mptcp-relay.exe") -Force
 
 Ensure-DesktopShortcut -TargetPath (Join-Path $installDir "leikwan-client-win.exe") -WorkingDirectory $installDir
 
@@ -211,6 +222,7 @@ $manifest = [ordered]@{
     bond_sha256 = (Get-FileHash (Join-Path $targetBin "leikwan-bond.exe") -Algorithm SHA256).Hash
     ingress_sha256 = (Get-FileHash (Join-Path $targetBin "leikwan-ingress.exe") -Algorithm SHA256).Hash
     uot_bond_sha256 = (Get-FileHash (Join-Path $targetBin "leikwan-uot-bond.exe") -Algorithm SHA256).Hash
+    mptcp_relay_sha256 = (Get-FileHash (Join-Path $targetBin "leikwan-mptcp-relay.exe") -Algorithm SHA256).Hash
     wstunnel_sha256 = (Get-FileHash (Join-Path $targetBin "wstunnel.exe") -Algorithm SHA256).Hash
     backup_dir = if (Test-Path -LiteralPath $backupDir) { $backupDir } else { "" }
 }
@@ -252,6 +264,7 @@ Copy-Item -LiteralPath (Join-Path $binDir "wstunnel.exe") -Destination (Join-Pat
 Copy-Item -LiteralPath (Join-Path $binDir "leikwan-bond.exe") -Destination (Join-Path $appBinStageDir "leikwan-bond.exe") -Force
 Copy-Item -LiteralPath (Join-Path $binDir "leikwan-ingress.exe") -Destination (Join-Path $appBinStageDir "leikwan-ingress.exe") -Force
 Copy-Item -LiteralPath (Join-Path $binDir "leikwan-uot-bond.exe") -Destination (Join-Path $appBinStageDir "leikwan-uot-bond.exe") -Force
+Copy-Item -LiteralPath (Join-Path $binDir "leikwan-mptcp-relay.exe") -Destination (Join-Path $appBinStageDir "leikwan-mptcp-relay.exe") -Force
 
 $sedPath = Join-Path $StageDir "package.sed"
 $packageTitle = "LeiKwan Bridge Setup"
@@ -292,12 +305,15 @@ SourceFiles0=$([System.IO.Path]::GetFullPath($StageDir))
 "@
 
 for ($i = 0; $i -lt $sourceFiles.Count; $i++) {
-    $sedContent += "`r`n%FILE$i%=" + $sourceFiles[$i]
+    $sedContent += "
+%FILE$i%=" + $sourceFiles[$i]
 }
 
-$sedContent += "`r`n[Strings]"
+$sedContent += "
+[Strings]"
 for ($i = 0; $i -lt $sourceFiles.Count; $i++) {
-    $sedContent += "`r`nFILE$i=" + $sourceFiles[$i]
+    $sedContent += "
+FILE$i=" + $sourceFiles[$i]
 }
 
 Set-Content -LiteralPath $sedPath -Value $sedContent -Encoding ASCII

@@ -593,6 +593,8 @@ class ClientAgentCfwgLatencyWatchdogIntegrationTests(unittest.TestCase):
                     "artifact_base_url": "https://artifacts.example.com",
                     "disable_auto_update": True,
                     "cfwg_latency_watchdog": {"enabled": True, "forward_ids": [47], "critical_rtt_ms": 45},
+                    "runtime_refresh": {"forward_ids": [47], "token": "refresh-test"},
+                    "cfwg_edge_pins": {"47": "162.159.39.4"},
                 }
             )
 
@@ -600,6 +602,8 @@ class ClientAgentCfwgLatencyWatchdogIntegrationTests(unittest.TestCase):
         self.assertEqual("https://artifacts.example.com", saved["artifact_base_url"])
         self.assertTrue(saved["disable_auto_update"])
         self.assertEqual({"enabled": True, "forward_ids": [47], "critical_rtt_ms": 45}, saved["cfwg_latency_watchdog"])
+        self.assertEqual({"forward_ids": [47], "token": "refresh-test"}, saved["runtime_refresh"])
+        self.assertEqual({"47": "162.159.39.4"}, saved["cfwg_edge_pins"])
 
 
     def test_management_patch_accepts_baseline_and_restart_action_options(self) -> None:
