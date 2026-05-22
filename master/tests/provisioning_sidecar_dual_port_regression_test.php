@@ -162,6 +162,23 @@ namespace {
     putenv('MPTCP_SLAVE_PRECONNECT=true');
     putenv('MPTCP_PRECONNECT_RELAY_PORT_RANGE_START=7000');
     putenv('MPTCP_PRECONNECT_RELAY_PORT_RANGE_END=9000');
+    putenv('MPTCP_SLAVE_PRECONNECT_FORWARD_IDS=999');
+    $blockedPreconnectConfig = call_private($service, 'buildMptcpClientConfig', $forward, [[
+        'id' => 178,
+        'node_id' => 5,
+        'node_name' => 'gz-node',
+        'public_host' => '8.8.8.8',
+        'public_ip' => '8.8.8.8',
+        'public_port' => 7001,
+        'node_agent_config_json' => json_encode([
+            'wireguard_public_key' => 'slave-public-key',
+            'wireguard_listen_port' => 7001,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+    ]]);
+    if (($blockedPreconnectConfig['slave_relay_host'] ?? '') !== '') {
+        fail('expected non-allowlisted forward to keep slave_relay_host disabled');
+    }
+    putenv('MPTCP_SLAVE_PRECONNECT_FORWARD_IDS=25');
     $forwardWithEndpoint = $forward + [
         'bond_sidecar_point_agent_config_json' => json_encode([
             'wireguard_public_key' => 'sidecar-public-key',
@@ -198,5 +215,7 @@ namespace {
     putenv('MPTCP_SLAVE_PRECONNECT');
     putenv('MPTCP_PRECONNECT_RELAY_PORT_RANGE_START');
     putenv('MPTCP_PRECONNECT_RELAY_PORT_RANGE_END');
+    putenv('MPTCP_SLAVE_PRECONNECT_FORWARD_IDS');
+    putenv('MPTCP_SLAVE_PRECONNECT_CLIENT_IDS');
     echo "ok\n";
 }

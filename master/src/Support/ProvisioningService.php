@@ -6587,7 +6587,7 @@ final class ProvisioningService
         if ($underlayLegs !== []) {
             $defaultRemoteHost = (string) ($underlayLegs[0]['sidecar_address'] ?? $defaultRemoteHost);
         }
-        $slavePreconnectEnabled = $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && $underlayLegs !== [];
+        $slavePreconnectEnabled = $this->mptcpSlavePreconnectEnabledForForward($forward, $underlayLegs !== []);
         $slaveRelayHost = $slavePreconnectEnabled ? (string) ($underlayLegs[0]['slave_address'] ?? '') : '';
         $slaveRelayPort = $slavePreconnectEnabled
             ? $this->stablePreconnectRelayPort((int) ($forward['id'] ?? 0), (int) ($underlayLegs[0]['node_id'] ?? 0))
@@ -6796,6 +6796,54 @@ final class ProvisioningService
         $rangeEnd = max($rangeStart, (int) ($this->config->getInt('MPTCP_PRECONNECT_RELAY_PORT_RANGE_END', $this->mptcpSlavePortRangeEnd()) ?? $this->mptcpSlavePortRangeEnd()));
         $rangeSize = max(1, ($rangeEnd - $rangeStart) + 1);
         return $rangeStart + abs(((($forwardId * 131) + ($nodeId * 37) + 1) % $rangeSize));
+    }
+
+    /**
+     * Slave pre-connect is globally gated, with optional forward/client allowlists
+     * for safe live rollout. Empty allowlists preserve the original global behavior.
+     *
+     * @param array<string, mixed> $forward
+     */
+    private function mptcpSlavePreconnectEnabledForForward(array $forward, bool $hasUnderlay): bool
+    {
+        if (!$hasUnderlay || !$this->config->getBool('MPTCP_SLAVE_PRECONNECT', false)) {
+            return false;
+        }
+
+        $forwardIds = $this->configIntSet('MPTCP_SLAVE_PRECONNECT_FORWARD_IDS');
+        if ($forwardIds !== []) {
+            $forwardId = (int) ($forward['id'] ?? 0);
+            if ($forwardId <= 0 || !isset($forwardIds[$forwardId])) {
+                return false;
+            }
+        }
+
+        $clientIds = $this->configIntSet('MPTCP_SLAVE_PRECONNECT_CLIENT_IDS');
+        if ($clientIds !== []) {
+            $clientId = (int) ($forward['line_client_id'] ?? 0);
+            if ($clientId <= 0 || !isset($clientIds[$clientId])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /** @return array<int, true> */
+    private function configIntSet(string $key): array
+    {
+        $raw = trim((string) ($this->config->get($key, '') ?? ''));
+        if ($raw === '') {
+            return [];
+        }
+        $result = [];
+        foreach (preg_split('/[\s,;]+/', $raw) ?: [] as $part) {
+            $value = (int) trim((string) $part);
+            if ($value > 0) {
+                $result[$value] = true;
+            }
+        }
+        return $result;
     }
 
     /**
@@ -7331,7 +7379,7 @@ final class ProvisioningService
         $sidecarListenPort = $this->sidecarWireguardListenPort(is_array($point) ? $point : [], $sidecarConfig);
         $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $sidecarConfig);
         $sidecarLegPort = $this->stableSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $forwardId, $nodeId);
-        $slavePreconnect = $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false);
+        $slavePreconnect = $this->mptcpSlavePreconnectEnabledForForward($forward, true);
         $preconnectTcpToken = '';
         $preconnectUdpToken = '';
         if ($slavePreconnect) {
