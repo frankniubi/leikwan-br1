@@ -66,11 +66,11 @@
     "size_bytes": 79848
   },
   "mptcp_client_runtime": {
-    "version": "2026.05.17.1",
+    "version": "2026.05.21.1",
     "path": "client-agent/leikwan_mptcp_client.py",
     "artifact_url": "/artifacts/leikwan-mptcp-client.py",
-    "sha256": "5f150daeeaa8f354036c14761b7beeb54e3518d2177a08db41d8219bf19cd3f7",
-    "size_bytes": 50810
+    "sha256": "195e4fc094d99bb610ae6fb10de8568cc13931e1934f8e79e6cceeeda8774212",
+    "size_bytes": 49717
   },
   "uot_runtime": {
     "version": "2026.04.08.1",
@@ -145,7 +145,7 @@
     "size_bytes": 8335360
   },
   "install_forward_runtime": {
-    "version": "2026.05.20.1",
+    "version": "2026.05.21.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
     "sha256": "7e5ba21e76283abe4c34cd39f9d3bb9bcde7d852686f056d0b10855193c8a5d5",
