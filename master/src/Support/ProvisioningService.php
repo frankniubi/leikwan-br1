@@ -5083,7 +5083,118 @@ final class ProvisioningService
             return ['uplinks' => []];
         }
 
-        return ['uplinks' => []];
+        // Get all forwards that use this sidecar point and have MPTCP enabled
+        $forwards = $this->db->fetchAll(
+            'SELECT f.*, s.status AS service_status
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.bond_sidecar_point_id = :point_id
+               AND f.enabled = 1
+               AND s.status = :active
+               AND f.runtime_preference IN (:mptcp_only, :mptcp_preferred)',
+            [
+                'point_id' => $pointId,
+                'active' => 'active',
+                'mptcp_only' => 'mptcp_only',
+                'mptcp_preferred' => 'mptcp_preferred_bond_fallback',
+            ]
+        );
+
+        $point = $this->db->fetchOne(
+            'SELECT agent_config_json, sidecar_host, cf_listen_port, path_prefix FROM sidecar_points WHERE id = :id LIMIT 1',
+            ['id' => $pointId]
+        );
+
+        if (!is_array($point)) {
+            return ['uplinks' => []];
+        }
+
+        $pointConfig = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
+        $sidecarListenPort = $this->sidecarWireguardListenPort($point, $pointConfig);
+        $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $pointConfig);
+        $sidecarPublicKey = trim((string) ($pointConfig['wireguard_public_key'] ?? ''));
+
+        if ($sidecarPublicKey === '') {
+            return ['uplinks' => []];
+        }
+
+        $uplinks = [];
+        $idx = 0;
+
+        foreach ($forwards as $forward) {
+            $forwardId = (int) ($forward['id'] ?? 0);
+
+            // Get active slave endpoints for this forward
+            $endpoints = $this->db->fetchAll(
+                'SELECT e.*, n.agent_config_json AS node_agent_config_json, n.name AS node_name
+                 FROM service_endpoints e
+                 INNER JOIN nodes n ON n.id = e.node_id
+                 WHERE e.forward_id = :forward_id
+                   AND e.health_status NOT IN (:deleted, :deleting)
+                 ORDER BY e.priority ASC, e.id ASC',
+                [
+                    'forward_id' => $forwardId,
+                    'deleted' => 'deleted',
+                    'deleting' => 'deleting',
+                ]
+            );
+
+            foreach ($endpoints as $endpoint) {
+                $nodeId = (int) ($endpoint['node_id'] ?? 0);
+                $nodeConfig = $this->decodeJsonAssoc($endpoint['node_agent_config_json'] ?? null);
+                $slavePublicKey = trim((string) ($nodeConfig['wireguard_public_key'] ?? ''));
+
+                if ($slavePublicKey === '') {
+                    continue;
+                }
+
+                $addresses = $this->stableMptcpLegAddressing($forwardId, $nodeId);
+                $fixedPort = $this->stableSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $forwardId, $nodeId);
+
+                $outerTransport = strtolower(trim((string) ($nodeConfig['wireguard_outer_transport'] ?? 'udp')));
+                if ($outerTransport === '') {
+                    $outerTransport = 'udp';
+                }
+
+                $uplink = [
+                    'enabled' => true,
+                    'interface_name' => 'lw-sc-' . $pointId . '-' . $idx,
+                    'local_address' => $addresses['sidecar_address'],
+                    'peer_address' => $addresses['slave_address'],
+                    'slave_peer_public_key' => $slavePublicKey,
+                    'listen_port' => $fixedPort,
+                    'outer_transport' => $outerTransport,
+                    'peer_keepalive_seconds' => 0,
+                ];
+
+                // Add CF mode configuration if slave uses wstunnel_udp
+                if ($outerTransport === 'wstunnel_udp') {
+                    $pathPrefix = trim((string) ($forward['path_prefix'] ?? ''));
+                    if ($pathPrefix !== '') {
+                        $uplink['cf_path_prefix'] = $pathPrefix;
+                        $uplink['cf_target_host'] = '127.0.0.1';
+                        $uplink['cf_target_port'] = $fixedPort;
+                    }
+                }
+
+                // Add TCP fallback configuration if needed
+                $nodeBasePort = isset($nodeConfig['wireguard_listen_port']) && (int) $nodeConfig['wireguard_listen_port'] > 0
+                    ? (int) $nodeConfig['wireguard_listen_port']
+                    : (int) ($endpoint['public_port'] ?? 0);
+                $nodeBaseFallback = isset($nodeConfig['wireguard_fallback_tcp_port']) && (int) $nodeConfig['wireguard_fallback_tcp_port'] > 0
+                    ? (int) $nodeConfig['wireguard_fallback_tcp_port']
+                    : ($nodeBasePort > 0 ? $nodeBasePort + 10000 : 0);
+
+                if ($outerTransport === 'tcp' && $nodeBaseFallback > 0) {
+                    $uplink['peer_tcp_fallback_port'] = $this->stableMptcpSlavePort($nodeBaseFallback, $forwardId);
+                }
+
+                $uplinks[] = $uplink;
+                $idx++;
+            }
+        }
+
+        return ['uplinks' => $uplinks];
     }
 
     private function reconcileForwardEndpoints(int $forwardId): void
