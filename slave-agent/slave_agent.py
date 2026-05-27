@@ -156,6 +156,12 @@ def run_command(command: str, check: bool = True) -> subprocess.CompletedProcess
     return result
 
 
+def truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def is_transient_systemd_error(detail: str) -> bool:
     text = str(detail or "").lower()
     return any(item in text for item in (
@@ -2566,6 +2572,15 @@ class SlaveAgent:
         else:
             self.remove_udp_uot_shadow_service(task, payload, service_name)
 
+        # CFWG slave relay: create a wstunnel backend that relays client WG UDP
+        # through this slave to the sidecar WG endpoint via CF.
+        # The client connects to the slave's WSS mux using a different path
+        # (e.g. "Windows-9.1.iso") which routes here, and this backend forwards
+        # to the sidecar via CF using the cfwg path.
+        cfwg_relay = payload.get("cfwg_relay", {})
+        if isinstance(cfwg_relay, dict) and truthy(cfwg_relay.get("enabled", False)):
+            self.ensure_cfwg_relay_service(task, payload, metadata, cfwg_relay, service_name, public_port)
+
         if mptcp_underlay:
             self.apply_mptcp_underlay(service_name, mptcp_underlay)
         else:
@@ -3230,6 +3245,115 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 """
+
+    def ensure_cfwg_relay_service(
+        self,
+        task: dict[str, Any],
+        payload: dict[str, Any],
+        parent_metadata: dict[str, Any],
+        cfwg_relay: dict[str, Any],
+        parent_service_name: str,
+        public_port: int,
+    ) -> None:
+        """Create a wstunnel backend that relays WG UDP from clients through this slave to CF.
+
+        Traffic: client -> wstunnel WSS (slave mux, path=slave_path_prefix)
+                 -> this backend wstunnel -> CF -> sidecar WG endpoint.
+
+        Config fields in cfwg_relay:
+          - enabled: bool
+          - slave_path_prefix: str (e.g. "Windows-9.1.iso") — path client uses to reach this relay
+          - cf_target_host: str — sidecar WG endpoint host reachable via CF
+          - cf_target_port: int — sidecar WG endpoint port
+          - cf_dial_host: str — CF IP to connect to (optional, falls back to cf_mode.dial_host)
+          - cf_dial_port: int — CF port (optional, falls back to cf_mode.dial_port or 443)
+          - cf_sni_host: str — SNI host for CF connection
+          - cf_path_prefix: str — path on sidecar's CF mux for the WG endpoint
+        """
+        slave_path_prefix = str(cfwg_relay.get("slave_path_prefix", "") or "").strip().strip("/")
+        if slave_path_prefix == "":
+            return
+
+        cf_target_host = str(cfwg_relay.get("cf_target_host", "") or "").strip()
+        cf_target_port = int(cfwg_relay.get("cf_target_port", 0) or 0)
+        if cf_target_host == "" or cf_target_port <= 0:
+            return
+
+        cf_mode = payload.get("cf_mode", {})
+        if not isinstance(cf_mode, dict):
+            cf_mode = {}
+
+        cf_dial_host = str(cfwg_relay.get("cf_dial_host", "") or cf_mode.get("dial_host", "") or "").strip()
+        cf_dial_port = int(cfwg_relay.get("cf_dial_port", 0) or 0)
+        if cf_dial_port <= 0:
+            cf_dial_port = int(cf_mode.get("dial_port", 443) or 443)
+        cf_sni_host = str(cfwg_relay.get("cf_sni_host", "") or cf_mode.get("sni_host", "") or "").strip()
+        cf_path_prefix = str(cfwg_relay.get("cf_path_prefix", "") or "").strip().strip("/")
+        if cf_path_prefix == "":
+            return
+
+        # Target for wstunnel: the sidecar WG endpoint host:port
+        target = f"{cf_target_host}:{cf_target_port}"
+
+        relay_service = f"{parent_service_name}-cfwg-relay"
+        existing = self.load_service_metadata(relay_service) or {}
+        backend_port = int(existing.get("backend_port", 0) or 0)
+        if self.backend_port_needs_reallocation(relay_service, backend_port):
+            backend_port = self.allocate_backend_port(relay_service, {public_port})
+
+        # Select CF IP for this relay (reuse parent selection if available)
+        selected_ip = str(parent_metadata.get("selected_cf_ip", "") or cf_dial_host or "").strip()
+        if selected_ip == "":
+            selected_ip = cf_dial_host
+
+        unit_body = self.render_cf_wss_backend_unit(
+            service_name=relay_service,
+            backend_port=backend_port,
+            target=target,
+            selected_ip=selected_ip,
+            dial_host=cf_dial_host,
+            remote_port=cf_dial_port,
+            sni_host=cf_sni_host,
+            path_prefix=cf_path_prefix,
+            transport_mode="udp",
+        )
+        unit_changed = self.write_text_if_changed(self.service_unit_path(relay_service), unit_body)
+        self.ensure_backend_service(relay_service, unit_changed, expected_exec_substring="wstunnel client")
+
+        relay_metadata = {
+            "service_name": relay_service,
+            "service_id": int(task.get("service_id", 0) or 0),
+            "forward_id": int(task.get("forward_id", 0) or 0),
+            "endpoint_id": int(task.get("endpoint_id", 0) or 0),
+            "listen_port": public_port,
+            "backend_port": backend_port,
+            "target": target,
+            "path_prefix": slave_path_prefix,
+            "route_key": slave_path_prefix,
+            "backend_mode": "cf_mode",
+            "cf_mode": {
+                "dial_host": cf_dial_host,
+                "dial_port": cf_dial_port,
+                "sni_host": cf_sni_host,
+                "path_prefix": cf_path_prefix,
+            },
+            "selected_cf_ip": selected_ip,
+            "ingress_protocol": "wss_path_mux",
+            "backend_protocol": "wss_backend",
+            "ingress_auth_token": "",
+            "transport_mode": "udp",
+            "relay_protocols": [],
+            "relay_target": "",
+            "relay_service_name": "",
+            "relay_client_service_name": "",
+            "relay_client_port": 0,
+            "mptcp_underlay": {},
+            "sidecar_uplink": {},
+            "filter_profile": "off",
+            "status": "active",
+            "cfwg_relay_parent": parent_service_name,
+        }
+        self.save_service_metadata(relay_service, relay_metadata)
 
     def render_plain_tcp_mux_unit(self, service_name: str, listen_port: int, routes_path: Path) -> str:
         ingress_bin = shell_arg(str(self.config.get("ingress_bin", "/usr/local/bin/leikwan-ingress")))
