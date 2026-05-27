@@ -333,12 +333,19 @@ class SidecarAgent:
         outer_transport = str(uplink.get("outer_transport", "udp") or "udp").strip().lower()
         peer_tcp_fallback_port = max(0, int(uplink.get("peer_tcp_fallback_port", 0) or 0))
         keepalive = max(0, int(uplink.get("peer_keepalive_seconds", 0) or 0))
+        cf_path_prefix = str(uplink.get("cf_path_prefix", "") or "").strip()
+        cf_target_host = str(uplink.get("cf_target_host", "") or "").strip()
+        cf_target_port = max(0, int(uplink.get("cf_target_port", 0) or 0))
         if interface_name == "" or local_address == "" or peer_address == "" or peer_public_key == "":
             return
         if outer_transport == "tcp" and peer_tcp_fallback_port > 0 and listen_port > 0:
             self.ensure_sidecar_uot_server_service(interface_name, peer_tcp_fallback_port, listen_port)
         else:
             self.remove_sidecar_uot_server_service(interface_name)
+        if cf_path_prefix != "" and cf_target_host != "" and cf_target_port > 0:
+            self.ensure_sidecar_cf_wstunnel_backend(interface_name, cf_path_prefix, cf_target_host, cf_target_port)
+        else:
+            self.remove_sidecar_cf_wstunnel_backend(interface_name)
         keepalive_line = f"PersistentKeepalive = {keepalive}\n" if keepalive > 0 else ""
         config = (
             "[Interface]\n"
@@ -379,6 +386,7 @@ class SidecarAgent:
         if system_path.exists():
             system_path.unlink()
         self.remove_sidecar_uot_server_service(interface_name)
+        self.remove_sidecar_cf_wstunnel_backend(interface_name)
 
     def restart_slave_sidecar_uplink(self, interface_name: str) -> None:
         iface = str(interface_name or "").strip()[:15]
@@ -438,6 +446,70 @@ WantedBy=multi-user.target
             subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
         if unit_path.exists():
             unit_path.unlink()
+
+    def ensure_sidecar_cf_wstunnel_backend(self, interface_name: str, path_prefix: str, target_host: str, target_port: int) -> None:
+        """Create wstunnel server backend for cf_mode slave transit underlay.
+
+        This creates a standalone wstunnel server that:
+        1. Listens on a dynamically allocated local port (26000-26099 range)
+        2. Accepts WebSocket connections with the specified path prefix
+        3. Forwards UDP traffic to the target (WireGuard listen port)
+
+        The CF mux will route incoming WSS connections to this backend based on path prefix.
+        """
+        if path_prefix == "" or target_host == "" or target_port <= 0:
+            return
+
+        service_name = f"leikwan-cf-slave-{interface_name}"
+
+        # Allocate a backend port for this service
+        backend_port = self.allocate_cf_backend_port(service_name)
+
+        # Create the wstunnel backend service
+        target = f"{target_host}:{target_port}"
+        unit_body = self.render_cf_backend_unit(service_name, backend_port, target, path_prefix)
+        unit_path = self.unit_path_for(service_name)
+
+        changed = write_text_if_changed(unit_path, unit_body, mode=0o644)
+
+        if shutil.which("systemctl") is not None:
+            if changed:
+                subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+                subprocess.run(["systemctl", "enable", f"{service_name}.service"], text=True, capture_output=True, check=False)
+                subprocess.run(["systemctl", "restart", f"{service_name}.service"], text=True, capture_output=True, check=False)
+
+        # Register this backend in CF metadata so it persists across agent restarts
+        metadata = self.load_managed_cf_metadata()
+        # Remove any existing entry for this service
+        metadata = [item for item in metadata if str(item.get("service_name", "")) != service_name]
+        # Add new entry
+        metadata.append({
+            "service_name": service_name,
+            "backend_port": backend_port,
+            "path_prefix": path_prefix,
+            "target": target,
+            "interface_name": interface_name,
+            "backend_type": "slave_transit_cf_wg",
+        })
+        self.save_managed_cf_metadata(metadata)
+
+    def remove_sidecar_cf_wstunnel_backend(self, interface_name: str) -> None:
+        """Remove wstunnel server backend for cf_mode slave transit underlay."""
+        service_name = f"leikwan-cf-slave-{interface_name}"
+        unit_path = self.unit_path_for(service_name)
+
+        if shutil.which("systemctl") is not None:
+            subprocess.run(["systemctl", "stop", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "disable", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+
+        if unit_path.exists():
+            unit_path.unlink()
+
+        # Remove from CF metadata
+        metadata = self.load_managed_cf_metadata()
+        metadata = [item for item in metadata if str(item.get("service_name", "")) != service_name]
+        self.save_managed_cf_metadata(metadata)
 
     @staticmethod
     def detect_time_service() -> str:
@@ -1109,6 +1181,33 @@ WantedBy=multi-user.target
                 for stale_service in sorted(previous_cf_services - active_cf_services):
                     if self.systemd_available():
                         self.disable_runtime(stale_service, self.unit_path_for(stale_service))
+
+                # Add slave transit CF backends to rendered routes
+                # These are created by apply_slave_sidecar_uplink and registered in CF metadata
+                for metadata_entry in self.load_managed_cf_metadata():
+                    if not isinstance(metadata_entry, dict):
+                        continue
+                    backend_type = str(metadata_entry.get("backend_type", "") or "")
+                    if backend_type != "slave_transit_cf_wg":
+                        continue
+                    service_name = str(metadata_entry.get("service_name", "") or "")
+                    if service_name in active_cf_services:
+                        # Already processed
+                        continue
+                    # Add this slave transit backend to the routes
+                    rendered_routes.append({
+                        "forward_id": 0,  # Slave transit backends don't have a forward_id
+                        "service_name": service_name,
+                        "path_prefix": str(metadata_entry.get("path_prefix", "") or ""),
+                        "target": str(metadata_entry.get("target", "") or ""),
+                        "backend_host": "127.0.0.1",
+                        "backend_port": int(metadata_entry.get("backend_port", 0) or 0),
+                        "backend_mode": "wstunnel",
+                        "transport_mode": "udp",
+                        "shadow_route_key": "",
+                    })
+                    active_cf_services.add(service_name)
+
                 self.save_managed_cf_metadata(rendered_routes)
                 cf_routes_path.write_text(json.dumps({"routes": rendered_routes}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
                 mptcp_forward_routes: list[dict[str, Any]] = []
