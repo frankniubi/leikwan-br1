@@ -282,8 +282,9 @@ def cleanup_stale_transit_interfaces(config: dict[str, Any], active_names: set[s
     if forward_id > 0:
         scoped_prefixes.add(f"lw-mptcp-{forward_id}-")
         scoped_exact_names.add(f"lw-self-{forward_id}")
+        scoped_exact_names.add(f"lw-cfsr-{forward_id}")
     for name in active_names:
-        if name.startswith("lw-self-"):
+        if name.startswith("lw-self-") or name.startswith("lw-cfsr-"):
             scoped_exact_names.add(name)
             continue
         if not name.startswith("lw-mptcp-"):
@@ -292,7 +293,7 @@ def cleanup_stale_transit_interfaces(config: dict[str, Any], active_names: set[s
         scoped_prefixes.add(prefix)
     # Identify stale interfaces: match our naming patterns but not in active set
     for iface in current_interfaces:
-        if iface.startswith("lw-self-"):
+        if iface.startswith("lw-self-") or iface.startswith("lw-cfsr-"):
             if scoped_exact_names and iface not in scoped_exact_names:
                 continue
         elif iface.startswith("lw-mptcp-"):
