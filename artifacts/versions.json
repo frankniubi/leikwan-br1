@@ -1,18 +1,19 @@
 {
   "slave_agent": {
-    "version": "2026.05.21.5",
+    "version": "2026.05.29.7",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "3463d7660e03b54c8ecac81f52ca6c5c2f36da0eb613d2f9b9f8053d6437abe5",
-    "size_bytes": 184758
+    "sha256": "dfaaef2f28eb2cdef47969aeb1e29a0ba45d6fa404003060154a9ebb9397a749",
+    "size_bytes": 229607,
+    "size": 229607
   },
   "slave_installer": {
     "version": "2026.05.20.1",
     "path": "install/install-slave.sh",
     "install_url": "/artifacts/install-slave.sh",
     "remote_install_url": "/artifacts/remote-install-slave.sh",
-    "sha256": "7c6ba7f222349bbce14431f0c11ff513c81d14ef6d0b02c720ced070f948b49b",
-    "size_bytes": 13744
+    "sha256": "5e48a9e5b0aa248d43247c3a26867db4b17008494be126c3b565665106aea6d1",
+    "size_bytes": 13410
   },
   "client_installer": {
     "version": "2026.05.12.1",
@@ -43,11 +44,12 @@
     "install_url": "/artifacts/uninstall-bond-sidecar.sh"
   },
   "client_agent": {
-    "version": "2026.05.20.1",
+    "version": "2026.05.29.9",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "6cb1632cc388ae84db065acee51818c75f6bb144e0c37ec8a924ea7417be4b1a",
-    "size_bytes": 213004
+    "sha256": "a4a99130c7a173d5705dbb81477ab1599ba492b32ad3ab9928cfcddd0f868583",
+    "size_bytes": 221889,
+    "size": 221889
   },
   "client_agent_installer": {
     "version": "2026.05.20.1",
@@ -59,23 +61,28 @@
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
-    "version": "2026.05.17.2",
+    "version": "2026.05.29.7",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "94a182673f6001e206acb3a3289afc0b39c24aad377d3f7572fcb7def0eee345",
-    "size_bytes": 79848
+    "sha256": "fda429393826fa0e9797b991a879b3875a44fa0266e80ba51e66662a3b6d8115",
+    "size_bytes": 91067,
+    "size": 91067
   },
   "mptcp_client_runtime": {
-    "version": "2026.05.21.1",
-    "path": "client-agent/leikwan_mptcp_client.py",
+    "version": "2026.05.29.5",
+    "path": "artifacts/leikwan-mptcp-client.py",
     "artifact_url": "/artifacts/leikwan-mptcp-client.py",
-    "sha256": "195e4fc094d99bb610ae6fb10de8568cc13931e1934f8e79e6cceeeda8774212",
-    "size_bytes": 49717
+    "sha256": "c68f1325f4b091cf1e3c9146126ba4c1c599b340b5c1c92302156949574b4540",
+    "size_bytes": 56282,
+    "size": 56282
   },
   "uot_runtime": {
-    "version": "2026.04.08.1",
+    "version": "2026.05.29.1",
     "path": "client-agent/leikwan_uot.py",
-    "artifact_url": "/artifacts/leikwan-uot.py"
+    "artifact_url": "/artifacts/leikwan-uot.py",
+    "sha256": "5f581087c8001324537d013a37f9f7b011ada5224b3dc21db30a7855be2024f9",
+    "size": 7852,
+    "size_bytes": 7852
   },
   "uot_bond_runtime": {
     "version": "2026.04.19.1",
@@ -129,8 +136,8 @@
     "version": "0.1.0",
     "path": "artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64",
-    "sha256": "ae01ef22b2eb7030e9894d4737b2cc8ddb0302731013298275577af7a033d1fe",
-    "size_bytes": 3407632
+    "sha256": "caa182f71a2484e3548d6d6679309b0a0b4dfad47f6a44dd8586ca24cc31dd04",
+    "size_bytes": 3477712
   },
   "mptcp_relay": {
     "version": "0.1.0",
@@ -145,18 +152,19 @@
     "size_bytes": 8335360
   },
   "install_forward_runtime": {
-    "version": "2026.05.21.1",
+    "version": "2026.05.28.4",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "7e5ba21e76283abe4c34cd39f9d3bb9bcde7d852686f056d0b10855193c8a5d5",
-    "size_bytes": 58810
+    "sha256": "6fb07af32c9bbb906c4bb46c353a566326d6e2401b8fb599a17181625edf7842",
+    "size_bytes": 68630,
+    "size": 68630
   },
   "cfwg_latency_watchdog": {
     "version": "2026.05.20.1",
     "path": "client-agent/cfwg_latency_watchdog.py",
     "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
-    "sha256": "5979698d0a29e9e47c0c3215a8b40782327f74f3c6158c8bc7b9f2a862f496bd",
-    "size_bytes": 26895
+    "sha256": "ae9f8b50f15a29da1dab24820736e772e814d029efadabeb8e533a1f55f8c59c",
+    "size_bytes": 26349
   },
   "leikwan_mptcp_relay_windows_amd64": {
     "version": "0.1.0",
@@ -165,5 +173,12 @@
     "sha256": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
     "size_bytes": 2605056,
     "platform": "windows-amd64"
+  },
+  "slave_preconnect_relay": {
+    "version": "2026.05.29.1",
+    "path": "slave-agent/preconnect_relay.py",
+    "artifact_url": "/artifacts/leikwan-preconnect-relay.py",
+    "sha256": "76d1f0a7f34d9f5f927e696e17839ef2aad1a9136795971b06757aeaaacaab03",
+    "size_bytes": 17387
   }
 }

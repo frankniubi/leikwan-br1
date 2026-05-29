@@ -134,8 +134,9 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                 with mock.patch.object(agent, "systemd_is_active", return_value=True):
                     with mock.patch.object(agent, "delete_nft_rules") as delete_nft:
                         with mock.patch.object(agent, "add_nft_rules") as add_nft:
-                            with mock.patch.object(client_agent_module.subprocess, "run") as run_mock:
-                                agent.apply_forward(forward, contract_signature=new_contract)
+                            with mock.patch.object(agent, "mptcp_forward_runtime_interfaces", return_value=[]):
+                                with mock.patch.object(client_agent_module.subprocess, "run") as run_mock:
+                                    agent.apply_forward(forward, contract_signature=new_contract)
 
             delete_nft.assert_not_called()
             add_nft.assert_not_called()
@@ -295,6 +296,83 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             run_mock.assert_not_called()
 
 
+
+    def test_mptcp_runtime_selection_ignores_non_active_panel_endpoints_without_health(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            selected = agent.select_mptcp_runtime_endpoints(
+                {
+                    "forward_id": 47,
+                    "mode": "mptcp",
+                    "endpoints": [
+                        {"endpoint_id": 653, "host": "203.0.113.19", "port": 7000, "health_status": "pending"},
+                        {"endpoint_id": 626, "host": "203.0.113.2", "port": 7000, "health_status": "active"},
+                    ],
+                    "mptcp": {"policy_mode": "latency_first", "active_leg_limit": 2},
+                },
+                now=100.0,
+            )
+
+        self.assertEqual([626], [item["endpoint_id"] for item in selected])
+
+    def test_mptcp_runtime_selection_uses_underlay_leg_health_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            selected = agent.select_mptcp_runtime_endpoints(
+                {
+                    "forward_id": 47,
+                    "mode": "mptcp",
+                    "endpoints": [
+                        {"endpoint_id": 640, "host": "203.0.113.13", "port": 7000},
+                        {"endpoint_id": 643, "host": "203.0.113.14", "port": 7000},
+                    ],
+                    "mptcp": {
+                        "policy_mode": "latency_first",
+                        "active_leg_limit": 2,
+                        "underlays": [
+                            {"interface_name": "lw-mptcp-47-0", "legs": [{"endpoint_id": 640, "health_status": "active"}]},
+                            {"interface_name": "lw-mptcp-47-1", "legs": [{"endpoint_id": 643, "health_status": "pending"}]},
+                        ],
+                    },
+                },
+                now=100.0,
+            )
+
+        self.assertEqual([640], [item["endpoint_id"] for item in selected])
+
+    def test_mptcp_runtime_selection_panel_pending_overrides_stale_local_health(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            agent.save_bond_endpoint_health(
+                {
+                    "47": {
+                        "640": {"role": "healthy", "quality_score": 1.0},
+                        "643": {"role": "healthy", "quality_score": 1.0},
+                    }
+                }
+            )
+            selected = agent.select_mptcp_runtime_endpoints(
+                {
+                    "forward_id": 47,
+                    "mode": "mptcp",
+                    "endpoints": [
+                        {"endpoint_id": 640, "host": "203.0.113.13", "port": 7000},
+                        {"endpoint_id": 643, "host": "203.0.113.14", "port": 7000},
+                    ],
+                    "mptcp": {
+                        "policy_mode": "latency_first",
+                        "active_leg_limit": 2,
+                        "underlays": [
+                            {"interface_name": "lw-mptcp-47-0", "legs": [{"endpoint_id": 640, "health_status": "active"}]},
+                            {"interface_name": "lw-mptcp-47-1", "legs": [{"endpoint_id": 643, "health_status": "pending"}]},
+                        ],
+                    },
+                },
+                now=100.0,
+            )
+
+        self.assertEqual([640], [item["endpoint_id"] for item in selected])
+
     def test_refresh_mptcp_runtime_endpoints_forces_runtime_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent = self.make_agent(tmp_dir)
@@ -303,7 +381,77 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             with mock.patch.object(agent, "apply_forward") as apply_mock:
                 agent.refresh_mptcp_runtime_endpoints(47, forward, "leikwan-client-47")
 
-            apply_mock.assert_called_once_with(forward, force_runtime_restart=True)
+            apply_mock.assert_called_once()
+            self.assertEqual(forward, apply_mock.call_args.args[0])
+            self.assertIn("contract_signature", apply_mock.call_args.kwargs)
+            self.assertFalse(apply_mock.call_args.kwargs["force_runtime_restart"])
+
+    def test_mptcp_apply_persists_health_policy_signature_for_noop_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            forward = {
+                "forward_id": 62,
+                "service_status": "active",
+                "listen_port": 32502,
+                "mode": "mptcp",
+                "transport": "tcp+udp",
+                "target": "192.0.2.10:32501",
+                "sni": "example.test",
+                "path_prefix": "route",
+                "endpoints": [
+                    {"endpoint_id": 619, "host": "203.0.113.19", "port": 7000, "health_status": "active"},
+                    {"endpoint_id": 620, "host": "203.0.113.20", "port": 7000, "health_status": "active"},
+                    {"endpoint_id": 666, "host": "203.0.113.66", "port": 7000, "health_status": "pending"},
+                ],
+                "mptcp": {
+                    "sidecar_port": 14969,
+                    "tcp_session_token": "tcp-token",
+                    "udp_session_token": "udp-token",
+                    "subflow_limit": 2,
+                    "mptcp_endpoints": [
+                        {"endpoint_id": 619, "address": "10.203.15.201", "dev": "lw-mptcp-62-0", "subflow": True},
+                        {"endpoint_id": 620, "address": "10.203.15.205", "dev": "lw-mptcp-62-1", "subflow": True},
+                        {"endpoint_id": 666, "address": "10.203.15.209", "dev": "lw-mptcp-62-2", "subflow": True},
+                    ],
+                    "underlays": [
+                        {"interface_name": "lw-mptcp-62-0", "legs": [{"endpoint_id": 619, "local_address": "10.203.15.201", "peer_address": "10.203.15.202", "mptcp_remote_address": "10.203.15.203", "health_status": "active"}]},
+                        {"interface_name": "lw-mptcp-62-1", "legs": [{"endpoint_id": 620, "local_address": "10.203.15.205", "peer_address": "10.203.15.206", "mptcp_remote_address": "10.203.15.207", "health_status": "active"}]},
+                        {"interface_name": "lw-mptcp-62-2", "legs": [{"endpoint_id": 666, "local_address": "10.203.15.209", "peer_address": "10.203.15.210", "mptcp_remote_address": "10.203.15.211", "health_status": "pending"}]},
+                    ],
+                },
+            }
+            rendered = {
+                "service_name": "leikwan-client-62",
+                "service_path": str(pathlib.Path(tmp_dir) / "leikwan-client-62.service"),
+                "service_unit": "unit\n",
+                "start_script_path": str(pathlib.Path(tmp_dir) / "start-62.sh"),
+                "start_script": "#!/bin/sh\n",
+                "files": [
+                    {
+                        "path": str(pathlib.Path(tmp_dir) / "mptcp-forward-62.json"),
+                        "content": json.dumps({"underlays": []}),
+                        "mode": 0o600,
+                    }
+                ],
+            }
+            base_signature = agent.forward_contract_signature(forward)
+            with mock.patch.dict("sys.modules", {"install_forward_runtime": mock.Mock(render_forward_runtime=mock.Mock(return_value=rendered))}):
+                with mock.patch.object(agent, "running_kernel_supports_mptcp", return_value=True):
+                    with mock.patch.object(agent, "mptcp_client_path", return_value=pathlib.Path("/usr/local/bin/leikwan-mptcp-client.py")):
+                        policy_signature = agent.effective_forward_contract_signature(forward)
+                    with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                        with mock.patch.object(agent, "delete_nft_rules"):
+                            with mock.patch.object(agent, "add_nft_rules"):
+                                with mock.patch.object(client_agent_module.subprocess, "run"):
+                                    with mock.patch.object(agent, "mptcp_client_path", return_value=pathlib.Path("/usr/local/bin/leikwan-mptcp-client.py")):
+                                        agent.apply_forward(forward, contract_signature=base_signature)
+
+            applied = agent.load_applied()["62"]
+            self.assertNotEqual(base_signature, applied["contract_signature"])
+            with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                with mock.patch.object(agent, "private_wg_interface_present", return_value=True):
+                    self.assertTrue(agent.forward_apply_is_noop(62, applied["contract_signature"]))
+                    self.assertFalse(agent.forward_apply_is_noop(62, base_signature))
 
     def test_forward_contract_signature_ignores_observation_only_latency_churn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -343,6 +491,145 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             changed["candidate_pool"][1]["quality_score"] = 0.73
 
             self.assertEqual(agent.forward_contract_signature(base), agent.forward_contract_signature(changed))
+
+    def test_mptcp_effective_signature_ignores_health_latency_churn_when_selection_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            forward = {
+                "forward_id": 62,
+                "service_status": "active",
+                "listen_port": 32502,
+                "mode": "mptcp",
+                "transport": "tcp+udp",
+                "target": "192.0.2.10:32501",
+                "endpoints": [
+                    {"endpoint_id": 619, "host": "203.0.113.19", "port": 7000, "health_status": "active"},
+                    {"endpoint_id": 620, "host": "203.0.113.20", "port": 7000, "health_status": "active"},
+                ],
+                "mptcp": {
+                    "sidecar_port": 14969,
+                    "tcp_session_token": "tcp-token",
+                    "udp_session_token": "udp-token",
+                    "subflow_limit": 2,
+                    "mptcp_endpoints": [
+                        {"endpoint_id": 619, "address": "10.203.15.201", "dev": "lw-mptcp-62-0", "subflow": True},
+                        {"endpoint_id": 620, "address": "10.203.15.205", "dev": "lw-mptcp-62-1", "subflow": True},
+                    ],
+                    "underlays": [
+                        {
+                            "interface_name": "lw-mptcp-62-0",
+                            "legs": [
+                                {
+                                    "endpoint_id": 619,
+                                    "local_address": "10.203.15.201",
+                                    "peer_address": "10.203.15.202",
+                                    "mptcp_remote_address": "10.203.15.203",
+                                    "health_status": "active",
+                                }
+                            ],
+                        },
+                        {
+                            "interface_name": "lw-mptcp-62-1",
+                            "legs": [
+                                {
+                                    "endpoint_id": 620,
+                                    "local_address": "10.203.15.205",
+                                    "peer_address": "10.203.15.206",
+                                    "mptcp_remote_address": "10.203.15.207",
+                                    "health_status": "active",
+                                }
+                            ],
+                        },
+                    ],
+                },
+            }
+            health = {
+                "62": {
+                    "619": {"role": "healthy", "one_leg_rtt_ms": 13.2, "last_latency_ms": 13.2, "quality_score": 0.93},
+                    "620": {"role": "healthy", "one_leg_rtt_ms": 12.6, "last_latency_ms": 12.6, "quality_score": 0.94},
+                }
+            }
+            agent.save_bond_endpoint_health(health)
+            with mock.patch.object(agent, "running_kernel_supports_mptcp", return_value=True):
+                first_signature = agent.effective_forward_contract_signature(forward)
+
+            health["62"]["619"].update({"one_leg_rtt_ms": 13.9, "last_latency_ms": 13.9, "quality_score": 0.90})
+            health["62"]["620"].update({"one_leg_rtt_ms": 12.1, "last_latency_ms": 12.1, "quality_score": 0.95})
+            agent.save_bond_endpoint_health(health)
+
+            with mock.patch.object(agent, "running_kernel_supports_mptcp", return_value=True):
+                self.assertEqual(first_signature, agent.effective_forward_contract_signature(forward))
+
+    def test_mptcp_effective_signature_ignores_health_role_churn_when_selection_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            forward = {
+                "forward_id": 62,
+                "service_status": "active",
+                "listen_port": 32502,
+                "mode": "mptcp",
+                "transport": "tcp+udp",
+                "target": "192.0.2.10:32501",
+                "endpoints": [
+                    {"endpoint_id": 619, "host": "203.0.113.19", "port": 7000, "health_status": "active"},
+                ],
+                "mptcp": {
+                    "sidecar_port": 14969,
+                    "tcp_session_token": "tcp-token",
+                    "udp_session_token": "udp-token",
+                    "subflow_limit": 1,
+                    "mptcp_endpoints": [
+                        {"endpoint_id": 619, "address": "10.203.15.201", "dev": "lw-mptcp-62-0", "subflow": True},
+                    ],
+                    "underlays": [
+                        {
+                            "interface_name": "lw-mptcp-62-0",
+                            "legs": [
+                                {
+                                    "endpoint_id": 619,
+                                    "local_address": "10.203.15.201",
+                                    "peer_address": "10.203.15.202",
+                                    "mptcp_remote_address": "10.203.15.203",
+                                    "health_status": "active",
+                                }
+                            ],
+                        },
+                    ],
+                },
+            }
+            agent.save_bond_endpoint_health(
+                {
+                    "62": {
+                        "619": {
+                            "role": "probation",
+                            "probation_until": 9999.0,
+                            "consecutive_successes": 1,
+                            "one_leg_rtt_ms": 13.2,
+                            "last_latency_ms": 13.2,
+                            "quality_score": 0.5,
+                        }
+                    }
+                }
+            )
+            with mock.patch.object(agent, "running_kernel_supports_mptcp", return_value=True):
+                probation_signature = agent.effective_forward_contract_signature(forward)
+
+            agent.save_bond_endpoint_health(
+                {
+                    "62": {
+                        "619": {
+                            "role": "healthy",
+                            "probation_until": 0.0,
+                            "consecutive_successes": 3,
+                            "one_leg_rtt_ms": 13.2,
+                            "last_latency_ms": 13.2,
+                            "quality_score": 0.95,
+                        }
+                    }
+                }
+            )
+            with mock.patch.object(agent, "running_kernel_supports_mptcp", return_value=True):
+                self.assertEqual(probation_signature, agent.effective_forward_contract_signature(forward))
     def test_mptcp_forward_contract_signature_includes_cf_port_and_wss_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent = self.make_agent(tmp_dir)
@@ -613,6 +900,77 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             refresh_mock.assert_called_once()
             entry = agent.load_bond_endpoint_health()["26"]["185"]
             self.assertEqual(entry["role"], "quarantined")
+
+    def test_ensure_runtime_health_normal_bond_quarantines_endpoint_when_one_leg_probe_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            agent.save_bond_endpoint_health(
+                {
+                    "59": {
+                        "571": {
+                            "role": "healthy",
+                            "consecutive_failures": 0,
+                            "consecutive_successes": 3,
+                            "quarantine_until": 0.0,
+                            "probation_until": 0.0,
+                            "last_error": "",
+                        },
+                        "502": {
+                            "role": "healthy",
+                            "consecutive_failures": 0,
+                            "consecutive_successes": 3,
+                            "quarantine_until": 0.0,
+                            "probation_until": 0.0,
+                            "last_error": "",
+                        },
+                    }
+                }
+            )
+            forward = {
+                "forward_id": 59,
+                "service_status": "active",
+                "listen_port": 32501,
+                "mode": "bond",
+                "backend_mode": "current_mode",
+                "path_prefix": "normal-route",
+                "endpoints": [
+                    {"endpoint_id": 571, "host": "111.229.217.7", "port": 7000, "ingress_auth_token": "token-1"},
+                    {"endpoint_id": 502, "host": "49.235.160.246", "port": 7000, "ingress_auth_token": "token-2"},
+                ],
+                "bonding": {
+                    "ingress_mode": "plain_tcp_mux",
+                    "route_key": "normal-route",
+                    "ws_priority": 10,
+                    "session_token": "session-token-1",
+                },
+            }
+
+            with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                with mock.patch.object(agent, "local_runtime_probe", return_value=(True, 1.0, None)):
+                    with mock.patch.object(
+                        agent,
+                        "remote_plain_tcp_ready_probe",
+                        side_effect=[(True, 1.0, None), (True, 1.0, None)],
+                    ):
+                        with mock.patch.object(
+                            agent,
+                            "cf_bond_one_leg_connect_probe",
+                            side_effect=[(True, 1.0, None), (False, None, "bond_hello_ack_timeout")],
+                        ):
+                            with mock.patch.object(agent, "restart_forward_service") as restart_mock:
+                                with mock.patch.object(agent, "refresh_bond_runtime_endpoints") as refresh_mock:
+                                    with mock.patch.object(
+                                        agent,
+                                        "collect_live_bond_slave_connections",
+                                        return_value=[{"endpoint_id": 571, "host": "111.229.217.7", "port": 7000}],
+                                    ):
+                                        agent.ensure_runtime_health([forward])
+
+            restart_mock.assert_not_called()
+            refresh_mock.assert_called_once()
+            entry = agent.load_bond_endpoint_health()["59"]["502"]
+            self.assertEqual(entry["role"], "quarantined")
+            self.assertEqual(entry["last_error"], "bond_hello_ack_timeout")
 
 
     def test_self_leg_selected_cf_bond_does_not_restart_when_slave_helpers_fail(self) -> None:

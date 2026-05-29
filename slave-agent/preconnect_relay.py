@@ -49,7 +49,8 @@ MPTCP_PROTOCOL = getattr(socket, "IPPROTO_MPTCP", 262)
 DEFAULT_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024
 RELAY_PIPE_CHUNK = 256 * 1024
 HEALTH_CHECK_INTERVAL_S = 10
-VERSION = "2026.05.22.1"
+MAX_CLIENT_HANDSHAKE_LEN = 64 * 1024
+VERSION = "2026.05.29.1"
 
 
 def load_config(path: pathlib.Path) -> dict[str, Any]:
@@ -126,14 +127,84 @@ async def send_handshake(writer: asyncio.StreamWriter, config: dict[str, Any], p
     logging.debug("sent handshake (%d bytes) for forward_id=%s", len(encoded), config.get("forward_id"))
 
 
+def _valid_client_handshake(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    protocol = str(payload.get("protocol", "") or "").strip().lower()
+    token = str(payload.get("session_token", "") or "").strip()
+    return protocol in {"tcp", "udp"} and token != ""
+
+
+async def maybe_forward_client_handshake(
+    client_reader: asyncio.StreamReader,
+    sidecar_writer: asyncio.StreamWriter,
+    config: dict[str, Any],
+) -> bytes:
+    """Pass through a client-sent sidecar handshake when present.
+
+    Normal slave-preconnect clients send raw payload; for those we keep the old
+    behavior by sending the relay's own handshake and returning any bytes read
+    during the probe as payload prefix.  App-layer MPTCP bond clients send the
+    sidecar handshake (including bond_session_id) immediately on each leg; those
+    frames must reach the sidecar unchanged so it can correlate the bond legs.
+    """
+    timeout = float(config.get("client_handshake_peek_timeout_s", 0.15) or 0.15)
+    prefix = b""
+    try:
+        prefix = await asyncio.wait_for(client_reader.read(4), timeout=timeout)
+    except asyncio.TimeoutError:
+        await send_handshake(sidecar_writer, config, "tcp")
+        return b""
+    if len(prefix) < 4:
+        await send_handshake(sidecar_writer, config, "tcp")
+        return prefix
+
+    handshake_len = struct.unpack(">I", prefix)[0]
+    if handshake_len == 0 or handshake_len > MAX_CLIENT_HANDSHAKE_LEN:
+        await send_handshake(sidecar_writer, config, "tcp")
+        return prefix
+
+    try:
+        body = await asyncio.wait_for(client_reader.readexactly(handshake_len), timeout=timeout)
+    except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+        await send_handshake(sidecar_writer, config, "tcp")
+        return prefix
+
+    try:
+        decoded = json.loads(body.decode("utf-8"))
+    except Exception:
+        await send_handshake(sidecar_writer, config, "tcp")
+        return prefix + body
+
+    if not _valid_client_handshake(decoded):
+        await send_handshake(sidecar_writer, config, "tcp")
+        return prefix + body
+
+    sidecar_writer.write(prefix)
+    sidecar_writer.write(body)
+    await sidecar_writer.drain()
+    logging.debug(
+        "forwarded client handshake (%d bytes, bond=%s) for forward_id=%s",
+        handshake_len,
+        "yes" if isinstance(decoded, dict) and decoded.get("bond_session_id") is not None else "no",
+        config.get("forward_id"),
+    )
+    return b""
+
+
 async def pipe(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     label: str,
+    initial: bytes = b"",
 ) -> int:
     """Relay data from reader to writer. Returns bytes forwarded."""
     total = 0
     try:
+        if initial:
+            writer.write(initial)
+            total += len(initial)
+            await writer.drain()
         while True:
             chunk = await reader.read(RELAY_PIPE_CHUNK)
             if not chunk:
@@ -199,9 +270,14 @@ class PreConnectRelay:
                     await client_writer.wait_closed()
                 return
 
-            # Send handshake on behalf of client
+            # Send the relay handshake for raw clients, but pass through
+            # app-layer bond handshakes so the sidecar can aggregate legs.
             try:
-                await send_handshake(sidecar_writer, self.config, "tcp")
+                initial_client_payload = await maybe_forward_client_handshake(
+                    client_reader,
+                    sidecar_writer,
+                    self.config,
+                )
             except Exception as exc:
                 logging.error("relay conn #%d: handshake failed: %s", conn_id, exc)
                 sidecar_writer.close()
@@ -210,7 +286,7 @@ class PreConnectRelay:
 
             # Bidirectional relay
             results = await asyncio.gather(
-                pipe(client_reader, sidecar_writer, f"conn#{conn_id} client->sidecar"),
+                pipe(client_reader, sidecar_writer, f"conn#{conn_id} client->sidecar", initial_client_payload),
                 pipe(sidecar_reader, client_writer, f"conn#{conn_id} sidecar->client"),
                 return_exceptions=True,
             )

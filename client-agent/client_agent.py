@@ -24,7 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.05.20.1"
+AGENT_VERSION = "2026.05.29.9"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -390,6 +390,28 @@ class ClientAgent:
                 "runtime_inputs": runtime_inputs,
             }
         )
+
+    def effective_forward_contract_signature(self, forward: dict) -> str:
+        mode = self.normalize_mode(forward.get("mode", "single"))
+        render_forward = dict(forward)
+        candidate_pool = self.select_forward_candidates(render_forward)
+        if candidate_pool:
+            render_forward["candidate_pool"] = candidate_pool
+        runtime_mode = self.choose_runtime_family(render_forward, self.running_kernel_supports_mptcp())
+        if runtime_mode in {"bond", "mptcp"}:
+            mode = runtime_mode
+            render_forward["mode"] = runtime_mode
+        if mode == "bond":
+            render_forward = self.apply_latency_target_candidate_escalation(render_forward)
+            render_forward["endpoints"] = self.select_bond_runtime_endpoints(render_forward)
+            return self.forward_contract_signature(self.strip_runtime_observation_fields(render_forward))
+        if mode == "mptcp":
+            render_forward["candidate_pool"] = self.filter_mptcp_capable_candidates(
+                [item for item in render_forward.get("candidate_pool", []) if isinstance(item, dict)]
+            )
+            render_forward = self.apply_mptcp_runtime_health_policy(render_forward)
+            return self.forward_contract_signature(self.strip_runtime_observation_fields(render_forward))
+        return self.forward_contract_signature(forward)
 
     @staticmethod
     def rendered_runtime_signature(rendered: dict, mode: str, transport: str, listen_port: int) -> str:
@@ -985,7 +1007,7 @@ class ClientAgent:
                     continue
             desired_ids.add(forward_id)
             try:
-                contract_signature = self.forward_contract_signature(forward)
+                contract_signature = self.effective_forward_contract_signature(forward)
                 force_runtime_restart = forward_id in force_runtime_refresh_ids
                 if not force_runtime_restart and self.forward_apply_is_noop(forward_id, contract_signature):
                     noop_forward_ids.append(forward_id)
@@ -1387,15 +1409,31 @@ class ClientAgent:
             render_forward = self.apply_mptcp_runtime_health_policy(render_forward)
 
         render_forward = self.strip_runtime_observation_fields(render_forward)
+        contract_forward = dict(render_forward)
         rendered = render_forward_runtime(render_forward, self.semantic_agent_config())
         listen_port = int(forward.get("listen_port", 0) or 0)
         rendered_signature = self.rendered_runtime_signature(rendered, mode, transport, listen_port)
-        if contract_signature is None:
-            contract_signature = self.forward_contract_signature(forward)
+        effective_contract_signature = self.forward_contract_signature(contract_forward)
+        if contract_signature is None or mode in {"bond", "mptcp"}:
+            contract_signature = effective_contract_signature
         applied = self.load_applied()
         previous = applied.get(str(forward_id), {})
         previous_runtime_present = self.applied_forward_runtime_is_present(previous) if isinstance(previous, dict) and previous else False
+        previous_runtime_mode = self.normalize_mode(previous.get("runtime_mode") or previous.get("published_mode") or "") if isinstance(previous, dict) else ""
+        live_mptcp_runtime_interfaces = self.mptcp_forward_runtime_interfaces(forward_id) if mode != "mptcp" else []
+        cleanup_for_runtime_transition = previous_runtime_mode == "mptcp" and mode != "mptcp"
+        cleanup_for_stale_non_mptcp_runtime = mode != "mptcp" and live_mptcp_runtime_interfaces != []
         rendered_unchanged = isinstance(previous, dict) and str(previous.get("rendered_signature", "") or "") == rendered_signature
+        if cleanup_for_runtime_transition or cleanup_for_stale_non_mptcp_runtime:
+            if cleanup_for_stale_non_mptcp_runtime and not cleanup_for_runtime_transition:
+                logging.info(
+                    "forward %s mode=%s has stale mptcp/self-leg interfaces: %s; cleaning before no-op check",
+                    forward_id,
+                    mode,
+                    ",".join(live_mptcp_runtime_interfaces),
+                )
+            self.cleanup_mptcp_forward_runtime(forward_id)
+            previous_runtime_present = False
         if rendered_unchanged and previous_runtime_present:
             if force_runtime_restart:
                 service_name = str(rendered.get("service_name", "") or f"leikwan-client-{forward_id}")
@@ -1551,6 +1589,23 @@ class ClientAgent:
         self.__class__.cleanup_orphan_mptcp_runtime(set(), target_forward_ids={forward_id})
 
     @classmethod
+    def mptcp_forward_runtime_interfaces(cls, forward_id: int) -> list[str]:
+        if forward_id <= 0 or shutil.which("wg") is None:
+            return []
+        result = subprocess.run(["wg", "show", "interfaces"], text=True, capture_output=True, check=False)
+        interfaces = result.stdout.strip().split()
+        matches: list[str] = []
+        for iface in interfaces:
+            if (
+                re.match(rf"^lw-mptcp-{forward_id}-", iface)
+                or re.match(rf"^lw-cfwg-{forward_id}$", iface)
+                or re.match(rf"^lw-cfsr-{forward_id}$", iface)
+                or re.match(rf"^lw-self-{forward_id}$", iface)
+            ):
+                matches.append(iface)
+        return sorted(matches)
+
+    @classmethod
     def cleanup_orphan_mptcp_runtime(
         cls,
         active_forward_ids: set[int],
@@ -1562,7 +1617,12 @@ class ClientAgent:
         interfaces = result.stdout.strip().split()
         removed_service_units = False
         for iface in interfaces:
-            match = re.match(r"^lw-mptcp-(\d+)-", iface)
+            match = (
+                re.match(r"^lw-mptcp-(\d+)-", iface)
+                or re.match(r"^lw-cfwg-(\d+)$", iface)
+                or re.match(r"^lw-cfsr-(\d+)$", iface)
+                or re.match(r"^lw-self-(\d+)$", iface)
+            )
             if match is None:
                 continue
             forward_id = int(match.group(1))
@@ -1648,10 +1708,7 @@ class ClientAgent:
                             .get(str(endpoint_id), {})
                             .get("role", "healthy")
                         )
-                        ready, latency_ms, error = self.remote_tcp_probe(
-                            str(candidate.get("host", "") or ""),
-                            int(candidate.get("port", 0) or 0),
-                        )
+                        ready, latency_ms, error = self.mptcp_candidate_health_probe(candidate)
                         ready_results.append(ready)
                         updated = self.record_bond_endpoint_probe_result(
                             forward_id,
@@ -1715,8 +1772,10 @@ class ClientAgent:
                 bonding = {}
             plain_tcp_ingress = mode == "bond" and str(bonding.get("ingress_mode", "wss_path_mux")) == "plain_tcp_mux"
             backend_mode = str(forward.get("backend_mode", "current_mode") or "current_mode")
+            bond_session_token = str(bonding.get("session_token", "") or "").strip()
             self_leg_primary = mode == "bond" and self.forward_has_selected_self_leg(forward_id, forward)
             for endpoint_index, endpoint in enumerate(endpoints):
+                bond_one_leg_probe_failed = False
                 if plain_tcp_ingress:
                     ready, latency_ms, error = self.remote_plain_tcp_ready_probe(
                         str(endpoint.get("host", "")),
@@ -1731,12 +1790,13 @@ class ClientAgent:
                         str(forward.get("sni", "") or endpoint.get("cdn_host", "") or endpoint.get("host", "")),
                         str(forward.get("path_prefix", "")),
                     )
-                if ready and mode == "bond" and plain_tcp_ingress and backend_mode == "cf_mode":
+                if ready and mode == "bond" and plain_tcp_ingress and bond_session_token != "":
                     ready, stronger_latency_ms, stronger_error = self.cf_bond_one_leg_connect_probe(forward, endpoint, endpoint_index)
                     if stronger_latency_ms is not None:
                         latency_ms = stronger_latency_ms
                     if stronger_error is not None:
                         error = stronger_error
+                    bond_one_leg_probe_failed = not ready
                 ready_results.append(ready)
                 if mode == "bond":
                     endpoint_id = int(endpoint.get("endpoint_id", 0) or 0)
@@ -1746,7 +1806,7 @@ class ClientAgent:
                         .get(str(endpoint_id), {})
                         .get("role", "healthy")
                     )
-                    if not ready and plain_tcp_ingress and backend_mode == "cf_mode":
+                    if not ready and plain_tcp_ingress and (backend_mode == "cf_mode" or bond_one_leg_probe_failed):
                         updated = self.force_bond_endpoint_quarantine(
                             forward_id,
                             endpoint_id,
@@ -1945,7 +2005,14 @@ class ClientAgent:
         if now < next_allowed:
             return
 
-        self.apply_forward(forward, force_runtime_restart=True)
+        contract_signature = self.effective_forward_contract_signature(forward)
+        if self.forward_apply_is_noop(forward_id, contract_signature):
+            self.persist_forward_apply_signatures(forward_id, contract_signature)
+            self.health_reorder_after[forward_id] = now + 30
+            logging.debug("refreshed %s mptcp leg health policy already rendered; no-op", service_name)
+            return
+
+        self.apply_forward(forward, contract_signature=contract_signature, force_runtime_restart=False)
         self.health_reorder_after[forward_id] = now + 30
         for index, latest_forward in enumerate(self.latest_forwards):
             if int(latest_forward.get("forward_id", 0) or 0) != forward_id:
@@ -2191,10 +2258,20 @@ class ClientAgent:
         base_priority = 10
 
         decorated = []
+        deferred_panel_pending = []
         for index, endpoint in enumerate(endpoints):
             endpoint_id = self.endpoint_id_for_runtime(endpoint, index)
             endpoint["endpoint_id"] = endpoint_id
+            endpoint["leg"] = self.mptcp_leg_for_endpoint(forward, endpoint_id)
             entry = dict(health.get(str(endpoint_id), {}))
+            leg_panel_health = ""
+            leg = endpoint.get("leg", {}) if isinstance(endpoint.get("leg", {}), dict) else {}
+            if isinstance(leg, dict):
+                leg_panel_health = str(leg.get("health_status", "") or "").strip().lower()
+            panel_health = str(endpoint.get("health_status", leg_panel_health or "active") or leg_panel_health or "active").strip().lower()
+            if panel_health not in {"", "active"}:
+                deferred_panel_pending.append(endpoint)
+                continue
             role = str(entry.get("role", "healthy") or "healthy")
             quarantine_until = float(entry.get("quarantine_until", 0.0) or 0.0)
             probation_until = float(entry.get("probation_until", 0.0) or 0.0)
@@ -2217,15 +2294,18 @@ class ClientAgent:
             decorated.append(endpoint)
 
         latency_first = self.latency_first_mptcp_enabled(forward)
+        if not decorated:
+            decorated = deferred_panel_pending
+
         if not latency_first:
-            preferred = [item for item in decorated if item["health_role"] != "quarantined"]
+            preferred = [item for item in decorated if item.get("health_role", "healthy") != "quarantined"]
             if preferred:
                 preferred.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
                 return preferred
             decorated.sort(key=lambda item: (int(item.get("dynamic_priority", base_priority)), int(item.get("endpoint_id", 0) or 0)))
             return decorated[:1]
 
-        healthy = [item for item in decorated if item["health_role"] == "healthy"]
+        healthy = [item for item in decorated if item.get("health_role", "healthy") == "healthy"]
         healthy.sort(key=self.latency_first_primary_sort_key)
         probation = [item for item in decorated if item["health_role"] == "probation"]
         probation.sort(key=self.latency_first_primary_sort_key)
@@ -2237,9 +2317,71 @@ class ClientAgent:
         if active_limit > 0 and len(selected) > active_limit:
             selected = selected[:active_limit]
 
+        # Slave-preconnect health is only observable through the client->slave
+        # WG address.  If a helper was quarantined while its WG was removed, it
+        # can never recover because the health probe has no route. Keep one
+        # non-active standby underlay rendered as backup-only so the health
+        # loop can keep probing the preconnect relay without making it the
+        # primary data path.
+        if (healthy or self.forward_has_selected_self_leg(int(forward.get("forward_id", 0) or 0), forward)) and len(selected) < 2:
+            selected_ids = {int(item.get("endpoint_id", 0) or 0) for item in selected}
+            for standby_pool in (probation, quarantined):
+                for standby in standby_pool:
+                    standby_id = int(standby.get("endpoint_id", 0) or 0)
+                    if standby_id in selected_ids or not self.endpoint_has_preconnect_probe(standby):
+                        continue
+                    standby["leg_role"] = "standby"
+                    standby["backup_only"] = True
+                    selected.append(standby)
+                    selected_ids.add(standby_id)
+                    if len(selected) >= 2:
+                        break
+                if len(selected) >= 2:
+                    break
+
         for index, endpoint in enumerate(selected):
+            if str(endpoint.get("leg_role", "") or "") == "standby":
+                endpoint["backup_only"] = True
+                continue
             endpoint["leg_role"] = "primary" if index == 0 else "helper"
         return selected
+
+    @staticmethod
+    def mptcp_leg_for_endpoint(forward: dict, endpoint_id: int) -> dict:
+        mptcp = forward.get("mptcp", {}) if isinstance(forward, dict) else {}
+        if not isinstance(mptcp, dict):
+            return {}
+        underlays = mptcp.get("underlays", [])
+        if not isinstance(underlays, list) or not underlays:
+            underlay = mptcp.get("underlay", {})
+            underlays = [underlay] if isinstance(underlay, dict) else []
+        for underlay in underlays:
+            if not isinstance(underlay, dict):
+                continue
+            legs = underlay.get("legs", [])
+            if not isinstance(legs, list):
+                continue
+            for leg in legs:
+                if not isinstance(leg, dict):
+                    continue
+                try:
+                    leg_endpoint_id = int(leg.get("endpoint_id", 0) or 0)
+                except (TypeError, ValueError):
+                    leg_endpoint_id = 0
+                if leg_endpoint_id == endpoint_id:
+                    return dict(leg)
+        return {}
+
+    @staticmethod
+    def endpoint_has_preconnect_probe(endpoint: dict) -> bool:
+        leg = endpoint.get("leg", {}) if isinstance(endpoint, dict) else {}
+        if not isinstance(leg, dict):
+            leg = {}
+        try:
+            relay_port = int(leg.get("preconnect_relay_port", 0) or 0)
+        except (TypeError, ValueError):
+            relay_port = 0
+        return relay_port > 0 or bool(leg.get("slave_preconnect", False))
 
     @staticmethod
     def mptcp_underlay_leg_endpoint_id(leg: dict, endpoint_by_address: dict[str, int]) -> int:
@@ -2312,7 +2454,18 @@ class ClientAgent:
                     leg["leg_role"] = role
                     leg["health_role"] = str(selected_endpoint.get("health_role", "healthy") or "healthy")
                     # Keep helper subflows enabled for throughput. Quarantined legs are already filtered out.
-                    leg["backup_only"] = bool(leg.get("backup_only", False))
+                    leg["backup_only"] = bool(leg.get("backup_only", False) or selected_endpoint.get("backup_only", False))
+                    if self.endpoint_has_preconnect_probe({"leg": leg}):
+                        preconnect_remote = str(leg.get("slave_address", "") or leg.get("peer_address", "") or "").strip()
+                        if preconnect_remote != "":
+                            # In slave-preconnect mode the client only talks to
+                            # the slave-side relay.  The abandoned sidecar
+                            # overlay IP must not be rendered into client WG or
+                            # MPTCP runtime config because it is intentionally
+                            # unreachable from the client.
+                            leg["peer_address"] = preconnect_remote
+                            leg["mptcp_remote_address"] = preconnect_remote
+                            leg["sidecar_address"] = preconnect_remote
                     if role == "primary" and primary_leg is None:
                         primary_leg = dict(leg)
                     filtered_legs.append(leg)
@@ -2372,6 +2525,8 @@ class ClientAgent:
                 endpoint["endpoint_id"] = endpoint_id
                 endpoint["leg_role"] = str(selected_endpoint.get("leg_role", "helper") or "helper")
                 endpoint["health_role"] = str(selected_endpoint.get("health_role", "healthy") or "healthy")
+                if selected_endpoint.get("backup_only", False):
+                    endpoint["backup_only"] = True
                 endpoint_key = (
                     str(endpoint.get("address", "") or "").strip(),
                     str(endpoint.get("dev", "") or "").strip(),
@@ -2397,10 +2552,27 @@ class ClientAgent:
             mptcp["mptcp_endpoints"] = filtered_mptcp_endpoints
 
         if primary_leg is not None:
-            remote_address = str(primary_leg.get("mptcp_remote_address", "") or "").strip()
-            if remote_address != "":
-                mptcp["sidecar_host"] = remote_address
-                mptcp["remote_host"] = remote_address
+            try:
+                preconnect_relay_port = int(primary_leg.get("preconnect_relay_port", 0) or 0)
+            except (TypeError, ValueError):
+                preconnect_relay_port = 0
+            preconnect_relay_host = str(
+                primary_leg.get("slave_address", "")
+                or primary_leg.get("peer_address", "")
+                or ""
+            ).strip()
+            if self.endpoint_has_preconnect_probe({"leg": primary_leg}) and preconnect_relay_host != "" and preconnect_relay_port > 0:
+                mptcp["slave_relay_host"] = preconnect_relay_host
+                mptcp["slave_relay_port"] = preconnect_relay_port
+                mptcp["sidecar_host"] = preconnect_relay_host
+                mptcp["remote_host"] = preconnect_relay_host
+                mptcp["sidecar_port"] = preconnect_relay_port
+                mptcp["remote_port"] = preconnect_relay_port
+            else:
+                remote_address = str(primary_leg.get("mptcp_remote_address", "") or "").strip()
+                if remote_address != "":
+                    mptcp["sidecar_host"] = remote_address
+                    mptcp["remote_host"] = remote_address
 
         configured_subflows = max(1, int(mptcp.get("subflow_limit", len(selected)) or len(selected) or 1))
         runtime_leg_count = len(filtered_mptcp_endpoints) or len(filtered_underlays) or len(selected)
@@ -3799,7 +3971,7 @@ class ClientAgent:
                     for candidate in self.mptcp_leg_candidates(forward, mptcp):
                         host = str(candidate.get("host", "") or "")
                         port = int(candidate.get("port", 0) or 0)
-                        reachable, latency_ms, err = self.remote_tcp_probe(host, port)
+                        reachable, latency_ms, err = self.mptcp_candidate_health_probe(candidate)
                         endpoint_results.append({
                             "endpoint_id": int(candidate.get("endpoint_id", 0) or 0),
                             "host": host,
@@ -3883,6 +4055,46 @@ class ClientAgent:
             return False, None, str(exc)
 
     @staticmethod
+    def preconnect_health_http_probe(host: str, port: int, timeout: float = 2.5) -> tuple[bool, float | None, str | None]:
+        started = time.time()
+        try:
+            with socket.create_connection((host, port), timeout=timeout) as sock:
+                sock.settimeout(timeout)
+                request = (
+                    "GET /health HTTP/1.1\r\n"
+                    f"Host: {host}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                ).encode("ascii", errors="ignore")
+                sock.sendall(request)
+                response = b""
+                while b"\r\n\r\n" not in response and len(response) < 4096:
+                    chunk = sock.recv(1024)
+                    if not chunk:
+                        break
+                    response += chunk
+            header, _, body = response.partition(b"\r\n\r\n")
+            status_line = header.splitlines()[0].decode("ascii", errors="ignore") if header.splitlines() else ""
+            latency_ms = round((time.time() - started) * 1000, 1)
+            if not status_line.startswith("HTTP/"):
+                return False, None, f"invalid health response: {status_line or 'empty'}"
+            parts = status_line.split()
+            status_code = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            if 200 <= status_code < 300:
+                return True, latency_ms, None
+            detail = body.decode("utf-8", errors="ignore").strip()
+            return False, None, f"preconnect health http {status_code}: {detail[:160]}"
+        except Exception as exc:  # noqa: BLE001
+            return False, None, str(exc)
+
+    def mptcp_candidate_health_probe(self, candidate: dict) -> tuple[bool, float | None, str | None]:
+        host = str(candidate.get("host", "") or "")
+        port = int(candidate.get("port", 0) or 0)
+        if str(candidate.get("health_probe", "") or "").strip() == "preconnect_http":
+            return self.preconnect_health_http_probe(host, port)
+        return self.remote_tcp_probe(host, port)
+
+    @staticmethod
     def mptcp_remote_hosts(mptcp: dict) -> list[str]:
         hosts: list[str] = []
 
@@ -3912,6 +4124,8 @@ class ClientAgent:
             raw_mptcp = forward.get("mptcp", {})
             mptcp = raw_mptcp if isinstance(raw_mptcp, dict) else {}
         remote_port = int(mptcp.get("sidecar_port", 0) or mptcp.get("remote_port", 0) or 0)
+        top_level_slave_relay_host = str(mptcp.get("slave_relay_host", "") or "").strip()
+        top_level_slave_relay_port = int(mptcp.get("slave_relay_port", 0) or 0)
         candidates: list[dict] = []
         seen: set[tuple[int, str, int]] = set()
         endpoints = [endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
@@ -3940,12 +4154,33 @@ class ClientAgent:
                     endpoint_id = int(endpoint_by_host.get(str(leg.get("peer_public_host", "") or "").strip(), 0) or 0)
                 if endpoint_id <= 0:
                     endpoint_id = len(candidates) + 1
-                host = str(leg.get("mptcp_remote_address", "") or "").strip()
-                if host == "":
-                    host = str(mptcp.get("sidecar_host") or mptcp.get("remote_host") or "").strip()
-                if host == "" or remote_port <= 0:
+                health_probe = "tcp"
+                relay_port = 0
+                host = ""
+                port = remote_port
+                try:
+                    relay_port = int(leg.get("preconnect_relay_port", 0) or 0)
+                except (TypeError, ValueError):
+                    relay_port = 0
+                if relay_port > 0 or bool(leg.get("slave_preconnect", False)):
+                    host = str(leg.get("slave_address", "") or leg.get("peer_address", "") or "").strip()
+                    if relay_port <= 0 and top_level_slave_relay_host != "" and top_level_slave_relay_port > 0 and len(candidates) == 0:
+                        host = top_level_slave_relay_host
+                        relay_port = top_level_slave_relay_port
+                    port = relay_port + 1 if relay_port > 0 else 0
+                    health_probe = "preconnect_http"
+                elif top_level_slave_relay_host != "" and top_level_slave_relay_port > 0 and len(candidates) == 0:
+                    host = top_level_slave_relay_host
+                    relay_port = top_level_slave_relay_port
+                    port = relay_port + 1
+                    health_probe = "preconnect_http"
+                else:
+                    host = str(leg.get("mptcp_remote_address", "") or "").strip()
+                    if host == "":
+                        host = str(mptcp.get("sidecar_host") or mptcp.get("remote_host") or "").strip()
+                if host == "" or port <= 0:
                     continue
-                key = (endpoint_id, host, remote_port)
+                key = (endpoint_id, host, port)
                 if key in seen:
                     continue
                 seen.add(key)
@@ -3954,7 +4189,9 @@ class ClientAgent:
                     {
                         "endpoint_id": endpoint_id,
                         "host": host,
-                        "port": remote_port,
+                        "port": port,
+                        "relay_port": relay_port,
+                        "health_probe": health_probe,
                         "underlay_index": underlay_index,
                         "leg_index": leg_index,
                         "endpoint": endpoint,

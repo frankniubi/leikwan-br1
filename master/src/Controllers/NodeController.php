@@ -436,6 +436,7 @@ final class NodeController extends BaseController
                 'desired_agent_sha256' => (string) ($slaveAgent['sha256'] ?? ''),
                 'desired_installer_version' => (string) ($slaveInstaller['version'] ?? ''),
                 'desired_installer_sha256' => (string) ($slaveInstaller['sha256'] ?? ''),
+                'sidecar_static_uplinks' => $this->provisioning->slaveSidecarUplinkManagementForNode((int) $node['id'])['uplinks'] ?? [],
             ],
         ]);
     }

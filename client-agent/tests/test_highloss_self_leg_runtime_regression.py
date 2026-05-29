@@ -111,6 +111,220 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
         self.assertEqual("10.203.201.181", next_forward["mptcp"]["mptcp_endpoints"][0]["address"])
         self.assertEqual("lw-mptcp-47-0", next_forward["mptcp"]["mptcp_endpoints"][0]["dev"])
 
+    def test_mptcp_leg_candidates_probe_slave_preconnect_health_endpoint(self) -> None:
+        agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)
+        forward = {
+            "forward_id": 62,
+            "mode": "mptcp",
+            "endpoints": [
+                {"endpoint_id": 619, "host": "111.229.217.7", "port": 7000},
+            ],
+            "mptcp": {
+                "sidecar_port": 14969,
+                "slave_relay_host": "10.203.15.202",
+                "slave_relay_port": 38825,
+                "underlays": [
+                    {
+                        "interface_name": "lw-mptcp-62-0",
+                        "legs": [
+                            {
+                                "endpoint_id": 619,
+                                "local_address": "10.203.15.201",
+                                "slave_address": "10.203.15.202",
+                                "peer_address": "10.203.15.202",
+                                "mptcp_remote_address": "10.203.15.203",
+                                "slave_preconnect": True,
+                                "preconnect_relay_port": 38825,
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+
+        candidates = agent.mptcp_leg_candidates(forward, forward["mptcp"])
+
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("10.203.15.202", candidates[0]["host"])
+        self.assertEqual(38826, candidates[0]["port"])
+        self.assertEqual(38825, candidates[0]["relay_port"])
+        self.assertEqual("preconnect_http", candidates[0]["health_probe"])
+
+    def test_mptcp_runtime_updates_slave_relay_to_selected_preconnect_primary(self) -> None:
+        agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)
+        agent.load_bond_endpoint_health = lambda: {
+            "62": {
+                "619": {"role": "healthy", "one_leg_rtt_ms": 45.0, "quality_score": 0.4},
+                "620": {"role": "healthy", "one_leg_rtt_ms": 8.0, "quality_score": 0.9},
+            }
+        }
+        forward = {
+            "forward_id": 62,
+            "mode": "mptcp",
+            "endpoints": [
+                {"endpoint_id": 619, "host": "111.229.217.7", "port": 7000},
+                {"endpoint_id": 620, "host": "150.158.103.182", "port": 7000},
+            ],
+            "mptcp": {
+                "sidecar_port": 14969,
+                "slave_relay_host": "10.203.15.202",
+                "slave_relay_port": 38825,
+                "subflow_limit": 2,
+                "mptcp_endpoints": [
+                    {"endpoint_id": 619, "address": "10.203.15.201", "dev": "lw-mptcp-62-0", "subflow": True},
+                    {"endpoint_id": 620, "address": "10.203.15.205", "dev": "lw-mptcp-62-1", "subflow": True},
+                ],
+                "underlays": [
+                    {
+                        "interface_name": "lw-mptcp-62-0",
+                        "legs": [
+                            {
+                                "endpoint_id": 619,
+                                "local_address": "10.203.15.201",
+                                "slave_address": "10.203.15.202",
+                                "peer_address": "10.203.15.202",
+                                "mptcp_remote_address": "10.203.15.203",
+                                "slave_preconnect": True,
+                                "preconnect_relay_port": 38825,
+                            }
+                        ],
+                    },
+                    {
+                        "interface_name": "lw-mptcp-62-1",
+                        "legs": [
+                            {
+                                "endpoint_id": 620,
+                                "local_address": "10.203.15.205",
+                                "slave_address": "10.203.15.206",
+                                "peer_address": "10.203.15.206",
+                                "mptcp_remote_address": "10.203.15.207",
+                                "slave_preconnect": True,
+                                "preconnect_relay_port": 38832,
+                            }
+                        ],
+                    },
+                ],
+            },
+        }
+
+        next_forward = agent.apply_mptcp_runtime_health_policy(forward, now=100.0)
+
+        self.assertEqual(620, next_forward["endpoints"][0]["endpoint_id"])
+        self.assertEqual("10.203.15.206", next_forward["mptcp"]["slave_relay_host"])
+        self.assertEqual(38832, next_forward["mptcp"]["slave_relay_port"])
+        self.assertEqual(620, next_forward["mptcp"]["underlays"][0]["legs"][0]["endpoint_id"])
+        self.assertEqual("lw-mptcp-62-0", next_forward["mptcp"]["mptcp_endpoints"][0]["dev"])
+
+    def test_mptcp_runtime_keeps_standby_preconnect_underlay_for_recovery(self) -> None:
+        agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)
+        agent.load_bond_endpoint_health = lambda: {
+            "62": {
+                "619": {"role": "healthy", "one_leg_rtt_ms": 8.0, "quality_score": 0.95},
+                "620": {"role": "quarantined", "one_leg_rtt_ms": None, "quality_score": 0.0, "quarantine_until": 9999.0},
+            }
+        }
+        forward = {
+            "forward_id": 62,
+            "mode": "mptcp",
+            "endpoints": [
+                {"endpoint_id": 619, "host": "111.229.217.7", "port": 7000},
+                {"endpoint_id": 620, "host": "150.158.103.182", "port": 7000},
+            ],
+            "mptcp": {
+                "sidecar_port": 14969,
+                "subflow_limit": 1,
+                "mptcp_endpoints": [
+                    {"endpoint_id": 619, "address": "10.203.15.201", "dev": "lw-mptcp-62-0", "subflow": True},
+                    {"endpoint_id": 620, "address": "10.203.15.205", "dev": "lw-mptcp-62-1", "subflow": True},
+                ],
+                "underlays": [
+                    {
+                        "interface_name": "lw-mptcp-62-0",
+                        "legs": [
+                            {
+                                "endpoint_id": 619,
+                                "local_address": "10.203.15.201",
+                                "slave_address": "10.203.15.202",
+                                "peer_address": "10.203.15.202",
+                                "mptcp_remote_address": "10.203.15.203",
+                                "slave_preconnect": True,
+                                "preconnect_relay_port": 38825,
+                            }
+                        ],
+                    },
+                    {
+                        "interface_name": "lw-mptcp-62-1",
+                        "legs": [
+                            {
+                                "endpoint_id": 620,
+                                "local_address": "10.203.15.205",
+                                "slave_address": "10.203.15.206",
+                                "peer_address": "10.203.15.206",
+                                "mptcp_remote_address": "10.203.15.207",
+                                "slave_preconnect": True,
+                                "preconnect_relay_port": 38832,
+                            }
+                        ],
+                    },
+                ],
+            },
+        }
+
+        next_forward = agent.apply_mptcp_runtime_health_policy(forward, now=100.0)
+
+        self.assertEqual([619, 620], [endpoint["endpoint_id"] for endpoint in next_forward["endpoints"]])
+        self.assertEqual("standby", next_forward["endpoints"][1]["leg_role"])
+        self.assertTrue(next_forward["mptcp"]["mptcp_endpoints"][1]["backup_only"])
+        self.assertEqual(620, next_forward["mptcp"]["underlays"][1]["legs"][0]["endpoint_id"])
+
+    def test_mptcp_runtime_keeps_two_quarantined_preconnect_standbys_behind_private_self_leg(self) -> None:
+        agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)
+        agent.load_bond_endpoint_health = lambda: {
+            "47": {
+                "622": {"role": "quarantined", "one_leg_rtt_ms": None, "quality_score": 0.0, "quarantine_until": 9999.0},
+                "623": {"role": "quarantined", "one_leg_rtt_ms": None, "quality_score": 0.0, "quarantine_until": 9999.0},
+                "626": {"role": "quarantined", "one_leg_rtt_ms": None, "quality_score": 0.0, "quarantine_until": 9999.0},
+            }
+        }
+        forward = {
+            "forward_id": 47,
+            "mode": "mptcp",
+            "candidate_pool": [
+                {
+                    "candidate_kind": "self_leg",
+                    "selected_primary": True,
+                    "probe_transport": "private_wg",
+                    "runtime_capabilities": ["bond", "mptcp"],
+                }
+            ],
+            "endpoints": [
+                {"endpoint_id": 622, "host": "111.229.217.7", "port": 7000},
+                {"endpoint_id": 623, "host": "150.158.103.182", "port": 7000},
+                {"endpoint_id": 626, "host": "111.231.3.220", "port": 7000},
+            ],
+            "mptcp": {
+                "sidecar_port": 8898,
+                "subflow_limit": 2,
+                "mptcp_endpoints": [
+                    {"endpoint_id": 622, "address": "10.203.201.201", "dev": "lw-mptcp-47-0", "subflow": True},
+                    {"endpoint_id": 623, "address": "10.203.201.205", "dev": "lw-mptcp-47-1", "subflow": True},
+                    {"endpoint_id": 626, "address": "10.203.201.217", "dev": "lw-mptcp-47-2", "subflow": True},
+                ],
+                "underlays": [
+                    {"interface_name": "lw-mptcp-47-0", "legs": [{"endpoint_id": 622, "local_address": "10.203.201.201", "slave_address": "10.203.201.202", "peer_address": "10.203.201.202", "mptcp_remote_address": "10.203.201.203", "slave_preconnect": True, "preconnect_relay_port": 38860}]},
+                    {"interface_name": "lw-mptcp-47-1", "legs": [{"endpoint_id": 623, "local_address": "10.203.201.205", "slave_address": "10.203.201.206", "peer_address": "10.203.201.206", "mptcp_remote_address": "10.203.201.207", "slave_preconnect": True, "preconnect_relay_port": 38867}]},
+                    {"interface_name": "lw-mptcp-47-2", "legs": [{"endpoint_id": 626, "local_address": "10.203.201.217", "slave_address": "10.203.201.218", "peer_address": "10.203.201.218", "mptcp_remote_address": "10.203.201.219", "slave_preconnect": True, "preconnect_relay_port": 38888}]},
+                ],
+            },
+        }
+
+        next_forward = agent.apply_mptcp_runtime_health_policy(forward, now=100.0)
+
+        self.assertEqual([622, 623], [endpoint["endpoint_id"] for endpoint in next_forward["endpoints"]])
+        self.assertEqual(["primary", "standby"], [endpoint["leg_role"] for endpoint in next_forward["endpoints"]])
+        self.assertEqual(["lw-mptcp-47-0", "lw-mptcp-47-1"], [underlay["interface_name"] for underlay in next_forward["mptcp"]["underlays"]])
+        self.assertTrue(next_forward["mptcp"]["mptcp_endpoints"][1].get("backup_only"))
+
     def test_panel_mptcp_endpoint_payload_carries_endpoint_id_for_health_remap(self) -> None:
         panel_php = (REPO_ROOT / "master/src/Support/ProvisioningService.php").read_text(encoding="utf-8")
         self.assertIn("'endpoint_id' => (int) ($leg['endpoint_id'] ?? 0)", panel_php)
@@ -450,6 +664,65 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
         self.assertEqual("self_leg", payload["direct_legs"][0]["candidate_kind"])
         self.assertLess(payload["direct_legs"][0]["priority"], payload["mptcp_endpoints"][0].get("priority", 100))
 
+
+
+    def test_cf_mptcp_private_wg_self_leg_preserves_mptcp_relay_port(self) -> None:
+        rendered = install_runtime.render_forward_runtime(
+            {
+                "forward_id": 47,
+                "listen_port": 11035,
+                "target": "185.220.238.143:5201",
+                "sni": "nrt1.nbwly.com",
+                "path_prefix": "tokyo-path",
+                "transport": "tcp",
+                "mode": "mptcp",
+                "backend_mode": "cf_mode",
+                "endpoints": [
+                    {"endpoint_id": 622, "host": "111.229.217.7", "port": 7000},
+                ],
+                "candidate_pool": [
+                    {
+                        "candidate_kind": "self_leg",
+                        "selected_primary": True,
+                        "runtime_capabilities": ["bond", "mptcp"],
+                        "probe_transport": "private_wg",
+                        "dial_host": "162.159.39.16",
+                        "dial_port": 2053,
+                        "cf_sni_host": "nrt1.nbwly.com",
+                        "path_prefix": "tokyo-path",
+                        "target_sidecar_port": 8899,
+                        "target_sidecar_bond_port": 8899,
+                        "target_sidecar_mptcp_port": 8898,
+                    }
+                ],
+                "mptcp": {
+                    "sidecar_host": "10.203.201.203",
+                    "sidecar_port": 8898,
+                    "remote_port": 8898,
+                    "slave_relay_host": "10.203.201.202",
+                    "slave_relay_port": 38860,
+                    "tcp_session_token": "tcp-token",
+                    "udp_session_token": "udp-token",
+                    "subflow_limit": 2,
+                    "mptcp_endpoints": [
+                        {"endpoint_id": 622, "address": "10.203.201.201", "dev": "lw-mptcp-47-0", "subflow": True},
+                    ],
+                    "underlays": [
+                        {"interface_name": "lw-mptcp-47-0", "legs": [{"endpoint_id": 622, "local_address": "10.203.201.201", "mptcp_remote_address": "10.203.201.203"}]},
+                    ],
+                },
+            },
+            {
+                "mptcp_client_bin": "/usr/local/bin/leikwan-mptcp-client.py",
+                "state_dir": "/var/lib/leikwan-client-agent",
+                "wireguard_listen_port": 43047,
+            },
+        )
+
+        config_file = next(file for file in rendered["files"] if file["path"] == "/etc/leikwan/mptcp-forward-47.json")
+        payload = json.loads(config_file["content"])
+        self.assertEqual(8898, payload["remote_port"])
+        self.assertEqual(8898, payload["relay_port"])
 
 
     def test_mptcp_private_wg_self_leg_renders_real_wg_profile_and_uses_sidecar_private_address(self) -> None:

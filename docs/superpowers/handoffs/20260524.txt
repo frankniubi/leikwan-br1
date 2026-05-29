@@ -1,0 +1,161 @@
+● I've read the handoff document. It's well-structured for continuity — the diagnosis chain, dirty-tree awareness, and
+  step-by-step deployment plan are solid. But there are gaps if the goal is IEPL-like smoothness on the slave-to-sidecar
+   leg. Here's my assessment and proposed improvements:
+
+  Assessment
+
+  What's good:
+  - Clean separation of concerns (resource hardening vs preconnect logic vs panel provisioning)
+  - The warm pool concept is the right idea — pre-establishing sidecar streams before client traffic arrives
+  - Candidate rotation for relay failover
+  - Bounded resource behavior to avoid repeating the OOM incident
+
+  What's missing for IEPL-like quality:
+
+  The plan treats the slave-to-sidecar leg as a binary (connected or not). Real IEPL smoothness requires treating it as
+  a managed link with continuous quality signals.
+
+  Concrete Improvements
+
+  1. Pool size of 1 is too thin for smooth operation
+
+  With preconnect_pool_size: 1 and preconnect_uot_pool_size: 1, any refill delay leaves the next connection cold. For
+  IEPL-like behavior:
+
+  preconnect_pool_size: 2-3       (TCP)
+  preconnect_uot_pool_size: 2     (UDP/UoT)
+
+  Rationale: when the client checks out a warm stream, the pool needs time to refill. With only 1 slot, the next request
+   during refill hits the cold path. With 2-3, you get overlap. The resource cost is minimal (a few idle TCP connections
+   to sidecar).
+
+  Add to Step 2deployment plan: after confirming tcp+udp works with pool=1, bump to pool=2-3 and verify no resource
+  regression.
+
+  2. Warm stream staleness detection is underspecified
+
+  Idle TCP streams die silently — intermediate NATs drop conntrack entries, TCP windows shrink, sidecar may close idle
+  connections. The plan mentions preconnect_stream_max_idle_s but doesn't specify a value or what happens on checkout of
+   a stale stream.
+
+  Add to preconnect_relay.py behavior:
+  - Periodic keepalive probe on warm streams (lightweight ping/pong or TCP keepalive at OS level, every 30-60s)
+  - On checkout: if stream age > max_idle, discard and take next from pool (or create fresh)
+  - On stale discard: trigger immediate refill so pool doesn't deplete
+  - Suggested preconnect_stream_max_idle_s: 120 — aggressive enough to catch NAT timeouts but not so tight it churns
+  connections
+
+  3. Missing: latency-aware relay selection
+
+  The current slave_relays[] rotation is round-robin on failure. For IEPL-like smoothness, the client should prefer the
+  relay with the lowest observed latency to sidecar, not just the first one that isn't dead.
+
+  Add to implementation plan:
+  - During health probe, measure RTT from client to each slave relay (TCP connect time or health endpoint response time)
+  - Sort slave_relays[] by observed latency, prefer lowest
+  - Fall back to rotation only when probes are unavailable
+  - This matters most for bond mode where multiple paths are active simultaneously — you want the fastest slave, not a
+  random one
+
+  4. Missing: slave-to-sidecar path quality monitoring
+
+  The plan has no mechanism to detect degraded (but not dead) slave-to-sidecar connections. A stalled or lossy path
+  should trigger failover before the client experiences it.
+
+  Add to slave preconnect relay:
+  - Track checkout-to-first-byte latency on served connections
+  - If latency spikes above threshold (e.g., 3x baseline), mark the sidecar target as degraded and log it
+  - Health endpoint should report sidecar_latency_ms so the client can make informed relay choices
+  - For bond mode specifically: if one slave leg degrades, the MPTCP scheduler should deprioritize it rather than
+  waiting for a full timeout
+
+  5. The deployment plan should verify bond mode specifically, not just single-leg MPTCP
+
+  The plan focuses on lw-mptcp-47-0 as a single helper leg, but IEPL-like throughput requires verifying the aggregate
+  behavior:
+  - lw-cfwg-47 (client-as-a-slave primary) + lw-mptcp-47-0 (slave helper) running simultaneously
+  - Both legs contribute to throughput during iperf3
+  - MPTCP scheduler distributes across both legs based on RTT/cwnd
+
+  Add Step 5.5to deployment plan:
+  5.5 Multi-path aggregate proof:
+      - Confirm both lw-cfwg-47 and lw-mptcp-47-0 show ESTABLISHED subflows
+      - Run iperf3 -R -b 500M (TCP) and observe combined throughput > single-leg capacity
+      - Verify MPTCP path manager shows both subflows active in `ip mptcp monitor`
+      - If one leg drops, verify the other continues without interruption (resilience test)
+
+  6. Client-as-a-slave needs the same warm-pool treatment
+
+  The plan builds warm pools only for the slave helper leg. But lw-cfwg-47 (client-as-a-slave) also has a path to
+  sidecar that could benefit from pre-establishment. If the CF-WG tunnel resets, the client-as-a-slave leg goes cold
+  until WireGuard renegotiates + TCP reconnects.
+
+  Add to plan:
+  - Client-as-a-slave mode should also maintain a pre-established sidecar connection through its own WG tunnel so that
+  after a brief WG blip, the MPTCP session can resume on an already-warm inner connection rather than waiting for full
+  re-establishment
+  - This is what makes real IEPL smooth — the underlay can blip without the overlay session feeling it
+
+  7. Revised deployment verification sequence
+
+  Add between Steps 4 and 5:
+
+  Step 4.5: Connection warmth verification (before traffic test)
+
+  On slave, confirm actual pre-established state:
+  - journalctl shows "pre-established tcp sidecar stream" AND "pre-established udp sidecar stream"
+  - Health endpoint shows preconnected_tcp >= 1, preconnected_udp >= 1
+  - ss shows ESTABLISHED connections from slave to sidecar (10.203.201.139:8898)
+
+  On sh36, confirm runtime is selecting slave preconnect path:
+  - Journal shows "using slave relay candidate" not "connecting to sidecar directly"
+  - First connection after restart should show<50ms setup (warm checkout)vs200-500ms (cold setup indicates pool miss)
+
+  If first-connection latency is high, the warm pool isn't working — debug before runningiperf3.
+
+  8. Failure narrowing tree for Step 5UDP test
+
+  The plan says "if UDP still fails, capture the narrow failure point" but doesn't give the decision tree. Make it
+  explicit:
+
+  iperf3 -R -u -b 300M failure narrowing:
+
+  1. Does sh36 log "selecting slave UoT relay candidate"?
+     NO→ client config missing uot_port or candidate selection bug
+     YES → continue
+
+  2. Does slave journal show "checkout udp preconnected stream"?
+     NO  → client not reaching slave UoT listener (firewall? wrong port?)
+     YES → continue
+
+  3. Does slave journal show "forwarding to sidecar udp"?
+     NO  → slave UoT framing/deframe bug
+     YES → continue
+
+  4. Does sidecar accept the UDP association?
+     NO  → sidecar handshake token mismatch or UDP not enabled on sidecar
+     YES → continue
+
+  5. Does reverse data flow (sidecar→slave→client)?
+     NO  → reverse path NAT/routing issue or UoT reassembly bug
+     YES → throughput issue, check MTU/buffer sizes
+
+  9. Long-term: adaptive pool sizing
+
+  For truly IEPL-like behavior, the pool size shouldn't be static. Under load, the pool depletes faster. The refill
+  logic should:
+  - Track checkout rate over a sliding window
+  - If checkouts/min > pool_size ×2, grow the pool (up to a cap)
+  - If pool is consistently full and idle, shrink it
+  - This prevents both cold-path hits under burst load and wasted resources during quiet periods
+
+  This is a post-deploy enhancement, not a blocker for the current rollout.
+
+  ---
+  Summary
+
+  The plan is sound for getting tcp+udp working end-to-end. For IEPL-like smoothness specifically, the key additions
+  are: larger warm pools (2-3 not 1), proactive staleness detection on pre-established streams, latency-aware relay
+  selection, and multi-path aggregate verification. The deployment steps are well-ordered — I'd just insert the warmth
+  verification gate (Step 4.5) before runningiperf3, so you don't waste time debugging throughput when the real problem
+  is a cold pool.

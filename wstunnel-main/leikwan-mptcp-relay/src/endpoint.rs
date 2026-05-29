@@ -35,7 +35,18 @@ pub fn configure_mptcp_endpoints(config: &MptcpEndpointConfig) -> Result<()> {
     // Step 2: Parse current endpoints.
     let current = get_current_endpoints()?;
 
-    // Step 3: Remove stale endpoints in our id range.
+    // Step 3a: Remove endpoints left behind by old relay instances whose
+    // network interface no longer exists. MPTCP endpoint slots are global, so
+    // an orphan outside our id range can still make a fresh forward fail with
+    // "too many addresses or duplicate one".
+    let removed_orphans = remove_endpoints_with_missing_devices(&current)?;
+    let current = if removed_orphans > 0 {
+        get_current_endpoints()?
+    } else {
+        current
+    };
+
+    // Step 3b: Remove stale endpoints in our id range.
     // Only clean our own range: id_base .. id_base + max(len, 10).
     // Use a small margin (10) in case the previous run had more endpoints.
     let id_end = config.id_base + std::cmp::max(config.endpoints.len() as u32, 10);
@@ -46,14 +57,22 @@ pub fn configure_mptcp_endpoints(config: &MptcpEndpointConfig) -> Result<()> {
     }
 
     // Step 4: Add desired endpoints.
+    let mut added = 0usize;
+    let mut skipped = 0usize;
     for ep in &config.endpoints {
-        add_endpoint(ep)?;
+        if add_endpoint(ep)? {
+            added += 1;
+        } else {
+            skipped += 1;
+        }
     }
 
     info!(
-        "configured {} MPTCP endpoints (id_base={})",
+        "configured MPTCP endpoints (id_base={} desired={} added={} skipped={})",
+        config.id_base,
         config.endpoints.len(),
-        config.id_base
+        added,
+        skipped
     );
 
     Ok(())
@@ -208,8 +227,61 @@ fn remove_endpoint(id: u32) -> Result<()> {
     Ok(())
 }
 
+/// Remove endpoints whose bound interface no longer exists.
+fn remove_endpoints_with_missing_devices(current: &[EndpointEntry]) -> Result<usize> {
+    let mut removed = 0usize;
+
+    for ep in current {
+        if endpoint_references_missing_device(ep, device_exists) {
+            warn!(
+                "removing orphaned MPTCP endpoint id {} address={} dev={}",
+                ep.id, ep.address, ep.device
+            );
+            remove_endpoint(ep.id)?;
+            removed += 1;
+        }
+    }
+
+    if removed > 0 {
+        info!("removed {} orphaned MPTCP endpoints with missing devices", removed);
+    }
+
+    Ok(removed)
+}
+
+fn endpoint_references_missing_device<F>(ep: &EndpointEntry, mut device_exists_fn: F) -> bool
+where
+    F: FnMut(&str) -> bool,
+{
+    !ep.device.is_empty() && !device_exists_fn(&ep.device)
+}
+
+fn device_exists(device: &str) -> bool {
+    match Command::new("ip")
+        .args(["link", "show", "dev", device])
+        .output()
+    {
+        Ok(output) => output.status.success(),
+        Err(err) => {
+            warn!(
+                "failed to check network device {} existence; preserving endpoint: {}",
+                device, err
+            );
+            true
+        }
+    }
+}
+
+fn is_skip_safe_endpoint_add_error(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    lower.contains("too many addresses")
+        || lower.contains("duplicate")
+        || lower.contains("file exists")
+        || lower.contains("object already exists")
+}
+
 /// Add an MPTCP endpoint.
-fn add_endpoint(ep: &EndpointEntry) -> Result<()> {
+fn add_endpoint(ep: &EndpointEntry) -> Result<bool> {
     let mut args = vec![
         "mptcp".to_string(),
         "endpoint".to_string(),
@@ -237,11 +309,19 @@ fn add_endpoint(ep: &EndpointEntry) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        if is_skip_safe_endpoint_add_error(detail) {
+            warn!(
+                "skipping MPTCP endpoint {} id {} flags={:?} dev={} after kernel rejected add: {}",
+                ep.address, ep.id, ep.flags, ep.device, detail
+            );
+            return Ok(false);
+        }
         return Err(anyhow!(
             "failed to add MPTCP endpoint {} (id {}): {}",
             ep.address,
             ep.id,
-            stderr.trim()
+            detail
         ));
     }
 
@@ -250,7 +330,7 @@ fn add_endpoint(ep: &EndpointEntry) -> Result<()> {
         ep.address, ep.id, ep.flags, ep.device
     );
 
-    Ok(())
+    Ok(true)
 }
 
 /// Check if managed endpoints are still present and re-register any
@@ -267,8 +347,9 @@ pub fn check_and_restore_endpoints(config: &MptcpEndpointConfig) -> Result<usize
                 "MPTCP endpoint id {} ({}) missing, re-registering",
                 ep.id, ep.address
             );
-            add_endpoint(ep)?;
-            restored += 1;
+            if add_endpoint(ep)? {
+                restored += 1;
+            }
         }
     }
 
@@ -278,4 +359,38 @@ pub fn check_and_restore_endpoints(config: &MptcpEndpointConfig) -> Result<usize
     }
 
     Ok(restored)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_add_capacity_or_duplicate_errors_are_skip_safe() {
+        assert!(is_skip_safe_endpoint_add_error(
+            "Error: too many addresses or duplicate one."
+        ));
+        assert!(is_skip_safe_endpoint_add_error(
+            "RTNETLINK answers: File exists"
+        ));
+        assert!(is_skip_safe_endpoint_add_error(
+            "RTNETLINK answers: Object already exists"
+        ));
+        assert!(!is_skip_safe_endpoint_add_error(
+            "Cannot find device \"lw-mptcp-47-1\""
+        ));
+    }
+
+    #[test]
+    fn endpoint_with_missing_named_device_is_stale() {
+        let ep = EndpointEntry {
+            address: "10.204.61.137".to_string(),
+            flags: vec!["subflow".to_string()],
+            device: "if44603".to_string(),
+            id: 92,
+        };
+
+        assert!(endpoint_references_missing_device(&ep, |dev| dev == "eth0"));
+        assert!(!endpoint_references_missing_device(&ep, |dev| dev == "if44603"));
+    }
 }

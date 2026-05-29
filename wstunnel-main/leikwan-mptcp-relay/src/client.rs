@@ -98,6 +98,24 @@ fn transport_includes_udp(value: &str) -> bool {
     matches!(normalized_transport(value).as_str(), "udp" | "tcp+udp")
 }
 
+fn remote_addr_from(host: &str, port: u16, label: &str) -> Result<SocketAddr> {
+    format!("{}:{}", host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("failed to resolve {} address", label))
+}
+
+fn tcp_remote_addr(config: &ClientConfig) -> Result<SocketAddr> {
+    if !config.slave_relay_host.trim().is_empty() && config.slave_relay_port > 0 {
+        return remote_addr_from(&config.slave_relay_host, config.slave_relay_port, "slave relay");
+    }
+    remote_addr_from(&config.remote_host, config.remote_port, "remote")
+}
+
+fn connects_via_slave_relay(config: &ClientConfig) -> bool {
+    !config.slave_relay_host.trim().is_empty() && config.slave_relay_port > 0
+}
+
 fn handle_client_connection(local_stream: TcpStream, config: &ClientConfig) -> Result<()> {
     let peer = local_stream
         .peer_addr()
@@ -114,11 +132,9 @@ fn handle_client_connection(local_stream: TcpStream, config: &ClientConfig) -> R
         warn!("bond mode requested but no legs were available, falling back to MPTCP");
     }
 
-    // Resolve remote address.
-    let remote_addr: SocketAddr = format!("{}:{}", config.remote_host, config.remote_port)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("failed to resolve remote address"))?;
+    // Resolve remote address. In slave-preconnect mode this is the slave-side
+    // relay; the slave already owns the sidecar MPTCP handshake.
+    let remote_addr = tcp_remote_addr(config)?;
 
     let sock_config = SocketConfig {
         congestion_control: config.tcp_congestion_control.clone(),
@@ -129,20 +145,27 @@ fn handle_client_connection(local_stream: TcpStream, config: &ClientConfig) -> R
     let mut mptcp_stream = mptcp::mptcp_connect(remote_addr, &sock_config)?;
     info!("connected MPTCP to {}", remote_addr);
 
-    // Send handshake: 4-byte big-endian length prefix + JSON payload.
-    // Format must match Python sidecar's read_handshake() expectation:
-    //   {"protocol":"tcp","session_token":"...","forward_id":N}
-    let handshake = serde_json::json!({
-        "protocol": "tcp",
-        "session_token": &config.tcp_session_token,
-        "forward_id": config.forward_id,
-    });
-    let handshake_bytes = serde_json::to_vec(&handshake)?;
-    let len_prefix = (handshake_bytes.len() as u32).to_be_bytes();
-    mptcp_stream.write_all(&len_prefix)?;
-    mptcp_stream.write_all(&handshake_bytes)?;
-    mptcp_stream.flush()?;
-    info!("sent handshake ({} bytes)", handshake_bytes.len());
+    if connects_via_slave_relay(config) {
+        info!(
+            "connected via slave preconnect relay {}:{} (forward_id={})",
+            config.slave_relay_host, config.slave_relay_port, config.forward_id
+        );
+    } else {
+        // Send handshake: 4-byte big-endian length prefix + JSON payload.
+        // Format must match Python sidecar's read_handshake() expectation:
+        //   {"protocol":"tcp","session_token":"...","forward_id":N}
+        let handshake = serde_json::json!({
+            "protocol": "tcp",
+            "session_token": &config.tcp_session_token,
+            "forward_id": config.forward_id,
+        });
+        let handshake_bytes = serde_json::to_vec(&handshake)?;
+        let len_prefix = (handshake_bytes.len() as u32).to_be_bytes();
+        mptcp_stream.write_all(&len_prefix)?;
+        mptcp_stream.write_all(&handshake_bytes)?;
+        mptcp_stream.flush()?;
+        info!("sent handshake ({} bytes)", handshake_bytes.len());
+    }
 
     // Bidirectional relay using splice on Linux, fallback on other platforms.
     relay_bidirectional(local_stream, mptcp_stream)?;
@@ -426,10 +449,7 @@ fn create_udp_association(
     state: Arc<UdpRelayState>,
     local_udp_sock: UdpSocket,
 ) -> Result<mpsc::SyncSender<Vec<u8>>> {
-    let remote_addr: SocketAddr = format!("{}:{}", config.remote_host, config.remote_port)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("failed to resolve remote address"))?;
+    let remote_addr = tcp_remote_addr(config)?;
 
     let sock_config = SocketConfig {
         congestion_control: config.tcp_congestion_control.clone(),
@@ -439,19 +459,26 @@ fn create_udp_association(
 
     let mut mptcp_stream = mptcp::mptcp_connect(remote_addr, &sock_config)?;
 
-    // Send UDP handshake.
-    let handshake = serde_json::json!({
-        "protocol": "udp",
-        "session_token": &config.udp_session_token,
-        "forward_id": config.forward_id,
-    });
-    let handshake_bytes = serde_json::to_vec(&handshake)?;
-    let len_prefix = (handshake_bytes.len() as u32).to_be_bytes();
-    mptcp_stream.write_all(&len_prefix)?;
-    mptcp_stream.write_all(&handshake_bytes)?;
-    mptcp_stream.flush()?;
+    if connects_via_slave_relay(config) {
+        info!(
+            "created UDP association for {} via slave preconnect relay {}",
+            client_addr, remote_addr
+        );
+    } else {
+        // Send UDP handshake.
+        let handshake = serde_json::json!({
+            "protocol": "udp",
+            "session_token": &config.udp_session_token,
+            "forward_id": config.forward_id,
+        });
+        let handshake_bytes = serde_json::to_vec(&handshake)?;
+        let len_prefix = (handshake_bytes.len() as u32).to_be_bytes();
+        mptcp_stream.write_all(&len_prefix)?;
+        mptcp_stream.write_all(&handshake_bytes)?;
+        mptcp_stream.flush()?;
 
-    info!("created UDP association for {} -> {}", client_addr, remote_addr);
+        info!("created UDP association for {} -> {}", client_addr, remote_addr);
+    }
 
     let stream_rd = mptcp_stream.try_clone()?;
     let stream_wr = mptcp_stream;
@@ -629,5 +656,20 @@ mod tests {
         assert!(!transport_includes_udp("tcp"));
         assert!(!transport_includes_tcp("udp"));
         assert!(transport_includes_udp("udp"));
+    }
+
+    #[test]
+    fn slave_preconnect_remote_addr_overrides_sidecar_addr() {
+        let mut config = parse_config("tcp");
+        config.remote_host = "10.203.15.203".to_string();
+        config.remote_port = 14969;
+        config.slave_relay_host = "10.203.15.202".to_string();
+        config.slave_relay_port = 38825;
+
+        assert!(connects_via_slave_relay(&config));
+        assert_eq!(
+            "10.203.15.202:38825".parse::<SocketAddr>().unwrap(),
+            tcp_remote_addr(&config).expect("slave relay addr")
+        );
     }
 }

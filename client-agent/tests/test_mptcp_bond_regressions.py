@@ -732,8 +732,59 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("--setup-underlays", rendered["start_script"])
-        self.assertNotIn("|| true", rendered["start_script"])
+        self.assertEqual(1, rendered["start_script"].count("--setup-underlays"))
+        self.assertIn("setup-underlays returned", rendered["start_script"])
+        self.assertNotIn("--setup-underlays || true", rendered["start_script"])
+
+    def test_mptcp_start_script_does_not_run_setup_underlays_twice_after_fix(self) -> None:
+        rendered = install_forward_runtime.render_forward_runtime(
+            {
+                "forward_id": 24,
+                "listen_port": 20851,
+                "target": "127.0.0.1:5201",
+                "sni": "br1.nbwly.com",
+                "path_prefix": "test-prefix",
+                "transport": "tcp+udp",
+                "mode": "mptcp",
+                "endpoints": [{"host": "8.163.69.176", "port": 7000}],
+                "mptcp": {
+                    "sidecar_host": "10.203.103.1",
+                    "sidecar_port": 8443,
+                    "tcp_session_token": "tcp-token",
+                    "udp_session_token": "udp-token",
+                    "manage_mptcp_endpoints": True,
+                    "mptcp_endpoints": [
+                        {
+                            "address": "10.203.103.113",
+                            "dev": "lw-mptcp-24-0",
+                            "subflow": True,
+                        }
+                    ],
+                    "underlays": [
+                        {
+                            "interface_name": "lw-mptcp-24-0",
+                            "legs": [
+                                {
+                                    "local_address": "10.203.103.113",
+                                    "peer_address": "10.203.103.1",
+                                    "mptcp_remote_address": "10.203.103.2",
+                                    "peer_public_key": "peer-pub",
+                                    "peer_public_host": "8.163.69.176",
+                                    "peer_udp_port": 51820,
+                                }
+                            ],
+                        }
+                    ],
+                },
+            },
+            {
+                "mptcp_client_bin": "/usr/local/bin/leikwan-mptcp-client.py",
+                "state_dir": "/var/lib/leikwan-client-agent",
+                "wireguard_listen_port": 43024,
+            },
+        )
+
+        self.assertEqual(1, rendered["start_script"].count("--setup-underlays"))
 
     def test_mptcp_runtime_includes_allow_tcp_fallback_flag(self) -> None:
         rendered = install_forward_runtime.render_forward_runtime(
@@ -1181,6 +1232,117 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
                             }
                         )
 
+    def test_apply_forward_does_not_crash_service_when_private_endpoint_device_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = client_agent_module.ClientAgent(config_path)
+
+            def fake_render_forward_runtime(_forward_arg, _agent_config):
+                return {
+                    "service_name": "leikwan-client-47",
+                    "service_path": str(pathlib.Path(tmp_dir) / "leikwan-client-47.service"),
+                    "service_unit": "[Unit]\nDescription=47\n",
+                    "start_script_path": str(pathlib.Path(tmp_dir) / "leikwan-client-start-47.sh"),
+                    "start_script": "#!/usr/bin/env bash\n",
+                    "files": [],
+                }
+
+            previous = {
+                "47": {
+                    "runtime_mode": "mptcp",
+                    "rendered_signature": "old-rendered-signature",
+                    "contract_signature": "old-contract-signature",
+                    "units": [],
+                    "managed_paths": [],
+                }
+            }
+            forward = {
+                "forward_id": 47,
+                "listen_port": 11035,
+                "target": "185.220.238.143:5201",
+                "sni": "nrt1.nbwly.com",
+                "path_prefix": "07289d1f5ed25399",
+                "transport": "tcp+udp",
+                "mode": "mptcp",
+                "service_status": "active",
+                "endpoints": [{"host": "49.235.160.246", "port": 7000}],
+                "mptcp": {
+                    "sidecar_host": "10.203.201.139",
+                    "sidecar_port": 8898,
+                    "tcp_session_token": "tcp-token",
+                    "udp_session_token": "udp-token",
+                },
+            }
+
+            with mock.patch.dict(sys.modules, {"install_forward_runtime": types.SimpleNamespace(render_forward_runtime=fake_render_forward_runtime)}):
+                with mock.patch.object(agent, "load_applied", return_value=previous):
+                    with mock.patch.object(agent, "systemd_is_active", return_value=False):
+                        with mock.patch.object(agent, "delete_nft_rules"):
+                            with mock.patch.object(agent, "add_nft_rules"):
+                                with mock.patch.object(agent, "write_text_if_changed", return_value=False):
+                                    with mock.patch.object(client_agent_module.subprocess, "run"):
+                                        with mock.patch.object(agent, "cleanup_mptcp_forward_runtime"):
+                                            agent.apply_forward(forward)
+
+    def test_configure_mptcp_policy_skips_missing_backup_endpoint_device(self) -> None:
+        recorded = []
+
+        def fake_run_command(parts, check=False):
+            recorded.append(parts)
+            if parts[:4] == ["ip", "mptcp", "limits", "set"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if parts[:2] == ["sysctl", "-w"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if parts == ["ip", "mptcp", "endpoint", "show"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if parts == ["ip", "link", "show", "dev", "lw-cfwg-47"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if parts == ["ip", "link", "show", "dev", "lw-mptcp-47-0"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="Device does not exist")
+            if parts[:4] == ["ip", "mptcp", "endpoint", "add"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"unexpected command: {parts}")
+
+        with mock.patch.object(leikwan_mptcp_client.os, "name", "posix"):
+            with mock.patch.object(leikwan_mptcp_client, "running_kernel_supports_mptcp", return_value=True):
+                with mock.patch.object(leikwan_mptcp_client, "shutil_which", return_value="/sbin/ip"):
+                    with mock.patch.object(leikwan_mptcp_client, "run_command", side_effect=fake_run_command):
+                        leikwan_mptcp_client.configure_mptcp_policy(
+                            {
+                                "manage_mptcp_endpoints": True,
+                                "subflow_limit": 3,
+                                "mptcp_endpoint_id_base": 220,
+                                "mptcp_endpoints": [
+                                    {
+                                        "address": "10.204.53.41",
+                                        "dev": "lw-cfwg-47",
+                                        "subflow": True,
+                                    },
+                                    {
+                                        "address": "10.203.201.177",
+                                        "dev": "lw-mptcp-47-0",
+                                        "subflow": True,
+                                        "backup_only": True,
+                                    },
+                                ],
+                            }
+                        )
+
+        flattened = [" ".join(parts) for parts in recorded if isinstance(parts, list)]
+        self.assertTrue(any("endpoint add 10.204.53.41 id 221 dev lw-cfwg-47 subflow" in line for line in flattened))
+        self.assertFalse(any("endpoint add 10.203.201.177 id 222 dev lw-mptcp-47-0 subflow backup" in line for line in flattened))
+
     def test_configure_mptcp_policy_deletes_conflicting_managed_window_endpoint(self) -> None:
         recorded = []
         endpoint_show_outputs = iter(
@@ -1377,6 +1539,33 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
         self.assertEqual(received_payloads, [b"retry"])
         self.assertEqual(data, reply_payload)
         self.assertEqual(addr, ("127.0.0.1", listen_port))
+
+    def test_setup_runtime_skips_mptcp_policy_when_underlays_fail(self) -> None:
+        with mock.patch.object(
+            leikwan_mptcp_client,
+            "apply_underlays",
+            return_value={"failed_interface_names": ["lw-cfwg-47"], "active_interface_names": []},
+        ) as apply_mock:
+            with mock.patch.object(leikwan_mptcp_client, "configure_mptcp_policy") as policy_mock:
+                leikwan_mptcp_client.setup_runtime({"forward_id": 47})
+
+        apply_mock.assert_called_once()
+        policy_mock.assert_not_called()
+
+    def test_setup_runtime_allows_endpoint_policy_when_private_underlays_survive_and_helper_fails(self) -> None:
+        with mock.patch.object(
+            leikwan_mptcp_client,
+            "apply_underlays",
+            return_value={
+                "failed_interface_names": ["lw-mptcp-47-0"],
+                "active_interface_names": ["lw-cfwg-47", "lw-cfsr-47"],
+            },
+        ) as apply_mock:
+            with mock.patch.object(leikwan_mptcp_client, "configure_mptcp_policy") as policy_mock:
+                leikwan_mptcp_client.setup_runtime({"forward_id": 47})
+
+        apply_mock.assert_called_once()
+        policy_mock.assert_called_once()
 
     def test_sidecar_agent_can_apply_state_dir_config_patch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1819,6 +2008,183 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
         self.assertTrue(any("wg-quick@lw-mptcp-19-0.service" in command for command in command_strings))
         self.assertTrue(any("wg-quick@lw-mptcp-19-1.service" in command for command in command_strings))
         self.assertFalse(any("wg-quick@lw-mptcp-24-0.service" in command for command in command_strings))
+
+    def test_cleanup_orphan_mptcp_runtime_removes_deleted_cfwg_and_cfsr_interfaces(self) -> None:
+        commands = []
+        deleted_paths = []
+
+        def fake_run(command, shell=False, text=False, capture_output=False, check=False):
+            commands.append(command)
+            if command == ["wg", "show", "interfaces"]:
+                return SimpleNamespace(returncode=0, stdout="lw-cfwg-59 lw-cfsr-59 lw-cfwg-24 lw-mptcp-24-0", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        def fake_exists(path_self):
+            return str(path_self) in {
+                "/etc/wireguard/lw-cfwg-59.conf",
+                "/etc/wireguard/lw-cfsr-59.conf",
+                "/etc/systemd/system",
+            }
+
+        def fake_glob(path_self, pattern):
+            return []
+
+        def fake_unlink(path_self):
+            deleted_paths.append(str(path_self))
+
+        with mock.patch.object(client_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(client_agent_module.subprocess, "run", side_effect=fake_run):
+                with mock.patch.object(client_agent_module.pathlib.Path, "exists", fake_exists):
+                    with mock.patch.object(client_agent_module.pathlib.Path, "glob", fake_glob):
+                        with mock.patch.object(client_agent_module.pathlib.Path, "unlink", fake_unlink):
+                            client_agent_module.ClientAgent.cleanup_orphan_mptcp_runtime({24})
+
+        command_strings = [command if isinstance(command, str) else " ".join(command) for command in commands]
+        self.assertTrue(any("wg-quick@lw-cfwg-59.service" in command for command in command_strings))
+        self.assertTrue(any("wg-quick@lw-cfsr-59.service" in command for command in command_strings))
+        self.assertFalse(any("wg-quick@lw-cfwg-24.service" in command for command in command_strings))
+
+    def test_apply_forward_cleans_mptcp_runtime_when_switching_to_bond(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = client_agent_module.ClientAgent(config_path)
+
+            def fake_render_forward_runtime(_forward_arg, _agent_config):
+                return {
+                    "service_name": "leikwan-client-59",
+                    "service_path": str(pathlib.Path(tmp_dir) / "leikwan-client-59.service"),
+                    "service_unit": "[Unit]\nDescription=Bond\n",
+                    "start_script_path": str(pathlib.Path(tmp_dir) / "leikwan-client-start-59.sh"),
+                    "start_script": "#!/usr/bin/env bash\n",
+                    "files": [],
+                }
+
+            previous = {
+                "59": {
+                    "runtime_mode": "mptcp",
+                    "rendered_signature": "old-rendered-signature",
+                    "contract_signature": "old-contract-signature",
+                    "units": [],
+                    "managed_paths": [],
+                }
+            }
+            forward = {
+                "forward_id": 59,
+                "listen_port": 32501,
+                "target": "38.207.137.131:32501",
+                "sni": "nrt1.nbwly.com",
+                "path_prefix": "566ff12a38fd8869",
+                "transport": "tcp+udp",
+                "mode": "bond",
+                "service_status": "active",
+                "endpoints": [{"host": "111.229.217.7", "port": 7000}],
+                "bonding": {"ingress_mode": "plain_tcp_mux", "route_key": "566ff12a38fd8869"},
+            }
+
+            with mock.patch.dict(sys.modules, {"install_forward_runtime": types.SimpleNamespace(render_forward_runtime=fake_render_forward_runtime)}):
+                with mock.patch.object(agent, "load_applied", return_value=previous):
+                    with mock.patch.object(agent, "systemd_is_active", return_value=False):
+                        with mock.patch.object(agent, "delete_nft_rules"):
+                            with mock.patch.object(agent, "add_nft_rules"):
+                                with mock.patch.object(agent, "write_text_if_changed", return_value=False):
+                                    with mock.patch.object(client_agent_module.subprocess, "run"):
+                                        with mock.patch.object(agent, "cleanup_mptcp_forward_runtime") as cleanup_mock:
+                                            agent.apply_forward(forward)
+
+            cleanup_mock.assert_called_once_with(59)
+
+    def test_apply_forward_cleans_stale_mptcp_interfaces_when_already_recorded_as_bond(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = client_agent_module.ClientAgent(config_path)
+
+            service_path = pathlib.Path(tmp_dir) / "leikwan-client-59.service"
+            start_path = pathlib.Path(tmp_dir) / "leikwan-client-start-59.sh"
+            service_path.write_text("[Unit]\nDescription=Bond\n", encoding="utf-8")
+            start_path.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+            def fake_render_forward_runtime(_forward_arg, _agent_config):
+                return {
+                    "service_name": "leikwan-client-59",
+                    "service_path": str(service_path),
+                    "service_unit": "[Unit]\nDescription=Bond\n",
+                    "start_script_path": str(start_path),
+                    "start_script": "#!/usr/bin/env bash\n",
+                    "files": [],
+                }
+
+            previous = {
+                "59": {
+                    "runtime_mode": "bond",
+                    "published_mode": "bond",
+                    "rendered_signature": "same-rendered-signature",
+                    "contract_signature": "old-contract-signature",
+                    "units": [
+                        {
+                            "service_name": "leikwan-client-59",
+                            "managed_paths": [str(service_path), str(start_path)],
+                        }
+                    ],
+                    "managed_paths": [str(service_path), str(start_path)],
+                }
+            }
+            forward = {
+                "forward_id": 59,
+                "listen_port": 32501,
+                "target": "38.207.137.131:32501",
+                "sni": "nrt1.nbwly.com",
+                "path_prefix": "566ff12a38fd8869",
+                "transport": "tcp+udp",
+                "mode": "bond",
+                "service_status": "active",
+                "endpoints": [{"host": "111.229.217.7", "port": 7000}],
+                "bonding": {"ingress_mode": "plain_tcp_mux", "route_key": "566ff12a38fd8869"},
+            }
+
+            commands = []
+
+            def fake_run(command, shell=False, text=False, capture_output=False, check=False):
+                commands.append(command)
+                if command == ["wg", "show", "interfaces"]:
+                    return SimpleNamespace(returncode=0, stdout="lw-cfsr-59 lw-mptcp-59-0", stderr="")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with mock.patch.dict(sys.modules, {"install_forward_runtime": types.SimpleNamespace(render_forward_runtime=fake_render_forward_runtime)}):
+                with mock.patch.object(client_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+                    with mock.patch.object(agent, "load_applied", return_value=previous):
+                        with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                            with mock.patch.object(agent, "delete_nft_rules"):
+                                with mock.patch.object(agent, "add_nft_rules"):
+                                    with mock.patch.object(agent, "write_text_if_changed", return_value=False):
+                                        with mock.patch.object(agent, "rendered_runtime_signature", return_value="same-rendered-signature"):
+                                            with mock.patch.object(client_agent_module.subprocess, "run", side_effect=fake_run):
+                                                agent.apply_forward(forward)
+
+            command_strings = [command if isinstance(command, str) else " ".join(command) for command in commands]
+            self.assertTrue(any("wg-quick@lw-cfsr-59.service" in command for command in command_strings))
+            self.assertTrue(any("wg-quick@lw-mptcp-59-0.service" in command for command in command_strings))
 
     def test_reconcile_global_mptcp_state_uses_max_subflow_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

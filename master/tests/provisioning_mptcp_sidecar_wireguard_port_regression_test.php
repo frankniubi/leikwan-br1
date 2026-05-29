@@ -96,7 +96,17 @@ namespace Leikwan\Master\Database {
                 return $client === null ? null : ['agent_config_json' => $client['agent_config_json'] ?? null];
             }
 
-            if (str_contains($normalized, 'SELECT agent_config_json, sidecar_host, listen_port FROM sidecar_points WHERE id = :id LIMIT 1')) {
+            if (str_contains($normalized, 'FROM forward_combinations fc')) {
+                $combination = $this->findById('forward_combinations', (int) ($params['id'] ?? 0));
+                if ($combination === null) {
+                    return null;
+                }
+                return $combination;
+            }
+
+            if (str_contains($normalized, 'SELECT agent_config_json, sidecar_host, listen_port FROM sidecar_points WHERE id = :id LIMIT 1')
+                || str_contains($normalized, 'SELECT agent_config_json, sidecar_host, listen_port, bond_listen_port, mptcp_listen_port FROM sidecar_points WHERE id = :id LIMIT 1')
+                || str_contains($normalized, 'SELECT sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, cf_listen_port, agent_config_json FROM sidecar_points WHERE id = :id LIMIT 1')) {
                 $point = $this->findById('sidecar_points', (int) ($params['id'] ?? 0));
                 if ($point === null) {
                     return null;
@@ -105,6 +115,9 @@ namespace Leikwan\Master\Database {
                     'agent_config_json' => $point['agent_config_json'] ?? null,
                     'sidecar_host' => $point['sidecar_host'] ?? '',
                     'listen_port' => $point['listen_port'] ?? 0,
+                    'bond_listen_port' => $point['bond_listen_port'] ?? 0,
+                    'mptcp_listen_port' => $point['mptcp_listen_port'] ?? 0,
+                    'cf_listen_port' => $point['cf_listen_port'] ?? 0,
                 ];
             }
 
@@ -277,6 +290,89 @@ namespace {
     }
     if (($firstUnderlay['listen_port'] ?? null) !== 14985) {
         fail('expected sidecar management underlay listen_port 14985, got ' . var_export($firstUnderlay['listen_port'] ?? null, true));
+    }
+
+
+    $cfForward = [
+        'id' => 47,
+        'service_id' => 1,
+        'line_client_id' => 1,
+        'bond_sidecar_point_id' => 4,
+        'client_mode' => 'mptcp',
+        'backend_mode' => 'cf_mode',
+        'path_prefix' => 'content/47/movie.m3u8',
+        'sni_host' => 'nrt1.example.test',
+        'cf_location_group_id' => 1,
+        'bond_sidecar_point_agent_config_json' => json_encode([
+            'wireguard_public_key' => 'sidecar-public-key',
+            'wireguard_listen_port' => 14969,
+            'cf_sni_host' => 'nrt1.example.test',
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+    ];
+    $cfEndpoints = [
+        [
+            'id' => 626,
+            'node_id' => 2,
+            'node_name' => 'shanghai-helper',
+            'public_host' => '203.0.113.20',
+            'public_port' => 7000,
+            'node_agent_config_json' => json_encode([
+                'wireguard_public_key' => 'slave-public-key',
+                'wireguard_listen_port' => 7000,
+                'wireguard_outer_transport' => 'udp',
+                'supports_cfwg_relay' => true,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        ],
+    ];
+    $cfLegs = call_private($service, 'mptcpUnderlayLegs', $cfForward, $cfEndpoints);
+    $cfLeg = $cfLegs[0] ?? null;
+    if (!is_array($cfLeg)) {
+        fail('expected cf mptcpUnderlayLegs to emit a slave leg');
+    }
+    if (($cfLeg['outer_transport'] ?? null) !== 'wstunnel_udp_via_slave') {
+        fail('expected cf slave leg to hide via wstunnel_udp_via_slave, got ' . var_export($cfLeg['outer_transport'] ?? null, true));
+    }
+    foreach (['slave_dial_host', 'slave_dial_port', 'slave_path_prefix', 'cf_target_host', 'cf_target_port'] as $key) {
+        if (!isset($cfLeg[$key]) || $cfLeg[$key] === '' || $cfLeg[$key] === 0) {
+            fail('expected cf slave leg to include ' . $key);
+        }
+    }
+
+    $cfSlaveUnderlay = call_private($service, 'buildMptcpSlaveUnderlayPayload', $cfForward, ['id' => 2, 'agent_config_json' => $cfEndpoints[0]['node_agent_config_json']], ['id' => 626, 'public_port' => 7000]);
+    if (!is_array($cfSlaveUnderlay)) {
+        fail('expected cf buildMptcpSlaveUnderlayPayload to return an array');
+    }
+    if (($cfSlaveUnderlay['client_cf_relay_enabled'] ?? null) !== true) {
+        fail('expected CF slave underlay to enable client_cf_relay even when node outer transport is udp');
+    }
+    if (($cfSlaveUnderlay['client_cf_relay_path_prefix'] ?? '') === '') {
+        fail('expected CF slave underlay to include client_cf_relay_path_prefix');
+    }
+
+    $db->seed('forward_combinations', [
+        [
+            'id' => 2,
+            'backend_mode' => 'current_mode',
+            'client_mode' => 'mptcp',
+            'sidecar_point_id' => 4,
+            'cf_location_group_id' => null,
+        ],
+    ]);
+    $normalCombinationForward = $cfForward;
+    $normalCombinationForward['id'] = 62;
+    $normalCombinationForward['backend_mode'] = 'current_mode';
+    $normalCombinationForward['cf_location_group_id'] = null;
+    $normalCombinationForward['forward_combination_id'] = 2;
+    $normalLegs = call_private($service, 'mptcpUnderlayLegs', $normalCombinationForward, $cfEndpoints);
+    $normalLeg = $normalLegs[0] ?? null;
+    if (!is_array($normalLeg)) {
+        fail('expected normal combination mptcpUnderlayLegs to emit a slave leg');
+    }
+    if (($normalLeg['outer_transport'] ?? null) !== 'udp') {
+        fail('expected non-CF forward combination to keep CNIX/direct WG, got ' . var_export($normalLeg['outer_transport'] ?? null, true));
+    }
+    if (($normalLeg['slave_path_prefix'] ?? '') !== '') {
+        fail('expected non-CF forward combination not to include slave CF relay path');
     }
 
     echo "ok\n";

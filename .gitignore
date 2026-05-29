@@ -10,12 +10,16 @@
 .env
 
 # Scratch files from live debugging and handoff planning.
+/.codex-tmp/
 /.tmp*
 /tmp_*.sh
 /tmp_*.py
 /findings.md
 /progress.md
 /task_plan.md
+/panel_verbose.out
+/sshpass.exe
+/status_report_*.md
 
 # Local generated artifacts and runtime captures.
 /artifacts/backups/
