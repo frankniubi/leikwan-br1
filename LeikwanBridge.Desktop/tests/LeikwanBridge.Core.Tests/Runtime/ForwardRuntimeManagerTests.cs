@@ -209,6 +209,74 @@ public sealed class ForwardRuntimeManagerTests
     }
 
     [Fact]
+    public void ApplyForward_MptcpPreconnectLeg_UsesSlaveRelayAndPreservesStructuredUnderlayFields()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
+        config.MptcpRelayBin = @"C:\leikwan\bin\leikwan-mptcp-relay.exe";
+        var manager = new ForwardRuntimeManager(
+            config,
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+
+        var forward = CreateMptcpForward();
+        forward.Mptcp!.SlaveRelayHost = "127.0.0.1";
+        forward.Mptcp.SlaveRelayPort = 38012;
+        forward.Mptcp.RelayHost = "relay-public.example.com";
+        forward.Mptcp.RelayPort = 38012;
+        forward.Mptcp.Underlays =
+        [
+            new UnderlayConfig
+            {
+                InterfaceName = "lw-mptcp-24-0",
+                Legs =
+                [
+                    new UnderlayLeg
+                    {
+                        EndpointId = 184,
+                        LocalAddress = "10.9.0.2",
+                        PeerAddress = "10.9.0.1",
+                        MptcpRemoteAddress = "10.203.15.202",
+                        PeerPublicHost = "8.163.90.132",
+                        PeerUdpPort = 51820,
+                        OuterTransport = "wstunnel_udp_via_slave",
+                        PeerTcpFallbackPort = 7001,
+                        SlavePreconnect = true,
+                        PreconnectRelayPort = 38012,
+                        HealthStatus = "active",
+                    },
+                ],
+            },
+        ];
+
+        manager.ApplyForward(forward, contractSignature: "sig", applyReason: "config_sync");
+
+        var runtimeConfigPath = Path.Combine(tempDir.Path, "runtime", "mptcp-forward-24.json");
+        using var document = JsonDocument.Parse(File.ReadAllText(runtimeConfigPath));
+        var root = document.RootElement;
+
+        Assert.Equal("127.0.0.1", root.GetProperty("remote_host").GetString());
+        Assert.Equal(38012, root.GetProperty("remote_port").GetInt32());
+        Assert.Equal("relay-public.example.com", root.GetProperty("relay_host").GetString());
+        Assert.Equal(38012, root.GetProperty("relay_port").GetInt32());
+        Assert.Equal("127.0.0.1", root.GetProperty("slave_relay_host").GetString());
+        Assert.Equal(38012, root.GetProperty("slave_relay_port").GetInt32());
+
+        var underlays = root.GetProperty("underlays");
+        var underlay = Assert.Single(underlays.EnumerateArray());
+        var leg = Assert.Single(underlay.GetProperty("legs").EnumerateArray());
+        Assert.Equal("wstunnel_udp_via_slave", leg.GetProperty("outer_transport").GetString());
+        Assert.True(leg.GetProperty("slave_preconnect").GetBoolean());
+        Assert.Equal(38012, leg.GetProperty("preconnect_relay_port").GetInt32());
+        Assert.Equal("active", leg.GetProperty("health_status").GetString());
+    }
+
+    [Fact]
     public void ApplyForward_Mptcp_WritesRuntimeConfigBeforeStartingRelay()
     {
         using var tempDir = new TempStateDirectory();
@@ -267,6 +335,39 @@ public sealed class ForwardRuntimeManagerTests
         Assert.Equal("mptcp", applied.Mode);
         Assert.Equal("tcp_fallback", applied.IngressMode);
         Assert.Contains("mptcp-runtime", applied.ProcessRoles);
+    }
+
+    [Fact]
+    public void ApplyForward_MptcpWithoutUsableRelay_FallsBackToBondRuntime()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
+        config.MptcpRelayBin = @"C:\leikwan\bin\leikwan-mptcp-relay.exe";
+        var manager = new ForwardRuntimeManager(
+            config,
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+
+        var forward = CreateMptcpForward();
+        forward.Mptcp!.SlaveRelayHost = string.Empty;
+        forward.Mptcp.SlaveRelayPort = 0;
+        forward.Mptcp.SidecarHost = string.Empty;
+        forward.Mptcp.SidecarPort = 0;
+        forward.Mptcp.RelayHost = string.Empty;
+        forward.Mptcp.RelayPort = 0;
+
+        manager.ApplyForward(forward, contractSignature: "sig", applyReason: "config_sync");
+
+        Assert.Contains("bond-runtime", supervisor.StartedRoles);
+        Assert.DoesNotContain("mptcp-runtime", supervisor.StartedRoles);
+
+        var applied = stateManager.LoadApplied()["24"];
+        Assert.Equal("bond", applied.Mode);
     }
 
     private static AgentConfig CreateConfig()

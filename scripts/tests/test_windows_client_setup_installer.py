@@ -51,6 +51,7 @@ class WindowsClientSetupInstallerTests(unittest.TestCase):
 
             env = os.environ.copy()
             env["LOCALAPPDATA"] = str(localappdata)
+            env["LEIKWAN_INSTALL_DIR"] = str(localappdata / "LeiKwan Bridge")
             env["LEIKWAN_DESKTOP_DIR"] = str(desktop_dir)
 
             install = subprocess.run(

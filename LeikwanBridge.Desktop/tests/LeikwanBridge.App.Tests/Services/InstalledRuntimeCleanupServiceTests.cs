@@ -8,7 +8,7 @@ public sealed class InstalledRuntimeCleanupServiceTests
     [Fact]
     public void KillProcessesUnderInstallRoot_KillsOnlyOtherInstalledProcesses()
     {
-        var installRoot = @"C:\Users\frankniubi\AppData\Local\LeiKwan Bridge";
+        var installRoot = @"C:\Program Files\LeiKwan Bridge";
         var killed = new List<int>();
         var service = new InstalledRuntimeCleanupService(
             () =>
@@ -31,7 +31,7 @@ public sealed class InstalledRuntimeCleanupServiceTests
     [Fact]
     public void KillProcessesUnderInstallRoot_KillsStaleLeiKwanProcessesFromOtherRoots()
     {
-        var installRoot = @"C:\Users\frankniubi\AppData\Local\LeiKwan Bridge";
+        var installRoot = @"C:\Program Files\LeiKwan Bridge";
         var killed = new List<int>();
         var service = new InstalledRuntimeCleanupService(
             () =>

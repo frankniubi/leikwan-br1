@@ -31,6 +31,9 @@ public sealed class EndpointConfig
     [JsonPropertyName("dynamic_priority")]
     public int DynamicPriority { get; set; }
 
+    [JsonPropertyName("health_status")]
+    public string HealthStatus { get; set; } = "active";
+
     [JsonPropertyName("health_role")]
     public string HealthRole { get; set; } = "healthy";
 
@@ -56,6 +59,7 @@ public sealed class EndpointConfig
             IngressProtocol = IngressProtocol,
             BackendProtocol = BackendProtocol,
             DynamicPriority = DynamicPriority,
+            HealthStatus = HealthStatus,
             HealthRole = HealthRole,
             QualityScore = QualityScore,
             LegRole = LegRole,

@@ -3,6 +3,7 @@ using LeikwanBridge.Core.Models;
 using Serilog;
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 
 namespace LeikwanBridge.Core.Services;
@@ -19,6 +20,7 @@ public sealed class HealthCheckService
     private readonly AgentConfig _config;
     private readonly Func<int, bool> _portListeningProbe;
     private readonly Func<ForwardConfig, EndpointConfig, int, (bool ok, double? latencyMs, string? error)> _cfBondLegProbe;
+    private readonly Func<string, int, bool> _relayHealthProbe;
     private readonly BondEndpointHealthService _bondEndpointHealth;
     private readonly Dictionary<int, DateTime> _restartCooldown = [];
     private readonly Dictionary<int, ForwardConfig> _forwards = [];
@@ -34,7 +36,8 @@ public sealed class HealthCheckService
         StateManager stateManager,
         Func<int, bool>? portListeningProbe = null,
         Func<ForwardConfig, EndpointConfig, int, (bool ok, double? latencyMs, string? error)>? cfBondLegProbe = null,
-        AgentConfig? config = null)
+        AgentConfig? config = null,
+        Func<string, int, bool>? relayHealthProbe = null)
     {
         _supervisor = supervisor;
         _runtimeManager = runtimeManager;
@@ -42,6 +45,7 @@ public sealed class HealthCheckService
         _config = config ?? new AgentConfig();
         _portListeningProbe = portListeningProbe ?? NetworkProbe.IsPortListening;
         _cfBondLegProbe = cfBondLegProbe ?? RunDefaultCfBondOneLegProbe;
+        _relayHealthProbe = relayHealthProbe ?? ProbeRelayHealth;
         _bondEndpointHealth = new BondEndpointHealthService(stateManager);
         _supervisor.ProcessExited += HandleProcessExited;
     }
@@ -97,7 +101,7 @@ public sealed class HealthCheckService
                 if (ShouldRestart(fid))
                 {
                     Log.Warning("forward {ForwardId}: processes not running, restarting", fid);
-                    RequestRestart(forward, "process_dead");
+                    RequestRestart(forward, "process_dead", force: true);
                 }
                 continue;
             }
@@ -109,7 +113,7 @@ public sealed class HealthCheckService
                 Log.Warning("forward {ForwardId}: local port {Port} not listening", fid, port);
                 if (ShouldRestart(fid))
                 {
-                    RequestRestart(forward, "port_not_listening");
+                    RequestRestart(forward, "port_not_listening", force: true);
                 }
 
                 continue;
@@ -120,13 +124,20 @@ public sealed class HealthCheckService
                 if (ShouldRestart(fid))
                 {
                     Log.Warning("forward {ForwardId}: bond runtime topology is degraded, rebuilding", fid);
-                    RequestRestart(forward, "bond_topology_degraded");
+                    RequestRestart(forward, "bond_topology_degraded", force: true);
                 }
             }
 
             if (BondEndpointHealthService.IsCfPlainTcpBond(forward))
             {
                 CheckCfBondEndpointHealth(forward);
+            }
+
+            if (IsMptcpPreconnectRelayUnhealthy(forward))
+            {
+                Log.Warning("forward {ForwardId}: preconnect relay health check failed", fid);
+                if (ShouldRestart(fid))
+                    RequestRestart(forward, "preconnect_relay_unhealthy", force: true);
             }
         }
 
@@ -173,13 +184,13 @@ public sealed class HealthCheckService
         if (!anyReady)
         {
             if (ShouldRestart(forwardId))
-                RequestRestart(forward, "all_cf_bond_legs_failed_probe");
+                RequestRestart(forward, "all_cf_bond_legs_failed_probe", force: true);
             return;
         }
 
         if (changed && ShouldRestart(forwardId))
         {
-            RequestRestart(forward, "cf_bond_endpoint_health_changed");
+            RequestRestart(forward, "cf_bond_endpoint_health_changed", force: true);
         }
     }
 
@@ -335,6 +346,61 @@ public sealed class HealthCheckService
         return (DateTime.UtcNow - lastRestart).TotalSeconds >= 30;
     }
 
+    private bool IsMptcpPreconnectRelayUnhealthy(ForwardConfig forward)
+    {
+        if (!string.Equals(ModeNormalizer.Normalize(forward.Mode), "mptcp", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var mptcp = forward.Mptcp;
+        if (mptcp == null)
+            return false;
+
+        var host = (mptcp.SlaveRelayHost ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(host))
+            return false;
+
+        var underlays = new List<UnderlayConfig>();
+        if (mptcp.Underlay != null)
+            underlays.Add(mptcp.Underlay);
+        underlays.AddRange(mptcp.Underlays);
+
+        var preconnectLegs = underlays
+            .SelectMany(underlay => underlay.Legs)
+            .Where(leg => leg.SlavePreconnect && leg.PreconnectRelayPort > 0)
+            .ToList();
+
+        var selectedLegRelayPort = preconnectLegs
+            .FirstOrDefault(leg => string.Equals((leg.HealthStatus ?? string.Empty).Trim(), "active", StringComparison.OrdinalIgnoreCase))
+            ?.PreconnectRelayPort
+            ?? preconnectLegs.FirstOrDefault()?.PreconnectRelayPort;
+
+        var relayPort = selectedLegRelayPort.GetValueOrDefault() > 0
+            ? selectedLegRelayPort!.Value
+            : mptcp.SlaveRelayPort;
+
+        if (relayPort <= 0)
+            return false;
+
+        return !_relayHealthProbe(host, relayPort);
+    }
+
+    private static bool ProbeRelayHealth(string host, int relayPort)
+    {
+        try
+        {
+            using var http = new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(2),
+            };
+            using var response = http.GetAsync($"http://{host}:{relayPort + 1}/health").GetAwaiter().GetResult();
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private bool RequiresBondTopologyRecovery(int forwardId)
     {
         var applied = _stateManager.LoadApplied();
@@ -373,10 +439,10 @@ public sealed class HealthCheckService
             return;
 
         Log.Warning("forward {ForwardId}: critical runtime role exited [{Role}], rebuilding", forwardId, role);
-        RequestRestart(forward, $"critical_process_exit:{role}");
+        RequestRestart(forward, $"critical_process_exit:{role}", force: true);
     }
 
-    private void RequestRestart(ForwardConfig forward, string issue)
+    private void RequestRestart(ForwardConfig forward, string issue, bool force = false)
     {
         var forwardId = forward.ForwardId;
         if (_restartInProgress.Contains(forwardId))
@@ -388,7 +454,7 @@ public sealed class HealthCheckService
         try
         {
             HealthIssue?.Invoke(forwardId, issue);
-            _runtimeManager.RestartForward(forward);
+            _runtimeManager.RestartForward(forward, force, issue);
         }
         finally
         {

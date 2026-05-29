@@ -20,12 +20,17 @@ function Require-File {
 }
 
 $appExe = Join-Path $AppPublishDir "LeikwanBridge.App.exe"
+$appBuildDir = Join-Path (Split-Path -Parent $AppPublishDir) "..\..\LeikwanBridge.Desktop\src\LeikwanBridge.App\bin\Release\net8.0-windows\win-x64"
+$appBuildDir = [System.IO.Path]::GetFullPath($appBuildDir)
 Require-File $appExe
 Require-File $BondExe
 Require-File $IngressExe
 Require-File $UotBondExe
 Require-File $MptcpRelayExe
 Require-File $WstunnelExe
+if (-not (Test-Path -LiteralPath $appBuildDir)) {
+    throw "required app build directory missing: $appBuildDir"
+}
 
 if (Test-Path -LiteralPath $StageDir) {
     Remove-Item -LiteralPath $StageDir -Recurse -Force
@@ -45,7 +50,18 @@ Copy-Item -LiteralPath $WstunnelExe -Destination (Join-Path $binDir "wstunnel.ex
 $installScript = @'
 $ErrorActionPreference = "Stop"
 
-$installDir = Join-Path $env:LOCALAPPDATA "LeiKwan Bridge"
+$programFilesDir = if (-not [string]::IsNullOrWhiteSpace($env:ProgramW6432)) {
+    $env:ProgramW6432
+} elseif (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+    $env:ProgramFiles
+} else {
+    [Environment]::GetFolderPath([System.Environment+SpecialFolder]::ProgramFiles)
+}
+$installDir = if (-not [string]::IsNullOrWhiteSpace($env:LEIKWAN_INSTALL_DIR)) {
+    $env:LEIKWAN_INSTALL_DIR
+} else {
+    Join-Path $programFilesDir "LeiKwan Bridge"
+}
 $payloadDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $targetBin = Join-Path $installDir "bin"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -257,7 +273,7 @@ $appBinStageDir = Join-Path $appStageDir "bin"
 New-Item -ItemType Directory -Path $appBinStageDir -Force | Out-Null
 
 Copy-Item -LiteralPath $appExe -Destination (Join-Path $appStageDir "leikwan-client-win.exe") -Force
-Get-ChildItem -LiteralPath $AppPublishDir -File | Where-Object { $_.Name -ne "LeikwanBridge.App.exe" } | ForEach-Object {
+Get-ChildItem -LiteralPath $appBuildDir -File | Where-Object { $_.Name -ne "LeikwanBridge.App.exe" } | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $appStageDir $_.Name) -Force
 }
 Copy-Item -LiteralPath (Join-Path $binDir "wstunnel.exe") -Destination (Join-Path $appBinStageDir "wstunnel.exe") -Force
