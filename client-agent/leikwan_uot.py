@@ -4,12 +4,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import socket
 import struct
 from typing import Callable
 
 FRAME_HEADER_BYTES = 4
 RECONNECT_DELAY_SECONDS = 0.5
+MAX_QUEUE_DATAGRAMS = 512
 
 
 def parse_host_port(value: str) -> tuple[str, int]:
@@ -79,8 +81,11 @@ class UdpCapture(asyncio.DatagramProtocol):
         self.last_peer = last_peer
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
+        try:
+            self.queue.put_nowait(data)
+        except asyncio.QueueFull:
+            return
         self.last_peer[0] = addr
-        self.queue.put_nowait(data)
 
 
 async def run_stream_bridge(tasks: list[asyncio.Task[None]], remote_label: str) -> None:
@@ -131,7 +136,7 @@ async def run_client_session(
 
 
 async def run_client(listen_udp: tuple[str, int], remote_tcp: tuple[str, int]) -> None:
-    queue: asyncio.Queue[bytes] = asyncio.Queue()
+    queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MAX_QUEUE_DATAGRAMS)
     last_peer: list[tuple[str, int] | None] = [None]
     loop = asyncio.get_running_loop()
     transport, _protocol = await loop.create_datagram_endpoint(
@@ -152,7 +157,7 @@ async def run_client(listen_udp: tuple[str, int], remote_tcp: tuple[str, int]) -
 
 
 async def handle_server_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, udp_target: tuple[str, int]) -> None:
-    queue: asyncio.Queue[bytes] = asyncio.Queue()
+    queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MAX_QUEUE_DATAGRAMS)
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_sock.setblocking(False)
     await asyncio.get_running_loop().sock_connect(udp_sock, udp_target)
@@ -175,9 +180,13 @@ async def run_server(listen_tcp: tuple[str, int], target_udp: tuple[str, int]) -
     async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await handle_server_connection(reader, writer, target_udp)
 
-    server = await asyncio.start_server(handler, host=listen_tcp[0], port=listen_tcp[1])
+    server = await asyncio.start_server(handler, host=listen_tcp[0], port=listen_tcp[1], reuse_port=can_reuse_port())
     async with server:
         await server.serve_forever()
+
+
+def can_reuse_port() -> bool:
+    return os.name != "nt" and hasattr(socket, "SO_REUSEPORT")
 
 
 def parse_args() -> argparse.Namespace:

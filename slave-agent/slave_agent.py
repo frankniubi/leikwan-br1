@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -21,12 +21,13 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.05.21.5"
+AGENT_VERSION = "2026.05.29.7"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
+COMMAND_TIMEOUT_SECONDS = 30
 
 DEFAULT_CONFIG = {
     "master_url": "",
@@ -148,9 +149,35 @@ def first_ipv4_candidate(text: str) -> str:
     return candidate if is_global_ipv4(candidate) else ""
 
 
+def command_timeout_seconds() -> int:
+    raw = str(os.environ.get("LEIKWAN_COMMAND_TIMEOUT_SECONDS", str(COMMAND_TIMEOUT_SECONDS)) or str(COMMAND_TIMEOUT_SECONDS))
+    try:
+        value = int(raw)
+    except ValueError:
+        value = COMMAND_TIMEOUT_SECONDS
+    return max(1, value)
+
+
+def _timeout_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
 def run_command(command: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     logging.debug("run: %s", command)
-    result = subprocess.run(command, shell=True, text=True, capture_output=True)
+    timeout_seconds = command_timeout_seconds()
+    try:
+        result = subprocess.run(command, shell=True, text=True, capture_output=True, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        stdout = _timeout_text(exc.stdout or exc.output)
+        stderr = _timeout_text(exc.stderr)
+        if stderr:
+            stderr += "\n"
+        stderr += f"command timed out after {timeout_seconds}s: {command}"
+        result = subprocess.CompletedProcess(command, 124, stdout=stdout, stderr=stderr)
     if check and result.returncode != 0:
         raise RuntimeError(f"command failed: {command}\nstdout={result.stdout}\nstderr={result.stderr}")
     return result
@@ -167,6 +194,8 @@ def is_transient_systemd_error(detail: str) -> bool:
     return any(item in text for item in (
         "transport endpoint is not connected",
         "connection timed out",
+        "command timed out after",
+        "timed out",
         "failed to connect to bus",
         "system has not been booted with systemd",
     ))
@@ -264,6 +293,11 @@ def http_json_with_headers(method: str, url: str, token: str | None = None, payl
 
 def safe_name(service_id: int, endpoint_id: int) -> str:
     return f"wstunnel-svc-{service_id}-{endpoint_id}"
+
+
+def safe_service_basename(service_name: str) -> str:
+    value = str(service_name or "").strip()
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value)[:120] or "selector"
 
 
 def mux_service_name(listen_port: int) -> str:
@@ -792,6 +826,101 @@ class WssPathMux:
                     await server.wait_closed()
 
 
+class SidecarUplinkSelectorProxy:
+    def __init__(self, agent: "SlaveAgent", service_name: str, selector: dict[str, Any]) -> None:
+        self.agent = agent
+        self.service_name = service_name
+        self.selector = selector
+        self.selector_port = int(selector.get("selector_port", 0) or 0)
+        self.state_path = agent.sidecar_uplink_selector_state_path(service_name)
+
+    async def relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while True:
+                chunk = await reader.read(65536)
+                if not chunk:
+                    break
+                writer.write(chunk)
+                await writer.drain()
+        except Exception:  # noqa: BLE001
+            logging.debug("sidecar selector relay closed", exc_info=True)
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+    async def refresh_loop(self) -> None:
+        interval = max(1.0, float(self.selector.get("probe_interval_seconds", 3) or 3))
+        while True:
+            try:
+                previous = self.agent.load_sidecar_uplink_selector_state(self.service_name)
+                state = self.agent.evaluate_sidecar_uplink_selector(self.selector, previous)
+                self.agent.save_sidecar_uplink_selector_state(self.service_name, state)
+            except Exception:  # noqa: BLE001
+                logging.exception("sidecar selector %s health refresh failed", self.service_name)
+            await asyncio.sleep(interval)
+
+    async def handle_client(self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
+        state = self.agent.load_sidecar_uplink_selector_state(self.service_name)
+        if not isinstance(state, dict) or str(state.get("active_target_host", "") or "") == "":
+            state = self.agent.evaluate_sidecar_uplink_selector(self.selector, state if isinstance(state, dict) else {})
+            self.agent.save_sidecar_uplink_selector_state(self.service_name, state)
+        target_host = str(state.get("active_target_host", "") or "").strip()
+        target_port = int(state.get("active_target_port", 0) or 0)
+        if target_host == "" or target_port <= 0:
+            client_writer.close()
+            with contextlib.suppress(Exception):
+                await client_writer.wait_closed()
+            return
+        try:
+            target_reader, target_writer = await asyncio.open_connection(target_host, target_port)
+        except Exception:  # noqa: BLE001
+            logging.exception("sidecar selector %s failed to connect active target %s:%s", self.service_name, target_host, target_port)
+            # Force a synchronous re-evaluation and retry once. This handles the
+            # case where the active lane died between probe intervals.
+            state = self.agent.evaluate_sidecar_uplink_selector(self.selector, state)
+            self.agent.save_sidecar_uplink_selector_state(self.service_name, state)
+            target_host = str(state.get("active_target_host", "") or "").strip()
+            target_port = int(state.get("active_target_port", 0) or 0)
+            try:
+                target_reader, target_writer = await asyncio.open_connection(target_host, target_port)
+            except Exception:  # noqa: BLE001
+                client_writer.close()
+                with contextlib.suppress(Exception):
+                    await client_writer.wait_closed()
+                return
+        await asyncio.gather(
+            self.relay(client_reader, target_writer),
+            self.relay(target_reader, client_writer),
+        )
+
+    async def serve(self) -> None:
+        if self.selector_port <= 0:
+            raise RuntimeError("sidecar selector missing selector_port")
+        initial_state = self.agent.evaluate_sidecar_uplink_selector(
+            self.selector,
+            self.agent.load_sidecar_uplink_selector_state(self.service_name),
+        )
+        self.agent.save_sidecar_uplink_selector_state(self.service_name, initial_state)
+        server = await asyncio.start_server(
+            self.handle_client,
+            host="127.0.0.1",
+            port=self.selector_port,
+            backlog=1024,
+        )
+        logging.info("sidecar selector %s listening on 127.0.0.1:%s", self.service_name, self.selector_port)
+        refresh_task = asyncio.create_task(self.refresh_loop())
+        try:
+            await server.serve_forever()
+        finally:
+            refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await refresh_task
+            server.close()
+            with contextlib.suppress(Exception):
+                await server.wait_closed()
+
+
 class SlaveAgent:
     def __init__(self, config_path: Path):
         self.config_path = config_path
@@ -807,6 +936,7 @@ class SlaveAgent:
         self.usage_state_path = self.state_dir / "usage_state.json"
         self.pull_state_path = self.state_dir / "management_pull_state.json"
         self.last_identity_refresh_at = 0.0
+        self._static_uplink_restart_at: dict[str, float] = {}
         self.services_dir.mkdir(parents=True, exist_ok=True)
         self.listeners_dir.mkdir(parents=True, exist_ok=True)
         self.filters_dir.mkdir(parents=True, exist_ok=True)
@@ -1412,6 +1542,16 @@ class SlaveAgent:
         except Exception:  # noqa: BLE001
             logging.exception("inline tls provisioning failed")
 
+        heartbeat_interval = max(5, int(self.config.get("heartbeat_interval_seconds", 30)))
+        usage_interval = max(5, int(self.config.get("usage_interval_seconds", 60)))
+        poll_interval = max(1, int(self.config.get("poll_interval_seconds", 5)))
+        next_heartbeat = 0.0
+        try:
+            self.send_heartbeat()
+            next_heartbeat = time.time() + heartbeat_interval
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("startup heartbeat failed: %s", exc)
+
         try:
             self.reconcile_runtime()
         except Exception:  # noqa: BLE001
@@ -1422,11 +1562,7 @@ class SlaveAgent:
         except Exception:  # noqa: BLE001
             logging.exception("orphan mptcp underlay cleanup failed")
 
-        next_heartbeat = 0.0
         next_usage = 0.0
-        heartbeat_interval = max(5, int(self.config.get("heartbeat_interval_seconds", 30)))
-        usage_interval = max(5, int(self.config.get("usage_interval_seconds", 60)))
-        poll_interval = max(1, int(self.config.get("poll_interval_seconds", 5)))
         while True:
             now = time.time()
             if now >= next_heartbeat:
@@ -1800,6 +1936,11 @@ class SlaveAgent:
                 cf_mode = metadata.get("cf_mode", {})
                 if not isinstance(cf_mode, dict):
                     cf_mode = {}
+                sidecar_uplink_selector = metadata.get("sidecar_uplink_selector", {})
+                if isinstance(sidecar_uplink_selector, dict) and sidecar_uplink_selector.get("enabled"):
+                    self.ensure_sidecar_uplink_selector(service_name, sidecar_uplink_selector)
+                else:
+                    self.remove_sidecar_uplink_selector(service_name)
                 if target == "" or public_port <= 0 or endpoint_id <= 0:
                     logging.warning("skipping invalid runtime metadata for %s", service_name)
                     continue
@@ -1966,6 +2107,7 @@ class SlaveAgent:
         if not isinstance(management, dict):
             return
         self.apply_config_patch(management.get("agent_config_json"))
+        self.apply_static_sidecar_uplinks(management.get("sidecar_static_uplinks", []))
         explicit_request_token = str(management.get("agent_update_request_token", "") or "")
         auto_request_token = self.auto_update_request_token(management)
         if bool(self.config.get("disable_auto_update", False)):
@@ -2030,6 +2172,311 @@ class SlaveAgent:
             runtime_state["last_agent_update_request_token"] = update_request_token
             self.save_runtime_state(runtime_state)
             return
+
+    def static_sidecar_uplink_state_path(self) -> Path:
+        return self.state_dir / "sidecar_static_uplinks.json"
+
+    def sidecar_uplink_selector_state_path(self, service_name: str) -> Path:
+        return self.state_dir / "sidecar-uplink-selectors" / f"{safe_service_basename(service_name)}.json"
+
+    def load_sidecar_uplink_selector_state(self, service_name: str) -> dict[str, Any]:
+        path = self.sidecar_uplink_selector_state_path(service_name)
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def save_sidecar_uplink_selector_state(self, service_name: str, payload: dict[str, Any]) -> None:
+        self.write_json(self.sidecar_uplink_selector_state_path(service_name), payload)
+
+    def load_static_sidecar_uplink_state(self) -> dict[str, Any]:
+        path = self.static_sidecar_uplink_state_path()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def save_static_sidecar_uplink_state(self, payload: dict[str, Any]) -> None:
+        self.write_json(self.static_sidecar_uplink_state_path(), payload)
+
+    def apply_static_sidecar_uplinks(self, raw_uplinks: Any) -> None:
+        if not isinstance(raw_uplinks, list):
+            return
+        active: set[str] = set()
+        next_state: dict[str, Any] = {"interfaces": {}}
+        for raw in raw_uplinks:
+            if not isinstance(raw, dict):
+                continue
+            uplink = dict(raw)
+            interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+            if interface_name == "" or not uplink.get("enabled", False):
+                continue
+            active.add(interface_name)
+            self.apply_sidecar_uplink(interface_name, uplink)
+            self.watch_static_sidecar_uplink(uplink)
+            next_state["interfaces"][interface_name] = {
+                "interface_name": interface_name,
+                "forward_combination_id": int(uplink.get("forward_combination_id", 0) or 0),
+                "sidecar_point_id": int(uplink.get("sidecar_point_id", 0) or 0),
+                "node_id": int(uplink.get("node_id", 0) or 0),
+                "lane": str(uplink.get("lane", "") or ""),
+            }
+        previous = self.load_static_sidecar_uplink_state()
+        previous_interfaces = previous.get("interfaces", {}) if isinstance(previous.get("interfaces", {}), dict) else {}
+        for iface, info in list(previous_interfaces.items()):
+            interface_name = str((info if isinstance(info, dict) else {}).get("interface_name", iface) or "").strip()[:15]
+            if interface_name != "" and interface_name not in active:
+                self.remove_sidecar_uplink(interface_name, {"interface_name": interface_name})
+        if active or previous_interfaces:
+            self.save_static_sidecar_uplink_state(next_state)
+
+    def watch_static_sidecar_uplink(self, uplink: dict[str, Any]) -> None:
+        watchdog = uplink.get("watchdog", {})
+        if not isinstance(watchdog, dict) or not bool(watchdog.get("enabled", False)):
+            return
+        interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+        if interface_name == "":
+            return
+        stale_seconds = max(10, int(watchdog.get("handshake_stale_seconds", 90) or 90))
+        cooldown = max(10, int(watchdog.get("restart_cooldown_seconds", 30) or 30))
+        now = time.time()
+        result = run_command(f"wg show {interface_name} latest-handshakes", check=False)
+        fresh = False
+        try:
+            returncode = int(getattr(result, "returncode", 1))
+        except (TypeError, ValueError):
+            returncode = 1
+        saw_handshake_state = returncode != 0
+        if returncode == 0:
+            for line in str(getattr(result, "stdout", "") or "").splitlines():
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        timestamp = float(parts[-1])
+                    except ValueError:
+                        continue
+                    if timestamp > 0:
+                        saw_handshake_state = True
+                        if now - timestamp <= stale_seconds:
+                            fresh = True
+                            break
+        if fresh:
+            return
+        if not saw_handshake_state:
+            return
+        if now - self._static_uplink_restart_at.get(interface_name, 0.0) < cooldown:
+            return
+        self._static_uplink_restart_at[interface_name] = now
+        if shutil.which("systemctl"):
+            run_command(f"systemctl restart wg-quick@{interface_name}.service", check=False)
+
+    @staticmethod
+    def parse_ping_summary(output: str) -> dict[str, Any]:
+        loss = 100.0
+        loss_match = re.search(r"(\d+(?:\.\d+)?)%\s*packet loss", str(output or ""))
+        if loss_match:
+            loss = float(loss_match.group(1))
+        latency_ms: float | None = None
+        mdev_ms: float | None = None
+        match = re.search(r"=\s*([0-9.]+)/([0-9.]+)/([0-9.]+)/([0-9.]+)", str(output or ""))
+        if match:
+            latency_ms = float(match.group(2))
+            mdev_ms = float(match.group(4))
+        return {
+            "loss_percent": loss,
+            "latency_ms": latency_ms,
+            "mdev_ms": mdev_ms,
+        }
+
+    def probe_sidecar_selector_candidate(self, candidate: dict[str, Any], selector: dict[str, Any]) -> dict[str, Any]:
+        lane = str(candidate.get("lane", "") or "").strip()
+        interface_name = str(candidate.get("ping_interface", "") or candidate.get("interface_name", "") or "").strip()[:15]
+        ping_address = str(candidate.get("ping_address", "") or candidate.get("peer_address", "") or candidate.get("sidecar_address", "") or "").strip()
+        sidecar_address = str(candidate.get("sidecar_address", "") or ping_address).strip()
+        sidecar_port = int(candidate.get("sidecar_port", 0) or selector.get("sidecar_service_port", 0) or 0)
+        ping_count = max(1, min(10, int(selector.get("ping_count", 3) or 3)))
+        ping_timeout = max(1, min(5, int(selector.get("ping_timeout_seconds", 1) or 1)))
+        result = run_command(
+            f"ping -c {ping_count} -W {ping_timeout} -I {shell_arg(interface_name)} {shell_arg(ping_address)}",
+            check=False,
+        )
+        parsed = self.parse_ping_summary(str(getattr(result, "stdout", "") or "") + "\n" + str(getattr(result, "stderr", "") or ""))
+        healthy = (
+            int(getattr(result, "returncode", 0) or 0) == 0
+            and parsed["latency_ms"] is not None
+            and float(parsed["loss_percent"]) <= float(selector.get("max_loss_percent", 0) or 0)
+        )
+        latency = parsed["latency_ms"]
+        mdev = parsed["mdev_ms"]
+        score = 999999.0
+        if healthy and latency is not None:
+            score = float(latency) + (float(mdev or 0.0) * 2.0)
+        return {
+            "lane": lane,
+            "interface_name": interface_name,
+            "ping_address": ping_address,
+            "sidecar_address": sidecar_address,
+            "sidecar_port": sidecar_port,
+            "healthy": healthy,
+            "latency_ms": latency,
+            "mdev_ms": mdev,
+            "loss_percent": float(parsed["loss_percent"]),
+            "score": round(score, 3),
+            "probed_at": time.time(),
+        }
+
+    def restart_sidecar_selector_lane(self, lane_state: dict[str, Any]) -> None:
+        interface_name = str(lane_state.get("interface_name", "") or "").strip()[:15]
+        if interface_name == "":
+            return
+        if shutil.which("systemctl"):
+            run_command(f"systemctl restart leikwan-wgcf-{interface_name}.service", check=False)
+            run_command(f"systemctl restart wg-quick@{interface_name}.service", check=False)
+
+    def evaluate_sidecar_uplink_selector(self, selector: dict[str, Any], previous_state: dict[str, Any] | None = None) -> dict[str, Any]:
+        previous = previous_state if isinstance(previous_state, dict) else {}
+        candidates = selector.get("candidates", [])
+        if not isinstance(candidates, list):
+            candidates = []
+        samples = [
+            self.probe_sidecar_selector_candidate(candidate, selector)
+            for candidate in candidates
+            if isinstance(candidate, dict)
+        ]
+        healthy = [sample for sample in samples if bool(sample.get("healthy", False))]
+        healthy.sort(key=lambda item: (float(item.get("score", 999999.0) or 999999.0), float(item.get("latency_ms", 999999.0) or 999999.0), str(item.get("lane", ""))))
+        active_lane = str(previous.get("active_lane", "") or "").strip()
+        if active_lane == "" and samples:
+            active_lane = str(samples[0].get("lane", "") or "").strip()
+        active_sample = next((item for item in samples if str(item.get("lane", "") or "") == active_lane), None)
+        best_sample = healthy[0] if healthy else None
+        selected = active_sample if isinstance(active_sample, dict) else best_sample
+        reason = "keep_active"
+        switch_improvement = float(selector.get("switch_improvement_ms", 3) or 3)
+        max_active_avg = float(selector.get("max_active_avg_ms", 0) or 0)
+        active_bad = (
+            active_sample is None
+            or not bool(active_sample.get("healthy", False))
+            or (max_active_avg > 0 and active_sample.get("latency_ms") is not None and float(active_sample.get("latency_ms", 0) or 0) > max_active_avg)
+        )
+        if best_sample is not None:
+            if active_sample is None or not bool(active_sample.get("healthy", False)):
+                selected = best_sample
+                reason = "active_unhealthy"
+            elif str(best_sample.get("lane", "") or "") != active_lane:
+                active_score = float(active_sample.get("score", 999999.0) or 999999.0)
+                best_score = float(best_sample.get("score", 999999.0) or 999999.0)
+                if active_bad or (active_score - best_score) >= switch_improvement:
+                    selected = best_sample
+                    reason = "latency_switch"
+        if selected is None and samples:
+            selected = samples[0]
+            reason = "all_unhealthy"
+
+        now = time.time()
+        last_restart_at = previous.get("last_restart_at", {})
+        if not isinstance(last_restart_at, dict):
+            last_restart_at = {}
+        restart_cooldown = max(10, int(selector.get("restart_cooldown_seconds", 60) or 60))
+        degraded_lanes = []
+        for sample in samples:
+            lane = str(sample.get("lane", "") or "").strip()
+            if lane == "":
+                continue
+            degraded = not bool(sample.get("healthy", False))
+            if sample.get("latency_ms") is not None and max_active_avg > 0 and float(sample.get("latency_ms", 0) or 0) > max_active_avg:
+                degraded = True
+            if not degraded:
+                continue
+            if now - float(last_restart_at.get(lane, 0.0) or 0.0) < restart_cooldown:
+                continue
+            self.restart_sidecar_selector_lane(sample)
+            last_restart_at[lane] = now
+            degraded_lanes.append(lane)
+
+        selected = selected or {}
+        active_target_host = str(selected.get("sidecar_address", "") or selected.get("ping_address", "") or "").strip()
+        active_target_port = int(selected.get("sidecar_port", 0) or selector.get("sidecar_service_port", 0) or 0)
+        return {
+            "active_lane": str(selected.get("lane", "") or ""),
+            "active_interface": str(selected.get("interface_name", "") or ""),
+            "active_target_host": active_target_host,
+            "active_target_port": active_target_port,
+            "switch_reason": reason,
+            "samples": samples,
+            "last_restart_at": last_restart_at,
+            "restarted_lanes": degraded_lanes,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        }
+
+    def render_sidecar_uplink_selector_unit(self, service_name: str, selector: dict[str, Any]) -> str:
+        agent_entrypoint = shell_arg(str(Path(__file__).resolve()))
+        config_path = shell_arg(str(self.config_path))
+        selector_file = shell_arg(str(self.sidecar_uplink_selector_config_path(service_name)))
+        return f"""[Unit]
+Description=Leikwan Static Sidecar WG Lane Selector {service_name}
+After=network.target
+
+[Service]
+# AgentVersion={AGENT_VERSION}
+Type=simple
+ExecStart=/usr/bin/python3 {agent_entrypoint} --config {config_path} sidecar-selector --service-name {shell_arg(service_name)} --selector-file {selector_file}
+Restart=always
+RestartSec=3
+WorkingDirectory={self.state_dir}
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    def sidecar_uplink_selector_config_path(self, service_name: str) -> Path:
+        return self.state_dir / "sidecar-uplink-selectors" / f"{safe_service_basename(service_name)}.config.json"
+
+    def ensure_sidecar_uplink_selector(self, service_name: str, selector: dict[str, Any]) -> None:
+        if not isinstance(selector, dict) or not bool(selector.get("enabled", False)):
+            self.remove_sidecar_uplink_selector(service_name)
+            return
+        selector_port = int(selector.get("selector_port", 0) or 0)
+        if selector_port <= 0:
+            self.remove_sidecar_uplink_selector(service_name)
+            return
+        config_path = self.sidecar_uplink_selector_config_path(service_name)
+        selector_config_body = json.dumps(selector, ensure_ascii=False, indent=2)
+        config_changed = True
+        if config_path.exists():
+            try:
+                config_changed = config_path.read_text(encoding="utf-8") != selector_config_body
+            except OSError:
+                config_changed = True
+        self.write_json(config_path, selector)
+        unit_path = self.service_unit_path(f"{service_name}-sidecar-selector")
+        unit_changed = self.write_text_if_changed(unit_path, self.render_sidecar_uplink_selector_unit(service_name, selector))
+        if shutil.which("systemctl"):
+            if unit_changed:
+                run_command("systemctl daemon-reload", check=False)
+            run_command(f"systemctl enable {service_name}-sidecar-selector.service", check=False)
+            if unit_changed or config_changed:
+                run_command(f"systemctl restart {service_name}-sidecar-selector.service", check=False)
+            else:
+                run_command(f"systemctl start {service_name}-sidecar-selector.service", check=False)
+
+    def remove_sidecar_uplink_selector(self, service_name: str) -> None:
+        selector_service = f"{service_name}-sidecar-selector"
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop {selector_service}.service", check=False)
+            run_command(f"systemctl disable {selector_service}.service", check=False)
+            run_command(f"systemctl reset-failed {selector_service}.service", check=False)
+            run_command("systemctl daemon-reload", check=False)
+        for path in (self.service_unit_path(selector_service), self.sidecar_uplink_selector_config_path(service_name), self.sidecar_uplink_selector_state_path(service_name)):
+            if path.exists():
+                path.unlink()
 
     def auto_update_request_token(self, management: Any) -> str:
         if not isinstance(management, dict):
@@ -2338,8 +2785,13 @@ class SlaveAgent:
         sidecar_uplink = payload.get("sidecar_uplink", {})
         if not isinstance(sidecar_uplink, dict):
             sidecar_uplink = {}
+        sidecar_uplink_selector = payload.get("sidecar_uplink_selector", {})
+        if not isinstance(sidecar_uplink_selector, dict):
+            sidecar_uplink_selector = {}
         if sidecar_uplink.get("enabled") and str(sidecar_uplink.get("relay_target", "") or "").strip() != "":
             target = str(sidecar_uplink.get("relay_target", "") or "").strip()
+        if sidecar_uplink_selector.get("enabled") and int(sidecar_uplink_selector.get("selector_port", 0) or 0) > 0:
+            target = f"127.0.0.1:{int(sidecar_uplink_selector.get('selector_port', 0) or 0)}"
         publish_bond_runtime = bool(payload.get("publish_bond_runtime", False)) or ingress_protocol == "plain_tcp_mux"
         metadata_path = self.metadata_path(service_name)
 
@@ -2367,11 +2819,16 @@ class SlaveAgent:
                 "relay_client_port": 0,
                 "mptcp_underlay": mptcp_underlay,
                 "sidecar_uplink": sidecar_uplink,
+                "sidecar_uplink_selector": sidecar_uplink_selector,
                 "filter_profile": str(payload.get("filter_profile", "off")),
                 "status": "active",
             }
             self.write_json(metadata_path, metadata)
             self.apply_mptcp_underlay(service_name, mptcp_underlay)
+            if sidecar_uplink_selector.get("enabled"):
+                self.ensure_sidecar_uplink_selector(service_name, sidecar_uplink_selector)
+            else:
+                self.remove_sidecar_uplink_selector(service_name)
             return {
                 "service_name": service_name,
                 "unit_path": "",
@@ -2384,6 +2841,10 @@ class SlaveAgent:
 
         if sidecar_uplink.get("enabled"):
             self.apply_sidecar_uplink(service_name, sidecar_uplink)
+        if sidecar_uplink_selector.get("enabled"):
+            self.ensure_sidecar_uplink_selector(service_name, sidecar_uplink_selector)
+        else:
+            self.remove_sidecar_uplink_selector(service_name)
 
         unit_path = self.service_unit_path(service_name)
         relay_unit_path = self.service_unit_path(relay_name)
@@ -2498,6 +2959,7 @@ class SlaveAgent:
             "relay_client_port": relay_client_port if relay_protocols else 0,
             "mptcp_underlay": mptcp_underlay,
             "sidecar_uplink": sidecar_uplink,
+            "sidecar_uplink_selector": sidecar_uplink_selector,
             "filter_profile": str(payload.get("filter_profile", "off")),
             "status": "active",
         }
@@ -2600,6 +3062,7 @@ class SlaveAgent:
             "relay_service_name": relay_name if relay_protocols else None,
             "relay_client_service_name": relay_client_name if relay_protocols else None,
             "wstunnel_start_deferred": backend_start_deferred,
+            "selector_port": int(sidecar_uplink_selector.get("selector_port", 0) or 0),
         }
 
     def stop_service(self, task: dict[str, Any], keep_files: bool) -> dict[str, Any]:
@@ -2634,6 +3097,7 @@ class SlaveAgent:
         if base_targeted:
             self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
             self.remove_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
+            self.remove_sidecar_uplink_selector(base_service_name)
 
         if not keep_files:
             relay_unit_path = self.service_unit_path(relay_name)
@@ -2690,6 +3154,7 @@ class SlaveAgent:
                 run_command(f"systemctl stop {relay_client_name}.service", check=False)
                 run_command(f"systemctl disable {relay_client_name}.service", check=False)
         if base_targeted:
+            self.remove_sidecar_uplink_selector(base_service_name)
             self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
             self.remove_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
         for service_name in service_names:
@@ -3262,13 +3727,13 @@ WantedBy=multi-user.target
 
         Config fields in cfwg_relay:
           - enabled: bool
-          - slave_path_prefix: str (e.g. "Windows-9.1.iso") — path client uses to reach this relay
-          - cf_target_host: str — sidecar WG endpoint host reachable via CF
-          - cf_target_port: int — sidecar WG endpoint port
-          - cf_dial_host: str — CF IP to connect to (optional, falls back to cf_mode.dial_host)
-          - cf_dial_port: int — CF port (optional, falls back to cf_mode.dial_port or 443)
-          - cf_sni_host: str — SNI host for CF connection
-          - cf_path_prefix: str — path on sidecar's CF mux for the WG endpoint
+          - slave_path_prefix: str (e.g. "Windows-9.1.iso") 鈥?path client uses to reach this relay
+          - cf_target_host: str 鈥?sidecar WG endpoint host reachable via CF
+          - cf_target_port: int 鈥?sidecar WG endpoint port
+          - cf_dial_host: str 鈥?CF IP to connect to (optional, falls back to cf_mode.dial_host)
+          - cf_dial_port: int 鈥?CF port (optional, falls back to cf_mode.dial_port or 443)
+          - cf_sni_host: str 鈥?SNI host for CF connection
+          - cf_path_prefix: str 鈥?path on sidecar's CF mux for the WG endpoint
         """
         slave_path_prefix = str(cfwg_relay.get("slave_path_prefix", "") or "").strip().strip("/")
         if slave_path_prefix == "":
@@ -3379,6 +3844,19 @@ WantedBy=multi-user.target
     def wireguard_interface_path(self, interface_name: str) -> Path:
         return Path(str(self.config.get("wireguard_config_dir", "/etc/wireguard") or "/etc/wireguard")) / f"{interface_name}.conf"
 
+    def stable_static_sidecar_local_udp_port(self, uplink: dict[str, Any]) -> int:
+        try:
+            point_id = int(uplink.get("sidecar_point_id", 0) or 0)
+            combination_id = int(uplink.get("forward_combination_id", 0) or 0)
+            node_id = int(uplink.get("node_id", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+        if point_id <= 0 or combination_id <= 0 or node_id <= 0:
+            return 0
+        lane = str(uplink.get("lane", "") or "").strip().lower()
+        lane_offset = 1 if lane in {"backup", "b"} else 0
+        return 43000 + abs(((point_id * 1009) + (combination_id * 131) + (node_id * 17) + lane_offset) % 2000)
+
     def apply_sidecar_uplink(self, service_name: str, uplink: dict[str, Any]) -> None:
         if not uplink.get("enabled") or not shutil.which("wg") or not shutil.which("wg-quick"):
             return
@@ -3393,20 +3871,91 @@ WantedBy=multi-user.target
         outer_transport = str(uplink.get("outer_transport", "udp") or "udp").strip().lower()
         peer_tcp_fallback_port = max(0, int(uplink.get("peer_tcp_fallback_port", 0) or 0))
         local_uot_udp_port = max(0, int(uplink.get("local_uot_udp_port", 0) or 0))
+        local_wstunnel_udp_port = max(0, int(uplink.get("local_wstunnel_udp_port", 0) or 0))
+        local_listen_port = max(0, int(uplink.get("local_listen_port", 0) or 0))
+        if local_listen_port <= 0:
+            local_listen_port = self.stable_static_sidecar_local_udp_port(uplink)
         keepalive = max(0, int(uplink.get("peer_keepalive_seconds", 25) or 25))
         if local_address == "" or peer_address == "" or peer_public_key == "":
             return
-        if outer_transport == "tcp" and local_uot_udp_port > 0 and endpoint_host != "" and peer_tcp_fallback_port > 0:
+        if outer_transport == "wstunnel_udp" and local_wstunnel_udp_port > 0:
+            cf_target_host = str(uplink.get("cf_target_host", "") or "127.0.0.1").strip()
+            cf_target_port = max(0, int(uplink.get("cf_target_port", 0) or 0))
+            cf_dial_host = str(uplink.get("cf_dial_host", "") or "").strip()
+            cf_dial_port = max(0, int(uplink.get("cf_dial_port", 0) or 0))
+            cf_sni_host = str(uplink.get("cf_sni_host", "") or "").strip()
+            cf_path_prefix = str(uplink.get("cf_path_prefix", "") or "").strip().strip("/")
+            cf_selection = None
+            raw_cf_mode = uplink.get("cf_mode", {})
+            if isinstance(raw_cf_mode, dict):
+                selection_mode = dict(raw_cf_mode)
+                selection_mode.setdefault("dial_host", cf_dial_host)
+                selection_mode.setdefault("dial_port", cf_dial_port)
+                selection_mode.setdefault("sni_host", cf_sni_host)
+                selection_mode.setdefault("path_prefix", cf_path_prefix)
+                if selection_mode.get("location_group_id") and isinstance(selection_mode.get("cidrs"), list):
+                    try:
+                        cf_selection = self.select_cf_location_ip(selection_mode)
+                    except Exception as exc:  # noqa: BLE001
+                        logging.warning("failed to select CF candidate for static sidecar uplink %s: %s", interface_name, exc)
+            elif isinstance(uplink.get("cf_location_group_id", None), int) or str(uplink.get("cf_location_group_id", "") or "").isdigit():
+                cidrs = uplink.get("cf_cidrs", [])
+                if isinstance(cidrs, list) and cidrs:
+                    selection_mode = {
+                        "location_group_id": int(uplink.get("cf_location_group_id", 0) or 0),
+                        "cidrs": cidrs,
+                        "probe_mode": str(uplink.get("cf_probe_mode", "tcp") or "tcp"),
+                        "dial_port": cf_dial_port,
+                        "sni_host": cf_sni_host,
+                        "path_prefix": cf_path_prefix,
+                        "cache_ttl_seconds": int(uplink.get("cf_cache_ttl_seconds", 120) or 120),
+                        "switch_improvement_ms": int(uplink.get("cf_switch_improvement_ms", 15) or 15),
+                        "max_candidates": int(uplink.get("cf_max_candidates", 8) or 8),
+                    }
+                    try:
+                        cf_selection = self.select_cf_location_ip(selection_mode)
+                    except Exception as exc:  # noqa: BLE001
+                        logging.warning("failed to select CF candidate for static sidecar uplink %s: %s", interface_name, exc)
+            if isinstance(cf_selection, dict):
+                selected_cf_ip = str(cf_selection.get("selected_ip", "") or "").strip()
+                if selected_cf_ip != "":
+                    cf_dial_host = selected_cf_ip
+            if cf_target_host != "" and cf_target_port > 0 and cf_dial_host != "" and cf_dial_port > 0 and cf_path_prefix != "":
+                self.ensure_sidecar_wstunnel_udp_client_service(
+                    interface_name,
+                    local_wstunnel_udp_port,
+                    cf_target_host,
+                    cf_target_port,
+                    cf_dial_host,
+                    cf_dial_port,
+                    cf_sni_host,
+                    cf_path_prefix,
+                )
+                endpoint_host = "127.0.0.1"
+                endpoint_port = local_wstunnel_udp_port
+            self.remove_sidecar_uot_client_service(interface_name)
+        elif outer_transport == "tcp" and local_uot_udp_port > 0 and endpoint_host != "" and peer_tcp_fallback_port > 0:
             self.ensure_sidecar_uot_client_service(interface_name, local_uot_udp_port, endpoint_host, peer_tcp_fallback_port)
             endpoint_host = "127.0.0.1"
             endpoint_port = local_uot_udp_port
+            self.remove_sidecar_wstunnel_udp_client_service(interface_name)
         else:
             self.remove_sidecar_uot_client_service(interface_name)
+            self.remove_sidecar_wstunnel_udp_client_service(interface_name)
+        if outer_transport == "wstunnel_udp" and local_wstunnel_udp_port > 0 and local_listen_port == local_wstunnel_udp_port:
+            # The local wstunnel UDP listener owns local_wstunnel_udp_port.  If
+            # WireGuard also binds the same ListenPort, wg-quick fails on
+            # interface-up with "RTNETLINK answers: Address already in use".
+            # Let WireGuard pick a source port while keeping its peer Endpoint
+            # pinned to the local wstunnel listener.
+            local_listen_port = 0
         endpoint = f"Endpoint = {endpoint_host}:{endpoint_port}\n" if endpoint_host != "" and endpoint_port > 0 else ""
+        listen_line = f"ListenPort = {local_listen_port}\n" if local_listen_port > 0 else ""
         keepalive_line = f"PersistentKeepalive = {keepalive}\n" if keepalive > 0 else ""
         config = (
             "[Interface]\n"
             f"PrivateKey = {private_key}\n"
+            f"{listen_line}"
             f"Address = {local_address}/32\n"
             "\n"
             "[Peer]\n"
@@ -3418,10 +3967,20 @@ WantedBy=multi-user.target
         path = self.wireguard_interface_path(interface_name)
         changed = self.write_text_if_changed(path, config)
         if shutil.which("systemctl"):
+            service_name = f"wg-quick@{interface_name}"
+            is_active = self.systemd_is_active(service_name)
             if changed:
                 run_command("systemctl daemon-reload", check=False)
-                run_command(f"systemctl enable wg-quick@{interface_name}.service", check=False)
-                run_command(f"systemctl restart wg-quick@{interface_name}.service", check=False)
+            if changed or not is_active:
+                run_command(f"systemctl enable {service_name}.service", check=False)
+                action = "restart" if changed else "start"
+                result = run_command(f"systemctl {action} {service_name}.service", check=False)
+                detail = str(getattr(result, "stderr", "") or getattr(result, "stdout", "") or "")
+                if int(getattr(result, "returncode", 0) or 0) != 0 and is_transient_systemd_error(detail):
+                    logging.warning("transient systemd %s failure for %s; reloading directly with wg-quick", action, interface_name)
+                    run_command(f"wg-quick down {interface_name}", check=False)
+                    run_command(f"ip link delete dev {interface_name}", check=False)
+                    run_command(f"wg-quick up {interface_name}", check=False)
 
     def remove_sidecar_uplink(self, service_name: str, uplink: dict[str, Any] | None = None) -> None:
         interface_name = str((uplink or {}).get("interface_name", "") or service_name).strip()[:15]
@@ -3439,6 +3998,47 @@ WantedBy=multi-user.target
         path = self.wireguard_interface_path(interface_name)
         if path.exists():
             path.unlink()
+        self.remove_sidecar_wstunnel_udp_client_service(interface_name)
+
+    def ensure_sidecar_wstunnel_udp_client_service(
+        self,
+        interface_name: str,
+        listen_udp_port: int,
+        target_host: str,
+        target_port: int,
+        dial_host: str,
+        dial_port: int,
+        sni_host: str,
+        path_prefix: str,
+    ) -> None:
+        if listen_udp_port <= 0 or target_port <= 0 or dial_host == "" or dial_port <= 0 or path_prefix == "":
+            return
+        service_name = f"leikwan-wgcf-{interface_name}"
+        target = f"{target_host}:{target_port}"
+        unit_path = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system")) / f"{service_name}.service"
+        unit_body = self.render_cf_wss_backend_unit(
+            service_name=service_name,
+            backend_port=listen_udp_port,
+            target=target,
+            selected_ip=dial_host,
+            dial_host=dial_host,
+            remote_port=dial_port,
+            sni_host=sni_host,
+            path_prefix=path_prefix,
+            transport_mode="udp",
+        )
+        changed = self.write_text_if_changed(unit_path, unit_body)
+        self.ensure_backend_service(service_name, changed, expected_exec_substring="wstunnel client")
+
+    def remove_sidecar_wstunnel_udp_client_service(self, interface_name: str) -> None:
+        service_name = f"leikwan-wgcf-{interface_name}"
+        unit_path = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system")) / f"{service_name}.service"
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop {service_name}.service", check=False)
+            run_command(f"systemctl disable {service_name}.service", check=False)
+            run_command("systemctl daemon-reload", check=False)
+        if unit_path.exists():
+            unit_path.unlink()
 
     def ensure_sidecar_uot_client_service(self, interface_name: str, listen_udp_port: int, remote_host: str, remote_tcp_port: int) -> None:
         if listen_udp_port <= 0 or remote_tcp_port <= 0 or remote_host == "":
@@ -3613,42 +4213,66 @@ WantedBy=multi-user.target
         sidecar_endpoint_host = str(underlay.get("sidecar_endpoint_host", "") or "").strip()
         sidecar_endpoint_port = max(0, int(underlay.get("sidecar_endpoint_port", 0) or 0))
         peer_keepalive_seconds = max(0, int(underlay.get("peer_keepalive_seconds", 25) or 25))
-        if slave_address == "" or client_address == "" or sidecar_address == "" or client_public_key == "" or sidecar_public_key == "":
+        uses_static_sidecar_uplink = bool(underlay.get("uses_static_sidecar_uplink", False))
+        if slave_address == "" or client_address == "" or sidecar_address == "" or client_public_key == "":
+            return
+        if not uses_static_sidecar_uplink and sidecar_public_key == "":
             return
         sidecar_endpoint = ""
         if sidecar_endpoint_host != "" and sidecar_endpoint_port > 0:
             sidecar_endpoint = f"Endpoint = {sidecar_endpoint_host}:{sidecar_endpoint_port}\n"
         sidecar_keepalive = f"PersistentKeepalive = {peer_keepalive_seconds}\n" if peer_keepalive_seconds > 0 else ""
+        sidecar_route_up = ""
+        sidecar_route_down = ""
+        if not uses_static_sidecar_uplink:
+            sidecar_route_up = f"PostUp = ip -4 route replace {sidecar_address}/32 dev {interface_name} src {slave_address} initcwnd 80 initrwnd 80\n"
+            sidecar_route_down = f"PostDown = ip -4 route del {sidecar_address}/32 dev {interface_name} >/dev/null 2>&1 || true\n"
         config = (
             "[Interface]\n"
             f"PrivateKey = {private_key}\n"
             f"ListenPort = {listen_port}\n"
             f"Address = {slave_address}/32\n"
             f"PostUp = ip -4 route replace {client_address}/32 dev {interface_name} src {slave_address} initcwnd 80 initrwnd 80\n"
-            f"PostUp = ip -4 route replace {sidecar_address}/32 dev {interface_name} src {slave_address} initcwnd 80 initrwnd 80\n"
+            f"{sidecar_route_up}"
             f"PostDown = ip -4 route del {client_address}/32 dev {interface_name} >/dev/null 2>&1 || true\n"
-            f"PostDown = ip -4 route del {sidecar_address}/32 dev {interface_name} >/dev/null 2>&1 || true\n"
+            f"{sidecar_route_down}"
             "PostUp = sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true\n"
             "PostUp = sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true\n"
             "\n"
             "[Peer]\n"
             f"PublicKey = {client_public_key}\n"
             f"AllowedIPs = {client_address}/32\n"
-            "\n"
-            "[Peer]\n"
-            f"PublicKey = {sidecar_public_key}\n"
-            f"{sidecar_endpoint}"
-            f"AllowedIPs = {sidecar_address}/32\n"
-            f"{sidecar_keepalive}"
         )
+        if not uses_static_sidecar_uplink:
+            config += (
+                "\n"
+                "[Peer]\n"
+                f"PublicKey = {sidecar_public_key}\n"
+                f"{sidecar_endpoint}"
+                f"AllowedIPs = {sidecar_address}/32\n"
+                f"{sidecar_keepalive}"
+            )
         path = self.wireguard_interface_path(interface_name)
         changed = self.write_text_if_changed(path, config)
         self.ensure_clean_mptcp_underlay(interface_name, underlay)
-        if not changed and not wireguard_peers_match_config(interface_name, [client_public_key, sidecar_public_key]):
+        expected_peers = [client_public_key] if uses_static_sidecar_uplink else [client_public_key, sidecar_public_key]
+        if not changed and not wireguard_peers_match_config(interface_name, expected_peers):
             logging.warning("mptcp underlay %s live peers differ from rendered config; forcing wg-quick reload", interface_name)
             changed = True
-        if str(underlay.get("outer_transport", "udp") or "udp").strip().lower() == "tcp":
-            self.ensure_uot_server_service(interface_name, int(underlay.get("fallback_tcp_port", 0) or 0), listen_port)
+        # The client may keep the slave public address out of its WireGuard
+        # profile by pointing WG at a local UoT UDP socket even when the
+        # declared slave underlay transport remains "udp".  In that shape the
+        # TCP fallback port still must be pre-created on the slave and bridged
+        # to the real WG UDP listen port; otherwise the client-side local UoT
+        # listener accepts packets but its remote TCP dial is refused.
+        fallback_tcp_port = int(underlay.get("fallback_tcp_port", 0) or 0)
+        client_cf_relay_enabled = truthy(underlay.get("client_cf_relay_enabled", False))
+        if fallback_tcp_port > 0 and not client_cf_relay_enabled:
+            self.ensure_uot_server_service(interface_name, fallback_tcp_port, listen_port)
+        elif client_cf_relay_enabled:
+            self.remove_uot_server_service(interface_name)
+        if client_cf_relay_enabled:
+            self.ensure_mptcp_client_cf_relay_service(service_name, underlay)
         if shutil.which("systemctl"):
             if changed:
                 run_command("systemctl daemon-reload", check=False)
@@ -3670,6 +4294,45 @@ WantedBy=multi-user.target
         # Start the pre-connect relay if configured (slave_preconnect mode)
         if underlay.get("slave_preconnect"):
             self.ensure_preconnect_relay(service_name, underlay)
+
+    def ensure_mptcp_client_cf_relay_service(self, service_name: str, underlay: dict[str, Any]) -> None:
+        interface_name = self.mptcp_underlay_interface_name(service_name, underlay)
+        listen_port = int(underlay.get("client_cf_relay_listen_port", 0) or 0)
+        path_prefix = str(underlay.get("client_cf_relay_path_prefix", "") or "").strip().strip("/")
+        target_host = str(underlay.get("client_cf_relay_target_host", "127.0.0.1") or "127.0.0.1").strip()
+        target_port = int(underlay.get("client_cf_relay_target_port", 0) or 0)
+        if listen_port <= 0 or target_port <= 0 or path_prefix == "":
+            return
+        relay_service = f"leikwan-mptcp-client-cf-{interface_name}"
+        existing = self.load_service_metadata(relay_service) or {}
+        backend_port = int(existing.get("backend_port", 0) or 0)
+        if self.backend_port_needs_reallocation(relay_service, backend_port):
+            backend_port = self.allocate_backend_port(relay_service, {listen_port})
+
+        unit_body = self.render_backend_unit(relay_service, backend_port, f"{target_host}:{target_port}", path_prefix)
+        unit_changed = self.write_text_if_changed(self.service_unit_path(relay_service), unit_body)
+        self.ensure_backend_service(relay_service, unit_changed, expected_exec_substring="wstunnel server")
+        self.save_service_metadata(
+            relay_service,
+            {
+                "service_name": relay_service,
+                "service_id": int(underlay.get("service_id", 0) or 0),
+                "forward_id": int(underlay.get("forward_id", 0) or 0),
+                "endpoint_id": int(underlay.get("endpoint_id", 0) or 0),
+                "listen_port": listen_port,
+                "backend_port": backend_port,
+                "target": f"{target_host}:{target_port}",
+                "path_prefix": path_prefix,
+                "route_key": path_prefix,
+                "ingress_protocol": "wss_path_mux",
+                "backend_protocol": "wss_backend",
+                "transport_mode": "udp",
+                "mptcp_underlay": {},
+                "status": "active",
+                "mptcp_client_cf_relay_parent": service_name,
+            },
+        )
+        self.sync_listener(listen_port)
 
     # ---- Slave Pre-Connect MPTCP Relay ----
 
@@ -3800,6 +4463,7 @@ WantedBy=multi-user.target
     def remove_mptcp_underlay(self, service_name: str, underlay: dict[str, Any] | None = None) -> None:
         interface_name = self.mptcp_underlay_interface_name(service_name, underlay)
         self.stop_preconnect_relay(service_name)
+        self.remove_mptcp_client_cf_relay_service(service_name, underlay)
         if shutil.which("systemctl"):
             run_command(f"systemctl stop wg-quick@{interface_name}.service", check=False)
             run_command(f"systemctl disable wg-quick@{interface_name}.service", check=False)
@@ -3820,6 +4484,24 @@ WantedBy=multi-user.target
             if explicit != "":
                 return explicit[:15]
         return service_name.replace("wstunnel-svc-", "lwm")[:15]
+
+    def remove_mptcp_client_cf_relay_service(self, service_name: str, underlay: dict[str, Any] | None = None) -> None:
+        interface_name = self.mptcp_underlay_interface_name(service_name, underlay)
+        relay_service = f"leikwan-mptcp-client-cf-{interface_name}"
+        metadata = self.load_service_metadata(relay_service)
+        public_port = int((metadata or {}).get("listen_port", 0) or 0)
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop {relay_service}.service", check=False)
+            run_command(f"systemctl disable {relay_service}.service", check=False)
+            run_command(f"systemctl reset-failed {relay_service}.service", check=False)
+        unit_path = self.service_unit_path(relay_service)
+        if unit_path.exists():
+            unit_path.unlink()
+        metadata_path = self.metadata_path(relay_service)
+        if metadata_path.exists():
+            metadata_path.unlink()
+        if public_port > 0:
+            self.sync_listener(public_port)
 
     def ensure_clean_mptcp_underlay(self, interface_name: str, underlay: dict[str, Any]) -> None:
         normalized = str(interface_name or "").strip()[:15]
@@ -3891,6 +4573,7 @@ WantedBy=multi-user.target
             if shutil.which("ip"):
                 run_command(f"ip link delete dev {iface}", check=False)
             self.remove_uot_server_service(iface)
+            self.remove_mptcp_client_cf_relay_service(iface, {"interface_name": iface})
             path = self.wireguard_interface_path(iface)
             if path.exists():
                 path.unlink()
@@ -4192,6 +4875,9 @@ def main() -> int:
     mux_parser = subparsers.add_parser("mux")
     mux_parser.add_argument("--public-port", type=int, required=True)
     mux_parser.add_argument("--routes-file", default="")
+    selector_parser = subparsers.add_parser("sidecar-selector")
+    selector_parser.add_argument("--service-name", required=True)
+    selector_parser.add_argument("--selector-file", required=True)
 
     args = parser.parse_args()
     agent = SlaveAgent(Path(args.config))
@@ -4212,6 +4898,15 @@ def main() -> int:
         routes_file = Path(args.routes_file) if args.routes_file else None
         try:
             asyncio.run(agent.run_mux(args.public_port, routes_file))
+        except KeyboardInterrupt:
+            return 0
+        return 0
+    if args.command == "sidecar-selector":
+        selector = json.loads(Path(args.selector_file).read_text(encoding="utf-8"))
+        if not isinstance(selector, dict):
+            raise RuntimeError("selector file must contain a JSON object")
+        try:
+            asyncio.run(SidecarUplinkSelectorProxy(agent, args.service_name, selector).serve())
         except KeyboardInterrupt:
             return 0
         return 0

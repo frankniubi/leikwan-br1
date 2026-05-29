@@ -159,9 +159,14 @@ final class SidecarAgentController extends BaseController
                 'service_status' => 'active',
             ]
         );
+        $mptcpRuntimeRows = $this->provisioning->mptcpRuntimeRowsForSidecarPoint($pointId);
         $hasBondRuntime = $bondForwardIds !== [];
         $hasMptcpRuntime = !$mptcpTemporarilyDisabled
-            && (!empty($mptcpManagement['underlays']) || !empty(($mptcpManagement['mptcp_policy']['endpoints'] ?? [])));
+            && (
+                $mptcpRuntimeRows !== []
+                || !empty($mptcpManagement['underlays'])
+                || !empty(($mptcpManagement['mptcp_policy']['endpoints'] ?? []))
+            );
         $bondListenPort = $this->sidecarBondListenPortForHeartbeat($point);
         $mptcpListenPort = $this->sidecarMptcpListenPortForHeartbeat(array_merge($point, [
             'agent_config_json' => json_encode($runtimeState, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
@@ -287,7 +292,7 @@ final class SidecarAgentController extends BaseController
                                 : (int) ($row['target_port'] ?? 0),
                             'upstream_realization_profile' => (string) ($row['chain_upstream_realization_mode'] ?? ''),
                         ];
-                    }, $cfRows)),
+                    }, $mptcpRuntimeRows)),
                 ] : null,
                 'sidecar_uplinks' => $sidecarUplinkManagement['uplinks'] ?? [],
                 'self_leg_client_peers' => $this->provisioning->selfLegClientPeersForPoint($pointId),

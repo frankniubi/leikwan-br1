@@ -198,13 +198,26 @@ def build_wireguard_interface_config(config: dict[str, Any]) -> str:
         peer_host = str(leg.get("peer_public_host", "") or "").strip()
         outer_transport = str(leg.get("outer_transport", "udp") or "udp").strip().lower()
         peer_port = int(leg.get("peer_udp_port", 0) or 0)
-        if outer_transport == "tcp":
+        if leg_uses_local_uot_endpoint(leg):
+            tcp_fallback_port = int(leg.get("peer_tcp_fallback_port", 0) or 0)
+            local_uot_udp_port = int(leg.get("local_uot_udp_port", 0) or 0)
             peer_host = "127.0.0.1"
-            peer_port = int(leg.get("local_uot_udp_port", leg.get("peer_tcp_fallback_port", 0)) or 0)
+            peer_port = local_uot_udp_port if local_uot_udp_port > 0 else tcp_fallback_port
+        elif outer_transport in {"wstunnel_udp", "wstunnel_udp_via_slave"}:
+            # Keep slave/sidecar public addresses out of the generated client
+            # WireGuard profile. The real dial target lives in the companion
+            # wstunnel process; WireGuard only talks to the local UDP listener.
+            local_udp_port = int(leg.get("local_udp_port", 0) or leg.get("local_wstunnel_udp_port", 0) or 0)
+            peer_host = "127.0.0.1"
+            if local_udp_port > 0:
+                peer_port = local_udp_port
         if local_address != "" and local_address not in seen_addresses:
             seen_addresses.append(local_address)
+        route_targets = [peer_address]
+        if not leg_uses_slave_preconnect_relay(leg):
+            route_targets.insert(0, overlay_address)
         if interface_name != "" and local_address != "":
-            for route_target in (overlay_address, peer_address):
+            for route_target in route_targets:
                 route_target = str(route_target or "").strip()
                 if route_target == "" or route_target == local_address:
                     continue
@@ -217,7 +230,10 @@ def build_wireguard_interface_config(config: dict[str, Any]) -> str:
         if peer_public_key == "" or peer_host == "" or peer_port <= 0:
             continue
         allowed_ips = []
-        for item in [peer_address, overlay_address]:
+        allowed_ip_candidates = [peer_address]
+        if not leg_uses_slave_preconnect_relay(leg):
+            allowed_ip_candidates.append(overlay_address)
+        for item in allowed_ip_candidates:
             if item != "" and item not in allowed_ips:
                 allowed_ips.append(item)
         peer_blocks.append(
@@ -238,10 +254,27 @@ def build_wireguard_interface_config(config: dict[str, Any]) -> str:
     return "\n".join(interface_lines) + "\n" + "\n".join(peer_blocks)
 
 
-def apply_wireguard_transit_underlays(underlays: list[dict[str, Any]], parent_config: dict[str, Any]) -> None:
+def leg_uses_local_uot_endpoint(leg: dict[str, Any]) -> bool:
+    outer_transport = str(leg.get("outer_transport", "udp") or "udp").strip().lower()
+    if outer_transport in {"wstunnel_udp", "wstunnel_udp_via_slave"}:
+        return False
+    tcp_fallback_port = int(leg.get("peer_tcp_fallback_port", 0) or 0)
+    local_uot_udp_port = int(leg.get("local_uot_udp_port", 0) or 0)
+    return outer_transport == "tcp" or (tcp_fallback_port > 0 and local_uot_udp_port > 0)
+
+
+def leg_uses_slave_preconnect_relay(leg: dict[str, Any]) -> bool:
+    try:
+        preconnect_relay_port = int(leg.get("preconnect_relay_port", 0) or 0)
+    except (TypeError, ValueError):
+        preconnect_relay_port = 0
+    return truthy(leg.get("slave_preconnect", False)) and preconnect_relay_port > 0
+
+
+def apply_wireguard_transit_underlays(underlays: list[dict[str, Any]], parent_config: dict[str, Any]) -> set[str]:
     """Create N WG interfaces, one per underlay entry (one leg each)."""
     if os.name == "nt":
-        return
+        return set()
     active_iface_names: set[str] = set()
     failed_iface_names: set[str] = set()
     for underlay in underlays:
@@ -264,6 +297,7 @@ def apply_wireguard_transit_underlays(underlays: list[dict[str, Any]], parent_co
     cleanup_stale_transit_interfaces(parent_config, active_iface_names)
     if failed_iface_names:
         logging.warning("skipped failed MPTCP transit interfaces: %s", ", ".join(sorted(failed_iface_names)))
+    return failed_iface_names
 
 
 def cleanup_stale_transit_interfaces(config: dict[str, Any], active_names: set[str]) -> None:
@@ -282,9 +316,10 @@ def cleanup_stale_transit_interfaces(config: dict[str, Any], active_names: set[s
     if forward_id > 0:
         scoped_prefixes.add(f"lw-mptcp-{forward_id}-")
         scoped_exact_names.add(f"lw-self-{forward_id}")
+        scoped_exact_names.add(f"lw-cfwg-{forward_id}")
         scoped_exact_names.add(f"lw-cfsr-{forward_id}")
     for name in active_names:
-        if name.startswith("lw-self-") or name.startswith("lw-cfsr-"):
+        if name.startswith("lw-self-") or name.startswith("lw-cfwg-") or name.startswith("lw-cfsr-"):
             scoped_exact_names.add(name)
             continue
         if not name.startswith("lw-mptcp-"):
@@ -293,7 +328,7 @@ def cleanup_stale_transit_interfaces(config: dict[str, Any], active_names: set[s
         scoped_prefixes.add(prefix)
     # Identify stale interfaces: match our naming patterns but not in active set
     for iface in current_interfaces:
-        if iface.startswith("lw-self-") or iface.startswith("lw-cfsr-"):
+        if iface.startswith("lw-self-") or iface.startswith("lw-cfwg-") or iface.startswith("lw-cfsr-"):
             if scoped_exact_names and iface not in scoped_exact_names:
                 continue
         elif iface.startswith("lw-mptcp-"):
@@ -396,6 +431,18 @@ def wait_for_interface(name: str, timeout_seconds: float = 5.0) -> bool:
     return False
 
 
+def wait_for_interface_absent(name: str, timeout_seconds: float = 5.0) -> bool:
+    if name == "" or not shutil_which("ip"):
+        return True
+    deadline = time.time() + max(0.1, timeout_seconds)
+    while time.time() < deadline:
+        result = run_command(["ip", "link", "show", "dev", name], check=False)
+        if result.returncode != 0:
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> bool:
     if os.name == "nt":
         return True
@@ -408,7 +455,7 @@ def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> bool:
     for leg in config.get("legs", []) if isinstance(config.get("legs", []), list) else []:
         if not isinstance(leg, dict):
             continue
-        if str(leg.get("outer_transport", "udp") or "udp").strip().lower() != "tcp":
+        if not leg_uses_local_uot_endpoint(leg):
             continue
         ensure_uot_client_service(name, leg)
     path = pathlib.Path(path_value)
@@ -424,7 +471,16 @@ def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> bool:
         if result.returncode != 0 or not wait_for_interface(name):
             detail = str(result.stderr or result.stdout or "interface did not appear").strip()
             logging.warning("transit interface %s failed after wg-quick up: %s", name, detail)
+            retryable = any(token in detail.lower() for token in ["address already in use", "file exists", "device or resource busy"])
             ensure_clean_transit_interface(name, desired_transit_addresses(config))
+            if retryable:
+                wait_for_interface_absent(name)
+                result = run_command(["wg-quick", "up", str(path)], check=False)
+                if result.returncode == 0 and wait_for_interface(name):
+                    return True
+                detail = str(result.stderr or result.stdout or "interface did not appear").strip()
+                logging.warning("transit interface %s failed again after retry: %s", name, detail)
+                ensure_clean_transit_interface(name, desired_transit_addresses(config))
             return False
         return True
     if name != "" and shutil_which("systemctl"):
@@ -553,17 +609,25 @@ def shutil_which(command: str) -> str | None:
         return None
 
 
-def apply_underlays(config: dict[str, Any]) -> None:
+def apply_underlays(config: dict[str, Any]) -> dict[str, Any]:
     """Dispatch underlay setup: supports both old 'underlay' and new 'underlays' formats."""
     underlays = config.get("underlays", [])
     if isinstance(underlays, list) and underlays:
         # New multi-interface path
-        apply_wireguard_transit_underlays(underlays, config)
-        return
+        failed = apply_wireguard_transit_underlays(underlays, config)
+        return {
+            "failed_interface_names": sorted(failed),
+            "active_interface_names": sorted(
+                str(item.get("interface_name", "") or "").strip()
+                for item in underlays
+                if isinstance(item, dict) and str(item.get("interface_name", "") or "").strip() != ""
+            ),
+        }
     # Backward compat: old single-underlay path
     underlay = config.get("underlay", {})
     if isinstance(underlay, dict):
         apply_underlay(underlay)
+    return {"failed_interface_names": [], "active_interface_names": []}
 
 
 def apply_underlay(config: dict[str, Any]) -> None:
@@ -774,7 +838,13 @@ def configure_mptcp_policy(config: dict[str, Any]) -> None:
             continue
         parts = ["ip", "mptcp", "endpoint", "add", desired_entry["address"], "id", str(index)]
         ep_dev = desired_entry.get("dev", "") or endpoint_device
-        ensure_endpoint_device_ready(ep_dev)
+        try:
+            ensure_endpoint_device_ready(ep_dev)
+        except RuntimeError as exc:
+            if truthy(desired_entry.get("backup_only", False)):
+                logging.warning("skipping backup MPTCP endpoint %s because device is not ready: %s", desired_entry["address"], exc)
+                continue
+            raise
         if ep_dev != "":
             parts.extend(["dev", ep_dev])
         if truthy(desired_entry.get("subflow", False)):
@@ -1251,7 +1321,12 @@ def setup_underlays_only(config: dict[str, Any]) -> None:
 
 
 def setup_runtime(config: dict[str, Any]) -> None:
-    apply_underlays(config)
+    underlay_result = apply_underlays(config)
+    failed_interface_names = set(underlay_result.get("failed_interface_names", [])) if isinstance(underlay_result, dict) else set()
+    active_interface_names = set(underlay_result.get("active_interface_names", [])) if isinstance(underlay_result, dict) else set()
+    if failed_interface_names and not active_interface_names:
+        logging.warning("skipping MPTCP endpoint policy because underlays failed: %s", ", ".join(sorted(failed_interface_names)))
+        return
     configure_mptcp_policy(config)
 
 

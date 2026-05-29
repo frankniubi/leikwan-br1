@@ -159,6 +159,91 @@ class SlaveMptcpCleanupTests(unittest.TestCase):
         self.assertIn("ip link delete dev lwf47n2", commands)
         self.assertIn("wg-quick up lwf47n2", commands)
 
+    def test_apply_mptcp_underlay_creates_uot_server_for_udp_transport_with_fallback(self) -> None:
+        agent = self.make_agent()
+
+        private_key_path = agent.wireguard_private_key_path()
+        private_key_path.parent.mkdir(parents=True, exist_ok=True)
+        private_key_path.write_text("slave-private\n", encoding="utf-8")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")):
+                with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                    with mock.patch.object(agent, "ensure_clean_mptcp_underlay"):
+                        with mock.patch.object(agent, "write_text_if_changed", return_value=True):
+                            with mock.patch.object(agent, "ensure_uot_server_service") as uot_mock:
+                                agent.apply_mptcp_underlay(
+                                    "wstunnel-svc-20-620",
+                                    {
+                                        "enabled": True,
+                                        "interface_name": "lwf62n20",
+                                        "listen_port": 7434,
+                                        "fallback_tcp_port": 7434,
+                                        "outer_transport": "udp",
+                                        "slave_address": "10.203.15.201",
+                                        "client_address": "10.203.15.202",
+                                        "sidecar_address": "10.203.15.203",
+                                        "client_public_key": "client-pub",
+                                        "sidecar_public_key": "sidecar-pub",
+                                        "sidecar_endpoint_host": "185.220.238.143",
+                                        "sidecar_endpoint_port": 14974,
+                                        "peer_keepalive_seconds": 25,
+                                    },
+                                )
+
+        uot_mock.assert_called_once_with("lwf62n20", 7434, 7434)
+
+    def test_apply_mptcp_underlay_creates_client_cf_relay_route(self) -> None:
+        agent = self.make_agent()
+
+        private_key_path = agent.wireguard_private_key_path()
+        private_key_path.parent.mkdir(parents=True, exist_ok=True)
+        private_key_path.write_text("slave-private\n", encoding="utf-8")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")):
+                with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                    with mock.patch.object(agent, "ensure_clean_mptcp_underlay"):
+                        with mock.patch.object(agent, "write_text_if_changed", return_value=True):
+                            with mock.patch.object(agent, "ensure_uot_server_service") as uot_mock:
+                                with mock.patch.object(agent, "remove_uot_server_service") as remove_uot_mock:
+                                    with mock.patch.object(agent, "ensure_backend_service") as backend_mock:
+                                        with mock.patch.object(agent, "sync_listener") as sync_mock:
+                                            agent.apply_mptcp_underlay(
+                                                "wstunnel-svc-20-620",
+                                                {
+                                                    "enabled": True,
+                                                    "service_id": 20,
+                                                    "forward_id": 62,
+                                                    "endpoint_id": 620,
+                                                    "interface_name": "lwf62n20",
+                                                    "listen_port": 7434,
+                                                    "fallback_tcp_port": 7434,
+                                                    "outer_transport": "wstunnel_udp",
+                                                    "slave_address": "10.203.15.201",
+                                                    "client_address": "10.203.15.202",
+                                                    "sidecar_address": "10.203.15.203",
+                                                    "client_public_key": "client-pub",
+                                                    "sidecar_public_key": "sidecar-pub",
+                                                    "sidecar_endpoint_host": "185.220.238.143",
+                                                    "sidecar_endpoint_port": 14974,
+                                                    "client_cf_relay_enabled": True,
+                                                    "client_cf_relay_listen_port": 7434,
+                                                    "client_cf_relay_path_prefix": "lw-mptcp-62-20-cfwg",
+                                                    "client_cf_relay_target_host": "127.0.0.1",
+                                                    "client_cf_relay_target_port": 7434,
+                                                },
+                                            )
+
+        uot_mock.assert_not_called()
+        remove_uot_mock.assert_called_once_with("lwf62n20")
+        backend_mock.assert_any_call("leikwan-mptcp-client-cf-lwf62n20", True, expected_exec_substring="wstunnel server")
+        sync_mock.assert_any_call(7434)
+        relay_metadata = agent.load_service_metadata("leikwan-mptcp-client-cf-lwf62n20")
+        self.assertIsNotNone(relay_metadata)
+        self.assertEqual("lw-mptcp-62-20-cfwg", relay_metadata["path_prefix"])
+        self.assertEqual(7434, relay_metadata["listen_port"])
+
     def test_install_slave_script_supports_update_mode(self) -> None:
         source = (REPO_ROOT / "install" / "install-slave.sh").read_text(encoding="utf-8")
 

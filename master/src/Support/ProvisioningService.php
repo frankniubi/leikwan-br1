@@ -714,12 +714,13 @@ final class ProvisioningService
             $placeholders[] = ':' . $key;
             $params[$key] = $groupKey;
         }
+        $freshnessClause = $this->nodeSelectionFreshnessSql($params);
         return $this->db->fetchAll(
             'SELECT n.*, g.group_key AS node_group_key
              FROM nodes n
              LEFT JOIN node_groups g ON g.id = n.group_id
              WHERE (n.status = :active OR n.status = :degraded)
-               AND g.group_key IN (' . implode(', ', $placeholders) . ')
+               AND g.group_key IN (' . implode(', ', $placeholders) . ')' . $freshnessClause . '
              ORDER BY g.group_key ASC, n.current_load ASC, n.last_heartbeat_at DESC, n.id ASC',
             $params
         );
@@ -4403,21 +4404,7 @@ final class ProvisioningService
                 'created_at' => $this->now(),
                 'updated_at' => $this->now(),
             ]);
-            $this->queueTask($specificNodeId, 'publish', $serviceId, $forwardId, $endpointId, [
-                'listen_port' => (int) $forward['public_port'],
-                'target' => $publishTarget,
-                'path_prefix' => (string) $forward['path_prefix'],
-                'sni_host' => (string) $forward['sni_host'],
-                'cdn_host' => (string) ($forward['cdn_host'] ?? ''),
-                'tls_cert_ref' => (string) $this->config->get('DEFAULT_TLS_CERT_REF', 'default-edge-cert'),
-                'filter_profile' => (string) $forward['filter_profile'],
-                'transport_mode' => (string) $forward['transport_mode'],
-                'leg_relay_protocols' => $this->legRelayProtocolsForNode($clientMode, $specificNode),
-                'mptcp_underlay' => $clientMode === 'mptcp' ? $this->buildMptcpSlaveUnderlayPayload($forward, $specificNode, [
-                    'id' => $endpointId,
-                    'public_port' => $forward['public_port'],
-                ]) : null,
-            ]);
+            $this->queueTask($specificNodeId, 'publish', $serviceId, $forwardId, $endpointId, $this->publishTaskPayloadForForward($forward, $specificNode, $endpointId));
             return $this->buildClientConfig($forwardId);
         }
 
@@ -4471,21 +4458,7 @@ final class ProvisioningService
                 'updated_at' => $this->now(),
             ]);
 
-            $this->queueTask((int) $node['id'], 'publish', $serviceId, $forwardId, $endpointId, [
-                'listen_port' => (int) $forward['public_port'],
-                'target' => $publishTarget,
-                'path_prefix' => (string) $forward['path_prefix'],
-                'sni_host' => (string) $forward['sni_host'],
-                'cdn_host' => (string) $forward['cdn_host'],
-                'tls_cert_ref' => (string) $this->config->get('DEFAULT_TLS_CERT_REF', 'default-edge-cert'),
-                'filter_profile' => (string) $forward['filter_profile'],
-                'transport_mode' => (string) $forward['transport_mode'],
-                'leg_relay_protocols' => $this->legRelayProtocolsForNode($clientMode, $node),
-                'mptcp_underlay' => $clientMode === 'mptcp' ? $this->buildMptcpSlaveUnderlayPayload($forward, $node, [
-                    'id' => $endpointId,
-                    'public_port' => $forward['public_port'],
-                ]) : null,
-            ]);
+            $this->queueTask((int) $node['id'], 'publish', $serviceId, $forwardId, $endpointId, $this->publishTaskPayloadForForward($forward, $node, $endpointId));
             $priority += 10;
         }
 
@@ -5070,11 +5043,6 @@ final class ProvisioningService
     }
 
     /**
-     * Temporary compatibility shim for newer sidecar agents that request
-     * persistent slave-sidecar uplink management. Returning an empty uplink set
-     * allows the heartbeat to succeed and lets the sidecar agent clean up any
-     * stale persisted uplinks locally instead of crashing on the panel call.
-     *
      * @return array{uplinks: array<int, array<string, mixed>>}
      */
     public function slaveSidecarUplinkManagementForPoint(int $pointId): array
@@ -5082,119 +5050,302 @@ final class ProvisioningService
         if ($pointId <= 0) {
             return ['uplinks' => []];
         }
-
-        // Get all forwards that use this sidecar point and have MPTCP enabled
-        $forwards = $this->db->fetchAll(
-            'SELECT f.*, s.status AS service_status
-             FROM forwards f
-             INNER JOIN services s ON s.id = f.service_id
-             WHERE f.bond_sidecar_point_id = :point_id
-               AND f.enabled = 1
-               AND s.status = :active
-               AND f.runtime_preference IN (:mptcp_only, :mptcp_preferred)',
-            [
-                'point_id' => $pointId,
-                'active' => 'active',
-                'mptcp_only' => 'mptcp_only',
-                'mptcp_preferred' => 'mptcp_preferred_bond_fallback',
-            ]
-        );
-
-        $point = $this->db->fetchOne(
-            'SELECT agent_config_json, sidecar_host, cf_listen_port, path_prefix FROM sidecar_points WHERE id = :id LIMIT 1',
-            ['id' => $pointId]
-        );
-
-        if (!is_array($point)) {
-            return ['uplinks' => []];
-        }
-
-        $pointConfig = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
-        $sidecarListenPort = $this->sidecarWireguardListenPort($point, $pointConfig);
-        $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $pointConfig);
-        $sidecarPublicKey = trim((string) ($pointConfig['wireguard_public_key'] ?? ''));
-
-        if ($sidecarPublicKey === '') {
-            return ['uplinks' => []];
-        }
-
         $uplinks = [];
-        $idx = 0;
 
-        foreach ($forwards as $forward) {
-            $forwardId = (int) ($forward['id'] ?? 0);
-
-            // Get active slave endpoints for this forward
-            $endpoints = $this->db->fetchAll(
-                'SELECT e.*, n.agent_config_json AS node_agent_config_json, n.name AS node_name
-                 FROM service_endpoints e
-                 INNER JOIN nodes n ON n.id = e.node_id
-                 WHERE e.forward_id = :forward_id
-                   AND e.health_status NOT IN (:deleted, :deleting)
-                 ORDER BY e.priority ASC, e.id ASC',
-                [
-                    'forward_id' => $forwardId,
-                    'deleted' => 'deleted',
-                    'deleting' => 'deleting',
-                ]
-            );
-
-            foreach ($endpoints as $endpoint) {
-                $nodeId = (int) ($endpoint['node_id'] ?? 0);
-                $nodeConfig = $this->decodeJsonAssoc($endpoint['node_agent_config_json'] ?? null);
-                $slavePublicKey = trim((string) ($nodeConfig['wireguard_public_key'] ?? ''));
-
-                if ($slavePublicKey === '') {
-                    continue;
+        foreach ($this->staticSlaveSidecarCombinationsForPoint($pointId) as $combination) {
+            foreach ($this->staticRentedSlavesForCombination((int) ($combination['id'] ?? 0)) as $node) {
+                foreach ($this->buildStaticSidecarUplinkPairForNode($combination, $node) as $lane) {
+                    $uplinks[] = $lane['sidecar'];
                 }
-
-                $addresses = $this->stableMptcpLegAddressing($forwardId, $nodeId);
-                $fixedPort = $this->stableSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $forwardId, $nodeId);
-
-                $outerTransport = strtolower(trim((string) ($nodeConfig['wireguard_outer_transport'] ?? 'udp')));
-                if ($outerTransport === '') {
-                    $outerTransport = 'udp';
-                }
-
-                $uplink = [
-                    'enabled' => true,
-                    'interface_name' => 'lw-sc-' . $pointId . '-' . $idx,
-                    'local_address' => $addresses['sidecar_address'],
-                    'peer_address' => $addresses['slave_address'],
-                    'slave_peer_public_key' => $slavePublicKey,
-                    'listen_port' => $fixedPort,
-                    'outer_transport' => $outerTransport,
-                    'peer_keepalive_seconds' => 0,
-                ];
-
-                // Add CF mode configuration if slave uses wstunnel_udp
-                if ($outerTransport === 'wstunnel_udp') {
-                    $pathPrefix = trim((string) ($forward['path_prefix'] ?? ''));
-                    if ($pathPrefix !== '') {
-                        $uplink['cf_path_prefix'] = $pathPrefix;
-                        $uplink['cf_target_host'] = '127.0.0.1';
-                        $uplink['cf_target_port'] = $fixedPort;
-                    }
-                }
-
-                // Add TCP fallback configuration if needed
-                $nodeBasePort = isset($nodeConfig['wireguard_listen_port']) && (int) $nodeConfig['wireguard_listen_port'] > 0
-                    ? (int) $nodeConfig['wireguard_listen_port']
-                    : (int) ($endpoint['public_port'] ?? 0);
-                $nodeBaseFallback = isset($nodeConfig['wireguard_fallback_tcp_port']) && (int) $nodeConfig['wireguard_fallback_tcp_port'] > 0
-                    ? (int) $nodeConfig['wireguard_fallback_tcp_port']
-                    : ($nodeBasePort > 0 ? $nodeBasePort + 10000 : 0);
-
-                if ($outerTransport === 'tcp' && $nodeBaseFallback > 0) {
-                    $uplink['peer_tcp_fallback_port'] = $this->stableMptcpSlavePort($nodeBaseFallback, $forwardId);
-                }
-
-                $uplinks[] = $uplink;
-                $idx++;
             }
         }
 
         return ['uplinks' => $uplinks];
+    }
+
+    /**
+     * @return array{uplinks: array<int, array<string, mixed>>}
+     */
+    public function slaveSidecarUplinkManagementForNode(int $nodeId): array
+    {
+        if ($nodeId <= 0) {
+            return ['uplinks' => []];
+        }
+
+        $uplinks = [];
+        $node = $this->db->fetchOne('SELECT * FROM nodes WHERE id = :id LIMIT 1', ['id' => $nodeId]);
+        if (!is_array($node)) {
+            return ['uplinks' => []];
+        }
+        foreach ($this->staticSlaveSidecarCombinations() as $combination) {
+            $selectedNodeIds = array_map(
+                static fn(array $selected): int => (int) ($selected['id'] ?? $selected['node_id'] ?? 0),
+                $this->staticRentedSlavesForCombination((int) ($combination['id'] ?? 0))
+            );
+            if (!in_array($nodeId, $selectedNodeIds, true)) {
+                continue;
+            }
+            foreach ($this->buildStaticSidecarUplinkPairForNode($combination, $node) as $lane) {
+                $uplinks[] = $lane['slave'];
+            }
+        }
+
+        return ['uplinks' => $uplinks];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function staticSlaveSidecarCombinations(): array
+    {
+        return $this->db->fetchAll(
+            'SELECT fc.*, sp.name AS sidecar_point_name, sp.sidecar_host,
+                    sp.listen_port AS sidecar_listen_port,
+                    sp.bond_listen_port AS sidecar_bond_listen_port,
+                    sp.mptcp_listen_port AS sidecar_mptcp_listen_port,
+                    sp.cf_listen_port AS sidecar_cf_listen_port,
+                    sp.agent_config_json AS sidecar_agent_config_json
+             FROM forward_combinations fc
+             INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+             WHERE fc.is_active = 1
+             ORDER BY fc.sort_order ASC, fc.id ASC'
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function staticSlaveSidecarCombinationsForPoint(int $pointId): array
+    {
+        if ($pointId <= 0) {
+            return [];
+        }
+        return $this->db->fetchAll(
+            'SELECT fc.*, sp.name AS sidecar_point_name, sp.sidecar_host,
+                    sp.listen_port AS sidecar_listen_port,
+                    sp.bond_listen_port AS sidecar_bond_listen_port,
+                    sp.mptcp_listen_port AS sidecar_mptcp_listen_port,
+                    sp.cf_listen_port AS sidecar_cf_listen_port,
+                    sp.agent_config_json AS sidecar_agent_config_json
+             FROM forward_combinations fc
+             INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+             WHERE fc.sidecar_point_id = :point_id
+               AND fc.is_active = 1
+             ORDER BY fc.sort_order ASC, fc.id ASC',
+            ['point_id' => $pointId]
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function staticSlaveSidecarCombinationsForNode(int $nodeId): array
+    {
+        if ($nodeId <= 0) {
+            return [];
+        }
+        return $this->db->fetchAll(
+            'SELECT fc.*, sp.name AS sidecar_point_name, sp.sidecar_host,
+                    sp.listen_port AS sidecar_listen_port,
+                    sp.bond_listen_port AS sidecar_bond_listen_port,
+                    sp.mptcp_listen_port AS sidecar_mptcp_listen_port,
+                    sp.cf_listen_port AS sidecar_cf_listen_port,
+                    sp.agent_config_json AS sidecar_agent_config_json
+             FROM forward_combination_slaves fcs
+             INNER JOIN forward_combinations fc ON fc.id = fcs.forward_combination_id
+             INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+             WHERE fcs.node_id = :node_id
+               AND fcs.is_active = 1
+               AND fc.is_active = 1
+             ORDER BY fc.sort_order ASC, fc.id ASC',
+            ['node_id' => $nodeId]
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function staticRentedSlavesForCombination(int $combinationId): array
+    {
+        if ($combinationId <= 0) {
+            return [];
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT n.*, g.group_key AS node_group_key, fcs.sort_order AS pin_sort_order
+             FROM forward_combination_slaves fcs
+             INNER JOIN nodes n ON n.id = fcs.node_id
+             LEFT JOIN node_groups g ON g.id = n.group_id
+             WHERE fcs.forward_combination_id = :forward_combination_id
+               AND fcs.is_active = 1
+               AND (n.status = :active OR n.status = :degraded)
+             ORDER BY fcs.sort_order ASC, n.id ASC',
+            [
+                'forward_combination_id' => $combinationId,
+                'active' => 'active',
+                'degraded' => 'degraded',
+            ]
+        );
+        if ($rows !== []) {
+            return $rows;
+        }
+
+        $combination = $this->forwardCombinationById($combinationId);
+        if (!is_array($combination)) {
+            return [];
+        }
+        $cap = max(0, (int) ($combination['helper_group_cap'] ?? 0));
+        $selected = $this->pickFastestSlavesForCombination($combinationId, $cap);
+        return array_values(array_map(
+            static fn(array $candidate): array => is_array($candidate['row'] ?? null) ? $candidate['row'] : [],
+            array_filter($selected, static fn(array $candidate): bool => ($candidate['candidate_source'] ?? '') === 'rented_node')
+        ));
+    }
+
+    /**
+     * @return array<int, array{sidecar: array<string, mixed>, slave: array<string, mixed>}>
+     */
+    private function buildStaticSidecarUplinkPairForNode(array $combination, array $node): array
+    {
+        $combinationId = (int) ($combination['id'] ?? $combination['forward_combination_id'] ?? 0);
+        $pointId = (int) ($combination['sidecar_point_id'] ?? 0);
+        $nodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
+        if ($combinationId <= 0 || $pointId <= 0 || $nodeId <= 0) {
+            return [];
+        }
+
+        $sidecarConfig = $this->decodeJsonAssoc($combination['sidecar_agent_config_json'] ?? null);
+        if ($sidecarConfig === [] && isset($combination['agent_config_json'])) {
+            $sidecarConfig = $this->decodeJsonAssoc($combination['agent_config_json'] ?? null);
+        }
+        $nodeConfig = $this->decodeJsonAssoc($node['agent_config_json'] ?? null);
+        $sidecarPublicKey = trim((string) ($sidecarConfig['wireguard_public_key'] ?? ''));
+        $slavePublicKey = trim((string) ($nodeConfig['wireguard_public_key'] ?? ''));
+        if ($sidecarPublicKey === '' || $slavePublicKey === '') {
+            return [];
+        }
+
+        $sidecarHost = trim((string) ($combination['sidecar_host'] ?? ''));
+        if ($sidecarHost === '' && $pointId > 0) {
+            $point = $this->db->fetchOne('SELECT sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, cf_listen_port, agent_config_json FROM sidecar_points WHERE id = :id LIMIT 1', ['id' => $pointId]);
+            if (is_array($point)) {
+                $sidecarHost = trim((string) ($point['sidecar_host'] ?? ''));
+                if ($sidecarConfig === []) {
+                    $sidecarConfig = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
+                }
+            }
+        }
+
+        $listenSource = [
+            'listen_port' => (int) ($combination['sidecar_listen_port'] ?? 0),
+            'bond_listen_port' => (int) ($combination['sidecar_bond_listen_port'] ?? 0),
+            'mptcp_listen_port' => (int) ($combination['sidecar_mptcp_listen_port'] ?? 0),
+        ];
+        $sidecarListenPort = $this->sidecarWireguardListenPort($listenSource, $sidecarConfig);
+        $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $sidecarConfig);
+        $cfMode = $this->staticSidecarCombinationUsesCf($combination);
+        $lanes = [];
+        foreach (['primary' => 'p', 'backup' => 'b'] as $lane => $suffix) {
+            $addresses = $this->staticSidecarUplinkAddressing($pointId, $combinationId, $nodeId, $lane);
+            $listenPort = $this->stableStaticSidecarUplinkPort($sidecarListenPort, $sidecarPortRangeEnd, $pointId, $combinationId, $nodeId, $lane);
+            if ($listenPort <= 0) {
+                continue;
+            }
+            $interfaceName = $this->staticSidecarUplinkInterfaceName($pointId, $combinationId, $nodeId, $suffix);
+            $base = [
+                'enabled' => true,
+                'mode' => 'static_slave_sidecar',
+                'forward_combination_id' => $combinationId,
+                'sidecar_point_id' => $pointId,
+                'node_id' => $nodeId,
+                'lane' => $lane,
+                'interface_name' => $interfaceName,
+                'subnet' => $addresses['subnet'],
+                'listen_port' => $listenPort,
+                'outer_transport' => $cfMode ? 'wstunnel_udp' : 'udp',
+                'peer_keepalive_seconds' => max(1, (int) ($this->config->getInt('STATIC_SIDECAR_WG_KEEPALIVE_SECONDS', 25) ?? 25)),
+                'watchdog' => [
+                    'enabled' => true,
+                    'handshake_stale_seconds' => max(10, (int) ($this->config->getInt('STATIC_SIDECAR_WG_HANDSHAKE_STALE_SECONDS', 90) ?? 90)),
+                    'restart_cooldown_seconds' => max(10, (int) ($this->config->getInt('STATIC_SIDECAR_WG_RESTART_COOLDOWN_SECONDS', 30) ?? 30)),
+                ],
+            ];
+            $slaveListenPort = $this->stableStaticLocalUdpPort($pointId, $combinationId, $nodeId, $lane);
+            $relayPort = $this->sidecarBondListenPort([
+                'listen_port' => (int) ($combination['sidecar_listen_port'] ?? 0),
+                'bond_listen_port' => (int) ($combination['sidecar_bond_listen_port'] ?? 0),
+            ]);
+            $sidecar = $base + [
+                'local_address' => $addresses['sidecar_address'],
+                'peer_address' => $addresses['slave_address'],
+                'slave_peer_public_key' => $slavePublicKey,
+                'sidecar_peer_public_key' => $sidecarPublicKey,
+                'relay_target' => $addresses['sidecar_address'] . ':' . $relayPort,
+            ];
+            $slave = $base + [
+                'local_address' => $addresses['slave_address'],
+                'peer_address' => $addresses['sidecar_address'],
+                'sidecar_peer_public_key' => $sidecarPublicKey,
+                'slave_peer_public_key' => $slavePublicKey,
+                'sidecar_endpoint_host' => $sidecarHost,
+                'sidecar_endpoint_port' => $listenPort,
+                'local_listen_port' => $slaveListenPort,
+                'relay_target' => $addresses['sidecar_address'] . ':' . $relayPort,
+            ];
+            if ($cfMode) {
+                $pathPrefix = $this->staticSidecarCfPathPrefix($pointId, $combinationId, $nodeId, $lane);
+                $cfListenPort = (int) ($combination['sidecar_cf_listen_port'] ?? 0);
+                if ($cfListenPort <= 0) {
+                    $cfListenPort = 443;
+                }
+                $cfSniHost = trim((string) ($sidecarConfig['cf_sni_host'] ?? $sidecarConfig['cf_sni'] ?? ''));
+                $cfGroupId = (int) ($combination['cf_location_group_id'] ?? 0);
+                $cfGroup = $cfGroupId > 0
+                    ? $this->db->fetchOne('SELECT * FROM cf_location_groups WHERE id = :id LIMIT 1', ['id' => $cfGroupId])
+                    : null;
+                $cfCidrRows = $cfGroupId > 0
+                    ? $this->db->fetchAll(
+                        'SELECT cidr, priority, is_active FROM cf_location_group_cidrs WHERE group_id = :group_id AND is_active = 1 ORDER BY priority ASC, id ASC',
+                        ['group_id' => $cfGroupId]
+                    )
+                    : [];
+                $localUdpPort = $slaveListenPort;
+                $sidecar['cf_path_prefix'] = $pathPrefix;
+                $sidecar['cf_target_host'] = '127.0.0.1';
+                $sidecar['cf_target_port'] = $listenPort;
+                $slave['cf_path_prefix'] = $pathPrefix;
+                $slave['cf_dial_host'] = $sidecarHost;
+                $slave['cf_dial_port'] = $cfListenPort;
+                $slave['cf_sni_host'] = $cfSniHost;
+                $slave['cf_target_host'] = '127.0.0.1';
+                $slave['cf_target_port'] = $listenPort;
+                $slave['local_wstunnel_udp_port'] = $localUdpPort;
+                $slave['sidecar_endpoint_host'] = '127.0.0.1';
+                $slave['sidecar_endpoint_port'] = $localUdpPort;
+                if ($cfGroupId > 0 && is_array($cfGroup) && $cfCidrRows !== []) {
+                    $slave['cf_mode'] = [
+                        'location_group_id' => $cfGroupId,
+                        'group_name' => (string) ($cfGroup['name'] ?? ''),
+                        'region_code' => (string) ($cfGroup['region_code'] ?? ''),
+                        'probe_mode' => (string) ($cfGroup['probe_mode'] ?? 'auto'),
+                        'cache_ttl_seconds' => max(30, (int) ($cfGroup['cache_ttl_seconds'] ?? 120)),
+                        'switch_improvement_ms' => max(1, (int) ($cfGroup['switch_improvement_ms'] ?? 15)),
+                        'max_candidates' => max(1, min(256, (int) ($cfGroup['max_candidates'] ?? 32))),
+                        'probe_samples' => max(1, min(5, (int) ($this->config->getInt('STATIC_SIDECAR_CF_PROBE_SAMPLES', 1) ?? 1))),
+                        'min_success_samples' => max(1, min(5, (int) ($this->config->getInt('STATIC_SIDECAR_CF_MIN_SUCCESS_SAMPLES', 1) ?? 1))),
+                        'allow_probe_target_failures' => true,
+                        'cidrs' => array_values(array_map(static fn(array $row): string => (string) $row['cidr'], $cfCidrRows)),
+                        'dial_host' => $sidecarHost,
+                        'dial_port' => $cfListenPort,
+                        'sni_host' => $cfSniHost,
+                        'path_prefix' => $pathPrefix,
+                    ];
+                }
+            }
+            $lanes[] = ['sidecar' => $sidecar, 'slave' => $slave];
+        }
+
+        return $lanes;
     }
 
     private function reconcileForwardEndpoints(int $forwardId): void
@@ -5386,6 +5537,146 @@ final class ProvisioningService
         ];
     }
 
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function staticSidecarUplinksForForwardNode(array $forward, array $node): array
+    {
+        $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
+        $nodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
+        if ($combinationId <= 0 || $nodeId <= 0) {
+            return [];
+        }
+        $combination = $this->forwardCombinationById($combinationId);
+        if (!is_array($combination)) {
+            return [];
+        }
+        if ((int) ($combination['sidecar_point_id'] ?? 0) <= 0 && (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0) {
+            $combination['sidecar_point_id'] = (int) $forward['bond_sidecar_point_id'];
+        }
+        if (empty($combination['sidecar_host']) || empty($combination['sidecar_agent_config_json'])) {
+            $point = $this->db->fetchOne(
+                'SELECT sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, cf_listen_port, agent_config_json FROM sidecar_points WHERE id = :id LIMIT 1',
+                ['id' => (int) ($combination['sidecar_point_id'] ?? $forward['bond_sidecar_point_id'] ?? 0)]
+            );
+            if (is_array($point)) {
+                $combination['sidecar_host'] = (string) ($point['sidecar_host'] ?? '');
+                $combination['sidecar_listen_port'] = (int) ($point['listen_port'] ?? 0);
+                $combination['sidecar_bond_listen_port'] = (int) ($point['bond_listen_port'] ?? 0);
+                $combination['sidecar_mptcp_listen_port'] = (int) ($point['mptcp_listen_port'] ?? 0);
+                $combination['sidecar_cf_listen_port'] = (int) ($point['cf_listen_port'] ?? 0);
+                $combination['sidecar_agent_config_json'] = $point['agent_config_json'] ?? null;
+            }
+        }
+
+        return array_values(array_map(
+            static fn(array $lane): array => $lane['slave'],
+            $this->buildStaticSidecarUplinkPairForNode($combination, $node)
+        ));
+    }
+
+    private function staticSidecarPrimaryUplinkForForwardNode(array $forward, array $node, string $targetMode): ?array
+    {
+        $uplinks = $this->staticSidecarUplinksForForwardNode($forward, $node);
+        if ($uplinks === []) {
+            return null;
+        }
+        $sidecarServicePort = 0;
+        $normalizedTargetMode = $this->normalizeClientMode($targetMode);
+        if (in_array($normalizedTargetMode, ['bond', 'mptcp'], true)) {
+            $sidecarServicePort = (int) ($this->resolveSidecarDirectTarget($forward, $normalizedTargetMode)['port'] ?? 0);
+        }
+        foreach ($this->staticSidecarUplinksWithServicePort($uplinks, $sidecarServicePort) as $slave) {
+            if (($slave['lane'] ?? '') !== 'primary') {
+                continue;
+            }
+            return $slave;
+        }
+        return null;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $uplinks
+     * @return array<int, array<string, mixed>>
+     */
+    private function staticSidecarUplinksWithServicePort(array $uplinks, int $sidecarServicePort): array
+    {
+        if ($sidecarServicePort <= 0) {
+            return $uplinks;
+        }
+        foreach ($uplinks as &$uplink) {
+            $peerAddress = trim((string) ($uplink['peer_address'] ?? ''));
+            if ($peerAddress === '') {
+                continue;
+            }
+            $uplink['relay_target'] = $peerAddress . ':' . $sidecarServicePort;
+        }
+        unset($uplink);
+        return $uplinks;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $uplinks
+     * @return array<string, mixed>
+     */
+    private function staticSidecarUplinkSelectorPayload(array $uplinks, int $sidecarServicePort): array
+    {
+        if ($sidecarServicePort <= 0 || count($uplinks) < 2) {
+            return [];
+        }
+
+        $candidates = [];
+        $firstCombinationId = 0;
+        $firstPointId = 0;
+        $firstNodeId = 0;
+        foreach ($uplinks as $uplink) {
+            if (!($uplink['enabled'] ?? false)) {
+                continue;
+            }
+            $interface = trim((string) ($uplink['interface_name'] ?? ''));
+            $peerAddress = trim((string) ($uplink['peer_address'] ?? ''));
+            if ($interface === '' || $peerAddress === '') {
+                continue;
+            }
+            $combinationId = (int) ($uplink['forward_combination_id'] ?? 0);
+            $pointId = (int) ($uplink['sidecar_point_id'] ?? 0);
+            $nodeId = (int) ($uplink['node_id'] ?? 0);
+            if ($firstCombinationId <= 0) {
+                $firstCombinationId = $combinationId;
+                $firstPointId = $pointId;
+                $firstNodeId = $nodeId;
+            }
+            $candidates[] = [
+                'lane' => (string) ($uplink['lane'] ?? ''),
+                'interface_name' => $interface,
+                'ping_interface' => $interface,
+                'ping_address' => $peerAddress,
+                'sidecar_address' => $peerAddress,
+                'peer_address' => $peerAddress,
+                'sidecar_port' => $sidecarServicePort,
+            ];
+        }
+        if (count($candidates) < 2) {
+            return [];
+        }
+
+        $selectorPort = 45000 + abs((($firstPointId * 1009) + ($firstCombinationId * 131) + ($firstNodeId * 17)) % 1000);
+        return [
+            'enabled' => true,
+            'strategy' => 'wg_allowed_ip_ping',
+            'selector_port' => $selectorPort,
+            'sidecar_service_port' => $sidecarServicePort,
+            'probe_interval_seconds' => max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_PROBE_INTERVAL_SECONDS', 3) ?? 3)),
+            'ping_count' => max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_PING_COUNT', 3) ?? 3)),
+            'ping_timeout_seconds' => max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_PING_TIMEOUT_SECONDS', 1) ?? 1)),
+            'switch_improvement_ms' => max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_SWITCH_IMPROVEMENT_MS', 3) ?? 3)),
+            'max_active_avg_ms' => max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_MAX_ACTIVE_AVG_MS', 70) ?? 70)),
+            'max_loss_percent' => max(0, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_MAX_LOSS_PERCENT', 0) ?? 0)),
+            'restart_cooldown_seconds' => max(10, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_RESTART_COOLDOWN_SECONDS', 60) ?? 60)),
+            'candidates' => $candidates,
+        ];
+    }
+
     private function publishTaskPayloadForForward(array $forward, array $node, int $endpointId): array
     {
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
@@ -5394,20 +5685,32 @@ final class ProvisioningService
         $publishesBondRuntime = $clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback';
         $backendMode = (string) ($forward['backend_mode'] ?? 'current_mode');
         $plainTcpIngress = $publishesBondRuntime && $bondIngressMode === 'plain_tcp_mux';
-        $backendProtocol = $plainTcpIngress && $backendMode !== 'cf_mode'
-            ? 'tcp_relay'
-            : 'wss_backend';
         $routeKey = (string) ($forward['path_prefix'] ?? '');
         $directTargetMode = $publishesBondRuntime ? 'bond' : $clientMode;
         $directSidecarTarget = in_array($directTargetMode, ['bond', 'mptcp'], true)
             ? $this->resolveSidecarDirectTarget($forward, $directTargetMode)
             : null;
+        $staticSidecarUplinks = $directSidecarTarget !== null
+            ? $this->staticSidecarUplinksWithServicePort($this->staticSidecarUplinksForForwardNode($forward, $node), (int) ($directSidecarTarget['port'] ?? 0))
+            : [];
+        $staticSidecarUplink = $directSidecarTarget !== null
+            ? (array_values(array_filter($staticSidecarUplinks, static fn(array $uplink): bool => ($uplink['lane'] ?? '') === 'primary'))[0] ?? null)
+            : null;
+        $staticSidecarSelector = $directSidecarTarget !== null
+            ? $this->staticSidecarUplinkSelectorPayload($staticSidecarUplinks, (int) ($directSidecarTarget['port'] ?? 0))
+            : [];
+        $backendProtocol = $plainTcpIngress && ($backendMode !== 'cf_mode' || $staticSidecarUplink !== null)
+            ? 'tcp_relay'
+            : 'wss_backend';
         if ($backendMode === 'cf_mode' && $directSidecarTarget !== null) {
             $publishTarget = '127.0.0.1:' . $directSidecarTarget['port'];
         } else {
             $publishTarget = $directSidecarTarget !== null
                 ? ($directSidecarTarget['host'] . ':' . $directSidecarTarget['port'])
                 : ((string) ($forward['target_host'] ?? '') . ':' . (int) ($forward['target_port'] ?? 0));
+        }
+        if (is_array($staticSidecarUplink) && trim((string) ($staticSidecarUplink['relay_target'] ?? '')) !== '') {
+            $publishTarget = (string) $staticSidecarUplink['relay_target'];
         }
         return [
             'listen_port' => (int) ($forward['public_port'] ?? 0),
@@ -5428,6 +5731,8 @@ final class ProvisioningService
             'transport_mode' => (string) ($forward['transport_mode'] ?? 'tcp+udp'),
             'ingress_protocol' => $plainTcpIngress ? 'plain_tcp_mux' : 'wss_path_mux',
             'backend_protocol' => $backendProtocol,
+            'sidecar_uplink' => $staticSidecarUplink ?? [],
+            'sidecar_uplink_selector' => $staticSidecarSelector,
             'ingress_auth_token' => $plainTcpIngress
                 ? $this->bondIngressAuthToken($forward, $endpointId, $routeKey)
                 : '',
@@ -5696,8 +6001,22 @@ final class ProvisioningService
             $sql .= ')';
         }
 
+        $sql .= $this->nodeSelectionFreshnessSql($params);
         $sql .= ' ORDER BY n.current_load ASC, n.last_heartbeat_at DESC, n.id ASC LIMIT ' . max(1, $count);
         return $this->db->fetchAll($sql, $params);
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    private function nodeSelectionFreshnessSql(array &$params): string
+    {
+        $maxAgeSeconds = $this->config->getInt('NODE_SELECTION_MAX_HEARTBEAT_AGE_SECONDS', 1800);
+        if ($maxAgeSeconds <= 0) {
+            return '';
+        }
+        $params['node_heartbeat_cutoff'] = gmdate('Y-m-d H:i:s', time() - $maxAgeSeconds);
+        return ' AND n.last_heartbeat_at IS NOT NULL AND n.last_heartbeat_at >= :node_heartbeat_cutoff';
     }
 
 
@@ -5728,12 +6047,13 @@ final class ProvisioningService
                 $placeholders[] = ':' . $key;
                 $params[$key] = $groupKey;
             }
+            $freshnessClause = $this->nodeSelectionFreshnessSql($params);
             $rows = $this->db->fetchAll(
                 'SELECT n.*, g.group_key AS node_group_key
                  FROM nodes n
                  LEFT JOIN node_groups g ON g.id = n.group_id
                  WHERE (n.status = :active OR n.status = :degraded)
-                   AND g.group_key IN (' . implode(', ', $placeholders) . ')
+                   AND g.group_key IN (' . implode(', ', $placeholders) . ')' . $freshnessClause . '
                  ORDER BY n.id ASC',
                 $params
             );
@@ -5747,6 +6067,13 @@ final class ProvisioningService
             }
         }
 
+        $pinnedParams = [
+            'forward_combination_id' => $combinationId,
+            'selection_kind' => 'admin_pin',
+            'active' => 'active',
+            'degraded' => 'degraded',
+        ];
+        $pinnedFreshnessClause = $this->nodeSelectionFreshnessSql($pinnedParams);
         $pinnedRows = $this->db->fetchAll(
             'SELECT n.*, g.group_key AS node_group_key, fcs.sort_order AS pin_sort_order
              FROM forward_combination_slaves fcs
@@ -5755,14 +6082,9 @@ final class ProvisioningService
              WHERE fcs.forward_combination_id = :forward_combination_id
                AND fcs.is_active = 1
                AND fcs.selection_kind = :selection_kind
-               AND (n.status = :active OR n.status = :degraded)
+               AND (n.status = :active OR n.status = :degraded)' . $pinnedFreshnessClause . '
              ORDER BY fcs.sort_order ASC, n.id ASC',
-            [
-                'forward_combination_id' => $combinationId,
-                'selection_kind' => 'admin_pin',
-                'active' => 'active',
-                'degraded' => 'degraded',
-            ]
+            $pinnedParams
         );
         foreach ($pinnedRows as $row) {
             $nodeId = (int) ($row['id'] ?? 0);
@@ -5966,13 +6288,14 @@ final class ProvisioningService
             $ownerClause = ' AND (n.owner_service_id IS NULL OR n.owner_service_id = :owner_service_id)';
             $params['owner_service_id'] = $serviceId;
         }
+        $freshnessClause = $this->nodeSelectionFreshnessSql($params);
 
         $row = $this->db->fetchOne(
             'SELECT COUNT(*) AS total
              FROM nodes n
              LEFT JOIN node_groups g ON g.id = n.group_id
              WHERE (n.status = :active OR n.status = :degraded)
-               AND g.group_key IN (' . implode(', ', $placeholders) . ')' . $ownerClause,
+               AND g.group_key IN (' . implode(', ', $placeholders) . ')' . $ownerClause . $freshnessClause,
             $params
         );
 
@@ -6788,15 +7111,28 @@ final class ProvisioningService
             if ($outerTransport === '') {
                 $outerTransport = 'udp';
             }
+            if ($this->forwardUsesCfMode($forward) && $this->nodeSupportsCfwgRelay($nodeConfig)) {
+                $outerTransport = 'wstunnel_udp_via_slave';
+            }
+            $localRelayPort = $this->stableLocalCfwgUdpPort((int) ($forward['id'] ?? 0), (int) ($endpoint['node_id'] ?? 0));
+            $slaveRelayPath = $this->mptcpSlaveRelayPathPrefix((int) ($forward['id'] ?? 0), (int) ($endpoint['node_id'] ?? 0));
             $legs[] = [
                 'endpoint_id' => (int) ($endpoint['id'] ?? 0),
                 'node_id' => (int) ($endpoint['node_id'] ?? 0),
                 'node_name' => (string) ($endpoint['node_name'] ?? ''),
+                'health_status' => (string) ($endpoint['health_status'] ?? ''),
                 'outer_transport' => $outerTransport,
-                'peer_public_host' => $publicHost,
-                'peer_udp_port' => $peerPort,
+                'peer_public_host' => $outerTransport === 'wstunnel_udp_via_slave' ? '127.0.0.1' : $publicHost,
+                'peer_udp_port' => $outerTransport === 'wstunnel_udp_via_slave' ? $localRelayPort : $peerPort,
                 'peer_tcp_fallback_port' => $fallbackTcpPort,
                 'local_uot_udp_port' => $this->stableLocalUotUdpPort((int) ($forward['id'] ?? 0), (int) ($endpoint['node_id'] ?? 0)),
+                'slave_dial_host' => $outerTransport === 'wstunnel_udp_via_slave' ? $publicHost : '',
+                'slave_dial_port' => $outerTransport === 'wstunnel_udp_via_slave' ? $peerPort : 0,
+                'slave_sni_host' => $outerTransport === 'wstunnel_udp_via_slave' ? (string) ($forward['sni_host'] ?? $forward['cdn_host'] ?? '') : '',
+                'slave_host_header' => $outerTransport === 'wstunnel_udp_via_slave' ? (string) ($forward['sni_host'] ?? $forward['cdn_host'] ?? '') : '',
+                'slave_path_prefix' => $outerTransport === 'wstunnel_udp_via_slave' ? $slaveRelayPath : '',
+                'cf_target_host' => $outerTransport === 'wstunnel_udp_via_slave' ? '127.0.0.1' : '',
+                'cf_target_port' => $outerTransport === 'wstunnel_udp_via_slave' ? $peerPort : 0,
                 'peer_public_key' => $slavePublicKey,
                 'client_address' => $addresses['client_address'],
                 'slave_address' => $addresses['slave_address'],
@@ -6807,9 +7143,32 @@ final class ProvisioningService
                 'subnet' => $addresses['subnet'],
                 'sidecar_public_key' => trim((string) ($sidecarConfig['wireguard_public_key'] ?? '')),
                 'backup_only' => false,
+                'slave_preconnect' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false),
+                'preconnect_relay_port' => $this->stablePreconnectRelayPort(
+                    (int) ($forward['id'] ?? 0),
+                    (int) ($endpoint['node_id'] ?? 0)
+                ),
             ];
         }
         return $legs;
+    }
+
+    private function nodeSupportsCfwgRelay(array $nodeConfig): bool
+    {
+        if (array_key_exists('supports_cfwg_relay', $nodeConfig)) {
+            return (bool) $nodeConfig['supports_cfwg_relay'];
+        }
+        return true;
+    }
+
+    private function stableLocalCfwgUdpPort(int $forwardId, int $nodeId): int
+    {
+        return 40000 + abs((($forwardId * 97) + ($nodeId * 13)) % 2000);
+    }
+
+    private function mptcpSlaveRelayPathPrefix(int $forwardId, int $nodeId): string
+    {
+        return 'lw-mptcp-' . $forwardId . '-' . $nodeId . '-cfwg';
     }
 
     /**
@@ -6878,9 +7237,85 @@ final class ProvisioningService
         return max($this->mptcpSlavePortRangeStart(), (int) ($this->config->getInt('MPTCP_SLAVE_PORT_RANGE_END', 9000) ?? 9000));
     }
 
+    private function forwardUsesCfMode(array $forward): bool
+    {
+        if (str_starts_with(strtolower(trim((string) ($forward['backend_mode'] ?? ''))), 'cf')
+            || (int) ($forward['cf_location_group_id'] ?? 0) > 0) {
+            return true;
+        }
+
+        $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
+        if ($combinationId <= 0) {
+            return false;
+        }
+
+        $combination = $this->forwardCombinationById($combinationId);
+        return is_array($combination) && $this->staticSidecarCombinationUsesCf($combination);
+    }
+
     private function stableLocalUotUdpPort(int $forwardId, int $nodeId): int
     {
         return 45000 + abs((($forwardId * 257) + ($nodeId * 17)) % 15000);
+    }
+
+    private function stableStaticLocalUdpPort(int $pointId, int $combinationId, int $nodeId, string $lane): int
+    {
+        $laneOffset = $lane === 'backup' ? 1 : 0;
+        return 43000 + abs((($pointId * 1009) + ($combinationId * 131) + ($nodeId * 17) + $laneOffset) % 2000);
+    }
+
+    /**
+     * @return array{subnet:string,slave_address:string,sidecar_address:string}
+     */
+    private function staticSidecarUplinkAddressing(int $pointId, int $combinationId, int $nodeId, string $lane): array
+    {
+        $laneOffset = $lane === 'backup' ? 1 : 0;
+        $stable = max(1, abs(($pointId * 1000003) + ($combinationId * 4099) + ($nodeId * 2) + $laneOffset));
+        $bucket = $stable % (250 * 64);
+        $octet3 = 1 + intdiv($bucket, 64);
+        $networkBase = ($bucket % 64) * 4;
+        return [
+            'subnet' => '10.240.' . $octet3 . '.' . $networkBase . '/30',
+            'sidecar_address' => '10.240.' . $octet3 . '.' . ($networkBase + 1),
+            'slave_address' => '10.240.' . $octet3 . '.' . ($networkBase + 2),
+        ];
+    }
+
+    private function staticSidecarUplinkInterfaceName(int $pointId, int $combinationId, int $nodeId, string $laneSuffix): string
+    {
+        $name = 'lws' . $pointId . 'c' . $combinationId . 'n' . $nodeId . $laneSuffix;
+        if (strlen($name) <= 15) {
+            return $name;
+        }
+        $hash = substr(hash('crc32b', $pointId . ':' . $combinationId . ':' . $nodeId . ':' . $laneSuffix), 0, 5);
+        return substr('lws' . $pointId . 'n' . $nodeId . $laneSuffix . $hash, 0, 15);
+    }
+
+    private function stableStaticSidecarUplinkPort(int $sidecarListenPort, int $portRangeEnd, int $pointId, int $combinationId, int $nodeId, string $lane): int
+    {
+        if ($sidecarListenPort <= 0 || $portRangeEnd <= $sidecarListenPort) {
+            return 0;
+        }
+        $rangeSize = $portRangeEnd - $sidecarListenPort;
+        $laneOffset = $lane === 'backup' ? 1 : 0;
+        $stableIndex = abs((($pointId * 1009) + ($combinationId * 131) + ($nodeId * 2) + $laneOffset) % $rangeSize);
+        return $sidecarListenPort + 1 + $stableIndex;
+    }
+
+    private function staticSidecarCombinationUsesCf(array $combination): bool
+    {
+        foreach (['backend_mode', 'connection_type', 'client_mode'] as $key) {
+            $value = strtolower(trim((string) ($combination[$key] ?? '')));
+            if ($value !== '' && str_starts_with($value, 'cf')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function staticSidecarCfPathPrefix(int $pointId, int $combinationId, int $nodeId, string $lane): string
+    {
+        return 'lws-' . $pointId . '-' . $combinationId . '-' . $nodeId . '-' . ($lane === 'backup' ? 'b' : 'p');
     }
 
     /**
@@ -7271,6 +7706,37 @@ final class ProvisioningService
     /**
      * @return array<string, mixed>
      */
+    public function mptcpRuntimeRowsForSidecarPoint(int $pointId): array
+    {
+        if ($pointId <= 0) {
+            return [];
+        }
+
+        return $this->db->fetchAll(
+            'SELECT f.id, f.path_prefix, f.target_host, f.target_port, f.transport_mode,
+                    f.bond_remote_host, f.bond_remote_port, f.backend_mode,
+                    fc.upstream_realization_mode AS chain_upstream_realization_mode,
+                    combo.self_leg_cf_transport AS forward_combination_self_leg_cf_transport
+             FROM forwards f
+             LEFT JOIN forward_chains fc ON fc.id = f.forward_chain_id
+             LEFT JOIN forward_combinations combo ON combo.id = f.forward_combination_id
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.bond_sidecar_point_id = :point_id
+               AND f.enabled = 1
+               AND f.client_mode = :client_mode
+               AND s.status = :service_status
+             ORDER BY f.id ASC',
+            [
+                'point_id' => $pointId,
+                'client_mode' => 'mptcp',
+                'service_status' => 'active',
+            ]
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function mptcpSidecarManagementForPoint(int $pointId): array
     {
         $point = $this->sidecarPointById($pointId);
@@ -7285,6 +7751,7 @@ final class ProvisioningService
              WHERE f.bond_sidecar_point_id = :point_id
                AND f.enabled = 1
                AND f.client_mode = :client_mode
+               AND (f.forward_combination_id IS NULL OR f.forward_combination_id = 0)
                AND s.status = :service_status
              ORDER BY f.id ASC',
             [
@@ -7428,6 +7895,21 @@ final class ProvisioningService
         $sidecarListenPort = $this->sidecarWireguardListenPort(is_array($point) ? $point : [], $sidecarConfig);
         $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $sidecarConfig);
         $sidecarLegPort = $this->stableSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $forwardId, $nodeId);
+        $staticSidecarUplink = $this->staticSidecarPrimaryUplinkForForwardNode($forward, $node, 'mptcp');
+        $usesStaticSidecarUplink = is_array($staticSidecarUplink) && trim((string) ($staticSidecarUplink['peer_address'] ?? '')) !== '';
+        $clientCfRelayEnabled = $this->forwardUsesCfMode($forward) && $this->nodeSupportsCfwgRelay($nodeConfig);
+        if ($clientCfRelayEnabled) {
+            $outerTransport = 'wstunnel_udp';
+        }
+        $effectiveSidecarAddress = $usesStaticSidecarUplink
+            ? trim((string) ($staticSidecarUplink['peer_address'] ?? ''))
+            : $addresses['sidecar_address'];
+        $effectiveSidecarEndpointHost = $usesStaticSidecarUplink
+            ? ''
+            : trim((string) ($point['sidecar_host'] ?? ''));
+        $effectiveSidecarEndpointPort = $usesStaticSidecarUplink
+            ? 0
+            : ($sidecarLegPort > 0 ? $sidecarLegPort : $sidecarListenPort);
 
         return [
             'enabled' => true,
@@ -7436,15 +7918,22 @@ final class ProvisioningService
             'fallback_tcp_port' => $this->stableMptcpSlavePort($nodeBaseFallback, $forwardId),
             'local_uot_udp_port' => $this->stableLocalUotUdpPort($forwardId, $nodeId),
             'outer_transport' => $outerTransport,
-            'sidecar_endpoint_host' => trim((string) ($point['sidecar_host'] ?? '')),
-            'sidecar_endpoint_port' => $sidecarLegPort > 0 ? $sidecarLegPort : $sidecarListenPort,
+            'sidecar_endpoint_host' => $effectiveSidecarEndpointHost,
+            'sidecar_endpoint_port' => $effectiveSidecarEndpointPort,
             'peer_keepalive_seconds' => max(0, (int) ($this->config->getInt('MPTCP_PEER_KEEPALIVE_SECONDS', 25) ?? 25)),
             'client_public_key' => $clientPublicKey,
             'sidecar_public_key' => $sidecarPublicKey,
             'client_address' => $addresses['client_address'],
             'slave_address' => $addresses['slave_address'],
-            'sidecar_address' => $addresses['sidecar_address'],
+            'sidecar_address' => $effectiveSidecarAddress,
             'subnet' => $addresses['subnet'],
+            'uses_static_sidecar_uplink' => $usesStaticSidecarUplink,
+            'sidecar_static_uplink' => $usesStaticSidecarUplink ? $staticSidecarUplink : [],
+            'client_cf_relay_enabled' => $clientCfRelayEnabled,
+            'client_cf_relay_listen_port' => $clientCfRelayEnabled ? $this->stableMptcpSlavePort($nodeBasePort, $forwardId) : 0,
+            'client_cf_relay_path_prefix' => $clientCfRelayEnabled ? $this->mptcpSlaveRelayPathPrefix($forwardId, $nodeId) : '',
+            'client_cf_relay_target_host' => $clientCfRelayEnabled ? '127.0.0.1' : '',
+            'client_cf_relay_target_port' => $clientCfRelayEnabled ? $this->stableMptcpSlavePort($nodeBasePort, $forwardId) : 0,
             // Slave pre-connect relay: slave opens MPTCP to sidecar on behalf of client.
             // Client only needs plain TCP to the slave's relay port.
             'slave_preconnect' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false),

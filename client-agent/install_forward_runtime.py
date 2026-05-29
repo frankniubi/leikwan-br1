@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import pathlib
 from urllib.parse import quote
 
@@ -37,6 +38,17 @@ def bonding_config(forward: dict) -> dict:
 def mptcp_config(forward: dict) -> dict:
     config = forward.get("mptcp", {})
     return config if isinstance(config, dict) else {}
+
+
+def is_ip_literal(value: object) -> bool:
+    text = str(value or "").strip().strip("[]")
+    if text == "":
+        return False
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return True
 
 
 def render_mptcp_runtime_config(forward: dict) -> dict:
@@ -994,7 +1006,8 @@ WantedBy=multi-user.target
             )
             if private_remote_port > 0:
                 remote_port = private_remote_port
-        direct_self_leg_endpoints = [
+        slave_preconnect_enabled = str(mptcp.get("slave_relay_host", "") or "").strip() != "" and int_or_default(mptcp.get("slave_relay_port"), 0) > 0
+        direct_self_leg_endpoints = [] if slave_preconnect_enabled else [
             endpoint
             for index, candidate in enumerate(selected_mptcp_self_leg_candidates(forward))
             for endpoint in [mptcp_self_leg_endpoint(candidate, forward, index + 1)]
@@ -1015,7 +1028,13 @@ WantedBy=multi-user.target
                 "display_host": "self_leg",
                 "leg_role": "primary" if index == 0 else "helper",
             })
-        if direct_legs:
+        private_wg_underlay_names = {
+            str(underlay.get("interface_name", "") or "").strip()
+            for underlay in private_self_leg_underlays
+            if isinstance(underlay, dict)
+        }
+        private_wg_underlay_present = bool(private_wg_underlay_names)
+        if direct_legs and not private_wg_underlay_present:
             remote_host = "127.0.0.1"
             remote_port = int(direct_legs[0]["local_port"])
 
@@ -1059,6 +1078,21 @@ WantedBy=multi-user.target
                 standby_endpoint.setdefault("health_role", "healthy")
                 standby_helper_mptcp_endpoints.append(standby_endpoint)
             rendered_mptcp_endpoints = preferred_private_mptcp_endpoints + standby_helper_mptcp_endpoints
+        slave_preconnect_underlay_count = 0
+        if slave_preconnect_enabled:
+            for underlay in mptcp.get("underlays", []) if isinstance(mptcp.get("underlays", []), list) else []:
+                if not isinstance(underlay, dict):
+                    continue
+                raw_legs = underlay.get("legs", [])
+                if not isinstance(raw_legs, list) or raw_legs == []:
+                    continue
+                for leg in raw_legs:
+                    if not isinstance(leg, dict):
+                        continue
+                    relay_port = int_or_default(leg.get("preconnect_relay_port"), 0)
+                    if truthy(leg.get("slave_preconnect", False)) or relay_port > 0:
+                        slave_preconnect_underlay_count += 1
+                        break
         rendered_subflow_limit = int_or_default(runtime_mptcp.get("subflow_limit"), 1)
         if direct_legs and not endpoints:
             rendered_subflow_limit = 1
@@ -1073,6 +1107,16 @@ WantedBy=multi-user.target
             "remote_port": remote_port,
             "relay_host": sidecar_relay_host,
             "relay_port": sidecar_relay_port,
+            "slave_relay_host": str(mptcp.get("slave_relay_host", "") or "").strip(),
+            "slave_relay_port": int_or_default(mptcp.get("slave_relay_port"), 0),
+            "slave_relay_uot_port": int_or_default(mptcp.get("slave_relay_uot_port") or mptcp.get("slave_uot_relay_port"), 0),
+            "slave_uot_relay_host": str(mptcp.get("slave_uot_relay_host", mptcp.get("slave_relay_host", "")) or "").strip(),
+            "slave_uot_relay_port": int_or_default(mptcp.get("slave_uot_relay_port") or mptcp.get("slave_relay_uot_port"), 0),
+            "slave_relays": mptcp.get("slave_relays", []) if isinstance(mptcp.get("slave_relays", []), list) else [],
+            "slave_relay_failure_backoff_s": int_or_default(
+                mptcp.get("slave_relay_failure_backoff_s") or mptcp.get("slave_relay_candidate_backoff_s"),
+                60,
+            ),
             "tcp_session_token": tcp_session_token,
             "udp_session_token": udp_session_token,
             "udp_mode": str(mptcp.get("udp_mode", "stream_compat") or "stream_compat"),
@@ -1090,8 +1134,12 @@ WantedBy=multi-user.target
             "tcp_wmem_max": int_or_default(mptcp.get("tcp_wmem_max"), 16777216),
             "tcp_rmem_max": int_or_default(mptcp.get("tcp_rmem_max"), 16777216),
             "speed_limit_mbps": speed_limit_mbps,
-            "bond_mode": "tcp" if direct_legs else str(mptcp.get("bond_mode", "") or ""),
-            "direct_legs": direct_legs,
+            "bond_mode": (
+                "tcp"
+                if (direct_legs and not private_wg_underlay_present) or slave_preconnect_underlay_count > 1
+                else str(mptcp.get("bond_mode", "") or "")
+            ),
+            "direct_legs": [] if private_wg_underlay_present else direct_legs,
             "endpoints": endpoints,
             "allow_tcp_fallback": truthy(mptcp.get("allow_tcp_fallback", True)),
             "manage_mptcp_endpoints": truthy(mptcp.get("manage_mptcp_endpoints", True)),
@@ -1150,12 +1198,12 @@ WantedBy=multi-user.target
         # Check for Rust MPTCP relay binary
         rust_relay_path = "/var/lib/leikwan-client-agent/leikwan-mptcp-relay"
         lines = ["#!/usr/bin/env bash", "set -euo pipefail"]
-        if direct_self_leg_endpoints or private_self_leg_underlays:
+        if (direct_self_leg_endpoints and not private_wg_underlay_present) or config_payload.get("underlays", []):
             lines.append("trap 'kill $(jobs -p) 2>/dev/null || true' EXIT")
         lines.append("unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy")
         lines.append("export NO_PROXY='*'")
         lines.append("export no_proxy='*'")
-        for index, endpoint in enumerate(direct_self_leg_endpoints):
+        for index, endpoint in enumerate([] if private_wg_underlay_present else direct_self_leg_endpoints):
             direct_target_port = int_or_default(endpoint.get("target_sidecar_port"), 0)
             if direct_target_port <= 0:
                 direct_target_port = sidecar_relay_port if sidecar_relay_port > 0 else 0
@@ -1191,8 +1239,8 @@ WantedBy=multi-user.target
                     f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 --tls-sni-override {cf_sni} --http-headers \"Host: {cf_sni}\" --http-upgrade-path-prefix \"{cf_path}\" wss://{cf_host}:{cf_port} &"
                 )
                 cf_wg_ports.append(local_udp)
-        # Slave-relayed cfwg legs: route WG UDP through the slave's CF WSS mux
-        for underlay in private_self_leg_underlays:
+        # Slave-relayed cfwg/transit legs: route WG UDP through the slave's WSS mux.
+        for underlay in config_payload.get("underlays", []):
             if not isinstance(underlay, dict):
                 continue
             for leg in underlay.get("legs", []):
@@ -1203,23 +1251,37 @@ WantedBy=multi-user.target
                 local_udp = int_or_default(leg.get("peer_udp_port"), 0)
                 slave_host = str(leg.get("slave_dial_host", "") or "").strip()
                 slave_port = int_or_default(leg.get("slave_dial_port"), 0)
-                slave_sni = str(leg.get("slave_sni_host", "") or sni).strip()
+                slave_sni = str(leg.get("slave_sni_host", "") or "").strip()
+                slave_host_header = str(leg.get("slave_host_header", "") or slave_sni or sni).strip()
+                # Direct slave IPs can RST TLS when the client sends the public service
+                # domain as SNI.  Let wstunnel use the URL IP as SNI for those direct
+                # slave dials, but keep the HTTP Host header stable for the mux route.
+                if is_ip_literal(slave_host) and slave_sni != "" and slave_sni != slave_host:
+                    slave_sni = ""
+                if slave_sni == "" and slave_host_header == "":
+                    slave_host_header = slave_host
+                slave_sni_args = f"--tls-sni-override {slave_sni} " if slave_sni != "" else ""
+                slave_host_header_args = f'--http-headers "Host: {slave_host_header}" ' if slave_host_header != "" else ""
                 slave_path = str(leg.get("slave_path_prefix", "") or "").strip().strip("/")
                 cf_target_host = str(leg.get("cf_target_host", "") or "127.0.0.1").strip()
                 cf_target_port = int_or_default(leg.get("cf_target_port"), 0)
                 if local_udp <= 0 or slave_host == "" or slave_port <= 0 or slave_path == "" or cf_target_host == "" or cf_target_port <= 0:
                     continue
                 lines.append(
-                    f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 --tls-sni-override {slave_sni} --http-headers \"Host: {slave_sni}\" --http-upgrade-path-prefix \"{slave_path}\" wss://{slave_host}:{slave_port} &"
+                    f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 {slave_sni_args}{slave_host_header_args}--http-upgrade-path-prefix \"{slave_path}\" wss://{slave_host}:{slave_port} &"
                 )
                 cf_wg_ports.append(local_udp)
         if cf_wg_ports:
             append_wait_for_local_listener(lines, cf_wg_ports)
-        lines.append(f"/usr/bin/python3 {helper_path} --config {config_path} --setup-underlays || echo \"mptcp setup-underlays returned $?; continuing to runtime listener\" >&2")
+        lines.append(
+            f"/usr/bin/python3 {helper_path} --config {config_path} --setup-underlays || "
+            f"echo \"mptcp setup-underlays returned $?; continuing to runtime listener\" >&2"
+        )
         lines.append(f'RUST_RELAY="{rust_relay_path}"')
-        lines.append(f'if [ -x "$RUST_RELAY" ]; then')
+        lines.append(f'if [ -x "$RUST_RELAY" ] && "$RUST_RELAY" --help >/dev/null 2>&1; then')
         lines.append(f'    exec "$RUST_RELAY" client --config {config_path}')
         lines.append(f'else')
+        lines.append(f'    echo "rust relay unavailable or not runnable; falling back to python mptcp client" >&2')
         lines.append(f'    exec /usr/bin/python3 {helper_path} --config {config_path}')
         lines.append(f'fi')
         start_script_path = f"/usr/local/bin/leikwan-client-start-{forward_id}.sh"

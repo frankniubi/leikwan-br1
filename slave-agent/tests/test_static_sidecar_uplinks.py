@@ -1,0 +1,493 @@
+﻿import importlib.util
+import json
+import pathlib
+import subprocess
+import sys
+import tempfile
+import unittest
+from types import SimpleNamespace
+from unittest import mock
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+
+def load_module(name: str, relative: str):
+    path = REPO_ROOT / relative
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+slave_agent_module = load_module("slave_agent_static_uplink_under_test", "slave-agent/slave_agent.py")
+
+
+class SlaveStaticSidecarUplinkTests(unittest.TestCase):
+    def make_agent(self):
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        tmp = pathlib.Path(tmp_dir.name)
+        config_path = tmp / "config.json"
+        config_path.write_text(json.dumps({
+            "master_url": "https://panel.example.com",
+            "node_token": "token",
+            "state_dir": str(tmp / "state"),
+            "systemd_dir": str(tmp / "systemd"),
+            "wireguard_config_dir": str(tmp / "wireguard"),
+            "wstunnel_bin": "/usr/local/bin/wstunnel",
+        }), encoding="utf-8")
+        return slave_agent_module.SlaveAgent(config_path)
+
+    def static_uplink_management(self, **overrides):
+        uplink = {
+            "enabled": True,
+            "interface_name": "lws4c2n19p",
+            "lane": "primary",
+            "local_address": "10.240.8.2",
+            "peer_address": "10.240.8.1",
+            "sidecar_peer_public_key": "sidecar-pub",
+            "sidecar_endpoint_host": "138.252.162.120",
+            "sidecar_endpoint_port": 14970,
+            "local_listen_port": 43123,
+            "outer_transport": "udp",
+            "peer_keepalive_seconds": 25,
+            "watchdog": {"enabled": True, "handshake_stale_seconds": 15},
+        }
+        uplink.update(overrides)
+        return {
+            "agent_config_json": {},
+            "sidecar_static_uplinks": [uplink],
+        }
+
+    def test_management_applies_static_uplinks_with_pinned_listen_port(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        commands: list[str] = []
+        written: dict[str, str] = {}
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+            if command == "wg show lws4c2n19p latest-handshakes":
+                return SimpleNamespace(returncode=0, stdout="peer 999\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        def fake_write(path, content):
+            written[str(path)] = content
+            return True
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                        with mock.patch.object(agent, "write_text_if_changed", side_effect=fake_write):
+                            agent.apply_management_state(self.static_uplink_management())
+
+        rendered = "\n".join(written.values())
+        self.assertIn("ListenPort = 43123", rendered)
+        self.assertIn("Address = 10.240.8.2/32", rendered)
+        self.assertIn("Endpoint = 138.252.162.120:14970", rendered)
+        self.assertIn("AllowedIPs = 10.240.8.1/32", rendered)
+        self.assertIn("systemctl restart wg-quick@lws4c2n19p.service", commands)
+
+    def test_management_derives_stable_listen_port_when_panel_payload_is_older(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        written: dict[str, str] = {}
+        management = self.static_uplink_management(
+            forward_combination_id=2,
+            sidecar_point_id=4,
+            node_id=19,
+        )
+        del management["sidecar_static_uplinks"][0]["local_listen_port"]
+
+        def fake_run(command: str, check: bool = True):
+            if command == "wg show lws4c2n19p latest-handshakes":
+                return SimpleNamespace(returncode=0, stdout="peer 999\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                        with mock.patch.object(agent, "write_text_if_changed", side_effect=lambda path, content: written.setdefault(str(path), content) is not None):
+                            agent.apply_management_state(management)
+
+        rendered = "\n".join(written.values())
+        self.assertIn("ListenPort = 43621", rendered)
+
+    def test_wstunnel_udp_uplink_does_not_bind_wireguard_to_local_wstunnel_port(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        written: dict[str, str] = {}
+        management = self.static_uplink_management(
+            outer_transport="wstunnel_udp",
+            sidecar_endpoint_host="127.0.0.1",
+            sidecar_endpoint_port=44499,
+            local_listen_port=44499,
+            local_wstunnel_udp_port=44499,
+            cf_target_host="127.0.0.1",
+            cf_target_port=14994,
+            cf_dial_host="185.220.238.143",
+            cf_dial_port=2053,
+            cf_path_prefix="lws-5-1-19-p",
+        )
+
+        def fake_run(command: str, check: bool = True):
+            if command == "wg show lws4c2n19p latest-handshakes":
+                return SimpleNamespace(returncode=0, stdout="peer 999\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                        with mock.patch.object(agent, "write_text_if_changed", side_effect=lambda path, content: written.setdefault(str(path), content) is not None):
+                            with mock.patch.object(agent, "ensure_sidecar_wstunnel_udp_client_service"):
+                                agent.apply_management_state(management)
+
+        rendered = "\n".join(written.values())
+        self.assertNotIn("ListenPort = 44499", rendered)
+        self.assertIn("Endpoint = 127.0.0.1:44499", rendered)
+
+    def test_wstunnel_udp_static_uplink_uses_cf_location_best_ip_when_available(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        management = self.static_uplink_management(
+            outer_transport="wstunnel_udp",
+            sidecar_endpoint_host="127.0.0.1",
+            sidecar_endpoint_port=44499,
+            local_listen_port=44499,
+            local_wstunnel_udp_port=44499,
+            cf_target_host="127.0.0.1",
+            cf_target_port=14994,
+            cf_dial_host="185.220.238.143",
+            cf_dial_port=2053,
+            cf_sni_host="nrt.example.com",
+            cf_path_prefix="lws-5-1-19-p",
+            cf_mode={
+                "location_group_id": 7,
+                "cidrs": ["162.159.39.0/24"],
+                "probe_mode": "tcp",
+                "dial_port": 2053,
+            },
+        )
+        service_args = {}
+
+        def fake_run(command: str, check: bool = True):
+            if command == "wg show lws4c2n19p latest-handshakes":
+                return SimpleNamespace(returncode=0, stdout="peer 999\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        def fake_ensure(*args):
+            service_args["args"] = args
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                        with mock.patch.object(agent, "write_text_if_changed", return_value=True):
+                            with mock.patch.object(agent, "select_cf_location_ip", return_value={"selected_ip": "162.159.39.16"}) as select_mock:
+                                with mock.patch.object(agent, "ensure_sidecar_wstunnel_udp_client_service", side_effect=fake_ensure):
+                                    agent.apply_management_state(management)
+
+        select_mock.assert_called_once()
+        self.assertEqual("162.159.39.16", service_args["args"][4])
+        self.assertEqual("nrt.example.com", service_args["args"][6])
+
+    def test_static_uplink_start_falls_back_to_wg_quick_on_systemctl_timeout(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        commands: list[str] = []
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+            if command == "systemctl is-active --quiet wg-quick@lws4c2n19p.service":
+                return SimpleNamespace(returncode=3, stdout="", stderr="")
+            if command == "systemctl start wg-quick@lws4c2n19p.service":
+                return SimpleNamespace(returncode=124, stdout="", stderr="command timed out after 30s")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                        with mock.patch.object(agent, "write_text_if_changed", return_value=False):
+                            agent.apply_management_state(self.static_uplink_management())
+
+        self.assertIn("systemctl start wg-quick@lws4c2n19p.service", commands)
+        self.assertIn("wg-quick up lws4c2n19p", commands)
+
+    def test_watchdog_restarts_only_after_a_seen_handshake_goes_stale(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        commands: list[str] = []
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+            if command == "wg show lws4c2n19p latest-handshakes":
+                return SimpleNamespace(returncode=0, stdout="peer 100\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                        with mock.patch.object(agent, "write_text_if_changed", return_value=False):
+                            agent.apply_management_state(self.static_uplink_management())
+
+        self.assertIn("systemctl restart wg-quick@lws4c2n19p.service", commands)
+
+    def test_watchdog_does_not_restart_never_handshaken_lane(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        commands: list[str] = []
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+            if command == "wg show lws4c2n19p latest-handshakes":
+                return SimpleNamespace(returncode=0, stdout="peer 0\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                        with mock.patch.object(agent, "write_text_if_changed", return_value=False):
+                            agent.apply_management_state(self.static_uplink_management())
+
+        self.assertNotIn("systemctl restart wg-quick@lws4c2n19p.service", commands)
+
+    def test_run_command_returns_timeout_result_when_check_false(self):
+        with mock.patch.object(
+            slave_agent_module.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd="systemctl start slow.service", timeout=30, output="partial", stderr="late"),
+        ):
+            result = slave_agent_module.run_command("systemctl start slow.service", check=False)
+
+        self.assertEqual(124, result.returncode)
+        self.assertIn("timed out", result.stderr)
+
+
+    def test_selector_scores_lanes_by_allowed_ip_ping_and_restarts_degraded_active_lane(self):
+        agent = self.make_agent()
+        selector = {
+            "enabled": True,
+            "selector_port": 45200,
+            "sidecar_service_port": 9000,
+            "candidates": [
+                {
+                    "lane": "primary",
+                    "interface_name": "lws4c2n19p",
+                    "ping_interface": "lws4c2n19p",
+                    "ping_address": "10.240.8.1",
+                    "sidecar_address": "10.240.8.1",
+                    "sidecar_port": 9000,
+                },
+                {
+                    "lane": "backup",
+                    "interface_name": "lws4c2n19b",
+                    "ping_interface": "lws4c2n19b",
+                    "ping_address": "10.240.8.5",
+                    "sidecar_address": "10.240.8.5",
+                    "sidecar_port": 9000,
+                },
+            ],
+            "max_active_avg_ms": 70,
+            "switch_improvement_ms": 20,
+            "restart_cooldown_seconds": 60,
+        }
+        commands: list[str] = []
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+            if "lws4c2n19p" in command and "10.240.8.1" in command:
+                return SimpleNamespace(returncode=0, stdout="""
+--- 10.240.8.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2002ms
+rtt min/avg/max/mdev = 95.000/105.000/120.000/10.000 ms
+""", stderr="")
+            if "lws4c2n19b" in command and "10.240.8.5" in command:
+                return SimpleNamespace(returncode=0, stdout="""
+--- 10.240.8.5 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2002ms
+rtt min/avg/max/mdev = 35.000/38.000/42.000/2.000 ms
+""", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    state = agent.evaluate_sidecar_uplink_selector(selector, previous_state={"active_lane": "primary", "last_restart_at": {}})
+
+        self.assertEqual("backup", state["active_lane"])
+        self.assertEqual("latency_switch", state["switch_reason"])
+        self.assertEqual("10.240.8.5", state["active_target_host"])
+        self.assertEqual(9000, state["active_target_port"])
+        self.assertIn("systemctl restart leikwan-wgcf-lws4c2n19p.service", commands)
+        self.assertIn("systemctl restart wg-quick@lws4c2n19p.service", commands)
+
+    def test_selector_keeps_active_lane_when_backup_is_not_better_enough(self):
+        agent = self.make_agent()
+        selector = {
+            "enabled": True,
+            "sidecar_service_port": 9000,
+            "candidates": [
+                {"lane": "primary", "interface_name": "lws4c2n19p", "ping_interface": "lws4c2n19p", "ping_address": "10.240.8.1", "sidecar_address": "10.240.8.1", "sidecar_port": 9000},
+                {"lane": "backup", "interface_name": "lws4c2n19b", "ping_interface": "lws4c2n19b", "ping_address": "10.240.8.5", "sidecar_address": "10.240.8.5", "sidecar_port": 9000},
+            ],
+            "max_active_avg_ms": 70,
+            "switch_improvement_ms": 20,
+        }
+
+        def fake_run(command: str, check: bool = True):
+            if "lws4c2n19p" in command:
+                return SimpleNamespace(returncode=0, stdout="rtt min/avg/max/mdev = 40.000/45.000/50.000/3.000 ms\n3 packets transmitted, 3 received, 0% packet loss", stderr="")
+            if "lws4c2n19b" in command:
+                return SimpleNamespace(returncode=0, stdout="rtt min/avg/max/mdev = 35.000/38.000/42.000/2.000 ms\n3 packets transmitted, 3 received, 0% packet loss", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    state = agent.evaluate_sidecar_uplink_selector(selector, previous_state={"active_lane": "primary"})
+
+        self.assertEqual("primary", state["active_lane"])
+        self.assertEqual("keep_active", state["switch_reason"])
+        self.assertEqual("10.240.8.1", state["active_target_host"])
+
+    def test_selector_default_hysteresis_switches_when_active_is_modestly_worse(self):
+        agent = self.make_agent()
+        selector = {
+            "enabled": True,
+            "sidecar_service_port": 9000,
+            "candidates": [
+                {"lane": "primary", "interface_name": "lws4c2n19p", "ping_interface": "lws4c2n19p", "ping_address": "10.240.8.1", "sidecar_address": "10.240.8.1", "sidecar_port": 9000},
+                {"lane": "backup", "interface_name": "lws4c2n19b", "ping_interface": "lws4c2n19b", "ping_address": "10.240.8.5", "sidecar_address": "10.240.8.5", "sidecar_port": 9000},
+            ],
+            "max_active_avg_ms": 70,
+        }
+
+        def fake_run(command: str, check: bool = True):
+            if "lws4c2n19p" in command:
+                return SimpleNamespace(returncode=0, stdout="rtt min/avg/max/mdev = 26.000/28.000/30.000/0.050 ms\n3 packets transmitted, 3 received, 0% packet loss", stderr="")
+            if "lws4c2n19b" in command:
+                return SimpleNamespace(returncode=0, stdout="rtt min/avg/max/mdev = 20.000/22.000/24.000/0.050 ms\n3 packets transmitted, 3 received, 0% packet loss", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    state = agent.evaluate_sidecar_uplink_selector(selector, previous_state={"active_lane": "primary"})
+
+        self.assertEqual("backup", state["active_lane"])
+        self.assertEqual("latency_switch", state["switch_reason"])
+        self.assertEqual("10.240.8.5", state["active_target_host"])
+
+    def test_selector_service_restarts_when_config_changes_but_unit_is_unchanged(self):
+        agent = self.make_agent()
+        service_name = "wstunnel-svc-2-571"
+        config_path = agent.sidecar_uplink_selector_config_path(service_name)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        old_selector = {
+            "enabled": True,
+            "selector_port": 45621,
+            "sidecar_service_port": 9000,
+            "switch_improvement_ms": 15,
+            "candidates": [],
+        }
+        config_path.write_text(json.dumps(old_selector, ensure_ascii=False, indent=2), encoding="utf-8")
+        new_selector = dict(old_selector)
+        new_selector["switch_improvement_ms"] = 3
+        commands: list[str] = []
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(agent, "write_text_if_changed", return_value=False):
+                    agent.ensure_sidecar_uplink_selector(service_name, new_selector)
+
+        self.assertIn("systemctl restart wstunnel-svc-2-571-sidecar-selector.service", commands)
+
+    def test_selector_unit_tracks_agent_version_so_binary_updates_restart_selector(self):
+        agent = self.make_agent()
+        unit = agent.render_sidecar_uplink_selector_unit("wstunnel-svc-2-571", {"selector_port": 45621})
+        self.assertIn(f"AgentVersion={slave_agent_module.AGENT_VERSION}", unit)
+
+    def test_run_sends_heartbeat_before_slow_startup_reconciliation(self):
+        agent = self.make_agent()
+        events: list[str] = []
+
+        class StopLoop(Exception):
+            pass
+
+        with mock.patch.object(agent, "refresh_network_identity", side_effect=lambda force=False: events.append("identity")):
+            with mock.patch.object(agent, "provision_inline_tls_assets", side_effect=lambda: events.append("tls")):
+                with mock.patch.object(agent, "send_heartbeat", side_effect=lambda: events.append("heartbeat")):
+                    with mock.patch.object(agent, "reconcile_runtime", side_effect=lambda: events.append("reconcile")):
+                        with mock.patch.object(agent, "cleanup_orphan_mptcp_underlays", side_effect=lambda: events.append("cleanup")):
+                            with mock.patch.object(agent, "report_usage", side_effect=lambda: events.append("usage")):
+                                with mock.patch.object(agent, "process_tasks", side_effect=lambda: events.append("tasks")):
+                                    with mock.patch.object(slave_agent_module.time, "sleep", side_effect=StopLoop):
+                                        with self.assertRaises(StopLoop):
+                                            agent.run()
+
+        self.assertLess(events.index("heartbeat"), events.index("reconcile"))
+
+    def test_publish_task_uses_selector_port_as_local_backend_target(self):
+        agent = self.make_agent()
+        task = {"service_id": 6, "forward_id": 59, "endpoint_id": 571, "payload": {}}
+        payload = {
+            "target": "10.240.8.1:9000",
+            "listen_port": 7000,
+            "path_prefix": "f59",
+            "route_key": "f59",
+            "transport_mode": "tcp+udp",
+            "ingress_protocol": "plain_tcp_mux",
+            "backend_protocol": "tcp_relay",
+            "ingress_auth_token": "token",
+            "publish_bond_runtime": True,
+            "sidecar_uplink": {"enabled": True, "relay_target": "10.240.8.1:9000"},
+            "sidecar_uplink_selector": {
+                "enabled": True,
+                "selector_port": 45200,
+                "sidecar_service_port": 9000,
+                "candidates": [
+                    {"lane": "primary", "interface_name": "lws4c2n19p", "ping_interface": "lws4c2n19p", "ping_address": "10.240.8.1", "sidecar_address": "10.240.8.1", "sidecar_port": 9000},
+                    {"lane": "backup", "interface_name": "lws4c2n19b", "ping_interface": "lws4c2n19b", "ping_address": "10.240.8.5", "sidecar_address": "10.240.8.5", "sidecar_port": 9000},
+                ],
+            },
+        }
+        selector_calls: list[dict] = []
+
+        with mock.patch.object(agent, "ensure_sidecar_uplink_selector", side_effect=lambda service, selector: selector_calls.append(selector)):
+            with mock.patch.object(agent, "apply_sidecar_uplink"):
+                with mock.patch.object(agent, "ensure_nft_table"):
+                    with mock.patch.object(agent, "delete_nft_rules"):
+                        with mock.patch.object(agent, "add_nft_rules"):
+                            with mock.patch.object(agent, "ensure_backend_service"):
+                                with mock.patch.object(agent, "sync_listener"):
+                                    with mock.patch.object(agent, "write_filter_marker", return_value={"filter_profile": "off"}):
+                                        result = agent.publish_task(task, payload)
+
+        self.assertEqual(45200, selector_calls[0]["selector_port"])
+        self.assertEqual(45200, result["selector_port"])
+        metadata = agent.load_service_metadata("wstunnel-svc-6-571")
+        self.assertEqual("127.0.0.1:45200", metadata["target"])
+        self.assertTrue(metadata["sidecar_uplink_selector"]["enabled"])
+
+
+if __name__ == "__main__":
+    unittest.main()

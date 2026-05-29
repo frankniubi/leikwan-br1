@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.05.17.2"
+AGENT_VERSION = "2026.05.29.7"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -463,7 +463,7 @@ WantedBy=multi-user.target
         service_name = f"leikwan-cf-slave-{interface_name}"
 
         # Allocate a backend port for this service
-        backend_port = self.allocate_cf_backend_port(service_name)
+        backend_port = self.reconcile_cf_backend_port(service_name, self.allocate_cf_backend_port(service_name))
 
         # Create the wstunnel backend service
         target = f"{target_host}:{target_port}"
@@ -672,7 +672,11 @@ WantedBy=multi-user.target
             value = patch.get("disable_auto_update")
             enabled = str(value).strip().lower() in {"1", "true", "yes", "on"} if not isinstance(value, bool) else value
             if value is None:
-                if "disable_auto_update" in self.config:
+                if self.local_auto_update_locked():
+                    if bool(self.config.get("disable_auto_update", False)) is not True:
+                        self.config["disable_auto_update"] = True
+                        changed = True
+                elif "disable_auto_update" in self.config:
                     self.config.pop("disable_auto_update", None)
                     changed = True
             elif bool(self.config.get("disable_auto_update", False)) != enabled:
@@ -691,6 +695,18 @@ WantedBy=multi-user.target
         if "bond-sidecar" in service_name:
             return service_name.replace("bond-sidecar", "mptcp-sidecar", 1)
         return service_name + "-mptcp"
+
+    def local_auto_update_locked(self) -> bool:
+        if bool(self.config.get("disable_auto_update_lock", False)):
+            return True
+        lock_path = pathlib.Path(str(self.config.get("disable_auto_update_lock_path", "/etc/leikwan-sidecar/disable-auto-update.lock") or ""))
+        try:
+            return lock_path.exists()
+        except OSError:
+            return False
+
+    def auto_update_disabled(self) -> bool:
+        return bool(self.config.get("disable_auto_update", False)) or self.local_auto_update_locked()
 
     def mptcp_runtime_config_path(self) -> pathlib.Path:
         primary = self.runtime_config_path()
@@ -863,9 +879,100 @@ WantedBy=multi-user.target
         if existing > 0 and existing not in used and existing not in reserved:
             return existing
         for port in range(26000, 26100):
-            if port not in used and port not in reserved:
+            if port not in used and port not in reserved and not self.cf_backend_port_listening(port):
                 return port
         raise RuntimeError("no free sidecar cf backend port available")
+
+    @staticmethod
+    def cf_backend_port_listening(port: int) -> bool:
+        if port <= 0 or os.name == "nt":
+            return False
+        try:
+            result = subprocess.run(
+                f"ss -ltn 'sport = :{port}'",
+                shell=True,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0 and "LISTEN" in result.stdout
+        except OSError:
+            return False
+
+    def reconcile_cf_backend_port(self, service_name: str, backend_port: int, reserved_ports: set[int] | None = None) -> int:
+        if backend_port <= 0:
+            return self.allocate_cf_backend_port(service_name, reserved_ports)
+        reserved = set(reserved_ports or set())
+        if backend_port in reserved:
+            return self.allocate_cf_backend_port(service_name, reserved)
+        service_active = self.systemd_is_active(service_name)
+        if service_active:
+            active_pid_result = subprocess.run(
+                f"systemctl show {service_name}.service -p MainPID --value",
+                shell=True,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            active_pid = int(active_pid_result.stdout.strip() or "0") if active_pid_result.returncode == 0 and active_pid_result.stdout.strip().isdigit() else 0
+            if active_pid <= 0:
+                return backend_port
+            try:
+                owner_result = subprocess.run(
+                    f"ss -ltnp 'sport = :{backend_port}'",
+                    shell=True,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if owner_result.returncode == 0 and str(active_pid) in owner_result.stdout:
+                    return backend_port
+            except OSError:
+                return backend_port
+        else:
+            try:
+                owner_result = subprocess.run(
+                    f"ss -ltnp 'sport = :{backend_port}'",
+                    shell=True,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if owner_result.returncode != 0 or "LISTEN" not in owner_result.stdout:
+                    try:
+                        with socket.create_connection(("127.0.0.1", backend_port), timeout=0.15):
+                            pass
+                    except ConnectionRefusedError:
+                        return backend_port
+                    except OSError:
+                        return backend_port
+            except OSError:
+                return backend_port
+        logging.warning("CF backend port %s for %s is occupied by another process; reallocating", backend_port, service_name)
+        for stale_service in [
+            str(item.get("service_name", "") or "")
+            for item in self.load_managed_cf_metadata()
+            if isinstance(item, dict)
+            and str(item.get("service_name", "") or "") != service_name
+            and int(item.get("backend_port", 0) or 0) == backend_port
+        ]:
+            if stale_service != "":
+                self.disable_runtime(stale_service, self.unit_path_for(stale_service))
+        metadata = self.load_managed_cf_metadata()
+        metadata = [
+            item
+            for item in metadata
+            if not (
+                isinstance(item, dict)
+                and (
+                    str(item.get("service_name", "") or "") == service_name
+                    or int(item.get("backend_port", 0) or 0) == backend_port
+                )
+            )
+        ]
+        self.save_managed_cf_metadata(metadata)
+        reserved.add(backend_port)
+        return self.allocate_cf_backend_port(service_name, reserved)
 
     def render_cf_backend_unit(self, service_name: str, backend_port: int, target: str, path_prefix: str) -> str:
         return f"""[Unit]
@@ -974,7 +1081,7 @@ WantedBy=multi-user.target
 
         explicit_request_token = str(management.get("agent_update_request_token", "") or "")
         auto_request_token = self.auto_update_request_token(management)
-        if bool(self.config.get("disable_auto_update", False)):
+        if self.auto_update_disabled():
             explicit_request_token = ""
             auto_request_token = ""
         update_state = self.load_update_state()
@@ -1051,14 +1158,20 @@ WantedBy=multi-user.target
         sidecar_uplinks = management.get("sidecar_uplinks", []) if isinstance(management.get("sidecar_uplinks", []), list) else []
         current_uplink_state = self.load_sidecar_uplink_state()
         active_interfaces: set[str] = set()
+        static_uplink_point_ids: set[int] = set()
         for uplink in sidecar_uplinks:
             if not isinstance(uplink, dict):
                 continue
             interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
             if interface_name == "":
                 continue
+            point_for_uplink = int(uplink.get("sidecar_point_id", point_id) or point_id)
+            if interface_name.startswith("lws") and point_for_uplink > 0:
+                static_uplink_point_ids.add(point_for_uplink)
             active_interfaces.add(interface_name)
             self.apply_slave_sidecar_uplink(uplink)
+        for cleanup_point_id in sorted(static_uplink_point_ids):
+            self.cleanup_stale_mptcp_transit_interfaces(cleanup_point_id)
         existing_slaves = current_uplink_state.get("slaves", {}) if isinstance(current_uplink_state.get("slaves", {}), dict) else {}
         for slave_id, info in list(existing_slaves.items()):
             iface = str((info if isinstance(info, dict) else {}).get("interface_name", "") or "").strip()[:15]
@@ -1073,8 +1186,7 @@ WantedBy=multi-user.target
                 interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
                 if interface_name == "":
                     continue
-                slave_key = interface_name.split("-")[-1]
-                next_state["slaves"][slave_key] = {"interface_name": interface_name}
+                next_state["slaves"][interface_name] = {"interface_name": interface_name}
             self.save_sidecar_uplink_state(next_state)
 
         self_leg_client_peers = management.get("self_leg_client_peers", []) if isinstance(management.get("self_leg_client_peers", []), list) else []
@@ -1116,10 +1228,20 @@ WantedBy=multi-user.target
                 self.disable_runtime(cf_service_name, cf_unit_path, runtime_config_path=cf_routes_path)
                 self.save_managed_cf_metadata([])
             else:
+                previous_cf_metadata = self.load_managed_cf_metadata()
                 previous_cf_services = {
                     str(item.get("service_name", "") or "")
-                    for item in self.load_managed_cf_metadata()
+                    for item in previous_cf_metadata
                     if isinstance(item, dict) and str(item.get("service_name", "") or "") != ""
+                }
+                previous_slave_transit_services = {
+                    str(item.get("service_name", "") or "")
+                    for item in previous_cf_metadata
+                    if (
+                        isinstance(item, dict)
+                        and str(item.get("backend_type", "") or "") == "slave_transit_cf_wg"
+                        and str(item.get("service_name", "") or "") != ""
+                    )
                 }
                 rendered_routes: list[dict[str, Any]] = []
                 reserved_cf_backend_ports: set[int] = set()
@@ -1178,12 +1300,13 @@ WantedBy=multi-user.target
                             "shadow_route_key": str(route.get("shadow_route_key", "") or ""),
                         }
                     )
-                for stale_service in sorted(previous_cf_services - active_cf_services):
+                for stale_service in sorted(previous_cf_services - active_cf_services - previous_slave_transit_services):
                     if self.systemd_available():
                         self.disable_runtime(stale_service, self.unit_path_for(stale_service))
 
                 # Add slave transit CF backends to rendered routes
                 # These are created by apply_slave_sidecar_uplink and registered in CF metadata
+                slave_transit_service_names: set[str] = set()
                 for metadata_entry in self.load_managed_cf_metadata():
                     if not isinstance(metadata_entry, dict):
                         continue
@@ -1195,20 +1318,49 @@ WantedBy=multi-user.target
                         # Already processed
                         continue
                     # Add this slave transit backend to the routes
+                    backend_port = self.reconcile_cf_backend_port(
+                        service_name,
+                        int(metadata_entry.get("backend_port", 0) or 0),
+                        reserved_cf_backend_ports,
+                    )
+                    reserved_cf_backend_ports.add(backend_port)
+                    path_prefix = str(metadata_entry.get("path_prefix", "") or "")
+                    target = str(metadata_entry.get("target", "") or "")
+                    if self.systemd_available() and path_prefix != "" and target != "":
+                        unit_body = self.render_cf_backend_unit(service_name, backend_port, target, path_prefix)
+                        unit_changed = write_text_if_changed(self.unit_path_for(service_name), unit_body)
+                        if unit_changed:
+                            subprocess.run("systemctl daemon-reload", shell=True, check=False)
+                        if unit_changed or not self.systemd_is_active(service_name):
+                            subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
+                            subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
                     rendered_routes.append({
                         "forward_id": 0,  # Slave transit backends don't have a forward_id
                         "service_name": service_name,
-                        "path_prefix": str(metadata_entry.get("path_prefix", "") or ""),
-                        "target": str(metadata_entry.get("target", "") or ""),
+                        "path_prefix": path_prefix,
+                        "target": target,
                         "backend_host": "127.0.0.1",
-                        "backend_port": int(metadata_entry.get("backend_port", 0) or 0),
+                        "backend_port": backend_port,
                         "backend_mode": "wstunnel",
                         "transport_mode": "udp",
                         "shadow_route_key": "",
+                        "interface_name": str(metadata_entry.get("interface_name", "") or ""),
+                        "backend_type": "slave_transit_cf_wg",
                     })
                     active_cf_services.add(service_name)
+                    slave_transit_service_names.add(service_name)
 
-                self.save_managed_cf_metadata(rendered_routes)
+                cf_metadata = self.load_managed_cf_metadata()
+                slave_transit_metadata = [
+                    item
+                    for item in cf_metadata
+                    if (
+                        isinstance(item, dict)
+                        and str(item.get("backend_type", "") or "") == "slave_transit_cf_wg"
+                        and str(item.get("service_name", "") or "") not in slave_transit_service_names
+                    )
+                ]
+                self.save_managed_cf_metadata(rendered_routes + slave_transit_metadata)
                 cf_routes_path.write_text(json.dumps({"routes": rendered_routes}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
                 mptcp_forward_routes: list[dict[str, Any]] = []
                 if isinstance(mptcp_runtime, dict):
@@ -1560,7 +1712,7 @@ WantedBy=multi-user.target
     def auto_update_request_token(self, management: dict) -> str:
         if not isinstance(management, dict):
             return ""
-        if bool(self.config.get("disable_auto_update", False)):
+        if self.auto_update_disabled():
             return ""
 
         desired_agent_version = str(management.get("desired_sidecar_agent_version", "") or "").strip()

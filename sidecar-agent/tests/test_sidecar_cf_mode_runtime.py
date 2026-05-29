@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
@@ -128,6 +129,91 @@ class SidecarCfModeRuntimeTests(unittest.TestCase):
             self.assertIn("wstunnel server ws://127.0.0.1:", cfwg_unit)
             self.assertIn("--restrict-to 127.0.0.1:14969", cfwg_unit)
             self.assertIn("--restrict-http-upgrade-path-prefix base.cfwg", cfwg_unit)
+
+    def test_cf_runtime_preserves_slave_transit_metadata_across_heartbeats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            agent.save_managed_cf_metadata([
+                {
+                    "service_name": "leikwan-cf-slave-lws5c1n12p",
+                    "backend_port": 26012,
+                    "path_prefix": "lws-5-1-12-p",
+                    "target": "127.0.0.1:14980",
+                    "interface_name": "lws5c1n12p",
+                    "backend_type": "slave_transit_cf_wg",
+                }
+            ])
+            management = {
+                "cf_runtime": {
+                    "listen_host": "0.0.0.0",
+                    "listen_port": 443,
+                    "tls_cert_path": "/etc/ssl/cf/fullchain.pem",
+                    "tls_key_path": "/etc/ssl/cf/privkey.pem",
+                    "routes": [
+                        {
+                            "forward_id": 47,
+                            "service_name": "cf-forward-47",
+                            "path_prefix": "base",
+                            "target": "127.0.0.1:8899",
+                        }
+                    ],
+                }
+            }
+
+            disabled_services: list[str] = []
+            with mock.patch.object(
+                agent,
+                "disable_runtime",
+                side_effect=lambda service_name, *_args, **_kwargs: disabled_services.append(service_name),
+            ):
+                agent.apply_management(management)
+                agent.apply_management(management)
+
+            persisted = json.loads(agent.cf_managed_metadata_path().read_text(encoding="utf-8"))
+            slave_entries = [
+                item
+                for item in persisted
+                if item.get("service_name") == "leikwan-cf-slave-lws5c1n12p"
+            ]
+            self.assertEqual(len(slave_entries), 1)
+            self.assertEqual(slave_entries[0]["backend_type"], "slave_transit_cf_wg")
+            self.assertNotIn("leikwan-cf-slave-lws5c1n12p", disabled_services)
+
+            routes = json.loads((agent.state_dir / "cf-routes-443.json").read_text(encoding="utf-8"))["routes"]
+            self.assertTrue(any(route["service_name"] == "leikwan-cf-slave-lws5c1n12p" for route in routes))
+
+    def test_slave_transit_backend_port_is_reallocated_when_occupied_by_wrong_service(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            agent.save_managed_cf_metadata([
+                {
+                    "service_name": "leikwan-cf-slave-lws5c1n12p",
+                    "backend_port": 26012,
+                    "path_prefix": "lws-5-1-12-p",
+                    "target": "127.0.0.1:14980",
+                    "interface_name": "lws5c1n12p",
+                    "backend_type": "slave_transit_cf_wg",
+                },
+                {
+                    "service_name": "cf-forward-47",
+                    "backend_port": 26012,
+                    "path_prefix": "base",
+                    "target": "127.0.0.1:8899",
+                },
+            ])
+
+            disabled = []
+            with mock.patch.object(agent, "systemd_is_active", return_value=False):
+                with mock.patch.object(agent, "disable_runtime", side_effect=lambda service_name, *_args: disabled.append(service_name)):
+                    with mock.patch.object(sidecar_agent.subprocess, "run") as run_mock:
+                        run_mock.return_value.returncode = 0
+                        run_mock.return_value.stdout = "LISTEN 0 1024 127.0.0.1:26012 users:((\"wstunnel\",pid=123,fd=9))"
+                        port = agent.reconcile_cf_backend_port("leikwan-cf-slave-lws5c1n12p", 26012)
+
+            self.assertEqual(26000, port)
+            self.assertIn("cf-forward-47", disabled)
+            metadata = json.loads(agent.cf_managed_metadata_path().read_text(encoding="utf-8"))
+            self.assertFalse(any(item.get("service_name") == "leikwan-cf-slave-lws5c1n12p" for item in metadata))
 
 
 if __name__ == "__main__":

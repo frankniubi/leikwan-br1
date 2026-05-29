@@ -23,6 +23,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('slave-agent/slave_agent.py', 'text/x-python; charset=utf-8');
     }
 
+    public function slavePreconnectRelay(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('slave-agent/preconnect_relay.py', 'text/x-python; charset=utf-8');
+    }
+
     public function installSlave(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/install-slave.sh');
@@ -229,7 +234,7 @@ final class ArtifactController extends BaseController
     {
         return Response::json(200, [
             'component' => 'slave',
-            'manifest' => $this->manifestFor('slave_agent', 'slave_installer', 'wstunnel_linux_amd64', 'wstunnel_linux_arm64', 'leikwan_leg_relay_linux_amd64'),
+            'manifest' => $this->manifestFor('slave_agent', 'slave_preconnect_relay', 'slave_installer', 'wstunnel_linux_amd64', 'wstunnel_linux_arm64', 'leikwan_leg_relay_linux_amd64'),
         ]);
     }
 

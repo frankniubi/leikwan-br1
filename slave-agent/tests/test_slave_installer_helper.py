@@ -53,6 +53,19 @@ class SlaveInstallerHelperTests(unittest.TestCase):
         self.assertIn('if [[ "$FORCE_REGISTER" == "1" ]]; then', source)
         self.assertIn('if [[ -z "$NODE_TOKEN" || "$FORCE_REGISTER" == "1" ]]; then', source)
 
+    def test_slave_installer_installs_preconnect_relay_helper(self) -> None:
+        source = (REPO_ROOT / "install" / "install-slave.sh").read_text(encoding="utf-8")
+        artifact_controller = (REPO_ROOT / "master" / "src" / "Controllers" / "ArtifactController.php").read_text(encoding="utf-8")
+        bootstrap = (REPO_ROOT / "master" / "src" / "Bootstrap.php").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'download_atomic "$ARTIFACT_BASE/artifacts/leikwan-preconnect-relay.py" "$BIN_DIR/leikwan-preconnect-relay.py"',
+            source,
+        )
+        self.assertIn("public function slavePreconnectRelay", artifact_controller)
+        self.assertIn("return $this->serveRepoFile('slave-agent/preconnect_relay.py', 'text/x-python; charset=utf-8');", artifact_controller)
+        self.assertIn("/artifacts/leikwan-preconnect-relay.py", bootstrap)
+
 
 if __name__ == "__main__":
     unittest.main()
