@@ -22,4 +22,9 @@ internal sealed class TestForwardRuntimeManager : ForwardRuntimeManager
     {
         RestartedForwardIds.Add(forward.ForwardId);
     }
+
+    public override void RestartForward(ForwardConfig forward, bool force, string reason)
+    {
+        RestartedForwardIds.Add(forward.ForwardId);
+    }
 }

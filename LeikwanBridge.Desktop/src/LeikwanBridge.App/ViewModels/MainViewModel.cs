@@ -224,9 +224,7 @@ public partial class MainViewModel : ObservableObject
         _pollingService.SyncError += OnSyncError;
         _healthCheckService.HealthIssue += OnHealthIssue;
 
-        var installRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "LeiKwan Bridge");
+        var installRoot = AppDefaults.GetInstallRoot();
         var cleaned = _installedRuntimeCleanup.KillProcessesUnderInstallRoot(installRoot, Environment.ProcessId);
         if (cleaned > 0)
             AddLog($"Stopped {cleaned} stale installed runtime process(es).");

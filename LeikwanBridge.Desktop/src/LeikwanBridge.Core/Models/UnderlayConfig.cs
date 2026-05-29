@@ -63,4 +63,13 @@ public sealed class UnderlayLeg
 
     [JsonPropertyName("local_uot_udp_port")]
     public int LocalUotUdpPort { get; set; }
+
+    [JsonPropertyName("slave_preconnect")]
+    public bool SlavePreconnect { get; set; }
+
+    [JsonPropertyName("preconnect_relay_port")]
+    public int PreconnectRelayPort { get; set; }
+
+    [JsonPropertyName("health_status")]
+    public string HealthStatus { get; set; } = "active";
 }

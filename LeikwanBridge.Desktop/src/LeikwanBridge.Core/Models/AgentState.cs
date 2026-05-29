@@ -38,6 +38,12 @@ public sealed class AppliedForwardState
     [JsonPropertyName("process_ids")]
     public List<int> ProcessIds { get; set; } = [];
 
+    [JsonPropertyName("contract_signature")]
+    public string ContractSignature { get; set; } = "";
+
+    [JsonPropertyName("last_apply_reason")]
+    public string LastApplyReason { get; set; } = "";
+
     [JsonPropertyName("user_stopped")]
     public bool UserStopped { get; set; }
 
