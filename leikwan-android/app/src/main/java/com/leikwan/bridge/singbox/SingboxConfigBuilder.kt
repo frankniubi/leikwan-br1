@@ -5,6 +5,12 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
+import com.leikwan.bridge.routing.CompiledConfigResult
+import com.leikwan.bridge.routing.RoutingCategoryCatalog
+import com.leikwan.bridge.routing.RoutingPolicyEngine
+import com.leikwan.bridge.routing.RoutingPolicySnapshot
+import com.leikwan.bridge.routing.SafePathRegistry
+import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.service.ProxyConnectionMode
 import java.net.URI
@@ -33,14 +39,21 @@ data class SingboxSettings(
     }
 }
 
-class SingboxConfigBuilder(val settings: SingboxSettings) {
+class SingboxConfigBuilder(
+    val settings: SingboxSettings,
+    private val safePathRegistry: SafePathRegistry =
+        SafePathRegistry.androidBaseline(settings.panelUrl, "v3-mirror.leikwanhost.com"),
+    private val routingEngine: RoutingPolicyEngine =
+        RoutingPolicyEngine(safePathRegistry, RoutingCategoryCatalog.default()),
+) {
     private val gson = Gson()
 
     fun build(
         proxyNodes: List<ProxyNode>,
         runtimeContext: RuntimeContext?,
+        routingPolicySnapshot: RoutingPolicySnapshot? = null,
         connectionMode: ProxyConnectionMode = ProxyConnectionMode.SERVICES,
-    ): String {
+    ): CompiledConfigResult {
         val activeProxyNodes = activeProxyNodes(proxyNodes, runtimeContext, connectionMode)
         val finalProxyTag = when {
             activeProxyNodes.isEmpty() -> "proxy"
@@ -54,8 +67,12 @@ class SingboxConfigBuilder(val settings: SingboxSettings) {
         root.add("dns", buildDns(finalProxyTag, connectionMode))
         root.add("inbounds", buildInbounds())
         root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode))
-        root.add("route", buildRoute(runtimeContext?.bypassHosts ?: emptySet(), finalProxyTag))
-        return gson.toJson(root)
+        root.add("route", buildRoute(runtimeContext?.bypassHosts ?: emptySet(), finalProxyTag, routingPolicySnapshot))
+        return CompiledConfigResult(
+            configJson = gson.toJson(root),
+            finalProxyTag = finalProxyTag,
+            warnings = routingPolicySnapshot?.warnings ?: emptyList(),
+        )
     }
 
     private fun buildDns(
@@ -259,7 +276,11 @@ class SingboxConfigBuilder(val settings: SingboxSettings) {
         }
     }
 
-    private fun buildRoute(runtimeBypassHosts: Set<String>, finalProxyTag: String): JsonObject {
+    private fun buildRoute(
+        runtimeBypassHosts: Set<String>,
+        finalProxyTag: String,
+        snapshot: RoutingPolicySnapshot?,
+    ): JsonObject {
         val route = JsonObject()
         val rules = JsonArray()
 
@@ -272,13 +293,30 @@ class SingboxConfigBuilder(val settings: SingboxSettings) {
             addProperty("action", "hijack-dns")
         })
 
-        val bypassHosts = linkedSetOf<String>()
-        bypassHosts += panelDirectDomains()
-        bypassHosts += runtimeBypassHosts
+        // (1) System-protected paths (non-overridable), one rule per registry entry, ordered before
+        //     user rules. Replaces the legacy panelDirectDomains() route injection so there is a single
+        //     source of truth and no duplicate panel/mirror rules.
+        val protectedEntries = snapshot?.protectedPaths ?: safePathRegistry.protectedEntries()
+        protectedEntries.forEach { entry ->
+            if (entry.domains.isNotEmpty()) {
+                rules.add(JsonObject().apply {
+                    add("domain", JsonArray().apply { entry.domains.forEach { add(it) } })
+                    addProperty("outbound", "direct")
+                })
+            }
+            if (entry.ipCidrs.isNotEmpty()) {
+                rules.add(JsonObject().apply {
+                    add("ip_cidr", JsonArray().apply { entry.ipCidrs.forEach { add(normalizeIpCidr(it)) } })
+                    addProperty("outbound", "direct")
+                })
+            }
+        }
 
+        // (2) Runtime slave/sidecar reachability (non-overridable), before user rules so a user TUNNEL
+        //     rule can never capture the slave egress and create a loop.
         val bypassIps = JsonArray()
         val bypassDomains = JsonArray()
-        bypassHosts.forEach { host ->
+        runtimeBypassHosts.forEach { host ->
             if (isIpLike(host)) {
                 bypassIps.add(normalizeIpCidr(host))
             } else if (host.isNotBlank()) {
@@ -298,6 +336,21 @@ class SingboxConfigBuilder(val settings: SingboxSettings) {
             })
         }
 
+        // (3) User country/category rules (the 用户自定义分流 surface). Each compiled rule routes its
+        //     rule_set(s) to "direct" (DIRECT) or the proxy tag (TUNNEL, sentinel swapped here).
+        if (snapshot != null) {
+            routingEngine.compileRouteRules(snapshot).forEach { compiled ->
+                val outbound =
+                    if (compiled.outbound == RoutingPolicyEngine.PROXY_OUTBOUND_SENTINEL) finalProxyTag
+                    else compiled.outbound
+                rules.add(JsonObject().apply {
+                    add("rule_set", JsonArray().apply { compiled.ruleSetTags.forEach { add(it) } })
+                    addProperty("outbound", outbound)
+                })
+            }
+        }
+
+        // (4) bypassLan toggle.
         if (settings.bypassLan) {
             rules.add(JsonObject().apply {
                 add("ip_cidr", JsonArray().apply {
@@ -310,6 +363,7 @@ class SingboxConfigBuilder(val settings: SingboxSettings) {
             })
         }
 
+        // (5) bypassChina toggle (also expressible as a CN->DIRECT user rule; kept for back-compat).
         if (settings.bypassChina) {
             rules.add(JsonObject().apply {
                 add("rule_set", JsonArray().apply {
@@ -320,6 +374,7 @@ class SingboxConfigBuilder(val settings: SingboxSettings) {
             })
         }
 
+        // (6) Custom bypass rules.
         val custom = settings.customBypassRules.trim()
         if (custom.isNotEmpty()) {
             val ips = JsonArray()
@@ -349,27 +404,49 @@ class SingboxConfigBuilder(val settings: SingboxSettings) {
         }
 
         route.add("rules", rules)
-        route.addProperty("final", finalProxyTag)
+        // route.final follows the user-settable global default: TUNNEL -> proxy tag; DIRECT -> direct.
+        route.addProperty(
+            "final",
+            if (snapshot?.globalDefaultOutcome == UserTrafficOutcome.DIRECT) "direct" else finalProxyTag,
+        )
         route.addProperty("auto_detect_interface", true)
 
+        // route.rule_set: China sets (if toggle) + user-rule remote sets, de-duplicated by tag.
+        val ruleSetArray = JsonArray()
+        val seenTags = linkedSetOf<String>()
         if (settings.bypassChina) {
-            route.add("rule_set", JsonArray().apply {
-                add(JsonObject().apply {
-                    addProperty("tag", "geoip-cn")
-                    addProperty("type", "remote")
-                    addProperty("format", "binary")
-                    addProperty("url", "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs")
-                })
-                add(JsonObject().apply {
-                    addProperty("tag", "geosite-cn")
-                    addProperty("type", "remote")
-                    addProperty("format", "binary")
-                    addProperty("url", "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs")
-                })
-            })
+            if (seenTags.add("geoip-cn")) {
+                ruleSetArray.add(remoteRuleSet(
+                    "geoip-cn",
+                    "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+                ))
+            }
+            if (seenTags.add("geosite-cn")) {
+                ruleSetArray.add(remoteRuleSet(
+                    "geosite-cn",
+                    "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+                ))
+            }
+        }
+        if (snapshot != null) {
+            routingEngine.requiredRuleSets(snapshot).forEach { ref ->
+                if (seenTags.add(ref.tag)) {
+                    ruleSetArray.add(remoteRuleSet(ref.tag, ref.url))
+                }
+            }
+        }
+        if (ruleSetArray.size() > 0) {
+            route.add("rule_set", ruleSetArray)
         }
 
         return route
+    }
+
+    private fun remoteRuleSet(tag: String, url: String): JsonObject = JsonObject().apply {
+        addProperty("tag", tag)
+        addProperty("type", "remote")
+        addProperty("format", "binary")
+        addProperty("url", url)
     }
 
     private fun panelDirectDomains(): Set<String> {
