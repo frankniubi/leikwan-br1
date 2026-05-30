@@ -4,9 +4,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
+import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.service.ProxyConnectionMode
 
-class Prefs private constructor(private val prefs: SharedPreferences) {
+class Prefs internal constructor(private val prefs: SharedPreferences) {
 
     var panelUrl: String
         get() = prefs.getString("panel_url", "https://v3-mirror.leikwanhost.com") ?: "https://v3-mirror.leikwanhost.com"
@@ -77,6 +78,47 @@ class Prefs private constructor(private val prefs: SharedPreferences) {
     var customBypassRules: String
         get() = prefs.getString("custom_bypass", "") ?: ""
         set(v) = prefs.edit().putString("custom_bypass", v).apply()
+
+    /**
+     * User-settable global default routing outcome (stored by [UserTrafficOutcome.name]).
+     * `TUNNEL` = global VPN (rules are DIRECT exceptions); `DIRECT` = selective tunneling.
+     */
+    var routingDefaultOutcome: UserTrafficOutcome
+        get() = runCatching {
+            UserTrafficOutcome.valueOf(
+                prefs.getString("routing_default_outcome", UserTrafficOutcome.TUNNEL.name)
+                    ?: UserTrafficOutcome.TUNNEL.name
+            )
+        }.getOrDefault(UserTrafficOutcome.TUNNEL)
+        set(v) = prefs.edit().putString("routing_default_outcome", v.name).apply()
+
+    var activeRulePackCountryVersion: String?
+        get() = prefs.getString("active_rule_pack_country_version", null)
+        set(v) = prefs.edit().putString("active_rule_pack_country_version", v).apply()
+
+    var activeRulePackCategoryVersion: String?
+        get() = prefs.getString("active_rule_pack_category_version", null)
+        set(v) = prefs.edit().putString("active_rule_pack_category_version", v).apply()
+
+    var activeRulePackSourceLabel: String?
+        get() = prefs.getString("active_rule_pack_source_label", null)
+        set(v) = prefs.edit().putString("active_rule_pack_source_label", v).apply()
+
+    var activeRulePackFetchedAtMs: Long
+        get() = prefs.getLong("active_rule_pack_fetched_at_ms", 0L)
+        set(v) = prefs.edit().putLong("active_rule_pack_fetched_at_ms", v).apply()
+
+    var activeRulePackStale: Boolean
+        get() = prefs.getBoolean("active_rule_pack_stale", false)
+        set(v) = prefs.edit().putBoolean("active_rule_pack_stale", v).apply()
+
+    var latestExplainabilityRevision: Long
+        get() = prefs.getLong("latest_explainability_revision", 0L)
+        set(v) = prefs.edit().putLong("latest_explainability_revision", v).apply()
+
+    var latestExplainabilityCompiledAtMs: Long
+        get() = prefs.getLong("latest_explainability_compiled_at_ms", 0L)
+        set(v) = prefs.edit().putLong("latest_explainability_compiled_at_ms", v).apply()
 
     fun isLoggedIn(): Boolean = token != null && clientsJson != null
 
