@@ -76,13 +76,15 @@ class TunnelOrchestrator(private val context: Context) {
             null
         }
 
-        val configJson = SingboxConfigBuilder
+        val compiled = SingboxConfigBuilder
             .fromPrefs(prefs)
             .build(
                 proxyNodes = listOf(selection.selectedNode),
                 runtimeContext = runtimeContext,
+                routingPolicySnapshot = null, // T5 wires the real RoutingPolicySnapshot here
                 connectionMode = connectionMode,
             )
+        val configJson = compiled.configJson
         writeDebugConfig(configJson)
         Log.d(TAG, "Generated sing-box config: $configJson")
 

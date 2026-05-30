@@ -2,6 +2,12 @@ package com.leikwan.bridge.singbox
 
 import com.google.gson.JsonParser
 import com.leikwan.bridge.data.ProxyNode
+import com.leikwan.bridge.routing.RoutingCategoryCatalog
+import com.leikwan.bridge.routing.RoutingPolicyEngine
+import com.leikwan.bridge.routing.RoutingRule
+import com.leikwan.bridge.routing.RoutingRuleKind
+import com.leikwan.bridge.routing.SafePathRegistry
+import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.runtime.ForwardMode
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.service.ProxyConnectionMode
@@ -54,7 +60,7 @@ class SingboxConfigBuilderTest {
             ),
         )
 
-        val config = JsonParser.parseString(builder.build(nodes, runtimeContext)).asJsonObject
+        val config = JsonParser.parseString(builder.build(nodes, runtimeContext).configJson).asJsonObject
         val outbounds = config.getAsJsonArray("outbounds")
         val mainProxy = outbounds.first { it.asJsonObject.get("tag").asString == "proxy-1" }.asJsonObject
         val routeRules = config.getAsJsonObject("route").getAsJsonArray("rules")
@@ -115,7 +121,7 @@ class SingboxConfigBuilderTest {
             ),
         )
 
-        val config = JsonParser.parseString(builder.build(nodes, runtimeContext)).asJsonObject
+        val config = JsonParser.parseString(builder.build(nodes, runtimeContext).configJson).asJsonObject
         val outbounds = config.getAsJsonArray("outbounds")
         val proxySelector = outbounds.first { it.asJsonObject.get("tag").asString == "proxy" }.asJsonObject
         val log = config.getAsJsonObject("log")
@@ -162,7 +168,7 @@ class SingboxConfigBuilderTest {
                 proxyNodes = nodes,
                 runtimeContext = runtimeContext,
                 connectionMode = ProxyConnectionMode.SERVICES,
-            )
+            ).configJson
         ).asJsonObject
         val outbounds = config.getAsJsonArray("outbounds")
         val routeRules = config.getAsJsonObject("route").getAsJsonArray("rules")
@@ -215,7 +221,7 @@ class SingboxConfigBuilderTest {
                 proxyNodes = listOf(node),
                 runtimeContext = null,
                 connectionMode = ProxyConnectionMode.DIRECT,
-            )
+            ).configJson
         ).asJsonObject
         val outbounds = config.getAsJsonArray("outbounds")
         val directProxy = outbounds.first { it.asJsonObject.get("tag").asString == "proxy-4" }.asJsonObject
@@ -259,7 +265,7 @@ class SingboxConfigBuilderTest {
                 proxyNodes = listOf(node),
                 runtimeContext = null,
                 connectionMode = ProxyConnectionMode.DIRECT,
-            )
+            ).configJson
         ).asJsonObject
         val outbounds = config.getAsJsonArray("outbounds")
         val directProxy = outbounds.first { it.asJsonObject.get("tag").asString == "proxy-5" }.asJsonObject
@@ -301,7 +307,7 @@ class SingboxConfigBuilderTest {
                 proxyNodes = listOf(node),
                 runtimeContext = null,
                 connectionMode = ProxyConnectionMode.DIRECT,
-            )
+            ).configJson
         ).asJsonObject
         val outbounds = config.getAsJsonArray("outbounds")
         val directProxy = outbounds.first { it.asJsonObject.get("tag").asString == "proxy-6" }.asJsonObject
@@ -310,4 +316,125 @@ class SingboxConfigBuilderTest {
         assertEquals("tls;host=example.com", directProxy.get("plugin_opts").asString)
         assertEquals("tcp", directProxy.get("network").asString)
     }
+
+    // ---- v2 routing-compilation tests (user country/category rules reach the route JSON) ----
+
+    @Test
+    fun `protected panel rule is direct and precedes user country rule`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+        val snapshot = engine().compile(
+            globalDefault = UserTrafficOutcome.TUNNEL,
+            countryRules = listOf(RoutingRule("c-cn", RoutingRuleKind.COUNTRY, "CN", UserTrafficOutcome.TUNNEL)),
+            categoryRules = emptyList(),
+            rulePackVersions = listOf("test"),
+            compiledAtMs = 1L,
+        )
+        val config = JsonParser.parseString(
+            builder.build(listOf(ssNode(1)), null, snapshot, ProxyConnectionMode.DIRECT).configJson
+        ).asJsonObject
+        val rules = config.getAsJsonObject("route").getAsJsonArray("rules").map { it.asJsonObject }
+
+        val panelIdx = rules.indexOfFirst { r ->
+            r.has("domain") && r.getAsJsonArray("domain").any { it.asString == "panel.example.com" }
+        }
+        val cnIdx = rules.indexOfFirst { r ->
+            r.has("rule_set") && r.getAsJsonArray("rule_set").any { it.asString == "geoip-cn" }
+        }
+        assertTrue("panel rule present", panelIdx >= 0)
+        assertTrue("country rule present", cnIdx >= 0)
+        assertTrue("protected panel precedes user country rule", panelIdx < cnIdx)
+        assertEquals("direct", rules[panelIdx].get("outbound").asString)
+    }
+
+    @Test
+    fun `country DIRECT rule emits geoip-cn direct rule and rule_set definition`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+        val snapshot = engine().compile(
+            globalDefault = UserTrafficOutcome.TUNNEL,
+            countryRules = listOf(RoutingRule("c-cn", RoutingRuleKind.COUNTRY, "CN", UserTrafficOutcome.DIRECT)),
+            categoryRules = emptyList(),
+            rulePackVersions = listOf("test"),
+            compiledAtMs = 1L,
+        )
+        val route = JsonParser.parseString(
+            builder.build(listOf(ssNode(1)), null, snapshot, ProxyConnectionMode.DIRECT).configJson
+        ).asJsonObject.getAsJsonObject("route")
+
+        val cnRule = route.getAsJsonArray("rules").map { it.asJsonObject }
+            .first { it.has("rule_set") && it.getAsJsonArray("rule_set").any { t -> t.asString == "geoip-cn" } }
+        assertEquals("direct", cnRule.get("outbound").asString)
+
+        val geoipCn = route.getAsJsonArray("rule_set").map { it.asJsonObject }
+            .first { it.get("tag").asString == "geoip-cn" }
+        assertEquals("remote", geoipCn.get("type").asString)
+        assertEquals("binary", geoipCn.get("format").asString)
+        assertTrue(geoipCn.get("url").asString.contains("sing-geoip"))
+    }
+
+    @Test
+    fun `category TUNNEL rule under DIRECT default routes to proxy tag and sets final direct`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+        val snapshot = engine().compile(
+            globalDefault = UserTrafficOutcome.DIRECT,
+            countryRules = emptyList(),
+            categoryRules = listOf(
+                RoutingRule("cat-video", RoutingRuleKind.WEBSITE_CATEGORY, "video", UserTrafficOutcome.TUNNEL)
+            ),
+            rulePackVersions = listOf("test"),
+            compiledAtMs = 1L,
+        )
+        val result = builder.build(listOf(ssNode(7)), null, snapshot, ProxyConnectionMode.DIRECT)
+        val route = JsonParser.parseString(result.configJson).asJsonObject.getAsJsonObject("route")
+
+        assertEquals("proxy-7", result.finalProxyTag)
+        assertEquals("direct", route.get("final").asString)
+        val videoRule = route.getAsJsonArray("rules").map { it.asJsonObject }
+            .first { it.has("rule_set") && it.getAsJsonArray("rule_set").any { t -> t.asString == "geosite-youtube" } }
+        assertEquals(result.finalProxyTag, videoRule.get("outbound").asString)
+    }
+
+    @Test
+    fun `no duplicate panel rule when snapshot present`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+        val snapshot = engine().compile(
+            globalDefault = UserTrafficOutcome.TUNNEL,
+            countryRules = emptyList(),
+            categoryRules = emptyList(),
+            rulePackVersions = listOf("test"),
+            compiledAtMs = 1L,
+        )
+        val rules = JsonParser.parseString(
+            builder.build(listOf(ssNode(1)), null, snapshot, ProxyConnectionMode.DIRECT).configJson
+        ).asJsonObject.getAsJsonObject("route").getAsJsonArray("rules").map { it.asJsonObject }
+
+        val panelOccurrences = rules.count { r ->
+            r.has("domain") && r.getAsJsonArray("domain").any { it.asString == "panel.example.com" }
+        }
+        assertEquals(1, panelOccurrences)
+    }
+
+    private fun engine() = RoutingPolicyEngine(
+        SafePathRegistry.androidBaseline("https://panel.example.com", "v3-mirror.leikwanhost.com"),
+        RoutingCategoryCatalog.default(),
+    )
+
+    private fun baseSettings() = SingboxSettings(
+        panelUrl = "https://panel.example.com",
+        dnsServer = "1.1.1.1",
+        dnsFallback = "8.8.8.8",
+        dnsStrategy = "prefer_ipv4",
+        bypassLan = true,
+        bypassChina = false,
+        customBypassRules = "",
+    )
+
+    private fun ssNode(id: Long) = ProxyNode(
+        id = id,
+        name = "ss-$id",
+        type = "ss",
+        originalServer = "remote.example.com",
+        originalPort = 443,
+        configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+        forwardId = null,
+    )
 }
