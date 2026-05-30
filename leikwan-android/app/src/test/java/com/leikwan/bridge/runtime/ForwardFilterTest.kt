@@ -45,6 +45,29 @@ class ForwardFilterTest {
         assertTrue(catalog.hiddenForwardIds.contains(22L))
     }
 
+    @Test
+    fun `selecting a hidden mptcp forward clears selection and reports it hidden`() {
+        val single = sampleContract(
+            forwardId = 11L,
+            mode = ForwardMode.SINGLE,
+            serviceName = "single-11",
+        )
+        val hiddenMptcp = sampleContract(
+            forwardId = 22L,
+            mode = ForwardMode.MPTCP,
+            serviceName = "mptcp-22",
+        )
+
+        val catalog = ForwardFilter.buildCatalog(
+            contracts = listOf(single, hiddenMptcp),
+            selectedForwardId = 22L,
+        )
+
+        assertNull(catalog.selectedForwardId)
+        assertTrue(catalog.hiddenForwardIds.contains(22L))
+        assertEquals(1, catalog.hiddenUnsupportedMptcpCount)
+    }
+
     private fun sampleContract(
         forwardId: Long,
         mode: ForwardMode,

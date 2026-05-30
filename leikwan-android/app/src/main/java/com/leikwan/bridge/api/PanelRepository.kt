@@ -4,6 +4,8 @@ import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.runtime.AndroidEffectiveForward
+import com.leikwan.bridge.runtime.AndroidEffectiveForwardBuilder
 import com.leikwan.bridge.runtime.ForwardCatalog
 import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardContractParser
@@ -20,6 +22,7 @@ class PanelRepository(context: Context) {
     private var api: PanelApi = buildApi(prefs.panelUrl)
     private var cachedForwardConfigs = mutableMapOf<Long, JsonElement>()
     private var cachedForwardContracts = mutableMapOf<Long, ForwardContract>()
+    private var cachedEffectiveForwards = mutableMapOf<Long, AndroidEffectiveForward>()
 
     private fun buildApi(baseUrl: String): PanelApi {
         val url = baseUrl.trimEnd('/') + "/"
@@ -64,6 +67,7 @@ class PanelRepository(context: Context) {
         prefs.selectedForwardId = 0L
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
+        cachedEffectiveForwards.clear()
         return resp
     }
 
@@ -88,6 +92,7 @@ class PanelRepository(context: Context) {
         if (!resp.ok) throw Exception("Pull configs failed")
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
+        cachedEffectiveForwards.clear()
         val contracts = mutableListOf<ForwardContract>()
         for (raw in resp.forwards) {
             try {
@@ -95,6 +100,9 @@ class PanelRepository(context: Context) {
                 contracts += contract
                 cachedForwardConfigs[contract.forwardId] = raw
                 cachedForwardContracts[contract.forwardId] = contract
+                AndroidEffectiveForwardBuilder.build(contract)?.let { effective ->
+                    cachedEffectiveForwards[effective.forwardId] = effective
+                }
             } catch (_: Exception) {
                 // skip unparseable forwards
             }
@@ -108,6 +116,8 @@ class PanelRepository(context: Context) {
     fun getCachedConfig(forwardId: Long): JsonElement? = cachedForwardConfigs[forwardId]
 
     fun getCachedContract(forwardId: Long): ForwardContract? = cachedForwardContracts[forwardId]
+
+    fun getCachedEffectiveForward(forwardId: Long): AndroidEffectiveForward? = cachedEffectiveForwards[forwardId]
 
     suspend fun heartbeat(): Boolean {
         return try {
@@ -123,5 +133,6 @@ class PanelRepository(context: Context) {
         prefs.logout()
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
+        cachedEffectiveForwards.clear()
     }
 }
