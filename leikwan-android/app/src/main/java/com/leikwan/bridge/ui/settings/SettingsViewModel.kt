@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.leikwan.bridge.api.ClientInfo
 import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.routing.RoutingDiagnosticsSource
+import com.leikwan.bridge.ui.shared.RoutingDiagnosticsUiModel
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +27,7 @@ data class SettingsUiState(
     val clients: List<ClientInfo> = emptyList(),
     val isSwitchingClient: Boolean = false,
     val switchError: String? = null,
+    val routingDiagnostics: RoutingDiagnosticsUiModel? = null,
 )
 
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
@@ -44,6 +47,9 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             clientId = prefs.clientId,
             clientName = prefs.clientName ?: "",
             clients = parseClients(),
+            routingDiagnostics = runCatching {
+                RoutingDiagnosticsSource.from(app).latest()
+            }.getOrNull(),
         ),
     )
     val state = _state.asStateFlow()

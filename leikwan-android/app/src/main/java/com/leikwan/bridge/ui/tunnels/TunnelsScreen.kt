@@ -41,28 +41,49 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leikwan.bridge.runtime.ForwardListItem
 import com.leikwan.bridge.service.ProxyConnectionMode
 import com.leikwan.bridge.ui.MainActivity
+import com.leikwan.bridge.ui.shared.RoutingDiagnosticsCard
 
 @Composable
 fun TunnelsScreen(viewModel: TunnelsViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
     val activity = LocalContext.current as? MainActivity
 
+    TunnelsScreenContent(
+        state = state,
+        onToggleVpn = {
+            if (state.vpnStatus == VpnStatus.DISCONNECTED) {
+                activity?.requestVpnPermission { viewModel.toggleVpn() }
+                    ?: viewModel.toggleVpn()
+            } else {
+                viewModel.toggleVpn()
+            }
+        },
+        onRefresh = viewModel::refreshForwards,
+        onSelectForward = viewModel::selectForward,
+    )
+}
+
+@Composable
+internal fun TunnelsScreenContent(
+    state: TunnelsUiState,
+    onToggleVpn: () -> Unit,
+    onRefresh: () -> Unit,
+    onSelectForward: (Long) -> Unit,
+) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         VpnToggleCard(
             status = state.vpnStatus,
             selectedForwardId = state.selectedForwardId,
             forwards = state.forwards,
-            onToggle = {
-                if (state.vpnStatus == VpnStatus.DISCONNECTED) {
-                    activity?.requestVpnPermission { viewModel.toggleVpn() }
-                        ?: viewModel.toggleVpn()
-                } else {
-                    viewModel.toggleVpn()
-                }
-            },
+            onToggle = onToggleVpn,
         )
 
         Spacer(Modifier.height(16.dp))
+
+        state.routingDiagnostics?.let { diagnostics ->
+            RoutingDiagnosticsCard(model = diagnostics)
+            Spacer(Modifier.height(16.dp))
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -70,7 +91,7 @@ fun TunnelsScreen(viewModel: TunnelsViewModel = viewModel()) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("Select a Forward", style = MaterialTheme.typography.titleLarge)
-            IconButton(onClick = { viewModel.refreshForwards() }) {
+            IconButton(onClick = onRefresh) {
                 Icon(Icons.Default.Refresh, "Refresh")
             }
         }
@@ -113,7 +134,7 @@ fun TunnelsScreen(viewModel: TunnelsViewModel = viewModel()) {
                         forward = forward,
                         isSelected = forward.forwardId == state.selectedForwardId,
                         isVpnRunning = state.vpnStatus != VpnStatus.DISCONNECTED,
-                        onClick = { viewModel.selectForward(forward.forwardId) },
+                        onClick = { onSelectForward(forward.forwardId) },
                     )
                 }
             }

@@ -6,10 +6,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.routing.RoutingDiagnosticsSource
 import com.leikwan.bridge.runtime.ForwardListItem
 import com.leikwan.bridge.service.ProxyConnectionMode
 import com.leikwan.bridge.service.LeikwanVpnService
 import com.leikwan.bridge.service.TunnelOrchestrator
+import com.leikwan.bridge.ui.shared.RoutingDiagnosticsUiModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -24,6 +26,7 @@ data class TunnelsUiState(
     val connectionMode: ProxyConnectionMode = ProxyConnectionMode.SERVICES,
     val isLoading: Boolean = false,
     val error: String? = null,
+    val routingDiagnostics: RoutingDiagnosticsUiModel? = null,
 )
 
 class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
@@ -36,6 +39,9 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
             selectedForwardId = prefs.selectedForwardId,
             connectionMode = prefs.proxyConnectionMode,
             vpnStatus = if (LeikwanVpnService.isRunning) VpnStatus.CONNECTED else VpnStatus.DISCONNECTED,
+            routingDiagnostics = runCatching {
+                RoutingDiagnosticsSource.from(app).latest()
+            }.getOrNull(),
         )
     )
     val state = _state.asStateFlow()

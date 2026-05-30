@@ -29,19 +29,44 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.leikwan.bridge.api.ClientInfo
+import com.leikwan.bridge.ui.shared.RoutingDiagnosticsCard
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     onLogout: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    SettingsScreenContent(
+        state = state,
+        onSwitchClient = viewModel::switchClient,
+        onUpdateDnsServer = viewModel::updateDnsServer,
+        onUpdateDnsFallback = viewModel::updateDnsFallback,
+        onUpdateDnsStrategy = viewModel::updateDnsStrategy,
+        onUpdateBypassLan = viewModel::updateBypassLan,
+        onUpdateBypassChina = viewModel::updateBypassChina,
+        onUpdateCustomBypass = viewModel::updateCustomBypass,
+        onLogout = { viewModel.logout(); onLogout() },
+    )
+}
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun SettingsScreenContent(
+    state: SettingsUiState,
+    onSwitchClient: (Long) -> Unit,
+    onUpdateDnsServer: (String) -> Unit,
+    onUpdateDnsFallback: (String) -> Unit,
+    onUpdateDnsStrategy: (String) -> Unit,
+    onUpdateBypassLan: (Boolean) -> Unit,
+    onUpdateBypassChina: (Boolean) -> Unit,
+    onUpdateCustomBypass: (String) -> Unit,
+    onLogout: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -80,7 +105,7 @@ fun SettingsScreen(
                     expanded = clientExpanded,
                     onDismissRequest = { clientExpanded = false },
                 ) {
-                    state.clients.forEach { client ->
+                    state.clients.forEach { client: ClientInfo ->
                         DropdownMenuItem(
                             text = {
                                 Text(
@@ -94,7 +119,7 @@ fun SettingsScreen(
                             },
                             onClick = {
                                 clientExpanded = false
-                                viewModel.switchClient(client.id)
+                                onSwitchClient(client.id)
                             },
                         )
                     }
@@ -117,7 +142,7 @@ fun SettingsScreen(
 
         OutlinedTextField(
             value = state.dnsServer,
-            onValueChange = { viewModel.updateDnsServer(it) },
+            onValueChange = onUpdateDnsServer,
             label = { Text("DNS Server") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
@@ -125,7 +150,7 @@ fun SettingsScreen(
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = state.dnsFallback,
-            onValueChange = { viewModel.updateDnsFallback(it) },
+            onValueChange = onUpdateDnsFallback,
             label = { Text("Fallback DNS") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
@@ -156,7 +181,7 @@ fun SettingsScreen(
                     DropdownMenuItem(
                         text = { Text(strategy) },
                         onClick = {
-                            viewModel.updateDnsStrategy(strategy)
+                            onUpdateDnsStrategy(strategy)
                             strategyExpanded = false
                         },
                     )
@@ -174,17 +199,17 @@ fun SettingsScreen(
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Bypass LAN IP")
-            Switch(checked = state.bypassLan, onCheckedChange = { viewModel.updateBypassLan(it) })
+            Switch(checked = state.bypassLan, onCheckedChange = onUpdateBypassLan)
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Bypass China IP/Domain")
-            Switch(checked = state.bypassChina, onCheckedChange = { viewModel.updateBypassChina(it) })
+            Switch(checked = state.bypassChina, onCheckedChange = onUpdateBypassChina)
         }
 
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = state.customBypassRules,
-            onValueChange = { viewModel.updateCustomBypass(it) },
+            onValueChange = onUpdateCustomBypass,
             label = { Text("Custom bypass (one IP/domain per line)") },
             modifier = Modifier.fillMaxWidth(),
             minLines = 3,
@@ -194,6 +219,14 @@ fun SettingsScreen(
         Spacer(Modifier.height(24.dp))
         HorizontalDivider()
         Spacer(Modifier.height(16.dp))
+
+        // Routing diagnostics (read-only)
+        state.routingDiagnostics?.let { diagnostics ->
+            RoutingDiagnosticsCard(model = diagnostics)
+            Spacer(Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(16.dp))
+        }
 
         // Account
         Text("Account", style = MaterialTheme.typography.titleMedium)
@@ -208,7 +241,7 @@ fun SettingsScreen(
         }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(
-            onClick = { viewModel.logout(); onLogout() },
+            onClick = onLogout,
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.outlinedButtonColors(
                 contentColor = MaterialTheme.colorScheme.error,
