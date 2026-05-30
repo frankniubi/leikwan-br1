@@ -4,6 +4,7 @@ import os
 import pathlib
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 
@@ -39,6 +40,99 @@ class WindowsClientSetupInstallerTests(unittest.TestCase):
     def sha256(path: pathlib.Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest().upper()
 
+    def test_relaunch_argument_round_trip_preserves_trailing_separators(self) -> None:
+        install_override = r"C:\Program Files\LeiKwan Bridge\\"
+        desktop_override = r"C:\Users\foo\Desktop\\"
+
+        with tempfile.TemporaryDirectory(prefix="leikwan-setup-relaunch-") as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            args_json = temp_path / "args.json"
+            child_ps1 = temp_path / "child.ps1"
+            child_ps1.write_text(
+                textwrap.dedent(
+                    """
+                    param(
+                        [switch]$Elevated
+                    )
+                    $payload = [ordered]@{
+                        Elevated = [bool]$Elevated
+                        InstallDirOverride = $env:LEIKWAN_RELAUNCH_INSTALL_DIR
+                        DesktopDirOverride = $env:LEIKWAN_RELAUNCH_DESKTOP_DIR
+                    }
+                    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+                    [System.IO.File]::WriteAllText(
+                        $env:LEIKWAN_ARGS_JSON,
+                        ($payload | ConvertTo-Json -Depth 4),
+                        $utf8NoBom
+                    )
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            harness_ps1 = temp_path / "harness.ps1"
+            harness_ps1.write_text(
+                textwrap.dedent(
+                    """
+                    param(
+                        [string]$ChildScript,
+                        [string]$InstallDir,
+                        [string]$DesktopDir
+                    )
+
+                    $env:LEIKWAN_RELAUNCH_INSTALL_DIR = $InstallDir
+                    $env:LEIKWAN_RELAUNCH_DESKTOP_DIR = $DesktopDir
+
+                    $psiArgs = @(
+                        "-NoProfile",
+                        "-ExecutionPolicy", "Bypass",
+                        "-File", $ChildScript,
+                        "-Elevated"
+                    )
+
+                    $process = Start-Process -FilePath "powershell.exe" -ArgumentList $psiArgs -Wait -PassThru
+                    exit $process.ExitCode
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            env = os.environ.copy()
+            env["LEIKWAN_ARGS_JSON"] = str(args_json)
+
+            run = subprocess.run(
+                [
+                    str(POWERSHELL_EXE),
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(harness_ps1),
+                    "-ChildScript",
+                    str(child_ps1),
+                    "-InstallDir",
+                    install_override,
+                    "-DesktopDir",
+                    desktop_override,
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(
+                run.returncode,
+                0,
+                msg="relaunch harness failed\nSTDOUT:\n" + run.stdout + "\nSTDERR:\n" + run.stderr,
+            )
+            self.assertTrue(args_json.is_file(), "child argument capture missing")
+            parsed = json.loads(args_json.read_text(encoding="utf-8"))
+            self.assertTrue(parsed["Elevated"])
+            self.assertEqual(parsed["InstallDirOverride"], install_override)
+            self.assertEqual(parsed["DesktopDirOverride"], desktop_override)
+
     def test_setup_installs_payload_and_creates_desktop_shortcut(self) -> None:
         self.assertTrue(SETUP_EXE.is_file(), f"missing setup exe: {SETUP_EXE}")
 
@@ -53,6 +147,25 @@ class WindowsClientSetupInstallerTests(unittest.TestCase):
             env["LOCALAPPDATA"] = str(localappdata)
             env["LEIKWAN_INSTALL_DIR"] = str(localappdata / "LeiKwan Bridge")
             env["LEIKWAN_DESKTOP_DIR"] = str(desktop_dir)
+
+            script_text = (extract_dir / "install.ps1").read_text(encoding="utf-8")
+            self.assertIn("-Verb RunAs", script_text)
+            self.assertIn("-Elevated", script_text)
+            self.assertIn("WindowsPrincipal", script_text)
+            self.assertIn("IsInRole", script_text)
+            self.assertIn("if ($Elevated)", script_text)
+            self.assertIn("$PSCommandPath", script_text)
+            self.assertIn("installer relaunched with -Elevated", script_text)
+            self.assertIn("Test-RequiresElevation -TargetDir $resolvedInstallDir -and -not (Test-IsAdministrator)", script_text)
+            self.assertIn('"-File", $PSCommandPath', script_text)
+            self.assertIn("if ($Elevated) {", script_text)
+            self.assertIn("installer relaunched with -Elevated but still lacks administrator rights", script_text)
+            self.assertIn("[string]$InstallDirOverride", script_text)
+            self.assertIn("[string]$DesktopDirOverride", script_text)
+            self.assertIn("$resolvedInstallDir", script_text)
+            self.assertIn("$resolvedDesktopDir", script_text)
+            self.assertIn("LEIKWAN_RELAUNCH_INSTALL_DIR", script_text)
+            self.assertIn("LEIKWAN_RELAUNCH_DESKTOP_DIR", script_text)
 
             install = subprocess.run(
                 [
