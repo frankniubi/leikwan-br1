@@ -15,7 +15,7 @@ object ProxySelectionPolicy {
         proxyNodes: List<ProxyNode>,
     ): ProxySelectionResult {
         if (selectedProxyId == 0L) {
-            ProxySelectionResult.Error("Select a proxy before starting this service")
+            return ProxySelectionResult.Error("Select a proxy before starting this service")
         }
         val selectedNode = proxyNodes.firstOrNull { it.id == selectedProxyId }
             ?: return ProxySelectionResult.Error("Selected proxy no longer exists")

@@ -32,6 +32,30 @@ class ProxySelectionPolicyTest {
     }
 
     @Test
+    fun `policy rejects when no proxy id is selected`() {
+        val result = ProxySelectionPolicy.validate(
+            selectedProxyId = 0L,
+            forwardId = 45L,
+            connectionMode = ProxyConnectionMode.SERVICES,
+            proxyNodes = listOf(
+                ProxyNode(
+                    id = 1,
+                    name = "proxy",
+                    type = "ss",
+                    originalServer = "127.0.0.1",
+                    originalPort = 32215,
+                    configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                    forwardId = 45L,
+                    enabled = true,
+                )
+            ),
+        )
+
+        require(result is ProxySelectionResult.Error)
+        assertEquals("Select a proxy before starting this service", result.message)
+    }
+
+    @Test
     fun `policy rejects when no enabled proxy is selected`() {
         val result = ProxySelectionPolicy.validate(
             selectedProxyId = 2L,

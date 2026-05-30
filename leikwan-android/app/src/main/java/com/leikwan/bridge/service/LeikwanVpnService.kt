@@ -12,6 +12,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import com.leikwan.bridge.ui.MainActivity
 import io.nekohasekai.libbox.CommandServer
@@ -48,10 +49,10 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         var configJson: String? = null
         @Volatile
         var startupState: VpnStartupState = VpnStartupState.IDLE
-            private set
+            @VisibleForTesting internal set
         @Volatile
         var lastStartError: String? = null
-            private set
+            @VisibleForTesting internal set
 
         fun startupSnapshot(): VpnStartupSnapshot {
             return VpnStartupSnapshot(
