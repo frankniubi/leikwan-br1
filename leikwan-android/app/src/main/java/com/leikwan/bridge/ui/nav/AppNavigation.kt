@@ -2,6 +2,7 @@ package com.leikwan.bridge.ui.nav
 
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
@@ -32,12 +33,14 @@ import androidx.navigation.compose.rememberNavController
 import com.leikwan.bridge.ui.MainActivity
 import com.leikwan.bridge.ui.proxies.ProxiesScreen
 import com.leikwan.bridge.ui.proxies.ProxiesViewModel
+import com.leikwan.bridge.ui.routing.RoutingScreen
 import com.leikwan.bridge.ui.settings.SettingsScreen
 import com.leikwan.bridge.ui.tunnels.TunnelsScreen
 
 enum class Screen(val route: String, val label: String, val icon: ImageVector) {
     Tunnels("tunnels", "Tunnels", Icons.Default.Lan),
     Proxies("proxies", "Proxies", Icons.Default.Shield),
+    Routing("routing", "Routing", Icons.AutoMirrored.Filled.AltRoute),
     Settings("settings", "Settings", Icons.Default.Settings),
 }
 
@@ -90,6 +93,7 @@ fun MainScreen(onLogout: () -> Unit = {}) {
         ) {
             composable(Screen.Tunnels.route) { TunnelsScreen() }
             composable(Screen.Proxies.route) { ProxiesScreen(viewModel = proxiesViewModel) }
+            composable(Screen.Routing.route) { RoutingScreen() }
             composable(Screen.Settings.route) { SettingsScreen(onLogout = onLogout) }
         }
     }
