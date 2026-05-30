@@ -19,18 +19,58 @@ function Require-File {
     }
 }
 
+function Resolve-InputFile {
+    param(
+        [string]$ConfiguredPath,
+        [bool]$WasExplicitlyProvided,
+        [string[]]$Fallbacks
+    )
+
+    if ($WasExplicitlyProvided) {
+        Require-File $ConfiguredPath
+        return $ConfiguredPath
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath) -and (Test-Path -LiteralPath $ConfiguredPath)) {
+        return $ConfiguredPath
+    }
+
+    foreach ($candidate in $Fallbacks) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+
+    throw "required file missing: $ConfiguredPath"
+}
+
 $appExe = Join-Path $AppPublishDir "LeikwanBridge.App.exe"
 $appBuildDir = Join-Path (Split-Path -Parent $AppPublishDir) "..\..\LeikwanBridge.Desktop\src\LeikwanBridge.App\bin\Release\net8.0-windows\win-x64"
 $appBuildDir = [System.IO.Path]::GetFullPath($appBuildDir)
 Require-File $appExe
-Require-File $BondExe
-Require-File $IngressExe
-Require-File $UotBondExe
-Require-File $MptcpRelayExe
-Require-File $WstunnelExe
 if (-not (Test-Path -LiteralPath $appBuildDir)) {
     throw "required app build directory missing: $appBuildDir"
 }
+$BondExe = Resolve-InputFile -ConfiguredPath $BondExe -WasExplicitlyProvided $PSBoundParameters.ContainsKey('BondExe') -Fallbacks @(
+    "artifacts/wstunnel/leikwan-bond_windows_amd64.exe",
+    "artifacts/windows/rebuild_payload/leikwan-bond.exe"
+)
+$IngressExe = Resolve-InputFile -ConfiguredPath $IngressExe -WasExplicitlyProvided $PSBoundParameters.ContainsKey('IngressExe') -Fallbacks @(
+    "artifacts/wstunnel/leikwan-ingress_windows_amd64.exe",
+    "artifacts/windows/rebuild_payload/leikwan-ingress.exe"
+)
+$UotBondExe = Resolve-InputFile -ConfiguredPath $UotBondExe -WasExplicitlyProvided $PSBoundParameters.ContainsKey('UotBondExe') -Fallbacks @(
+    "artifacts/windows/rebuild_payload/leikwan-uot-bond.exe"
+)
+$MptcpRelayExe = Resolve-InputFile -ConfiguredPath $MptcpRelayExe -WasExplicitlyProvided $PSBoundParameters.ContainsKey('MptcpRelayExe') -Fallbacks @(
+    "artifacts/wstunnel/leikwan-mptcp-relay_windows_amd64.exe",
+    "artifacts/windows/rebuild_payload/leikwan-mptcp-relay.exe"
+)
+$WstunnelExe = Resolve-InputFile -ConfiguredPath $WstunnelExe -WasExplicitlyProvided $PSBoundParameters.ContainsKey('WstunnelExe') -Fallbacks @(
+    "artifacts/wstunnel/wstunnel_windows_amd64.exe",
+    "artifacts/windows/rebuild_payload/wstunnel.exe",
+    "wstunnel.exe"
+)
 
 if (Test-Path -LiteralPath $StageDir) {
     Remove-Item -LiteralPath $StageDir -Recurse -Force
@@ -48,6 +88,12 @@ Copy-Item -LiteralPath $MptcpRelayExe -Destination (Join-Path $binDir "leikwan-m
 Copy-Item -LiteralPath $WstunnelExe -Destination (Join-Path $binDir "wstunnel.exe") -Force
 
 $installScript = @'
+param(
+    [switch]$Elevated,
+    [string]$InstallDirOverride,
+    [string]$DesktopDirOverride
+)
+
 $ErrorActionPreference = "Stop"
 
 $programFilesDir = if (-not [string]::IsNullOrWhiteSpace($env:ProgramW6432)) {
@@ -57,11 +103,66 @@ $programFilesDir = if (-not [string]::IsNullOrWhiteSpace($env:ProgramW6432)) {
 } else {
     [Environment]::GetFolderPath([System.Environment+SpecialFolder]::ProgramFiles)
 }
-$installDir = if (-not [string]::IsNullOrWhiteSpace($env:LEIKWAN_INSTALL_DIR)) {
+
+$resolvedInstallDir = if (-not [string]::IsNullOrWhiteSpace($InstallDirOverride)) {
+    $InstallDirOverride
+} elseif (-not [string]::IsNullOrWhiteSpace($env:LEIKWAN_RELAUNCH_INSTALL_DIR)) {
+    $env:LEIKWAN_RELAUNCH_INSTALL_DIR
+} elseif (-not [string]::IsNullOrWhiteSpace($env:LEIKWAN_INSTALL_DIR)) {
     $env:LEIKWAN_INSTALL_DIR
 } else {
     Join-Path $programFilesDir "LeiKwan Bridge"
 }
+
+$resolvedDesktopDir = if (-not [string]::IsNullOrWhiteSpace($DesktopDirOverride)) {
+    $DesktopDirOverride
+} elseif (-not [string]::IsNullOrWhiteSpace($env:LEIKWAN_RELAUNCH_DESKTOP_DIR)) {
+    $env:LEIKWAN_RELAUNCH_DESKTOP_DIR
+} elseif (-not [string]::IsNullOrWhiteSpace($env:LEIKWAN_DESKTOP_DIR)) {
+    $env:LEIKWAN_DESKTOP_DIR
+} else {
+    [Environment]::GetFolderPath([System.Environment+SpecialFolder]::DesktopDirectory)
+}
+
+function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Test-RequiresElevation {
+    param([string]$TargetDir)
+
+    $trimChars = [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $programFiles = [System.IO.Path]::GetFullPath($programFilesDir).TrimEnd($trimChars)
+    $target = [System.IO.Path]::GetFullPath($TargetDir).TrimEnd($trimChars)
+    $programFilesWithSeparator = $programFiles + [System.IO.Path]::DirectorySeparatorChar
+
+    return $target.Equals($programFiles, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $target.StartsWith($programFilesWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+if (Test-RequiresElevation -TargetDir $resolvedInstallDir -and -not (Test-IsAdministrator)) {
+    if ($Elevated) {
+        throw "installer relaunched with -Elevated but still lacks administrator rights"
+    }
+
+    $env:LEIKWAN_RELAUNCH_INSTALL_DIR = $resolvedInstallDir
+    $env:LEIKWAN_RELAUNCH_DESKTOP_DIR = $resolvedDesktopDir
+
+    $psiArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $PSCommandPath,
+        "-Elevated"
+    )
+
+    $process = Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $psiArgs -Wait -PassThru
+    exit $process.ExitCode
+}
+
+$installDir = $resolvedInstallDir
+$desktopDir = $resolvedDesktopDir
 $payloadDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $targetBin = Join-Path $installDir "bin"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -85,21 +186,17 @@ function Resolve-PayloadFile {
 function Ensure-DesktopShortcut {
     param(
         [string]$TargetPath,
-        [string]$WorkingDirectory
+        [string]$WorkingDirectory,
+        [string]$DesktopDirPath
     )
 
-    $desktopDir = $env:LEIKWAN_DESKTOP_DIR
-    if ([string]::IsNullOrWhiteSpace($desktopDir)) {
-        $desktopDir = [Environment]::GetFolderPath([System.Environment+SpecialFolder]::DesktopDirectory)
-    }
-
-    if ([string]::IsNullOrWhiteSpace($desktopDir)) {
+    if ([string]::IsNullOrWhiteSpace($DesktopDirPath)) {
         Write-Warning "desktop directory unavailable; skipping shortcut creation"
         return
     }
 
-    New-Item -ItemType Directory -Path $desktopDir -Force | Out-Null
-    $shortcutPath = Join-Path $desktopDir "LeiKwan Bridge.lnk"
+    New-Item -ItemType Directory -Path $DesktopDirPath -Force | Out-Null
+    $shortcutPath = Join-Path $DesktopDirPath "LeiKwan Bridge.lnk"
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $TargetPath
@@ -229,7 +326,7 @@ Copy-Item -LiteralPath $sourceIngress -Destination (Join-Path $installDir "leikw
 Copy-Item -LiteralPath $sourceUotBond -Destination (Join-Path $installDir "leikwan-uot-bond.exe") -Force
 Copy-Item -LiteralPath $sourceMptcpRelay -Destination (Join-Path $installDir "leikwan-mptcp-relay.exe") -Force
 
-Ensure-DesktopShortcut -TargetPath (Join-Path $installDir "leikwan-client-win.exe") -WorkingDirectory $installDir
+Ensure-DesktopShortcut -TargetPath (Join-Path $installDir "leikwan-client-win.exe") -WorkingDirectory $installDir -DesktopDirPath $desktopDir
 
 $manifest = [ordered]@{
     installed_at = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
