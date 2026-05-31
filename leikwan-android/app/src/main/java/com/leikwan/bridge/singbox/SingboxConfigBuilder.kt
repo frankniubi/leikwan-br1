@@ -64,7 +64,15 @@ class SingboxConfigBuilder(
         root.add("log", JsonObject().apply {
             addProperty("level", "debug")
         })
-        root.add("dns", buildDns(finalProxyTag, connectionMode))
+        val dnsProxyDetourTag = finalProxyTag.takeIf { activeProxyNodes.isNotEmpty() }
+        val dnsBootstrapDomains = if (connectionMode == ProxyConnectionMode.DIRECT) {
+            activeProxyNodes
+                .mapNotNull { it.originalServer.trim().lowercase().takeIf { host -> host.isNotEmpty() && !isIpLike(host) } }
+                .toSet()
+        } else {
+            emptySet()
+        }
+        root.add("dns", buildDns(dnsProxyDetourTag, dnsBootstrapDomains))
         root.add("inbounds", buildInbounds())
         root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode))
         root.add("route", buildRoute(runtimeContext?.bypassHosts ?: emptySet(), finalProxyTag, routingPolicySnapshot))
@@ -76,32 +84,30 @@ class SingboxConfigBuilder(
     }
 
     private fun buildDns(
-        proxyDetourTag: String,
-        connectionMode: ProxyConnectionMode,
+        proxyDetourTag: String?,
+        bootstrapDomains: Set<String>,
     ): JsonObject {
         val dns = JsonObject()
         val servers = JsonArray()
         servers.add(JsonObject().apply {
             addProperty("tag", "remote")
-            addProperty("type", "udp")
+            addProperty("type", if (proxyDetourTag != null) "tcp" else "udp")
             addProperty("server", settings.dnsServer)
-            addProperty(
-                "detour",
-                if (connectionMode == ProxyConnectionMode.SERVICES) proxyDetourTag else "direct"
-            )
+            if (proxyDetourTag != null) {
+                addProperty("detour", proxyDetourTag)
+            }
         })
         servers.add(JsonObject().apply {
             addProperty("tag", "direct-dns")
             addProperty("type", "udp")
             addProperty("server", settings.dnsFallback)
-            addProperty("detour", "direct")
         })
         dns.add("servers", servers)
 
         val rules = JsonArray()
         rules.add(JsonObject().apply {
             add("domain", JsonArray().apply {
-                panelDirectDomains().forEach { add(it) }
+                (panelDirectDomains() + bootstrapDomains).forEach { add(it) }
             })
             addProperty("server", "direct-dns")
         })
@@ -128,7 +134,13 @@ class SingboxConfigBuilder(
                 })
                 addProperty("auto_route", true)
                 addProperty("strict_route", true)
-                addProperty("stack", "mixed")
+                // gVisor userspace stack: required for an unprivileged Android VpnService.
+                // The "mixed"/"system" TCP stacks need kernel socket redirection (NET_ADMIN)
+                // the app does not have, so TCP connections were never accepted by the TUN
+                // (UDP/DNS worked via gVisor, all TCP browsing timed out). See
+                // docs/2026-05-31-android-direct-vpn-still-bad-handoff.md.
+                addProperty("stack", "gvisor")
+                addProperty("mtu", 1280)
             })
         }
     }
@@ -409,7 +421,6 @@ class SingboxConfigBuilder(
             "final",
             if (snapshot?.globalDefaultOutcome == UserTrafficOutcome.DIRECT) "direct" else finalProxyTag,
         )
-        route.addProperty("auto_detect_interface", true)
 
         // route.rule_set: China sets (if toggle) + user-rule remote sets, de-duplicated by tag.
         val ruleSetArray = JsonArray()

@@ -62,6 +62,20 @@ fun LoginScreen(
             clients = state.clients,
             onSelect = { viewModel.selectClient(it.id) },
             onDismiss = { viewModel.dismissClientPicker() },
+            onUseFirst = { state.clients.firstOrNull()?.let { viewModel.selectClient(it.id) } },
+        )
+    }
+
+    state.error?.let { err ->
+        AlertDialog(
+            onDismissRequest = { viewModel.clearError() },
+            title = { Text("Sign in failed") },
+            text = { Text(err) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.clearError() }) {
+                    Text("OK")
+                }
+            },
         )
     }
 
@@ -143,6 +157,7 @@ private fun ClientPickerDialog(
     clients: List<ClientInfo>,
     onSelect: (ClientInfo) -> Unit,
     onDismiss: () -> Unit,
+    onUseFirst: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -182,7 +197,8 @@ private fun ClientPickerDialog(
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Use Default") }
+            TextButton(onClick = onUseFirst) { Text("Use First") }
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
 }

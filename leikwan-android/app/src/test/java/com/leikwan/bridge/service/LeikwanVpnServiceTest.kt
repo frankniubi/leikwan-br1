@@ -2,9 +2,11 @@ package com.leikwan.bridge.service
 
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
@@ -32,5 +34,14 @@ class LeikwanVpnServiceTest {
 
         assertEquals(VpnStartupState.STARTING, snapshot.state)
         assertNull(snapshot.errorMessage)
+    }
+
+    @Test
+    fun `libbox outbound sockets use Android protect callback`() {
+        val service = Robolectric.buildService(LeikwanVpnService::class.java)
+            .create()
+            .get()
+
+        assertTrue(service.usePlatformAutoDetectInterfaceControl())
     }
 }

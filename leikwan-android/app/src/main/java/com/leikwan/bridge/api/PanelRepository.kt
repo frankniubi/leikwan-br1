@@ -1,6 +1,7 @@
 package com.leikwan.bridge.api
 
 import android.content.Context
+import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.leikwan.bridge.data.Prefs
@@ -10,9 +11,12 @@ import com.leikwan.bridge.runtime.ForwardCatalog
 import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardContractParser
 import com.leikwan.bridge.runtime.ForwardFilter
+import com.leikwan.bridge.net.AppDns
+import com.leikwan.bridge.net.MirrorNoSni
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.net.URI
 import java.util.concurrent.TimeUnit
 
 class PanelRepository(context: Context) {
@@ -26,10 +30,21 @@ class PanelRepository(context: Context) {
 
     private fun buildApi(baseUrl: String): PanelApi {
         val url = baseUrl.trimEnd('/') + "/"
-        val client = OkHttpClient.Builder()
+        val host = runCatching { URI(url).host }.getOrNull()
+        val clientBuilder = OkHttpClient.Builder()
+            // Resolve the panel hostname over DoH so GFW UDP/53 poisoning can't redirect
+            // login to a bogus IP. Panel control-plane calls intentionally do not fall
+            // back to system DNS because poisoned networks return bogus A/AAAA records.
+            .dns(AppDns.strict())
+            .callTimeout(20, TimeUnit.SECONDS)
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
-            .build()
+
+        if (MirrorNoSni.shouldRewrite(host)) {
+            MirrorNoSni.applyTo(clientBuilder)
+        }
+
+        val client = clientBuilder.build()
         return Retrofit.Builder()
             .baseUrl(url)
             .client(client)
@@ -43,32 +58,117 @@ class PanelRepository(context: Context) {
     suspend fun login(panelUrl: String, email: String, password: String): LoginResponse {
         prefs.panelUrl = panelUrl
         api = buildApi(panelUrl)
-        val resp = api.login(LoginRequest(email, password))
-        if (!resp.ok) throw Exception("Login failed")
-        prefs.token = resp.token
-        prefs.username = resp.username
-        prefs.email = email
-        prefs.password = password
-        prefs.clientId = resp.clientId
-        prefs.clientName = resp.clientName
-        prefs.clientsJson = gson.toJson(resp.clients)
-        prefs.selectedForwardId = 0L
+        val resp = executeLogin(LoginRequest(email, password))
+        if (needsClientSelection(resp)) {
+            return resp
+        }
+        val sessionToken = resp.token?.takeIf { it.isNotBlank() }
+            ?: throw Exception("Login response missing session token")
+        val selectedClientId = resp.clientId ?: resp.clients.singleOrNull()?.id
+            ?: throw Exception("Please select a client")
+        val selection = executeSelectClient(ClientSelectionRequest(sessionToken, selectedClientId))
+        persistSelectedClient(selection, email, password, resp.clients, resp.username)
         return resp
+    }
+
+    suspend fun selectClient(
+        panelUrl: String,
+        email: String,
+        password: String,
+        sessionToken: String,
+        clientId: Long,
+        clients: List<ClientInfo>,
+        username: String? = null,
+    ): ClientSelectionResponse {
+        prefs.panelUrl = panelUrl
+        api = buildApi(panelUrl)
+        val token = sessionToken.takeIf { it.isNotBlank() }
+            ?: executeLogin(LoginRequest(email, password)).token?.takeIf { it.isNotBlank() }
+            ?: throw Exception("Login response missing session token")
+        val selection = executeSelectClient(ClientSelectionRequest(token, clientId))
+        persistSelectedClient(selection, email, password, clients, username)
+        return selection
     }
 
     suspend fun switchClient(clientId: Long): LoginResponse {
         val email = prefs.email ?: throw Exception("Not logged in")
         val password = prefs.password ?: throw Exception("Re-login required")
-        val resp = api.login(LoginRequest(email, password, clientId))
-        if (!resp.ok) throw Exception("Switch client failed")
-        prefs.token = resp.token
-        prefs.clientId = resp.clientId
-        prefs.clientName = resp.clientName
-        prefs.selectedForwardId = 0L
+        val resp = executeLogin(LoginRequest(email, password), fallback = "Switch client failed")
+        val sessionToken = resp.token?.takeIf { it.isNotBlank() }
+            ?: throw Exception("Login response missing session token")
+        val selection = executeSelectClient(ClientSelectionRequest(sessionToken, clientId), fallback = "Switch client failed")
+        persistSelectedClient(selection, email, password, resp.clients, resp.username)
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
         return resp
+    }
+
+    private fun needsClientSelection(resp: LoginResponse): Boolean =
+        resp.clients.size > 1 && resp.clientId == null
+
+    private fun persistSelectedClient(
+        selection: ClientSelectionResponse,
+        email: String,
+        password: String,
+        clients: List<ClientInfo>,
+        username: String?,
+    ) {
+        val agentToken = selection.agentToken.takeIf { it.isNotBlank() }
+            ?: throw Exception("Client selection missing agent token")
+        prefs.token = agentToken
+        prefs.username = username
+        prefs.email = email
+        prefs.password = password
+        prefs.clientId = selection.clientId
+        prefs.clientName = selection.clientName
+        prefs.clientsJson = gson.toJson(clients)
+        prefs.selectedForwardId = 0L
+    }
+
+    private suspend fun executeLogin(request: LoginRequest, fallback: String = "Login failed"): LoginResponse {
+        val response = api.login(request)
+        if (!response.isSuccessful) {
+            val message = PanelErrorParser.messageFromHttp(
+                response.code(),
+                response.message(),
+                response.errorBody()?.string(),
+            )
+            Log.w(TAG, "panel login http failure code=${response.code()} message=$message")
+            throw Exception(message)
+        }
+        val body = response.body() ?: throw Exception("Empty login response")
+        if (!body.ok) {
+            val message = body.error?.takeIf { it.isNotBlank() } ?: fallback
+            Log.w(TAG, "panel login api failure message=$message")
+            throw Exception(message)
+        }
+        Log.i(TAG, "panel login ok clients=${body.clients.size} clientId=${body.clientId}")
+        return body
+    }
+
+    private suspend fun executeSelectClient(
+        request: ClientSelectionRequest,
+        fallback: String = "Client selection failed",
+    ): ClientSelectionResponse {
+        val response = api.selectClient(request)
+        if (!response.isSuccessful) {
+            val message = PanelErrorParser.messageFromHttp(
+                response.code(),
+                response.message(),
+                response.errorBody()?.string(),
+            )
+            Log.w(TAG, "client select http failure code=${response.code()} message=$message")
+            throw Exception(message)
+        }
+        val body = response.body() ?: throw Exception("Empty client selection response")
+        if (!body.ok) {
+            val message = body.error?.takeIf { it.isNotBlank() } ?: fallback
+            Log.w(TAG, "client select api failure message=$message")
+            throw Exception(message)
+        }
+        Log.i(TAG, "client select ok clientId=${body.clientId}")
+        return body
     }
 
     suspend fun pullConfigs(): List<ForwardInfo> {
@@ -134,5 +234,9 @@ class PanelRepository(context: Context) {
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
+    }
+
+    private companion object {
+        const val TAG = "LKPanelRepo"
     }
 }
