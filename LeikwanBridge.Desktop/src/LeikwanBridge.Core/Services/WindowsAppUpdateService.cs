@@ -50,6 +50,77 @@ public sealed class WindowsAppUpdateService
         return Path.Combine(installRoot, "updates", $"leikwan-bridge-setup-{version}.exe");
     }
 
+    public static string BuildInstallStatePath(string installRoot)
+    {
+        return Path.Combine(installRoot, "install-state.json");
+    }
+
+    public static WindowsAppInstallState? LoadInstallState(string installRoot)
+    {
+        var path = BuildInstallStatePath(installRoot);
+        if (!File.Exists(path))
+            return null;
+
+        var json = File.ReadAllText(path);
+        return JsonSerializer.Deserialize<WindowsAppInstallState>(json);
+    }
+
+    public static string[] BuildSilentUpdateArguments(string installerPath, string currentInstallRoot, WindowsAppInstallState state)
+    {
+        _ = installerPath;
+
+        var normalizedCurrentInstallRoot = NormalizeInstallRoot(currentInstallRoot);
+        var normalizedStateInstallRoot = NormalizeInstallRoot(state.InstallDir);
+        if (!string.Equals(normalizedCurrentInstallRoot, normalizedStateInstallRoot, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("install-state target mismatch for silent update");
+
+        var validatedInstallMode = ValidateInstallMode(state.InstallMode);
+        var validatedDesktopShortcut = ValidateDesktopShortcut(state.DesktopShortcut);
+
+        return
+        [
+            "/VERYSILENT",
+            "/NORESTART",
+            validatedInstallMode == "all-users" ? "/ALLUSERS" : "/CURRENTUSER",
+            "/LEIKWANUPDATE=1",
+            $"/LEIKWANINSTALLDIR={normalizedCurrentInstallRoot}",
+            $"/LEIKWANINSTALLMODE={validatedInstallMode}",
+            $"/LEIKWANDESKTOPSHORTCUT={(validatedDesktopShortcut ? 1 : 0)}",
+        ];
+    }
+
+    public static string NormalizeInstallRoot(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new InvalidOperationException("install-state install_dir is missing or empty");
+
+        var fullPath = Path.GetFullPath(path.Trim());
+        var rootPath = Path.GetPathRoot(fullPath) ?? string.Empty;
+        if (string.Equals(fullPath, rootPath, StringComparison.OrdinalIgnoreCase))
+            return fullPath;
+
+        return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private static string ValidateInstallMode(string installMode)
+    {
+        var normalized = (installMode ?? string.Empty).Trim();
+        if (string.Equals(normalized, "all-users", StringComparison.OrdinalIgnoreCase))
+            return "all-users";
+        if (string.Equals(normalized, "just-for-me", StringComparison.OrdinalIgnoreCase))
+            return "just-for-me";
+
+        throw new InvalidOperationException("install-state install_mode is missing or invalid");
+    }
+
+    private static bool ValidateDesktopShortcut(bool? desktopShortcut)
+    {
+        if (!desktopShortcut.HasValue)
+            throw new InvalidOperationException("install-state desktop_shortcut is missing");
+
+        return desktopShortcut.Value;
+    }
+
     public static bool HasPendingUpdate(AgentConfig config)
     {
         return !string.IsNullOrWhiteSpace(config.PendingUpdateVersion)
