@@ -529,3 +529,90 @@ Implements A.6.1 (Option A):
 - Invariant B: hard "exactly 2" at publish, or "at most 2 + diagnostics"?
 - Safe `STATIC_SIDECAR_SELECTOR_PORT_RANGE_SIZE` upper bound vs other loopback listeners (45000–45999 confirmed clear; 45000–49999 not exhaustively proven free).
 - Single-lane slave latency watch: relax the ≥2 selector gate to ≥1, or a separate component (a 1-candidate selector cannot "switch")?
+
+---
+
+## Appendix C — Full implementation plan: Tokyo end-to-end + automation hardening
+
+Built from a 2026-05-31 end-to-end live diagnosis (node13 + node20 + Tokyo reachability) plus a four-lane read-only audit of the automation (panel / slave-agent / sidecar-agent / watchdog). This is the complete backlog for everything still undone. Items already shipped are marked **DONE**; the rest are ordered by priority in §C.10.
+
+### C.0 Diagnosis snapshot (live, 2026-05-31)
+
+- **Windows frontend:** the "no entry port" symptom is **fixed** (Phase-1, 105/105 .NET tests) — uncommitted in this worktree.
+- **node13 (`47.116.104.15`, the real Tokyo / point-5 slave): slave→Tokyo CF-WSTUNNEL is HEALTHY now.** Static uplinks `lws5c1n13p/b` tracked, confs present, `wg-quick@lws5c1n13*` active; CF carriers `udp://127.0.0.1:44397→14982` / `44398→14983` via `wss://162.159.39.5:2053` (SNI `nrt1.nbwly.com`) running; all three point-5 selectors report **both lanes healthy, 0% loss, ~41–43 ms**; 0 failed-update backlog. The old direct `lwsc13`→`185.220.238.143:14973` path is dead/superseded but harmless.
+- **Tokyo sidecar far-end: healthy by inference.** The selector pings reach the **sidecar overlay (`10.240.190.233/237`) through the WG tunnels at 0% loss**, which requires the Tokyo WG backend (`:14982/:14983`) to be up and replying bidirectionally; CF mux `:2053` is reachable. **Open direct check:** iperf3/`:5201` target + sidecar→target delivery + sidecar-agent key/heartbeat were not verified directly (the `root@cn2.dmt.mcbar.cc:2125` jump was too slow to complete a gather). See §C.1.1.
+- **node20 (`150.158.103.182`):** a point-4/CNIX slave, **not** a Tokyo member. Its `lws5` references are a **stale per-forward selector** (`wstunnel-svc-9-1772-udp-uot`) probing interfaces that were never provisioned; the agent already disabled the orphan `wg-quick@lws5*` units. This is the §C.2 bug in the field.
+- **Already fixed:** panel `selector_port` uniqueness (commit `a87bd4d`); slave-agent tear-down of incomplete uplinks instead of orphaning (`d8d87ba`).
+
+### C.1 Make a Tokyo forward actually pass (immediate goal)
+
+Because node13's slave→sidecar leg is healthy, a forward routed **client → node13 → point-5** should pass once the remaining two segments are confirmed:
+
+- **C.1.1 (live verify Tokyo far-end)** — via `root@cn2.dmt.mcbar.cc:2125` → `root@185.220.238.143` (port 22): confirm (a) the forward's target is served (e.g. `iperf3 -s` on `127.0.0.1:5201`), (b) the CF mux `:2053` routes the published path-prefix to WG `:14982/:14983`, (c) the sidecar WG peers for node13's lanes show **rx>0 and tx>0** (not one-way), (d) the sidecar-agent reports `wireguard_public_key` + a valid WG port range to the panel. *(plink note: cache the cn2 host key with `"y" | plink …` once; `-batch -m` aborts on an uncached key — that, not a network hang, stalled the first attempt.)*
+- **C.1.2 (client→slave segment)** — pick a Tokyo forward whose client→slave ingress is also healthy. For the bond/`plain_tcp_mux` path this is a direct domestic dial to node13's `7000–9000` ingress; for forward-47-style MPTCP it is the slave preconnect relay (`:38638`), which previously failed the TCP handshake (separate issue, §A.4).
+- **C.1.3 (Gate-C validation)** — run `iperf3 -c 127.0.0.1 -R -p <listen_port> -b 300M -t 3` through that forward's client listener; require real throughput (listener-up is insufficient, per §14.2).
+
+### C.2 Stale selector / orphan reconcile (HIGH — the node20 field bug)
+
+**Slave-agent** (`slave-agent/slave_agent.py`):
+- Make the **static-uplink set authoritative for selector candidates**: in `apply_static_sidecar_uplinks` (~L2208), after computing `active`, prune/disable any `*-sidecar-selector` whose candidate `interface_name` is no longer in `active` (re-`ensure` with pruned candidates, or remove if empty). Selectors are keyed by service_name and today are decoupled from the interface lifecycle (`remove_sidecar_uplink` ~L3997 never touches selectors).
+- In `probe_sidecar_selector_candidate` (~L2305) / `evaluate_sidecar_uplink_selector` (~L2342): **skip candidates whose interface is absent from `wg show` or whose `/etc/wireguard/<iface>.conf` is missing**, and never `restart_sidecar_selector_lane` a non-existent interface.
+- Add **`cleanup_orphan_sidecar_uplinks()`** mirroring `cleanup_orphan_mptcp_underlays` (~L4558): reconcile live `wg show` `lws*` + `systemctl` `wg-quick@lws*` / `leikwan-wgcf-*` / `*-sidecar-selector` against the active set; remove orphans. Call it next to the MPTCP cleanup (~L2104). **Write `sidecar_static_uplinks.json` atomically** (temp+rename) so a partial write can't zero the inventory and orphan every live interface.
+
+**Panel** (`ProvisioningService.php`): the selector is emitted only inside per-forward publish tasks (~L5735) while uplinks come via the management feed; on membership change the `destroy` payload (~L5442) omits selector teardown. Fix one of: move the selector into the authoritative management feed (recomputed each poll), or force-republish surviving forwards on the node when membership changes, or include explicit selector teardown in `destroy`.
+
+### C.3 selector_port crash-loop hardening (HIGH — agent side still unfixed)
+
+Panel-side port uniqueness is **DONE** (`a87bd4d`), but the agent has no defense against any future collision: a losing `*-sidecar-selector` unit (`Restart=always`, `RestartSec=3`, no `StartLimit*`) thrashed ~26k times.
+- `render_sidecar_uplink_selector_unit` (~L2418): add `StartLimitIntervalSec=300` + `StartLimitBurst=5`, `RestartSec=5`.
+- `serve()` (~L897): on `OSError: EADDRINUSE`, log + clean-exit (or bounded backoff) instead of crashing; optionally pre-bind-probe the port.
+
+### C.4 Republish convergence / drift detection (HIGH — panel)
+
+- **`reconcileForwardEndpoints` skips `active` endpoints** (~L5432: only `pending/error/degraded` re-published), so a silently-drifted-but-`active` endpoint is never re-converged by combination/sidecar/client saves. Add a **desired-payload fingerprint per endpoint**; re-publish when it changes even if `active`; add a periodic **non-convergence sweep** that re-pushes endpoints whose `updated_at` is stale vs the forward/combination and **escalates an alarm** after N non-convergent cycles (A.6.2).
+- **Node-heartbeat republish has no gate** (`NodeController.php:205` republishes all active endpoints every ~30 s) while the sidecar path gates on a WG fingerprint + 600 s; apply a symmetric fingerprint gate to the node path to avoid storms, and make the forced-interval republish **bypass the active-skip** so it actually re-converges drift.
+
+### C.5 Port / address allocation collisions (HIGH/MED — panel)
+
+- **Sidecar WG port range is ~30 slots** (`min(listen+30)`); `stableStaticSidecarUplinkPort` (~L7294) and `stableSidecarLegPort` (~L7337) hash `% rangeSize` with **no probing/assert** → distinct tuples silently collide on one sidecar UDP port (verified). **Fix:** widen the sidecar WG range materially or back it with a per-sidecar uniqueness-checked allocation table; carve **disjoint sub-ranges for leg vs uplink**; log+reject when `rangeSize < expected uplink count`.
+- **Interface-name truncation collision** (~L7284): the `>15`-char crc32b fallback drops `combinationId` and can truncate the hash → identical `lws…` names for distinct combinations (verified). **Fix:** `'lws' . substr(hash('crc32b', fullTuple), 0, 11)` (≤14 chars, hash never truncated).
+- **/30 subnet collision** (`staticSidecarUplinkAddressing` ~L7270, `% 16000`): distinct uplinks can get the same slave/sidecar IP pair (verified). **Fix:** uniqueness-checked addressing or assert no two active uplinks share a subnet.
+- **Selector TCP range (45000–49999) numerically overlaps the UoT UDP range (45000–59999)** — harmless (different L4 namespaces) but document it; don't share a protocol-agnostic "used ports" set.
+
+### C.6 Sidecar-agent reconcile (HIGH/MED — `sidecar-agent/sidecar_agent.py`)
+
+- **Disabled peers are never torn down** (~L1162/L1195 add `interface_name` to the active set *before* the `enabled` check; `apply_*` just early-returns): a peer flipped to `enabled:false` keeps running. **Fix:** only mark active when enabled; else call `remove_*` explicitly.
+- **State not persisted when the list goes empty** (~L1181/L1209 guarded by `if sidecar_uplinks:` / `if self_leg_client_peers:`): the last-departed peer's removal is never recorded → stale on-disk state + skipped scoped cleanup. **Fix:** persist unconditionally (empty list → `{}`).
+- **Orphaned CF slave-transit backends**: the CF sweep explicitly excludes `slave_transit_cf_wg` (~L1303) and the whole block is gated on `cf_runtime is not None` (~L1220) → a missed `remove_slave_sidecar_uplink` orphans the `leikwan-cf-slave-*` unit + its 260xx port + `cf-managed.json`/`cf-routes-2053.json` rows. **Fix:** authoritative sweep of CF backends vs active uplinks regardless of `cf_runtime`.
+- **260xx backend pool (100 ports) exhaustion raises `RuntimeError` that aborts the whole heartbeat reconcile** (~L865/L466). **Fix:** per-uplink try/catch so one bad uplink doesn't kill bond/mptcp/self-update; widen/config the range; prune leaked metadata.
+- **Silent keyless heartbeat**: `ensure_wireguard_identity` returns `""` on failure and the heartbeat reports `wireguard_public_key:""` as `status:ok` → panel publishes 0 legs with no signal (~L153/L1668); the companion `private.key` read can also crash the reconcile. **Fix:** `status:degraded` + log on empty key; guard the key read.
+- **One-way WG observability**: heartbeat carries no per-interface `wg show` rx/tx/handshake (~L1666), so a handshake-ok/rx==0 return-path failure is invisible. **Fix:** report per-peer rx/tx + handshake age; let the panel flag `tx>0 && rx==0 && handshake recent`.
+
+### C.7 Watchdog / health (HIGH/MED)
+
+- **Restart amplification across four siloed cooldowns** (shell handshake watchdog 300 s; slave `watch_static_sidecar_uplink` 30 s `slave_agent.py:2273`; selector lane 60 s `:2334`; `CfwgLatencyWatchdog` 240 s): they share no ledger, and a selector restart itself trips the handshake watcher → self-reinforcing flap. **Fix:** a shared per-interface restart ledger under `/run/leikwan/` + a circuit breaker (≥3 restarts/10 min → long backoff + alarm).
+- **Last-lane / single-lane restart of the only path** (`slave_agent.py:2378-2401`): when only one (degraded) lane remains, the selector restarts it every 60 s — guaranteed outage pulses with no escape. **Fix:** suppress restart when the selected lane is the sole candidate / `reason==all_unhealthy`; escalate an alarm instead.
+- **Single-lane slave has no latency watch** (selector emitted only with ≥2 uplinks, `ProvisioningService.php:5624/5659`): a single-lane forward that brownouts (fresh handshake, high RTT/loss) is unwatched. **Fix:** emit a monitor-only 1-candidate selector (no switch) behind `STATIC_SIDECAR_SELECTOR_SINGLE_LANE_RESTART`.
+- **`leikwan-wg-watchdog.sh` one-way blindness** (only checks handshake age ~L42–54): fresh handshake + frozen rx is never restarted. **Fix:** sample `wg show <iface> transfer`, persist last rx, restart when handshake fresh but rx delta == 0 for N polls.
+- **`leikwan-wg-watchdog.sh` glob misses `lws*`/`lwf*`** (matches `lw-*|wg*|lwm*`, not `lws…`): static-sidecar lanes have no out-of-process fallback if the slave agent wedges. **Fix:** broaden glob to `lw*|wg*`.
+- **`CfwgLatencyWatchdog` default `forward_ids='47'`** (`ClientAgentController.php:301`): only forward 47 is latency-watched; empty config silently watches nothing-or-all. **Fix:** default empty → all active CFWG forwards; log the resolved set; WARN when a configured id has no `lw-cfwg-*`/`wstunnel_udp` target.
+- **No "all lanes degraded" alarm + infinite probing of non-existent interfaces** (`slave_agent.py:2378-2416`, `:2297`): failures are only visible in state JSON. **Fix:** WARN + report a health event to the panel on sustained all-unhealthy; distinguish "interface missing" from "ping failed".
+
+### C.8 Slave self-update backlog (MED — `slave-agent/slave_agent.py`)
+
+Dozens of failed `leikwan-slave-update-*` transient units accumulate (~L2715, unique-named, never reset). **Fix:** `systemd-run --collect`; per-`request_token` failure circuit breaker (stop re-requesting after N failures using the existing `update_state.last_error`); periodic `systemctl reset-failed 'leikwan-slave-update-*'`.
+
+### C.9 Verification
+
+- **Unit:** panel — selector-port uniqueness (DONE) + tests for fingerprint-drift republish, interface-name/subnet/port collision helpers, "0/1 leg" diagnostics. slave-agent — incomplete-uplink teardown (DONE) + stale-selector pruning, orphan sweep, EADDRINUSE clean-exit. sidecar-agent — disabled-peer teardown, empty-list persistence, CF-backend orphan sweep, keyless-heartbeat `degraded`. watchdog — shared cooldown ledger, last-lane restart suppression, one-way rx detection.
+- **Live:** §C.1.3 Gate-C iperf3 through a Tokyo forward; confirm node13 lanes rx>0/tx>0 on the sidecar; confirm a removed uplink leaves **no** running selector; confirm a degraded sole lane is not restart-looped.
+
+### C.10 Sequencing & priority
+
+1. **C.1** confirm Tokyo far-end + run Gate-C on a node13 Tokyo forward (proves end-to-end now that slave→sidecar is healthy).
+2. **C.2** stale-selector / orphan reconcile (fixes the live node20 noise + prevents recurrence) — **highest-impact automation fix**.
+3. **C.3** selector EADDRINUSE hardening + **C.6** disabled-peer teardown / empty-list persistence (cheap, high-value safety).
+4. **C.4** republish drift convergence + **C.5** allocation-collision fixes (correctness at scale).
+5. **C.7** watchdog ledger / last-lane / one-way detection; **C.8** update backlog; **C.6** one-way observability + keyless `degraded`.
+
+**AUP / deploy note:** all of the above is defensive operational engineering on the operator's own product. Changes are code-first + unit-tested; **no production deploy** to live slaves/sidecars/panel without explicit confirmation and the §C.9 verification.
