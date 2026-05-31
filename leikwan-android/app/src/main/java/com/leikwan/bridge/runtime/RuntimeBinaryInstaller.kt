@@ -4,9 +4,9 @@ import android.content.Context
 import android.os.Build
 import java.io.File
 
-class RuntimeBinaryInstaller(private val context: Context) {
+open class RuntimeBinaryInstaller(private val context: Context) {
 
-    fun prepareBinaryPaths(): RuntimeBinaryPaths {
+    open fun prepareBinaryPaths(): RuntimeBinaryPaths {
         val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty().ifBlank { "arm64-v8a" }
         val runtimeDir = File(context.filesDir, "runtime/$abi").apply { mkdirs() }
         val nativeLibraryDir = context.applicationInfo.nativeLibraryDir?.let(::File)

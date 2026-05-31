@@ -9,6 +9,7 @@ object BondForwardRunner {
     fun buildPlan(
         forward: ForwardContract,
         binaries: RuntimeBinaryPaths,
+        portSalt: Int = 0,
     ): RuntimeContext {
         val bonding = forward.bonding
             ?: throw IllegalArgumentException("bond mode missing bonding config")
@@ -36,7 +37,7 @@ object BondForwardRunner {
             endpoint.cdnHost?.takeIf { it.isNotBlank() }?.let { bypassHosts += it }
         }
 
-        val basePort = 20000 + ((forward.forwardId.toInt() * 37) % 15000)
+        val basePort = 20000 + (((forward.forwardId.toInt() * 37) + portSalt) % 15000)
         val localLegPorts = mutableListOf<Int>()
         val processPlans = mutableListOf<RuntimeProcessPlan>()
         val protocolPlans = mutableListOf<ProtocolPlan>()

@@ -9,10 +9,10 @@ import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "ProcessRunner"
 
-class ProcessRunner {
+open class ProcessRunner {
     private val pools = ConcurrentHashMap<Long, GuardedProcessPool>()
 
-    fun start(forwardId: Long, runtimeContext: RuntimeContext) {
+    open fun start(forwardId: Long, runtimeContext: RuntimeContext) {
         stopForward(forwardId)
         AndroidRuntimeJanitor.cleanupStaleRuntimeProcesses()
         val fatalError = AtomicReference<IOException?>(null)
@@ -33,11 +33,11 @@ class ProcessRunner {
         }
     }
 
-    fun stopForward(forwardId: Long) {
+    open fun stopForward(forwardId: Long) {
         pools.remove(forwardId)?.close()
     }
 
-    fun stopAll() {
+    open fun stopAll() {
         pools.keys.toList().forEach { stopForward(it) }
     }
 

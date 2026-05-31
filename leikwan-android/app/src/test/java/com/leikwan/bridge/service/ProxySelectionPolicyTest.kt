@@ -29,6 +29,71 @@ class ProxySelectionPolicyTest {
 
         require(result is ProxySelectionResult.Success)
         assertEquals(1L, result.selectedNode.id)
+        assertEquals(listOf(1L), result.activeNodes.map { it.id })
+    }
+
+    @Test
+    fun `policy returns all enabled service-compatible nodes for multi-node services mode`() {
+        val result = ProxySelectionPolicy.validate(
+            selectedProxyId = 1L,
+            forwardId = 45L,
+            connectionMode = ProxyConnectionMode.SERVICES,
+            proxyNodes = listOf(
+                ProxyNode(
+                    id = 1,
+                    name = "selected",
+                    type = "ss",
+                    originalServer = "127.0.0.1",
+                    originalPort = 32215,
+                    configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                    forwardId = 45L,
+                    enabled = true,
+                ),
+                ProxyNode(
+                    id = 2,
+                    name = "same-forward",
+                    type = "ss",
+                    originalServer = "127.0.0.2",
+                    originalPort = 32216,
+                    configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                    forwardId = 45L,
+                    enabled = true,
+                ),
+                ProxyNode(
+                    id = 3,
+                    name = "global",
+                    type = "ss",
+                    originalServer = "127.0.0.3",
+                    originalPort = 32217,
+                    configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                    forwardId = null,
+                    enabled = true,
+                ),
+                ProxyNode(
+                    id = 4,
+                    name = "other-forward",
+                    type = "ss",
+                    originalServer = "127.0.0.4",
+                    originalPort = 32218,
+                    configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                    forwardId = 44L,
+                    enabled = true,
+                ),
+                ProxyNode(
+                    id = 5,
+                    name = "disabled",
+                    type = "ss",
+                    originalServer = "127.0.0.5",
+                    originalPort = 32219,
+                    configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                    forwardId = 45L,
+                    enabled = false,
+                ),
+            ),
+        )
+
+        require(result is ProxySelectionResult.Success)
+        assertEquals(listOf(1L, 2L, 3L), result.activeNodes.map { it.id })
     }
 
     @Test
