@@ -36,8 +36,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.leikwan.bridge.R
 import com.leikwan.bridge.runtime.ForwardListItem
 import com.leikwan.bridge.service.ProxyConnectionMode
 import com.leikwan.bridge.ui.MainActivity
@@ -90,16 +92,16 @@ internal fun TunnelsScreenContent(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Select a Forward", style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.tunnels_select_forward), style = MaterialTheme.typography.titleLarge)
             IconButton(onClick = onRefresh) {
-                Icon(Icons.Default.Refresh, "Refresh")
+                Icon(Icons.Default.Refresh, stringResource(R.string.tunnels_refresh))
             }
         }
 
         if (state.hiddenUnsupportedMptcpCount > 0) {
             Spacer(Modifier.height(8.dp))
             Text(
-                "Hidden ${state.hiddenUnsupportedMptcpCount} unsupported MPTCP forward(s)",
+                stringResource(R.string.tunnels_hidden_unsupported_mptcp_format, state.hiddenUnsupportedMptcpCount),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -108,7 +110,7 @@ internal fun TunnelsScreenContent(
         if (state.connectionMode == ProxyConnectionMode.DIRECT) {
             Spacer(Modifier.height(8.dp))
             Text(
-                "Direct mode is controlled from the Proxies screen.",
+                stringResource(R.string.tunnels_direct_mode_proxies),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -125,7 +127,7 @@ internal fun TunnelsScreenContent(
             }
         } else if (state.forwards.isEmpty()) {
             Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                Text("No forwards assigned", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.tunnels_empty_forwards), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -157,13 +159,21 @@ private fun VpnToggleCard(
         }, label = "status"
     )
     val statusText = when (status) {
-        VpnStatus.DISCONNECTED -> if (selectedForwardId == 0L) "Select a forward below" else "Ready to connect"
-        VpnStatus.CONNECTING -> "Connecting..."
+        VpnStatus.DISCONNECTED -> if (selectedForwardId == 0L) {
+            stringResource(R.string.tunnels_status_select_forward)
+        } else {
+            stringResource(R.string.tunnels_status_ready)
+        }
+        VpnStatus.CONNECTING -> stringResource(R.string.tunnels_status_connecting)
         VpnStatus.CONNECTED -> {
             val name = forwards.find { it.forwardId == selectedForwardId }?.let {
-                it.serviceName.ifEmpty { "Forward #${it.forwardId}" }
-            } ?: "Connected"
-            "Connected: $name"
+                if (it.serviceName.isNotEmpty()) {
+                    it.serviceName
+                } else {
+                    stringResource(R.string.tunnels_forward_fallback_format, it.forwardId)
+                }
+            } ?: stringResource(R.string.tunnels_status_connected)
+            stringResource(R.string.tunnels_status_connected_format, name)
         }
     }
 
@@ -174,7 +184,7 @@ private fun VpnToggleCard(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("VPN", style = MaterialTheme.typography.titleLarge)
+                Text(stringResource(R.string.tunnels_vpn), style = MaterialTheme.typography.titleLarge)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Surface(
                         modifier = Modifier.size(10.dp),
@@ -220,13 +230,21 @@ private fun ForwardCard(
         ) {
             Icon(
                 if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                contentDescription = if (isSelected) "Selected" else "Not selected",
+                contentDescription = if (isSelected) {
+                    stringResource(R.string.tunnels_selected)
+                } else {
+                    stringResource(R.string.tunnels_not_selected)
+                },
                 tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    forward.serviceName.ifEmpty { "Forward #${forward.forwardId}" },
+                    if (forward.serviceName.isNotEmpty()) {
+                        forward.serviceName
+                    } else {
+                        stringResource(R.string.tunnels_forward_fallback_format, forward.forwardId)
+                    },
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Spacer(Modifier.height(4.dp))
@@ -235,18 +253,18 @@ private fun ForwardCard(
                     AssistChip(onClick = {}, label = { Text(forward.mode.wireValue.uppercase()) })
                     AssistChip(onClick = {}, label = { Text(forward.transport.uppercase()) })
                     forward.speedLimitMbps?.let {
-                        AssistChip(onClick = {}, label = { Text("${it} Mbps") })
+                        AssistChip(onClick = {}, label = { Text(stringResource(R.string.tunnels_speed_mbps_format, it)) })
                     }
                 }
 
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Target: ${forward.target}",
+                    stringResource(R.string.tunnels_target_format, forward.target),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    "Listen: 127.0.0.1:${forward.listenPort}",
+                    stringResource(R.string.tunnels_listen_format, forward.listenPort),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

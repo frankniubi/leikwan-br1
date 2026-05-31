@@ -1,8 +1,10 @@
 package com.leikwan.bridge.ui.proxies
 
 import android.app.Application
+import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.leikwan.bridge.R
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
@@ -28,6 +30,7 @@ data class ProxiesUiState(
 )
 
 class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
+    private val appContext = app.applicationContext
     private val prefs = Prefs.get(app)
     private val db = AppDatabase.get(app)
     private val nodeDao = db.proxyNodeDao()
@@ -147,10 +150,10 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                 is ProxyNodeEditResult.Success -> {
                     nodeDao.update(result.node)
                     _state.value = _state.value.copy(error = null)
-                    _snackbar.value = "Proxy updated"
+                    _snackbar.value = s(R.string.proxy_updated)
                 }
                 is ProxyNodeEditResult.Error -> {
-                    _state.value = _state.value.copy(error = result.message)
+                    _state.value = _state.value.copy(error = s(result.messageRes))
                 }
             }
         }
@@ -162,7 +165,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             val newId = nodeDao.insert(duplicated)
             prefs.selectedProxyId = newId
             _state.value = _state.value.copy(selectedProxyId = newId, error = null)
-            _snackbar.value = "Proxy duplicated"
+            _snackbar.value = s(R.string.proxy_duplicated)
         }
     }
 
@@ -173,7 +176,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 orchestrator.startForForward(0L)
                 _state.value = _state.value.copy(isLoading = false, error = null)
-                _snackbar.value = "Direct VPN started"
+                _snackbar.value = s(R.string.direct_vpn_started)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(isLoading = false, error = e.message)
             }
@@ -200,13 +203,13 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             when (val result = ImportRouter.process(text)) {
                 is ImportRouter.ImportResult.ProxyNodes -> {
                     nodeDao.insertAll(result.nodes)
-                    _snackbar.value = "Added ${result.nodes.size} proxy node(s)"
+                    _snackbar.value = s(R.string.added_proxy_nodes_format, result.nodes.size)
                 }
                 is ImportRouter.ImportResult.SubscriptionUrl -> {
                     _state.value = _state.value.copy(isLoading = true)
                     try {
                         val url = result.url
-                        val name = url.substringAfterLast("/").take(16).ifEmpty { "Subscription" }
+                        val name = url.substringAfterLast("/").take(16).ifEmpty { s(R.string.default_subscription_name) }
                         val subId = subDao.insert(Subscription(name = name, url = url))
                         val nodes = SubscriptionFetcher.fetch(url)
                             .map { it.copy(subscriptionId = subId) }
@@ -214,18 +217,18 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                         subDao.update(subDao.getById(subId)!!.copy(
                             lastUpdated = System.currentTimeMillis()
                         ))
-                        _snackbar.value = "Subscription added (${nodes.size} nodes)"
+                        _snackbar.value = s(R.string.subscription_added_format, nodes.size)
                         _state.value = _state.value.copy(isLoading = false)
                     } catch (e: Exception) {
                         _state.value = _state.value.copy(isLoading = false)
-                        _snackbar.value = "Failed to fetch subscription: ${e.message}"
+                        _snackbar.value = s(R.string.subscription_fetch_failed_format, e.message.orEmpty())
                     }
                 }
                 is ImportRouter.ImportResult.Mixed -> {
                     nodeDao.insertAll(result.nodes)
                     for (url in result.subscriptionUrls) {
                         try {
-                            val name = url.substringAfterLast("/").take(16).ifEmpty { "Subscription" }
+                            val name = url.substringAfterLast("/").take(16).ifEmpty { s(R.string.default_subscription_name) }
                             val subId = subDao.insert(Subscription(name = name, url = url))
                             val nodes = SubscriptionFetcher.fetch(url)
                                 .map { it.copy(subscriptionId = subId) }
@@ -235,12 +238,19 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                             ))
                         } catch (_: Exception) {}
                     }
-                    _snackbar.value = "Imported ${result.nodes.size} node(s) and ${result.subscriptionUrls.size} subscription(s)"
+                    _snackbar.value = s(
+                        R.string.imported_proxy_subscription_format,
+                        result.nodes.size,
+                        result.subscriptionUrls.size,
+                    )
                 }
                 is ImportRouter.ImportResult.Empty -> {
-                    _snackbar.value = "No proxy links found"
+                    _snackbar.value = s(R.string.no_proxy_links_found)
                 }
             }
         }
     }
+
+    private fun s(@StringRes id: Int, vararg args: Any): String =
+        appContext.getString(id, *args)
 }

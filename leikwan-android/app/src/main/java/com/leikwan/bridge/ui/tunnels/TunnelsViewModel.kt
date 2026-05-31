@@ -2,8 +2,10 @@ package com.leikwan.bridge.ui.tunnels
 
 import android.app.Application
 import android.util.Log
+import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.leikwan.bridge.R
 import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.routing.RoutingDiagnosticsSource
@@ -30,6 +32,7 @@ data class TunnelsUiState(
 )
 
 class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
+    private val appContext = app.applicationContext
     private val repo = PanelRepository(app)
     private val prefs = Prefs.get(app)
     private val orchestrator = TunnelOrchestrator(app)
@@ -82,7 +85,7 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
             if (prefs.proxyConnectionMode == ProxyConnectionMode.DIRECT && _state.value.vpnStatus == VpnStatus.DISCONNECTED) {
                 _state.value = _state.value.copy(
                     connectionMode = prefs.proxyConnectionMode,
-                    error = "Direct mode starts from the Proxies screen",
+                    error = s(R.string.tunnels_error_direct_from_proxies),
                 )
                 return@launch
             }
@@ -97,7 +100,7 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 val selectedId = _state.value.selectedForwardId
                 if (prefs.proxyConnectionMode == com.leikwan.bridge.service.ProxyConnectionMode.SERVICES && selectedId == 0L) {
-                    _state.value = _state.value.copy(error = "Please select a service first")
+                    _state.value = _state.value.copy(error = s(R.string.tunnels_error_select_service))
                     return@launch
                 }
                 if (
@@ -107,7 +110,7 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
                     prefs.selectedForwardId = 0L
                     _state.value = _state.value.copy(
                         selectedForwardId = 0L,
-                        error = "Selected forward is no longer supported on Android",
+                        error = s(R.string.tunnels_error_forward_unsupported),
                     )
                     return@launch
                 }
@@ -121,4 +124,7 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    private fun s(@StringRes id: Int, vararg args: Any): String =
+        appContext.getString(id, *args)
 }

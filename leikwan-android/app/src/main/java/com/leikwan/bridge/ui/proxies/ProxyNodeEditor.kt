@@ -1,5 +1,7 @@
 package com.leikwan.bridge.ui.proxies
 
+import androidx.annotation.StringRes
+import com.leikwan.bridge.R
 import com.leikwan.bridge.data.ProxyNode
 
 data class ProxyNodeEditDraft(
@@ -11,7 +13,7 @@ data class ProxyNodeEditDraft(
 
 sealed interface ProxyNodeEditResult {
     data class Success(val node: ProxyNode) : ProxyNodeEditResult
-    data class Error(val message: String) : ProxyNodeEditResult
+    data class Error(@StringRes val messageRes: Int) : ProxyNodeEditResult
 }
 
 object ProxyNodeEditor {
@@ -30,16 +32,16 @@ object ProxyNodeEditor {
     ): ProxyNodeEditResult {
         val name = draft.name.trim()
         if (name.isEmpty()) {
-            return ProxyNodeEditResult.Error("Proxy name is required")
+            return ProxyNodeEditResult.Error(R.string.proxy_error_name_required)
         }
         val server = draft.originalServer.trim()
         if (server.isEmpty()) {
-            return ProxyNodeEditResult.Error("Proxy server is required")
+            return ProxyNodeEditResult.Error(R.string.proxy_error_server_required)
         }
         val port = draft.originalPort.trim().toIntOrNull()
-            ?: return ProxyNodeEditResult.Error("Proxy port must be a number")
+            ?: return ProxyNodeEditResult.Error(R.string.proxy_error_port_number)
         if (port !in 1..65535) {
-            return ProxyNodeEditResult.Error("Proxy port must be between 1 and 65535")
+            return ProxyNodeEditResult.Error(R.string.proxy_error_port_range)
         }
         validateProtocolDraft(draft.protocol)
             ?.let { return ProxyNodeEditResult.Error(it) }
@@ -60,34 +62,35 @@ object ProxyNodeEditor {
         )
     }
 
-    private fun validateProtocolDraft(protocol: ProxyProtocolDraft): String? {
+    @StringRes
+    private fun validateProtocolDraft(protocol: ProxyProtocolDraft): Int? {
         return when (protocol) {
             is ProxyProtocolDraft.Shadowsocks -> when {
-                protocol.method.isBlank() -> "Shadowsocks method is required"
-                protocol.password.isBlank() -> "Shadowsocks password is required"
+                protocol.method.isBlank() -> R.string.proxy_error_ss_method_required
+                protocol.password.isBlank() -> R.string.proxy_error_ss_password_required
                 else -> null
             }
 
             is ProxyProtocolDraft.Vless -> when {
-                protocol.uuid.isBlank() -> "VLESS UUID is required"
+                protocol.uuid.isBlank() -> R.string.proxy_error_vless_uuid_required
                 else -> null
             }
 
             is ProxyProtocolDraft.Vmess -> when {
-                protocol.uuid.isBlank() -> "VMess UUID is required"
-                protocol.alterId.isBlank() -> "VMess alterId is required"
-                protocol.alterId.toIntOrNull() == null -> "VMess alterId must be a number"
+                protocol.uuid.isBlank() -> R.string.proxy_error_vmess_uuid_required
+                protocol.alterId.isBlank() -> R.string.proxy_error_vmess_alter_id_required
+                protocol.alterId.toIntOrNull() == null -> R.string.proxy_error_vmess_alter_id_number
                 else -> null
             }
 
             is ProxyProtocolDraft.WireGuard -> when {
-                protocol.privateKey.isBlank() -> "WireGuard private key is required"
-                protocol.addresses.isBlank() -> "WireGuard address is required"
-                protocol.publicKey.isBlank() -> "WireGuard peer public key is required"
-                protocol.allowedIps.isBlank() -> "WireGuard allowed IPs are required"
-                protocol.mtu.isNotBlank() && protocol.mtu.toIntOrNull() == null -> "WireGuard MTU must be a number"
+                protocol.privateKey.isBlank() -> R.string.proxy_error_wg_private_key_required
+                protocol.addresses.isBlank() -> R.string.proxy_error_wg_address_required
+                protocol.publicKey.isBlank() -> R.string.proxy_error_wg_peer_public_key_required
+                protocol.allowedIps.isBlank() -> R.string.proxy_error_wg_allowed_ips_required
+                protocol.mtu.isNotBlank() && protocol.mtu.toIntOrNull() == null -> R.string.proxy_error_wg_mtu_number
                 protocol.persistentKeepalive.isNotBlank() &&
-                    protocol.persistentKeepalive.toIntOrNull() == null -> "WireGuard keepalive must be a number"
+                    protocol.persistentKeepalive.toIntOrNull() == null -> R.string.proxy_error_wg_keepalive_number
                 else -> null
             }
 

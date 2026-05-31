@@ -81,12 +81,12 @@ internal fun SettingsScreenContent(
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
     ) {
-        Text("Settings", style = MaterialTheme.typography.titleLarge)
+        Text(stringResource(R.string.settings_title), style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(16.dp))
 
         // Client Switcher
         if (state.clients.size > 1) {
-            Text("Client", style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.settings_client), style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
 
             var clientExpanded by remember { mutableStateOf(false) }
@@ -95,10 +95,14 @@ internal fun SettingsScreenContent(
                 onExpandedChange = { clientExpanded = it },
             ) {
                 OutlinedTextField(
-                    value = state.clientName.ifEmpty { "Client #${state.clientId}" },
+                    value = if (state.clientName.isNotEmpty()) {
+                        state.clientName
+                    } else {
+                        stringResource(R.string.settings_client_id_format, state.clientId)
+                    },
                     onValueChange = {},
                     readOnly = true,
-                    label = { Text("Active Client") },
+                    label = { Text(stringResource(R.string.settings_active_client)) },
                     modifier = Modifier.fillMaxWidth().menuAnchor(),
                     trailingIcon = {
                         if (state.isSwitchingClient) {
@@ -169,13 +173,13 @@ internal fun SettingsScreenContent(
         Spacer(Modifier.height(16.dp))
 
         // DNS
-        Text("DNS", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.settings_dns), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
 
         OutlinedTextField(
             value = state.dnsServer,
             onValueChange = onUpdateDnsServer,
-            label = { Text("DNS Server") },
+            label = { Text(stringResource(R.string.settings_dns_server)) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
@@ -183,7 +187,7 @@ internal fun SettingsScreenContent(
         OutlinedTextField(
             value = state.dnsFallback,
             onValueChange = onUpdateDnsFallback,
-            label = { Text("Fallback DNS") },
+            label = { Text(stringResource(R.string.settings_dns_fallback)) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
@@ -199,7 +203,7 @@ internal fun SettingsScreenContent(
                 value = state.dnsStrategy,
                 onValueChange = {},
                 readOnly = true,
-                label = { Text("DNS Strategy") },
+                label = { Text(stringResource(R.string.settings_dns_strategy)) },
                 modifier = Modifier.fillMaxWidth().menuAnchor(),
                 trailingIcon = {
                     ExposedDropdownMenuDefaults.TrailingIcon(expanded = strategyExpanded)
@@ -226,15 +230,15 @@ internal fun SettingsScreenContent(
         Spacer(Modifier.height(16.dp))
 
         // Bypass Rules
-        Text("Bypass Rules", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.settings_bypass_rules), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Bypass LAN IP")
+            Text(stringResource(R.string.settings_bypass_lan_ip))
             Switch(checked = state.bypassLan, onCheckedChange = onUpdateBypassLan)
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Bypass China IP/Domain")
+            Text(stringResource(R.string.settings_bypass_china))
             Switch(checked = state.bypassChina, onCheckedChange = onUpdateBypassChina)
         }
 
@@ -242,7 +246,7 @@ internal fun SettingsScreenContent(
         OutlinedTextField(
             value = state.customBypassRules,
             onValueChange = onUpdateCustomBypass,
-            label = { Text("Custom bypass (one IP/domain per line)") },
+            label = { Text(stringResource(R.string.settings_custom_bypass)) },
             modifier = Modifier.fillMaxWidth(),
             minLines = 3,
             maxLines = 6,
@@ -252,15 +256,19 @@ internal fun SettingsScreenContent(
         HorizontalDivider()
         Spacer(Modifier.height(16.dp))
 
-        Text("Routing rule packs", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.settings_rule_packs), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Active: ${state.rulePackLabel}",
+            stringResource(R.string.settings_rule_pack_active_format, state.rulePackLabel),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (state.rulePackStale) {
-            Text("Rule pack is stale", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            Text(
+                stringResource(R.string.settings_rule_pack_stale),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         state.rulePackMessage?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -271,11 +279,11 @@ internal fun SettingsScreenContent(
                 if (state.isUpdatingRules) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                 } else {
-                    Text("Update rules")
+                    Text(stringResource(R.string.settings_rules_update))
                 }
             }
             OutlinedButton(onClick = onRollbackRules, enabled = !state.isUpdatingRules) {
-                Text("Rollback")
+                Text(stringResource(R.string.settings_rules_rollback))
             }
         }
 
@@ -292,12 +300,12 @@ internal fun SettingsScreenContent(
         }
 
         // Account
-        Text("Account", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.settings_account), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
-        Text("Logged in as: ${state.username}", style = MaterialTheme.typography.bodyMedium)
+        Text(stringResource(R.string.settings_logged_in_as_format, state.username), style = MaterialTheme.typography.bodyMedium)
         if (state.clientName.isNotEmpty()) {
             Text(
-                "Client: ${state.clientName}",
+                stringResource(R.string.settings_client_name_format, state.clientName),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -310,16 +318,16 @@ internal fun SettingsScreenContent(
                 contentColor = MaterialTheme.colorScheme.error,
             ),
         ) {
-            Text("Logout")
+            Text(stringResource(R.string.settings_logout))
         }
 
         Spacer(Modifier.height(24.dp))
 
         // About
-        Text("About", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.settings_about), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         Text(
-            "LeiKwan Bridge v0.1.0",
+            stringResource(R.string.settings_app_version),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
