@@ -45,9 +45,11 @@ class RoutingScreenTest {
             RoutingScreenContent(
                 state = seededState,
                 onSetGlobalDefault = {},
+                onSetGlobalDefaultNode = {},
                 onAddCountry = { _, _ -> },
                 onAddCategory = { _, _ -> },
                 onToggle = {},
+                onSetTargetNode = { _, _ -> },
                 onDelete = {},
             )
         }

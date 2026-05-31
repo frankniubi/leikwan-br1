@@ -59,9 +59,11 @@ fun RoutingScreen(
     RoutingScreenContent(
         state = state,
         onSetGlobalDefault = viewModel::setGlobalDefault,
+        onSetGlobalDefaultNode = viewModel::setGlobalDefaultNode,
         onAddCountry = viewModel::addCountryRule,
         onAddCategory = viewModel::addCategoryRule,
         onToggle = viewModel::toggleRule,
+        onSetTargetNode = viewModel::setRuleTargetNode,
         onDelete = viewModel::deleteRule,
     )
 }
@@ -71,9 +73,11 @@ fun RoutingScreen(
 internal fun RoutingScreenContent(
     state: RoutingUiState,
     onSetGlobalDefault: (UserTrafficOutcome) -> Unit,
+    onSetGlobalDefaultNode: (Long?) -> Unit,
     onAddCountry: (String, UserTrafficOutcome) -> Unit,
     onAddCategory: (String, UserTrafficOutcome) -> Unit,
     onToggle: (String) -> Unit,
+    onSetTargetNode: (String, Long?) -> Unit,
     onDelete: (String) -> Unit,
 ) {
     Column(
@@ -97,6 +101,15 @@ internal fun RoutingScreenContent(
                 )
             }
         }
+        Spacer(Modifier.height(8.dp))
+        NodePicker(
+            label = "Default node",
+            selectedNodeId = state.globalDefaultNodeId,
+            nodes = state.availableNodes,
+            enabled = state.globalDefault == UserTrafficOutcome.TUNNEL,
+            autoLabel = "Auto (selector)",
+            onSelect = onSetGlobalDefaultNode,
+        )
         Spacer(Modifier.height(8.dp))
         Text(
             "TUNNEL = everything through LeiKwan except rules; " +
@@ -218,7 +231,13 @@ internal fun RoutingScreenContent(
             )
         } else {
             rules.forEach { rule ->
-                RuleRow(rule = rule, onToggle = onToggle, onDelete = onDelete)
+                RuleRow(
+                    rule = rule,
+                    nodes = state.availableNodes,
+                    onToggle = onToggle,
+                    onSetTargetNode = onSetTargetNode,
+                    onDelete = onDelete,
+                )
                 Spacer(Modifier.height(8.dp))
             }
         }
@@ -242,28 +261,106 @@ private fun OutcomeToggle(outcome: UserTrafficOutcome, onChange: (UserTrafficOut
 @Composable
 private fun RuleRow(
     rule: RoutingRule,
+    nodes: List<RoutingNodeOption>,
     onToggle: (String) -> Unit,
+    onSetTargetNode: (String, Long?) -> Unit,
     onDelete: (String) -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(rule.matchValue, style = MaterialTheme.typography.titleSmall)
-                Text(
-                    rule.outcome.name,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(rule.matchValue, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        rule.outcome.name,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = rule.enabled,
+                    onCheckedChange = { onToggle(rule.id) },
                 )
+                IconButton(onClick = { onDelete(rule.id) }) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete ${rule.matchValue}")
+                }
             }
-            Switch(
-                checked = rule.enabled,
-                onCheckedChange = { onToggle(rule.id) },
+            if (rule.outcome == UserTrafficOutcome.TUNNEL) {
+                Spacer(Modifier.height(8.dp))
+                NodePicker(
+                    label = "Target node",
+                    selectedNodeId = rule.targetNodeId,
+                    nodes = nodes,
+                    enabled = rule.enabled,
+                    autoLabel = "Auto (default)",
+                    onSelect = { onSetTargetNode(rule.id, it) },
+                )
+                if (rule.targetNodeId != null && nodes.none { it.id == rule.targetNodeId }) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Pinned node is unavailable; startup falls back to the default node.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NodePicker(
+    label: String,
+    selectedNodeId: Long?,
+    nodes: List<RoutingNodeOption>,
+    enabled: Boolean,
+    autoLabel: String,
+    onSelect: (Long?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = when {
+        selectedNodeId == null -> autoLabel
+        else -> nodes.firstOrNull { it.id == selectedNodeId }?.name ?: "Unavailable node #$selectedNodeId"
+    }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { if (enabled) expanded = it },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            enabled = enabled,
+            label = { Text(label) },
+            trailingIcon = {
+                ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+            },
+            modifier = Modifier.fillMaxWidth().menuAnchor(),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text(autoLabel) },
+                onClick = {
+                    onSelect(null)
+                    expanded = false
+                },
             )
-            IconButton(onClick = { onDelete(rule.id) }) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete ${rule.matchValue}")
+            nodes.forEach { node ->
+                DropdownMenuItem(
+                    text = { Text("${node.name} (${node.type.uppercase()})") },
+                    onClick = {
+                        onSelect(node.id)
+                        expanded = false
+                    },
+                )
             }
         }
     }

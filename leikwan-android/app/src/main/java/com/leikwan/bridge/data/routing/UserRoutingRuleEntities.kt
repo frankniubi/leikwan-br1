@@ -16,5 +16,6 @@ data class UserRoutingRuleEntity(
     @ColumnInfo(name = "match_value") val matchValue: String,
     @ColumnInfo(name = "outcome") val outcome: String,
     @ColumnInfo(name = "enabled") val enabled: Boolean,
+    @ColumnInfo(name = "target_node_id") val targetNodeId: Long? = null,
     @ColumnInfo(name = "created_at") val createdAt: Long,
 )
