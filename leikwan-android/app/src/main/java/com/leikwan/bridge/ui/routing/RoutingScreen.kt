@@ -1,5 +1,6 @@
 package com.leikwan.bridge.ui.routing
 
+import android.app.Application
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -39,12 +40,21 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.leikwan.bridge.routing.RoutingRule
 import com.leikwan.bridge.routing.UserTrafficOutcome
 
 @Composable
-fun RoutingScreen(viewModel: RoutingViewModel = viewModel()) {
+fun RoutingScreen(
+    viewModel: RoutingViewModel = viewModel(
+        factory = viewModelFactory {
+            initializer { RoutingViewModel(this[APPLICATION_KEY] as Application) }
+        },
+    ),
+) {
     val state by viewModel.state.collectAsState()
     RoutingScreenContent(
         state = state,
