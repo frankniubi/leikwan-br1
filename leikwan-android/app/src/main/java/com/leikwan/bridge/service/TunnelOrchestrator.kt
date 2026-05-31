@@ -13,6 +13,7 @@ import com.leikwan.bridge.data.routing.UserRoutingRuleStore
 import com.leikwan.bridge.routing.RoutingCategoryCatalog
 import com.leikwan.bridge.routing.RoutingPolicyEngine
 import com.leikwan.bridge.routing.RoutingPolicySnapshot
+import com.leikwan.bridge.routing.RoutingRule
 import com.leikwan.bridge.routing.SafePathRegistry
 import com.leikwan.bridge.runtime.BondForwardRunner
 import com.leikwan.bridge.runtime.ForwardContract
@@ -68,15 +69,17 @@ class TunnelOrchestrator internal constructor(
      * Build the authoritative [RoutingPolicySnapshot] for one startup/rebuild cycle from the
      * persisted user rules, active rule-pack versions, and the user-settable global default.
      */
-    internal suspend fun buildRoutingSnapshot(nowMs: Long): RoutingPolicySnapshot =
-        routingEngine.compile(
+    internal suspend fun buildRoutingSnapshot(nowMs: Long): RoutingPolicySnapshot {
+        val enabledNodeIds = db.proxyNodeDao().getEnabled().map { it.id }.toSet()
+        return routingEngine.compile(
             globalDefault = prefs.routingDefaultOutcome,
-            globalDefaultNodeId = null,
-            countryRules = userRuleStore.countryRules(),
-            categoryRules = userRuleStore.categoryRules(),
+            globalDefaultNodeId = prefs.routingDefaultNodeId?.takeIf { it in enabledNodeIds },
+            countryRules = userRuleStore.countryRules().sanitizeNodeTargets(enabledNodeIds),
+            categoryRules = userRuleStore.categoryRules().sanitizeNodeTargets(enabledNodeIds),
             rulePackVersions = rulePackManager.activeVersions(),
             compiledAtMs = nowMs,
         )
+    }
 
     suspend fun startForForward(forwardId: Long) = withContext(Dispatchers.IO) {
         Log.i(TAG, "Pulling forward configs...")
@@ -232,6 +235,12 @@ class TunnelOrchestrator internal constructor(
         baseListenPort + 1 + (nodeId % 1000L).toInt()
 
     private fun portSaltForNode(nodeId: Long): Int = ((nodeId % 1000L) * 20).toInt()
+
+    private fun List<RoutingRule>.sanitizeNodeTargets(enabledNodeIds: Set<Long>): List<RoutingRule> =
+        map { rule ->
+            val targetNodeId = rule.targetNodeId?.takeIf { it in enabledNodeIds }
+            if (targetNodeId == rule.targetNodeId) rule else rule.copy(targetNodeId = targetNodeId)
+        }
 
     private fun writeDebugConfig(configJson: String) {
         runCatching {

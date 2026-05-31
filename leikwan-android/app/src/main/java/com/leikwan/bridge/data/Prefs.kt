@@ -92,6 +92,21 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
         }.getOrDefault(UserTrafficOutcome.TUNNEL)
         set(v) = prefs.edit().putString("routing_default_outcome", v.name).apply()
 
+    /**
+     * Optional node pin for the global TUNNEL default. `0`/null = auto/default selector.
+     */
+    var routingDefaultNodeId: Long?
+        get() = prefs.getLong("routing_default_node_id", 0L).takeIf { it > 0L }
+        set(v) {
+            val editor = prefs.edit()
+            if (v != null && v > 0L) {
+                editor.putLong("routing_default_node_id", v)
+            } else {
+                editor.remove("routing_default_node_id")
+            }
+            editor.apply()
+        }
+
     var activeRulePackCountryVersion: String?
         get() = prefs.getString("active_rule_pack_country_version", null)
         set(v) = prefs.edit().putString("active_rule_pack_country_version", v).apply()
@@ -129,6 +144,7 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
             .remove("selected_forward_id")
             .remove("selected_proxy_id")
             .remove("proxy_connection_mode")
+            .remove("routing_default_node_id")
             .apply()
     }
 

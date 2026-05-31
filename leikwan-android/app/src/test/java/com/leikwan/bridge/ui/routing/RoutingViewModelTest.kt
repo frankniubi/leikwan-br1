@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.data.routing.UserRoutingRuleStore
 import com.leikwan.bridge.routing.RoutingCategoryCatalog
 import com.leikwan.bridge.routing.UserTrafficOutcome
@@ -68,6 +69,7 @@ class RoutingViewModelTest {
     private fun newViewModel(): RoutingViewModel =
         RoutingViewModel(
             app = app,
+            db = db,
             store = store,
             prefs = prefs,
             categoryCatalog = RoutingCategoryCatalog.default(),
@@ -125,6 +127,46 @@ class RoutingViewModelTest {
 
         assertEquals(UserTrafficOutcome.DIRECT, vm.state.value.globalDefault)
         assertEquals(UserTrafficOutcome.DIRECT, prefs.routingDefaultOutcome)
+    }
+
+    @Test
+    fun `node targets persist and available nodes exclude disabled nodes`() = runTest(dispatcher) {
+        val nodeA = db.proxyNodeDao().insert(
+            ProxyNode(
+                name = "Tokyo",
+                type = "ss",
+                originalServer = "tokyo.example.com",
+                originalPort = 443,
+                configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                enabled = true,
+            )
+        )
+        db.proxyNodeDao().insert(
+            ProxyNode(
+                name = "Disabled",
+                type = "ss",
+                originalServer = "disabled.example.com",
+                originalPort = 443,
+                configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                enabled = false,
+            )
+        )
+        val vm = newViewModel()
+        advanceUntilIdle()
+
+        assertEquals(listOf(nodeA), vm.state.value.availableNodes.map { it.id })
+
+        vm.addCategoryRule("video", UserTrafficOutcome.TUNNEL)
+        advanceUntilIdle()
+        vm.setRuleTargetNode("category-video", nodeA)
+        advanceUntilIdle()
+        vm.setGlobalDefaultNode(nodeA)
+        advanceUntilIdle()
+
+        assertEquals(nodeA, vm.state.value.globalDefaultNodeId)
+        assertEquals(nodeA, prefs.routingDefaultNodeId)
+        assertEquals(nodeA, vm.state.value.categoryRules.single().targetNodeId)
+        assertEquals(nodeA, store.categoryRules().single().targetNodeId)
     }
 
     @Test

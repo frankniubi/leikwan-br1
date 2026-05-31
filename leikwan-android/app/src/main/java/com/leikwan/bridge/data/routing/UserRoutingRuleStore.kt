@@ -19,6 +19,9 @@ class UserRoutingRuleStore(private val db: AppDatabase) {
     suspend fun setEnabled(id: String, enabled: Boolean) =
         db.userRoutingRuleDao().setEnabled(id, enabled)
 
+    suspend fun setTargetNodeId(id: String, targetNodeId: Long?) =
+        db.userRoutingRuleDao().setTargetNodeId(id, targetNodeId)
+
     suspend fun clear() = db.userRoutingRuleDao().clear()
 
     suspend fun all(): List<RoutingRule> = db.userRoutingRuleDao().all().map { it.toRule() }
@@ -36,6 +39,7 @@ class UserRoutingRuleStore(private val db: AppDatabase) {
             matchValue = matchValue,
             outcome = outcome.name,
             enabled = enabled,
+            targetNodeId = targetNodeId,
             createdAt = System.currentTimeMillis(),
         )
 
@@ -46,6 +50,7 @@ class UserRoutingRuleStore(private val db: AppDatabase) {
             matchValue = matchValue,
             outcome = UserTrafficOutcome.valueOf(outcome),
             enabled = enabled,
+            targetNodeId = targetNodeId,
         )
 
     companion object {

@@ -19,6 +19,9 @@ interface UserRoutingRuleDao {
     @Query("UPDATE user_routing_rules SET enabled = :enabled WHERE id = :id")
     suspend fun setEnabled(id: String, enabled: Boolean)
 
+    @Query("UPDATE user_routing_rules SET target_node_id = :targetNodeId WHERE id = :id")
+    suspend fun setTargetNodeId(id: String, targetNodeId: Long?)
+
     @Query("DELETE FROM user_routing_rules WHERE id = :id")
     suspend fun deleteById(id: String)
 
