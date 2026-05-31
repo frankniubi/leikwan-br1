@@ -3877,6 +3877,18 @@ WantedBy=multi-user.target
             local_listen_port = self.stable_static_sidecar_local_udp_port(uplink)
         keepalive = max(0, int(uplink.get("peer_keepalive_seconds", 25) or 25))
         if local_address == "" or peer_address == "" or peer_public_key == "":
+            # Enabled uplink with incomplete data (e.g. the sidecar has not yet
+            # reported its WireGuard public key, or the panel published a partial
+            # lane). We cannot render a valid WG config, so we must NOT leave a
+            # previously-enabled wg-quick@ unit running against a stale/absent
+            # config -- that is exactly the "/etc/wireguard/<iface>.conf does not
+            # exist" fail-loop. Tear the interface down; the next reconcile
+            # re-provisions it once the panel publishes complete data.
+            logging.warning(
+                "static sidecar uplink %s missing local/peer address or sidecar key; tearing down until complete data is published",
+                interface_name,
+            )
+            self.remove_sidecar_uplink(interface_name, {"interface_name": interface_name})
             return
         if outer_transport == "wstunnel_udp" and local_wstunnel_udp_port > 0:
             cf_target_host = str(uplink.get("cf_target_host", "") or "127.0.0.1").strip()
