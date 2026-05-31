@@ -1,8 +1,10 @@
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -54,6 +56,20 @@ class FakeRunner:
 
 
 class CfwgLatencyWatchdogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Isolate the shared restart-ledger circuit breaker per test. Without
+        # this the breaker's default on-disk dir is process-global, so restarts
+        # from one test would leak into the next and open the breaker, masking
+        # the behavior under test. Tests that exercise the breaker directly
+        # override this env var with their own dir inside the test body.
+        self._ledger_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._ledger_tmp.cleanup)
+        self._ledger_env = mock.patch.dict(
+            os.environ, {"LEIKWAN_RESTART_LEDGER_DIR": self._ledger_tmp.name}
+        )
+        self._ledger_env.start()
+        self.addCleanup(self._ledger_env.stop)
+
     def _write_runtime(self, root: pathlib.Path) -> None:
         root.mkdir(parents=True, exist_ok=True)
         (root / "mptcp-forward-47.json").write_text(
@@ -75,6 +91,39 @@ class CfwgLatencyWatchdogTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+
+    def test_empty_forward_ids_watch_all_active_forwards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            watchdog = watchdog_module.CfwgLatencyWatchdog(
+                state_dir=pathlib.Path(tmp) / "state",
+                config={"enabled": True, "forward_ids": []},
+                runtime_config_dir=pathlib.Path(tmp) / "runtime",
+            )
+
+            self.assertEqual(
+                {47, 59},
+                watchdog.configured_forward_ids([
+                    {"forward_id": 47, "service_status": "active"},
+                    {"forward_id": 59, "service_status": "active"},
+                    {"forward_id": 60, "service_status": "suspended"},
+                ]),
+            )
+
+    def test_configured_missing_target_is_warned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clock = FakeClock()
+            watchdog = watchdog_module.CfwgLatencyWatchdog(
+                state_dir=pathlib.Path(tmp) / "state",
+                config={"enabled": True, "forward_ids": [59]},
+                command_runner=FakeRunner([]),
+                time_fn=clock.now,
+                runtime_config_dir=pathlib.Path(tmp) / "runtime",
+            )
+
+            with self.assertLogs(level="WARNING") as logs:
+                watchdog.tick([{"forward_id": 59, "service_status": "active"}])
+
+        self.assertTrue(any("configured forward=59 has no lw-cfwg wstunnel_udp target" in line for line in logs.output))
 
     def test_restarts_forward_service_after_sustained_high_icmp_latency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -426,6 +475,150 @@ class CfwgLatencyWatchdogTests(unittest.TestCase):
             self.assertIn(["systemctl", "restart", "leikwan-client-47.service"], runner.commands)
 
 
+    def test_resolved_watched_forward_set_logged_at_info_level(self) -> None:
+        # C.7f: the resolved watched-forward set must be observable at INFO, not
+        # buried at DEBUG, so operators can confirm the watchdog's scope.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            runtime_dir = base / "etc" / "leikwan"
+            self._write_runtime(runtime_dir)
+            clock = FakeClock()
+            watchdog = watchdog_module.CfwgLatencyWatchdog(
+                state_dir=base / "state",
+                config={"enabled": True, "forward_ids": [47], "probe_interval_seconds": 0, "window_samples": 12},
+                command_runner=FakeRunner([31.0] * 12),
+                time_fn=clock.now,
+                runtime_config_dir=runtime_dir,
+            )
+
+            with self.assertLogs(level="INFO") as logs:
+                watchdog.tick([{"forward_id": 47, "service_status": "active"}])
+
+        resolved = [line for line in logs.output if "resolved forwards=" in line and "[47]" in line]
+        self.assertEqual(1, len(resolved), f"expected one INFO resolved-forwards line, got {logs.output}")
+        self.assertTrue(resolved[0].startswith("INFO"), resolved[0])
+
+    def test_restart_records_ledger_line_with_cfwg_latency_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            runtime_dir = base / "etc" / "leikwan"
+            self._write_runtime(runtime_dir)
+            ledger_dir = base / "ledger"
+            clock = FakeClock()
+            runner = FakeRunner([70.0, 70.0, 70.0])
+            watchdog = watchdog_module.CfwgLatencyWatchdog(
+                state_dir=base / "state",
+                config={
+                    "enabled": True,
+                    "forward_ids": [47],
+                    "probe_interval_seconds": 0,
+                    "window_samples": 3,
+                    "critical_rtt_ms": 45,
+                    "dwell_windows": 1,
+                    "cooldown_seconds": 0,
+                },
+                command_runner=runner,
+                time_fn=clock.now,
+                runtime_config_dir=runtime_dir,
+            )
+
+            with mock.patch.dict(os.environ, {"LEIKWAN_RESTART_LEDGER_DIR": str(ledger_dir)}):
+                with mock.patch.object(watchdog_module, "RESTART_LEDGER_DIR", ledger_dir):
+                    for _ in range(3):
+                        watchdog.tick([{"forward_id": 47, "service_status": "active"}])
+                        clock.advance(1)
+
+            self.assertIn(["systemctl", "restart", "leikwan-client-47.service"], runner.commands)
+            ledger_file = ledger_dir / "lw-cfwg-47.log"
+            self.assertTrue(ledger_file.exists(), "restart must create a ledger file for the interface")
+            lines = [ln for ln in ledger_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            self.assertEqual(1, len(lines), f"expected exactly one ledger line, got {lines}")
+            epoch_str, _, token = lines[0].partition(" ")
+            self.assertTrue(epoch_str.isdigit(), f"ledger epoch not integer: {epoch_str!r}")
+            self.assertEqual("cfwg-latency", token)
+
+    def test_circuit_breaker_suppresses_cfwg_restart_when_ledger_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            runtime_dir = base / "etc" / "leikwan"
+            self._write_runtime(runtime_dir)
+            ledger_dir = base / "ledger"
+            ledger_dir.mkdir(parents=True, exist_ok=True)
+            clock = FakeClock()
+            # Pre-seed MAX recent entries so the breaker is open for this iface.
+            (ledger_dir / "lw-cfwg-47.log").write_text(
+                "".join(f"{int(clock.now())} cfwg-latency\n" for _ in range(3)),
+                encoding="utf-8",
+            )
+            runner = FakeRunner([70.0, 70.0, 70.0])
+            watchdog = watchdog_module.CfwgLatencyWatchdog(
+                state_dir=base / "state",
+                config={
+                    "enabled": True,
+                    "forward_ids": [47],
+                    "probe_interval_seconds": 0,
+                    "window_samples": 3,
+                    "critical_rtt_ms": 45,
+                    "dwell_windows": 1,
+                    "cooldown_seconds": 0,
+                },
+                command_runner=runner,
+                time_fn=clock.now,
+                runtime_config_dir=runtime_dir,
+            )
+
+            with mock.patch.dict(os.environ, {"LEIKWAN_RESTART_LEDGER_DIR": str(ledger_dir)}):
+                with mock.patch.object(watchdog_module, "RESTART_LEDGER_DIR", ledger_dir):
+                    for _ in range(3):
+                        watchdog.tick([{"forward_id": 47, "service_status": "active"}])
+                        clock.advance(1)
+
+            self.assertNotIn(
+                ["systemctl", "restart", "leikwan-client-47.service"],
+                runner.commands,
+                "open breaker must suppress the cfwg restart",
+            )
+            lines = [ln for ln in (ledger_dir / "lw-cfwg-47.log").read_text(encoding="utf-8").splitlines() if ln.strip()]
+            self.assertEqual(3, len(lines), "suppressed restart must append nothing to the ledger")
+
+    def test_circuit_breaker_respects_custom_max_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            runtime_dir = base / "etc" / "leikwan"
+            self._write_runtime(runtime_dir)
+            ledger_dir = base / "ledger"
+            ledger_dir.mkdir(parents=True, exist_ok=True)
+            clock = FakeClock()
+            (ledger_dir / "lw-cfwg-47.log").write_text(
+                f"{int(clock.now())} cfwg-latency\n",
+                encoding="utf-8",
+            )
+            runner = FakeRunner([70.0, 70.0, 70.0])
+            watchdog = watchdog_module.CfwgLatencyWatchdog(
+                state_dir=base / "state",
+                config={
+                    "enabled": True,
+                    "forward_ids": [47],
+                    "probe_interval_seconds": 0,
+                    "window_samples": 3,
+                    "critical_rtt_ms": 45,
+                    "dwell_windows": 1,
+                    "cooldown_seconds": 0,
+                },
+                command_runner=runner,
+                time_fn=clock.now,
+                runtime_config_dir=runtime_dir,
+            )
+
+            # With MAX=1, a single pre-seeded entry already opens the breaker.
+            with mock.patch.dict(os.environ, {"LEIKWAN_RESTART_LEDGER_DIR": str(ledger_dir), "LEIKWAN_RESTART_LEDGER_MAX": "1"}):
+                with mock.patch.object(watchdog_module, "RESTART_LEDGER_DIR", ledger_dir):
+                    for _ in range(3):
+                        watchdog.tick([{"forward_id": 47, "service_status": "active"}])
+                        clock.advance(1)
+
+            self.assertNotIn(["systemctl", "restart", "leikwan-client-47.service"], runner.commands)
+
     def test_rotate_cf_ip_action_writes_pin_and_restarts_forward_service(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = pathlib.Path(tmp)
@@ -545,8 +738,9 @@ class CfwgLatencyWatchdogTests(unittest.TestCase):
                 with mock.patch.object(agent, "delete_nft_rules") as delete_nft:
                     with mock.patch.object(agent, "add_nft_rules") as add_nft:
                         with mock.patch.object(agent, "cleanup_mptcp_forward_runtime") as cleanup:
-                            with mock.patch.object(client_agent_module.subprocess, "run", side_effect=lambda command, *args, **kwargs: commands.append(command) or types.SimpleNamespace(returncode=0, stdout="", stderr="")):
-                                agent.apply_forward(forward, force_runtime_restart=True)
+                            with mock.patch.object(client_agent_module.platform, "release", return_value="test-kernel"):
+                                with mock.patch.object(client_agent_module.subprocess, "run", side_effect=lambda command, *args, **kwargs: commands.append(command) or types.SimpleNamespace(returncode=0, stdout="", stderr="")):
+                                    agent.apply_forward(forward, force_runtime_restart=True)
             finally:
                 if previous_module is None:
                     sys.modules.pop("install_forward_runtime", None)
@@ -663,5 +857,3 @@ class ClientAgentCfwgLatencyWatchdogIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

@@ -298,7 +298,7 @@ final class ClientAgentController extends BaseController
     {
         $enabled = $this->config->getBool('CFWG_LATENCY_WATCHDOG_ENABLED', true);
         $forwardIds = [];
-        foreach (explode(',', (string) ($this->config->get('CFWG_LATENCY_WATCHDOG_FORWARD_IDS', '47') ?? '47')) as $rawForwardId) {
+        foreach (explode(',', (string) ($this->config->get('CFWG_LATENCY_WATCHDOG_FORWARD_IDS', '') ?? '')) as $rawForwardId) {
             $forwardId = (int) trim($rawForwardId);
             if ($forwardId > 0 && !in_array($forwardId, $forwardIds, true)) {
                 $forwardIds[] = $forwardId;

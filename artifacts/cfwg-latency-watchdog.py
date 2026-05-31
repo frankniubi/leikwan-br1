@@ -4,12 +4,128 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import pathlib
 import re
 import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
+
+
+# C.7a restart-ledger circuit breaker (cross-language byte contract). The
+# on-disk format is one append-only file per interface at <dir>/<iface>.log,
+# where each restart appends a single line: the integer epoch-seconds, a space,
+# the source token, terminated by a newline. The same format is written/read by
+# slave_agent.py and leikwan-wg-watchdog.sh.
+RESTART_LEDGER_DIR = pathlib.Path("/run/leikwan/restart-ledger")
+RESTART_LEDGER_WINDOW_SECONDS = 600
+RESTART_LEDGER_MAX = 3
+
+
+def _restart_ledger_dir() -> pathlib.Path:
+    override = os.environ.get("LEIKWAN_RESTART_LEDGER_DIR", "")
+    if override:
+        return pathlib.Path(override)
+    return RESTART_LEDGER_DIR
+
+
+def _restart_ledger_window() -> int:
+    try:
+        value = int(os.environ.get("LEIKWAN_RESTART_LEDGER_WINDOW", "") or RESTART_LEDGER_WINDOW_SECONDS)
+    except (TypeError, ValueError):
+        return RESTART_LEDGER_WINDOW_SECONDS
+    return value if value > 0 else RESTART_LEDGER_WINDOW_SECONDS
+
+
+def _restart_ledger_max() -> int:
+    try:
+        value = int(os.environ.get("LEIKWAN_RESTART_LEDGER_MAX", "") or RESTART_LEDGER_MAX)
+    except (TypeError, ValueError):
+        return RESTART_LEDGER_MAX
+    return value if value > 0 else RESTART_LEDGER_MAX
+
+
+def restart_ledger_recent_count(interface_name: str, now: float) -> int:
+    """Count ledger entries for <interface_name> within the breaker window.
+
+    Best-effort: any read/parse error counts as 0 (fail-open) so a missing or
+    corrupt ledger never blocks a legitimate restart, and never raises.
+    """
+    iface = str(interface_name or "").strip()
+    if iface == "":
+        return 0
+    window = _restart_ledger_window()
+    cutoff = float(now) - float(window)
+    path = _restart_ledger_dir() / f"{iface}.log"
+    count = 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if line == "":
+                    continue
+                head = line.split(" ", 1)[0]
+                try:
+                    epoch = int(head)
+                except (TypeError, ValueError):
+                    continue
+                if epoch >= cutoff:
+                    count += 1
+    except (OSError, ValueError):
+        return 0
+    return count
+
+
+def restart_ledger_append(interface_name: str, source_token: str, now: float) -> None:
+    """Atomically append one ledger line for a performed restart.
+
+    Tolerates the directory being absent or unwritable -> fail-open (the
+    restart still happens, we just fail to record it). Never raises.
+    """
+    iface = str(interface_name or "").strip()
+    token = str(source_token or "").strip()
+    if iface == "" or token == "":
+        return
+    try:
+        ledger_dir = _restart_ledger_dir()
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(ledger_dir, 0o755)
+        except OSError:
+            pass
+        path = ledger_dir / f"{iface}.log"
+        line = f"{int(now)} {token}\n"
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+    except OSError:
+        return
+
+
+def restart_circuit_breaker_allow(interface_name: str, source_token: str, now: float | None = None) -> bool:
+    """Circuit breaker gate evaluated BEFORE restarting <interface_name>.
+
+    Returns True and records one ledger line if the restart is permitted.
+    Returns False (and records nothing) when the breaker is open: the count of
+    restarts within the window has reached the max. On suppression a WARN is
+    logged. The caller is responsible for performing the actual restart only
+    when this returns True.
+    """
+    moment = time.time() if now is None else float(now)
+    recent = restart_ledger_recent_count(interface_name, moment)
+    if recent >= _restart_ledger_max():
+        logging.warning(
+            "circuit breaker open for %s: %s restarts in %ss; backing off",
+            interface_name,
+            recent,
+            _restart_ledger_window(),
+        )
+        return False
+    restart_ledger_append(interface_name, source_token, moment)
+    return True
 
 
 @dataclass
@@ -159,9 +275,21 @@ class CfwgLatencyWatchdog:
             if forward_id > 0:
                 self._latest_forwards_by_id[forward_id] = dict(forward)
         desired_forward_ids = self.configured_forward_ids(forward_list)
+        configured_forward_ids = set(self.config.get("forward_ids", []) or [])
+        # C.7f: surface the resolved watched-forward set at INFO so operators can
+        # confirm scope from the journal without flipping on DEBUG logging.
+        logging.info(
+            "cfwg latency watchdog resolved forwards=%s configured=%s",
+            sorted(desired_forward_ids),
+            sorted(configured_forward_ids),
+        )
         for forward_id in sorted(desired_forward_ids):
             target = self.load_target(forward_id)
             if target is None:
+                if forward_id in configured_forward_ids:
+                    logging.warning("cfwg latency watchdog configured forward=%s has no lw-cfwg wstunnel_udp target", forward_id)
+                else:
+                    logging.debug("cfwg latency watchdog active forward=%s has no lw-cfwg wstunnel_udp target", forward_id)
                 continue
             self.probe_forward(forward_id, target["interface_name"], target["peer_address"])
 
@@ -449,6 +577,17 @@ class CfwgLatencyWatchdog:
         now = self.time_fn()
         cooldown_seconds = float(self.config.get("cooldown_seconds", 300.0) if self.config.get("cooldown_seconds") is not None else 300.0)
         if now - state.last_restart_at < cooldown_seconds:
+            return
+        # C.7a: consult the shared restart-ledger circuit breaker before
+        # restarting. If too many restarts have occurred within the window the
+        # breaker is open -- suppress this restart (and record nothing) so a
+        # flapping path cannot loop the per-forward service indefinitely. We
+        # still advance last_restart_at so the local cooldown also backs off.
+        if not restart_circuit_breaker_allow(interface_name, "cfwg-latency", now=now):
+            state.last_restart_at = now
+            state.bad_windows = 0
+            state.last_event = "restart_suppressed:circuit_breaker_open"
+            self.write_state_snapshot()
             return
         restarted = self.restart_runtime(forward_id, interface_name)
         state.last_restart_at = now

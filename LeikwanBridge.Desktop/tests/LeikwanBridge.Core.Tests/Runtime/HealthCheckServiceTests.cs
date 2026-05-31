@@ -1,3 +1,4 @@
+using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using Xunit;
@@ -30,12 +31,12 @@ public sealed class HealthCheckServiceTests
     }
 
     [Fact]
-    public void ProcessExited_BondIngressExit_RestartsWholeForward()
+    public void ProcessExited_BondIngressExit_RequestsForceRestart()
     {
         using var tempDir = new TempStateDirectory();
         var supervisor = new TestProcessSupervisor();
         var stateManager = new StateManager(tempDir.Path);
-        var runtimeManager = new TestForwardRuntimeManager(stateManager, supervisor);
+        var runtimeManager = new ForceRecordingForwardRuntimeManager(stateManager, supervisor);
         stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
         {
             ["26"] = CreateAppliedBondState(),
@@ -50,7 +51,7 @@ public sealed class HealthCheckServiceTests
         service.UpdateForwards([CreatePlainTcpMuxBondForward()]);
         supervisor.TriggerExit(26, "bond-ingress-leg-0");
 
-        Assert.Contains(26, runtimeManager.RestartedForwardIds);
+        Assert.Contains((26, true, "critical_process_exit:bond-ingress-leg-0"), runtimeManager.RestartRequests);
     }
 
     [Fact]
@@ -136,6 +137,183 @@ public sealed class HealthCheckServiceTests
         Assert.Equal("cf_bond_leg_probe_failed", entry.LastError);
     }
 
+    [Fact]
+    public async Task RunCheckOnceAsync_MptcpPreconnectHealthFailure_RequestsForceRestart()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new ForceRecordingForwardRuntimeManager(stateManager, supervisor);
+        var forward = CreateMptcpPreconnectForward();
+        var signature = ForwardContractSignature.Compute(EffectiveForwardConfigBuilder.Build(forward));
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["24"] = new AppliedForwardState
+            {
+                ForwardId = 24,
+                Mode = "mptcp",
+                ContractSignature = signature,
+            },
+        });
+        supervisor.RunningRoles.Add("mptcp-runtime");
+        var service = new HealthCheckService(
+            supervisor,
+            runtimeManager,
+            stateManager,
+            port => port == 11023,
+            relayHealthProbe: (_, _) => false);
+
+        await service.RunCheckOnceAsync([forward]);
+
+        Assert.Contains((24, true, "preconnect_relay_unhealthy"), runtimeManager.RestartRequests);
+    }
+
+    [Fact]
+    public async Task RunCheckOnceAsync_MptcpLegRelayHealth_ProbesLegPortWhenTopLevelRelayPortIsZero()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new ForceRecordingForwardRuntimeManager(stateManager, supervisor);
+        var forward = CreateMptcpPreconnectForward();
+        forward.Mptcp!.SlaveRelayPort = 0;
+        forward.Mptcp.Underlays[0].Legs[0].PreconnectRelayPort = 38012;
+        var probedPorts = new List<int>();
+        var signature = ForwardContractSignature.Compute(EffectiveForwardConfigBuilder.Build(forward));
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["24"] = new AppliedForwardState
+            {
+                ForwardId = 24,
+                Mode = "mptcp",
+                ContractSignature = signature,
+            },
+        });
+        supervisor.RunningRoles.Add("mptcp-runtime");
+        var service = new HealthCheckService(
+            supervisor,
+            runtimeManager,
+            stateManager,
+            port => port == 11023,
+            relayHealthProbe: (_, relayPort) =>
+            {
+                probedPorts.Add(relayPort);
+                return relayPort == 38012;
+            });
+
+        await service.RunCheckOnceAsync([forward]);
+
+        Assert.Empty(runtimeManager.RestartRequests);
+        Assert.Equal([38012], probedPorts);
+    }
+
+    [Fact]
+    public async Task RunCheckOnceAsync_MptcpIgnoresStandbyLegRelayWhenActiveLegRelayIsHealthy()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new ForceRecordingForwardRuntimeManager(stateManager, supervisor);
+        var forward = CreateMptcpPreconnectForward();
+        forward.Mptcp!.SlaveRelayPort = 38100;
+        forward.Mptcp.Underlays[0].Legs =
+        [
+            new UnderlayLeg
+            {
+                EndpointId = 184,
+                SlavePreconnect = true,
+                PreconnectRelayPort = 38012,
+                HealthStatus = "active",
+            },
+            new UnderlayLeg
+            {
+                EndpointId = 185,
+                SlavePreconnect = true,
+                PreconnectRelayPort = 38013,
+                HealthStatus = "standby",
+            },
+        ];
+        var probedPorts = new List<int>();
+        var signature = ForwardContractSignature.Compute(EffectiveForwardConfigBuilder.Build(forward));
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["24"] = new AppliedForwardState
+            {
+                ForwardId = 24,
+                Mode = "mptcp",
+                ContractSignature = signature,
+            },
+        });
+        supervisor.RunningRoles.Add("mptcp-runtime");
+        var service = new HealthCheckService(
+            supervisor,
+            runtimeManager,
+            stateManager,
+            port => port == 11023,
+            relayHealthProbe: (_, relayPort) =>
+            {
+                probedPorts.Add(relayPort);
+                return relayPort == 38012;
+            });
+
+        await service.RunCheckOnceAsync([forward]);
+
+        Assert.Empty(runtimeManager.RestartRequests);
+        Assert.Equal([38012], probedPorts);
+    }
+
+    [Fact]
+    public async Task RunCheckOnceAsync_MptcpLegacyUnderlay_UsesLegRelayPortBeforeTopLevelRelayPort()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new ForceRecordingForwardRuntimeManager(stateManager, supervisor);
+        var forward = CreateMptcpPreconnectForward();
+        forward.Mptcp!.SlaveRelayPort = 38100;
+        forward.Mptcp.Underlay = new UnderlayConfig
+        {
+            Legs =
+            [
+                new UnderlayLeg
+                {
+                    EndpointId = 184,
+                    SlavePreconnect = true,
+                    PreconnectRelayPort = 38012,
+                    HealthStatus = "active",
+                },
+            ],
+        };
+        forward.Mptcp.Underlays = [];
+        var probedPorts = new List<int>();
+        var signature = ForwardContractSignature.Compute(EffectiveForwardConfigBuilder.Build(forward));
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["24"] = new AppliedForwardState
+            {
+                ForwardId = 24,
+                Mode = "mptcp",
+                ContractSignature = signature,
+            },
+        });
+        supervisor.RunningRoles.Add("mptcp-runtime");
+        var service = new HealthCheckService(
+            supervisor,
+            runtimeManager,
+            stateManager,
+            port => port == 11023,
+            relayHealthProbe: (_, relayPort) =>
+            {
+                probedPorts.Add(relayPort);
+                return relayPort == 38012;
+            });
+
+        await service.RunCheckOnceAsync([forward]);
+
+        Assert.Empty(runtimeManager.RestartRequests);
+        Assert.Equal([38012], probedPorts);
+    }
+
     private static AppliedForwardState CreateAppliedBondState()
     {
         return new AppliedForwardState
@@ -173,5 +351,56 @@ public sealed class HealthCheckServiceTests
                 RouteKey = "forward-26",
             },
         };
+    }
+
+    private static ForwardConfig CreateMptcpPreconnectForward()
+    {
+        return new ForwardConfig
+        {
+            ForwardId = 24,
+            ServiceStatus = "active",
+            Mode = "mptcp",
+            ListenPort = 11023,
+            Transport = "tcp",
+            Mptcp = new MptcpConfig
+            {
+                SlaveRelayHost = "127.0.0.1",
+                SlaveRelayPort = 38012,
+                Underlays =
+                [
+                    new UnderlayConfig
+                    {
+                        Legs =
+                        [
+                            new UnderlayLeg
+                            {
+                                EndpointId = 184,
+                                SlavePreconnect = true,
+                                PreconnectRelayPort = 38012,
+                            },
+                        ],
+                    },
+                ],
+            },
+            Endpoints =
+            [
+                new EndpointConfig { EndpointId = 184, Host = "8.163.90.132", Port = 7001 },
+            ],
+        };
+    }
+
+    private sealed class ForceRecordingForwardRuntimeManager : ForwardRuntimeManager
+    {
+        public ForceRecordingForwardRuntimeManager(StateManager stateManager, ProcessSupervisor supervisor)
+            : base(new AgentConfig(), supervisor, stateManager, _ => true, _ => true)
+        {
+        }
+
+        public List<(int forwardId, bool force, string reason)> RestartRequests { get; } = [];
+
+        public override void RestartForward(ForwardConfig forward, bool force, string reason)
+        {
+            RestartRequests.Add((forward.ForwardId, force, reason));
+        }
     }
 }

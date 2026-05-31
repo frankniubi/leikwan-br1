@@ -39,9 +39,14 @@ public class ForwardRuntimeManager : IDisposable
 
     public virtual void ApplyForward(ForwardConfig forward)
     {
+        ApplyForward(forward, contractSignature: null, applyReason: "manual_apply");
+    }
+
+    public virtual void ApplyForward(ForwardConfig forward, string? contractSignature, string applyReason)
+    {
         var applied = _stateManager.LoadApplied();
         applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
-        ApplyForwardCore(forward, previousState);
+        ApplyForwardCore(forward, previousState, contractSignature, applyReason);
     }
 
     public virtual void ApplyAuthoritativeAgentConfig(JsonElement? agentConfigJson)
@@ -49,28 +54,34 @@ public class ForwardRuntimeManager : IDisposable
         _config.ApplyAuthoritativeConfig(agentConfigJson);
     }
 
-    private void ApplyForwardCore(ForwardConfig forward, AppliedForwardState? previousState)
+    private void ApplyForwardCore(ForwardConfig forward, AppliedForwardState? previousState, string? contractSignature, string applyReason)
     {
-        var forwardId = forward.ForwardId;
-        var mode = ModeNormalizer.Normalize(forward.Mode);
+        var selectedForward = forward;
+        var forwardId = selectedForward.ForwardId;
+        var mode = ModeNormalizer.Normalize(selectedForward.Mode);
+        if (mode == "mptcp" && !HasUsableMptcpRelay(selectedForward))
+        {
+            selectedForward = MptcpFallbackService.ConvertToBond(selectedForward);
+            mode = ModeNormalizer.Normalize(selectedForward.Mode);
+        }
 
 
         Log.Information("applying forward {ForwardId} mode={Mode} transport={Transport} endpoints={Count}",
-            forwardId, mode, forward.Transport, forward.Endpoints.Count);
+            forwardId, mode, selectedForward.Transport, selectedForward.Endpoints.Count);
 
         // Stop existing processes
         _supervisor.StopAll(forwardId);
-        WaitForPortsReleased(PortsForReleaseWait(previousState, forward.ListenPort), TimeSpan.FromSeconds(3));
+        WaitForPortsReleased(PortsForReleaseWait(previousState, selectedForward.ListenPort), TimeSpan.FromSeconds(3));
 
         BondRuntimeBuilder.RuntimeSpec spec;
         try
         {
             spec = mode switch
             {
-                "bond" => _bondBuilder.Build(WithSelectedBondRuntimeEndpoints(forward)),
-                "race" => _bondBuilder.BuildRace(forward),
-                "mptcp" => _mptcpBuilder.Build(forward),
-                _ => _bondBuilder.BuildSingle(forward),
+                "bond" => _bondBuilder.Build(WithSelectedBondRuntimeEndpoints(selectedForward)),
+                "race" => _bondBuilder.BuildRace(selectedForward),
+                "mptcp" => _mptcpBuilder.Build(selectedForward),
+                _ => _bondBuilder.BuildSingle(selectedForward),
             };
         }
         catch (Exception ex)
@@ -120,15 +131,19 @@ public class ForwardRuntimeManager : IDisposable
         {
             ForwardId = forwardId,
             Mode = mode,
-            ListenPort = forward.ListenPort,
+            ListenPort = selectedForward.ListenPort,
             IngressMode = spec.IngressMode,
-            EndpointCount = forward.Endpoints.Count,
+            EndpointCount = selectedForward.Endpoints.Count,
             LegPorts = [.. spec.LegPorts],
             ProcessRoles = [.. spec.Processes.Select(process => process.Role)],
             ProcessLabels = [.. spec.Processes.Select(process => process.Label)],
             ProcessIds = [.. _supervisor.GetProcesses(forwardId)
                 .Select(process => TryGetProcessId(process.Process))
                 .Where(pid => pid > 0)],
+            ContractSignature = contractSignature ?? previousState?.ContractSignature ?? string.Empty,
+            LastApplyReason = string.IsNullOrWhiteSpace(applyReason)
+                ? previousState?.LastApplyReason ?? "config_sync"
+                : applyReason,
             UserStopped = false,
             UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
         };
@@ -158,9 +173,22 @@ public class ForwardRuntimeManager : IDisposable
 
     public virtual void RestartForward(ForwardConfig forward)
     {
+        RestartForward(forward, force: true, reason: "manual_apply");
+    }
+
+    public virtual void RestartForward(ForwardConfig forward, bool force, string reason)
+    {
         var applied = _stateManager.LoadApplied();
         applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
-        ApplyForwardCore(forward, previousState);
+
+        var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+        var contractSignature = ForwardContractSignature.Compute(effectiveForward);
+        var signatureMatches = previousState != null
+            && string.Equals(previousState.ContractSignature, contractSignature, StringComparison.Ordinal);
+        if (!force && signatureMatches && IsForwardRunning(forward.ForwardId))
+            return;
+
+        ApplyForwardCore(effectiveForward, previousState, contractSignature, string.IsNullOrWhiteSpace(reason) ? "manual_apply" : reason);
     }
 
     public bool IsForwardRunning(int forwardId) => _supervisor.IsRunning(forwardId);
@@ -213,6 +241,27 @@ public class ForwardRuntimeManager : IDisposable
             ports.AddRange(previousState.LegPorts);
 
         return ports;
+    }
+
+    private static bool HasUsableMptcpRelay(ForwardConfig forward)
+    {
+        var mptcp = forward.Mptcp;
+        if (mptcp is null)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(mptcp.SlaveRelayHost) && mptcp.SlaveRelayPort > 0)
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(mptcp.RelayHost) && mptcp.RelayPort > 0)
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(mptcp.RemoteHost) && mptcp.RemotePort > 0)
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(mptcp.SidecarHost) && mptcp.SidecarPort > 0)
+            return true;
+
+        return false;
     }
 
     private ForwardConfig WithSelectedBondRuntimeEndpoints(ForwardConfig forward)

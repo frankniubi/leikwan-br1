@@ -27,6 +27,10 @@ public static class MptcpFallbackService
         );
         var tcpToken = FirstNonEmpty(mptcp.TcpSessionToken, mptcp.SessionToken);
         var udpToken = FirstNonEmpty(mptcp.UdpSessionToken, tcpToken);
+        var hasSidecarTarget = !string.IsNullOrWhiteSpace(sidecarHost) && sidecarPort > 0;
+        var remoteTarget = hasSidecarTarget
+            ? $"{sidecarHost}:{sidecarPort}"
+            : FirstNonEmpty(forward.Target);
 
         var result = new ForwardConfig
         {
@@ -50,8 +54,7 @@ public static class MptcpFallbackService
                 AggregatorPort = sidecarPort,
                 RelayHost = sidecarHost,
                 RelayPort = sidecarPort,
-                RemoteTarget = sidecarHost != "" && sidecarPort > 0
-                    ? $"{sidecarHost}:{sidecarPort}" : "",
+                RemoteTarget = remoteTarget,
                 SessionToken = tcpToken,
                 UdpSessionToken = udpToken,
                 ChunkSize = 65536,
@@ -62,12 +65,12 @@ public static class MptcpFallbackService
                 InteractiveChunkBytes = 16384,
                 LatencyGuardBytes = 262144,
                 InteractiveRttSlackMs = 30,
-                QuicEnabled = true,
-                QuicViaSlave = true,
+                QuicEnabled = hasSidecarTarget,
+                QuicViaSlave = hasSidecarTarget,
                 QuicDirectEnabled = false,
                 ActiveLegLimit = 2,
                 QuicActiveLegLimit = 2,
-                WssStandbyEnabled = true,
+                WssStandbyEnabled = hasSidecarTarget,
                 WssStandbyMode = "warm-passive",
                 DisableLocalRateLimit = true,
                 QuicServerName = sidecarHost,
