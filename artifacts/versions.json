@@ -163,8 +163,8 @@
     "version": "2026.05.20.1",
     "path": "client-agent/cfwg_latency_watchdog.py",
     "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
-    "sha256": "ae9f8b50f15a29da1dab24820736e772e814d029efadabeb8e533a1f55f8c59c",
-    "size_bytes": 26349
+    "sha256": "9665bb2d4053ff6acde3531c57942bd53c9b2bd0571bc33f55f52e4ca5e03046",
+    "size_bytes": 32009
   },
   "leikwan_mptcp_relay_windows_amd64": {
     "version": "0.1.0",

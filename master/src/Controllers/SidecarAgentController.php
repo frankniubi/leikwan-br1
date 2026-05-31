@@ -44,7 +44,18 @@ final class SidecarAgentController extends BaseController
             'wireguard_public_key' => $request->input('wireguard_public_key'),
             'wireguard_listen_port' => $request->input('wireguard_listen_port'),
             'wireguard_fallback_tcp_port' => $request->input('wireguard_fallback_tcp_port'),
+            'wireguard_peer_state' => $request->input('wireguard_peer_state'),
         ]);
+        // Appendix C.6f: consume the stored peer-state and flag one-way return-path failures.
+        $peerHealth = $this->evaluateWireguardPeerStates(
+            is_array($runtimeState['wireguard_peer_state'] ?? null) ? $runtimeState['wireguard_peer_state'] : []
+        );
+        $degradedPeers = array_values(array_filter(
+            $peerHealth,
+            static fn(array $row): bool => ($row['degraded'] ?? false) === true
+        ));
+        $runtimeState['wireguard_peer_health'] = $peerHealth;
+        $runtimeState['wireguard_peer_one_way_degraded'] = $degradedPeers !== [];
         $directCfBackendForwardIds = [];
         $rawDirectCfBackendForwardIds = $runtimeState['cf_direct_backend_forward_ids'] ?? [];
         if (is_array($rawDirectCfBackendForwardIds)) {
@@ -303,6 +314,56 @@ final class SidecarAgentController extends BaseController
     }
 
     /**
+     * Appendix C.6f — consume the per-peer wireguard_peer_state carried by the sidecar
+     * heartbeat and flag one-way return-path failures.
+     *
+     * A peer that is transmitting (tx_bytes>0) but receiving nothing (rx_bytes==0) while its
+     * handshake is FRESH (handshake_age_seconds is non-null and below FRESH_THRESHOLD, default
+     * 180s) is dialling into a black hole: the WG return path is dead even though we just
+     * completed a handshake. Such a peer is marked degraded with reason 'one_way_return_path'.
+     * Peers with no handshake (null) or a stale handshake are NOT flagged, because there is no
+     * fresh evidence of a live-but-one-way tunnel.
+     *
+     * Field contract (cross-agent): interface_name, peer_public_key, rx_bytes, tx_bytes,
+     * handshake_age_seconds.
+     *
+     * @param array<int, mixed> $peerStates
+     * @return array<int, array<string, mixed>>
+     */
+    private function evaluateWireguardPeerStates(array $peerStates): array
+    {
+        $freshThreshold = max(1, (int) ($this->config->getInt('SIDECAR_WG_PEER_FRESH_HANDSHAKE_SECONDS', 180) ?? 180));
+        $evaluated = [];
+        foreach ($peerStates as $peer) {
+            if (!is_array($peer)) {
+                continue;
+            }
+            $interfaceName = trim((string) ($peer['interface_name'] ?? ''));
+            $peerPublicKey = trim((string) ($peer['peer_public_key'] ?? ''));
+            $rxBytes = max(0, (int) ($peer['rx_bytes'] ?? 0));
+            $txBytes = max(0, (int) ($peer['tx_bytes'] ?? 0));
+            $handshakeAge = array_key_exists('handshake_age_seconds', $peer) && $peer['handshake_age_seconds'] !== null
+                ? (int) $peer['handshake_age_seconds']
+                : null;
+
+            $freshHandshake = $handshakeAge !== null && $handshakeAge >= 0 && $handshakeAge < $freshThreshold;
+            $oneWay = $txBytes > 0 && $rxBytes === 0 && $freshHandshake;
+
+            $evaluated[] = [
+                'interface_name' => $interfaceName,
+                'peer_public_key' => $peerPublicKey,
+                'rx_bytes' => $rxBytes,
+                'tx_bytes' => $txBytes,
+                'handshake_age_seconds' => $handshakeAge,
+                'healthy' => !$oneWay,
+                'degraded' => $oneWay,
+                'reason' => $oneWay ? 'one_way_return_path' : '',
+            ];
+        }
+        return $evaluated;
+    }
+
+    /**
      * @param array<string, mixed> $existing
      * @param array<string, mixed> $input
      * @return array<string, mixed>
@@ -326,6 +387,11 @@ final class SidecarAgentController extends BaseController
         foreach (['wireguard_listen_port', 'wireguard_fallback_tcp_port'] as $intKey) {
             if (array_key_exists($intKey, $input) && $input[$intKey] !== null && $input[$intKey] !== '') {
                 $merged[$intKey] = max(0, (int) $input[$intKey]);
+            }
+        }
+        foreach (['wireguard_peer_state'] as $arrayKey) {
+            if (array_key_exists($arrayKey, $input) && is_array($input[$arrayKey])) {
+                $merged[$arrayKey] = array_values($input[$arrayKey]);
             }
         }
         return $merged;

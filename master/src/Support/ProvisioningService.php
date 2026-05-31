@@ -18,6 +18,23 @@ final class ProvisioningService
 
     private ?bool $nodeGroupIngressColumnsAvailable = null;
     private ?bool $nodeGroupDescriptionColumnAvailable = null;
+
+    /**
+     * Per-(sidecar point) uniqueness-checked allocation registries. Keyed by point id,
+     * each holds already-assigned uplink ports, leg ports and /30 subnets so that distinct
+     * (point, combination, node, lane) tuples never alias onto the same slot the way pure
+     * %rangeSize hashing did. Cached per tuple so a republish reproduces the same value.
+     *
+     * @var array<int, array<string, int>>
+     */
+    private array $staticSidecarUplinkPortRegistry = [];
+    /** @var array<int, array<string, int>> */
+    private array $staticSidecarLegPortRegistry = [];
+    /** @var array<int, array<string, string>> */
+    private array $staticSidecarSubnetRegistry = [];
+    /** @var array<string, bool> */
+    private array $staticSidecarUndersizeReported = [];
+
     public function __construct(
         private Config $config,
         private Database $db,
@@ -4656,6 +4673,113 @@ final class ProvisioningService
         }
     }
 
+    /**
+     * C.4b — periodic non-convergence sweep. Re-pushes active endpoints whose updated_at is stale
+     * relative to the latest forward/combination updated_at (an edit landed but the endpoint never
+     * re-converged), and escalates an alarm (log + persisted marker) after N consecutive sweeps in
+     * which at least one endpoint remains non-convergent.
+     *
+     * Returns the number of endpoints found non-convergent this cycle.
+     */
+    public function sweepNonConvergentEndpoints(): int
+    {
+        $rows = $this->db->fetchAll(
+            'SELECT e.id AS service_endpoint_id,
+                    e.node_id AS endpoint_node_id,
+                    e.updated_at AS endpoint_updated_at,
+                    e.health_status AS endpoint_health_status,
+                    f.*,
+                    f.updated_at AS forward_updated_at,
+                    fc.updated_at AS combination_updated_at,
+                    s.status AS service_status
+             FROM service_endpoints e
+             INNER JOIN forwards f ON f.id = e.forward_id
+             INNER JOIN services s ON s.id = f.service_id
+             LEFT JOIN forward_combinations fc ON fc.id = f.forward_combination_id
+             WHERE e.health_status = :active_status
+               AND f.enabled = 1
+               AND s.status = :service_status',
+            [
+                'active_status' => 'active',
+                'service_status' => 'active',
+            ]
+        );
+
+        $nonConvergent = 0;
+        foreach ($rows as $row) {
+            $endpointUpdatedAt = strtotime((string) ($row['endpoint_updated_at'] ?? '')) ?: 0;
+            $forwardUpdatedAt = strtotime((string) ($row['forward_updated_at'] ?? '')) ?: 0;
+            $combinationUpdatedAt = ($row['combination_updated_at'] ?? null) !== null
+                ? (strtotime((string) $row['combination_updated_at']) ?: 0)
+                : 0;
+            $desiredAt = max($forwardUpdatedAt, $combinationUpdatedAt);
+            if ($desiredAt <= 0 || $endpointUpdatedAt <= 0 || $endpointUpdatedAt >= $desiredAt) {
+                continue; // converged (endpoint re-published at/after the latest edit)
+            }
+            $nonConvergent++;
+
+            $nodeId = (int) ($row['endpoint_node_id'] ?? 0);
+            $endpointId = (int) ($row['service_endpoint_id'] ?? 0);
+            $forwardId = (int) ($row['forward_id'] ?? $row['id'] ?? 0);
+            $node = $this->db->fetchOne('SELECT * FROM nodes WHERE id = :id LIMIT 1', ['id' => $nodeId]);
+            if (!is_array($node)) {
+                continue;
+            }
+            $publicHost = $this->resolveNodePublicHost($node);
+            if ($publicHost === '') {
+                continue;
+            }
+            $node['resolved_public_host'] = $publicHost;
+            try {
+                $payload = $this->publishTaskPayloadForForward($row, $node, $endpointId);
+                $this->queueTask($nodeId, 'publish', (int) ($row['service_id'] ?? 0), $forwardId, $endpointId, $payload);
+                $this->storeEndpointDesiredPayloadFingerprint(
+                    $endpointId,
+                    $this->desiredEndpointPayloadFingerprint($row, $node, $payload)
+                );
+            } catch (\Throwable $e) {
+                error_log('sweepNonConvergentEndpoints re-push failed for endpoint ' . $endpointId . ': ' . $e->getMessage());
+            }
+        }
+
+        $this->escalateNonConvergenceAlarm($nonConvergent);
+        return $nonConvergent;
+    }
+
+    /**
+     * Track consecutive non-convergent sweep cycles and raise (log + persist) an alarm once they
+     * cross the configured threshold. A fully-convergent cycle clears the counter and the alarm.
+     */
+    private function escalateNonConvergenceAlarm(int $nonConvergentThisCycle): void
+    {
+        $threshold = max(1, (int) ($this->config->getInt('NON_CONVERGENCE_ALARM_CYCLES', 3) ?? 3));
+        $counterKey = 'non_convergence_consecutive_cycles';
+        if ($nonConvergentThisCycle <= 0) {
+            $this->appSettingSet($counterKey, '0');
+            // Only clear an alarm that was actually raised; never materialise an empty marker.
+            if ($this->appSettingGet('non_convergence_alarm') !== null) {
+                $this->appSettingSet('non_convergence_alarm', null);
+            }
+            return;
+        }
+        $current = (int) ($this->appSettingGet($counterKey) ?? '0') + 1;
+        $this->appSettingSet($counterKey, (string) $current);
+        if ($current >= $threshold) {
+            $payload = json_encode([
+                'consecutive_cycles' => $current,
+                'threshold' => $threshold,
+                'non_convergent_endpoints' => $nonConvergentThisCycle,
+                'raised_at' => $this->now(),
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $this->appSettingSet('non_convergence_alarm', $payload !== false ? $payload : '');
+            error_log(
+                'non_convergence_alarm consecutive_cycles=' . $current
+                . ' threshold=' . $threshold
+                . ' non_convergent_endpoints=' . $nonConvergentThisCycle
+            );
+        }
+    }
+
     public function republishActiveEndpointsForNode(int $nodeId): void
     {
         if ($nodeId <= 0) {
@@ -5246,8 +5370,8 @@ final class ProvisioningService
         $cfMode = $this->staticSidecarCombinationUsesCf($combination);
         $lanes = [];
         foreach (['primary' => 'p', 'backup' => 'b'] as $lane => $suffix) {
-            $addresses = $this->staticSidecarUplinkAddressing($pointId, $combinationId, $nodeId, $lane);
-            $listenPort = $this->stableStaticSidecarUplinkPort($sidecarListenPort, $sidecarPortRangeEnd, $pointId, $combinationId, $nodeId, $lane);
+            $addresses = $this->allocateStaticSidecarUplinkSubnet($pointId, $combinationId, $nodeId, $lane);
+            $listenPort = $this->allocateStaticSidecarUplinkPort($sidecarListenPort, $sidecarPortRangeEnd, $pointId, $combinationId, $nodeId, $lane);
             if ($listenPort <= 0) {
                 continue;
             }
@@ -5429,30 +5553,132 @@ final class ProvisioningService
                 continue;
             }
             $endpoint = $existingByNode[$nodeId];
-            if (in_array((string) ($endpoint['health_status'] ?? ''), ['pending', 'error', 'degraded'], true)) {
-                $payload = $this->publishTaskPayloadForForward($forward, $node, (int) ($endpoint['id'] ?? 0));
-                $this->queueTask($nodeId, 'publish', (int) ($forward['service_id'] ?? 0), $forwardId, (int) ($endpoint['id'] ?? 0), $payload);
+            $endpointId = (int) ($endpoint['id'] ?? 0);
+            $payload = $this->publishTaskPayloadForForward($forward, $node, $endpointId);
+            $status = (string) ($endpoint['health_status'] ?? '');
+            $fingerprint = $this->desiredEndpointPayloadFingerprint($forward, $node, $payload);
+            $isUnconverged = in_array($status, ['pending', 'error', 'degraded'], true);
+            // C.4a/C.4c: re-publish pending/error/degraded as before, AND re-publish an ACTIVE
+            // endpoint whenever the materially-published desired payload drifted vs. the last
+            // fingerprint we published for it. Unchanged active endpoints are left untouched so
+            // we do not re-queue tasks on every reconcile cycle.
+            $drifted = $this->endpointDesiredPayloadDrifted($endpointId, $fingerprint);
+            if ($isUnconverged || $drifted) {
+                $this->queueTask($nodeId, 'publish', (int) ($forward['service_id'] ?? 0), $forwardId, $endpointId, $payload);
+                $this->storeEndpointDesiredPayloadFingerprint($endpointId, $fingerprint);
             }
         }
 
+        $membershipChanged = false;
         foreach ($existingByNode as $nodeId => $endpoint) {
             if (isset($reachableNodes[$nodeId])) {
                 continue;
             }
-            $this->queueTask((int) $nodeId, 'destroy', (int) ($forward['service_id'] ?? 0), $forwardId, (int) ($endpoint['id'] ?? 0), [
+            $membershipChanged = true;
+            $removedEndpointId = (int) ($endpoint['id'] ?? 0);
+            $serviceId = (int) ($forward['service_id'] ?? 0);
+            // C.2: a removed member's slave-side sidecar-uplink lane selector must be torn down
+            // explicitly so it does not linger binding its loopback port / racing dead candidates.
+            $this->queueTask((int) $nodeId, 'destroy', $serviceId, $forwardId, $removedEndpointId, [
                 'listen_port' => (int) ($endpoint['public_port'] ?? 0),
                 'path_prefix' => (string) ($forward['path_prefix'] ?? ''),
                 'reason' => 'reconcile',
+                'selector_teardown' => [
+                    'enabled' => true,
+                    'service_id' => $serviceId,
+                    'endpoint_id' => $removedEndpointId,
+                    'reason' => 'membership_change',
+                ],
             ]);
             $this->db->execute(
                 'UPDATE service_endpoints SET health_status = :status, updated_at = :updated_at WHERE id = :id',
                 [
-                    'id' => (int) ($endpoint['id'] ?? 0),
+                    'id' => $removedEndpointId,
                     'status' => 'deleting',
                     'updated_at' => $this->now(),
                 ]
             );
+            // The selector candidate set is per (point, combination, node); dropping a member
+            // shrinks it, so drop the removed endpoint's fingerprint to force the next reconcile
+            // to re-publish surviving endpoints with the recomputed candidate list.
+            $this->storeEndpointDesiredPayloadFingerprint($removedEndpointId, '');
         }
+
+        // C.2: when membership changed, force the surviving endpoints of this forward to be
+        // re-published so their recomputed selector candidate list no longer references the
+        // dropped member (the active-drift fingerprint above will fire on the next pass, but we
+        // proactively invalidate it here so a single reconcile converges).
+        if ($membershipChanged) {
+            foreach ($reachableNodes as $survivingNodeId => $survivingNode) {
+                $survivingEndpoint = $existingByNode[$survivingNodeId] ?? null;
+                if (!is_array($survivingEndpoint)) {
+                    continue;
+                }
+                $this->storeEndpointDesiredPayloadFingerprint((int) ($survivingEndpoint['id'] ?? 0), '');
+            }
+        }
+    }
+
+    /**
+     * C.4a/C.4c: a stable sha1 over the fields of the materially-published payload that actually
+     * drift between reconcile cycles — chosen target host/port, sidecar point/uplink selection,
+     * routing/transport mode, ingress/backend protocol, combination membership and the resolved
+     * public host of the chosen slave. A change in any of these means an already-active endpoint
+     * is serving a stale config and must be re-published.
+     *
+     * @param array<string, mixed> $forward
+     * @param array<string, mixed> $node
+     * @param array<string, mixed> $payload
+     */
+    private function desiredEndpointPayloadFingerprint(array $forward, array $node, array $payload): string
+    {
+        $sidecarUplink = is_array($payload['sidecar_uplink'] ?? null) ? $payload['sidecar_uplink'] : [];
+        $selector = is_array($payload['sidecar_uplink_selector'] ?? null) ? $payload['sidecar_uplink_selector'] : [];
+        $material = [
+            'target' => (string) ($payload['target'] ?? ''),
+            'backend_mode' => (string) ($payload['backend_mode'] ?? ''),
+            'transport_mode' => (string) ($payload['transport_mode'] ?? ''),
+            'ingress_protocol' => (string) ($payload['ingress_protocol'] ?? ''),
+            'backend_protocol' => (string) ($payload['backend_protocol'] ?? ''),
+            'publish_bond_runtime' => (bool) ($payload['publish_bond_runtime'] ?? false),
+            'forward_combination_id' => $payload['forward_combination_id'] ?? null,
+            'path_prefix' => (string) ($payload['path_prefix'] ?? ''),
+            'sni_host' => (string) ($payload['sni_host'] ?? ''),
+            'cdn_host' => (string) ($payload['cdn_host'] ?? ''),
+            'origin_group_key' => (string) ($payload['origin_group_key'] ?? ''),
+            'node_id' => (int) ($node['id'] ?? $node['node_id'] ?? 0),
+            'resolved_public_host' => (string) ($node['resolved_public_host'] ?? ''),
+            'sidecar_point_id' => (int) ($sidecarUplink['sidecar_point_id'] ?? $forward['bond_sidecar_point_id'] ?? 0),
+            'sidecar_uplink_interface' => (string) ($sidecarUplink['interface_name'] ?? ''),
+            'sidecar_uplink_listen_port' => (int) ($sidecarUplink['listen_port'] ?? 0),
+            'sidecar_relay_target' => (string) ($sidecarUplink['relay_target'] ?? ''),
+            'selector_enabled' => (bool) ($selector['enabled'] ?? false),
+            'selector_candidate_count' => is_array($selector['candidates'] ?? null) ? count($selector['candidates']) : 0,
+            'selector_single_lane_monitor' => (bool) ($selector['single_lane_monitor'] ?? false),
+        ];
+        return sha1((string) json_encode($material, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    private function endpointDesiredPayloadFingerprintKey(int $endpointId): string
+    {
+        return 'endpoint_desired_payload_fingerprint:' . $endpointId;
+    }
+
+    private function endpointDesiredPayloadDrifted(int $endpointId, string $fingerprint): bool
+    {
+        if ($endpointId <= 0) {
+            return false;
+        }
+        $stored = $this->appSettingGet($this->endpointDesiredPayloadFingerprintKey($endpointId));
+        return $stored === null || $stored !== $fingerprint;
+    }
+
+    private function storeEndpointDesiredPayloadFingerprint(int $endpointId, string $fingerprint): void
+    {
+        if ($endpointId <= 0) {
+            return;
+        }
+        $this->appSettingSet($this->endpointDesiredPayloadFingerprintKey($endpointId), $fingerprint);
     }
 
     /**
@@ -5621,7 +5847,7 @@ final class ProvisioningService
      */
     private function staticSidecarUplinkSelectorPayload(array $uplinks, int $sidecarServicePort, int $forwardId, int $endpointId): array
     {
-        if ($sidecarServicePort <= 0 || count($uplinks) < 2) {
+        if ($sidecarServicePort <= 0 || $uplinks === []) {
             return [];
         }
 
@@ -5656,14 +5882,27 @@ final class ProvisioningService
                 'sidecar_port' => $sidecarServicePort,
             ];
         }
-        if (count($candidates) < 2) {
-            return [];
+
+        $candidateCount = count($candidates);
+        // C.7c: a single-lane forward normally gets NO selector (failover needs >=2 lanes). Behind
+        // STATIC_SIDECAR_SELECTOR_SINGLE_LANE_RESTART (default off) we still emit a MONITOR-ONLY
+        // selector for the single lane so a dead-but-handshaking one-way path can be detected and
+        // restarted. The selector is flagged single_lane_monitor so the slave runs it as a watchdog
+        // rather than a failover switch.
+        $singleLaneMonitor = false;
+        if ($candidateCount < 2) {
+            if ($candidateCount === 1 && $this->config->getBool('STATIC_SIDECAR_SELECTOR_SINGLE_LANE_RESTART', false)) {
+                $singleLaneMonitor = true;
+            } else {
+                return [];
+            }
         }
 
         $selectorPort = $this->stableSidecarSelectorPort($firstPointId, $firstCombinationId, $firstNodeId, $forwardId, $endpointId);
         return [
             'enabled' => true,
             'strategy' => 'wg_allowed_ip_ping',
+            'single_lane_monitor' => $singleLaneMonitor,
             'selector_port' => $selectorPort,
             'sidecar_service_port' => $sidecarServicePort,
             'probe_interval_seconds' => max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_PROBE_INTERVAL_SECONDS', 3) ?? 3)),
@@ -7269,9 +7508,8 @@ final class ProvisioningService
      */
     private function staticSidecarUplinkAddressing(int $pointId, int $combinationId, int $nodeId, string $lane): array
     {
-        $laneOffset = $lane === 'backup' ? 1 : 0;
-        $stable = max(1, abs(($pointId * 1000003) + ($combinationId * 4099) + ($nodeId * 2) + $laneOffset));
-        $bucket = $stable % (250 * 64);
+        $tupleHash = hash('crc32b', $pointId . ':' . $combinationId . ':' . $nodeId . ':' . $lane);
+        $bucket = hexdec($tupleHash) % (250 * 64);
         $octet3 = 1 + intdiv($bucket, 64);
         $networkBase = ($bucket % 64) * 4;
         return [
@@ -7287,8 +7525,7 @@ final class ProvisioningService
         if (strlen($name) <= 15) {
             return $name;
         }
-        $hash = substr(hash('crc32b', $pointId . ':' . $combinationId . ':' . $nodeId . ':' . $laneSuffix), 0, 5);
-        return substr('lws' . $pointId . 'n' . $nodeId . $laneSuffix . $hash, 0, 15);
+        return 'lws' . substr(hash('crc32b', $pointId . ':' . $combinationId . ':' . $nodeId . ':' . $laneSuffix), 0, 11);
     }
 
     private function stableStaticSidecarUplinkPort(int $sidecarListenPort, int $portRangeEnd, int $pointId, int $combinationId, int $nodeId, string $lane): int
@@ -7297,8 +7534,12 @@ final class ProvisioningService
             return 0;
         }
         $rangeSize = $portRangeEnd - $sidecarListenPort;
+        if ($rangeSize < 2) {
+            return 0;
+        }
+        $uplinkRangeSize = max(1, intdiv($rangeSize, 2));
         $laneOffset = $lane === 'backup' ? 1 : 0;
-        $stableIndex = abs((($pointId * 1009) + ($combinationId * 131) + ($nodeId * 2) + $laneOffset) % $rangeSize);
+        $stableIndex = abs((($pointId * 1009) + ($combinationId * 131) + ($nodeId * 2) + $laneOffset) % $uplinkRangeSize);
         return $sidecarListenPort + 1 + $stableIndex;
     }
 
@@ -7361,9 +7602,204 @@ final class ProvisioningService
         if ($sidecarListenPort <= 0 || $portRangeEnd <= $sidecarListenPort) {
             return 0;
         }
-        $rangeSize = $portRangeEnd - $sidecarListenPort; // e.g. 14999-14969 = 30
-        $stableIndex = abs(($forwardId * 256 + $nodeId) % $rangeSize);
-        return $sidecarListenPort + 1 + $stableIndex;
+        $rangeSize = $portRangeEnd - $sidecarListenPort;
+        if ($rangeSize < 2) {
+            return 0;
+        }
+        $uplinkRangeSize = max(1, intdiv($rangeSize, 2));
+        $legRangeStart = $sidecarListenPort + 1 + $uplinkRangeSize;
+        $legRangeSize = max(1, $rangeSize - $uplinkRangeSize);
+        $stableIndex = abs(($forwardId * 256 + $nodeId) % $legRangeSize);
+        return $legRangeStart + $stableIndex;
+    }
+
+    /**
+     * Probe within a contiguous [start..start+size-1] subrange for a free slot, beginning at
+     * the deterministic hash bucket and walking forward (wrapping) until an unassigned slot is
+     * found. Returns the chosen absolute value, or 0 when every slot in the subrange is taken.
+     * Deterministic per ($hashSeed) given a fixed assigned-set, so a republish reproduces it.
+     *
+     * @param array<int, bool> $assignedValues set of already-assigned absolute values
+     */
+    private function probeFreeSlotInSubrange(int $rangeStart, int $rangeSize, int $hashSeed, array $assignedValues): int
+    {
+        if ($rangeSize <= 0) {
+            return 0;
+        }
+        $startIndex = abs($hashSeed % $rangeSize);
+        for ($step = 0; $step < $rangeSize; $step++) {
+            $candidate = $rangeStart + (($startIndex + $step) % $rangeSize);
+            if (!isset($assignedValues[$candidate])) {
+                return $candidate;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Record + log that a sidecar point's allocation subrange is too small to hold every
+     * tuple that must fit. We persist an operational marker (consumed by ops dashboards) and
+     * emit a log line; the marker is written once per (point, lane-class) per process.
+     */
+    private function reportStaticSidecarUndersize(int $pointId, string $laneClass, int $subrangeSize, int $demand): void
+    {
+        $markerKey = $pointId . ':' . $laneClass;
+        if (isset($this->staticSidecarUndersizeReported[$markerKey])) {
+            return;
+        }
+        $this->staticSidecarUndersizeReported[$markerKey] = true;
+        $payload = json_encode([
+            'sidecar_point_id' => $pointId,
+            'lane_class' => $laneClass,
+            'subrange_size' => $subrangeSize,
+            'distinct_tuples_demanded' => $demand,
+            'detected_at' => $this->now(),
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $this->appSettingSet('static_sidecar_alloc_undersize:' . $pointId, $payload !== false ? $payload : '');
+        error_log(
+            'static_sidecar_alloc_undersize point=' . $pointId
+            . ' lane_class=' . $laneClass
+            . ' subrange_size=' . $subrangeSize
+            . ' demand=' . $demand
+            . ' (subrange smaller than the number of distinct tuples that must fit)'
+        );
+    }
+
+    /**
+     * Uniqueness-checked uplink WG listen port allocation for a (point, combination, node, lane)
+     * tuple. Carves the disjoint UPLINK half of the sidecar WG range and probes for the next
+     * free slot relative to the deterministic bucket, de-colliding tuples that pure %rangeSize
+     * hashing would alias. Cached per tuple for republish idempotency. Returns 0 if no range.
+     */
+    private function allocateStaticSidecarUplinkPort(int $sidecarListenPort, int $portRangeEnd, int $pointId, int $combinationId, int $nodeId, string $lane): int
+    {
+        if ($sidecarListenPort <= 0 || $portRangeEnd <= $sidecarListenPort) {
+            return 0;
+        }
+        $rangeSize = $portRangeEnd - $sidecarListenPort;
+        if ($rangeSize < 2) {
+            return 0;
+        }
+        $tupleKey = $combinationId . ':' . $nodeId . ':' . $lane;
+        $registry = &$this->staticSidecarUplinkPortRegistry[$pointId];
+        if (!is_array($registry)) {
+            $registry = [];
+        }
+        if (isset($registry[$tupleKey])) {
+            return $registry[$tupleKey];
+        }
+        $uplinkRangeSize = max(1, intdiv($rangeSize, 2));
+        $rangeStart = $sidecarListenPort + 1;
+        $laneOffset = $lane === 'backup' ? 1 : 0;
+        $hashSeed = abs(($pointId * 1009) + ($combinationId * 131) + ($nodeId * 2) + $laneOffset);
+        $assigned = array_fill_keys(array_values($registry), true);
+        if (count($registry) >= $uplinkRangeSize) {
+            $this->reportStaticSidecarUndersize($pointId, 'uplink', $uplinkRangeSize, count($registry) + 1);
+        }
+        $port = $this->probeFreeSlotInSubrange($rangeStart, $uplinkRangeSize, $hashSeed, $assigned);
+        if ($port <= 0) {
+            // Subrange exhausted: fall back to the deterministic bucket so we still publish a
+            // (possibly colliding) port rather than nothing — the undersize marker is the signal.
+            $this->reportStaticSidecarUndersize($pointId, 'uplink', $uplinkRangeSize, count($registry) + 1);
+            $port = $rangeStart + abs($hashSeed % $uplinkRangeSize);
+        }
+        $registry[$tupleKey] = $port;
+        return $port;
+    }
+
+    /**
+     * Uniqueness-checked per-forward leg port allocation. Carves the disjoint LEG half of the
+     * sidecar WG range (above the uplink half) and probes for a free slot relative to the
+     * deterministic bucket. Cached per (forward, node) tuple for republish idempotency.
+     */
+    private function allocateStaticSidecarLegPort(int $sidecarListenPort, int $portRangeEnd, int $pointId, int $forwardId, int $nodeId): int
+    {
+        if ($sidecarListenPort <= 0 || $portRangeEnd <= $sidecarListenPort) {
+            return 0;
+        }
+        $rangeSize = $portRangeEnd - $sidecarListenPort;
+        if ($rangeSize < 2) {
+            return 0;
+        }
+        $tupleKey = $forwardId . ':' . $nodeId;
+        $registry = &$this->staticSidecarLegPortRegistry[$pointId];
+        if (!is_array($registry)) {
+            $registry = [];
+        }
+        if (isset($registry[$tupleKey])) {
+            return $registry[$tupleKey];
+        }
+        $uplinkRangeSize = max(1, intdiv($rangeSize, 2));
+        $legRangeStart = $sidecarListenPort + 1 + $uplinkRangeSize;
+        $legRangeSize = max(1, $rangeSize - $uplinkRangeSize);
+        $hashSeed = abs(($forwardId * 256) + $nodeId);
+        $assigned = array_fill_keys(array_values($registry), true);
+        if (count($registry) >= $legRangeSize) {
+            $this->reportStaticSidecarUndersize($pointId, 'leg', $legRangeSize, count($registry) + 1);
+        }
+        $port = $this->probeFreeSlotInSubrange($legRangeStart, $legRangeSize, $hashSeed, $assigned);
+        if ($port <= 0) {
+            $this->reportStaticSidecarUndersize($pointId, 'leg', $legRangeSize, count($registry) + 1);
+            $port = $legRangeStart + abs($hashSeed % $legRangeSize);
+        }
+        $registry[$tupleKey] = $port;
+        return $port;
+    }
+
+    /**
+     * Uniqueness-checked /30 transit subnet allocation for a (point, combination, node, lane)
+     * tuple. Probes the 10.240.0.0/16-derived /30 space for a free network given the subnets
+     * already handed out for this sidecar point, de-colliding tuples that pure %bucket hashing
+     * would alias onto the same /30. Cached per tuple for republish idempotency.
+     *
+     * @return array{subnet:string,slave_address:string,sidecar_address:string}
+     */
+    private function allocateStaticSidecarUplinkSubnet(int $pointId, int $combinationId, int $nodeId, string $lane): array
+    {
+        $tupleKey = $combinationId . ':' . $nodeId . ':' . $lane;
+        $registry = &$this->staticSidecarSubnetRegistry[$pointId];
+        if (!is_array($registry)) {
+            $registry = [];
+        }
+        if (isset($registry[$tupleKey])) {
+            return $this->staticSidecarSubnetFromBucket($registry[$tupleKey]);
+        }
+        $totalBuckets = 250 * 64; // 10.240.1.0 .. 10.240.250.x, 64 /30s per octet3
+        $tupleHash = hash('crc32b', $pointId . ':' . $combinationId . ':' . $nodeId . ':' . $lane);
+        $hashSeed = abs((int) hexdec($tupleHash));
+        $assigned = array_fill_keys(array_values($registry), true);
+        if (count($registry) >= $totalBuckets) {
+            $this->reportStaticSidecarUndersize($pointId, 'subnet', $totalBuckets, count($registry) + 1);
+        }
+        $startIndex = $hashSeed % $totalBuckets;
+        $bucket = -1;
+        for ($step = 0; $step < $totalBuckets; $step++) {
+            $candidate = ($startIndex + $step) % $totalBuckets;
+            if (!isset($assigned[$candidate])) {
+                $bucket = $candidate;
+                break;
+            }
+        }
+        if ($bucket < 0) {
+            $this->reportStaticSidecarUndersize($pointId, 'subnet', $totalBuckets, count($registry) + 1);
+            $bucket = $startIndex;
+        }
+        $registry[$tupleKey] = $bucket;
+        return $this->staticSidecarSubnetFromBucket($bucket);
+    }
+
+    /**
+     * @return array{subnet:string,slave_address:string,sidecar_address:string}
+     */
+    private function staticSidecarSubnetFromBucket(int $bucket): array
+    {
+        $octet3 = 1 + intdiv($bucket, 64);
+        $networkBase = ($bucket % 64) * 4;
+        return [
+            'subnet' => '10.240.' . $octet3 . '.' . $networkBase . '/30',
+            'sidecar_address' => '10.240.' . $octet3 . '.' . ($networkBase + 1),
+            'slave_address' => '10.240.' . $octet3 . '.' . ($networkBase + 2),
+        ];
     }
 
     private function sidecarWireguardListenPort(array $point, array $pointConfig): int
@@ -7850,7 +8286,7 @@ final class ProvisioningService
             'underlays' => array_values(array_map(function ($leg, $idx) use ($pointId, $sidecarListenPort, $sidecarPortRangeEnd) {
                 $fid = (int) ($leg['forward_id'] ?? 0);
                 $nid = (int) ($leg['node_id'] ?? 0);
-                $fixedPort = $this->stableSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $fid, $nid);
+                $fixedPort = $this->allocateStaticSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $pointId, $fid, $nid);
                 return [
                     'type' => (string) ($this->config->get('MPTCP_UNDERLAY_TYPE', 'wireguard') ?? 'wireguard'),
                     'mode' => 'slave_transit',
@@ -8500,5 +8936,57 @@ final class ProvisioningService
     private function now(): string
     {
         return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+    }
+
+    /**
+     * Read a persisted operational marker / state value from the app_settings k/v store.
+     */
+    private function appSettingGet(string $key): ?string
+    {
+        try {
+            $row = $this->db->fetchOne(
+                'SELECT setting_value FROM app_settings WHERE setting_key = :setting_key LIMIT 1',
+                ['setting_key' => $key]
+            );
+        } catch (\Throwable) {
+            return null;
+        }
+        if (!is_array($row) || !array_key_exists('setting_value', $row)) {
+            return null;
+        }
+        $value = $row['setting_value'];
+        return $value === null ? null : (string) $value;
+    }
+
+    /**
+     * Upsert a persisted operational marker / state value into the app_settings k/v store.
+     */
+    private function appSettingSet(string $key, ?string $value): void
+    {
+        try {
+            $existing = $this->db->fetchOne(
+                'SELECT id FROM app_settings WHERE setting_key = :setting_key LIMIT 1',
+                ['setting_key' => $key]
+            );
+            if (is_array($existing) && isset($existing['id'])) {
+                $this->db->execute(
+                    'UPDATE app_settings SET setting_value = :setting_value, updated_at = :updated_at WHERE setting_key = :setting_key',
+                    [
+                        'setting_value' => $value,
+                        'updated_at' => $this->now(),
+                        'setting_key' => $key,
+                    ]
+                );
+                return;
+            }
+            $this->db->insert('app_settings', [
+                'setting_key' => $key,
+                'setting_value' => $value,
+                'created_at' => $this->now(),
+                'updated_at' => $this->now(),
+            ]);
+        } catch (\Throwable $e) {
+            error_log('appSettingSet failed for ' . $key . ': ' . $e->getMessage());
+        }
     }
 }

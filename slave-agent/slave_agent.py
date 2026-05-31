@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import contextlib
 import email.utils
+import errno
 import html
 import ipaddress
 import json
@@ -28,6 +29,112 @@ IDENTITY_REFRESH_SECONDS = 300
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 COMMAND_TIMEOUT_SECONDS = 30
+
+# Shared restart ledger (cross-language byte contract). The on-disk format is
+# one append-only file per interface at <dir>/<iface>.log, where each restart
+# appends a single line: the integer epoch-seconds, a space, the source token,
+# terminated by a newline. The same format is written/read by
+# leikwan-wg-watchdog.sh and cfwg_latency_watchdog.py.
+RESTART_LEDGER_DIR = Path("/run/leikwan/restart-ledger")
+RESTART_LEDGER_WINDOW_SECONDS = 600
+RESTART_LEDGER_MAX = 3
+
+
+def _restart_ledger_window() -> int:
+    try:
+        value = int(os.environ.get("LEIKWAN_RESTART_LEDGER_WINDOW", "") or RESTART_LEDGER_WINDOW_SECONDS)
+    except (TypeError, ValueError):
+        return RESTART_LEDGER_WINDOW_SECONDS
+    return value if value > 0 else RESTART_LEDGER_WINDOW_SECONDS
+
+
+def _restart_ledger_max() -> int:
+    try:
+        value = int(os.environ.get("LEIKWAN_RESTART_LEDGER_MAX", "") or RESTART_LEDGER_MAX)
+    except (TypeError, ValueError):
+        return RESTART_LEDGER_MAX
+    return value if value > 0 else RESTART_LEDGER_MAX
+
+
+def restart_ledger_recent_count(interface_name: str, now: float) -> int:
+    """Count ledger entries for <interface_name> within the breaker window.
+
+    Best-effort: any read/parse error counts as 0 (fail-open) so a missing or
+    corrupt ledger never blocks a legitimate restart, and never raises.
+    """
+    iface = str(interface_name or "").strip()
+    if iface == "":
+        return 0
+    window = _restart_ledger_window()
+    cutoff = float(now) - float(window)
+    path = RESTART_LEDGER_DIR / f"{iface}.log"
+    count = 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if line == "":
+                    continue
+                head = line.split(" ", 1)[0]
+                try:
+                    epoch = int(head)
+                except (TypeError, ValueError):
+                    continue
+                if epoch >= cutoff:
+                    count += 1
+    except (OSError, ValueError):
+        return 0
+    return count
+
+
+def restart_ledger_append(interface_name: str, source_token: str, now: float) -> None:
+    """Atomically append one ledger line for a performed restart.
+
+    Tolerates the directory being absent or unwritable -> fail-open (the
+    restart still happens, we just fail to record it). Never raises.
+    """
+    iface = str(interface_name or "").strip()
+    token = str(source_token or "").strip()
+    if iface == "" or token == "":
+        return
+    try:
+        RESTART_LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(RESTART_LEDGER_DIR, 0o755)
+        except OSError:
+            pass
+        path = RESTART_LEDGER_DIR / f"{iface}.log"
+        line = f"{int(now)} {token}\n"
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+    except OSError:
+        return
+
+
+def restart_circuit_breaker_allow(interface_name: str, source_token: str, now: float | None = None) -> bool:
+    """Circuit breaker gate evaluated BEFORE restarting <interface_name>.
+
+    Returns True and records one ledger line if the restart is permitted.
+    Returns False (and records nothing) when the breaker is open: the count of
+    restarts within the window has reached the max. On suppression a WARN is
+    logged. The caller is responsible for performing the actual restart only
+    when this returns True.
+    """
+    moment = time.time() if now is None else float(now)
+    recent = restart_ledger_recent_count(interface_name, moment)
+    if recent >= _restart_ledger_max():
+        logging.warning(
+            "circuit breaker open for %s: %s restarts in %ss; backing off",
+            interface_name,
+            recent,
+            _restart_ledger_window(),
+        )
+        return False
+    restart_ledger_append(interface_name, source_token, moment)
+    return True
 
 DEFAULT_CONFIG = {
     "master_url": "",
@@ -902,12 +1009,18 @@ class SidecarUplinkSelectorProxy:
             self.agent.load_sidecar_uplink_selector_state(self.service_name),
         )
         self.agent.save_sidecar_uplink_selector_state(self.service_name, initial_state)
-        server = await asyncio.start_server(
-            self.handle_client,
-            host="127.0.0.1",
-            port=self.selector_port,
-            backlog=1024,
-        )
+        try:
+            server = await asyncio.start_server(
+                self.handle_client,
+                host="127.0.0.1",
+                port=self.selector_port,
+                backlog=1024,
+            )
+        except OSError as exc:
+            if getattr(exc, "errno", None) == errno.EADDRINUSE:
+                logging.error("sidecar selector %s port 127.0.0.1:%s already in use; exiting cleanly", self.service_name, self.selector_port)
+                return
+            raise
         logging.info("sidecar selector %s listening on 127.0.0.1:%s", self.service_name, self.selector_port)
         refresh_task = asyncio.create_task(self.refresh_loop())
         try:
@@ -2101,13 +2214,27 @@ class SlaveAgent:
             self.apply_management_state(management, schedule_updates=True)
         except Exception:  # noqa: BLE001
             logging.exception("failed to schedule node management updates")
+        # BUG-1: only run the authoritative orphan sweep when the static-uplink
+        # section was actually present in this successfully-fetched payload. An
+        # absent section -> NO-OP sweep (preserve live lanes).
+        sidecar_section_present = isinstance(management, dict) and "sidecar_static_uplinks" in management
+        self.cleanup_orphan_sidecar_uplinks(section_present=sidecar_section_present)
         self.cleanup_orphan_mptcp_underlays()
 
     def apply_management_state(self, management: Any, schedule_updates: bool = True) -> None:
         if not isinstance(management, dict):
             return
         self.apply_config_patch(management.get("agent_config_json"))
-        self.apply_static_sidecar_uplinks(management.get("sidecar_static_uplinks", []))
+        # BUG-1: only treat the static-uplink feed as authoritative when the
+        # section was actually present in this management payload. A payload
+        # that simply omitted the key must NOT be read as "tear everything
+        # down" -- that would wipe live lanes whenever the panel/heartbeat
+        # response happens to leave the section out.
+        sidecar_section_present = "sidecar_static_uplinks" in management
+        self.apply_static_sidecar_uplinks(
+            management.get("sidecar_static_uplinks", []),
+            section_present=sidecar_section_present,
+        )
         explicit_request_token = str(management.get("agent_update_request_token", "") or "")
         auto_request_token = self.auto_update_request_token(management)
         if bool(self.config.get("disable_auto_update", False)):
@@ -2152,21 +2279,33 @@ class SlaveAgent:
             if not self.should_retry_update(update_state, update_request_token, now):
                 continue
 
-            update_state.update(
-                {
-                    "request_token": update_request_token,
-                    "status": "scheduled",
-                    "last_attempt_at": now,
-                    "last_error": "",
-                }
-            )
+            # BUG-5: failure_count is a per-token circuit-breaker counter. When a
+            # brand-new update_request_token arrives, the prior token's failures
+            # must NOT carry over -- otherwise a previously-tripped breaker would
+            # immediately suppress a healthy new release. Reset to 0 before we
+            # start tracking the new token.
+            tracked_request_token = str(update_state.get("request_token", "") or "")
+            scheduled_update: dict[str, Any] = {
+                "request_token": update_request_token,
+                "status": "scheduled",
+                "last_attempt_at": now,
+                "last_error": "",
+            }
+            if tracked_request_token != update_request_token:
+                scheduled_update["failure_count"] = 0
+            update_state.update(scheduled_update)
             self.save_update_state(update_state)
             try:
                 self.request_self_update(update_request_token)
             except Exception as exc:  # noqa: BLE001
+                try:
+                    failure_count = int(update_state.get("failure_count", 0) or 0)
+                except (TypeError, ValueError):
+                    failure_count = 0
                 update_state["status"] = "error"
                 update_state["last_error"] = str(exc)
                 update_state["last_failed_at"] = now
+                update_state["failure_count"] = failure_count + 1
                 self.save_update_state(update_state)
                 raise
             runtime_state["last_agent_update_request_token"] = update_request_token
@@ -2192,6 +2331,42 @@ class SlaveAgent:
     def save_sidecar_uplink_selector_state(self, service_name: str, payload: dict[str, Any]) -> None:
         self.write_json(self.sidecar_uplink_selector_state_path(service_name), payload)
 
+    def node_health_events_path(self) -> Path:
+        return self.state_dir / "node_health_events.json"
+
+    def record_health_event(self, kind: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Record a node-health/alarm event so sustained degradation is visible
+        outside per-selector state JSON. Best-effort and never raises -- a
+        health channel must not be able to crash the reconcile loop.
+        """
+        event: dict[str, Any] = {
+            "kind": str(kind or ""),
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time())),
+            "epoch": int(time.time()),
+        }
+        if isinstance(detail, dict):
+            for key, value in detail.items():
+                event[str(key)] = value
+        try:
+            path = self.node_health_events_path()
+            existing: list[Any] = []
+            if path.exists():
+                try:
+                    loaded = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        loaded = loaded.get("events", [])
+                    if isinstance(loaded, list):
+                        existing = loaded
+                except (OSError, json.JSONDecodeError):
+                    existing = []
+            existing.append(event)
+            # Keep the channel bounded so it never grows without limit.
+            existing = existing[-200:]
+            self.write_json(path, {"events": existing})
+        except OSError:
+            pass
+        return event
+
     def load_static_sidecar_uplink_state(self) -> dict[str, Any]:
         path = self.static_sidecar_uplink_state_path()
         if not path.exists():
@@ -2205,7 +2380,15 @@ class SlaveAgent:
     def save_static_sidecar_uplink_state(self, payload: dict[str, Any]) -> None:
         self.write_json(self.static_sidecar_uplink_state_path(), payload)
 
-    def apply_static_sidecar_uplinks(self, raw_uplinks: Any) -> None:
+    def apply_static_sidecar_uplinks(self, raw_uplinks: Any, section_present: bool = True) -> None:
+        # BUG-1: when the uplink section was absent this cycle (or the fetch
+        # failed and a defaulted-empty value was passed), do NOT reconcile and
+        # do NOT overwrite the saved authoritative state with {} -- that would
+        # tear down live lanes merely because the section was omitted. An
+        # explicitly-present empty list, by contrast, means "teardown intended"
+        # and is handled as authoritative below.
+        if not section_present:
+            return
         if not isinstance(raw_uplinks, list):
             return
         active: set[str] = set()
@@ -2233,8 +2416,41 @@ class SlaveAgent:
             interface_name = str((info if isinstance(info, dict) else {}).get("interface_name", iface) or "").strip()[:15]
             if interface_name != "" and interface_name not in active:
                 self.remove_sidecar_uplink(interface_name, {"interface_name": interface_name})
+        self.prune_sidecar_uplink_selectors(active)
         if active or previous_interfaces:
             self.save_static_sidecar_uplink_state(next_state)
+
+    def prune_sidecar_uplink_selectors(self, active_interfaces: set[str]) -> None:
+        selector_dir = self.state_dir / "sidecar-uplink-selectors"
+        if not selector_dir.exists():
+            return
+        for config_path in selector_dir.glob("*.config.json"):
+            service_name = config_path.name.removesuffix(".config.json")
+            try:
+                selector = json.loads(config_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(selector, dict):
+                continue
+            candidates = selector.get("candidates", [])
+            if not isinstance(candidates, list):
+                candidates = []
+            pruned = [
+                candidate
+                for candidate in candidates
+                if isinstance(candidate, dict)
+                and str(candidate.get("interface_name", "") or candidate.get("ping_interface", "") or "").strip()[:15] in active_interfaces
+            ]
+            if len(pruned) == len(candidates):
+                continue
+            if not pruned:
+                logging.warning("removing sidecar selector %s because all candidate interfaces are stale", service_name)
+                self.remove_sidecar_uplink_selector(service_name)
+                continue
+            updated = dict(selector)
+            updated["candidates"] = pruned
+            logging.warning("pruned stale sidecar selector candidates for %s: %s -> %s", service_name, len(candidates), len(pruned))
+            self.ensure_sidecar_uplink_selector(service_name, updated)
 
     def watch_static_sidecar_uplink(self, uplink: dict[str, Any]) -> None:
         watchdog = uplink.get("watchdog", {})
@@ -2272,6 +2488,15 @@ class SlaveAgent:
             return
         if now - self._static_uplink_restart_at.get(interface_name, 0.0) < cooldown:
             return
+        # C.7a: consult the shared restart ledger circuit breaker before
+        # restarting. If too many restarts have occurred within the window the
+        # breaker is open -- suppress the restart and surface a health event.
+        if not restart_circuit_breaker_allow(interface_name, "static-uplink-watch", now=now):
+            self.record_health_event(
+                "restart_breaker_open",
+                {"interface_name": interface_name, "source": "static-uplink-watch"},
+            )
+            return
         self._static_uplink_restart_at[interface_name] = now
         if shutil.which("systemctl"):
             run_command(f"systemctl restart wg-quick@{interface_name}.service", check=False)
@@ -2300,6 +2525,22 @@ class SlaveAgent:
         ping_address = str(candidate.get("ping_address", "") or candidate.get("peer_address", "") or candidate.get("sidecar_address", "") or "").strip()
         sidecar_address = str(candidate.get("sidecar_address", "") or ping_address).strip()
         sidecar_port = int(candidate.get("sidecar_port", 0) or selector.get("sidecar_service_port", 0) or 0)
+        if not self.sidecar_selector_candidate_interface_ready(interface_name):
+            return {
+                "lane": lane,
+                "interface_name": interface_name,
+                "ping_address": ping_address,
+                "sidecar_address": sidecar_address,
+                "sidecar_port": sidecar_port,
+                "healthy": False,
+                "latency_ms": None,
+                "mdev_ms": None,
+                "loss_percent": 100.0,
+                "score": 999999.0,
+                "probed_at": time.time(),
+                "error": "interface_missing",
+                "restartable": False,
+            }
         ping_count = max(1, min(10, int(selector.get("ping_count", 3) or 3)))
         ping_timeout = max(1, min(5, int(selector.get("ping_timeout_seconds", 1) or 1)))
         result = run_command(
@@ -2329,15 +2570,39 @@ class SlaveAgent:
             "loss_percent": float(parsed["loss_percent"]),
             "score": round(score, 3),
             "probed_at": time.time(),
+            "restartable": True,
         }
 
-    def restart_sidecar_selector_lane(self, lane_state: dict[str, Any]) -> None:
+    def sidecar_selector_candidate_interface_ready(self, interface_name: str) -> bool:
+        interface_name = str(interface_name or "").strip()[:15]
+        if interface_name == "":
+            return False
+        if not self.wireguard_interface_path(interface_name).exists():
+            return False
+        if not shutil.which("wg"):
+            return False
+        result = run_command("wg show interfaces", check=False)
+        if int(getattr(result, "returncode", 0) or 0) != 0:
+            return False
+        interfaces = set(str(getattr(result, "stdout", "") or "").split())
+        return interface_name in interfaces
+
+    def restart_sidecar_selector_lane(self, lane_state: dict[str, Any], now: float | None = None) -> bool:
         interface_name = str(lane_state.get("interface_name", "") or "").strip()[:15]
         if interface_name == "":
-            return
+            return False
+        # C.7a: consult the shared restart ledger circuit breaker first. If the
+        # breaker is open, suppress the restart and record an alarm/health event.
+        if not restart_circuit_breaker_allow(interface_name, "selector-lane", now=now):
+            self.record_health_event(
+                "restart_breaker_open",
+                {"interface_name": interface_name, "source": "selector-lane"},
+            )
+            return False
         if shutil.which("systemctl"):
             run_command(f"systemctl restart leikwan-wgcf-{interface_name}.service", check=False)
             run_command(f"systemctl restart wg-quick@{interface_name}.service", check=False)
+        return True
 
     def evaluate_sidecar_uplink_selector(self, selector: dict[str, Any], previous_state: dict[str, Any] | None = None) -> dict[str, Any]:
         previous = previous_state if isinstance(previous_state, dict) else {}
@@ -2358,6 +2623,12 @@ class SlaveAgent:
         best_sample = healthy[0] if healthy else None
         selected = active_sample if isinstance(active_sample, dict) else best_sample
         reason = "keep_active"
+        # C.7c: a single-lane forward is monitor-only. The panel marks it with
+        # single_lane_monitor=true (and it is also implied by a single
+        # candidate). In monitor mode we still PROBE and record latency/loss,
+        # but we never switch lanes or issue a restart -- there is nothing to
+        # fail over to, so flapping a single lane only hurts.
+        monitor_only = bool(selector.get("single_lane_monitor", False)) or len(samples) <= 1
         switch_improvement = float(selector.get("switch_improvement_ms", 3) or 3)
         max_active_avg = float(selector.get("max_active_avg_ms", 0) or 0)
         active_bad = (
@@ -2365,7 +2636,7 @@ class SlaveAgent:
             or not bool(active_sample.get("healthy", False))
             or (max_active_avg > 0 and active_sample.get("latency_ms") is not None and float(active_sample.get("latency_ms", 0) or 0) > max_active_avg)
         )
-        if best_sample is not None:
+        if not monitor_only and best_sample is not None:
             if active_sample is None or not bool(active_sample.get("healthy", False)):
                 selected = best_sample
                 reason = "active_unhealthy"
@@ -2375,8 +2646,8 @@ class SlaveAgent:
                 if active_bad or (active_score - best_score) >= switch_improvement:
                     selected = best_sample
                     reason = "latency_switch"
-        if selected is None and samples:
-            selected = samples[0]
+        if best_sample is None and samples:
+            selected = active_sample if isinstance(active_sample, dict) else samples[0]
             reason = "all_unhealthy"
 
         now = time.time()
@@ -2390,20 +2661,30 @@ class SlaveAgent:
             if lane == "":
                 continue
             degraded = not bool(sample.get("healthy", False))
+            if not bool(sample.get("restartable", True)):
+                continue
             if sample.get("latency_ms") is not None and max_active_avg > 0 and float(sample.get("latency_ms", 0) or 0) > max_active_avg:
                 degraded = True
             if not degraded:
                 continue
+            # C.7c: monitor-only / single-lane forwards never restart.
+            if monitor_only:
+                continue
+            if reason == "all_unhealthy" or len(samples) <= 1:
+                continue
             if now - float(last_restart_at.get(lane, 0.0) or 0.0) < restart_cooldown:
                 continue
-            self.restart_sidecar_selector_lane(sample)
+            # C.7a: restart only if the shared breaker allows it. A suppressed
+            # restart does not advance the cooldown or count as a restarted lane.
+            if not self.restart_sidecar_selector_lane(sample, now=now):
+                continue
             last_restart_at[lane] = now
             degraded_lanes.append(lane)
 
         selected = selected or {}
         active_target_host = str(selected.get("sidecar_address", "") or selected.get("ping_address", "") or "").strip()
         active_target_port = int(selected.get("sidecar_port", 0) or selector.get("sidecar_service_port", 0) or 0)
-        return {
+        state: dict[str, Any] = {
             "active_lane": str(selected.get("lane", "") or ""),
             "active_interface": str(selected.get("interface_name", "") or ""),
             "active_target_host": active_target_host,
@@ -2414,6 +2695,37 @@ class SlaveAgent:
             "restarted_lanes": degraded_lanes,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         }
+        # C.7g: when every lane is unhealthy, the state write alone is easy to
+        # miss. Log a WARN and stamp a health-event marker so sustained
+        # all-unhealthy is visible outside the per-selector state JSON. We keep
+        # distinguishing interface_missing from ping-failed in the per-lane
+        # samples (probe_sidecar_selector_candidate sets error=interface_missing
+        # only when the interface is absent).
+        if reason == "all_unhealthy" and samples:
+            service_name = str(selector.get("service_name", "") or "")
+            interface_missing = sum(1 for s in samples if str(s.get("error", "") or "") == "interface_missing")
+            ping_failed = sum(
+                1 for s in samples
+                if not bool(s.get("healthy", False)) and str(s.get("error", "") or "") != "interface_missing"
+            )
+            logging.warning(
+                "sidecar selector %s all lanes unhealthy: %s lane(s), interface_missing=%s ping_failed=%s",
+                service_name or "(unnamed)",
+                len(samples),
+                interface_missing,
+                ping_failed,
+            )
+            health_event = {
+                "kind": "all_unhealthy",
+                "service_name": service_name,
+                "lane_count": len(samples),
+                "interface_missing": interface_missing,
+                "ping_failed": ping_failed,
+                "at": state["updated_at"],
+            }
+            state["health_event"] = health_event
+            self.record_health_event("all_unhealthy", health_event)
+        return state
 
     def render_sidecar_uplink_selector_unit(self, service_name: str, selector: dict[str, Any]) -> str:
         agent_entrypoint = shell_arg(str(Path(__file__).resolve()))
@@ -2427,8 +2739,10 @@ After=network.target
 # AgentVersion={AGENT_VERSION}
 Type=simple
 ExecStart=/usr/bin/python3 {agent_entrypoint} --config {config_path} sidecar-selector --service-name {shell_arg(service_name)} --selector-file {selector_file}
-Restart=always
-RestartSec=3
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
 WorkingDirectory={self.state_dir}
 LimitNOFILE=1048576
 
@@ -2694,6 +3008,22 @@ WantedBy=multi-user.target
         tracked_request_token = str(update_state.get("request_token", "") or "")
         tracked_status = str(update_state.get("status", "") or "")
         last_attempt_at = self.state_timestamp(update_state.get("last_attempt_at"))
+        last_error = str(update_state.get("last_error", "") or "")
+        try:
+            failure_count = int(update_state.get("failure_count", 0) or 0)
+        except (TypeError, ValueError):
+            failure_count = 0
+        max_failures = max(1, int(self.config.get("update_max_failures", 3) or 3))
+
+        if tracked_request_token == request_token and tracked_status == "error" and last_error != "" and failure_count >= max_failures:
+            logging.error(
+                "slave self-update circuit breaker open for token=%s failures=%s/%s last_error=%s",
+                request_token,
+                failure_count,
+                max_failures,
+                last_error,
+            )
+            return False
 
         if tracked_status == "running" and last_attempt_at > 0 and (now - last_attempt_at) < UPDATE_STALE_SECONDS:
             return False
@@ -2706,6 +3036,10 @@ WantedBy=multi-user.target
 
         return True
 
+    def reset_failed_update_units(self) -> None:
+        if shutil.which("systemctl"):
+            run_command("systemctl reset-failed 'leikwan-slave-update-*'", check=False)
+
     def request_self_update(self, request_token: str) -> None:
         helper_path = Path("/usr/local/bin/leikwan-slave-update")
         if not helper_path.exists():
@@ -2713,12 +3047,14 @@ WantedBy=multi-user.target
         state_path = self.update_state_path()
 
         if shutil.which("systemd-run"):
+            self.reset_failed_update_units()
             unit_name = f"leikwan-slave-update-{int(time.time())}-{request_token[:8]}"
             subprocess.run(
                 [
                     "systemd-run",
                     "--quiet",
                     "--no-block",
+                    "--collect",
                     "--unit",
                     unit_name,
                     "/usr/bin/env",
@@ -4606,6 +4942,68 @@ WantedBy=multi-user.target
                 run_command(f"systemctl stop {unit_name}", check=False)
                 run_command(f"systemctl disable {unit_name}", check=False)
                 run_command(f"systemctl reset-failed {unit_name}", check=False)
+
+    def cleanup_orphan_sidecar_uplinks(self, section_present: bool = True) -> None:
+        # BUG-1: the orphan sweep derives its "active set" from saved state and
+        # tears down any live lws* interface/unit not in that set. It must only
+        # run when this cycle actually carried an authoritative static-uplink
+        # section. If the section was absent (or the management fetch failed),
+        # skip the sweep entirely -- otherwise a transiently-omitted section
+        # would orphan-wipe every live lane.
+        if not section_present:
+            return
+        previous = self.load_static_sidecar_uplink_state()
+        previous_interfaces = previous.get("interfaces", {}) if isinstance(previous.get("interfaces", {}), dict) else {}
+        active_interfaces = {
+            str((info if isinstance(info, dict) else {}).get("interface_name", iface) or "").strip()[:15]
+            for iface, info in previous_interfaces.items()
+        }
+        active_interfaces = {iface for iface in active_interfaces if iface}
+        self.prune_sidecar_uplink_selectors(active_interfaces)
+
+        if not shutil.which("wg"):
+            return
+
+        result = run_command("wg show interfaces", check=False)
+        for iface in str(getattr(result, "stdout", "") or "").strip().split():
+            if not iface.startswith("lws"):
+                continue
+            if iface in active_interfaces:
+                continue
+            logging.info("removing orphan static sidecar uplink interface: %s", iface)
+            self.remove_sidecar_uplink(iface, {"interface_name": iface})
+
+        if shutil.which("systemctl"):
+            unit_result = run_command(
+                "systemctl list-units 'wg-quick@lws*' 'leikwan-wgcf-lws*' '*-sidecar-selector.service' --type=service --all --no-legend --no-pager",
+                check=False,
+            )
+            for line in str(getattr(unit_result, "stdout", "") or "").splitlines():
+                unit_name = line.strip().split()[0] if line.strip() else ""
+                if unit_name == "":
+                    continue
+                wg_match = re.match(r"^wg-quick@(lws[^.]+)\.service$", unit_name)
+                cf_match = re.match(r"^leikwan-wgcf-(lws[^.]+)\.service$", unit_name)
+                selector_match = re.match(r"^(.+)-sidecar-selector\.service$", unit_name)
+                if wg_match is not None:
+                    iface = wg_match.group(1)
+                    if iface not in active_interfaces:
+                        run_command(f"systemctl stop {unit_name}", check=False)
+                        run_command(f"systemctl disable {unit_name}", check=False)
+                        run_command(f"systemctl reset-failed {unit_name}", check=False)
+                elif cf_match is not None:
+                    iface = cf_match.group(1)
+                    if iface not in active_interfaces:
+                        run_command(f"systemctl stop {unit_name}", check=False)
+                        run_command(f"systemctl disable {unit_name}", check=False)
+                        run_command(f"systemctl reset-failed {unit_name}", check=False)
+                elif selector_match is not None:
+                    service_name = selector_match.group(1)
+                    state_path = self.sidecar_uplink_selector_config_path(service_name)
+                    if not state_path.exists():
+                        run_command(f"systemctl stop {unit_name}", check=False)
+                        run_command(f"systemctl disable {unit_name}", check=False)
+                        run_command(f"systemctl reset-failed {unit_name}", check=False)
 
     def ensure_uot_server_service(self, interface_name: str, listen_tcp_port: int, target_udp_port: int) -> None:
         if listen_tcp_port <= 0 or target_udp_port <= 0:

@@ -145,6 +145,33 @@ final class NodeController extends BaseController
         $mergedCapabilities = $this->mergeCapabilityConfig($existingAgentConfig, $body);
         $supportsUdp = $this->boolInput($body, 'supports_udp', (bool) ($node['supports_udp'] ?? true));
         $supportsFiltering = $this->boolInput($body, 'supports_filtering', (bool) ($node['supports_filtering'] ?? false));
+        // Regression sentinel: node_heartbeat_republish_gate
+        // Node heartbeats are frequent; only republish endpoint payloads when
+        // node identity/capability inputs change, plus a bounded force interval
+        // that goes through republishActiveEndpointsForNode and therefore bypasses
+        // reconcileForwardEndpoints' active-endpoint skip.
+        $republishCapabilityState = $mergedCapabilities;
+        unset($republishCapabilityState['last_endpoint_republish_fingerprint'], $republishCapabilityState['last_endpoint_republish_at']);
+        $existingRepublishFingerprint = trim((string) ($existingAgentConfig['last_endpoint_republish_fingerprint'] ?? ''));
+        $existingRepublishAt = (int) ($existingAgentConfig['last_endpoint_republish_at'] ?? 0);
+        $republishFingerprint = sha1(json_encode([
+            'group_id' => (int) ($groupId ?? 0),
+            'status' => $status,
+            'agent_version' => $agentVersion,
+            'public_ip' => $publicIp,
+            'private_ip' => $privateIp,
+            'machine_id' => $machineId !== '' ? $machineId : (($node['machine_id'] ?? null) !== '' ? $node['machine_id'] : null),
+            'supports_udp' => (int) $supportsUdp,
+            'supports_filtering' => (int) $supportsFiltering,
+            'capabilities' => $republishCapabilityState,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '');
+        $republishForceIntervalSeconds = max(60, (int) ($this->config->getInt('NODE_REPUBLISH_FORCE_INTERVAL_SECONDS', 600) ?? 600));
+        $now = time();
+        $shouldRepublishNodeEndpoints = ($republishFingerprint !== $existingRepublishFingerprint)
+            || ($existingRepublishAt <= 0)
+            || (($now - $existingRepublishAt) >= $republishForceIntervalSeconds);
+        $mergedCapabilities['last_endpoint_republish_fingerprint'] = $republishFingerprint;
+        $mergedCapabilities['last_endpoint_republish_at'] = $shouldRepublishNodeEndpoints ? $now : $existingRepublishAt;
 
         $this->db->execute(
             'UPDATE nodes
@@ -201,7 +228,7 @@ final class NodeController extends BaseController
             $this->provisioning->recordDonationSelfCheck((int) $node['id'], $body);
         }
         $this->provisioning->applyForwardChainRemediationSignals((int) $node['id'], $mergedCapabilities);
-        if (!array_key_exists('forward_chain_remediation', $body) || !is_array($body['forward_chain_remediation'])) {
+        if ($shouldRepublishNodeEndpoints && (!array_key_exists('forward_chain_remediation', $body) || !is_array($body['forward_chain_remediation']))) {
             $this->provisioning->republishActiveEndpointsForNode((int) $node['id']);
         }
 
