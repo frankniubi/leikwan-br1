@@ -12,9 +12,15 @@ private const val TAG = "ProcessRunner"
 open class ProcessRunner {
     private val pools = ConcurrentHashMap<Long, GuardedProcessPool>()
 
-    open fun start(forwardId: Long, runtimeContext: RuntimeContext) {
+    open fun start(
+        forwardId: Long,
+        runtimeContext: RuntimeContext,
+        cleanupStale: Boolean = true,
+    ) {
         stopForward(forwardId)
-        AndroidRuntimeJanitor.cleanupStaleRuntimeProcesses()
+        if (cleanupStale) {
+            AndroidRuntimeJanitor.cleanupStaleRuntimeProcesses()
+        }
         val fatalError = AtomicReference<IOException?>(null)
         val pool = GuardedProcessPool(
             onFatal = { error -> fatalError.compareAndSet(null, error) },

@@ -198,7 +198,7 @@ class TunnelOrchestrator internal constructor(
         forward: ForwardContract,
         nodeIds: List<Long>,
         binaries: RuntimeBinaryPaths,
-    ): Map<Long, NodeLeg> = nodeIds.associateWith { nodeId ->
+    ): Map<Long, NodeLeg> = nodeIds.mapIndexed { index, nodeId ->
         val legForward = forward.withListenPort(listenPortForNode(forward.listenPort, nodeId))
         val legRuntime = buildRuntimePlan(
             forward = legForward,
@@ -206,8 +206,8 @@ class TunnelOrchestrator internal constructor(
             portSalt = portSaltForNode(nodeId),
         )
         val processKey = NodeLeg.processKey(forward.forwardId, nodeId)
-        processRunner.start(processKey, legRuntime)
-        NodeLeg(
+        processRunner.start(processKey, legRuntime, cleanupStale = index == 0)
+        nodeId to NodeLeg(
             nodeId = nodeId,
             forwardId = forward.forwardId,
             processKey = processKey,
@@ -217,7 +217,7 @@ class TunnelOrchestrator internal constructor(
             processPlans = legRuntime.processPlans,
             bypassHosts = legRuntime.bypassHosts,
         )
-    }
+    }.toMap()
 
     private fun stopRuntime(runtimeContext: RuntimeContext?) {
         runtimeContext ?: return
