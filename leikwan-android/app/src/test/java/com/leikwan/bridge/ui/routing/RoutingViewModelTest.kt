@@ -79,7 +79,7 @@ class RoutingViewModelTest {
     fun `preset categories come from the catalog`() = runTest(dispatcher) {
         val vm = newViewModel()
         advanceUntilIdle()
-        assertEquals(listOf("video", "ai"), vm.state.value.presetCategories)
+        assertTrue(vm.state.value.presetCategories.containsAll(listOf("google", "youtube", "ai", "china_direct")))
     }
 
     @Test
@@ -127,6 +127,34 @@ class RoutingViewModelTest {
 
         assertEquals(UserTrafficOutcome.DIRECT, vm.state.value.globalDefault)
         assertEquals(UserTrafficOutcome.DIRECT, prefs.routingDefaultOutcome)
+    }
+
+    @Test
+    fun `setSelectorEnabled writes prefs and state`() = runTest(dispatcher) {
+        val vm = newViewModel()
+        advanceUntilIdle()
+        assertFalse(vm.state.value.selectorEnabled)
+
+        vm.setSelectorEnabled(true)
+        advanceUntilIdle()
+
+        assertTrue(vm.state.value.selectorEnabled)
+        assertTrue(prefs.routingSelectorEnabled)
+    }
+
+    @Test
+    fun `country search suggestions resolve selected country to alpha2 code`() = runTest(dispatcher) {
+        val vm = newViewModel()
+        advanceUntilIdle()
+
+        vm.updateCountryQuery("japan")
+        advanceUntilIdle()
+        assertEquals("JP", vm.state.value.countrySuggestions.first().code)
+
+        vm.selectCountrySuggestion(vm.state.value.countrySuggestions.first())
+        advanceUntilIdle()
+
+        assertEquals("JP", vm.state.value.countryQuery)
     }
 
     @Test

@@ -32,9 +32,17 @@ class PrefsRoutingStateTest {
     }
 
     @Test
-    fun `logout preserves routing metadata but clears auth fields`() {
+    fun `routing selector enabled defaults false and round-trips`() {
+        assertEquals(false, prefs.routingSelectorEnabled)
+        prefs.routingSelectorEnabled = true
+        assertEquals(true, prefs.routingSelectorEnabled)
+    }
+
+    @Test
+    fun `logout preserves routing metadata but clears auth fields and selector switch`() {
         prefs.token = "token-123"
         prefs.routingDefaultOutcome = UserTrafficOutcome.DIRECT
+        prefs.routingSelectorEnabled = true
         prefs.activeRulePackCountryVersion = "country-2026-05-30a"
         prefs.activeRulePackCategoryVersion = "category-2026-05-30a"
         prefs.activeRulePackSourceLabel = "panel://routing/rule-packs"
@@ -47,6 +55,7 @@ class PrefsRoutingStateTest {
 
         assertNull(prefs.token)
         assertEquals(UserTrafficOutcome.DIRECT, prefs.routingDefaultOutcome)
+        assertEquals(false, prefs.routingSelectorEnabled)
         assertEquals("country-2026-05-30a", prefs.activeRulePackCountryVersion)
         assertEquals("category-2026-05-30a", prefs.activeRulePackCategoryVersion)
         assertEquals("panel://routing/rule-packs", prefs.activeRulePackSourceLabel)

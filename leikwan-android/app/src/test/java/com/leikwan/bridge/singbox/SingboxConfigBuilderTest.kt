@@ -1,6 +1,7 @@
 package com.leikwan.bridge.singbox
 
 import com.google.gson.JsonParser
+import com.leikwan.bridge.data.routing.RulePackManifest
 import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.routing.RoutingCategoryCatalog
 import com.leikwan.bridge.routing.RoutingPolicyEngine
@@ -628,6 +629,43 @@ class SingboxConfigBuilderTest {
     }
 
     @Test
+    fun `protected lan direct rule survives when bypassLan toggle is off`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings().copy(bypassLan = false))
+        val snapshot = engine().compile(
+            UserTrafficOutcome.TUNNEL,
+            2L,
+            emptyList(),
+            listOf(
+                RoutingRule(
+                    "video",
+                    RoutingRuleKind.WEBSITE_CATEGORY,
+                    "video",
+                    UserTrafficOutcome.TUNNEL,
+                    targetNodeId = 2L,
+                ),
+            ),
+            emptyList(),
+            0L,
+        )
+        val config = JsonParser.parseString(
+            builder.build(listOf(ssNode(2)), null, snapshot, ProxyConnectionMode.DIRECT).configJson
+        ).asJsonObject
+        val rules = config.getAsJsonObject("route").getAsJsonArray("rules")
+
+        val lanIdx = rules.indexOfFirst {
+            val obj = it.asJsonObject
+            obj.has("ip_cidr") &&
+                obj.getAsJsonArray("ip_cidr").any { cidr -> cidr.asString == "192.168.0.0/16" } &&
+                obj.get("outbound")?.asString == "direct"
+        }
+        val nodeRuleIdx = rules.indexOfFirst { it.asJsonObject.get("outbound")?.asString == "proxy-2" }
+
+        assertTrue("protected LAN bypass present", lanIdx >= 0)
+        assertTrue("node rule present", nodeRuleIdx >= 0)
+        assertTrue("protected LAN bypass precedes node rule", lanIdx < nodeRuleIdx)
+    }
+
+    @Test
     fun `services mode rewrites each node outbound to its own relay leg port`() {
         val builder = SingboxConfigBuilder(settings = baseSettings())
         val runtime = RuntimeContext(
@@ -677,6 +715,52 @@ class SingboxConfigBuilderTest {
         assertEquals(12001, node1.get("server_port").asInt)
         assertEquals("127.0.0.1", node2.get("server").asString)
         assertEquals(12002, node2.get("server_port").asInt)
+    }
+
+    @Test
+    fun `bypassChina uses active rule pack refs when provided`() {
+        val manifest = RulePackManifest.parse(
+            """
+                {
+                  "version": "2026.05.31",
+                  "geosite": [
+                    {
+                      "key": "custom",
+                      "labelEn": "Custom",
+                      "labelZh": "自定义",
+                      "defaultDirect": false,
+                      "tags": ["geosite-custom"]
+                    }
+                  ],
+                  "geoip": {
+                    "version": "2026.05.31",
+                    "cnTag": "geoip-cn",
+                    "refs": [
+                      {"tag": "geoip-cn", "url": "https://cdn.example/geoip-cn.srs"},
+                      {"tag": "geosite-cn", "url": "https://cdn.example/geosite-cn.srs"}
+                    ]
+                  }
+                }
+            """.trimIndent()
+        )
+        val builder = SingboxConfigBuilder(
+            settings = baseSettings().copy(bypassChina = true),
+            rulePackManifest = manifest,
+        )
+
+        val route = JsonParser.parseString(
+            builder.build(listOf(ssNode(1)), null, null, ProxyConnectionMode.DIRECT).configJson
+        ).asJsonObject.getAsJsonObject("route")
+
+        val refs = route.getAsJsonArray("rule_set").map { it.asJsonObject }
+        assertEquals(
+            "https://cdn.example/geoip-cn.srs",
+            refs.first { it.get("tag").asString == "geoip-cn" }.get("url").asString,
+        )
+        assertEquals(
+            "https://cdn.example/geosite-cn.srs",
+            refs.first { it.get("tag").asString == "geosite-cn" }.get("url").asString,
+        )
     }
 
     @Test

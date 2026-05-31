@@ -30,8 +30,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.leikwan.bridge.R
 import com.leikwan.bridge.api.ClientInfo
 import com.leikwan.bridge.ui.shared.RoutingDiagnosticsCard
 
@@ -50,6 +54,8 @@ fun SettingsScreen(
         onUpdateBypassLan = viewModel::updateBypassLan,
         onUpdateBypassChina = viewModel::updateBypassChina,
         onUpdateCustomBypass = viewModel::updateCustomBypass,
+        onUpdateRules = viewModel::updateRules,
+        onRollbackRules = viewModel::rollbackRules,
         onLogout = { viewModel.logout(); onLogout() },
     )
 }
@@ -65,6 +71,8 @@ internal fun SettingsScreenContent(
     onUpdateBypassLan: (Boolean) -> Unit,
     onUpdateBypassChina: (Boolean) -> Unit,
     onUpdateCustomBypass: (String) -> Unit,
+    onUpdateRules: () -> Unit,
+    onRollbackRules: () -> Unit,
     onLogout: () -> Unit,
 ) {
     Column(
@@ -135,6 +143,30 @@ internal fun SettingsScreenContent(
             HorizontalDivider()
             Spacer(Modifier.height(16.dp))
         }
+
+        // DNS
+        Text(stringResource(R.string.language), style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags("zh-CN"))
+                },
+            ) {
+                Text(stringResource(R.string.language_zh))
+            }
+            OutlinedButton(
+                onClick = {
+                    AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags("en"))
+                },
+            ) {
+                Text(stringResource(R.string.language_en))
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
 
         // DNS
         Text("DNS", style = MaterialTheme.typography.titleMedium)
@@ -215,6 +247,37 @@ internal fun SettingsScreenContent(
             minLines = 3,
             maxLines = 6,
         )
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
+
+        Text("Routing rule packs", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Active: ${state.rulePackLabel}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (state.rulePackStale) {
+            Text("Rule pack is stale", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+        state.rulePackMessage?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onUpdateRules, enabled = !state.isUpdatingRules) {
+                if (state.isUpdatingRules) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Update rules")
+                }
+            }
+            OutlinedButton(onClick = onRollbackRules, enabled = !state.isUpdatingRules) {
+                Text("Rollback")
+            }
+        }
 
         Spacer(Modifier.height(24.dp))
         HorizontalDivider()

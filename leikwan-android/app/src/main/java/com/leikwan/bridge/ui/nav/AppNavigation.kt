@@ -6,6 +6,8 @@ import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -19,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -30,6 +33,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.ui.MainActivity
 import com.leikwan.bridge.ui.proxies.ProxiesScreen
 import com.leikwan.bridge.ui.proxies.ProxiesViewModel
@@ -56,6 +60,16 @@ fun MainScreen(onLogout: () -> Unit = {}) {
     LaunchedEffect(activity) {
         activity?.pendingImport?.collect { text ->
             proxiesViewModel.importAny(text)
+        }
+    }
+
+    LaunchedEffect(activity?.navigateToRoutingRequest) {
+        if ((activity?.navigateToRoutingRequest ?: 0) > 0) {
+            navController.navigate(Screen.Routing.route) {
+                popUpTo(navController.graph.startDestinationId) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
         }
     }
 
@@ -101,12 +115,22 @@ fun MainScreen(onLogout: () -> Unit = {}) {
 
 @Composable
 private fun BottomBar(navController: NavHostController) {
+    val context = LocalContext.current
+    val routingBadge by remember { mutableStateOf(Prefs.get(context).routingSelectorEnabled) }
     NavigationBar {
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentDestination = navBackStackEntry?.destination
         Screen.entries.forEach { screen ->
             NavigationBarItem(
-                icon = { Icon(screen.icon, contentDescription = screen.label) },
+                icon = {
+                    if (screen == Screen.Routing && routingBadge) {
+                        BadgedBox(badge = { Badge() }) {
+                            Icon(screen.icon, contentDescription = screen.label)
+                        }
+                    } else {
+                        Icon(screen.icon, contentDescription = screen.label)
+                    }
+                },
                 label = { Text(screen.label) },
                 selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
                 onClick = {
