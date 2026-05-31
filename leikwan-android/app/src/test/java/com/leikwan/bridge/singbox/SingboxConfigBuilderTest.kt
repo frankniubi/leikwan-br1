@@ -216,6 +216,22 @@ class SingboxConfigBuilderTest {
     }
 
     @Test
+    fun `tun inbound enables endpoint independent nat for full cone udp`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(ssNode(1)),
+                runtimeContext = null,
+                connectionMode = ProxyConnectionMode.DIRECT,
+            ).configJson
+        ).asJsonObject
+        val tunInbound = config.getAsJsonArray("inbounds").first().asJsonObject
+
+        assertTrue(tunInbound.get("endpoint_independent_nat").asBoolean)
+    }
+
+    @Test
     fun `builder keeps original proxy address in direct mode`() {
         val builder = SingboxConfigBuilder(
             settings = SingboxSettings(
