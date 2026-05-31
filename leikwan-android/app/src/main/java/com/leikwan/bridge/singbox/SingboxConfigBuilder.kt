@@ -357,9 +357,12 @@ class SingboxConfigBuilder(
         //     rule_set(s) to "direct" (DIRECT) or the proxy tag (TUNNEL, sentinel swapped here).
         if (snapshot != null) {
             routingEngine.compileRouteRules(snapshot).forEach { compiled ->
-                val outbound =
-                    if (compiled.outbound == RoutingPolicyEngine.PROXY_OUTBOUND_SENTINEL) finalProxyTag
-                    else compiled.outbound
+                val outbound = when {
+                    compiled.outbound == RoutingPolicyEngine.PROXY_OUTBOUND_SENTINEL -> finalProxyTag
+                    compiled.outbound.startsWith("<NODE:") ->
+                        "proxy-" + compiled.outbound.removePrefix("<NODE:").removeSuffix(">")
+                    else -> compiled.outbound
+                }
                 rules.add(JsonObject().apply {
                     add("rule_set", JsonArray().apply { compiled.ruleSetTags.forEach { add(it) } })
                     addProperty("outbound", outbound)
@@ -422,9 +425,10 @@ class SingboxConfigBuilder(
 
         route.add("rules", rules)
         // route.final follows the user-settable global default: TUNNEL -> proxy tag; DIRECT -> direct.
+        val defaultTunnelTag = snapshot?.globalDefaultNodeId?.let { "proxy-$it" } ?: finalProxyTag
         route.addProperty(
             "final",
-            if (snapshot?.globalDefaultOutcome == UserTrafficOutcome.DIRECT) "direct" else finalProxyTag,
+            if (snapshot?.globalDefaultOutcome == UserTrafficOutcome.DIRECT) "direct" else defaultTunnelTag,
         )
 
         // route.rule_set: China sets (if toggle) + user-rule remote sets, de-duplicated by tag.

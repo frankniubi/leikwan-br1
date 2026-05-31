@@ -531,6 +531,101 @@ class SingboxConfigBuilderTest {
         assertEquals(1, panelOccurrences)
     }
 
+    @Test
+    fun `category rule pinned to a node routes to that node tag`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+        val snapshot = engine().compile(
+            globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = 1L,
+            countryRules = emptyList(),
+            categoryRules = listOf(
+                RoutingRule(
+                    "video",
+                    RoutingRuleKind.WEBSITE_CATEGORY,
+                    "video",
+                    UserTrafficOutcome.TUNNEL,
+                    targetNodeId = 2L,
+                ),
+            ),
+            rulePackVersions = emptyList(),
+            compiledAtMs = 0L,
+        )
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(ssNode(1), ssNode(2)),
+                runtimeContext = null,
+                routingPolicySnapshot = snapshot,
+                connectionMode = ProxyConnectionMode.DIRECT,
+            ).configJson
+        ).asJsonObject
+
+        val outbounds = config.getAsJsonArray("outbounds").map { it.asJsonObject.get("tag").asString }
+        assertTrue(outbounds.contains("proxy-1"))
+        assertTrue(outbounds.contains("proxy-2"))
+
+        val routeRules = config.getAsJsonObject("route").getAsJsonArray("rules")
+        val videoRule = routeRules.first { r ->
+            r.asJsonObject.has("rule_set") &&
+                r.asJsonObject.getAsJsonArray("rule_set").any { it.asString == "geosite-youtube" }
+        }.asJsonObject
+        assertEquals("proxy-2", videoRule.get("outbound").asString)
+        assertEquals("proxy-1", config.getAsJsonObject("route").get("final").asString)
+    }
+
+    @Test
+    fun `slave and lan ips are direct and precede any node-targeted user rule`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+        val snapshot = engine().compile(
+            UserTrafficOutcome.TUNNEL,
+            2L,
+            emptyList(),
+            listOf(
+                RoutingRule(
+                    "video",
+                    RoutingRuleKind.WEBSITE_CATEGORY,
+                    "video",
+                    UserTrafficOutcome.TUNNEL,
+                    targetNodeId = 2L,
+                ),
+            ),
+            emptyList(),
+            0L,
+        )
+        val runtime = RuntimeContext(
+            forwardId = 1L,
+            mode = ForwardMode.BOND,
+            localListenPort = 12000,
+            localLegPorts = emptyList(),
+            processPlans = emptyList(),
+            bypassHosts = linkedSetOf("38.207.137.131"),
+        )
+        val config = JsonParser.parseString(
+            builder.build(listOf(ssNode(2)), runtime, snapshot, ProxyConnectionMode.DIRECT).configJson
+        ).asJsonObject
+        val rules = config.getAsJsonObject("route").getAsJsonArray("rules")
+
+        fun indexOfFirst(pred: (com.google.gson.JsonObject) -> Boolean) =
+            rules.indexOfFirst { pred(it.asJsonObject) }
+
+        val slaveIdx = indexOfFirst {
+            it.has("ip_cidr") &&
+                it.getAsJsonArray("ip_cidr").any { cidr -> cidr.asString.startsWith("38.207.137.131") } &&
+                it.get("outbound")?.asString == "direct"
+        }
+        val lanIdx = indexOfFirst {
+            it.has("ip_cidr") &&
+                it.getAsJsonArray("ip_cidr").any { cidr -> cidr.asString == "192.168.0.0/16" } &&
+                it.get("outbound")?.asString == "direct"
+        }
+        val nodeRuleIdx = indexOfFirst { it.get("outbound")?.asString == "proxy-2" }
+
+        assertTrue("slave bypass present", slaveIdx >= 0)
+        assertTrue("lan bypass present", lanIdx >= 0)
+        assertTrue("node rule present", nodeRuleIdx >= 0)
+        assertTrue("slave bypass precedes node rule", slaveIdx < nodeRuleIdx)
+        assertTrue("lan bypass precedes node rule", lanIdx < nodeRuleIdx)
+    }
+
     private fun engine() = RoutingPolicyEngine(
         SafePathRegistry.androidBaseline("https://panel.example.com", "v3-mirror.leikwanhost.com"),
         RoutingCategoryCatalog.default(),
