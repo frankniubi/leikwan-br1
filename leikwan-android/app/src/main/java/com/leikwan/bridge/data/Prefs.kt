@@ -93,6 +93,14 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
         set(v) = prefs.edit().putString("routing_default_outcome", v.name).apply()
 
     /**
+     * Master switch for user-authored country/category routing rules.
+     * Default OFF keeps the Proxies-selected node authoritative for new installs.
+     */
+    var routingSelectorEnabled: Boolean
+        get() = prefs.getBoolean("routing_selector_enabled", false)
+        set(v) = prefs.edit().putBoolean("routing_selector_enabled", v).apply()
+
+    /**
      * Optional node pin for the global TUNNEL default. `0`/null = auto/default selector.
      */
     var routingDefaultNodeId: Long?
@@ -144,6 +152,7 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
             .remove("selected_forward_id")
             .remove("selected_proxy_id")
             .remove("proxy_connection_mode")
+            .remove("routing_selector_enabled")
             .remove("routing_default_node_id")
             .apply()
     }

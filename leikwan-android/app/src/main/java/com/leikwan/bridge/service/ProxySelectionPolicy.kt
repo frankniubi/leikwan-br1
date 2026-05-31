@@ -25,17 +25,8 @@ object ProxySelectionPolicy {
         if (!selectedNode.enabled) {
             return ProxySelectionResult.Error("Selected proxy is disabled")
         }
-        if (
-            connectionMode == ProxyConnectionMode.SERVICES &&
-            selectedNode.forwardId != null &&
-            selectedNode.forwardId != forwardId
-        ) {
-            return ProxySelectionResult.Error("Selected proxy does not match the chosen service")
-        }
         val activeNodes = if (connectionMode == ProxyConnectionMode.SERVICES) {
-            proxyNodes.filter { node ->
-                node.enabled && (node.forwardId == null || node.forwardId == forwardId)
-            }.ifEmpty { listOf(selectedNode) }
+            proxyNodes.filter { node -> node.enabled }.ifEmpty { listOf(selectedNode) }
         } else {
             proxyNodes.filter { it.enabled }.ifEmpty { listOf(selectedNode) }
         }

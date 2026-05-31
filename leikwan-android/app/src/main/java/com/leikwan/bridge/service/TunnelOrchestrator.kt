@@ -8,6 +8,7 @@ import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.routing.RoutingExplainabilitySnapshot
 import com.leikwan.bridge.data.routing.RoutingExplainabilityStore
+import com.leikwan.bridge.data.routing.RulePackManifest
 import com.leikwan.bridge.data.routing.RulePackManager
 import com.leikwan.bridge.data.routing.UserRoutingRuleStore
 import com.leikwan.bridge.routing.RoutingCategoryCatalog
@@ -15,6 +16,7 @@ import com.leikwan.bridge.routing.RoutingPolicyEngine
 import com.leikwan.bridge.routing.RoutingPolicySnapshot
 import com.leikwan.bridge.routing.RoutingRule
 import com.leikwan.bridge.routing.SafePathRegistry
+import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.runtime.BondForwardRunner
 import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardMode
@@ -30,6 +32,11 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 private const val TAG = "TunnelOrchestrator"
+
+data class NodeLegsResult(
+    val legs: Map<Long, NodeLeg>,
+    val failedNodeIds: List<Long>,
+)
 
 class TunnelOrchestrator internal constructor(
     private val context: Context,
@@ -69,16 +76,35 @@ class TunnelOrchestrator internal constructor(
      * Build the authoritative [RoutingPolicySnapshot] for one startup/rebuild cycle from the
      * persisted user rules, active rule-pack versions, and the user-settable global default.
      */
-    internal suspend fun buildRoutingSnapshot(nowMs: Long): RoutingPolicySnapshot {
+    internal suspend fun buildRoutingSnapshot(
+        nowMs: Long,
+        unavailableNodeIds: Set<Long> = emptySet(),
+    ): RoutingPolicySnapshot {
         val enabledNodeIds = db.proxyNodeDao().getEnabled().map { it.id }.toSet()
-        return routingEngine.compile(
+        val availableNodeIds = enabledNodeIds - unavailableNodeIds
+        val effectiveRoutingEngine = RulePackManifest.fromSnapshot(rulePackManager.current())
+            ?.let { manifest -> routingEngine.withCategoryCatalog(RoutingCategoryCatalog.fromManifest(manifest)) }
+            ?: routingEngine
+        if (!prefs.routingSelectorEnabled) {
+            return effectiveRoutingEngine.compile(
+                globalDefault = UserTrafficOutcome.TUNNEL,
+                globalDefaultNodeId = prefs.selectedProxyId.takeIf { it > 0L && it in availableNodeIds },
+                countryRules = emptyList(),
+                categoryRules = emptyList(),
+                rulePackVersions = rulePackManager.activeVersions(),
+                compiledAtMs = nowMs,
+            )
+        }
+        val warnings = mutableListOf<String>()
+        val snapshot = effectiveRoutingEngine.compile(
             globalDefault = prefs.routingDefaultOutcome,
-            globalDefaultNodeId = prefs.routingDefaultNodeId?.takeIf { it in enabledNodeIds },
-            countryRules = userRuleStore.countryRules().sanitizeNodeTargets(enabledNodeIds),
-            categoryRules = userRuleStore.categoryRules().sanitizeNodeTargets(enabledNodeIds),
+            globalDefaultNodeId = prefs.routingDefaultNodeId?.takeIf { it in availableNodeIds },
+            countryRules = userRuleStore.countryRules().sanitizeNodeTargets(availableNodeIds, warnings),
+            categoryRules = userRuleStore.categoryRules().sanitizeNodeTargets(availableNodeIds, warnings),
             rulePackVersions = rulePackManager.activeVersions(),
             compiledAtMs = nowMs,
         )
+        return if (warnings.isEmpty()) snapshot else snapshot.copy(warnings = snapshot.warnings + warnings)
     }
 
     suspend fun startForForward(forwardId: Long) = withContext(Dispatchers.IO) {
@@ -113,14 +139,36 @@ class TunnelOrchestrator internal constructor(
 
         stop()
 
+        var unavailableNodeIds: Set<Long> = emptySet()
         val runtimeContext = if (connectionMode == ProxyConnectionMode.SERVICES) {
             val forward = panelRepo.getCachedContract(selectedForward ?: 0L)
                 ?: throw Exception("Forward ${selectedForward ?: 0L} not found")
             Log.i(TAG, "Starting forward ${forward.forwardId}: ${forward.serviceName}")
             val binaries = binaryInstaller.prepareBinaryPaths()
             val relayNodes = selection.activeNodes.filter { it.type.lowercase() != "wireguard" }
+            val missingRelayNodeIds = mutableSetOf<Long>()
+            val relayNodeForwards = relayNodes.mapNotNull { node ->
+                val nodeForwardId = node.forwardId
+                val nodeForward = if (nodeForwardId != null) {
+                    panelRepo.getCachedContract(nodeForwardId)
+                } else {
+                    forward
+                }
+                if (nodeForward == null) {
+                    Log.w(TAG, "Relay node ${node.id} references unavailable forward $nodeForwardId; dropping it")
+                    missingRelayNodeIds += node.id
+                    null
+                } else {
+                    node.id to nodeForward
+                }
+            }
             if (relayNodes.size > 1) {
-                val legs = startNodeLegs(forward, relayNodes.map { it.id }, binaries)
+                val result = startNodeLegs(relayNodeForwards, binaries)
+                val legs = result.legs
+                if (legs.isEmpty()) {
+                    throw Exception("No relay legs could be started")
+                }
+                unavailableNodeIds = missingRelayNodeIds + result.failedNodeIds
                 RuntimeContext(
                     forwardId = forward.forwardId,
                     mode = forward.mode,
@@ -131,17 +179,25 @@ class TunnelOrchestrator internal constructor(
                     nodeLegs = legs,
                 )
             } else {
-                val planned = buildRuntimePlan(forward, binaries)
-                processRunner.start(forward.forwardId, planned)
+                if (relayNodes.isNotEmpty() && relayNodeForwards.isEmpty()) {
+                    throw Exception("Selected relay node forward is unavailable")
+                }
+                val singleForward = relayNodeForwards.singleOrNull()?.second ?: forward
+                val planned = buildRuntimePlan(singleForward, binaries)
+                processRunner.start(singleForward.forwardId, planned)
                 planned
             }
         } else {
             null
         }
 
-        val routingSnapshot = buildRoutingSnapshot(System.currentTimeMillis())
+        val activeRulePackManifest = RulePackManifest.fromSnapshot(rulePackManager.current())
+        val routingSnapshot = buildRoutingSnapshot(
+            System.currentTimeMillis(),
+            unavailableNodeIds = unavailableNodeIds,
+        )
         val compiled = SingboxConfigBuilder
-            .fromPrefs(prefs)
+            .fromPrefs(prefs, activeRulePackManifest)
             .build(
                 proxyNodes = selection.activeNodes,
                 runtimeContext = runtimeContext,
@@ -198,29 +254,38 @@ class TunnelOrchestrator internal constructor(
     }
 
     internal fun startNodeLegs(
-        forward: ForwardContract,
-        nodeIds: List<Long>,
+        nodeForwards: List<Pair<Long, ForwardContract>>,
         binaries: RuntimeBinaryPaths,
-    ): Map<Long, NodeLeg> = nodeIds.mapIndexed { index, nodeId ->
-        val legForward = forward.withListenPort(listenPortForNode(forward.listenPort, nodeId))
-        val legRuntime = buildRuntimePlan(
-            forward = legForward,
-            binaries = binaries,
-            portSalt = portSaltForNode(nodeId),
-        )
-        val processKey = NodeLeg.processKey(forward.forwardId, nodeId)
-        processRunner.start(processKey, legRuntime, cleanupStale = index == 0)
-        nodeId to NodeLeg(
-            nodeId = nodeId,
-            forwardId = forward.forwardId,
-            processKey = processKey,
-            mode = legRuntime.mode,
-            localListenPort = legRuntime.localListenPort,
-            localLegPorts = legRuntime.localLegPorts,
-            processPlans = legRuntime.processPlans,
-            bypassHosts = legRuntime.bypassHosts,
-        )
-    }.toMap()
+    ): NodeLegsResult {
+        val legs = linkedMapOf<Long, NodeLeg>()
+        val failed = mutableListOf<Long>()
+        nodeForwards.forEachIndexed { index, (nodeId, forward) ->
+            try {
+                val legForward = forward.withListenPort(listenPortForNode(forward.listenPort, index))
+                val legRuntime = buildRuntimePlan(
+                    forward = legForward,
+                    binaries = binaries,
+                    portSalt = portSaltForIndex(index),
+                )
+                val processKey = NodeLeg.processKey(forward.forwardId, nodeId)
+                processRunner.start(processKey, legRuntime, cleanupStale = legs.isEmpty())
+                legs[nodeId] = NodeLeg(
+                    nodeId = nodeId,
+                    forwardId = forward.forwardId,
+                    processKey = processKey,
+                    mode = legRuntime.mode,
+                    localListenPort = legRuntime.localListenPort,
+                    localLegPorts = legRuntime.localLegPorts,
+                    processPlans = legRuntime.processPlans,
+                    bypassHosts = legRuntime.bypassHosts,
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Relay leg for node $nodeId failed; dropping it", e)
+                failed += nodeId
+            }
+        }
+        return NodeLegsResult(legs, failed)
+    }
 
     private fun stopRuntime(runtimeContext: RuntimeContext?) {
         runtimeContext ?: return
@@ -231,15 +296,23 @@ class TunnelOrchestrator internal constructor(
         }
     }
 
-    private fun listenPortForNode(baseListenPort: Int, nodeId: Long): Int =
-        baseListenPort + 1 + (nodeId % 1000L).toInt()
+    private fun listenPortForNode(baseListenPort: Int, index: Int): Int =
+        baseListenPort + 1 + index
 
-    private fun portSaltForNode(nodeId: Long): Int = ((nodeId % 1000L) * 20).toInt()
+    private fun portSaltForIndex(index: Int): Int = (index + 1) * 40
 
-    private fun List<RoutingRule>.sanitizeNodeTargets(enabledNodeIds: Set<Long>): List<RoutingRule> =
+    private fun List<RoutingRule>.sanitizeNodeTargets(
+        availableNodeIds: Set<Long>,
+        warnings: MutableList<String>,
+    ): List<RoutingRule> =
         map { rule ->
-            val targetNodeId = rule.targetNodeId?.takeIf { it in enabledNodeIds }
-            if (targetNodeId == rule.targetNodeId) rule else rule.copy(targetNodeId = targetNodeId)
+            val targetNodeId = rule.targetNodeId?.takeIf { it in availableNodeIds }
+            if (targetNodeId == rule.targetNodeId) {
+                rule
+            } else {
+                warnings += "Rule '${rule.id}': target node ${rule.targetNodeId} unavailable; using default."
+                rule.copy(targetNodeId = targetNodeId)
+            }
         }
 
     private fun writeDebugConfig(configJson: String) {

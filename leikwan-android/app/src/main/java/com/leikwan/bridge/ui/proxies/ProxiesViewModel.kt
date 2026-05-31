@@ -22,6 +22,7 @@ data class ProxiesUiState(
     val subscriptions: List<Subscription> = emptyList(),
     val selectedProxyId: Long = 0L,
     val connectionMode: ProxyConnectionMode = ProxyConnectionMode.SERVICES,
+    val routingSelectorEnabled: Boolean = false,
     val isLoading: Boolean = false,
     val error: String? = null,
 )
@@ -37,6 +38,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         ProxiesUiState(
             selectedProxyId = prefs.selectedProxyId,
             connectionMode = prefs.proxyConnectionMode,
+            routingSelectorEnabled = prefs.routingSelectorEnabled,
         )
     )
     val state = _state.asStateFlow()
@@ -187,6 +189,10 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearError() {
         _state.value = _state.value.copy(error = null)
+    }
+
+    fun refreshRoutingSelectorState() {
+        _state.value = _state.value.copy(routingSelectorEnabled = prefs.routingSelectorEnabled)
     }
 
     fun importAny(text: String) {

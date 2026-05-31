@@ -33,7 +33,7 @@ class ProxySelectionPolicyTest {
     }
 
     @Test
-    fun `policy returns all enabled service-compatible nodes for multi-node services mode`() {
+    fun `policy returns all enabled nodes so services mode can start per-node forward legs`() {
         val result = ProxySelectionPolicy.validate(
             selectedProxyId = 1L,
             forwardId = 45L,
@@ -93,7 +93,7 @@ class ProxySelectionPolicyTest {
         )
 
         require(result is ProxySelectionResult.Success)
-        assertEquals(listOf(1L, 2L, 3L), result.activeNodes.map { it.id })
+        assertEquals(listOf(1L, 2L, 3L, 4L), result.activeNodes.map { it.id })
     }
 
     @Test
@@ -145,7 +145,7 @@ class ProxySelectionPolicyTest {
     }
 
     @Test
-    fun `policy rejects mismatched service proxy in services mode`() {
+    fun `policy allows a selected proxy with its own service binding in services mode`() {
         val result = ProxySelectionPolicy.validate(
             selectedProxyId = 3L,
             forwardId = 45L,
@@ -164,8 +164,9 @@ class ProxySelectionPolicyTest {
             ),
         )
 
-        require(result is ProxySelectionResult.Error)
-        assertTrue(result.message.contains("match", ignoreCase = true))
+        require(result is ProxySelectionResult.Success)
+        assertEquals(3L, result.selectedNode.id)
+        assertEquals(listOf(3L), result.activeNodes.map { it.id })
     }
 
     @Test

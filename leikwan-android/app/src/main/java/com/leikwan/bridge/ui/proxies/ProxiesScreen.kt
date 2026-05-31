@@ -35,6 +35,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -48,6 +49,9 @@ import com.leikwan.bridge.service.ProxyConnectionMode
 fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
     val activity = LocalContext.current as? MainActivity
+    LaunchedEffect(Unit) {
+        viewModel.refreshRoutingSelectorState()
+    }
     var showAddUri by remember { mutableStateOf(false) }
     var showAddSub by remember { mutableStateOf(false) }
     var showQrScan by remember { mutableStateOf(false) }
@@ -79,6 +83,31 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                     selected = state.connectionMode == ProxyConnectionMode.DIRECT,
                     onClick = { viewModel.setConnectionMode(ProxyConnectionMode.DIRECT) },
                 )
+            }
+            Spacer(Modifier.height(8.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { activity?.navigateToRouting() },
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        if (state.routingSelectorEnabled) {
+                            "Routing rules: ON"
+                        } else {
+                            "Routing rules: OFF"
+                        },
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        if (state.routingSelectorEnabled) {
+                            "Selected proxy may be overridden by Routing."
+                        } else {
+                            "Selected proxy is authoritative."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             Spacer(Modifier.height(8.dp))
 
