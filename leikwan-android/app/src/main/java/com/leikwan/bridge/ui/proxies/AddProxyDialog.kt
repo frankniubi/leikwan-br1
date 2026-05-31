@@ -32,7 +32,7 @@ fun AddUriDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
-                label = { Text("ss://, vmess://, or vless:// URI") },
+                label = { Text("ss://, vmess://, vless://, wg://, or WireGuard config") },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 3,
                 maxLines = 6,
@@ -164,6 +164,7 @@ private fun ProxyProtocolEditor(
         is ProxyProtocolDraft.Shadowsocks -> ShadowsocksEditor(protocol, onProtocolChange)
         is ProxyProtocolDraft.Vless -> VlessEditor(protocol, onProtocolChange)
         is ProxyProtocolDraft.Vmess -> VmessEditor(protocol, onProtocolChange)
+        is ProxyProtocolDraft.WireGuard -> WireGuardEditor(protocol, onProtocolChange)
         is ProxyProtocolDraft.Unknown -> UnknownEditor(protocol, onProtocolChange)
     }
 }
@@ -346,6 +347,73 @@ private fun VmessEditor(
         value = details.path,
         onValueChange = { onChange(details.copy(path = it)) },
         label = { Text("Path (optional)") },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
+}
+
+@Composable
+private fun WireGuardEditor(
+    details: ProxyProtocolDraft.WireGuard,
+    onChange: (ProxyProtocolDraft) -> Unit,
+) {
+    Text("WireGuard")
+    OutlinedTextField(
+        value = details.privateKey,
+        onValueChange = { onChange(details.copy(privateKey = it)) },
+        label = { Text("Private Key") },
+        modifier = Modifier.fillMaxWidth(),
+        minLines = 2,
+        maxLines = 3,
+    )
+    OutlinedTextField(
+        value = details.addresses,
+        onValueChange = { onChange(details.copy(addresses = it)) },
+        label = { Text("Interface Address(es)") },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
+    OutlinedTextField(
+        value = details.publicKey,
+        onValueChange = { onChange(details.copy(publicKey = it)) },
+        label = { Text("Peer Public Key") },
+        modifier = Modifier.fillMaxWidth(),
+        minLines = 2,
+        maxLines = 3,
+    )
+    OutlinedTextField(
+        value = details.preSharedKey,
+        onValueChange = { onChange(details.copy(preSharedKey = it)) },
+        label = { Text("Preshared Key (optional)") },
+        modifier = Modifier.fillMaxWidth(),
+        minLines = 1,
+        maxLines = 2,
+    )
+    OutlinedTextField(
+        value = details.allowedIps,
+        onValueChange = { onChange(details.copy(allowedIps = it)) },
+        label = { Text("Allowed IPs") },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
+    OutlinedTextField(
+        value = details.mtu,
+        onValueChange = { onChange(details.copy(mtu = it)) },
+        label = { Text("MTU (optional)") },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
+    OutlinedTextField(
+        value = details.persistentKeepalive,
+        onValueChange = { onChange(details.copy(persistentKeepalive = it)) },
+        label = { Text("Persistent Keepalive (optional)") },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
+    OutlinedTextField(
+        value = details.reserved,
+        onValueChange = { onChange(details.copy(reserved = it)) },
+        label = { Text("Reserved bytes (optional)") },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )

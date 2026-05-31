@@ -12,6 +12,7 @@ object ProxyListSections {
         "ss" to "Shadowsocks",
         "vless" to "VLESS",
         "vmess" to "VMess",
+        "wireguard" to "WireGuard",
     )
 
     fun build(nodes: List<ProxyNode>): List<ProxyListSection> {

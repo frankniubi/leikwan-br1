@@ -679,6 +679,55 @@ class SingboxConfigBuilderTest {
         assertEquals(12002, node2.get("server_port").asInt)
     }
 
+    @Test
+    fun `wireguard node emits endpoint form and category rule can target it`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+        val snapshot = engine().compile(
+            globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = 9L,
+            countryRules = emptyList(),
+            categoryRules = listOf(
+                RoutingRule(
+                    id = "ai",
+                    kind = RoutingRuleKind.WEBSITE_CATEGORY,
+                    matchValue = "ai",
+                    outcome = UserTrafficOutcome.TUNNEL,
+                    targetNodeId = 9L,
+                )
+            ),
+            rulePackVersions = emptyList(),
+            compiledAtMs = 0L,
+        )
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(wireGuardNode(9L)),
+                runtimeContext = null,
+                routingPolicySnapshot = snapshot,
+                connectionMode = ProxyConnectionMode.DIRECT,
+            ).configJson
+        ).asJsonObject
+        val endpoints = config.getAsJsonArray("endpoints").map { it.asJsonObject }
+        val endpoint = endpoints.single { it.get("tag").asString == "proxy-9" }
+        val peer = endpoint.getAsJsonArray("peers").single().asJsonObject
+        val outbounds = config.getAsJsonArray("outbounds").map { it.asJsonObject }
+        val aiRule = config.getAsJsonObject("route").getAsJsonArray("rules").map { it.asJsonObject }
+            .first { it.has("rule_set") && it.getAsJsonArray("rule_set").any { tag -> tag.asString == "geosite-openai" } }
+
+        assertEquals("wireguard", endpoint.get("type").asString)
+        assertEquals(false, endpoint.get("system").asBoolean)
+        assertEquals("private-key", endpoint.get("private_key").asString)
+        assertEquals(listOf("10.7.0.2/32"), endpoint.getAsJsonArray("address").map { it.asString })
+        assertEquals(1420, endpoint.get("mtu").asInt)
+        assertEquals("public-key", peer.get("public_key").asString)
+        assertEquals("wg.example.com", peer.get("address").asString)
+        assertEquals(51820, peer.get("port").asInt)
+        assertEquals(listOf("0.0.0.0/0", "::/0"), peer.getAsJsonArray("allowed_ips").map { it.asString })
+        assertEquals("proxy-9", aiRule.get("outbound").asString)
+        assertEquals("proxy-9", config.getAsJsonObject("route").get("final").asString)
+        assertFalse(outbounds.any { it.get("tag")?.asString == "proxy-9" })
+    }
+
     private fun engine() = RoutingPolicyEngine(
         SafePathRegistry.androidBaseline("https://panel.example.com", "v3-mirror.leikwanhost.com"),
         RoutingCategoryCatalog.default(),
@@ -701,6 +750,30 @@ class SingboxConfigBuilderTest {
         originalServer = "remote.example.com",
         originalPort = 443,
         configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+        forwardId = null,
+    )
+
+    private fun wireGuardNode(id: Long) = ProxyNode(
+        id = id,
+        name = "wg-$id",
+        type = "wireguard",
+        originalServer = "wg.example.com",
+        originalPort = 51820,
+        configJson = """
+            {
+              "private_key": "private-key",
+              "address": ["10.7.0.2/32"],
+              "mtu": 1420,
+              "peers": [
+                {
+                  "public_key": "public-key",
+                  "address": "wg.example.com",
+                  "port": 51820,
+                  "allowed_ips": ["0.0.0.0/0", "::/0"]
+                }
+              ]
+            }
+        """.trimIndent(),
         forwardId = null,
     )
 }

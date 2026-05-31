@@ -51,4 +51,26 @@ class ProxyProtocolDraftTest {
         assertEquals("/ws", details.path)
         assertEquals("edge.example.com", details.sni)
     }
+
+    @Test
+    fun `details parser reads wireguard endpoint fields`() {
+        val node = ProxyNode(
+            id = 3,
+            name = "WG",
+            type = "wireguard",
+            originalServer = "wg.example.com",
+            originalPort = 51820,
+            configJson = """{"private_key":"private","address":["10.7.0.2/32"],"mtu":1420,"peers":[{"public_key":"public","address":"wg.example.com","port":51820,"allowed_ips":["0.0.0.0/0"],"persistent_keepalive_interval":25}]}""",
+        )
+
+        val details = ProxyProtocolDraftParser.parse(node)
+
+        require(details is ProxyProtocolDraft.WireGuard)
+        assertEquals("private", details.privateKey)
+        assertEquals("10.7.0.2/32", details.addresses)
+        assertEquals("1420", details.mtu)
+        assertEquals("public", details.publicKey)
+        assertEquals("0.0.0.0/0", details.allowedIps)
+        assertEquals("25", details.persistentKeepalive)
+    }
 }

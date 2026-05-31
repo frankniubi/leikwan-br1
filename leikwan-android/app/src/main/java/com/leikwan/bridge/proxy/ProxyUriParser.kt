@@ -1,7 +1,9 @@
 package com.leikwan.bridge.proxy
 
 import com.google.gson.Gson
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.leikwan.bridge.data.ProxyNode
 import java.net.URI
 import java.net.URLDecoder
@@ -17,6 +19,8 @@ object ProxyUriParser {
             trimmed.startsWith("ss://") -> parseShadowsocks(trimmed)
             trimmed.startsWith("vmess://") -> parseVmess(trimmed)
             trimmed.startsWith("vless://") -> parseVless(trimmed)
+            trimmed.startsWith("wg://", ignoreCase = true) -> parseWireGuard(trimmed)
+            looksLikeWireGuardConfig(trimmed) -> parseWireGuardConfig(trimmed, explicitName = null)
             else -> null
         }
     }
@@ -28,6 +32,7 @@ object ProxyUriParser {
         } catch (_: Exception) {
             text
         }
+        parse(decoded.trim())?.let { return listOf(it) }
         return decoded.lines()
             .map { it.trim() }
             .filter { it.isNotEmpty() }
@@ -189,12 +194,155 @@ object ProxyUriParser {
         }
     }
 
+    private fun parseWireGuard(uri: String): ProxyNode? {
+        return try {
+            val withoutScheme = uri.substringAfter("://")
+            val name = withoutScheme.substringAfter("#", "").let {
+                URLDecoder.decode(it, "UTF-8").ifEmpty { null }
+            }
+            val payloadPart = withoutScheme.substringBefore("#").substringBefore("?")
+            val decodedPayload = decodeBase64Flexible(urlDecode(payloadPart))?.let { String(it, Charsets.UTF_8) }
+                ?: urlDecode(payloadPart)
+            when {
+                looksLikeWireGuardConfig(decodedPayload) -> parseWireGuardConfig(decodedPayload, explicitName = name)
+                decodedPayload.trim().startsWith("{") -> parseWireGuardJson(decodedPayload, explicitName = name)
+                else -> null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun parseWireGuardConfig(configText: String, explicitName: String?): ProxyNode? {
+        return try {
+            val (interfaceFields, peerFields) = parseWireGuardIni(configText)
+            val privateKey = interfaceFields["privatekey"] ?: return null
+            val addresses = splitCsv(interfaceFields["address"])
+            val mtu = interfaceFields["mtu"]?.toIntOrNull()
+            val firstPeer = peerFields.firstOrNull() ?: return null
+            val endpoint = firstPeer["endpoint"] ?: return null
+            val (server, port) = parseEndpoint(endpoint) ?: return null
+            val publicKey = firstPeer["publickey"] ?: return null
+            val allowedIps = splitCsv(firstPeer["allowedips"])
+            val preSharedKey = firstPeer["presharedkey"]
+            val keepalive = firstPeer["persistentkeepalive"]?.toIntOrNull()
+            val reserved = splitCsv(firstPeer["reserved"]).mapNotNull { it.toIntOrNull() }
+
+            val canonical = JsonObject().apply {
+                addProperty("private_key", privateKey)
+                if (addresses.isNotEmpty()) add("address", JsonArray().apply { addresses.forEach { add(it) } })
+                mtu?.let { addProperty("mtu", it) }
+                add("peers", JsonArray().apply {
+                    add(JsonObject().apply {
+                        addProperty("public_key", publicKey)
+                        preSharedKey?.takeIf { it.isNotBlank() }?.let { addProperty("pre_shared_key", it) }
+                        addProperty("address", server)
+                        addProperty("port", port)
+                        if (allowedIps.isNotEmpty()) {
+                            add("allowed_ips", JsonArray().apply { allowedIps.forEach { add(it) } })
+                        }
+                        keepalive?.let { addProperty("persistent_keepalive_interval", it) }
+                        if (reserved.isNotEmpty()) {
+                            add("reserved", JsonArray().apply { reserved.forEach { add(it) } })
+                        }
+                    })
+                })
+            }
+
+            ProxyNode(
+                name = explicitName ?: "WireGuard $server:$port",
+                type = "wireguard",
+                originalServer = server,
+                originalPort = port,
+                configJson = gson.toJson(canonical),
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun parseWireGuardJson(json: String, explicitName: String?): ProxyNode? {
+        return try {
+            val config = JsonParser.parseString(json).asJsonObject
+            val peer = config.getAsJsonArray("peers")?.firstOrNull()?.asJsonObject ?: return null
+            val server = peer.get("address")?.asString
+                ?: peer.get("server")?.asString
+                ?: config.get("server")?.asString
+                ?: return null
+            val port = peer.get("port")?.asInt
+                ?: peer.get("server_port")?.asInt
+                ?: config.get("server_port")?.asInt
+                ?: return null
+            ProxyNode(
+                name = explicitName
+                    ?: config.get("name")?.asString?.takeIf { it.isNotBlank() }
+                    ?: "WireGuard $server:$port",
+                type = "wireguard",
+                originalServer = server,
+                originalPort = port,
+                configJson = gson.toJson(config),
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun parseHostPort(hostPort: String): Pair<String, Int>? {
         val server = hostPort.substringBeforeLast(":", "")
         val port = hostPort.substringAfterLast(":", "").toIntOrNull()
         if (server.isBlank() || port == null) return null
         return server to port
     }
+
+    private fun parseEndpoint(endpoint: String): Pair<String, Int>? {
+        val trimmed = endpoint.trim()
+        if (trimmed.startsWith("[")) {
+            val host = trimmed.substringAfter("[").substringBefore("]")
+            val port = trimmed.substringAfter("]:", "").toIntOrNull()
+            if (host.isBlank() || port == null) return null
+            return host to port
+        }
+        return parseHostPort(trimmed)
+    }
+
+    private fun looksLikeWireGuardConfig(value: String): Boolean {
+        val trimmed = value.trimStart()
+        return trimmed.startsWith("[Interface]", ignoreCase = true) &&
+            trimmed.contains("[Peer]", ignoreCase = true)
+    }
+
+    private fun parseWireGuardIni(configText: String): Pair<Map<String, String>, List<Map<String, String>>> {
+        val interfaceFields = linkedMapOf<String, String>()
+        val peers = mutableListOf<MutableMap<String, String>>()
+        var currentSection = ""
+        var currentPeer: MutableMap<String, String>? = null
+
+        configText.lines().forEach { rawLine ->
+            val line = rawLine.substringBefore("#").substringBefore(";").trim()
+            if (line.isBlank()) return@forEach
+            if (line.startsWith("[") && line.endsWith("]")) {
+                currentSection = line.removePrefix("[").removeSuffix("]").trim().lowercase()
+                if (currentSection == "peer") {
+                    currentPeer = linkedMapOf<String, String>().also { peers += it }
+                }
+                return@forEach
+            }
+            val key = line.substringBefore("=", "").trim().lowercase().replace("_", "")
+            val value = line.substringAfter("=", "").trim()
+            if (key.isBlank() || value.isBlank()) return@forEach
+            when (currentSection) {
+                "interface" -> interfaceFields[key] = value
+                "peer" -> currentPeer?.set(key, value)
+            }
+        }
+        return interfaceFields to peers
+    }
+
+    private fun splitCsv(value: String?): List<String> =
+        value.orEmpty()
+            .split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
 
     private fun applyShadowsocksQueryParams(query: String, config: JsonObject) {
         if (query.isBlank()) return

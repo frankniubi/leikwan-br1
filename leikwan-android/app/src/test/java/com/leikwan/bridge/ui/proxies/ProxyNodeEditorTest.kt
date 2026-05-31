@@ -149,4 +149,52 @@ class ProxyNodeEditorTest {
         assertTrue(config.get("udp_over_tcp").asBoolean)
         assertTrue(config.get("multiplex_enabled").asBoolean)
     }
+
+    @Test
+    fun `editor applies wireguard typed fields and syncs config json`() {
+        val node = ProxyNode(
+            id = 11,
+            name = "old-wg",
+            type = "wireguard",
+            originalServer = "old.example.com",
+            originalPort = 51820,
+            configJson = """{"private_key":"old","address":["10.0.0.2/32"],"peers":[{"public_key":"old-peer","address":"old.example.com","port":51820,"allowed_ips":["0.0.0.0/0"]}]}""",
+        )
+
+        val result = ProxyNodeEditor.applyDraft(
+            node = node,
+            draft = ProxyNodeEditDraft(
+                name = "new-wg",
+                originalServer = "wg.example.com",
+                originalPort = "51821",
+                protocol = ProxyProtocolDraft.WireGuard(
+                    privateKey = "private",
+                    addresses = "10.7.0.2/32, fd00::2/128",
+                    publicKey = "public",
+                    preSharedKey = "psk",
+                    allowedIps = "0.0.0.0/0, ::/0",
+                    mtu = "1420",
+                    persistentKeepalive = "25",
+                ),
+            ),
+        )
+
+        require(result is ProxyNodeEditResult.Success)
+        val updated = result.node
+        val config = JsonParser.parseString(updated.configJson).asJsonObject
+        val peer = config.getAsJsonArray("peers").single().asJsonObject
+
+        assertEquals("new-wg", updated.name)
+        assertEquals("wg.example.com", updated.originalServer)
+        assertEquals(51821, updated.originalPort)
+        assertEquals("private", config.get("private_key").asString)
+        assertEquals(listOf("10.7.0.2/32", "fd00::2/128"), config.getAsJsonArray("address").map { it.asString })
+        assertEquals(1420, config.get("mtu").asInt)
+        assertEquals("public", peer.get("public_key").asString)
+        assertEquals("psk", peer.get("pre_shared_key").asString)
+        assertEquals("wg.example.com", peer.get("address").asString)
+        assertEquals(51821, peer.get("port").asInt)
+        assertEquals(listOf("0.0.0.0/0", "::/0"), peer.getAsJsonArray("allowed_ips").map { it.asString })
+        assertEquals(25, peer.get("persistent_keepalive_interval").asInt)
+    }
 }
