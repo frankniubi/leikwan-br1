@@ -40,7 +40,14 @@ class MainActivity : ComponentActivity() {
     private val _clipboardImport = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val clipboardImport = _clipboardImport.asSharedFlow()
 
+    var navigateToRoutingRequest by mutableStateOf(0)
+        private set
+
     private var lastClipHash: String? = null
+
+    fun navigateToRouting() {
+        navigateToRoutingRequest += 1
+    }
 
     fun requestVpnPermission(onGranted: () -> Unit) {
         val intent = VpnService.prepare(this)

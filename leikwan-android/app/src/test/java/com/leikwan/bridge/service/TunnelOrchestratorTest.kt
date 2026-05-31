@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.data.routing.RoutingExplainabilityStore
 import com.leikwan.bridge.data.routing.RulePackManager
 import com.leikwan.bridge.data.routing.UserRoutingRuleStore
@@ -12,6 +13,7 @@ import com.leikwan.bridge.runtime.BondingContract
 import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardEndpoint
 import com.leikwan.bridge.runtime.ForwardMode
+import com.leikwan.bridge.runtime.NodeLeg
 import com.leikwan.bridge.runtime.ProcessRunner
 import com.leikwan.bridge.runtime.RuntimeBinaryPaths
 import com.leikwan.bridge.runtime.RuntimeContext
@@ -24,6 +26,7 @@ import com.leikwan.bridge.routing.UserTrafficOutcome
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -58,6 +61,7 @@ class TunnelOrchestratorTest {
         sharedPrefs.edit().clear().apply()
         val prefs = Prefs(sharedPrefs)
         prefs.routingDefaultOutcome = UserTrafficOutcome.TUNNEL
+        prefs.routingSelectorEnabled = true
 
         val userRuleStore = UserRoutingRuleStore(db)
         userRuleStore.upsert(
@@ -113,9 +117,8 @@ class TunnelOrchestratorTest {
             processRunnerFactory = { processRunner },
         )
 
-        val legs = orchestrator.startNodeLegs(
-            forward = sampleBondForward(),
-            nodeIds = listOf(1L, 2L),
+        val result = orchestrator.startNodeLegs(
+            nodeForwards = listOf(1L to sampleBondForward(), 2L to sampleBondForward()),
             binaries = RuntimeBinaryPaths(
                 wstunnelBinary = "/runtime/wstunnel",
                 ingressBinary = "/runtime/leikwan-ingress",
@@ -123,9 +126,10 @@ class TunnelOrchestratorTest {
             ),
         )
 
+        val legs = result.legs
         assertEquals(setOf(1L, 2L), legs.keys)
-        assertEquals(11026, legs.getValue(1L).localListenPort)
-        assertEquals(11027, legs.getValue(2L).localListenPort)
+        assertEquals(11025, legs.getValue(1L).localListenPort)
+        assertEquals(11026, legs.getValue(2L).localListenPort)
         assertEquals(
             listOf(
                 legs.getValue(1L).processKey,
@@ -140,7 +144,218 @@ class TunnelOrchestratorTest {
         assertTrue(legs.getValue(1L).localLegPorts.single() != legs.getValue(2L).localLegPorts.single())
     }
 
-    private class RecordingProcessRunner : ProcessRunner() {
+    @Test
+    fun `services mode legs reach distinct upstream targets per node`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val prefs = Prefs(context.getSharedPreferences("orchestrator-distinct-leg-test-prefs", Context.MODE_PRIVATE))
+        val processRunner = RecordingProcessRunner()
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = UserRoutingRuleStore(db),
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+            processRunnerFactory = { processRunner },
+        )
+
+        val result = orchestrator.startNodeLegs(
+            nodeForwards = listOf(
+                1L to sampleBondForward(forwardId = 26L, remoteTarget = "server-a.example:9000"),
+                2L to sampleBondForward(forwardId = 27L, listenPort = 11124, remoteTarget = "server-b.example:9000"),
+            ),
+            binaries = RuntimeBinaryPaths(
+                wstunnelBinary = "/runtime/wstunnel",
+                ingressBinary = "/runtime/leikwan-ingress",
+                bondBinary = "/runtime/leikwan-bond",
+            ),
+        )
+
+        val node1Command = result.legs.getValue(1L).processPlans.flatMap { it.command }.joinToString(" ")
+        val node2Command = result.legs.getValue(2L).processPlans.flatMap { it.command }.joinToString(" ")
+        assertTrue(node1Command.contains("server-a.example:9000"))
+        assertFalse(node1Command.contains("server-b.example:9000"))
+        assertTrue(node2Command.contains("server-b.example:9000"))
+        assertFalse(node2Command.contains("server-a.example:9000"))
+    }
+
+    @Test
+    fun `a leg that fails to start is dropped and the tunnel continues`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val prefs = Prefs(context.getSharedPreferences("orchestrator-failed-leg-test-prefs", Context.MODE_PRIVATE))
+        val processRunner = RecordingProcessRunner(
+            failForProcessKeys = setOf(NodeLeg.processKey(forwardId = 26L, nodeId = 2L)),
+        )
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = UserRoutingRuleStore(db),
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+            processRunnerFactory = { processRunner },
+        )
+
+        val result = orchestrator.startNodeLegs(
+            nodeForwards = listOf(1L to sampleBondForward(), 2L to sampleBondForward()),
+            binaries = RuntimeBinaryPaths(
+                wstunnelBinary = "/runtime/wstunnel",
+                ingressBinary = "/runtime/leikwan-ingress",
+                bondBinary = "/runtime/leikwan-bond",
+            ),
+        )
+
+        assertEquals(setOf(1L), result.legs.keys)
+        assertEquals(listOf(2L), result.failedNodeIds)
+        assertEquals(listOf(NodeLeg.processKey(26L, 1L)), processRunner.started.map { it.forwardId })
+        assertEquals(listOf(true), processRunner.started.map { it.cleanupStale })
+    }
+
+    @Test
+    fun `node leg ports are allocated by index to avoid modulo collisions`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val prefs = Prefs(context.getSharedPreferences("orchestrator-port-collision-test-prefs", Context.MODE_PRIVATE))
+        val processRunner = RecordingProcessRunner()
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = UserRoutingRuleStore(db),
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+            processRunnerFactory = { processRunner },
+        )
+
+        val result = orchestrator.startNodeLegs(
+            nodeForwards = listOf(1L to sampleBondForward(), 1001L to sampleBondForward()),
+            binaries = RuntimeBinaryPaths(
+                wstunnelBinary = "/runtime/wstunnel",
+                ingressBinary = "/runtime/leikwan-ingress",
+                bondBinary = "/runtime/leikwan-bond",
+            ),
+        )
+
+        assertEquals(11025, result.legs.getValue(1L).localListenPort)
+        assertEquals(11026, result.legs.getValue(1001L).localListenPort)
+        assertTrue(
+            result.legs.getValue(1L).localLegPorts.single() !=
+                result.legs.getValue(1001L).localLegPorts.single(),
+        )
+    }
+
+    @Test
+    fun `buildRoutingSnapshot warns and falls back when a target node is unavailable`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val sharedPrefs = context.getSharedPreferences("orchestrator-warning-test-prefs", Context.MODE_PRIVATE)
+        sharedPrefs.edit().clear().apply()
+        val prefs = Prefs(sharedPrefs)
+        prefs.routingDefaultOutcome = UserTrafficOutcome.TUNNEL
+        prefs.routingSelectorEnabled = true
+
+        db.proxyNodeDao().insert(ssNode("default"))
+        val failedNodeId = db.proxyNodeDao().insert(ssNode("failed"))
+
+        val userRuleStore = UserRoutingRuleStore(db)
+        userRuleStore.upsert(
+            RoutingRule(
+                id = "category-video",
+                kind = RoutingRuleKind.WEBSITE_CATEGORY,
+                matchValue = "video",
+                outcome = UserTrafficOutcome.TUNNEL,
+                enabled = true,
+                targetNodeId = failedNodeId,
+            )
+        )
+
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = userRuleStore,
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+        )
+
+        val snapshot = orchestrator.buildRoutingSnapshot(7L, unavailableNodeIds = setOf(failedNodeId))
+
+        assertEquals(null, snapshot.userCategoryRules.single().targetNodeId)
+        assertTrue(
+            snapshot.warnings.any {
+                it.contains("category-video") && it.contains(failedNodeId.toString())
+            },
+        )
+    }
+
+    @Test
+    fun `buildRoutingSnapshot gates user rules behind selector switch`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val sharedPrefs = context.getSharedPreferences("orchestrator-selector-gate-test-prefs", Context.MODE_PRIVATE)
+        sharedPrefs.edit().clear().apply()
+        val prefs = Prefs(sharedPrefs)
+        val selectedNodeId = db.proxyNodeDao().insert(ssNode("selected"))
+        prefs.selectedProxyId = selectedNodeId
+        prefs.routingDefaultOutcome = UserTrafficOutcome.DIRECT
+
+        val userRuleStore = UserRoutingRuleStore(db)
+        userRuleStore.upsert(
+            RoutingRule(
+                id = "category-video",
+                kind = RoutingRuleKind.WEBSITE_CATEGORY,
+                matchValue = "video",
+                outcome = UserTrafficOutcome.TUNNEL,
+                enabled = true,
+            )
+        )
+
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = userRuleStore,
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+        )
+
+        prefs.routingSelectorEnabled = false
+        val disabledSnapshot = orchestrator.buildRoutingSnapshot(8L)
+        assertEquals(emptyList<RoutingRule>(), disabledSnapshot.userCategoryRules)
+        assertEquals(UserTrafficOutcome.TUNNEL, disabledSnapshot.globalDefaultOutcome)
+        assertEquals(selectedNodeId, disabledSnapshot.globalDefaultNodeId)
+
+        prefs.routingSelectorEnabled = true
+        val enabledSnapshot = orchestrator.buildRoutingSnapshot(9L)
+        assertEquals(listOf("category-video"), enabledSnapshot.userCategoryRules.map { it.id })
+        assertEquals(UserTrafficOutcome.DIRECT, enabledSnapshot.globalDefaultOutcome)
+    }
+
+    private class RecordingProcessRunner(
+        private val failForProcessKeys: Set<Long> = emptySet(),
+    ) : ProcessRunner() {
         data class Started(
             val forwardId: Long,
             val runtimeContext: RuntimeContext,
@@ -150,15 +365,31 @@ class TunnelOrchestratorTest {
         val started = mutableListOf<Started>()
 
         override fun start(forwardId: Long, runtimeContext: RuntimeContext, cleanupStale: Boolean) {
+            if (forwardId in failForProcessKeys) {
+                throw IllegalStateException("planned failure for process $forwardId")
+            }
             started += Started(forwardId, runtimeContext, cleanupStale)
         }
     }
 
-    private fun sampleBondForward(): ForwardContract = ForwardContract(
-        forwardId = 26L,
+    private fun ssNode(name: String): ProxyNode = ProxyNode(
+        name = name,
+        type = "ss",
+        originalServer = "$name.example.com",
+        originalPort = 443,
+        configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+        enabled = true,
+    )
+
+    private fun sampleBondForward(
+        forwardId: Long = 26L,
+        listenPort: Int = 11024,
+        remoteTarget: String = "138.252.162.120:9000",
+    ): ForwardContract = ForwardContract(
+        forwardId = forwardId,
         serviceName = "bond-26",
         target = "193.227.109.82:5201",
-        listenPort = 11024,
+        listenPort = listenPort,
         mode = ForwardMode.BOND,
         transport = "tcp",
         serviceStatus = "active",
@@ -185,7 +416,7 @@ class TunnelOrchestratorTest {
         bonding = BondingContract(
             ingressMode = "wss_path_mux",
             routeKey = "/route-key",
-            remoteTarget = "138.252.162.120:9000",
+            remoteTarget = remoteTarget,
             sessionToken = "tcp-token",
             udpSessionToken = "udp-token",
             chunkSize = null,
