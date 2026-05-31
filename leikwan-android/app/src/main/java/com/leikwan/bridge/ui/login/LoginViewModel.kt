@@ -2,8 +2,10 @@ package com.leikwan.bridge.ui.login
 
 import android.app.Application
 import android.util.Log
+import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.leikwan.bridge.R
 import com.leikwan.bridge.api.ClientInfo
 import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.Prefs
@@ -26,6 +28,7 @@ data class LoginUiState(
 )
 
 class LoginViewModel(app: Application) : AndroidViewModel(app) {
+    private val appContext = app.applicationContext
     private val repo = PanelRepository(app)
     private val prefs = Prefs.get(app)
 
@@ -58,7 +61,7 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
                     _state.value = _state.value.copy(isLoading = false, isLoggedIn = true)
                 }
             } catch (e: Exception) {
-                val message = e.message?.takeIf { it.isNotBlank() } ?: "Login failed"
+                val message = e.message?.takeIf { it.isNotBlank() } ?: s(R.string.login_error_generic)
                 Log.w(TAG, "login failed id=${System.identityHashCode(this@LoginViewModel)} message=$message", e)
                 _state.value = _state.value.copy(isLoading = false, error = message)
             }
@@ -81,7 +84,7 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 _state.value = _state.value.copy(isLoading = false, isLoggedIn = true)
             } catch (e: Exception) {
-                val message = e.message?.takeIf { it.isNotBlank() } ?: "Switch failed"
+                val message = e.message?.takeIf { it.isNotBlank() } ?: s(R.string.login_error_switch_failed)
                 Log.w(TAG, "switch client failed id=${System.identityHashCode(this@LoginViewModel)} message=$message", e)
                 _state.value = _state.value.copy(isLoading = false, error = message)
             }
@@ -93,7 +96,7 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun dismissClientPicker() {
-        _state.value = _state.value.copy(showClientPicker = false, error = "Select a client to continue")
+        _state.value = _state.value.copy(showClientPicker = false, error = s(R.string.login_error_select_client))
     }
 
     override fun onCleared() {
@@ -103,6 +106,9 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun safeHost(panelUrl: String): String =
         runCatching { URI(panelUrl).host ?: "<no-host>" }.getOrDefault("<invalid-url>")
+
+    private fun s(@StringRes id: Int, vararg args: Any): String =
+        appContext.getString(id, *args)
 
     private companion object {
         const val TAG = "LKLogin"

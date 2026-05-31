@@ -18,5 +18,10 @@ class CountryCatalogTest {
         assertEquals("CI", CountryCatalog.search("cote d ivoire").first().code)
         assertTrue(CountryCatalog.search("").isEmpty())
     }
-}
 
+    @Test
+    fun `bundled catalog covers the full ISO country table`() {
+        assertTrue("Expected the bundled ISO table to include at least 240 regions", CountryCatalog.all().size >= 240)
+        assertEquals(CountryCatalog.all().size, CountryCatalog.all().map { it.code }.distinct().size)
+    }
+}

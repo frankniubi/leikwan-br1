@@ -11,7 +11,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.leikwan.bridge.R
 
 /**
  * Read-only diagnostics card rendered on the Settings and Tunnels screens, summarising the most
@@ -24,15 +26,19 @@ fun RoutingDiagnosticsCard(
 ) {
     Card(modifier = modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("Routing diagnostics", style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.diagnostics_title), style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
-            DiagnosticsRow("Default action", model.defaultActionLabel)
-            DiagnosticsRow("Decision reason", model.decisionReasonLabel)
-            DiagnosticsRow("Protected traffic", model.protectedTrafficLabel)
-            DiagnosticsRow("Active rule packs", model.activeRulePackLabel)
+            DiagnosticsRow(stringResource(R.string.diagnostics_default_action), model.defaultActionLabel)
+            DiagnosticsRow(stringResource(R.string.diagnostics_decision_reason), model.decisionReasonLabel)
+            DiagnosticsRow(stringResource(R.string.diagnostics_protected_traffic), model.protectedTrafficLabel)
+            DiagnosticsRow(stringResource(R.string.diagnostics_active_rule_packs), model.activeRulePackLabel)
             DiagnosticsRow(
-                "Warnings",
-                if (model.warnings.isEmpty()) "none" else model.warnings.joinToString("; "),
+                stringResource(R.string.diagnostics_warnings),
+                if (model.warnings.isEmpty()) {
+                    stringResource(R.string.diagnostics_none)
+                } else {
+                    model.warnings.joinToString("; ")
+                },
             )
         }
     }
@@ -42,7 +48,7 @@ fun RoutingDiagnosticsCard(
 private fun DiagnosticsRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
         Text(
-            "$label: ",
+            stringResource(R.string.diagnostics_row_format, label),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

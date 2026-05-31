@@ -26,6 +26,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.annotation.StringRes
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavHostController
@@ -33,6 +35,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.leikwan.bridge.R
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.ui.MainActivity
 import com.leikwan.bridge.ui.proxies.ProxiesScreen
@@ -41,11 +44,11 @@ import com.leikwan.bridge.ui.routing.RoutingScreen
 import com.leikwan.bridge.ui.settings.SettingsScreen
 import com.leikwan.bridge.ui.tunnels.TunnelsScreen
 
-enum class Screen(val route: String, val label: String, val icon: ImageVector) {
-    Tunnels("tunnels", "Tunnels", Icons.Default.Lan),
-    Proxies("proxies", "Proxies", Icons.Default.Shield),
-    Routing("routing", "Routing", Icons.AutoMirrored.Filled.AltRoute),
-    Settings("settings", "Settings", Icons.Default.Settings),
+enum class Screen(val route: String, @StringRes val labelRes: Int, val icon: ImageVector) {
+    Tunnels("tunnels", R.string.nav_tunnels, Icons.Default.Lan),
+    Proxies("proxies", R.string.nav_proxies, Icons.Default.Shield),
+    Routing("routing", R.string.nav_routing, Icons.AutoMirrored.Filled.AltRoute),
+    Settings("settings", R.string.nav_settings, Icons.Default.Settings),
 }
 
 @Composable
@@ -77,8 +80,8 @@ fun MainScreen(onLogout: () -> Unit = {}) {
     LaunchedEffect(activity) {
         activity?.clipboardImport?.collect { text ->
             val result = snackbarHostState.showSnackbar(
-                message = "Proxy link detected in clipboard",
-                actionLabel = "Import",
+                message = context.getString(R.string.clipboard_proxy_detected),
+                actionLabel = context.getString(R.string.clipboard_import),
                 duration = SnackbarDuration.Long,
             )
             if (result == SnackbarResult.ActionPerformed) {
@@ -121,17 +124,18 @@ private fun BottomBar(navController: NavHostController) {
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentDestination = navBackStackEntry?.destination
         Screen.entries.forEach { screen ->
+            val label = stringResource(screen.labelRes)
             NavigationBarItem(
                 icon = {
                     if (screen == Screen.Routing && routingBadge) {
                         BadgedBox(badge = { Badge() }) {
-                            Icon(screen.icon, contentDescription = screen.label)
+                            Icon(screen.icon, contentDescription = label)
                         }
                     } else {
-                        Icon(screen.icon, contentDescription = screen.label)
+                        Icon(screen.icon, contentDescription = label)
                     }
                 },
-                label = { Text(screen.label) },
+                label = { Text(label) },
                 selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
                 onClick = {
                     navController.navigate(screen.route) {
