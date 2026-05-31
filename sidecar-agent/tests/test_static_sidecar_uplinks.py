@@ -56,7 +56,7 @@ class SidecarStaticSidecarUplinkTests(unittest.TestCase):
 
             with mock.patch.object(sidecar_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
                 with mock.patch.object(sidecar_agent_module.subprocess, "run", side_effect=fake_run):
-                    with mock.patch.object(agent, "cleanup_stale_mptcp_transit_interfaces", side_effect=lambda point_id: cleanup_calls.append(point_id)):
+                    with mock.patch.object(agent, "cleanup_stale_mptcp_transit_interfaces", side_effect=lambda point_id, keep=None: cleanup_calls.append(point_id)):
                         agent.apply_management({
                             "config_patch": {"managed_iperf3_ports": []},
                             "sidecar_uplinks": [

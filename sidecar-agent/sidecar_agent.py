@@ -417,23 +417,72 @@ class SidecarAgent:
             return
         subprocess.run(["systemctl", "restart", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
 
-    def cleanup_stale_mptcp_transit_interfaces(self, point_id: int) -> None:
-        if point_id <= 0 or shutil.which("wg") is None:
+    @staticmethod
+    def wireguard_system_dir() -> pathlib.Path:
+        return pathlib.Path("/etc/wireguard")
+
+    def cleanup_stale_mptcp_transit_interfaces(self, point_id: int, keep: "set[str] | None" = None) -> None:
+        """Reap stale MPTCP slave-transit interfaces (lw-sc-<point>-<idx>).
+
+        These devices are created LIVE by the mptcp relay (not via wg-quick), so the
+        cleanup must actually delete the kernel device with `ip link del` — stopping
+        the (disabled/failed) wg-quick unit and removing the conf is a no-op against
+        the live device, which is why stale interfaces accumulated forever as the
+        published leg count shrank.
+
+        `keep` is the set of interface_names the panel published THIS cycle for this
+        point; any matching interface in `keep` is preserved so a mixed point (static
+        lws* uplinks AND active lw-sc transit legs) never loses its live traffic.
+        keep=None is treated as the empty set (reap everything for the point).
+        """
+        if point_id <= 0:
             return
-        result = subprocess.run(["wg", "show", "interfaces"], text=True, capture_output=True, check=False)
-        interfaces = result.stdout.strip().split() if result.returncode == 0 else []
+        keep_set = set(keep) if keep else set()
         scoped_prefix = f"lw-sc-{point_id}-"
-        for iface in interfaces:
-            if not iface.startswith(scoped_prefix):
-                continue
+
+        # Live kernel devices currently known to WireGuard for this point.
+        live_interfaces: list[str] = []
+        if shutil.which("wg") is not None:
+            result = subprocess.run(["wg", "show", "interfaces"], text=True, capture_output=True, check=False)
+            if result.returncode == 0:
+                live_interfaces = [
+                    iface for iface in result.stdout.strip().split()
+                    if iface.startswith(scoped_prefix) and iface not in keep_set
+                ]
+
+        wg_dir = self.wireguard_system_dir()
+        for iface in live_interfaces:
+            # Stop/disable any (likely failed) wg-quick unit and clear its failed state.
             if shutil.which("systemctl") is not None:
                 subprocess.run(["systemctl", "stop", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
                 subprocess.run(["systemctl", "disable", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
+                subprocess.run(["systemctl", "reset-failed", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
+            # ACTUALLY remove the live kernel device (the relay created it directly).
+            if shutil.which("ip") is not None:
+                subprocess.run(["ip", "link", "del", "dev", iface], text=True, capture_output=True, check=False)
             elif shutil.which("wg-quick") is not None:
                 subprocess.run(["wg-quick", "down", iface], text=True, capture_output=True, check=False)
-            conf_path = pathlib.Path(f"/etc/wireguard/{iface}.conf")
-            if conf_path.exists():
+            conf_path = wg_dir / f"{iface}.conf"
+            try:
+                if conf_path.exists():
+                    conf_path.unlink()
+            except OSError:
+                pass
+
+        # Reap conf-only orphans: lw-sc-<point>-*.conf with no live device and not kept.
+        live_now = set(live_interfaces)
+        try:
+            conf_orphans = list(wg_dir.glob(f"{scoped_prefix}*.conf")) if wg_dir.exists() else []
+        except OSError:
+            conf_orphans = []
+        for conf_path in conf_orphans:
+            iface = conf_path.name[: -len(".conf")]
+            if iface in keep_set or iface in live_now:
+                continue
+            try:
                 conf_path.unlink()
+            except OSError:
+                pass
 
     def ensure_sidecar_uot_server_service(self, interface_name: str, listen_tcp_port: int, target_udp_port: int) -> None:
         if listen_tcp_port <= 0 or target_udp_port <= 0:
@@ -1232,6 +1281,18 @@ WantedBy=multi-user.target
             else:
                 bond_runtime = legacy_runtime
 
+        # Transit keep-set: the lw-sc-<point>-<idx> names the panel published THIS
+        # cycle. Computed from the RAW published underlays (not the later L1677
+        # processing) so the static-uplink cleanup site can preserve a mixed point's
+        # active transit legs while still reaping stale ones.
+        transit_keep: set[str] = set()
+        if isinstance(mptcp_runtime, dict):
+            for raw_ul in mptcp_runtime.get("underlays", []) or []:
+                if isinstance(raw_ul, dict):
+                    name = str(raw_ul.get("interface_name", "") or "")
+                    if name:
+                        transit_keep.add(name)
+
         primary_service_name = self.service_name()
         primary_unit_path = self.service_unit_path()
         primary_runtime_path = self.runtime_config_path()
@@ -1281,7 +1342,7 @@ WantedBy=multi-user.target
                 except Exception:  # noqa: BLE001
                     logging.exception("slave-sidecar uplink %s reconcile failed; continuing", interface_name)
             for cleanup_point_id in sorted(static_uplink_point_ids):
-                self.cleanup_stale_mptcp_transit_interfaces(cleanup_point_id)
+                self.cleanup_stale_mptcp_transit_interfaces(cleanup_point_id, keep=transit_keep)
             existing_slaves = current_uplink_state.get("slaves", {}) if isinstance(current_uplink_state.get("slaves", {}), dict) else {}
             for slave_id, info in list(existing_slaves.items()):
                 iface = str((info if isinstance(info, dict) else {}).get("interface_name", "") or "").strip()[:15]
@@ -1740,6 +1801,16 @@ WantedBy=multi-user.target
                 if unit_changed or runtime_changed or start_script_changed or not self.systemd_is_active(secondary_service_name):
                     subprocess.run(f"systemctl enable {secondary_service_name}.service", shell=True, check=False)
                     subprocess.run(f"systemctl restart {secondary_service_name}.service", shell=True, check=False)
+            # Accumulation fix: reap any lw-sc-<point>-* not in the currently-published
+            # set (e.g. when legs shrink from 5 to 2, indices 2,3,4 get deleted).
+            self.cleanup_stale_mptcp_transit_interfaces(
+                point_id,
+                keep={
+                    str(ul.get("interface_name", ""))
+                    for ul in underlays
+                    if str(ul.get("interface_name", ""))
+                },
+            )
         else:
             self.disable_runtime(secondary_service_name, secondary_unit_path, secondary_start_script, secondary_runtime_path)
             self.cleanup_stale_mptcp_transit_interfaces(point_id)
