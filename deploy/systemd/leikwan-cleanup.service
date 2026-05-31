@@ -4,5 +4,5 @@ After=network.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/var/www/master
-ExecStart=/usr/bin/php /var/www/master/cli/cleanup-tasks.php --retention-days 7 --offline-minutes 60 --lease-timeout 10
+WorkingDirectory=/www/wwwroot/v3.leikwanhost.com/leikwan-v3/master
+ExecStart=/usr/bin/php /www/wwwroot/v3.leikwanhost.com/leikwan-v3/master/cli/cleanup-tasks.php --retention-days 7 --offline-minutes 60 --lease-timeout 10

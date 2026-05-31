@@ -143,6 +143,29 @@ download_atomic() {
   mv "$tmp_path" "$path"
 }
 
+# Returns 0 if local file exists and sha256 matches expected; 1 otherwise.
+check_binary_current() {
+  local local_path="$1" expected_sha256="$2"
+  [[ -f "$local_path" && -n "$expected_sha256" ]] || return 1
+  local actual
+  actual=$(sha256sum "$local_path" 2>/dev/null | awk '{print $1}')
+  [[ "$actual" == "$expected_sha256" ]]
+}
+
+# Extract sha256 for a versions.json key from the pre-fetched $_VERSIONS_JSON variable.
+_vers_sha256() {
+  python3 -c "
+import json, sys
+key = sys.argv[2]
+try:
+    d = json.loads(sys.argv[1])
+    entry = d.get(key)
+    print(entry.get('sha256', '') if isinstance(entry, dict) else '')
+except Exception:
+    print('')
+" "$_VERSIONS_JSON" "$1" 2>/dev/null || echo ''
+}
+
 json_config_value() {
   local key="$1"
   local default_value="${2:-}"
@@ -311,12 +334,32 @@ ensure_time_sync
 install_wireguard_tools
 
 mkdir -p "$CONFIG_DIR" "$BIN_DIR"
-download_atomic "$ARTIFACT_BASE/artifacts/slave-agent.py" "$BIN_DIR/leikwan-slave-agent.py"
+_VERSIONS_JSON=$(curl --connect-timeout 10 --max-time 30 -fsSL \
+    "$ARTIFACT_BASE/artifacts/versions.json" 2>/dev/null || echo '{}')
+
+_sha=$(_vers_sha256 slave_agent)
+if check_binary_current "$BIN_DIR/leikwan-slave-agent.py" "$_sha"; then
+  echo "  slave-agent.py up to date, skipping download"
+else
+  download_atomic "$ARTIFACT_BASE/artifacts/slave-agent.py" "$BIN_DIR/leikwan-slave-agent.py"
+fi
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-preconnect-relay.py" "$BIN_DIR/leikwan-preconnect-relay.py"
 download_atomic "$ARTIFACT_BASE/artifacts/slave-agent-update.sh" "$BIN_DIR/leikwan-slave-update"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
-download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
-download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
+
+_sha=$(_vers_sha256 wstunnel_linux_amd64)
+if check_binary_current "$BIN_DIR/wstunnel" "$_sha"; then
+  echo "  wstunnel up to date, skipping download"
+else
+  download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
+fi
+
+_sha=$(_vers_sha256 leikwan_ingress_linux_amd64)
+if check_binary_current "$BIN_DIR/leikwan-ingress" "$_sha"; then
+  echo "  leikwan-ingress up to date, skipping download"
+else
+  download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
+fi
 
 # --- WireGuard watchdog ---
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-wg-watchdog.sh" "$BIN_DIR/leikwan-wg-watchdog.sh"
