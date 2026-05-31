@@ -200,7 +200,7 @@ class SingboxConfigBuilderTest {
     }
 
     @Test
-    fun `tun inbound uses mobile safe mtu to avoid oversized udp proxy packets`() {
+    fun `tun inbound uses large mtu for throughput`() {
         val builder = SingboxConfigBuilder(settings = baseSettings())
 
         val config = JsonParser.parseString(
@@ -212,7 +212,7 @@ class SingboxConfigBuilderTest {
         ).asJsonObject
         val tunInbound = config.getAsJsonArray("inbounds").first().asJsonObject
 
-        assertEquals(1280, tunInbound.get("mtu").asInt)
+        assertEquals(9000, tunInbound.get("mtu").asInt)
     }
 
     @Test

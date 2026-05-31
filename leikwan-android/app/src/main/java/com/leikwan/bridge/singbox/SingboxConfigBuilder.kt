@@ -145,7 +145,7 @@ class SingboxConfigBuilder(
                 // docs/2026-05-31-android-direct-vpn-still-bad-handoff.md.
                 addProperty("stack", "gvisor")
                 addProperty("endpoint_independent_nat", true)
-                addProperty("mtu", 1280)
+                addProperty("mtu", 9000)
             })
         }
     }
