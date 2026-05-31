@@ -3,7 +3,10 @@ package com.leikwan.bridge.service
 import com.leikwan.bridge.data.ProxyNode
 
 sealed interface ProxySelectionResult {
-    data class Success(val selectedNode: ProxyNode) : ProxySelectionResult
+    data class Success(
+        val selectedNode: ProxyNode,
+        val activeNodes: List<ProxyNode> = listOf(selectedNode),
+    ) : ProxySelectionResult
     data class Error(val message: String) : ProxySelectionResult
 }
 
@@ -29,6 +32,13 @@ object ProxySelectionPolicy {
         ) {
             return ProxySelectionResult.Error("Selected proxy does not match the chosen service")
         }
-        return ProxySelectionResult.Success(selectedNode)
+        val activeNodes = if (connectionMode == ProxyConnectionMode.SERVICES) {
+            proxyNodes.filter { node ->
+                node.enabled && (node.forwardId == null || node.forwardId == forwardId)
+            }.ifEmpty { listOf(selectedNode) }
+        } else {
+            proxyNodes.filter { it.enabled }.ifEmpty { listOf(selectedNode) }
+        }
+        return ProxySelectionResult.Success(selectedNode, activeNodes)
     }
 }

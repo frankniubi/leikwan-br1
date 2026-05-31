@@ -15,9 +15,12 @@ import com.leikwan.bridge.routing.RoutingPolicyEngine
 import com.leikwan.bridge.routing.RoutingPolicySnapshot
 import com.leikwan.bridge.routing.SafePathRegistry
 import com.leikwan.bridge.runtime.BondForwardRunner
+import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardMode
+import com.leikwan.bridge.runtime.NodeLeg
 import com.leikwan.bridge.runtime.ProcessRunner
 import com.leikwan.bridge.runtime.RuntimeBinaryInstaller
+import com.leikwan.bridge.runtime.RuntimeBinaryPaths
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.runtime.SingleForwardRunner
 import com.leikwan.bridge.singbox.SingboxConfigBuilder
@@ -112,13 +115,23 @@ class TunnelOrchestrator internal constructor(
                 ?: throw Exception("Forward ${selectedForward ?: 0L} not found")
             Log.i(TAG, "Starting forward ${forward.forwardId}: ${forward.serviceName}")
             val binaries = binaryInstaller.prepareBinaryPaths()
-            val planned = when (forward.mode) {
-                ForwardMode.SINGLE -> SingleForwardRunner.buildPlan(forward, binaries)
-                ForwardMode.BOND -> BondForwardRunner.buildPlan(forward, binaries)
-                else -> throw Exception("Forward ${forward.forwardId} mode ${forward.mode.wireValue} is not supported on Android")
+            val relayNodes = selection.activeNodes.filter { it.type.lowercase() != "wireguard" }
+            if (relayNodes.size > 1) {
+                val legs = startNodeLegs(forward, relayNodes.map { it.id }, binaries)
+                RuntimeContext(
+                    forwardId = forward.forwardId,
+                    mode = forward.mode,
+                    localListenPort = legs.values.firstOrNull()?.localListenPort ?: forward.listenPort,
+                    localLegPorts = legs.values.flatMap { it.localLegPorts },
+                    processPlans = emptyList(),
+                    bypassHosts = legs.values.flatMapTo(linkedSetOf()) { it.bypassHosts },
+                    nodeLegs = legs,
+                )
+            } else {
+                val planned = buildRuntimePlan(forward, binaries)
+                processRunner.start(forward.forwardId, planned)
+                planned
             }
-            processRunner.start(forward.forwardId, planned)
-            planned
         } else {
             null
         }
@@ -127,7 +140,7 @@ class TunnelOrchestrator internal constructor(
         val compiled = SingboxConfigBuilder
             .fromPrefs(prefs)
             .build(
-                proxyNodes = listOf(selection.selectedNode),
+                proxyNodes = selection.activeNodes,
                 runtimeContext = runtimeContext,
                 routingPolicySnapshot = routingSnapshot,
                 connectionMode = connectionMode,
@@ -149,11 +162,11 @@ class TunnelOrchestrator internal constructor(
                 activeRuntime = runtimeContext
             }
             is VpnStartupAwaitResult.Failed -> {
-                runtimeContext?.let { processRunner.stopForward(it.forwardId) }
+                stopRuntime(runtimeContext)
                 throw Exception(vpnResult.errorMessage)
             }
             VpnStartupAwaitResult.Timeout -> {
-                runtimeContext?.let { processRunner.stopForward(it.forwardId) }
+                stopRuntime(runtimeContext)
                 throw Exception("VPN service start timed out")
             }
         }
@@ -170,6 +183,55 @@ class TunnelOrchestrator internal constructor(
     }
 
     fun isRunning(): Boolean = LeikwanVpnService.isRunning
+
+    private fun buildRuntimePlan(
+        forward: ForwardContract,
+        binaries: RuntimeBinaryPaths,
+        portSalt: Int = 0,
+    ): RuntimeContext = when (forward.mode) {
+        ForwardMode.SINGLE -> SingleForwardRunner.buildPlan(forward, binaries)
+        ForwardMode.BOND -> BondForwardRunner.buildPlan(forward, binaries, portSalt)
+        else -> throw Exception("Forward ${forward.forwardId} mode ${forward.mode.wireValue} is not supported on Android")
+    }
+
+    internal fun startNodeLegs(
+        forward: ForwardContract,
+        nodeIds: List<Long>,
+        binaries: RuntimeBinaryPaths,
+    ): Map<Long, NodeLeg> = nodeIds.associateWith { nodeId ->
+        val legForward = forward.withListenPort(listenPortForNode(forward.listenPort, nodeId))
+        val legRuntime = buildRuntimePlan(
+            forward = legForward,
+            binaries = binaries,
+            portSalt = portSaltForNode(nodeId),
+        )
+        val processKey = NodeLeg.processKey(forward.forwardId, nodeId)
+        processRunner.start(processKey, legRuntime)
+        NodeLeg(
+            nodeId = nodeId,
+            forwardId = forward.forwardId,
+            processKey = processKey,
+            mode = legRuntime.mode,
+            localListenPort = legRuntime.localListenPort,
+            localLegPorts = legRuntime.localLegPorts,
+            processPlans = legRuntime.processPlans,
+            bypassHosts = legRuntime.bypassHosts,
+        )
+    }
+
+    private fun stopRuntime(runtimeContext: RuntimeContext?) {
+        runtimeContext ?: return
+        if (runtimeContext.nodeLegs.isNotEmpty()) {
+            runtimeContext.nodeLegs.values.forEach { processRunner.stopForward(it.processKey) }
+        } else {
+            processRunner.stopForward(runtimeContext.forwardId)
+        }
+    }
+
+    private fun listenPortForNode(baseListenPort: Int, nodeId: Long): Int =
+        baseListenPort + 1 + (nodeId % 1000L).toInt()
+
+    private fun portSaltForNode(nodeId: Long): Int = ((nodeId % 1000L) * 20).toInt()
 
     private fun writeDebugConfig(configJson: String) {
         runCatching {

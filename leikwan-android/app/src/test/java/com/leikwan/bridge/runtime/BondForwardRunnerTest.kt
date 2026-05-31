@@ -256,4 +256,85 @@ class BondForwardRunnerTest {
                 command.any { it.contains("tcp://127.0.0.1:21162?priority=10&endpoint_id=184&display_host=8.163.90.132") }
         })
     }
+
+    @Test
+    fun `bond runner port salt separates per-node leg ingress ports`() {
+        val forward = ForwardContract(
+            forwardId = 26L,
+            serviceName = "bond-26",
+            target = "193.227.109.82:5201",
+            listenPort = 11024,
+            mode = ForwardMode.BOND,
+            transport = "tcp",
+            serviceStatus = "active",
+            endpointMode = "manual",
+            sni = "relay.example.com",
+            pathPrefix = "/route-key",
+            speedLimitMbps = 500,
+            endpoints = listOf(
+                ForwardEndpoint(
+                    endpointId = 184,
+                    node = "gz-1",
+                    host = "8.163.90.132",
+                    port = 7001,
+                    cdnHost = null,
+                    priority = 1,
+                    dynamicPriority = null,
+                    weight = 1,
+                    healthStatus = "healthy",
+                    supportsQuicLeg = false,
+                    ingressProtocol = null,
+                    ingressAuthToken = null,
+                ),
+            ),
+            bonding = BondingContract(
+                ingressMode = "wss_path_mux",
+                routeKey = "/route-key",
+                remoteTarget = "138.252.162.120:9000",
+                sessionToken = "tcp-token",
+                udpSessionToken = "udp-token",
+                chunkSize = null,
+                maxWindowBytes = null,
+                retransmitMs = null,
+                connectTimeoutMs = null,
+                joinTimeoutMs = null,
+                adaptiveJoinTimeout = false,
+                joinTimeoutFloorMs = null,
+                joinTimeoutCeilingMs = null,
+                joinTimeoutPerLegMs = null,
+                interactiveChunkBytes = null,
+                latencyGuardBytes = null,
+                interactiveRttSlackMs = null,
+                warmupTriggerBytes = null,
+                warmupSliceBytes = null,
+                warmupLegDelayMs = null,
+                bulkPromoteBytes = null,
+                legCooldownMs = null,
+                quicEnabled = false,
+                quicViaSlave = false,
+                activeLegLimit = 0,
+                quicActiveLegLimit = 0,
+                wssStandbyEnabled = true,
+                disableLocalRateLimit = true,
+                quicServerName = null,
+                quicInsecure = true,
+                quicPriority = 0,
+                wsPriority = 10,
+            ),
+            mptcp = null,
+        )
+        val binaries = RuntimeBinaryPaths(
+            wstunnelBinary = "/runtime/wstunnel",
+            ingressBinary = "/runtime/leikwan-ingress",
+            bondBinary = "/runtime/leikwan-bond",
+        )
+
+        val nodeA = BondForwardRunner.buildPlan(forward, binaries, portSalt = 20)
+        val nodeB = BondForwardRunner.buildPlan(forward, binaries, portSalt = 40)
+
+        assertEquals(listOf(20982), nodeA.localLegPorts)
+        assertEquals(listOf(21002), nodeB.localLegPorts)
+        assertTrue(nodeA.processPlans.first().command.contains("tcp://127.0.0.1:20982:138.252.162.120:9000"))
+        assertTrue(nodeB.processPlans.first().command.contains("tcp://127.0.0.1:21002:138.252.162.120:9000"))
+    }
 }

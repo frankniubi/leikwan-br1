@@ -9,6 +9,7 @@ import com.leikwan.bridge.routing.RoutingRuleKind
 import com.leikwan.bridge.routing.SafePathRegistry
 import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.runtime.ForwardMode
+import com.leikwan.bridge.runtime.NodeLeg
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.service.ProxyConnectionMode
 import org.junit.Assert.assertEquals
@@ -624,6 +625,58 @@ class SingboxConfigBuilderTest {
         assertTrue("node rule present", nodeRuleIdx >= 0)
         assertTrue("slave bypass precedes node rule", slaveIdx < nodeRuleIdx)
         assertTrue("lan bypass precedes node rule", lanIdx < nodeRuleIdx)
+    }
+
+    @Test
+    fun `services mode rewrites each node outbound to its own relay leg port`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+        val runtime = RuntimeContext(
+            forwardId = 26L,
+            mode = ForwardMode.BOND,
+            localListenPort = 11024,
+            localLegPorts = emptyList(),
+            processPlans = emptyList(),
+            bypassHosts = emptySet(),
+            nodeLegs = mapOf(
+                1L to NodeLeg(
+                    nodeId = 1L,
+                    forwardId = 26L,
+                    processKey = 26001L,
+                    mode = ForwardMode.BOND,
+                    localListenPort = 12001,
+                    localLegPorts = emptyList(),
+                    processPlans = emptyList(),
+                    bypassHosts = emptySet(),
+                ),
+                2L to NodeLeg(
+                    nodeId = 2L,
+                    forwardId = 26L,
+                    processKey = 26002L,
+                    mode = ForwardMode.BOND,
+                    localListenPort = 12002,
+                    localLegPorts = emptyList(),
+                    processPlans = emptyList(),
+                    bypassHosts = emptySet(),
+                ),
+            ),
+        )
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(ssNode(1), ssNode(2)),
+                runtimeContext = runtime,
+                routingPolicySnapshot = null,
+                connectionMode = ProxyConnectionMode.SERVICES,
+            ).configJson
+        ).asJsonObject
+        val outbounds = config.getAsJsonArray("outbounds").map { it.asJsonObject }
+        val node1 = outbounds.first { it.get("tag").asString == "proxy-1" }
+        val node2 = outbounds.first { it.get("tag").asString == "proxy-2" }
+
+        assertEquals("127.0.0.1", node1.get("server").asString)
+        assertEquals(12001, node1.get("server_port").asInt)
+        assertEquals("127.0.0.1", node2.get("server").asString)
+        assertEquals(12002, node2.get("server_port").asInt)
     }
 
     private fun engine() = RoutingPolicyEngine(

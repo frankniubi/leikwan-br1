@@ -106,6 +106,7 @@ class AndroidEffectiveForwardBuilderTest {
         assertEquals(listOf(20001, 20002), intent.localLegPorts)
         assertEquals(context.processPlans, intent.processPlans)
         assertEquals(context.bypassHosts, intent.bypassHosts)
+        assertEquals(emptyMap<Long, NodeLeg>(), intent.nodeLegs)
     }
 
     @Test

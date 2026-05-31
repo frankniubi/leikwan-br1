@@ -76,7 +76,7 @@ class SingboxConfigBuilder(
         root.add("dns", buildDns(dnsProxyDetourTag, dnsBootstrapDomains, enableIpv6Tun))
         root.add("inbounds", buildInbounds(enableIpv6Tun))
         root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode))
-        root.add("route", buildRoute(runtimeContext?.bypassHosts ?: emptySet(), finalProxyTag, routingPolicySnapshot))
+        root.add("route", buildRoute(runtimeContext?.allBypassHosts() ?: emptySet(), finalProxyTag, routingPolicySnapshot))
         return CompiledConfigResult(
             configJson = gson.toJson(root),
             finalProxyTag = finalProxyTag,
@@ -193,7 +193,7 @@ class SingboxConfigBuilder(
     ): JsonObject? {
         val config = gson.fromJson(node.configJson, JsonObject::class.java)
         val useLocalRelay = connectionMode == ProxyConnectionMode.SERVICES
-        val relayPort = runtimeContext?.localListenPort
+        val relayPort = runtimeContext?.relayListenPortForNode(node.id)
         val outboundServer = if (useLocalRelay) "127.0.0.1" else node.originalServer
         val outboundPort = if (useLocalRelay) {
             relayPort ?: return null
@@ -488,6 +488,8 @@ class SingboxConfigBuilder(
             .filter {
                 if (connectionMode != ProxyConnectionMode.SERVICES || runtimeContext == null) {
                     true
+                } else if (runtimeContext.nodeLegs.isNotEmpty()) {
+                    runtimeContext.nodeLegs.containsKey(it.id)
                 } else {
                     it.forwardId == null || it.forwardId == runtimeContext.forwardId
                 }

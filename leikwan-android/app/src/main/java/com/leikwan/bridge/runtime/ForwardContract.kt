@@ -88,6 +88,8 @@ data class ForwardContract(
             speedLimitMbps = speedLimitMbps,
         )
     }
+
+    fun withListenPort(listenPort: Int): ForwardContract = copy(listenPort = listenPort)
 }
 
 data class ForwardListItem(

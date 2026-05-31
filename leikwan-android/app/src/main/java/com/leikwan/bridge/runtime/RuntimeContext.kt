@@ -18,6 +18,30 @@ data class RuntimeBinaryPaths(
     val bondBinary: String?,
 )
 
+data class NodeLeg(
+    val nodeId: Long,
+    val forwardId: Long,
+    val processKey: Long,
+    val mode: ForwardMode,
+    val localListenPort: Int,
+    val localLegPorts: List<Int>,
+    val processPlans: List<RuntimeProcessPlan>,
+    val bypassHosts: Set<String>,
+) {
+    companion object {
+        fun processKey(forwardId: Long, nodeId: Long): Long = forwardId * 100_000L + (nodeId % 100_000L)
+    }
+
+    fun toRuntimeContext(): RuntimeContext = RuntimeContext(
+        forwardId = forwardId,
+        mode = mode,
+        localListenPort = localListenPort,
+        localLegPorts = localLegPorts,
+        processPlans = processPlans,
+        bypassHosts = bypassHosts,
+    )
+}
+
 data class RuntimeContext(
     val forwardId: Long,
     val mode: ForwardMode,
@@ -25,4 +49,18 @@ data class RuntimeContext(
     val localLegPorts: List<Int>,
     val processPlans: List<RuntimeProcessPlan>,
     val bypassHosts: Set<String>,
-)
+    val nodeLegs: Map<Long, NodeLeg> = emptyMap(),
+) {
+    fun relayListenPortForNode(nodeId: Long): Int? =
+        nodeLegs[nodeId]?.localListenPort ?: localListenPort
+
+    fun allBypassHosts(): Set<String> =
+        if (nodeLegs.isEmpty()) {
+            bypassHosts
+        } else {
+            linkedSetOf<String>().apply {
+                addAll(bypassHosts)
+                nodeLegs.values.forEach { addAll(it.bypassHosts) }
+            }
+        }
+}
