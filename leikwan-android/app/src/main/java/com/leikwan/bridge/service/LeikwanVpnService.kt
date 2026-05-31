@@ -103,6 +103,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             options.workingPath = cacheDir.absolutePath
             options.tempPath = cacheDir.absolutePath
             Libbox.setup(options)
+            Libbox.checkConfig(config)
 
             val server = CommandServer(this, this)
             commandServer = server

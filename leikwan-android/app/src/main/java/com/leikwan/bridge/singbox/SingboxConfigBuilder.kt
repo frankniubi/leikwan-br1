@@ -66,8 +66,9 @@ class SingboxConfigBuilder(
             addProperty("level", "debug")
         })
         val dnsProxyDetourTag = finalProxyTag.takeIf { activeProxyNodes.isNotEmpty() }
-        val dnsBootstrapDomains = if (connectionMode == ProxyConnectionMode.DIRECT) {
+        val dnsBootstrapDomains = if (connectionMode == ProxyConnectionMode.DIRECT || activeProxyNodes.any { it.type.equals("wireguard", ignoreCase = true) }) {
             activeProxyNodes
+                .filter { connectionMode == ProxyConnectionMode.DIRECT || it.type.equals("wireguard", ignoreCase = true) }
                 .mapNotNull { it.originalServer.trim().lowercase().takeIf { host -> host.isNotEmpty() && !isIpLike(host) } }
                 .toSet()
         } else {
@@ -76,6 +77,7 @@ class SingboxConfigBuilder(
         root.add("dns", buildDns(dnsProxyDetourTag, dnsBootstrapDomains, enableIpv6Tun))
         root.add("inbounds", buildInbounds(enableIpv6Tun))
         root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode))
+        buildEndpoints(activeProxyNodes).takeIf { it.size() > 0 }?.let { root.add("endpoints", it) }
         root.add("route", buildRoute(runtimeContext?.allBypassHosts() ?: emptySet(), finalProxyTag, routingPolicySnapshot))
         return CompiledConfigResult(
             configJson = gson.toJson(root),
@@ -160,6 +162,10 @@ class SingboxConfigBuilder(
 
         activeProxyNodes(proxyNodes, runtimeContext, connectionMode)
             .forEach { node ->
+                if (node.type.equals("wireguard", ignoreCase = true)) {
+                    proxyTags += "proxy-${node.id}"
+                    return@forEach
+                }
                 val outbound = buildProxyOutbound(node, runtimeContext, connectionMode) ?: return@forEach
                 outbounds.add(outbound)
                 proxyTags += "proxy-${node.id}"
@@ -186,6 +192,51 @@ class SingboxConfigBuilder(
         return outbounds
     }
 
+    private fun buildEndpoints(proxyNodes: List<ProxyNode>): JsonArray {
+        val endpoints = JsonArray()
+        proxyNodes
+            .filter { it.type.equals("wireguard", ignoreCase = true) }
+            .forEach { node ->
+                buildWireGuardEndpoint(node)?.let { endpoints.add(it) }
+            }
+        return endpoints
+    }
+
+    private fun buildWireGuardEndpoint(node: ProxyNode): JsonObject? {
+        val config = gson.fromJson(node.configJson, JsonObject::class.java) ?: return null
+        val peers = config.getAsJsonArray("peers") ?: return null
+        if (peers.size() == 0) return null
+
+        return JsonObject().apply {
+            addProperty("type", "wireguard")
+            addProperty("tag", "proxy-${node.id}")
+            // Bundled libbox is a sing-box devel build with WireGuard endpoint support
+            // (Go build info: github.com/sagernet/sing-box (devel), with >=1.11 endpoint
+            // deprecation strings); use endpoint form instead of deprecated wireguard outbound.
+            addProperty("system", false)
+            config.copyString("private_key", this)
+            config.copyString("listen_port", this)
+            config.copyInt("mtu", this)
+            config.copyArray("address", this)
+            add("peers", JsonArray().apply {
+                peers.forEach { peerElement ->
+                    val peer = peerElement.asJsonObject
+                    val peerAddress = peer.stringOrNull("address") ?: node.originalServer
+                    val peerPort = peer.intOrNull("port") ?: node.originalPort
+                    add(JsonObject().apply {
+                        peer.copyString("public_key", this)
+                        peer.copyString("pre_shared_key", this)
+                        addProperty("address", peerAddress)
+                        addProperty("port", peerPort)
+                        peer.copyArray("allowed_ips", this)
+                        peer.copyInt("persistent_keepalive_interval", this)
+                        peer.copyArray("reserved", this)
+                    })
+                }
+            })
+        }
+    }
+
     private fun buildProxyOutbound(
         node: ProxyNode,
         runtimeContext: RuntimeContext?,
@@ -201,7 +252,7 @@ class SingboxConfigBuilder(
             node.originalPort
         }
 
-        return when (node.type) {
+        return when (node.type.lowercase()) {
             "ss" -> JsonObject().apply {
                 addProperty("type", "shadowsocks")
                 addProperty("tag", "proxy-${node.id}")
@@ -489,9 +540,11 @@ class SingboxConfigBuilder(
                 if (connectionMode != ProxyConnectionMode.SERVICES || runtimeContext == null) {
                     true
                 } else if (runtimeContext.nodeLegs.isNotEmpty()) {
-                    runtimeContext.nodeLegs.containsKey(it.id)
+                    it.type.equals("wireguard", ignoreCase = true) || runtimeContext.nodeLegs.containsKey(it.id)
                 } else {
-                    it.forwardId == null || it.forwardId == runtimeContext.forwardId
+                    it.type.equals("wireguard", ignoreCase = true) ||
+                        it.forwardId == null ||
+                        it.forwardId == runtimeContext.forwardId
                 }
             }
     }
@@ -503,6 +556,39 @@ class SingboxConfigBuilder(
     private fun normalizeIpCidr(value: String): String {
         if ("/" in value) return value
         return if (value.contains(':')) "$value/128" else "$value/32"
+    }
+
+    private fun JsonObject.copyString(name: String, target: JsonObject) {
+        val value = get(name) ?: return
+        if (!value.isJsonNull) {
+            target.add(name, value.deepCopy())
+        }
+    }
+
+    private fun JsonObject.copyInt(name: String, target: JsonObject) {
+        val value = get(name) ?: return
+        if (value.isJsonNull) return
+        runCatching { value.asInt }
+            .onSuccess { target.addProperty(name, it) }
+    }
+
+    private fun JsonObject.copyArray(name: String, target: JsonObject) {
+        val value = get(name) ?: return
+        if (value.isJsonArray) {
+            target.add(name, value.deepCopy())
+        }
+    }
+
+    private fun JsonObject.stringOrNull(name: String): String? {
+        val value = get(name) ?: return null
+        if (value.isJsonNull) return null
+        return runCatching { value.asString.trim().takeIf { it.isNotEmpty() } }.getOrNull()
+    }
+
+    private fun JsonObject.intOrNull(name: String): Int? {
+        val value = get(name) ?: return null
+        if (value.isJsonNull) return null
+        return runCatching { value.asInt }.getOrNull()
     }
 
     companion object {

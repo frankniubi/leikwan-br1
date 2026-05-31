@@ -11,7 +11,7 @@ object ImportRouter {
         data class Empty(val rawInput: String) : ImportResult()
     }
 
-    private val proxySchemes = listOf("ss://", "vmess://", "vless://")
+    private val proxySchemes = listOf("ss://", "vmess://", "vless://", "wg://")
 
     fun process(text: String): ImportResult {
         val trimmed = text.trim()
@@ -53,6 +53,7 @@ object ImportRouter {
     fun looksImportable(text: String): Boolean {
         val trimmed = text.trim()
         return proxySchemes.any { trimmed.startsWith(it, ignoreCase = true) } ||
+            trimmed.startsWith("[Interface]", ignoreCase = true) ||
             trimmed.startsWith("http://", ignoreCase = true) ||
             trimmed.startsWith("https://", ignoreCase = true)
     }

@@ -55,4 +55,62 @@ class ProxyUriParserTest {
             config.get("password").asString,
         )
     }
+
+    @Test
+    fun `wireguard config parser preserves interface and peer fields`() {
+        val node = ProxyUriParser.parse(
+            """
+            [Interface]
+            PrivateKey = private-key-123
+            Address = 10.66.66.2/32, fd00::2/128
+            MTU = 1420
+
+            [Peer]
+            PublicKey = public-key-456
+            PresharedKey = psk-789
+            Endpoint = wg.example.com:51820
+            AllowedIPs = 0.0.0.0/0, ::/0
+            PersistentKeepalive = 25
+            """.trimIndent()
+        ) ?: error("expected wireguard node")
+
+        val config = JsonParser.parseString(node.configJson).asJsonObject
+        val peer = config.getAsJsonArray("peers").single().asJsonObject
+
+        assertEquals("WireGuard wg.example.com:51820", node.name)
+        assertEquals("wireguard", node.type)
+        assertEquals("wg.example.com", node.originalServer)
+        assertEquals(51820, node.originalPort)
+        assertEquals("private-key-123", config.get("private_key").asString)
+        assertEquals(listOf("10.66.66.2/32", "fd00::2/128"), config.getAsJsonArray("address").map { it.asString })
+        assertEquals(1420, config.get("mtu").asInt)
+        assertEquals("public-key-456", peer.get("public_key").asString)
+        assertEquals("psk-789", peer.get("pre_shared_key").asString)
+        assertEquals("wg.example.com", peer.get("address").asString)
+        assertEquals(51820, peer.get("port").asInt)
+        assertEquals(listOf("0.0.0.0/0", "::/0"), peer.getAsJsonArray("allowed_ips").map { it.asString })
+        assertEquals(25, peer.get("persistent_keepalive_interval").asInt)
+    }
+
+    @Test
+    fun `wg uri parser accepts base64 encoded wireguard config`() {
+        val encoded = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+            """
+            [Interface]
+            PrivateKey = key
+            Address = 10.7.0.2/32
+            [Peer]
+            PublicKey = peer
+            Endpoint = 203.0.113.7:51820
+            AllowedIPs = 0.0.0.0/0
+            """.trimIndent().toByteArray()
+        )
+
+        val node = ProxyUriParser.parse("wg://$encoded#Tokyo-WG") ?: error("expected wireguard node")
+
+        assertEquals("Tokyo-WG", node.name)
+        assertEquals("wireguard", node.type)
+        assertEquals("203.0.113.7", node.originalServer)
+        assertEquals(51820, node.originalPort)
+    }
 }

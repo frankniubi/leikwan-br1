@@ -1,6 +1,7 @@
 package com.leikwan.bridge.ui.proxies
 
 import com.google.gson.Gson
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.leikwan.bridge.data.ProxyNode
@@ -36,6 +37,17 @@ sealed interface ProxyProtocolDraft {
         val network: String = "tcp",
         val host: String = "",
         val path: String = "",
+    ) : ProxyProtocolDraft
+
+    data class WireGuard(
+        val privateKey: String = "",
+        val addresses: String = "",
+        val publicKey: String = "",
+        val preSharedKey: String = "",
+        val allowedIps: String = "0.0.0.0/0, ::/0",
+        val mtu: String = "",
+        val persistentKeepalive: String = "",
+        val reserved: String = "",
     ) : ProxyProtocolDraft
 
     data class Unknown(
@@ -85,6 +97,22 @@ object ProxyProtocolDraftParser {
                 path = config.stringOrEmpty("path"),
             )
 
+            "wireguard" -> {
+                val peer = config.arrayOrNull("peers")?.firstOrNull()?.asJsonObject
+                ProxyProtocolDraft.WireGuard(
+                    privateKey = config.stringOrEmpty("private_key"),
+                    addresses = config.csvString("address"),
+                    publicKey = peer?.stringOrEmpty("public_key").orEmpty(),
+                    preSharedKey = peer?.stringOrEmpty("pre_shared_key").orEmpty(),
+                    allowedIps = peer?.csvString("allowed_ips").orEmpty(),
+                    mtu = config.stringOrEmpty("mtu"),
+                    persistentKeepalive = peer?.stringOrEmpty("persistent_keepalive_interval")
+                        ?: peer?.stringOrEmpty("persistent_keepalive")
+                        ?: "",
+                    reserved = peer?.csvString("reserved").orEmpty(),
+                )
+            }
+
             else -> ProxyProtocolDraft.Unknown(prettyJson(node.configJson))
         }
     }
@@ -131,6 +159,27 @@ object ProxyProtocolDraftParser {
                 protocol.network.takeIf { it.isNotBlank() && it != "tcp" }?.let { addProperty("net", it) }
                 protocol.host.takeIf { it.isNotBlank() }?.let { addProperty("host", it) }
                 protocol.path.takeIf { it.isNotBlank() }?.let { addProperty("path", it) }
+            }
+
+            is ProxyProtocolDraft.WireGuard -> JsonObject().apply {
+                addProperty("private_key", protocol.privateKey)
+                addCsvArray("address", protocol.addresses)
+                protocol.mtu.trim().toIntOrNull()?.let { addProperty("mtu", it) }
+                add("peers", JsonArray().apply {
+                    add(JsonObject().apply {
+                        addProperty("public_key", protocol.publicKey)
+                        protocol.preSharedKey.takeIf { it.isNotBlank() }?.let { addProperty("pre_shared_key", it) }
+                        addProperty("address", server)
+                        addProperty("port", port)
+                        addCsvArray("allowed_ips", protocol.allowedIps)
+                        protocol.persistentKeepalive.trim().toIntOrNull()
+                            ?.let { addProperty("persistent_keepalive_interval", it) }
+                        val reservedInts = csvValues(protocol.reserved).mapNotNull { it.toIntOrNull() }
+                        if (reservedInts.isNotEmpty()) {
+                            add("reserved", JsonArray().apply { reservedInts.forEach { add(it) } })
+                        }
+                    })
+                })
             }
 
             is ProxyProtocolDraft.Unknown -> runCatching {
@@ -183,6 +232,12 @@ object ProxyProtocolDraftParser {
                 add("${details.network.ifBlank { "tcp" }.uppercase()} • ${details.security.ifBlank { "auto" }}")
             }
 
+            is ProxyProtocolDraft.WireGuard -> buildList {
+                add(hostLine)
+                add("Public key: ${details.publicKey.ifBlank { "Unknown" }}")
+                details.addresses.takeIf { it.isNotBlank() }?.let { add("Address: $it") }
+            }
+
             is ProxyProtocolDraft.Unknown -> listOf(hostLine)
         }
     }
@@ -210,6 +265,14 @@ object ProxyProtocolDraftParser {
             "ss" -> {
                 config.addProperty("server", server)
                 config.addProperty("server_port", port)
+                config.addProperty("name", name)
+            }
+
+            "wireguard" -> {
+                config.arrayOrNull("peers")?.firstOrNull()?.asJsonObject?.let { peer ->
+                    peer.addProperty("address", server)
+                    peer.addProperty("port", port)
+                }
                 config.addProperty("name", name)
             }
         }
@@ -243,3 +306,29 @@ private fun JsonObject.objectOrNull(name: String): JsonObject? {
     val value = get(name) ?: return null
     return value.takeIf { it.isJsonObject }?.asJsonObject
 }
+
+private fun JsonObject.arrayOrNull(name: String): JsonArray? {
+    val value = get(name) ?: return null
+    return value.takeIf { it.isJsonArray }?.asJsonArray
+}
+
+private fun JsonObject.csvString(name: String): String {
+    val value = get(name) ?: return ""
+    return when {
+        value.isJsonArray -> value.asJsonArray.joinToString(", ") { it.asString }
+        value.isJsonPrimitive -> value.asString.trim()
+        else -> ""
+    }
+}
+
+private fun JsonObject.addCsvArray(name: String, csv: String) {
+    val values = csvValues(csv)
+    if (values.isNotEmpty()) {
+        add(name, JsonArray().apply { values.forEach { add(it) } })
+    }
+}
+
+private fun csvValues(csv: String): List<String> =
+    csv.split(",")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }

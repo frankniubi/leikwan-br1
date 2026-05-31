@@ -80,6 +80,17 @@ object ProxyNodeEditor {
                 else -> null
             }
 
+            is ProxyProtocolDraft.WireGuard -> when {
+                protocol.privateKey.isBlank() -> "WireGuard private key is required"
+                protocol.addresses.isBlank() -> "WireGuard address is required"
+                protocol.publicKey.isBlank() -> "WireGuard peer public key is required"
+                protocol.allowedIps.isBlank() -> "WireGuard allowed IPs are required"
+                protocol.mtu.isNotBlank() && protocol.mtu.toIntOrNull() == null -> "WireGuard MTU must be a number"
+                protocol.persistentKeepalive.isNotBlank() &&
+                    protocol.persistentKeepalive.toIntOrNull() == null -> "WireGuard keepalive must be a number"
+                else -> null
+            }
+
             is ProxyProtocolDraft.Unknown -> null
         }
     }
