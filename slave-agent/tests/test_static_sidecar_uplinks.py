@@ -25,6 +25,21 @@ slave_agent_module = load_module("slave_agent_static_uplink_under_test", "slave-
 
 
 class SlaveStaticSidecarUplinkTests(unittest.TestCase):
+    def setUp(self):
+        # Isolate the shared restart-ledger circuit breaker per test so that
+        # repeated runs (with fixed mocked timestamps) do not accumulate ledger
+        # entries on disk and trip the breaker, suppressing the restarts these
+        # tests assert on.
+        ledger_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(ledger_dir.cleanup)
+        patch = mock.patch.object(
+            slave_agent_module,
+            "RESTART_LEDGER_DIR",
+            pathlib.Path(ledger_dir.name),
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def make_agent(self):
         tmp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(tmp_dir.cleanup)
@@ -60,6 +75,12 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
             "agent_config_json": {},
             "sidecar_static_uplinks": [uplink],
         }
+
+    def mark_selector_interfaces_ready(self, agent, *interfaces: str) -> None:
+        for iface in interfaces:
+            path = agent.wireguard_interface_path(iface)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("[Interface]\n", encoding="utf-8")
 
     def test_management_applies_static_uplinks_with_pinned_listen_port(self):
         agent = self.make_agent()
@@ -339,9 +360,12 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
             "restart_cooldown_seconds": 60,
         }
         commands: list[str] = []
+        self.mark_selector_interfaces_ready(agent, "lws4c2n19p", "lws4c2n19b")
 
         def fake_run(command: str, check: bool = True):
             commands.append(command)
+            if command == "wg show interfaces":
+                return SimpleNamespace(returncode=0, stdout="lws4c2n19p lws4c2n19b\n", stderr="")
             if "lws4c2n19p" in command and "10.240.8.1" in command:
                 return SimpleNamespace(returncode=0, stdout="""
 --- 10.240.8.1 ping statistics ---
@@ -380,8 +404,11 @@ rtt min/avg/max/mdev = 35.000/38.000/42.000/2.000 ms
             "max_active_avg_ms": 70,
             "switch_improvement_ms": 20,
         }
+        self.mark_selector_interfaces_ready(agent, "lws4c2n19p", "lws4c2n19b")
 
         def fake_run(command: str, check: bool = True):
+            if command == "wg show interfaces":
+                return SimpleNamespace(returncode=0, stdout="lws4c2n19p lws4c2n19b\n", stderr="")
             if "lws4c2n19p" in command:
                 return SimpleNamespace(returncode=0, stdout="rtt min/avg/max/mdev = 40.000/45.000/50.000/3.000 ms\n3 packets transmitted, 3 received, 0% packet loss", stderr="")
             if "lws4c2n19b" in command:
@@ -408,8 +435,11 @@ rtt min/avg/max/mdev = 35.000/38.000/42.000/2.000 ms
             ],
             "max_active_avg_ms": 70,
         }
+        self.mark_selector_interfaces_ready(agent, "lws4c2n19p", "lws4c2n19b")
 
         def fake_run(command: str, check: bool = True):
+            if command == "wg show interfaces":
+                return SimpleNamespace(returncode=0, stdout="lws4c2n19p lws4c2n19b\n", stderr="")
             if "lws4c2n19p" in command:
                 return SimpleNamespace(returncode=0, stdout="rtt min/avg/max/mdev = 26.000/28.000/30.000/0.050 ms\n3 packets transmitted, 3 received, 0% packet loss", stderr="")
             if "lws4c2n19b" in command:
@@ -457,6 +487,126 @@ rtt min/avg/max/mdev = 35.000/38.000/42.000/2.000 ms
         agent = self.make_agent()
         unit = agent.render_sidecar_uplink_selector_unit("wstunnel-svc-2-571", {"selector_port": 45621})
         self.assertIn(f"AgentVersion={slave_agent_module.AGENT_VERSION}", unit)
+        self.assertIn("Restart=on-failure", unit)
+        self.assertIn("StartLimitIntervalSec=300", unit)
+        self.assertIn("StartLimitBurst=5", unit)
+        self.assertIn("RestartSec=5", unit)
+
+    def test_apply_static_uplinks_prunes_selector_candidates_not_in_active_set(self):
+        agent = self.make_agent()
+        service_name = "wstunnel-svc-2-571"
+        selector = {
+            "enabled": True,
+            "selector_port": 45621,
+            "sidecar_service_port": 9000,
+            "candidates": [
+                {"lane": "primary", "interface_name": "lws4c2n19p"},
+                {"lane": "backup", "interface_name": "lws5c2n20b"},
+            ],
+        }
+        config_path = agent.sidecar_uplink_selector_config_path(service_name)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(selector), encoding="utf-8")
+        kept: list[dict] = []
+
+        with mock.patch.object(agent, "apply_sidecar_uplink"):
+            with mock.patch.object(agent, "watch_static_sidecar_uplink"):
+                with mock.patch.object(agent, "remove_sidecar_uplink"):
+                    with mock.patch.object(agent, "ensure_sidecar_uplink_selector", side_effect=lambda _name, payload: kept.append(payload)):
+                        agent.apply_static_sidecar_uplinks([
+                            {
+                                "enabled": True,
+                                "interface_name": "lws4c2n19p",
+                                "forward_combination_id": 2,
+                                "sidecar_point_id": 4,
+                                "node_id": 19,
+                            }
+                        ])
+
+        self.assertEqual(1, len(kept))
+        self.assertEqual(["lws4c2n19p"], [item["interface_name"] for item in kept[0]["candidates"]])
+
+    def test_apply_static_uplinks_removes_selector_when_all_candidates_are_stale(self):
+        agent = self.make_agent()
+        service_name = "wstunnel-svc-2-571"
+        config_path = agent.sidecar_uplink_selector_config_path(service_name)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "enabled": True,
+            "selector_port": 45621,
+            "candidates": [{"lane": "backup", "interface_name": "lws5c2n20b"}],
+        }), encoding="utf-8")
+        removed: list[str] = []
+
+        with mock.patch.object(agent, "apply_sidecar_uplink"):
+            with mock.patch.object(agent, "watch_static_sidecar_uplink"):
+                with mock.patch.object(agent, "remove_sidecar_uplink"):
+                    with mock.patch.object(agent, "remove_sidecar_uplink_selector", side_effect=lambda name: removed.append(name)):
+                        agent.apply_static_sidecar_uplinks([
+                            {"enabled": True, "interface_name": "lws4c2n19p"}
+                        ])
+
+        self.assertEqual([service_name], removed)
+
+    def test_selector_probe_skips_missing_interface_without_ping_or_restart(self):
+        agent = self.make_agent()
+        selector = {
+            "enabled": True,
+            "sidecar_service_port": 9000,
+            "candidates": [
+                {"lane": "primary", "interface_name": "lws5c1n20p", "ping_address": "10.240.190.233", "sidecar_address": "10.240.190.233"},
+            ],
+        }
+        commands: list[str] = []
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+            if command == "wg show interfaces":
+                return SimpleNamespace(returncode=0, stdout="lws4c2n19p\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    state = agent.evaluate_sidecar_uplink_selector(selector, previous_state={})
+
+        self.assertEqual("interface_missing", state["samples"][0]["error"])
+        self.assertFalse(any(command.startswith("ping ") for command in commands))
+        self.assertFalse(any(command.startswith("systemctl restart") for command in commands))
+
+    def test_selector_does_not_restart_when_all_candidates_are_unhealthy(self):
+        agent = self.make_agent()
+        for iface in ("lws4c2n19p", "lws4c2n19b"):
+            path = agent.wireguard_interface_path(iface)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("[Interface]\n", encoding="utf-8")
+        selector = {
+            "enabled": True,
+            "sidecar_service_port": 9000,
+            "candidates": [
+                {"lane": "primary", "interface_name": "lws4c2n19p", "ping_interface": "lws4c2n19p", "ping_address": "10.240.8.1", "sidecar_address": "10.240.8.1"},
+                {"lane": "backup", "interface_name": "lws4c2n19b", "ping_interface": "lws4c2n19b", "ping_address": "10.240.8.5", "sidecar_address": "10.240.8.5"},
+            ],
+            "restart_cooldown_seconds": 60,
+        }
+        commands: list[str] = []
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+            if command == "wg show interfaces":
+                return SimpleNamespace(returncode=0, stdout="lws4c2n19p lws4c2n19b\n", stderr="")
+            if command.startswith("ping "):
+                return SimpleNamespace(returncode=1, stdout="3 packets transmitted, 0 received, 100% packet loss", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    state = agent.evaluate_sidecar_uplink_selector(selector, previous_state={"active_lane": "primary", "last_restart_at": {}})
+
+        self.assertEqual("all_unhealthy", state["switch_reason"])
+        self.assertEqual([], state["restarted_lanes"])
+        self.assertFalse(any(command.startswith("systemctl restart") for command in commands))
 
     def test_run_sends_heartbeat_before_slow_startup_reconciliation(self):
         agent = self.make_agent()

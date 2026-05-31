@@ -24,6 +24,18 @@ sidecar_agent_module = load_module("sidecar_agent_static_uplink_under_test", "si
 
 
 class SidecarStaticSidecarUplinkTests(unittest.TestCase):
+    def make_agent(self):
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        tmp = pathlib.Path(tmp_dir.name)
+        config_path = tmp / "agent.json"
+        config_path.write_text(json.dumps({
+            "state_dir": str(tmp),
+            "service_name": "leikwan-bond-sidecar-4",
+            "managed_iperf3_ports": [],
+        }), encoding="utf-8")
+        return sidecar_agent_module.SidecarAgent(config_path)
+
     def test_static_lws_state_is_keyed_by_interface_and_cleans_legacy_lwsc(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = pathlib.Path(tmp_dir)
@@ -67,6 +79,143 @@ class SidecarStaticSidecarUplinkTests(unittest.TestCase):
             self.assertIn("lws4c2n19p", state.get("slaves", {}))
             self.assertNotIn("lws4c2n19p".split("-")[-1], [])
             self.assertIn(4, cleanup_calls)
+
+    def test_disabled_static_uplink_is_removed_and_empty_state_is_persisted(self):
+        agent = self.make_agent()
+        agent.save_sidecar_uplink_state({"slaves": {"lws4c2n19p": {"interface_name": "lws4c2n19p"}}})
+        removed: list[str] = []
+
+        with mock.patch.object(agent, "remove_slave_sidecar_uplink", side_effect=lambda uplink: removed.append(str(uplink.get("interface_name", "")))):
+            agent.apply_management({
+                "sidecar_uplinks": [{"enabled": False, "interface_name": "lws4c2n19p"}],
+                "bond_runtime": None,
+                "mptcp_runtime": None,
+            })
+
+        self.assertEqual(["lws4c2n19p"], removed)
+        state = json.loads(agent.sidecar_uplink_state_path().read_text(encoding="utf-8"))
+        self.assertEqual({"slaves": {}}, state)
+
+    def test_disabled_self_leg_peer_is_removed_and_empty_state_is_persisted(self):
+        agent = self.make_agent()
+        agent.save_self_leg_client_peer_state({"interfaces": {"lw-self-1": {"interface_name": "lw-self-1"}}})
+        removed: list[str] = []
+
+        with mock.patch.object(agent, "remove_self_leg_client_peer", side_effect=lambda peer: removed.append(str(peer.get("interface_name", "")))):
+            agent.apply_management({
+                "self_leg_client_peers": [{"enabled": False, "interface_name": "lw-self-1"}],
+                "bond_runtime": None,
+                "mptcp_runtime": None,
+            })
+
+        self.assertEqual(["lw-self-1"], removed)
+        state = json.loads(agent.self_leg_client_peer_state_path().read_text(encoding="utf-8"))
+        self.assertEqual({"interfaces": {}}, state)
+
+    def test_heartbeat_reports_degraded_when_wireguard_identity_is_missing(self):
+        agent = self.make_agent()
+
+        with mock.patch.object(agent, "ensure_wireguard_identity", return_value=""):
+            payload = agent.build_heartbeat_payload()
+
+        self.assertEqual("degraded", payload["status"])
+        self.assertEqual("wireguard_identity_missing", payload["health_error"])
+
+    def test_heartbeat_reports_wireguard_peer_transfer_state(self):
+        agent = self.make_agent()
+        dump = "\n".join([
+            "lws4c2n19p\tprivate\tpublic\t14970\toff",
+            "lws4c2n19p\tpeer-public\t(none)\t198.51.100.7:14970\t10.240.8.2/32\t900\t1234\t5678\t25",
+        ])
+
+        def fake_which(command: str):
+            return "/usr/bin/wg" if command == "wg" else None
+
+        with mock.patch.object(agent, "ensure_wireguard_identity", return_value="sidecar-public"):
+            with mock.patch.object(sidecar_agent_module.shutil, "which", side_effect=fake_which):
+                with mock.patch.object(sidecar_agent_module.time, "time", return_value=1000.0):
+                    with mock.patch.object(sidecar_agent_module.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=dump, stderr="")):
+                        payload = agent.build_heartbeat_payload()
+
+        self.assertEqual(
+            [
+                {
+                    "interface_name": "lws4c2n19p",
+                    "peer_public_key": "peer-public",
+                    "latest_handshake_epoch": 900,
+                    "handshake_age_seconds": 100,
+                    "rx_bytes": 1234,
+                    "tx_bytes": 5678,
+                }
+            ],
+            payload["wireguard_peer_state"],
+        )
+
+    def test_cf_slave_transit_backends_are_swept_against_active_uplinks(self):
+        agent = self.make_agent()
+        agent.save_managed_cf_metadata([
+            {
+                "service_name": "leikwan-cf-slave-lwsactive",
+                "backend_port": 26001,
+                "interface_name": "lwsactive",
+                "backend_type": "slave_transit_cf_wg",
+            },
+            {
+                "service_name": "leikwan-cf-slave-lwsstale",
+                "backend_port": 26002,
+                "interface_name": "lwsstale",
+                "backend_type": "slave_transit_cf_wg",
+            },
+            {
+                "service_name": "cf-forward-47",
+                "backend_port": 26003,
+                "backend_type": "forward_cf",
+            },
+        ])
+        disabled: list[str] = []
+
+        with mock.patch.object(agent, "disable_runtime", side_effect=lambda service, *_args, **_kwargs: disabled.append(service)):
+            agent.cleanup_orphan_slave_transit_cf_backends({"lwsactive"})
+
+        self.assertEqual(["leikwan-cf-slave-lwsstale"], disabled)
+        services = [item["service_name"] for item in agent.load_managed_cf_metadata()]
+        self.assertEqual(["leikwan-cf-slave-lwsactive", "cf-forward-47"], services)
+
+    def test_cf_backend_launch_failure_does_not_abort_wireguard_uplink(self):
+        agent = self.make_agent()
+        (agent.wireguard_dir()).mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("sidecar-private\n", encoding="utf-8")
+        agent.wireguard_public_key_path().write_text("sidecar-public\n", encoding="utf-8")
+
+        uplink = {
+            "enabled": True,
+            "interface_name": "lws4c2n19p",
+            "listen_port": 14970,
+            "local_address": "10.240.8.1",
+            "peer_address": "10.240.8.2",
+            "slave_peer_public_key": "slave-pub",
+            "outer_transport": "udp",
+            "cf_path_prefix": "lw-mptcp-47-0-cfwg",
+            "cf_target_host": "127.0.0.1",
+            "cf_target_port": 14982,
+        }
+
+        with mock.patch.object(sidecar_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(sidecar_agent_module.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="inactive", stderr="")):
+                with mock.patch.object(agent, "ensure_sidecar_cf_wstunnel_backend", side_effect=RuntimeError("no free ports")):
+                    agent.apply_slave_sidecar_uplink(uplink)
+
+        rendered = agent.sidecar_uplink_interfaces_dir() / "lws4c2n19p.conf"
+        self.assertTrue(rendered.exists())
+        self.assertIn("PrivateKey = sidecar-private", rendered.read_text(encoding="utf-8"))
+
+    def test_cf_backend_port_range_is_widened_and_configurable(self):
+        agent = self.make_agent()
+        agent.config["cf_backend_port_start"] = 27000
+        agent.config["cf_backend_port_end"] = 27000
+
+        with mock.patch.object(agent, "cf_backend_port_listening", return_value=False):
+            self.assertEqual(27000, agent.allocate_cf_backend_port("leikwan-cf-slave-lws4c2n19p"))
 
 
 if __name__ == "__main__":

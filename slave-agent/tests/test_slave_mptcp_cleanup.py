@@ -350,6 +350,80 @@ class SlaveMptcpCleanupTests(unittest.TestCase):
         self.assertEqual(update_state.get("request_token"), "auto-release:agent=2026.04.27.1")
         self.assertEqual(update_state.get("status"), "running")
 
+    def test_request_self_update_uses_systemd_collect_and_resets_failed_units(self) -> None:
+        agent = self.make_agent()
+        reset_commands: list[str] = []
+        systemd_run_invocations: list[list[str]] = []
+
+        def fake_which(command: str):
+            if command in {"systemd-run", "systemctl"}:
+                return "/usr/bin/" + command
+            return None
+
+        def fake_run_command(command: str, check: bool = True):
+            reset_commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        def fake_subprocess_run(args, **kwargs):
+            systemd_run_invocations.append(list(args))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.Path, "exists", return_value=True):
+            with mock.patch.object(slave_agent_module.shutil, "which", side_effect=fake_which):
+                with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run_command):
+                    with mock.patch.object(slave_agent_module.subprocess, "run", side_effect=fake_subprocess_run):
+                        agent.request_self_update("manual-update-token")
+
+        self.assertIn("systemctl reset-failed 'leikwan-slave-update-*'", reset_commands)
+        self.assertEqual(1, len(systemd_run_invocations))
+        self.assertIn("--collect", systemd_run_invocations[0])
+
+    def test_update_retry_circuit_breaker_stops_repeated_same_token_failures(self) -> None:
+        agent = self.make_agent()
+        now = 1778067400.0
+
+        self.assertFalse(agent.should_retry_update(
+            {
+                "request_token": "manual-update-token",
+                "status": "error",
+                "last_error": "install-slave exited with status 1",
+                "failure_count": 3,
+                "last_attempt_at": now - 3600,
+            },
+            "manual-update-token",
+            now,
+        ))
+        self.assertTrue(agent.should_retry_update(
+            {
+                "request_token": "manual-update-token",
+                "status": "error",
+                "last_error": "install-slave exited with status 1",
+                "failure_count": 2,
+                "last_attempt_at": now - 3600,
+            },
+            "manual-update-token",
+            now,
+        ))
+
+    def test_update_launch_failure_increments_failure_count(self) -> None:
+        agent = self.make_agent()
+
+        with mock.patch.object(agent, "request_self_update", side_effect=RuntimeError("temporary systemd-run failure")):
+            with self.assertRaises(RuntimeError):
+                agent.apply_management_state(
+                    {
+                        "agent_config_json": {},
+                        "agent_update_request_token": "manual-update-token",
+                        "desired_agent_version": "2099.01.01.1",
+                    }
+                )
+
+        update_state = agent.load_update_state()
+        self.assertEqual("manual-update-token", update_state.get("request_token"))
+        self.assertEqual("error", update_state.get("status"))
+        self.assertEqual(1, update_state.get("failure_count"))
+        self.assertEqual("temporary systemd-run failure", update_state.get("last_error"))
+
 
 if __name__ == "__main__":
     unittest.main()
