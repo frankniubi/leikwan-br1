@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">LeiKwan Bridge</string>
+    <string name="language">Language</string>
+    <string name="language_zh">Simplified Chinese</string>
+    <string name="language_en">English</string>
+    <string name="settings_rules_update">Update rules</string>
+    <string name="settings_rules_rollback">Rollback</string>
+    <string name="routing_selector_title">User routing rules</string>
+    <string name="routing_selector_on">ON: Routing rules may override the selected proxy.</string>
+    <string name="routing_selector_off">OFF: Proxies selection is authoritative.</string>
 </resources>

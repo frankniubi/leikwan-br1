@@ -33,6 +33,9 @@ class RoutingPolicyEngine(
         private fun geoipUrl(tag: String): String = "$GEOIP_BASE$tag.srs"
     }
 
+    fun withCategoryCatalog(categoryCatalog: RoutingCategoryCatalog): RoutingPolicyEngine =
+        RoutingPolicyEngine(safePathRegistry, categoryCatalog)
+
     /**
      * Compile the authoritative snapshot for one rebuild cycle. Unsupported or disabled rules are
      * dropped with a warning; outcomes are never expanded beyond TUNNEL/DIRECT.
@@ -69,7 +72,7 @@ class RoutingPolicyEngine(
                     warnings += "Dropped rule '${rule.id}': kind ${rule.kind} is not a website-category rule."
                     false
                 }
-                !categoryCatalog.presetKeys().contains(rule.matchValue.trim().lowercase()) -> {
+                !categoryCatalog.supports(rule.matchValue) -> {
                     warnings += "Dropped category rule '${rule.id}': unknown category '${rule.matchValue}'."
                     false
                 }

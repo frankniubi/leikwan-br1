@@ -5,8 +5,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.leikwan.bridge.api.ClientInfo
 import com.leikwan.bridge.api.PanelRepository
+import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.data.routing.RulePackFetchResult
+import com.leikwan.bridge.data.routing.RulePackFetcher
+import com.leikwan.bridge.data.routing.RulePackManager
+import com.leikwan.bridge.data.routing.RulePackSnapshot
 import com.leikwan.bridge.routing.RoutingDiagnosticsSource
+import com.leikwan.bridge.service.LeikwanVpnService
 import com.leikwan.bridge.ui.shared.RoutingDiagnosticsUiModel
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -28,12 +34,19 @@ data class SettingsUiState(
     val isSwitchingClient: Boolean = false,
     val switchError: String? = null,
     val routingDiagnostics: RoutingDiagnosticsUiModel? = null,
+    val rulePackLabel: String = "none",
+    val rulePackStale: Boolean = false,
+    val isUpdatingRules: Boolean = false,
+    val rulePackMessage: String? = null,
 )
 
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs.get(app)
+    private val db = AppDatabase.get(app)
     private val repo = PanelRepository(app)
     private val gson = Gson()
+    private val rulePackManager = RulePackManager(db, prefs)
+    private val rulePackFetcher = RulePackFetcher(manager = rulePackManager)
 
     private val _state = MutableStateFlow(
         SettingsUiState(
@@ -50,6 +63,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             routingDiagnostics = runCatching {
                 RoutingDiagnosticsSource.from(app).latest()
             }.getOrNull(),
+            rulePackLabel = rulePackLabelFromPrefs(),
+            rulePackStale = prefs.activeRulePackStale,
         ),
     )
     val state = _state.asStateFlow()
@@ -114,7 +129,57 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(customBypassRules = value)
     }
 
+    fun updateRules() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isUpdatingRules = true, rulePackMessage = null)
+            val result = if (LeikwanVpnService.isRunning) {
+                rulePackFetcher.fetchAndActivate()
+            } else {
+                val seed = rulePackFetcher.ensureSeed()
+                RulePackFetchResult.Success(seed)
+            }
+            _state.value = when (result) {
+                is RulePackFetchResult.Success -> _state.value.copy(
+                    isUpdatingRules = false,
+                    rulePackLabel = rulePackLabel(result.snapshot),
+                    rulePackStale = result.snapshot.stale,
+                    rulePackMessage = "Rules ready: ${result.snapshot.categoryPackVersion}",
+                )
+                is RulePackFetchResult.Error -> _state.value.copy(
+                    isUpdatingRules = false,
+                    rulePackMessage = result.message,
+                )
+            }
+        }
+    }
+
+    fun rollbackRules() {
+        viewModelScope.launch {
+            val previous = rulePackManager.previous()
+            if (previous == null) {
+                _state.value = _state.value.copy(rulePackMessage = "No previous rule pack")
+            } else {
+                val activated = rulePackManager.activate(previous.copy(rollbackAvailable = false))
+                _state.value = _state.value.copy(
+                    rulePackLabel = rulePackLabel(activated),
+                    rulePackStale = activated.stale,
+                    rulePackMessage = "Rolled back to ${activated.categoryPackVersion}",
+                )
+            }
+        }
+    }
+
     fun logout() {
         prefs.logout()
     }
+
+    private fun rulePackLabelFromPrefs(): String {
+        val source = prefs.activeRulePackSourceLabel ?: return "none"
+        val country = prefs.activeRulePackCountryVersion ?: ""
+        val category = prefs.activeRulePackCategoryVersion ?: ""
+        return "$source geoip=$country geosite=$category"
+    }
+
+    private fun rulePackLabel(snapshot: RulePackSnapshot): String =
+        "${snapshot.sourceLabel} geoip=${snapshot.countryPackVersion} geosite=${snapshot.categoryPackVersion}"
 }

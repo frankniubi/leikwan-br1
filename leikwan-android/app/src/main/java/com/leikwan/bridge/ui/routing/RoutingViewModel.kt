@@ -7,6 +7,8 @@ import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.data.routing.UserRoutingRuleStore
+import com.leikwan.bridge.routing.Country
+import com.leikwan.bridge.routing.CountryCatalog
 import com.leikwan.bridge.routing.RoutingCategoryCatalog
 import com.leikwan.bridge.routing.RoutingRule
 import com.leikwan.bridge.routing.RoutingRuleKind
@@ -19,12 +21,15 @@ import kotlinx.coroutines.launch
  * UI state for the user-authored routing surface (the 用户自定义分流 screen).
  */
 data class RoutingUiState(
+    val selectorEnabled: Boolean = false,
     val globalDefault: UserTrafficOutcome = UserTrafficOutcome.TUNNEL,
     val globalDefaultNodeId: Long? = null,
     val availableNodes: List<RoutingNodeOption> = emptyList(),
     val countryRules: List<RoutingRule> = emptyList(),
     val categoryRules: List<RoutingRule> = emptyList(),
     val presetCategories: List<String> = emptyList(),
+    val countryQuery: String = "",
+    val countrySuggestions: List<Country> = emptyList(),
 )
 
 data class RoutingNodeOption(
@@ -52,6 +57,7 @@ class RoutingViewModel(
 
     private val _state = MutableStateFlow(
         RoutingUiState(
+            selectorEnabled = prefs.routingSelectorEnabled,
             globalDefault = prefs.routingDefaultOutcome,
             globalDefaultNodeId = prefs.routingDefaultNodeId,
             presetCategories = categoryCatalog.presetKeys(),
@@ -66,6 +72,7 @@ class RoutingViewModel(
     fun refresh() {
         viewModelScope.launch {
             _state.value = _state.value.copy(
+                selectorEnabled = prefs.routingSelectorEnabled,
                 globalDefault = prefs.routingDefaultOutcome,
                 globalDefaultNodeId = sanitizedDefaultNodeId(),
                 availableNodes = availableNodeOptions(),
@@ -79,6 +86,11 @@ class RoutingViewModel(
     fun setGlobalDefault(outcome: UserTrafficOutcome) {
         prefs.routingDefaultOutcome = outcome
         _state.value = _state.value.copy(globalDefault = outcome)
+    }
+
+    fun setSelectorEnabled(enabled: Boolean) {
+        prefs.routingSelectorEnabled = enabled
+        _state.value = _state.value.copy(selectorEnabled = enabled)
     }
 
     fun setGlobalDefaultNode(nodeId: Long?) {
@@ -104,9 +116,23 @@ class RoutingViewModel(
         }
     }
 
+    fun updateCountryQuery(query: String) {
+        _state.value = _state.value.copy(
+            countryQuery = query,
+            countrySuggestions = CountryCatalog.search(query),
+        )
+    }
+
+    fun selectCountrySuggestion(country: Country) {
+        _state.value = _state.value.copy(
+            countryQuery = country.code,
+            countrySuggestions = emptyList(),
+        )
+    }
+
     fun addCategoryRule(category: String, outcome: UserTrafficOutcome) {
         val normalized = category.trim().lowercase()
-        if (normalized !in categoryCatalog.presetKeys()) return
+        if (!categoryCatalog.supports(normalized)) return
         val rule = RoutingRule(
             id = "category-$normalized",
             kind = RoutingRuleKind.WEBSITE_CATEGORY,
@@ -145,6 +171,7 @@ class RoutingViewModel(
 
     private suspend fun refreshNow() {
         _state.value = _state.value.copy(
+            selectorEnabled = prefs.routingSelectorEnabled,
             globalDefault = prefs.routingDefaultOutcome,
             globalDefaultNodeId = sanitizedDefaultNodeId(),
             availableNodes = availableNodeOptions(),

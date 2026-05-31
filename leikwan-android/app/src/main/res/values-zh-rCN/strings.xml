@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">雷宽桥</string>
+    <string name="language">语言</string>
+    <string name="language_zh">简体中文</string>
+    <string name="language_en">英文</string>
+    <string name="settings_rules_update">更新规则</string>
+    <string name="settings_rules_rollback">回滚</string>
+    <string name="routing_selector_title">用户分流规则</string>
+    <string name="routing_selector_on">开启：分流规则可能覆盖当前选中的节点。</string>
+    <string name="routing_selector_off">关闭：代理页选中的节点优先生效。</string>
+</resources>
