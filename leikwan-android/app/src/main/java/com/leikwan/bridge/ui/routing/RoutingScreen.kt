@@ -40,12 +40,16 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.leikwan.bridge.R
 import com.leikwan.bridge.routing.RoutingRule
+import com.leikwan.bridge.routing.RoutingRuleKind
 import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.routing.CountryCatalog
 
@@ -88,13 +92,14 @@ internal fun RoutingScreenContent(
     onSetTargetNode: (String, Long?) -> Unit,
     onDelete: (String) -> Unit,
 ) {
+    val zh = isZhLocale()
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
     ) {
-        Text("Routing", style = MaterialTheme.typography.titleLarge)
+        Text(stringResource(R.string.routing_title), style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(16.dp))
 
         Row(
@@ -103,12 +108,12 @@ internal fun RoutingScreenContent(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("User routing rules", style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(R.string.routing_selector_title), style = MaterialTheme.typography.titleMedium)
                 Text(
                     if (state.selectorEnabled) {
-                        "ON: Routing rules may override the selected proxy."
+                        stringResource(R.string.routing_selector_on)
                     } else {
-                        "OFF: Proxies selection is authoritative."
+                        stringResource(R.string.routing_selector_off)
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -120,7 +125,7 @@ internal fun RoutingScreenContent(
 
         Column(modifier = Modifier.alpha(if (state.selectorEnabled) 1f else 0.45f)) {
         // Global default
-        Text("Global default", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.routing_global_default), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             UserTrafficOutcome.entries.forEach { outcome ->
@@ -128,23 +133,22 @@ internal fun RoutingScreenContent(
                     selected = state.globalDefault == outcome,
                     onClick = { onSetGlobalDefault(outcome) },
                     enabled = state.selectorEnabled,
-                    label = { Text(outcome.name) },
+                    label = { Text(outcome.label()) },
                 )
             }
         }
         Spacer(Modifier.height(8.dp))
         NodePicker(
-            label = "Default node",
+            label = stringResource(R.string.routing_default_node),
             selectedNodeId = state.globalDefaultNodeId,
             nodes = state.availableNodes,
             enabled = state.selectorEnabled && state.globalDefault == UserTrafficOutcome.TUNNEL,
-            autoLabel = "Auto (selector)",
+            autoLabel = stringResource(R.string.routing_auto_selector),
             onSelect = onSetGlobalDefaultNode,
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            "TUNNEL = everything through LeiKwan except rules; " +
-                "DIRECT = everything direct except rules.",
+            stringResource(R.string.routing_global_default_help),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -154,7 +158,7 @@ internal fun RoutingScreenContent(
         Spacer(Modifier.height(16.dp))
 
         // Add country rule
-        Text("Add country rule", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.routing_add_country_rule), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         var countryOutcome by remember { mutableStateOf(UserTrafficOutcome.DIRECT) }
         var countryExpanded by remember { mutableStateOf(false) }
@@ -176,7 +180,7 @@ internal fun RoutingScreenContent(
                         }
                     },
                     enabled = state.selectorEnabled,
-                    label = { Text("Country name or ISO code") },
+                    label = { Text(stringResource(R.string.routing_country_search_label)) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(
                         capitalization = KeyboardCapitalization.Words,
@@ -195,7 +199,16 @@ internal fun RoutingScreenContent(
                 ) {
                     state.countrySuggestions.forEach { country ->
                         DropdownMenuItem(
-                            text = { Text("${country.nameZh} / ${country.nameEn} (${country.code})") },
+                            text = {
+                                Text(
+                                    stringResource(
+                                        R.string.routing_country_suggestion_format,
+                                        country.nameZh,
+                                        country.nameEn,
+                                        country.code,
+                                    )
+                                )
+                            },
                             onClick = {
                                 onSelectCountrySuggestion(country)
                                 countryExpanded = false
@@ -220,7 +233,7 @@ internal fun RoutingScreenContent(
             enabled = state.selectorEnabled && state.countryQuery.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Add country rule")
+            Text(stringResource(R.string.routing_add_country_rule))
         }
 
         Spacer(Modifier.height(24.dp))
@@ -228,12 +241,14 @@ internal fun RoutingScreenContent(
         Spacer(Modifier.height(16.dp))
 
         // Add category rule
-        Text("Add category rule", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.routing_add_category_rule), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         var categoryExpanded by remember { mutableStateOf(false) }
-        var selectedCategory by remember(state.presetCategories) {
-            mutableStateOf(state.presetCategories.firstOrNull() ?: "")
+        var selectedCategory by remember(state.presetCategoryOptions) {
+            mutableStateOf(state.presetCategoryOptions.firstOrNull()?.key ?: "")
         }
+        val selectedCategoryOption = state.presetCategoryOptions.firstOrNull { it.key == selectedCategory }
+        val selectedCategoryLabel = selectedCategoryOption?.label(zh) ?: selectedCategory
         var categoryOutcome by remember { mutableStateOf(UserTrafficOutcome.TUNNEL) }
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -245,11 +260,11 @@ internal fun RoutingScreenContent(
                 modifier = Modifier.weight(1f),
             ) {
                 OutlinedTextField(
-                    value = selectedCategory,
+                    value = selectedCategoryLabel,
                     onValueChange = {},
                     readOnly = true,
                     enabled = state.selectorEnabled,
-                    label = { Text("Category") },
+                    label = { Text(stringResource(R.string.routing_category)) },
                     trailingIcon = {
                         ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded)
                     },
@@ -259,11 +274,16 @@ internal fun RoutingScreenContent(
                     expanded = categoryExpanded,
                     onDismissRequest = { categoryExpanded = false },
                 ) {
-                    state.presetCategories.forEach { category ->
+                    state.presetCategoryOptions.forEach { category ->
                         DropdownMenuItem(
-                            text = { Text(category) },
+                            text = { Text(category.label(zh)) },
                             onClick = {
-                                selectedCategory = category
+                                selectedCategory = category.key
+                                categoryOutcome = if (category.defaultDirect) {
+                                    UserTrafficOutcome.DIRECT
+                                } else {
+                                    UserTrafficOutcome.TUNNEL
+                                }
                                 categoryExpanded = false
                             },
                         )
@@ -283,7 +303,7 @@ internal fun RoutingScreenContent(
             enabled = state.selectorEnabled && selectedCategory.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Add category rule")
+            Text(stringResource(R.string.routing_add_category_rule))
         }
 
         Spacer(Modifier.height(24.dp))
@@ -291,12 +311,12 @@ internal fun RoutingScreenContent(
         Spacer(Modifier.height(16.dp))
 
         // Existing rules
-        Text("Rules", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.routing_rules), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         val rules = state.countryRules + state.categoryRules
         if (rules.isEmpty()) {
             Text(
-                "No custom rules yet.",
+                stringResource(R.string.routing_no_custom_rules),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -309,6 +329,7 @@ internal fun RoutingScreenContent(
                     onSetTargetNode = onSetTargetNode,
                     onDelete = onDelete,
                     controlsEnabled = state.selectorEnabled,
+                    zh = zh,
                 )
                 Spacer(Modifier.height(8.dp))
             }
@@ -324,7 +345,7 @@ private fun OutcomeToggle(
     onChange: (UserTrafficOutcome) -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(outcome.name, style = MaterialTheme.typography.labelMedium)
+        Text(outcome.label(), style = MaterialTheme.typography.labelMedium)
         Spacer(Modifier.width(4.dp))
         Switch(
             checked = outcome == UserTrafficOutcome.TUNNEL,
@@ -344,6 +365,7 @@ private fun RuleRow(
     onSetTargetNode: (String, Long?) -> Unit,
     onDelete: (String) -> Unit,
     controlsEnabled: Boolean = true,
+    zh: Boolean,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
@@ -352,9 +374,9 @@ private fun RuleRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(rule.displayMatchValue(), style = MaterialTheme.typography.titleSmall)
+                    Text(rule.displayMatchValue(zh), style = MaterialTheme.typography.titleSmall)
                     Text(
-                        rule.outcome.name,
+                        rule.outcome.label(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -365,23 +387,26 @@ private fun RuleRow(
                     onCheckedChange = { onToggle(rule.id) },
                 )
                 IconButton(onClick = { onDelete(rule.id) }, enabled = controlsEnabled) {
-                    Icon(Icons.Default.Delete, contentDescription = "Delete ${rule.matchValue}")
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = stringResource(R.string.routing_delete_rule_format, rule.matchValue),
+                    )
                 }
             }
             if (rule.outcome == UserTrafficOutcome.TUNNEL) {
                 Spacer(Modifier.height(8.dp))
                 NodePicker(
-                    label = "Target node",
+                    label = stringResource(R.string.routing_target_node),
                     selectedNodeId = rule.targetNodeId,
                     nodes = nodes,
                     enabled = controlsEnabled && rule.enabled,
-                    autoLabel = "Auto (default)",
+                    autoLabel = stringResource(R.string.routing_auto_default),
                     onSelect = { onSetTargetNode(rule.id, it) },
                 )
                 if (rule.targetNodeId != null && nodes.none { it.id == rule.targetNodeId }) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Pinned node is unavailable; startup falls back to the default node.",
+                        stringResource(R.string.routing_pinned_node_unavailable),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -391,9 +416,14 @@ private fun RuleRow(
     }
 }
 
-private fun RoutingRule.displayMatchValue(): String =
-    if (kind == com.leikwan.bridge.routing.RoutingRuleKind.COUNTRY) {
-        "${CountryCatalog.nameFor(matchValue, zh = true)} (${matchValue.uppercase()})"
+@Composable
+private fun RoutingRule.displayMatchValue(zh: Boolean): String =
+    if (kind == RoutingRuleKind.COUNTRY) {
+        stringResource(
+            R.string.routing_country_rule_display_format,
+            CountryCatalog.nameFor(matchValue, zh = zh),
+            matchValue.uppercase(),
+        )
     } else {
         matchValue
     }
@@ -411,7 +441,8 @@ private fun NodePicker(
     var expanded by remember { mutableStateOf(false) }
     val selectedLabel = when {
         selectedNodeId == null -> autoLabel
-        else -> nodes.firstOrNull { it.id == selectedNodeId }?.name ?: "Unavailable node #$selectedNodeId"
+        else -> nodes.firstOrNull { it.id == selectedNodeId }?.name
+            ?: stringResource(R.string.routing_unavailable_node_format, selectedNodeId)
     }
     ExposedDropdownMenuBox(
         expanded = expanded,
@@ -442,7 +473,9 @@ private fun NodePicker(
             )
             nodes.forEach { node ->
                 DropdownMenuItem(
-                    text = { Text("${node.name} (${node.type.uppercase()})") },
+                    text = {
+                        Text(stringResource(R.string.routing_node_option_format, node.name, node.type.uppercase()))
+                    },
                     onClick = {
                         onSelect(node.id)
                         expanded = false
@@ -451,4 +484,17 @@ private fun NodePicker(
             }
         }
     }
+}
+
+@Composable
+private fun UserTrafficOutcome.label(): String =
+    when (this) {
+        UserTrafficOutcome.TUNNEL -> stringResource(R.string.routing_outcome_tunnel)
+        UserTrafficOutcome.DIRECT -> stringResource(R.string.routing_outcome_direct)
+    }
+
+@Composable
+private fun isZhLocale(): Boolean {
+    val locales = LocalConfiguration.current.locales
+    return locales[0]?.language.equals("zh", ignoreCase = true)
 }

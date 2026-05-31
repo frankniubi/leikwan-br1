@@ -1,8 +1,10 @@
 package com.leikwan.bridge.ui.settings
 
 import android.app.Application
+import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.leikwan.bridge.R
 import com.leikwan.bridge.api.ClientInfo
 import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.AppDatabase
@@ -41,6 +43,7 @@ data class SettingsUiState(
 )
 
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
+    private val appContext = app.applicationContext
     private val prefs = Prefs.get(app)
     private val db = AppDatabase.get(app)
     private val repo = PanelRepository(app)
@@ -143,7 +146,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
                     isUpdatingRules = false,
                     rulePackLabel = rulePackLabel(result.snapshot),
                     rulePackStale = result.snapshot.stale,
-                    rulePackMessage = "Rules ready: ${result.snapshot.categoryPackVersion}",
+                    rulePackMessage = s(R.string.settings_rules_ready_format, result.snapshot.categoryPackVersion),
                 )
                 is RulePackFetchResult.Error -> _state.value.copy(
                     isUpdatingRules = false,
@@ -157,13 +160,13 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val previous = rulePackManager.previous()
             if (previous == null) {
-                _state.value = _state.value.copy(rulePackMessage = "No previous rule pack")
+                _state.value = _state.value.copy(rulePackMessage = s(R.string.settings_no_previous_rule_pack))
             } else {
                 val activated = rulePackManager.activate(previous.copy(rollbackAvailable = false))
                 _state.value = _state.value.copy(
                     rulePackLabel = rulePackLabel(activated),
                     rulePackStale = activated.stale,
-                    rulePackMessage = "Rolled back to ${activated.categoryPackVersion}",
+                    rulePackMessage = s(R.string.settings_rolled_back_format, activated.categoryPackVersion),
                 )
             }
         }
@@ -174,7 +177,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun rulePackLabelFromPrefs(): String {
-        val source = prefs.activeRulePackSourceLabel ?: return "none"
+        val source = prefs.activeRulePackSourceLabel ?: return s(R.string.settings_rule_pack_none)
         val country = prefs.activeRulePackCountryVersion ?: ""
         val category = prefs.activeRulePackCategoryVersion ?: ""
         return "$source geoip=$country geosite=$category"
@@ -182,4 +185,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun rulePackLabel(snapshot: RulePackSnapshot): String =
         "${snapshot.sourceLabel} geoip=${snapshot.countryPackVersion} geosite=${snapshot.categoryPackVersion}"
+
+    private fun s(@StringRes id: Int, vararg args: Any): String =
+        appContext.getString(id, *args)
 }

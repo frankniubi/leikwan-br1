@@ -55,6 +55,14 @@ sealed interface ProxyProtocolDraft {
     ) : ProxyProtocolDraft
 }
 
+data class ProxySummaryText(
+    val unknown: String,
+    val methodFormat: String,
+    val uuidFormat: String,
+    val publicKeyFormat: String,
+    val addressFormat: String,
+)
+
 object ProxyProtocolDraftParser {
     private val gson = Gson()
 
@@ -197,12 +205,12 @@ object ProxyProtocolDraftParser {
         return gson.toJson(config)
     }
 
-    fun summaryLines(node: ProxyNode): List<String> {
+    fun summaryLines(node: ProxyNode, text: ProxySummaryText): List<String> {
         val hostLine = "${node.type.uppercase()} | ${node.originalServer}:${node.originalPort}"
         return when (val details = parse(node)) {
             is ProxyProtocolDraft.Shadowsocks -> buildList {
                 add(hostLine)
-                add("Method: ${details.method.ifBlank { "Unknown" }}")
+                add(text.methodFormat.formatOne(details.method.ifBlank { text.unknown }))
                 val flags = buildList {
                     details.plugin.takeIf { it.isNotBlank() }?.let { add("plugin=$it") }
                     if (details.udpOverTcp) add("uot")
@@ -215,7 +223,7 @@ object ProxyProtocolDraftParser {
 
             is ProxyProtocolDraft.Vless -> buildList {
                 add(hostLine)
-                add("UUID: ${details.uuid.ifBlank { "Unknown" }}")
+                add(text.uuidFormat.formatOne(details.uuid.ifBlank { text.unknown }))
                 val transport = buildList {
                     add(details.transportType.ifBlank { "tcp" }.uppercase())
                     details.security.takeIf { it.isNotBlank() }?.let { add(it.uppercase()) }
@@ -228,14 +236,14 @@ object ProxyProtocolDraftParser {
 
             is ProxyProtocolDraft.Vmess -> buildList {
                 add(hostLine)
-                add("UUID: ${details.uuid.ifBlank { "Unknown" }}")
+                add(text.uuidFormat.formatOne(details.uuid.ifBlank { text.unknown }))
                 add("${details.network.ifBlank { "tcp" }.uppercase()} • ${details.security.ifBlank { "auto" }}")
             }
 
             is ProxyProtocolDraft.WireGuard -> buildList {
                 add(hostLine)
-                add("Public key: ${details.publicKey.ifBlank { "Unknown" }}")
-                details.addresses.takeIf { it.isNotBlank() }?.let { add("Address: $it") }
+                add(text.publicKeyFormat.formatOne(details.publicKey.ifBlank { text.unknown }))
+                details.addresses.takeIf { it.isNotBlank() }?.let { add(text.addressFormat.formatOne(it)) }
             }
 
             is ProxyProtocolDraft.Unknown -> listOf(hostLine)
@@ -284,6 +292,8 @@ object ProxyProtocolDraftParser {
         }.getOrElse { rawJson }
     }
 }
+
+private fun String.formatOne(value: String): String = String.format(this, value)
 
 private fun JsonObject.stringOrEmpty(name: String): String {
     val value = get(name) ?: return ""

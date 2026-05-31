@@ -28,6 +28,7 @@ data class RoutingUiState(
     val countryRules: List<RoutingRule> = emptyList(),
     val categoryRules: List<RoutingRule> = emptyList(),
     val presetCategories: List<String> = emptyList(),
+    val presetCategoryOptions: List<RoutingCategoryOption> = emptyList(),
     val countryQuery: String = "",
     val countrySuggestions: List<Country> = emptyList(),
 )
@@ -37,6 +38,15 @@ data class RoutingNodeOption(
     val name: String,
     val type: String,
 )
+
+data class RoutingCategoryOption(
+    val key: String,
+    val labelEn: String,
+    val labelZh: String,
+    val defaultDirect: Boolean,
+) {
+    fun label(zh: Boolean): String = if (zh) labelZh else labelEn
+}
 
 /**
  * Drives the Routing screen: a user-settable global default plus add/toggle/delete of country and
@@ -61,6 +71,7 @@ class RoutingViewModel(
             globalDefault = prefs.routingDefaultOutcome,
             globalDefaultNodeId = prefs.routingDefaultNodeId,
             presetCategories = categoryCatalog.presetKeys(),
+            presetCategoryOptions = categoryOptions(),
         ),
     )
     val state = _state.asStateFlow()
@@ -79,6 +90,7 @@ class RoutingViewModel(
                 countryRules = store.countryRules(),
                 categoryRules = store.categoryRules(),
                 presetCategories = categoryCatalog.presetKeys(),
+                presetCategoryOptions = categoryOptions(),
             )
         }
     }
@@ -178,8 +190,19 @@ class RoutingViewModel(
             countryRules = store.countryRules(),
             categoryRules = store.categoryRules(),
             presetCategories = categoryCatalog.presetKeys(),
+            presetCategoryOptions = categoryOptions(),
         )
     }
+
+    private fun categoryOptions(): List<RoutingCategoryOption> =
+        categoryCatalog.presets().map {
+            RoutingCategoryOption(
+                key = it.key,
+                labelEn = it.labelEn,
+                labelZh = it.labelZh,
+                defaultDirect = it.defaultDirect,
+            )
+        }
 
     private suspend fun sanitizedDefaultNodeId(): Long? {
         val nodeId = prefs.routingDefaultNodeId

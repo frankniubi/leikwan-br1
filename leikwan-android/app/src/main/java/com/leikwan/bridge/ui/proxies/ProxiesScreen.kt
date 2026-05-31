@@ -40,8 +40,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.leikwan.bridge.R
 import com.leikwan.bridge.ui.MainActivity
 import com.leikwan.bridge.service.ProxyConnectionMode
 
@@ -68,18 +70,18 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-            Text("Proxies", style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.proxies_title), style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
-            Text("Connection mode", style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.proxies_connection_mode), style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ProxyModeChip(
-                    label = ProxyConnectionMode.SERVICES.label,
+                    label = stringResource(R.string.proxy_mode_services),
                     selected = state.connectionMode == ProxyConnectionMode.SERVICES,
                     onClick = { viewModel.setConnectionMode(ProxyConnectionMode.SERVICES) },
                 )
                 ProxyModeChip(
-                    label = ProxyConnectionMode.DIRECT.label,
+                    label = stringResource(R.string.proxy_mode_direct),
                     selected = state.connectionMode == ProxyConnectionMode.DIRECT,
                     onClick = { viewModel.setConnectionMode(ProxyConnectionMode.DIRECT) },
                 )
@@ -92,17 +94,17 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
                         if (state.routingSelectorEnabled) {
-                            "Routing rules: ON"
+                            stringResource(R.string.proxies_routing_rules_on)
                         } else {
-                            "Routing rules: OFF"
+                            stringResource(R.string.proxies_routing_rules_off)
                         },
                         style = MaterialTheme.typography.titleSmall,
                     )
                     Text(
                         if (state.routingSelectorEnabled) {
-                            "Selected proxy may be overridden by Routing."
+                            stringResource(R.string.proxies_routing_rules_on_detail)
                         } else {
-                            "Selected proxy is authoritative."
+                            stringResource(R.string.proxies_routing_rules_off_detail)
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -123,15 +125,27 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
 
             if (state.nodes.isEmpty() && !state.isLoading) {
                 Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                    Text("No proxy nodes. Tap + to add.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(stringResource(R.string.proxies_empty), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
                 val sections = remember(state.nodes) { ProxyListSections.build(state.nodes) }
+                val proxySummaryText = ProxySummaryText(
+                    unknown = stringResource(R.string.common_unknown),
+                    methodFormat = stringResource(R.string.proxy_summary_method_format),
+                    uuidFormat = stringResource(R.string.proxy_summary_uuid_format),
+                    publicKeyFormat = stringResource(R.string.proxy_summary_public_key_format),
+                    addressFormat = stringResource(R.string.proxy_summary_address_format),
+                )
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     sections.forEach { section ->
                         item(key = "section-${section.title}") {
+                            val sectionTitle = if (section.title == "Other") {
+                                stringResource(R.string.proxies_section_other)
+                            } else {
+                                section.title
+                            }
                             Text(
-                                text = section.title,
+                                text = sectionTitle,
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
@@ -168,13 +182,14 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                                             node.originalServer,
                                             node.originalPort,
                                             node.configJson,
+                                            proxySummaryText,
                                         ) {
-                                            ProxyProtocolDraftParser.summaryLines(node)
+                                            ProxyProtocolDraftParser.summaryLines(node, proxySummaryText)
                                         }
                                         Text(node.name, style = MaterialTheme.typography.titleMedium)
                                         if (state.selectedProxyId == node.id) {
                                             Text(
-                                                "Selected proxy",
+                                                stringResource(R.string.proxies_selected_proxy),
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.primary,
                                             )
@@ -189,10 +204,10 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                                     }
                                     Row {
                                         IconButton(onClick = { viewModel.duplicateNode(node) }) {
-                                            Icon(Icons.Default.ContentCopy, "Duplicate proxy")
+                                            Icon(Icons.Default.ContentCopy, stringResource(R.string.proxies_duplicate_proxy))
                                         }
                                         IconButton(onClick = { editingNode = node }) {
-                                            Icon(Icons.Default.Edit, "Modify proxy")
+                                            Icon(Icons.Default.Edit, stringResource(R.string.proxies_modify_proxy))
                                         }
                                         Switch(
                                             checked = node.enabled,
@@ -211,7 +226,7 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                                         IconButton(onClick = { viewModel.deleteNode(node) }) {
                                             Icon(
                                                 Icons.Default.Delete,
-                                                "Delete",
+                                                stringResource(R.string.common_delete),
                                                 tint = MaterialTheme.colorScheme.error,
                                             )
                                         }
@@ -230,20 +245,20 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
         ) {
             if (showFabMenu) {
                 SmallFloatingActionButton(onClick = { showQrScan = true; showFabMenu = false }) {
-                    Icon(Icons.Default.QrCodeScanner, "Scan QR")
+                    Icon(Icons.Default.QrCodeScanner, stringResource(R.string.proxies_scan_qr))
                 }
                 Spacer(Modifier.height(8.dp))
                 SmallFloatingActionButton(onClick = { showAddSub = true; showFabMenu = false }) {
-                    Text("SUB", style = MaterialTheme.typography.labelMedium)
+                    Text(stringResource(R.string.proxies_fab_subscription), style = MaterialTheme.typography.labelMedium)
                 }
                 Spacer(Modifier.height(8.dp))
                 SmallFloatingActionButton(onClick = { showAddUri = true; showFabMenu = false }) {
-                    Text("URI", style = MaterialTheme.typography.labelMedium)
+                    Text(stringResource(R.string.proxies_fab_uri), style = MaterialTheme.typography.labelMedium)
                 }
                 Spacer(Modifier.height(12.dp))
             }
             FloatingActionButton(onClick = { showFabMenu = !showFabMenu }) {
-                Icon(Icons.Default.Add, "Add proxy")
+                Icon(Icons.Default.Add, stringResource(R.string.proxies_add_proxy))
             }
         }
     }

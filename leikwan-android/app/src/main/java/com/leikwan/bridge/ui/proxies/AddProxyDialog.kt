@@ -19,7 +19,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.leikwan.bridge.R
 import com.leikwan.bridge.data.ProxyNode
 
 @Composable
@@ -27,12 +29,12 @@ fun AddUriDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add Proxy") },
+        title = { Text(stringResource(R.string.add_proxy_title)) },
         text = {
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
-                label = { Text("ss://, vmess://, vless://, wg://, or WireGuard config") },
+                label = { Text(stringResource(R.string.add_proxy_uri_label)) },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 3,
                 maxLines = 6,
@@ -40,10 +42,10 @@ fun AddUriDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
         },
         confirmButton = {
             TextButton(onClick = { onAdd(text); onDismiss() }, enabled = text.isNotBlank()) {
-                Text("Add")
+                Text(stringResource(R.string.common_add))
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
 
@@ -53,13 +55,13 @@ fun AddSubscriptionDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit
     var url by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add Subscription") },
+        title = { Text(stringResource(R.string.add_subscription_title)) },
         text = {
             Column {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Name") },
+                    label = { Text(stringResource(R.string.field_name)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
@@ -67,7 +69,7 @@ fun AddSubscriptionDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit
                 OutlinedTextField(
                     value = url,
                     onValueChange = { url = it },
-                    label = { Text("Subscription URL") },
+                    label = { Text(stringResource(R.string.field_subscription_url)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
@@ -77,9 +79,9 @@ fun AddSubscriptionDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit
             TextButton(
                 onClick = { onAdd(name, url); onDismiss() },
                 enabled = name.isNotBlank() && url.isNotBlank(),
-            ) { Text("Add") }
+            ) { Text(stringResource(R.string.common_add)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
 
@@ -98,7 +100,7 @@ fun EditProxyDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Modify ${node.type.uppercase()} Proxy") },
+        title = { Text(stringResource(R.string.edit_proxy_title_format, node.type.uppercase())) },
         text = {
             Column(
                 modifier = Modifier
@@ -106,25 +108,25 @@ fun EditProxyDialog(
                     .verticalScroll(scrollState),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text("Type: ${node.type.uppercase()}")
+                Text(stringResource(R.string.proxy_type_format, node.type.uppercase()))
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Name") },
+                    label = { Text(stringResource(R.string.field_name)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = server,
                     onValueChange = { server = it },
-                    label = { Text("Server") },
+                    label = { Text(stringResource(R.string.field_server)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = port,
                     onValueChange = { port = it },
-                    label = { Text("Port") },
+                    label = { Text(stringResource(R.string.field_port)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
@@ -148,10 +150,10 @@ fun EditProxyDialog(
                 },
                 enabled = name.isNotBlank() && server.isNotBlank() && port.isNotBlank(),
             ) {
-                Text("Save")
+                Text(stringResource(R.string.common_save))
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
 
@@ -174,18 +176,18 @@ private fun ShadowsocksEditor(
     details: ProxyProtocolDraft.Shadowsocks,
     onChange: (ProxyProtocolDraft) -> Unit,
 ) {
-    Text("Shadowsocks")
+    Text(stringResource(R.string.protocol_shadowsocks))
     OutlinedTextField(
         value = details.method,
         onValueChange = { onChange(details.copy(method = it)) },
-        label = { Text("Encrypt Method") },
+        label = { Text(stringResource(R.string.field_encrypt_method)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.password,
         onValueChange = { onChange(details.copy(password = it)) },
-        label = { Text("Password / PSK") },
+        label = { Text(stringResource(R.string.field_password_psk)) },
         modifier = Modifier.fillMaxWidth(),
         minLines = 2,
         maxLines = 3,
@@ -193,14 +195,14 @@ private fun ShadowsocksEditor(
     OutlinedTextField(
         value = details.plugin,
         onValueChange = { onChange(details.copy(plugin = it)) },
-        label = { Text("Plugin") },
+        label = { Text(stringResource(R.string.field_plugin)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.pluginOpts,
         onValueChange = { onChange(details.copy(pluginOpts = it)) },
-        label = { Text("Plugin Options") },
+        label = { Text(stringResource(R.string.field_plugin_options)) },
         modifier = Modifier.fillMaxWidth(),
         minLines = 2,
         maxLines = 3,
@@ -208,17 +210,17 @@ private fun ShadowsocksEditor(
     OutlinedTextField(
         value = details.network,
         onValueChange = { onChange(details.copy(network = it)) },
-        label = { Text("Network (optional)") },
+        label = { Text(stringResource(R.string.field_network_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     ProtocolToggleRow(
-        label = "UDP over TCP",
+        label = stringResource(R.string.toggle_udp_over_tcp),
         checked = details.udpOverTcp,
         onCheckedChange = { onChange(details.copy(udpOverTcp = it)) },
     )
     ProtocolToggleRow(
-        label = "Multiplex",
+        label = stringResource(R.string.toggle_multiplex),
         checked = details.multiplexEnabled,
         onCheckedChange = { onChange(details.copy(multiplexEnabled = it)) },
     )
@@ -229,74 +231,74 @@ private fun VlessEditor(
     details: ProxyProtocolDraft.Vless,
     onChange: (ProxyProtocolDraft) -> Unit,
 ) {
-    Text("VLESS")
+    Text(stringResource(R.string.protocol_vless))
     OutlinedTextField(
         value = details.uuid,
         onValueChange = { onChange(details.copy(uuid = it)) },
-        label = { Text("UUID") },
+        label = { Text(stringResource(R.string.field_uuid)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.flow,
         onValueChange = { onChange(details.copy(flow = it)) },
-        label = { Text("Flow (optional)") },
+        label = { Text(stringResource(R.string.field_flow_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.security,
         onValueChange = { onChange(details.copy(security = it)) },
-        label = { Text("Security (tls / reality / none)") },
+        label = { Text(stringResource(R.string.field_security_vless)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.transportType,
         onValueChange = { onChange(details.copy(transportType = it)) },
-        label = { Text("Transport Type") },
+        label = { Text(stringResource(R.string.field_transport_type)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.host,
         onValueChange = { onChange(details.copy(host = it)) },
-        label = { Text("Host (optional)") },
+        label = { Text(stringResource(R.string.field_host_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.path,
         onValueChange = { onChange(details.copy(path = it)) },
-        label = { Text("Path (optional)") },
+        label = { Text(stringResource(R.string.field_path_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.sni,
         onValueChange = { onChange(details.copy(sni = it)) },
-        label = { Text("SNI (optional)") },
+        label = { Text(stringResource(R.string.field_sni_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.serviceName,
         onValueChange = { onChange(details.copy(serviceName = it)) },
-        label = { Text("gRPC Service Name (optional)") },
+        label = { Text(stringResource(R.string.field_grpc_service_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.publicKey,
         onValueChange = { onChange(details.copy(publicKey = it)) },
-        label = { Text("Reality Public Key (optional)") },
+        label = { Text(stringResource(R.string.field_reality_public_key_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.shortId,
         onValueChange = { onChange(details.copy(shortId = it)) },
-        label = { Text("Reality Short ID (optional)") },
+        label = { Text(stringResource(R.string.field_reality_short_id_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
@@ -307,46 +309,46 @@ private fun VmessEditor(
     details: ProxyProtocolDraft.Vmess,
     onChange: (ProxyProtocolDraft) -> Unit,
 ) {
-    Text("VMess")
+    Text(stringResource(R.string.protocol_vmess))
     OutlinedTextField(
         value = details.uuid,
         onValueChange = { onChange(details.copy(uuid = it)) },
-        label = { Text("UUID") },
+        label = { Text(stringResource(R.string.field_uuid)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.alterId,
         onValueChange = { onChange(details.copy(alterId = it)) },
-        label = { Text("Alter ID") },
+        label = { Text(stringResource(R.string.field_alter_id)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.security,
         onValueChange = { onChange(details.copy(security = it)) },
-        label = { Text("Security") },
+        label = { Text(stringResource(R.string.field_security)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.network,
         onValueChange = { onChange(details.copy(network = it)) },
-        label = { Text("Network") },
+        label = { Text(stringResource(R.string.field_network)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.host,
         onValueChange = { onChange(details.copy(host = it)) },
-        label = { Text("Host (optional)") },
+        label = { Text(stringResource(R.string.field_host_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.path,
         onValueChange = { onChange(details.copy(path = it)) },
-        label = { Text("Path (optional)") },
+        label = { Text(stringResource(R.string.field_path_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
@@ -357,11 +359,11 @@ private fun WireGuardEditor(
     details: ProxyProtocolDraft.WireGuard,
     onChange: (ProxyProtocolDraft) -> Unit,
 ) {
-    Text("WireGuard")
+    Text(stringResource(R.string.protocol_wireguard))
     OutlinedTextField(
         value = details.privateKey,
         onValueChange = { onChange(details.copy(privateKey = it)) },
-        label = { Text("Private Key") },
+        label = { Text(stringResource(R.string.field_private_key)) },
         modifier = Modifier.fillMaxWidth(),
         minLines = 2,
         maxLines = 3,
@@ -369,14 +371,14 @@ private fun WireGuardEditor(
     OutlinedTextField(
         value = details.addresses,
         onValueChange = { onChange(details.copy(addresses = it)) },
-        label = { Text("Interface Address(es)") },
+        label = { Text(stringResource(R.string.field_interface_addresses)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.publicKey,
         onValueChange = { onChange(details.copy(publicKey = it)) },
-        label = { Text("Peer Public Key") },
+        label = { Text(stringResource(R.string.field_peer_public_key)) },
         modifier = Modifier.fillMaxWidth(),
         minLines = 2,
         maxLines = 3,
@@ -384,7 +386,7 @@ private fun WireGuardEditor(
     OutlinedTextField(
         value = details.preSharedKey,
         onValueChange = { onChange(details.copy(preSharedKey = it)) },
-        label = { Text("Preshared Key (optional)") },
+        label = { Text(stringResource(R.string.field_preshared_key_optional)) },
         modifier = Modifier.fillMaxWidth(),
         minLines = 1,
         maxLines = 2,
@@ -392,28 +394,28 @@ private fun WireGuardEditor(
     OutlinedTextField(
         value = details.allowedIps,
         onValueChange = { onChange(details.copy(allowedIps = it)) },
-        label = { Text("Allowed IPs") },
+        label = { Text(stringResource(R.string.field_allowed_ips)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.mtu,
         onValueChange = { onChange(details.copy(mtu = it)) },
-        label = { Text("MTU (optional)") },
+        label = { Text(stringResource(R.string.field_mtu_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.persistentKeepalive,
         onValueChange = { onChange(details.copy(persistentKeepalive = it)) },
-        label = { Text("Persistent Keepalive (optional)") },
+        label = { Text(stringResource(R.string.field_persistent_keepalive_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
     OutlinedTextField(
         value = details.reserved,
         onValueChange = { onChange(details.copy(reserved = it)) },
-        label = { Text("Reserved bytes (optional)") },
+        label = { Text(stringResource(R.string.field_reserved_bytes_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
@@ -424,11 +426,11 @@ private fun UnknownEditor(
     details: ProxyProtocolDraft.Unknown,
     onChange: (ProxyProtocolDraft) -> Unit,
 ) {
-    Text("Unsupported protocol config")
+    Text(stringResource(R.string.unsupported_protocol_config))
     OutlinedTextField(
         value = details.configJson,
         onValueChange = { onChange(details.copy(configJson = it)) },
-        label = { Text("Config JSON") },
+        label = { Text(stringResource(R.string.field_config_json)) },
         modifier = Modifier.fillMaxWidth(),
         minLines = 6,
         maxLines = 10,
