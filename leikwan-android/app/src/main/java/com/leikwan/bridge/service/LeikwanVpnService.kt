@@ -15,18 +15,26 @@ import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import com.leikwan.bridge.ui.MainActivity
+import io.nekohasekai.libbox.CommandClient
+import io.nekohasekai.libbox.CommandClientHandler
+import io.nekohasekai.libbox.CommandClientOptions
 import io.nekohasekai.libbox.CommandServer
 import io.nekohasekai.libbox.CommandServerHandler
 import io.nekohasekai.libbox.ConnectionOwner
+import io.nekohasekai.libbox.ConnectionEvents
 import io.nekohasekai.libbox.InterfaceUpdateListener
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.LocalDNSTransport
+import io.nekohasekai.libbox.LogIterator
 import io.nekohasekai.libbox.NeighborUpdateListener
 import io.nekohasekai.libbox.NetworkInterfaceIterator
+import io.nekohasekai.libbox.OutboundGroupItemIterator
+import io.nekohasekai.libbox.OutboundGroupIterator
 import io.nekohasekai.libbox.OverrideOptions
 import io.nekohasekai.libbox.PlatformInterface
 import io.nekohasekai.libbox.RoutePrefixIterator
 import io.nekohasekai.libbox.SetupOptions
+import io.nekohasekai.libbox.StatusMessage
 import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.libbox.SystemProxyStatus
 import io.nekohasekai.libbox.TunOptions
@@ -40,6 +48,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
     private var tunFd: ParcelFileDescriptor? = null
     private var commandServer: CommandServer? = null
+    private var commandClient: CommandClient? = null
 
     companion object {
         var instance: LeikwanVpnService? = null
@@ -98,6 +107,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             val server = CommandServer(this, this)
             commandServer = server
             server.start()
+            startCommandClientDiagnostics()
             server.startOrReloadService(config, OverrideOptions())
 
             isRunning = true
@@ -116,6 +126,12 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     fun stopVpn() {
+        try {
+            commandClient?.disconnect()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error disconnecting CommandClient", e)
+        }
+        commandClient = null
         try {
             commandServer?.closeService()
             commandServer?.close()
@@ -167,7 +183,8 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                     .getOrNull()
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() },
-            )
+            ),
+            ownerPackageName = packageName,
         )
         val builder = Builder()
             .setConfigureIntent(mainActivityPendingIntent())
@@ -186,6 +203,10 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         plan.inet4Routes.forEach { route -> builder.addRoute(route.address, route.prefix) }
         plan.inet6Routes.forEach { route -> builder.addRoute(route.address, route.prefix) }
         plan.dnsServers.forEach { dns -> builder.addDnsServer(dns) }
+        plan.disallowedPackageNames.forEach { packageName ->
+            builder.addDisallowedApplication(packageName)
+            Log.i(TAG, "Excluded VPN owner package from captured traffic: $packageName")
+        }
 
         tunFd = builder.establish() ?: throw Exception("VPN permission not granted")
         Log.i(TAG, "TUN interface established, fd=${tunFd!!.fd}")
@@ -226,7 +247,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         protect(fd)
     }
 
-    override fun usePlatformAutoDetectInterfaceControl(): Boolean = false
+    override fun usePlatformAutoDetectInterfaceControl(): Boolean = true
 
     override fun localDNSTransport(): LocalDNSTransport? = null
 
@@ -326,5 +347,115 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             routes += RoutePrefix(route.address(), route.prefix())
         }
         return routes
+    }
+
+    private fun startCommandClientDiagnostics() {
+        val options = CommandClientOptions().apply {
+            addCommand(Libbox.CommandLog)
+            addCommand(Libbox.CommandConnections)
+            addCommand(Libbox.CommandStatus)
+        }
+        runCatching {
+            CommandClient(BoxDiagnosticsHandler(), options).also { client ->
+                client.connect()
+                commandClient = client
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "CommandClient diagnostics unavailable", error)
+        }
+    }
+
+    private class BoxDiagnosticsHandler : CommandClientHandler {
+        override fun connected() {
+            Log.i(TAG, "box command client connected")
+        }
+
+        override fun disconnected(message: String?) {
+            Log.i(TAG, "box command client disconnected: $message")
+        }
+
+        override fun clearLogs() {
+            Log.d(TAG, "box logs cleared")
+        }
+
+        override fun setDefaultLogLevel(level: Int) {
+            Log.d(TAG, "box default log level=$level")
+        }
+
+        override fun writeLogs(iterator: LogIterator?) {
+            var emitted = 0
+            while (iterator?.hasNext() == true && emitted < 80) {
+                val entry = iterator.next()
+                Log.d(TAG, "box log[${entry.level}]: ${entry.message}")
+                emitted += 1
+            }
+            if (iterator?.hasNext() == true) {
+                Log.d(TAG, "box log batch truncated")
+            }
+        }
+
+        override fun writeConnectionEvents(events: ConnectionEvents?) {
+            val iterator = events?.iterator() ?: return
+            var emitted = 0
+            while (iterator.hasNext() && emitted < 80) {
+                val event = iterator.next()
+                val connection = event.connection
+                Log.d(
+                    TAG,
+                    "box conn type=${event.type} id=${event.id} " +
+                        "network=${connection?.network} dest=${connection?.displayDestination()} " +
+                        "domain=${connection?.domain} outbound=${connection?.outbound} " +
+                        "chain=${connection?.chain()?.toListForLog()}",
+                )
+                emitted += 1
+            }
+            if (iterator.hasNext()) {
+                Log.d(TAG, "box connection batch truncated")
+            }
+        }
+
+        override fun writeStatus(message: StatusMessage?) {
+            if (message == null) return
+            Log.d(
+                TAG,
+                "box status in=${message.connectionsIn} out=${message.connectionsOut} " +
+                    "up=${message.uplinkTotal} down=${message.downlinkTotal}",
+            )
+        }
+
+        override fun writeGroups(iterator: OutboundGroupIterator?) {
+            var emitted = 0
+            while (iterator?.hasNext() == true && emitted < 40) {
+                val group = iterator.next()
+                Log.d(TAG, "box group tag=${group.tag} type=${group.type} selected=${group.selected}")
+                emitted += 1
+            }
+        }
+
+        override fun writeOutbounds(iterator: OutboundGroupItemIterator?) {
+            var emitted = 0
+            while (iterator?.hasNext() == true && emitted < 40) {
+                val outbound = iterator.next()
+                Log.d(TAG, "box outbound tag=${outbound.tag} type=${outbound.type} delay=${outbound.urlTestDelay}")
+                emitted += 1
+            }
+        }
+
+        override fun initializeClashMode(modeList: StringIterator?, currentMode: String?) {
+            Log.d(TAG, "box clash modes=${modeList.toListForLog()} current=$currentMode")
+        }
+
+        override fun updateClashMode(newMode: String?) {
+            Log.d(TAG, "box clash mode=$newMode")
+        }
+
+        private fun StringIterator?.toListForLog(): List<String> {
+            if (this == null) return emptyList()
+            val values = mutableListOf<String>()
+            while (hasNext() && values.size < 16) {
+                values += next()
+            }
+            return values
+        }
     }
 }

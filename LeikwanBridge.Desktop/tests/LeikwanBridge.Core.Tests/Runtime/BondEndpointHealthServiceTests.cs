@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using Xunit;
@@ -35,6 +36,51 @@ public sealed class BondEndpointHealthServiceTests
         Assert.Equal(317, selected[0].EndpointId);
         Assert.Equal("probation", selected[0].HealthRole);
         Assert.Equal(25, selected[0].DynamicPriority);
+    }
+
+    [Fact]
+    public void SelectRuntimeEndpoints_IgnoresPanelInactiveEndpointEvenWhenLocalQualityIsBest()
+    {
+        using var tempDir = new TempStateDirectory();
+        var stateManager = new StateManager(tempDir.Path);
+        var service = new BondEndpointHealthService(stateManager);
+
+        stateManager.SaveBondEndpointHealth(new Dictionary<string, Dictionary<string, BondEndpointHealthEntry>>
+        {
+            ["40"] = new()
+            {
+                ["254"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 1.0 },
+                ["256"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 0.4 },
+            }
+        });
+
+        var forward = CreateLatencyFirstNormalBondForward();
+        var parsed = JsonSerializer.Deserialize<ForwardConfig>("""
+        {
+          "forward_id": 40,
+          "service_status": "active",
+          "mode": "bond",
+          "listen_port": 11030,
+          "transport": "tcp",
+          "backend_mode": "current_mode",
+          "endpoints": [
+            { "endpoint_id": 254, "host": "8.163.90.132", "port": 7000, "dynamic_priority": 10, "health_status": "inactive" },
+            { "endpoint_id": 256, "host": "8.163.87.42", "port": 7000, "dynamic_priority": 10, "health_status": "active" }
+          ],
+          "bonding": {
+            "ingress_mode": "plain_tcp_mux",
+            "route_key": "forward-40",
+            "session_token": "tcp-session",
+            "remote_target": "45.196.220.47:5201",
+            "policy_mode": "latency_first",
+            "ws_priority": 10
+          }
+        }
+        """, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+
+        var selected = service.SelectRuntimeEndpoints(parsed, nowUnixSeconds: 100);
+
+        Assert.Equal([256], selected.Select(endpoint => endpoint.EndpointId).ToArray());
     }
 
     [Fact]

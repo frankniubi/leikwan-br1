@@ -52,4 +52,22 @@ class TunSetupPlannerTest {
         assertFalse(plan.allowBypass)
         assertTrue(plan.bindActiveNetwork)
     }
+
+    @Test
+    fun `planner excludes the vpn owner package from captured app traffic`() {
+        val plan = TunSetupPlanner.plan(
+            snapshot = TunOptionSnapshot(
+                autoRoute = true,
+                strictRoute = true,
+                inet4Addresses = emptyList(),
+                inet6Addresses = emptyList(),
+                inet4Routes = emptyList(),
+                inet6Routes = emptyList(),
+                dnsServer = "172.19.0.2",
+            ),
+            ownerPackageName = "com.leikwan.bridge",
+        )
+
+        assertEquals(listOf("com.leikwan.bridge"), plan.disallowedPackageNames)
+    }
 }

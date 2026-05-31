@@ -21,6 +21,7 @@ data class TunSetupPlan(
     val inet4Routes: List<RoutePrefix>,
     val inet6Routes: List<RoutePrefix>,
     val dnsServers: List<String>,
+    val disallowedPackageNames: List<String>,
     val allowBypass: Boolean,
     val bindActiveNetwork: Boolean,
 )
@@ -32,7 +33,10 @@ object TunSetupPlanner {
     private val fallbackInet6Routes = listOf(RoutePrefix("::", 0))
     private const val fallbackDnsServer = "1.1.1.1"
 
-    fun plan(snapshot: TunOptionSnapshot): TunSetupPlan {
+    fun plan(
+        snapshot: TunOptionSnapshot,
+        ownerPackageName: String? = null,
+    ): TunSetupPlan {
         val inet4Addresses = snapshot.inet4Addresses.ifEmpty { fallbackInet4Address }
         val inet6Addresses = snapshot.inet6Addresses.ifEmpty { fallbackInet6Address }
         val inet4Routes = if (snapshot.autoRoute && snapshot.inet4Routes.isNotEmpty()) {
@@ -46,6 +50,10 @@ object TunSetupPlanner {
             fallbackInet6Routes
         }
         val dnsServers = listOf(snapshot.dnsServer?.takeIf { it.isNotBlank() } ?: fallbackDnsServer)
+        val disallowedPackageNames = ownerPackageName
+            ?.takeIf { it.isNotBlank() }
+            ?.let(::listOf)
+            ?: emptyList()
 
         return TunSetupPlan(
             inet4Addresses = inet4Addresses,
@@ -53,6 +61,7 @@ object TunSetupPlanner {
             inet4Routes = inet4Routes,
             inet6Routes = inet6Routes,
             dnsServers = dnsServers,
+            disallowedPackageNames = disallowedPackageNames,
             allowBypass = false,
             bindActiveNetwork = true,
         )

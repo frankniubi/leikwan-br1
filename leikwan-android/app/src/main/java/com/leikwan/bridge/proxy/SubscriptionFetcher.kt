@@ -1,6 +1,7 @@
 package com.leikwan.bridge.proxy
 
 import com.leikwan.bridge.data.ProxyNode
+import com.leikwan.bridge.net.AppDns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -9,6 +10,8 @@ import java.util.concurrent.TimeUnit
 
 object SubscriptionFetcher {
     private val client = OkHttpClient.Builder()
+        // Resolve subscription hostnames over DoH to avoid GFW UDP/53 poisoning.
+        .dns(AppDns.shared())
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .followRedirects(true)

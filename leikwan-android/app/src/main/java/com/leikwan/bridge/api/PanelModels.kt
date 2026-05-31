@@ -9,17 +9,32 @@ data class LoginRequest(
     @SerializedName("client_id") val clientId: Long? = null,
 )
 
+data class ClientSelectionRequest(
+    @SerializedName("session_token") val sessionToken: String,
+    @SerializedName("client_id") val clientId: Long,
+)
+
 data class LoginResponse(
     val ok: Boolean,
-    val token: String,
-    @SerializedName("user_id") val userId: Long,
-    val username: String,
-    @SerializedName("client_id") val clientId: Long,
-    @SerializedName("client_name") val clientName: String,
-    val clients: List<ClientInfo>,
+    val error: String? = null,
+    @SerializedName(value = "session_token", alternate = ["token"])
+    val token: String? = null,
+    @SerializedName("user_id") val userId: Long? = null,
+    val username: String? = null,
+    @SerializedName("client_id") val clientId: Long? = null,
+    @SerializedName("client_name") val clientName: String? = null,
+    val clients: List<ClientInfo> = emptyList(),
 )
 
 data class ClientInfo(val id: Long, val name: String)
+
+data class ClientSelectionResponse(
+    val ok: Boolean,
+    val error: String? = null,
+    @SerializedName("client_id") val clientId: Long,
+    @SerializedName("client_name") val clientName: String,
+    @SerializedName("agent_token") val agentToken: String,
+)
 
 data class PullConfigsResponse(
     val ok: Boolean,

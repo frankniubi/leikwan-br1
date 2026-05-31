@@ -94,7 +94,10 @@ public sealed class BondEndpointHealthService
 
     public List<EndpointConfig> SelectRuntimeEndpoints(ForwardConfig forward, double? nowUnixSeconds = null)
     {
-        var endpoints = forward.Endpoints.Select(endpoint => endpoint.Clone()).ToList();
+        var endpoints = forward.Endpoints
+            .Where(endpoint => string.Equals(endpoint.HealthStatus, "active", StringComparison.OrdinalIgnoreCase))
+            .Select(endpoint => endpoint.Clone())
+            .ToList();
         if (ModeNormalizer.Normalize(forward.Mode) != "bond"
             || !string.Equals(forward.Bonding?.PolicyMode, "latency_first", StringComparison.OrdinalIgnoreCase))
             return endpoints;

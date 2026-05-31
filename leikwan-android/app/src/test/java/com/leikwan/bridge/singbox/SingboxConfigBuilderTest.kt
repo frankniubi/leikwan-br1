@@ -72,6 +72,7 @@ class SingboxConfigBuilderTest {
         assertEquals("debug", log.get("level").asString)
         assertFalse(outbounds.any { it.asJsonObject.get("type").asString == "selector" })
         assertEquals("proxy-1", config.getAsJsonObject("route").get("final").asString)
+        assertEquals("tcp", remoteDns.get("type").asString)
         assertEquals("proxy-1", remoteDns.get("detour").asString)
         assertFalse(outbounds.any { it.asJsonObject.get("tag").asString == "proxy-2" })
         assertTrue(routeRules.any { rule ->
@@ -125,8 +126,12 @@ class SingboxConfigBuilderTest {
         val outbounds = config.getAsJsonArray("outbounds")
         val proxySelector = outbounds.first { it.asJsonObject.get("tag").asString == "proxy" }.asJsonObject
         val log = config.getAsJsonObject("log")
+        val dnsServers = config.getAsJsonObject("dns").getAsJsonArray("servers")
+        val remoteDns = dnsServers.first { it.asJsonObject.get("tag").asString == "remote" }.asJsonObject
 
         assertEquals("direct", proxySelector.get("type").asString)
+        assertEquals("udp", remoteDns.get("type").asString)
+        assertFalse(remoteDns.has("detour"))
         assertEquals("debug", log.get("level").asString)
     }
 
@@ -181,9 +186,10 @@ class SingboxConfigBuilderTest {
 
         assertEquals("127.0.0.1", vmess.get("server").asString)
         assertEquals(32216, vmess.get("server_port").asInt)
-        assertEquals("direct", directDns.get("detour").asString)
+        assertFalse(directDns.has("detour"))
         assertFalse(outbounds.any { it.asJsonObject.get("type").asString == "selector" })
         assertEquals("proxy-3", config.getAsJsonObject("route").get("final").asString)
+        assertFalse(config.getAsJsonObject("route").has("auto_detect_interface"))
         assertEquals("proxy-3", remoteDns.get("detour").asString)
         assertFalse(outbounds.any { it.asJsonObject.get("type").asString == "dns" })
         assertFalse(outbounds.any { it.asJsonObject.get("type").asString == "block" })
@@ -191,6 +197,22 @@ class SingboxConfigBuilderTest {
         assertFalse(tunInbound.has("sniff_override_destination"))
         assertTrue(routeRules.any { it.asJsonObject.get("action")?.asString == "sniff" })
         assertTrue(routeRules.any { it.asJsonObject.get("action")?.asString == "hijack-dns" })
+    }
+
+    @Test
+    fun `tun inbound uses mobile safe mtu to avoid oversized udp proxy packets`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(ssNode(1)),
+                runtimeContext = null,
+                connectionMode = ProxyConnectionMode.DIRECT,
+            ).configJson
+        ).asJsonObject
+        val tunInbound = config.getAsJsonArray("inbounds").first().asJsonObject
+
+        assertEquals(1280, tunInbound.get("mtu").asInt)
     }
 
     @Test
@@ -233,8 +255,10 @@ class SingboxConfigBuilderTest {
         assertEquals(443, directProxy.get("server_port").asInt)
         assertFalse(outbounds.any { it.asJsonObject.get("type").asString == "selector" })
         assertEquals("proxy-4", config.getAsJsonObject("route").get("final").asString)
-        assertEquals("direct", remoteDns.get("detour").asString)
-        assertEquals("direct", directDns.get("detour").asString)
+        assertFalse(config.getAsJsonObject("route").has("auto_detect_interface"))
+        assertEquals("tcp", remoteDns.get("type").asString)
+        assertEquals("proxy-4", remoteDns.get("detour").asString)
+        assertFalse(directDns.has("detour"))
     }
 
     @Test
@@ -275,8 +299,49 @@ class SingboxConfigBuilderTest {
 
         assertFalse(directProxy.has("network"))
         assertFalse(directProxy.has("multiplex"))
-        assertEquals("direct", remoteDns.get("detour").asString)
-        assertEquals("direct", directDns.get("detour").asString)
+        assertEquals("tcp", remoteDns.get("type").asString)
+        assertEquals("proxy-5", remoteDns.get("detour").asString)
+        assertFalse(directDns.has("detour"))
+    }
+
+    @Test
+    fun `direct mode resolves proxy hostnames with direct dns to avoid dns proxy bootstrap loops`() {
+        val builder = SingboxConfigBuilder(
+            settings = SingboxSettings(
+                panelUrl = "https://panel.example.com",
+                dnsServer = "1.1.1.1",
+                dnsFallback = "8.8.8.8",
+                dnsStrategy = "prefer_ipv4",
+                bypassLan = true,
+                bypassChina = false,
+                customBypassRules = "",
+            )
+        )
+        val node = ProxyNode(
+            id = 8,
+            name = "domain-direct",
+            type = "ss",
+            originalServer = "proxy.example.net",
+            originalPort = 443,
+            configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+            forwardId = null,
+        )
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(node),
+                runtimeContext = null,
+                connectionMode = ProxyConnectionMode.DIRECT,
+            ).configJson
+        ).asJsonObject
+        val dnsRules = config.getAsJsonObject("dns").getAsJsonArray("rules")
+
+        assertTrue(dnsRules.any { rule ->
+            val obj = rule.asJsonObject
+            obj.get("server")?.asString == "direct-dns" &&
+                obj.has("domain") &&
+                obj.getAsJsonArray("domain").any { it.asString == "proxy.example.net" }
+        })
     }
 
     @Test
