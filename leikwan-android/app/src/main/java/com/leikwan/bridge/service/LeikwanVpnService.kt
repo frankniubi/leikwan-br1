@@ -14,6 +14,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
+import com.leikwan.bridge.R
 import com.leikwan.bridge.ui.MainActivity
 import io.nekohasekai.libbox.CommandClient
 import io.nekohasekai.libbox.CommandClientHandler
@@ -87,7 +88,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         if (config == null) {
             Log.e(TAG, "No config provided")
             startupState = VpnStartupState.FAILED
-            lastStartError = "No config provided"
+            lastStartError = getString(R.string.vpn_error_no_config)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -95,7 +96,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         startupState = VpnStartupState.STARTING
         lastStartError = null
         isRunning = false
-        startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
+        startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.vpn_notification_connecting)))
 
         try {
             val options = SetupOptions()
@@ -114,7 +115,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             isRunning = true
             startupState = VpnStartupState.RUNNING
             lastStartError = null
-            updateNotification("Connected")
+            updateNotification(getString(R.string.vpn_notification_connected))
             Log.i(TAG, "VPN service started with libbox")
         } catch (e: Exception) {
             startupState = VpnStartupState.FAILED
@@ -189,7 +190,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         )
         val builder = Builder()
             .setConfigureIntent(mainActivityPendingIntent())
-            .setSession("LeiKwan Bridge")
+            .setSession(getString(R.string.app_name))
             .setMtu(options.mtu)
 
         if (plan.bindActiveNetwork) {
@@ -288,8 +289,10 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID, "VPN Service", NotificationManager.IMPORTANCE_LOW,
-            ).apply { description = "LeiKwan Bridge VPN status" }
+                CHANNEL_ID,
+                getString(R.string.vpn_notification_channel_name),
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply { description = getString(R.string.vpn_notification_channel_description) }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
@@ -302,11 +305,11 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         val stopPending = PendingIntent.getService(this, 1, stopIntent, PendingIntent.FLAG_IMMUTABLE)
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("LeiKwan Bridge")
+            .setContentTitle(getString(R.string.app_name))
             .setContentText(status)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(pending)
-            .addAction(android.R.drawable.ic_media_pause, "Disconnect", stopPending)
+            .addAction(android.R.drawable.ic_media_pause, getString(R.string.vpn_notification_disconnect), stopPending)
             .setOngoing(true)
             .build()
     }

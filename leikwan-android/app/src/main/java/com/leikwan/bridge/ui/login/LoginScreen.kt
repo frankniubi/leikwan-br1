@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -69,11 +70,11 @@ fun LoginScreen(
     state.error?.let { err ->
         AlertDialog(
             onDismissRequest = { viewModel.clearError() },
-            title = { Text("Sign in failed") },
+            title = { Text(stringResource(R.string.login_sign_in_failed)) },
             text = { Text(err) },
             confirmButton = {
                 TextButton(onClick = { viewModel.clearError() }) {
-                    Text("OK")
+                    Text(stringResource(R.string.common_ok))
                 }
             },
         )
@@ -87,13 +88,13 @@ fun LoginScreen(
             ) {
                 Image(
                     painter = painterResource(R.drawable.ic_launcher_foreground),
-                    contentDescription = "LeiKwan Bridge",
+                    contentDescription = stringResource(R.string.app_name),
                     modifier = Modifier.size(80.dp),
                 )
                 Spacer(Modifier.height(8.dp))
-                Text("LeiKwan Bridge", style = MaterialTheme.typography.headlineMedium)
+                Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    "Connect to your network",
+                    stringResource(R.string.login_subtitle),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -102,7 +103,7 @@ fun LoginScreen(
                 OutlinedTextField(
                     value = panelUrl,
                     onValueChange = { panelUrl = it },
-                    label = { Text("Panel URL") },
+                    label = { Text(stringResource(R.string.login_panel_url)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
@@ -110,7 +111,7 @@ fun LoginScreen(
                 OutlinedTextField(
                     value = email,
                     onValueChange = { email = it },
-                    label = { Text("Email") },
+                    label = { Text(stringResource(R.string.login_email)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
@@ -119,7 +120,7 @@ fun LoginScreen(
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
-                    label = { Text("Password") },
+                    label = { Text(stringResource(R.string.login_password)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
@@ -145,7 +146,13 @@ fun LoginScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                     }
-                    Text(if (state.isLoading) "Signing in..." else "Sign In")
+                    Text(
+                        if (state.isLoading) {
+                            stringResource(R.string.login_signing_in)
+                        } else {
+                            stringResource(R.string.login_sign_in)
+                        }
+                    )
                 }
             }
         }
@@ -161,11 +168,11 @@ private fun ClientPickerDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Select Client") },
+        title = { Text(stringResource(R.string.login_select_client_title)) },
         text = {
             Column {
                 Text(
-                    "Multiple clients found. Choose one:",
+                    stringResource(R.string.login_multiple_clients),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(12.dp))
@@ -185,7 +192,7 @@ private fun ClientPickerDialog(
                             Column {
                                 Text(client.name, style = MaterialTheme.typography.titleSmall)
                                 Text(
-                                    "ID: ${client.id}",
+                                    stringResource(R.string.login_client_id_format, client.id),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -197,8 +204,8 @@ private fun ClientPickerDialog(
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onUseFirst) { Text("Use First") }
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onUseFirst) { Text(stringResource(R.string.login_use_first)) }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) }
         },
     )
 }

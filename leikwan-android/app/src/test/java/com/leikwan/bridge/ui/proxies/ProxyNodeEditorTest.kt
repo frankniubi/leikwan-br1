@@ -1,6 +1,7 @@
 package com.leikwan.bridge.ui.proxies
 
 import com.google.gson.JsonParser
+import com.leikwan.bridge.R
 import com.leikwan.bridge.data.ProxyNode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -76,7 +77,7 @@ class ProxyNodeEditorTest {
         )
 
         require(result is ProxyNodeEditResult.Error)
-        assertTrue(result.message.contains("port", ignoreCase = true))
+        assertEquals(R.string.proxy_error_port_number, result.messageRes)
     }
 
     @Test
@@ -104,7 +105,7 @@ class ProxyNodeEditorTest {
         )
 
         require(result is ProxyNodeEditResult.Error)
-        assertTrue(result.message.contains("method", ignoreCase = true))
+        assertEquals(R.string.proxy_error_ss_method_required, result.messageRes)
     }
 
     @Test
