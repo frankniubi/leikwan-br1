@@ -115,19 +115,26 @@ public sealed class ConfigPollingService
         foreach (var forward in forwards)
         {
             var key = forward.ForwardId.ToString();
-            if (applied.TryGetValue(key, out var appliedState) && appliedState.UserStopped)
+            var hasAppliedState = applied.TryGetValue(key, out var appliedState);
+            if (hasAppliedState && appliedState!.UserStopped)
                 continue;
 
-            if (!applied.ContainsKey(key) || !_runtimeManager.IsForwardRunning(forward.ForwardId))
+            var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+            var contractSignature = ForwardContractSignature.Compute(effectiveForward);
+            var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
+            var signatureMatches = hasAppliedState
+                && string.Equals(appliedState!.ContractSignature, contractSignature, StringComparison.Ordinal);
+
+            if (hasAppliedState && isRunning && signatureMatches)
+                continue;
+
+            try
             {
-                try
-                {
-                    _runtimeManager.ApplyForward(forward);
-                }
-                catch (Exception ex)
-                {
-                    Log.Error(ex, "failed applying forward {ForwardId}", forward.ForwardId);
-                }
+                _runtimeManager.ApplyForward(effectiveForward, contractSignature, "config_sync");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "failed applying forward {ForwardId}", forward.ForwardId);
             }
         }
 

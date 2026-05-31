@@ -58,6 +58,11 @@ if path.exists():
     except Exception:
         existing = {}
 payload = dict(existing)
+same_request = str(existing.get("request_token", "")) == request_token
+try:
+    previous_failure_count = int(existing.get("failure_count", 0) or 0) if same_request else 0
+except Exception:
+    previous_failure_count = 0
 payload["request_token"] = request_token
 payload["status"] = status
 payload["last_attempt_at"] = time.time()
@@ -66,6 +71,12 @@ if error_message:
     payload["last_failed_at"] = time.time()
 else:
     payload["last_error"] = ""
+if status == "error":
+    payload["failure_count"] = previous_failure_count + 1
+elif status == "success":
+    payload["failure_count"] = 0
+elif not same_request:
+    payload["failure_count"] = 0
 if status == "running":
     payload["last_started_at"] = time.time()
 elif status == "success":

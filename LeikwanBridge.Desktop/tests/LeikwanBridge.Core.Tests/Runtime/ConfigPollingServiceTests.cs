@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using Xunit;
@@ -22,7 +23,7 @@ public sealed class ConfigPollingServiceTests
             StateDir = tempDir.Path,
         };
         var stateManager = new StateManager(tempDir.Path);
-        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new TestProcessSupervisor());
         using var api = new MasterApiClient(server.BaseUrl, "token");
         var service = new ConfigPollingService(api, runtimeManager, stateManager);
         var order = new List<string>();
@@ -71,6 +72,76 @@ public sealed class ConfigPollingServiceTests
         Assert.Contains("\"listen_udp\": \"0.0.0.0:11024\"", payload);
         Assert.Contains("\"route_key\": \"forward-26.uot\"", payload);
         Assert.Contains("\"session_token\": \"udp-session\"", payload);
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_DoesNotApply_WhenSignatureMatches_AndRuntimeIsRunning()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildPullResponseJson());
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var forward = BuildForwardFromPullResponse();
+        var signature = ForwardContractSignature.Compute(EffectiveForwardConfigBuilder.Build(forward));
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["26"] = new()
+            {
+                ForwardId = 26,
+                ContractSignature = signature,
+                UserStopped = false,
+                LastApplyReason = "config_sync",
+            },
+        });
+
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+
+        Assert.Empty(runtimeManager.AppliedForwardIds);
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_Applies_WhenSignatureChanges_EvenIfRuntimeIsRunning()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildPullResponseJson());
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["26"] = new()
+            {
+                ForwardId = 26,
+                ContractSignature = "different-signature",
+                UserStopped = false,
+                LastApplyReason = "config_sync",
+            },
+        });
+
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+
+        Assert.Equal([26], runtimeManager.AppliedForwardIds);
     }
 
     private static string BuildPullResponseJson()
@@ -157,19 +228,97 @@ public sealed class ConfigPollingServiceTests
         """;
     }
 
+    private static ForwardConfig BuildForwardFromPullResponse()
+    {
+        return new ForwardConfig
+        {
+            ForwardId = 26,
+            ServiceStatus = "active",
+            Mode = "bond",
+            ListenPort = 11024,
+            Target = "193.227.109.82:5201",
+            Sni = "v3.leikwanhost.com",
+            PathPrefix = "forward-26",
+            Transport = "tcp+udp",
+            Endpoints =
+            [
+                new EndpointConfig
+                {
+                    EndpointId = 184,
+                    Host = "8.163.90.132",
+                    Port = 7001,
+                    RouteKey = "forward-26",
+                    IngressAuthToken = "token-a",
+                    IngressProtocol = "plain_tcp_mux",
+                    DynamicPriority = 9,
+                    HealthStatus = "active",
+                },
+                new EndpointConfig
+                {
+                    EndpointId = 185,
+                    Host = "8.163.90.235",
+                    Port = 7001,
+                    RouteKey = "forward-26",
+                    IngressAuthToken = "token-b",
+                    IngressProtocol = "plain_tcp_mux",
+                    DynamicPriority = 10,
+                    HealthStatus = "active",
+                },
+            ],
+            Bonding = new BondingConfig
+            {
+                RemoteTarget = "138.252.162.120:9000",
+                SessionToken = "tcp-session",
+                UdpSessionToken = "udp-session",
+                IngressMode = "plain_tcp_mux",
+                RouteKey = "forward-26",
+                ChunkSize = 131072,
+                MaxWindowBytes = 16777216,
+                RetransmitMs = 300,
+                ConnectTimeoutMs = 3000,
+                JoinTimeoutMs = 400,
+                InteractiveChunkBytes = 16384,
+                LatencyGuardBytes = 262144,
+                InteractiveRttSlackMs = 30,
+                WarmupTriggerBytes = 65536,
+                WarmupSliceBytes = 65536,
+                WarmupLegDelayMs = 80,
+                BulkPromoteBytes = 262144,
+                LegCooldownMs = 1800000,
+                DisableLocalRateLimit = true,
+                QuicEnabled = false,
+                QuicViaSlave = false,
+                WssStandbyEnabled = false,
+                WsPriority = 10,
+            },
+        };
+    }
+
     private sealed class RecordingForwardRuntimeManager : ForwardRuntimeManager
     {
-        public RecordingForwardRuntimeManager(AgentConfig config, StateManager stateManager)
-            : base(config, new TestProcessSupervisor(), stateManager, _ => true, _ => true)
+        public RecordingForwardRuntimeManager(AgentConfig config, StateManager stateManager, ProcessSupervisor supervisor)
+            : base(config, supervisor, stateManager, _ => true, _ => true)
         {
         }
 
         public Action<ForwardConfig>? OnApply { get; set; }
+        public List<int> AppliedForwardIds { get; } = [];
 
         public override void ApplyForward(ForwardConfig forward)
         {
+            ApplyForward(forward, contractSignature: null, applyReason: "manual_apply");
+        }
+
+        public override void ApplyForward(ForwardConfig forward, string? contractSignature, string applyReason)
+        {
+            AppliedForwardIds.Add(forward.ForwardId);
             OnApply?.Invoke(forward);
         }
+    }
+
+    private sealed class AlwaysRunningProcessSupervisor : ProcessSupervisor
+    {
+        public override bool IsRunning(int forwardId) => true;
     }
 
     private sealed class PullApiServer : IDisposable

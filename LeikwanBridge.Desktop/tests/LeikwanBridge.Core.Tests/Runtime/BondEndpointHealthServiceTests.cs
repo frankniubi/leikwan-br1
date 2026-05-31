@@ -8,6 +8,69 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class BondEndpointHealthServiceTests
 {
     [Fact]
+    public void SelectRuntimeEndpoints_CfBond_ExcludesInactiveEndpointEvenWhenItsQualityIsBest()
+    {
+        using var tempDir = new TempStateDirectory();
+        var stateManager = new StateManager(tempDir.Path);
+        var service = new BondEndpointHealthService(stateManager);
+
+        stateManager.SaveBondEndpointHealth(new Dictionary<string, Dictionary<string, BondEndpointHealthEntry>>
+        {
+            ["47"] = new()
+            {
+                ["316"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 1.0 },
+                ["317"] = new BondEndpointHealthEntry { Role = "healthy", ConsecutiveSuccesses = 4, QualityScore = 0.2 },
+            }
+        });
+
+        var selected = service.SelectRuntimeEndpoints(CreateCfBondForwardWithInactiveBestLeg(), nowUnixSeconds: 1_001);
+
+        Assert.Equal([317], selected.Select(endpoint => endpoint.EndpointId).ToList());
+    }
+
+    [Fact]
+    public void SelectRuntimeEndpoints_NonLatencyFirstBond_DoesNotFilterInactiveEndpoints()
+    {
+        using var tempDir = new TempStateDirectory();
+        var stateManager = new StateManager(tempDir.Path);
+        var service = new BondEndpointHealthService(stateManager);
+
+        var forward = new ForwardConfig
+        {
+            ForwardId = 52,
+            Mode = "bond",
+            ListenPort = 12000,
+            Transport = "tcp",
+            Endpoints =
+            [
+                new EndpointConfig { EndpointId = 1, Host = "a", Port = 1, HealthStatus = "inactive" },
+                new EndpointConfig { EndpointId = 2, Host = "b", Port = 1, HealthStatus = "active" },
+            ],
+            Bonding = new BondingConfig { PolicyMode = "balanced" },
+        };
+
+        var selected = service.SelectRuntimeEndpoints(forward, nowUnixSeconds: 100);
+
+        Assert.Equal(new[] { 1, 2 }, selected.Select(endpoint => endpoint.EndpointId).ToArray());
+    }
+
+    [Fact]
+    public void SelectRuntimeEndpoints_LatencyFirstBond_AllInactive_ReturnsEmpty()
+    {
+        using var tempDir = new TempStateDirectory();
+        var stateManager = new StateManager(tempDir.Path);
+        var service = new BondEndpointHealthService(stateManager);
+
+        var forward = CreateCfBondForward();
+        foreach (var endpoint in forward.Endpoints)
+            endpoint.HealthStatus = "inactive";
+
+        var selected = service.SelectRuntimeEndpoints(forward, nowUnixSeconds: 100);
+
+        Assert.Empty(selected);
+    }
+
+    [Fact]
     public void SelectRuntimeEndpoints_CfBond_ExcludesQuarantinedEndpointWhenHealthyExists()
     {
         using var tempDir = new TempStateDirectory();
@@ -81,6 +144,41 @@ public sealed class BondEndpointHealthServiceTests
         var selected = service.SelectRuntimeEndpoints(parsed, nowUnixSeconds: 100);
 
         Assert.Equal([256], selected.Select(endpoint => endpoint.EndpointId).ToArray());
+    }
+
+    [Fact]
+    public void SelectRuntimeEndpoints_CfBond_FallbackDoesNotSelectInactiveEndpoint()
+    {
+        using var tempDir = new TempStateDirectory();
+        var stateManager = new StateManager(tempDir.Path);
+        var service = new BondEndpointHealthService(stateManager);
+
+        stateManager.SaveBondEndpointHealth(new Dictionary<string, Dictionary<string, BondEndpointHealthEntry>>
+        {
+            ["47"] = new()
+            {
+                ["316"] = new BondEndpointHealthEntry
+                {
+                    Role = "healthy",
+                    ConsecutiveSuccesses = 4,
+                    QualityScore = 1.0,
+                },
+                ["317"] = new BondEndpointHealthEntry
+                {
+                    Role = "quarantined",
+                    ConsecutiveFailures = 3,
+                    QuarantineUntil = 2_000,
+                    QualityScore = 0.0,
+                },
+            },
+        });
+
+        var selected = service.SelectRuntimeEndpoints(CreateCfBondForwardWithInactiveBestLeg(), nowUnixSeconds: 1_000);
+
+        Assert.Single(selected);
+        Assert.Equal(317, selected[0].EndpointId);
+        Assert.Equal("primary", selected[0].LegRole);
+        Assert.Equal("quarantined", selected[0].HealthRole);
     }
 
     [Fact]
@@ -216,6 +314,13 @@ public sealed class BondEndpointHealthServiceTests
                 WsPriority = 10,
             },
         };
+    }
+
+    private static ForwardConfig CreateCfBondForwardWithInactiveBestLeg()
+    {
+        var forward = CreateCfBondForward();
+        forward.Endpoints[0].HealthStatus = "inactive";
+        return forward;
     }
 
     private static ForwardConfig CreateCfBondForwardWithFiveHealthyLegs()

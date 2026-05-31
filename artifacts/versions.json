@@ -1,11 +1,11 @@
 {
   "slave_agent": {
-    "version": "2026.05.29.7",
+    "version": "2026.06.01.1",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "dfaaef2f28eb2cdef47969aeb1e29a0ba45d6fa404003060154a9ebb9397a749",
-    "size_bytes": 229607,
-    "size": 229607
+    "sha256": "f315bc6341065f3d3967940fc3274f8b46fcefaaff5ae34db17ff08aa7686387",
+    "size_bytes": 249908,
+    "size": 249908
   },
   "slave_installer": {
     "version": "2026.05.20.1",
@@ -61,12 +61,12 @@
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
-    "version": "2026.05.29.7",
+    "version": "2026.06.01.1",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "fda429393826fa0e9797b991a879b3875a44fa0266e80ba51e66662a3b6d8115",
-    "size_bytes": 91067,
-    "size": 91067
+    "sha256": "8fb718377e8cbbed7a9def3108cfb0576e26dbd97d0221b7083a8d9cbcf4df02",
+    "size_bytes": 100933,
+    "size": 100933
   },
   "mptcp_client_runtime": {
     "version": "2026.05.29.5",
@@ -160,11 +160,11 @@
     "size": 68630
   },
   "cfwg_latency_watchdog": {
-    "version": "2026.05.20.1",
+    "version": "2026.06.01.1",
     "path": "client-agent/cfwg_latency_watchdog.py",
     "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
-    "sha256": "ae9f8b50f15a29da1dab24820736e772e814d029efadabeb8e533a1f55f8c59c",
-    "size_bytes": 26349
+    "sha256": "9665bb2d4053ff6acde3531c57942bd53c9b2bd0571bc33f55f52e4ca5e03046",
+    "size_bytes": 32009
   },
   "leikwan_mptcp_relay_windows_amd64": {
     "version": "0.1.0",

@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 using LeikwanBridge.Core.Models;
 
@@ -22,13 +24,16 @@ public sealed class MptcpRuntimeBuilder
     {
         var mptcp = forward.Mptcp ?? throw new InvalidOperationException("mptcp mode missing mptcp config");
         // Windows cannot bring up the panel-published Linux/WireGuard underlay.
-        // If a slave pre-connect relay is available, prefer it — the relay handles
-        // MPTCP to sidecar on our behalf. Client only needs plain TCP.
+        // If a slave pre-connect relay is available on a Windows-visible address,
+        // prefer it — the relay handles MPTCP to sidecar on our behalf. When the
+        // relay host is only a private underlay address, Windows must fall back to
+        // the public relay endpoint instead.
         var slaveRelayHost = (mptcp.SlaveRelayHost ?? "").Trim();
         var slaveRelayPort = mptcp.SlaveRelayPort;
+        var useSlaveRelay = ShouldUseWindowsVisibleSlaveRelay(slaveRelayHost, slaveRelayPort);
         string remoteHost;
         int remotePort;
-        if (!string.IsNullOrWhiteSpace(slaveRelayHost) && slaveRelayPort > 0)
+        if (useSlaveRelay)
         {
             remoteHost = slaveRelayHost;
             remotePort = slaveRelayPort;
@@ -38,6 +43,8 @@ public sealed class MptcpRuntimeBuilder
             // Fallback: use the public relay endpoint with TCP fallback.
             remoteHost = FirstNonEmpty(mptcp.RelayHost, mptcp.RemoteHost, mptcp.SidecarHost);
             remotePort = FirstPositive(mptcp.RelayPort, mptcp.RemotePort, mptcp.SidecarPort);
+            slaveRelayHost = string.Empty;
+            slaveRelayPort = 0;
         }
         if (string.IsNullOrWhiteSpace(remoteHost) || remotePort <= 0)
             throw new InvalidOperationException("mptcp mode missing sidecar host/port");
@@ -98,6 +105,13 @@ public sealed class MptcpRuntimeBuilder
         if (subflowLimit <= 0)
             subflowLimit = 1;
 
+        var effectiveSlaveRelayHost = ShouldUseWindowsVisibleSlaveRelay(mptcp.SlaveRelayHost, mptcp.SlaveRelayPort)
+            ? FirstNonEmpty(mptcp.SlaveRelayHost)
+            : string.Empty;
+        var effectiveSlaveRelayPort = string.IsNullOrWhiteSpace(effectiveSlaveRelayHost)
+            ? 0
+            : mptcp.SlaveRelayPort;
+
         return new Dictionary<string, object?>
         {
             ["forward_id"] = forward.ForwardId,
@@ -127,11 +141,40 @@ public sealed class MptcpRuntimeBuilder
             ["underlays"] = mptcp.Underlays,
             ["stats_path"] = statsPath,
             ["windows_compatibility_mode"] = true,
-            // Slave pre-connect relay: when available, Windows client connects
-            // via plain TCP to the slave relay (no MPTCP kernel support needed).
-            ["slave_relay_host"] = FirstNonEmpty(mptcp.SlaveRelayHost),
-            ["slave_relay_port"] = mptcp.SlaveRelayPort,
+            // Slave pre-connect relay: when available on a Windows-visible address,
+            // Windows client connects via plain TCP to the slave relay.
+            ["slave_relay_host"] = effectiveSlaveRelayHost,
+            ["slave_relay_port"] = effectiveSlaveRelayPort,
         };
+    }
+
+    private static bool ShouldUseWindowsVisibleSlaveRelay(string host, int port)
+    {
+        if (string.IsNullOrWhiteSpace(host) || port <= 0)
+            return false;
+
+        if (!IPAddress.TryParse(host, out var ipAddress))
+            return true;
+
+        if (IPAddress.IsLoopback(ipAddress))
+            return true;
+
+        if (ipAddress.AddressFamily != AddressFamily.InterNetwork)
+            return true;
+
+        var bytes = ipAddress.GetAddressBytes();
+        if (bytes[0] == 10)
+            return false;
+        if (bytes[0] == 127)
+            return false;
+        if (bytes[0] == 169 && bytes[1] == 254)
+            return false;
+        if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+            return false;
+        if (bytes[0] == 192 && bytes[1] == 168)
+            return false;
+
+        return true;
     }
 
     private static string FirstNonEmpty(params string?[] values)

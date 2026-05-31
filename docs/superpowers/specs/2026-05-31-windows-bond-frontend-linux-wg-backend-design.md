@@ -1,0 +1,618 @@
+# Windows Bond Frontend / Linux WG Backend Design
+
+**Status:** Ready for implementation planning. Phase-1 implementation is allowed, but Phase-1 release remains gated by the explicit contract, validation, and rollout conditions in §§15–16.
+**Scope:** Windows desktop client (`LeikwanBridge.Desktop`) runtime + the control-plane payload it consumes. Linux backend behavior is explicitly out of scope (see §13).
+
+---
+
+## 0. Locked decisions (read first)
+
+These were confirmed with the product owner and are not open for re-litigation during implementation:
+
+1. **Windows runs only two runtime shapes: `single` and `bond_frontend`.** No `mptcp` runtime, no `race` runtime on Windows.
+2. **Windows is a pure frontend.** It dials a slave's ingress and relays the application flow. It never:
+   - runs WireGuard or manages any underlay,
+   - runs an MPTCP socket / endpoint policy,
+   - acts as "client-as-a-slave" (no self-leg, no `lw-cfwg-*`, no `lw-cfsr-*`, no CF-WG self transit),
+   - consumes inner overlay (`10.203.x.x`) / relay / preconnect / sidecar topology.
+3. **Client → slave is always a direct domestic dial.** All slaves are in mainland China and the Windows client is in mainland China, so there is **no GFW between client and slave**. Windows therefore needs **no Cloudflare edge, no wstunnel, no TLS-fronting** for the client→slave hop. The slave ingress is plain TCP mux (`plain_tcp_mux`) on the slave's public domestic IP, ports `7000–9000`.
+4. **`bond_frontend` aggregation is app-layer**, performed by the existing `leikwan-bond` client across multiple direct slave ingress legs. The slave re-aggregates onward to the sidecar. Aggregation does **not** happen on the Windows client via MPTCP.
+5. **`slave → sidecar` is always WireGuard** (carried over CF/CNIX/etc. as a Linux implementation detail). This is invisible to Windows.
+
+The remainder of this document specifies how to implement these decisions.
+
+---
+
+## 1. Summary
+
+Today the Windows client tries to honor `mptcp` forwards via `MptcpRuntimeBuilder`. That builder makes Windows depend on Linux backend detail it cannot satisfy (inner `slave_relay_host`, underlays, MPTCP endpoint policy). The result is the observed symptom: **for an `mptcp`-tagged forward, Windows exposes no usable entry port / the forward is torn down at readiness**, even though the local listener concept is fine.
+
+This design removes the Windows MPTCP runtime path entirely and makes Windows consume a **frontend-only ingress contract**: a set of directly-dialable slave ingress legs. Windows maps that to `single` (one leg) or `bond_frontend` (≥2 legs), both implemented by the **existing** bond/`plain_tcp_mux` runtime that already dials slave ingress directly. All transport complexity (slave→sidecar WireGuard, CF/CNIX presentation, sidecar target delivery) stays on Linux.
+
+The key realization that makes this low-risk: **`bond_frontend` is the bond `plain_tcp_mux` runtime that already exists** (`BondRuntimeBuilder.Build`, lines 86–104 dial `ep.Host:ep.Port` directly with `--route-key`/`--auth-token`). We are mostly *re-routing* and *deleting*, not building new transport.
+
+---
+
+## 2. Problem statement (grounded in current code)
+
+`LeikwanBridge.Core/Services/MptcpRuntimeBuilder.cs`:
+- Prefers `mptcp.slave_relay_host : slave_relay_port` as the connect target (lines 27–41). In the rendered contract for an MPTCP forward this is the **inner overlay address** (e.g. `10.203.201.178`), which Windows has **no route to** (Windows brought up no WireGuard).
+- Throws if no sidecar host/port or session token is present (lines 42–51).
+
+`LeikwanBridge.Core/Services/ForwardRuntimeManager.cs`:
+- If `Build()` throws, it logs and returns with **no processes started** (lines 76–80) → no listener.
+- Even when processes start, it waits up to 15 s for the leg/listen ports and calls `StopAll` if they are not ready (lines 100–105) → the forward is torn down.
+
+Net effect for an `mptcp` forward on Windows: **"no entry port exposed on system."** The cause is not "Windows can't listen"; it is "Windows is forced to participate in a backend transport contract it cannot fulfill, so the runtime never reaches a healthy listening state."
+
+Field confirmation: in the `forward 47` investigation (2026-05-31), the analogous Linux relay logic connected to the dead slave-preconnect relay and the listener served resets. Windows shares the same `prefer slave_relay_host` selection logic, but with an *unroutable* inner address, so it fails one step earlier (no working listener at all).
+
+---
+
+## 3. Goals
+
+1. Remove the Windows `mptcp` runtime execution path.
+2. Make a Windows `mptcp`-tagged forward come up as a working `single`/`bond_frontend` forward with a real entry port.
+3. Windows consumes only directly-dialable slave ingress information.
+4. Preserve frontend multi-leg throughput aggregation via `bond_frontend`.
+5. Keep all backend transport (slave→sidecar WG, CF/CNIX, sidecar delivery) on Linux.
+6. Preserve the existing orchestration discipline (desired-state, effective signature, no-op skip, health gating, supervision) — applied to the ingress contract.
+7. Make end-to-end verification mandatory (a listening port is not "done").
+
+## 4. Non-goals
+
+This design does **not**:
+- implement native Windows kernel MPTCP;
+- run WireGuard on Windows;
+- make Windows a slave / self-leg / "client-as-a-slave" (no `lw-cfwg-*`, no `lw-cfsr-*`, no CF-WG self transit);
+- run wstunnel/Cloudflare on Windows for the client→slave hop (unnecessary: domestic direct);
+- expose or consume inner overlay addressing, underlays, or sidecar topology on Windows;
+- change the Linux meaning of bond / MPTCP / sidecar WireGuard;
+- fix the `forward 47` **backend** failure (separate work — see §13).
+
+---
+
+## 5. Architecture
+
+### 5.1 Windows runtime model
+
+Exactly two shapes. For `plain_tcp_mux`, they are the **same Windows transport family** and differ only by valid ingress-leg count:
+
+| Windows mode | When | Normative Phase-1 TCP process graph |
+|---|---|---|
+| `single` | exactly one valid ingress leg | stage 1: one `bond-ingress-leg-0` process binds a deterministic loopback back-port and dials the slave ingress directly with `--remote <host:port> --route-key <routeKey> --auth-token <ingressAuthToken>`; stage 2: one `bond-runtime` process listens on `listen_port`, consumes a one-element `--legs` list, and receives the TCP `--session-token` |
+| `bond_frontend` | ≥2 valid ingress legs | the same two-stage stack, but with one `bond-ingress` process per leg and a single `bond-runtime` listener on `listen_port` over a multi-element `--legs` list |
+
+- The application-facing listener is **`bond-runtime`**, not `bond-ingress`.
+- `bond-ingress` binds loopback back-ports only; the runtime contract is that the app can reach the forward locally via `127.0.0.1:<listen_port>`. The implementation may bind `0.0.0.0` for compatibility, but the contract is local reachability, not public exposure.
+- Each ingress leg is a **direct TCP dial to the slave's public domestic ingress** (`host:port` in `7000–9000`) authenticated with `route_key` + `ingress_auth_token`. This is the existing `bond-ingress-leg-{i}` path (`BondRuntimeBuilder.Build`, lines 86–104).
+- `single` is **not** a special WSS fast path. It is the one-leg degenerate case of the direct frontend stack, and no new direct single-transport binary is required.
+- The Windows direct frontend path must not route TCP using `forward.target`, `bonding.remote_target`, `slave_relay_*`, `relay_*`, `sidecar_*`, or any underlay address. The application target is represented by the session token consumed by `bond-runtime`.
+- UDP / `tcp+udp` are separately gated in §§14–16. This subsection is normative for **TCP** in Phase 1.
+
+No WireGuard, no wstunnel, no MPTCP endpoints, no self-leg. The slave ingress is the boundary of Windows's responsibility.
+
+### 5.2 Linux runtime model (unchanged, summarized for context)
+
+- **Slave:** accepts the direct client ingress (`plain_tcp_mux` on `7000–9000`), aggregates/dispatches, owns preconnect/relay where applicable, forwards to the sidecar over WireGuard (carried via direct/CNIX or CF/wstunnel as needed).
+- **Sidecar:** receives over WireGuard, owns mux/target delivery, hides CF/CNIX specifics behind the WG boundary.
+- **Invariant:** `slave → sidecar` is always WireGuard.
+
+These are Linux concerns and **must not** appear in the Windows contract.
+
+---
+
+## 6. Frontend ingress contract
+
+### 6.1 Shape
+
+Windows runtime execution is driven exclusively by an ingress-leg set. Each leg contains only Windows-relevant fields:
+
+```jsonc
+{
+  "forward_id": 47,
+  "listen_port": 11035,
+  "transport": "tcp",            // tcp | udp | tcp+udp
+  "session_token": "<jwt>",      // bond session token (encodes target host:port; opaque to Windows)
+  "udp_session_token": "<jwt>",  // when transport includes udp
+  "frontend_ingress_legs": [
+    {
+      "endpoint_id": 640,
+      "host": "47.116.104.15",   // PUBLIC DOMESTIC slave IP (directly dialable)
+      "port": 7000,              // slave ingress port (7000-9000)
+      "ingress_protocol": "plain_tcp_mux",
+      "ingress_auth_token": "5b1b9e39...",
+      "route_key": "<route-key>",
+      "priority": 50,
+      "weight": 100,
+      "health_status": "active",
+      "display_host": "47.116.104.15"  // optional, UI only
+    }
+  ]
+}
+```
+
+### 6.2 Source of truth (Phase 1: client-side projection, but token reuse is gated)
+
+The rendered MPTCP forward **already contains** most of the ingress-leg data needed for Windows projection: `endpoints[].host`, `.port`, `.ingress_protocol = plain_tcp_mux`, `.ingress_auth_token`, `.priority`, `.weight`, and `.health_status`.
+
+Windows may therefore derive `frontend_ingress_legs` from `endpoints[]` and ignore the `mptcp`/`underlays`/`leg` blocks entirely. However, **token reuse is not assumed by this spec without proof**:
+
+- The desktop code proves only that `MptcpFallbackService` can copy `mptcp.tcp_session_token` / `mptcp.udp_session_token` into bond fields.
+- The desktop code does **not** prove that the shipped `leikwan-bond` runtime and backend contract accept `mptcp.*session_token` unchanged as the frontend `--session-token`.
+
+Therefore Phase 1 has two allowed contract states:
+
+1. **Verified token reuse** — runtime/source validation proves `mptcp.tcp_session_token` and `mptcp.udp_session_token` are valid inputs for the Windows frontend bond runtime; Windows projects them into the frontend runtime inputs unchanged.
+2. **Explicit frontend token** — if token reuse is not proven, the panel must expose a Windows-usable frontend/bond token, and Phase 1 is blocked for that traffic shape until it does.
+
+A dedicated `windows_frontend` block remains the Phase-2 hardening (§12), but token validity is a release gate in Phase 1.
+
+### 6.3 Validity rule for a leg
+
+A leg is "valid" iff: `host` non-empty AND `port > 0` AND `ingress_protocol == plain_tcp_mux` AND `ingress_auth_token` non-empty AND `health_status` is acceptable (see §11). Invalid legs are dropped before mode mapping.
+
+---
+
+## 7. Effective-mode mapping
+
+```
+validLegs = frontend_ingress_legs.filter(valid)         // §6.3 + §11 health gate
+if validLegs.count == 0  -> forward not runnable (report, do not start)
+if validLegs.count == 1  -> single
+if validLegs.count >= 2  -> bond_frontend
+```
+
+This mapping is independent of the backend label. A real backend `mptcp` forward becomes a Windows `bond_frontend` (or `single`). This is intentional.
+
+---
+
+## 8. Explicit Windows exclusions
+
+The following must never influence Windows runtime execution and must be stripped before building the effective config:
+
+- `underlays`, `underlay legs`
+- `mptcp`, `mptcp_endpoints`, `manage_mptcp_endpoints`, `subflow_limit`
+- `slave_relay_host`, `slave_relay_port`, `slave_uot_relay_*`, `preconnect_relay_port`
+- `relay_host`/`relay_port`/`remote_host`/`remote_port` when they reference inner/sidecar addresses
+- `peer_address`, `mptcp_remote_address`, `sidecar_*`, any `10.203.x.x` / `10.204.x.x`
+- `outer_transport`, `cf_*`, `cdn_host` (for the client→slave hop)
+
+They may remain in the global payload for Linux consumers; the Windows effective config ignores them.
+
+---
+
+## 9. Code changes (file-by-file)
+
+1. **`Helpers/WindowsForwardPolicy.cs`** — keep `mptcp` as "supported on Windows" (we still accept the forward), but it is now a *frontend* forward. Add a helper `ResolveWindowsRuntimeMode(forward)` that returns `single`/`bond_frontend` per §7. (Alternatively, normalize `mptcp` → frontend at this layer.)
+
+2. **`Helpers/ModeNormalizer.cs`** — add a Windows-facing notion of `bond_frontend`. Keep `Normalize` for backend labels, but introduce the effective Windows mode resolution that maps `mptcp`→`single`/`bond_frontend` by leg count. Do not let `mptcp` reach `MptcpRuntimeBuilder`.
+
+3. **`Services/ForwardRuntimeManager.cs`** (dispatch, lines 65–80) — change the `switch`:
+   - `mptcp` → build the frontend ingress legs and dispatch to the bond `plain_tcp_mux` path (`single` or `bond_frontend`), **not** `_mptcpBuilder`.
+   - `bond` → unchanged.
+   - `single`/default → for `plain_tcp_mux` forwards use the direct ingress-leg path (item 4), not the wss `BuildSingle`.
+   - Remove `_mptcpBuilder` from the active path (Phase 2 deletes the field/file).
+
+4. **`Services/BondRuntimeBuilder.cs`** —
+   - Add a `BuildSingle` variant (or a `BuildFrontend` entry) that, for `plain_tcp_mux`, emits the same two-stage direct frontend stack described in §5.1: one ingress helper on a loopback back-port plus one one-leg `bond-runtime` listener on `listen_port`. Do **not** use the `wss://` path for domestic forwards.
+   - The existing `Build()` logic already proves the one-leg direct TCP process graph is structurally possible; no new transport binary is required. The implementation may reuse `Build()` for the one-leg case if it removes legacy assumptions that are irrelevant to the frontend-only contract.
+   - Relax or remove unconditional `bonding.remote_target` validation for the TCP `plain_tcp_mux` frontend path. The frontend-only contract is token-driven and must not require a backend-only remote-target tuple just to satisfy legacy validation.
+   - Derive the frontend `session_token` only from a Windows-approved frontend token source per §6.2. Do not silently assume `mptcp.*session_token` is valid without proof.
+   - Keep the existing multi-leg `Build` (`plain_tcp_mux`) as `bond_frontend`.
+   - Guard rails: never read `underlays`/`slave_relay_host`/inner addresses in any Windows builder.
+
+5. **Models** (`Models/ForwardConfig.cs`, `Models/EndpointConfig.cs`, `Models/MptcpConfig.cs`) —
+   - Add a method to project `endpoints[]` (+ approved frontend token inputs) into `frontend_ingress_legs` (§6.2).
+   - Mark `mptcp`/`underlays`/`slave_relay_*` as Linux-only (not consumed by Windows effective config). Do not delete the JSON fields (other consumers/back-compat) — just stop reading them on Windows.
+   - (`EndpointConfig.cs` and `BondEndpointHealthService.cs` are already under change on this branch — fold the ingress-leg projection + health gating in here.)
+
+6. **Capabilities / heartbeat** (`Services/HeartbeatService.cs`, `Models/HeartbeatPayload.cs`, `Models/ClientMeta.cs`) — the spec must distinguish three things clearly:
+   - `supports_mptcp` is currently a **capability advertisement** meaning Windows accepts `mptcp` forwards via compatibility runtime behavior; it is not evidence of Linux-equivalent kernel MPTCP or client-managed underlays.
+   - `wireguard_public_key`, `wireguard_listen_port`, and `wireguard_fallback_tcp_port` are **heartbeat-advertised runtime/provisioning inputs**, not frontend-ingress controls.
+   - `client.agent_config_json` from `/api/client/configs/pull` is a **panel-managed authoritative config snapshot**, not a round-trip echo of heartbeat state.
+
+   Phase 1 must either (a) keep the current heartbeat/provisioning semantics and explicitly document that frontend-only Windows runtime behavior does not imply removing WG identity advertisement, or (b) introduce and verify a new panel contract that safely suppresses self-leg/underlay expectations without breaking provisioning. This is a release gate, not a follow-up cleanup item.
+
+7. **Cleanup** (`App/Services/InstalledRuntimeCleanupService.cs`) — ensure any previously-installed Windows MPTCP runtime artifacts (`mptcp-forward-*.json`, self-leg/WG remnants) are cleaned on upgrade.
+
+8. **Retire** `MptcpRuntimeBuilder.cs` from the active path (Phase 2): delete or reduce to a no-op stub; remove `MptcpFallbackService` Windows usage if it only existed to prop up the MPTCP path.
+
+---
+
+## 10. Signature rules
+
+The Windows runtime contract signature is computed from Windows-visible ingress semantics only:
+
+Include: `forward_id`, `listen_port`, effective Windows mode (`single`/`bond_frontend`), the selected ingress legs (`endpoint_id`/`host`/`port`/`transport`/`route_key`/auth material), and frontend runtime knobs that actually affect execution.
+
+Exclude: `underlays`, `mptcp_*`, relay/preconnect/sidecar tuples, `cf_*`, and any backend-only change that does not alter Windows ingress behavior.
+
+Result: backend-only Linux changes do not force Windows restarts; ingress changes do. (Same discipline as the existing effective-signature/no-op-skip machinery — applied to the ingress object.)
+
+---
+
+## 11. Health and failure attribution
+
+### 11.1 Health gating
+- A leg is selectable only if panel `health_status` is active **and** the leg passes local reachability (TCP connect + ingress auth handshake to `host:port`). **Do not select a leg on panel health alone** — `forward 47` showed the panel can mark a path "active" while it is end-to-end dead.
+- Local ranking happens inside the active set (latency/priority/weight), reusing existing `BondEndpointHealthService`.
+- A projected Windows frontend with zero valid legs is **not runnable** and must fail before process launch with an explicit diagnostic. It must not fall back to Linux-only relay/preconnect fields.
+- If a forward advertises a transport shape Windows cannot legally run in Phase 1 (for example UDP without a validated Windows UDP contract), the forward is **not runnable** and must fail explicitly rather than silently degrading to a different transport shape.
+
+### 11.2 Attribution (must remain observable)
+On failure, the runtime must classify:
+
+| Class | Signals | Required surface |
+|---|---|---|
+| **Windows-side** | listener not up; ingress-leg process not up; ingress auth handshake to slave failed; bond aggregator not up | local status/log must identify startup/runtime failure on Windows and name the failing stage |
+| **Linux-side** | slave ingress accepts then drops; slave→sidecar WG down; sidecar target delivery fails | local status/log must preserve that Windows listener/runtime came up but the onward backend path failed |
+
+A Windows-side success with end-to-end failure ⇒ the fault is Linux backend (§13), and the Windows app should surface that distinction (status + log), not silently show "connected."
+
+### 11.3 Observable status contract
+At minimum, Phase 1 must preserve the following operator-visible distinctions:
+
+1. **Not runnable (contract)** — no valid ingress legs, missing approved frontend token, or unsupported transport contract on Windows.
+2. **Startup failure (Windows)** — projected runtime was runnable, but local listener / ingress helper / bond runtime failed to start.
+3. **Frontend healthy, backend unhealthy (Linux-side)** — Windows listener and expected runtime graph are up, but end-to-end traffic still fails.
+4. **Healthy** — listener, expected runtime graph, and end-to-end traffic validation all succeed.
+
+The exact UI copy may evolve, but these four states must remain distinguishable in logs and runtime status.
+
+---
+
+## 12. Migration
+
+**Phase 1 — client-side derivation (no panel change):**
+- Windows derives `frontend_ingress_legs` from `endpoints[]` + session token(s).
+- `mptcp`-tagged forwards are run as `single`/`bond_frontend`.
+- `MptcpRuntimeBuilder` is bypassed (kept on disk only as dead fallback if `endpoints[]` cannot yield a valid leg — log loudly if that path is ever hit).
+- Ship + validate (see §14) before Phase 2.
+
+**Phase 2 — contract + cleanup:**
+- Panel emits an explicit `windows_frontend.ingress_legs[]` block for Windows-assigned forwards (authoritative, removes reliance on `endpoints[]` projection).
+- Windows advertises frontend-only capabilities (§9.6) so the panel stops sending MPTCP/self-leg expectations.
+- Delete `MptcpRuntimeBuilder` from the Windows path.
+
+---
+
+## 13. Relationship to the `forward 47` (Linux) backend failure
+
+This design **fixes the Windows symptom** ("no entry port") for any forward whose backend is healthy. It does **not** fix the `forward 47` backend break, which is independent and lives in the Linux layer:
+- the slave-preconnect TCP path does not complete (client→slave handshake silently dropped),
+- `slave → sidecar` WG is dead (`10.203.201.179` 100% loss; node13 slave-agent cannot reach the panel → stale config),
+- the only healthy path (the slave's own CF self-leg to the sidecar) is not used as the connect target.
+
+**Consequence for validation:** if Windows `bond_frontend` dials forward 47's slave ingress (`47.116.104.15:7000`) while that slave's onward `slave→sidecar` WG is still dead, the Windows listener will come up but end-to-end traffic will still fail. **Do not use forward 47 as the Phase-1 acceptance forward until its backend is repaired** — pick a forward with a known-healthy slave→sidecar path, or fix the backend first (separate work item: connect-target failover to the healthy CF/direct path + slave→sidecar WG watchdog).
+
+The concrete remediation plan for the slave→sidecar backend (including the 2026-05-31 slave→Tokyo CF-WSTUNNEL breakage) is **Appendix A**. It is Linux work, out of scope for the Windows release gates (§§15–16), but a prerequisite for selecting a backend-healthy acceptance forward (Gate C).
+
+This document does not change Linux behavior (§4).
+
+---
+
+## 14. Testing and verification
+
+### 14.1 Windows unit / integration
+- effective-mode mapping (`endpoints[]` + approved frontend token inputs → `single`/`bond_frontend`), including 0/1/≥2 valid legs;
+- ingress-leg projection drops all excluded fields (§8);
+- health gating: panel-active-but-unreachable leg is excluded;
+- signature stability + no-op reapply on backend-only churn;
+- `bond_frontend`/`single` process-graph correctness for `plain_tcp_mux` (direct dial, no wstunnel/WG processes emitted);
+- `MptcpRuntimeBuilder` is never invoked for any Windows-runnable forward;
+- unsupported Windows transport shapes fail explicitly instead of silently degrading.
+
+Windows tests must **not** assert on `slave_relay_host` preference, underlay preservation, or any backend relay decision.
+
+### 14.2 End-to-end (mandatory; listener-up is insufficient)
+A Windows frontend change is verified only if **all** hold:
+1. local listener is up on `listen_port`;
+2. expected runtime graph is up (ingress legs + `bond-runtime`; one-leg direct stack for `single`, multi-leg direct stack for `bond_frontend`);
+3. exact traffic validation succeeds;
+4. failure attribution remains observable if it fails.
+
+Exact TCP traffic command (the shape validated in debugging):
+```powershell
+& "C:\Users\frankniubi\Downloads\iperf3.exe" -c 127.0.0.1 -R -p <listen_port> -b 300M -t 3
+```
+- `-b 300M` is part of the verification contract; a listening port with failing/zero throughput is a FAIL.
+- Use a forward whose backend (slave→sidecar) is currently healthy (see §13). Forward 47 is not a valid Phase-1 acceptance target until its backend is fixed.
+- If Phase 1 includes a Windows UDP-capable transport shape, acceptance must include a corresponding UDP validation path. If UDP remains gated out of Phase 1, non-TCP shapes must be filtered or rejected before release rather than implicitly treated as covered by this TCP check.
+
+### 14.3 Phase-1 release blockers (must be closed or explicitly deferred out of scope)
+The following are **release gates**, not cleanup notes:
+
+1. **Token contract** — either the shipped frontend runtime is proven to accept the projected token source, or the panel exposes an explicit Windows-usable frontend token.
+2. **Single-leg direct TCP contract** — the one-leg direct `plain_tcp_mux` process graph is implemented and verified; Windows must not fall back to legacy WSS for that case.
+3. **Capability / provisioning contract** — Phase 1 explicitly documents whether current heartbeat WG identity advertisement is preserved or replaced, and the panel must not infer self-leg/underlay obligations from the Windows client.
+4. **Transport scope** — UDP / `tcp+udp` is either fully specified and verified for Windows Phase 1, or explicitly filtered/rejected as out of scope.
+5. **Acceptance forward** — a named backend-healthy canary forward is selected and recorded before release validation starts.
+
+---
+
+## 15. Rollout gates and release sequence
+
+Phase 1 is a **gated release**. Items that were previously treated as open dependencies are release blockers until closed or explicitly deferred out of scope.
+
+### Gate A — Contract and implementation readiness (must pass before any canary)
+1. The `plain_tcp_mux` `single` direct-dial TCP path is implemented and verified; Windows must not fall back to the legacy `wss` single-path for this case.
+2. The frontend token source is explicit and validated: either token reuse is proven, or the panel exposes a Windows-usable frontend token.
+3. The capability/provisioning contract is explicit: Phase 1 documents whether current heartbeat WG identity advertisement is preserved or replaced, and the panel must not infer self-leg/underlay obligations from the Windows client.
+4. The Windows transport scope is explicit: UDP / `tcp+udp` is either fully specified and verified for Phase 1, or filtered/rejected as out of scope.
+
+### Gate B — Automated verification (must pass before packaging)
+1. Unit and integration coverage from §14.1 passes.
+2. At least one test proves `MptcpRuntimeBuilder` is not invoked for any Windows-runnable forward.
+3. At least one test proves Linux-only fields (`underlays`, `slave_relay_*`, preconnect, sidecar, CF metadata) do not affect the Windows runtime contract or signature.
+4. At least one test proves a panel-active but locally unreachable ingress leg is excluded before effective-mode resolution.
+5. At least one test proves unsupported Windows transport shapes fail explicitly instead of silently degrading.
+
+### Gate C — Canary validation (must pass before rollout beyond the canary machine)
+Before validation starts, the release operator must pre-select and record one named backend-healthy forward ID. Acceptance requires all of the following on that exact forward:
+1. The old build reproduces the prior failure mode or otherwise demonstrates the regression being closed.
+2. The new build exposes the listener on the expected `listen_port`.
+3. The runtime graph matches the expected Windows topology (`single` or `bond_frontend`, direct ingress legs only, no WireGuard, no wstunnel, no MPTCP runtime path).
+4. The exact §14.2 TCP validation command succeeds against `127.0.0.1:<listen_port>`.
+5. If the backend is intentionally made unhealthy or becomes unhealthy during validation, the Windows app preserves failure attribution instead of reporting a false healthy state.
+
+### Gate D — Release expansion
+Only after Gate C passes may the build move beyond the canary machine. Phase 2 remains blocked until the explicit `windows_frontend` contract is live and the active Windows MPTCP path is removable without fallback.
+
+If any gate fails, rollout stops immediately and §16 backout is mandatory.
+
+---
+
+## 16. Backout
+
+Backout unit for this design is the **Windows client build/package only**; Linux backend behavior is unchanged by this release.
+
+Before any rollout, retain the last known-good Windows installer/package reference and the manifest/binding needed to restore it.
+
+### Immediate backout triggers
+Back out immediately if any of the following occurs on the canary or during limited rollout:
+1. No listener comes up, or readiness tears the listener back down.
+2. The runtime graph includes `MptcpRuntimeBuilder`, WireGuard, wstunnel, self-leg behavior, or inner-overlay targets.
+3. The §14.2 traffic command fails, stalls, or produces no usable throughput on the named backend-healthy forward.
+4. Capability advertisement causes the control plane to assign self-leg, underlay, or other Linux-only expectations to Windows.
+5. Signature/no-op changes cause restart churn or repeated unnecessary re-apply.
+6. Failure attribution is lost such that operators cannot tell a Windows-side failure from a Linux backend failure.
+
+### Backout procedure
+1. Halt rollout and stop using the candidate Windows build for any additional clients.
+2. Re-publish or reinstall the previous known-good Windows build/package.
+3. Re-run baseline validation on the canary forward or another known-good baseline forward to confirm the regression is removed.
+4. Leave Linux backend config unchanged unless a separate Linux incident is active.
+5. Preserve logs, forward ID, build version, and runtime graph for postmortem; do not continue rollout under partial acceptance.
+
+---
+
+## 17. Recommendation
+
+Adopt the Windows simplification as specified, with explicit gates:
+- Windows runs only `single` / `bond_frontend`, both as direct `plain_tcp_mux` dials to domestic slave ingress.
+- No MPTCP, no WireGuard, no client-as-a-slave, no wstunnel/CF on Windows for the frontend path.
+- Linux owns all backend transport; `slave → sidecar` stays WireGuard.
+- Start with client-side projection (Phase 1), but do not ship until token semantics, capability/provisioning semantics, transport scope, and canary validation are all explicitly closed.
+- Then harden with an explicit panel `windows_frontend` contract and remove the active Windows MPTCP path (Phase 2).
+
+---
+
+## Appendix A — Linux backend remediation plan: slave → sidecar (Tokyo CF-WSTUNNEL)
+
+**Status:** Linux backend work. **Out of scope** for the Windows release gates (§§15–16), but a **prerequisite** for picking a backend-healthy acceptance forward (§13, Gate C). Windows `bond_frontend` cannot be validated end-to-end against a Tokyo (sidecar point 5) forward until at least one point-5 backend path is healthy.
+
+### A.1 Observed failure (2026-05-31)
+
+Investigated on **slave3 = `150.158.103.182`** (node20, hostname `VM-0-11-debian`; reached via the `sh36` domestic hop). Symptom: **no active WSTUNNEL(CF-IP) connection to the Tokyo sidecar (point 5)**.
+
+Evidence chain:
+- `/etc/wireguard/lws5c1n20p.conf` and `lws5c1n20b.conf` **do not exist** → `wg-quick@lws5c1n20{p,b}.service` **fail-loop every ~60 s** (`wg-quick: '/etc/wireguard/lws5c1n20p.conf' does not exist`).
+- The point-5 WG lanes therefore **never come up**: absent from `wg show`; overlay addrs `10.240.190.233/237` unassigned anywhere.
+- **No CF carrier** exists: no `wstunnel client` process and no carrier unit dialing a Cloudflare IP for point 5 (only the selector `wstunnel-svc-9-1772-udp-uot` runs).
+- The point-5 selector consequently reports **both lanes `healthy:false, loss 100%`**; the only TCP to Tokyo `:2053` seen is a stray `TIME-WAIT` (opened→closed, never ESTAB).
+- **Network is healthy / not the blocker:** CF edge `162.159.39.5` ping 31 ms / 0%; Tokyo `185.220.238.143:2053` TCP connect OK. Direct Tokyo WG `:14973` is unreachable and direct ICMP to Tokyo is 50% loss — i.e., the CF-WSTUNNEL path is *required*; direct WG cannot substitute.
+- **Contributing slave-agent reconcile faults:** 9 sidecar-uplink selectors share `selector_port` **45638** → `EADDRINUSE` crash-loop (~26,000 restarts); a large backlog of failed `leikwan-slave-update-*` units.
+- **Cross-slave contrast:** on node13 (`47.116.104.15`) the `lws5` lanes *were* up but had a dead return path (`lwsc13` → `185.220.238.143:14973` showed **sent 16 MiB / received 0**). Same failure family, different manifestation.
+- The same slave's **CNIX/HK uplinks** (`lws4*` → `138.252.162.120`) are **healthy** (22–29 ms, 0% loss, 71 MiB moved) — so the host and domestic network are fine; only the point-5/Tokyo CF provisioning is broken.
+
+### A.2 Root cause
+
+The slave-agent's reconcile **materializes control scaffolding without the data plane**: it created/enabled the `wg-quick@lws5*` systemd units and the selector config, but **never wrote the WireGuard `.conf` files nor the CF/wstunnel carrier**. It also **allocates colliding `selector_port`s**. The result is a permanently half-provisioned point-5 uplink that can never establish.
+
+### A.3 Fix plan (ordered)
+
+**Phase L0 — stop the bleeding (per-slave, reversible, no code):**
+1. `systemctl reset-failed` to clear the failed `leikwan-slave-update-*` backlog so the unit list/journal is legible and updates can re-run cleanly.
+2. Either let the agent regenerate (L1) or temporarily stop the fail-looping `wg-quick@lws5*` units so they aren't retrying every 60 s while the real fix lands. (Do not "fix" by hand-writing confs — that masks the reconcile bug.)
+
+**Phase L1 — slave-agent reconcile correctness (`slave-agent/slave_agent.py`):**
+1. **Atomic uplink provisioning:** before enabling/starting `wg-quick@<iface>` for a sidecar uplink, the agent MUST first write `/etc/wireguard/<iface>.conf` **and** create the CF/wstunnel carrier (the `wstunnel client` that maps the WG `Endpoint = 127.0.0.1:<localport>` over the selected CF IP/path). Never enable a `wg-quick@` unit whose `.conf` is absent.
+2. **Self-heal guard:** on every reconcile, if a `wg-quick@<iface>` unit is enabled but its `.conf` is missing (or the carrier is absent), regenerate the missing artifact (or tear down the orphan unit) and log it loudly. This converts the silent 60-s fail-loop into a healed state.
+3. **Unique `selector_port` allocation:** assign a stable, unique selector port per sidecar-uplink service (derive deterministically from `forward_id`/`endpoint_id`, mirroring `stableSidecarLegPort()` for WG ports). Assert no two enabled services share a `selector_port`. This removes the shared-`45638` `EADDRINUSE` crash-loop.
+4. **Idempotent warm reconcile:** republishing identical desired state must not tear down/recreate the WG interface or carrier (project invariant: republish is idempotent).
+
+**Phase L2 — Tokyo sidecar side (point 5, `185.220.238.143`; reach via `root@cn2.dmt.mcbar.cc:2125` jump if direct SSH is slow):**
+1. Confirm the CF/wstunnel backend mux on `:2053` is up and routes the published path-prefix to the sidecar WG backend (`:1498x`).
+2. Confirm the sidecar WG peer for the slave (node20 / node13) has the correct public key and `AllowedIPs`, **including the return route to the slave overlay** — this is the node13 "sent 16 MiB / received 0" return-path failure to rule out.
+3. Confirm the `slave → sidecar always WireGuard` invariant holds and the CF presentation maps onto the WG backend.
+
+**Phase L3 — verification (per fixed slave):**
+1. `wg show lws5c1n20{p,b}` shows a **fresh handshake (<2 min)** and **bidirectional** transfer (`rx>0` and `tx>0`).
+2. Selector state shows both lanes `healthy:true, loss 0%`.
+3. No `wg-quick@lws5*` failures; no `EADDRINUSE` selector crashes; failed-update backlog cleared.
+4. **End-to-end:** a point-5 (Tokyo) forward carries real traffic (iperf3 through the forward's client listener). Passing this makes that forward a valid **Gate-C** canary for the Windows `bond_frontend` acceptance (§14.2).
+
+### A.4 Related forward-47 backend items (same remediation family)
+
+Per §13, the forward-47 backend break is adjacent and should be addressed in the same pass:
+- **connect-target failover:** the relay must fail over from a dead slave-preconnect target to the healthy CF/direct path instead of pinning to the dead one;
+- **slave→sidecar WG watchdog:** detect a stale/one-way WG session (handshake present but `rx==0`, or 100% overlay-ping loss) and restart the lane/carrier — the existing `leikwan-wg-watchdog` was observed **inactive/dead** on the affected slaves and must be enabled and extended to cover these lanes.
+
+### A.5 Relationship to the Windows release
+
+Gate C (§15) requires a **named backend-healthy forward**. Until at least one point-5 path is repaired per this appendix (or a non-Tokyo backend-healthy forward is selected), the Windows `bond_frontend` end-to-end acceptance must not use a Tokyo forward. This appendix is the prerequisite that makes a Tokyo forward eligible.
+
+### A.6 Panel-side automation fixes (republish / uplink-selector allocation)
+
+The slave-agent reconcile faults (A.3) are aggravated by two control-plane issues in `master/`. These are **panel automation fixes** and should land with the backend remediation.
+
+**A.6.1 `selector_port` collision — confirmed bug.**
+`ProvisioningService::staticSidecarUplinkSelectorPayload()` (`master/src/Support/ProvisioningService.php`, ≈ line 5663) computes:
+```php
+$selectorPort = 45000 + abs((($firstPointId * 1009) + ($firstCombinationId * 131) + ($firstNodeId * 17)) % 1000);
+```
+The port is derived only from the **first** uplink's `(sidecar_point_id, forward_combination_id, node_id)`. Every published uplink-selector service that shares that tuple on a node therefore receives the **same** `selector_port`, and since the slave-agent runs each selector as a separate process binding `127.0.0.1:<selector_port>`, they collide → `EADDRINUSE` crash-loop (observed on node20: 9 services pinned to `45638`, ~26,000 restarts). `% 1000` also invites birthday collisions at scale.
+
+*Fix:* allocate a `selector_port` that is **unique per published selector service** (fold the service/forward/endpoint identity into the hash, not just the lane tuple), and **assert no duplicate `selector_port` within a node's published task set before emitting** (fail the publish loudly instead of shipping a collision). Widen the range and/or use the deterministic-but-collision-checked scheme already used for WG ports (`stableSidecarLegPort()`). If the intent is one shared selector per `(point, combination, node)` lane, the panel must emit exactly **one** selector service for that lane (and the agent run one), never N services on one port.
+
+**A.6.2 Republish converges on desired state but never detects non-convergence (drift) — hardening.**
+Republish itself is not starved: the node/slave path republishes on nearly every heartbeat (`NodeController::heartbeat` → `reconcileActiveForwardsForGroup` + `republishActiveEndpointsForNode`), and the sidecar path gates on a WG fingerprint with a 600 s force-interval safety net (`SidecarAgentController`). The gap is that republish **re-queues the same desired state with no convergence check**: when a slave is half-provisioned (e.g. `wg-quick@lws5*` fail-looping because its `.conf` was never written), the panel keeps publishing identical tasks the agent never applies, with no escalation; a slave that cannot pull at all (observed: node13 `failed to pull tasks/heartbeat: read operation timed out`) is likewise never surfaced.
+
+*Fix (automation):*
+1. **Drift-triggered force-republish** — when a node heartbeat reports an assigned uplink lane unhealthy / interface missing / handshake stale (surface the lane health the agent already computes), force a republish of that node's tasks regardless of the fingerprint gate.
+2. **Non-convergence escalation** — track, per `(node, forward/endpoint)`, consecutive republishes without the slave reporting that lane healthy; past a threshold raise an operational alarm (admin dashboard + log) instead of silently re-queueing forever.
+3. **Delivery-failure visibility** — mark a node whose task-pull/heartbeat has failed for > N intervals as `degraded` so operators see the stuck node and republish isn't aimed at an unreachable agent.
+
+These preserve `republish` idempotency (A.3 L1.4) while ensuring a slave that fails to converge is **detected and escalated**, not left in a permanent silent fail-loop.
+
+---
+
+## Appendix B — Implementation plan: selector_port fix + slave/sidecar WG invariants
+
+Investigated 2026-05-31 via a parallel multi-agent read-only review of the panel (`master/`) and the slave/sidecar/client agents. The `selector_port` fix (B.1) is **implemented in this commit**; the rest are scoped work items. All file:line citations are from this worktree.
+
+### B.1 selector_port collision fix — DONE (this commit)
+Implements A.6.1 (Option A):
+- New helper `ProvisioningService::stableSidecarSelectorPort(point, combination, node, forwardId, endpointId)` — mirrors `stableSidecarLegPort` (which already includes `forwardId`), folds `forward_id`+`endpoint_id` into the key, config-tunable via `STATIC_SIDECAR_SELECTOR_PORT_RANGE_START` (default 45000) / `_SIZE` (default 5000) → 45000–49999 TCP, disjoint from the TCP preconnect (38000–39999) and backend (20000–40000) ranges; stateless/deterministic so any single-task republish reproduces the same port.
+- `staticSidecarUplinkSelectorPayload()` now takes `forwardId, endpointId`; the inline `45000 + …%1000` literal is removed; the single caller (`publishTaskPayloadForForward`) passes `$forward['id']` + `$endpointId`.
+- New test `provisioning_static_sidecar_selector_port_regression_test.php`: two endpoints sharing `(point 4, combination 2, node 19)` now get **distinct** ports (the crash-loop bug), endpoint_id varies the port, ports are in-range, and allocation is deterministic. `forward_combination_static_sidecar_wg_regression_test.php` still passes; the 14 other suite failures are **pre-existing** (verified by reverting this edit and re-running — they fail identically).
+- Optional follow-up (not in this commit): A.6.2 node-level duplicate-port guard in `republishActiveEndpointsForNode` (linear-probe on the rare hash collision).
+
+### B.2 Invariant A — static slave↔sidecar WG; no per-client WG; client-as-a-slave exception
+**Verdict: structurally holds; the stated trigger does not exist in code.**
+- Holds: slave↔sidecar WG is static per `(sidecar_point_id, forward_combination_id, node_id, lane)` with no client dimension (`buildStaticSidecarUplinkPairForNode` ProvisioningService.php:5208-5349; iface `lws{point}c{combo}n{node}{p,b}` :7284-7292), reconciled idempotently by both agents (sidecar_agent.py:1158-1190; slave_agent.py:2208-2237). A client connecting at the slave creates **no** additional WG toward the sidecar — the slave fronts clients with a wstunnel/CF mux (`ensure_cfwg_relay_service` slave_agent.py:3714-3821), not WG.
+- The only per-client WG toward the sidecar is the gated **self-leg** (`lw-self-*`/`lw-cfwg-*`, ProvisioningService.php:2972-3106, 7628-7704; sidecar_agent.py:205-254) and the client **cfsr** relay leg (`lw-cfsr-*`, install_forward_runtime.py:491-603).
+- **Gap:** the invariant's trigger — *runtime detection of Linux + China Telecom (Chinanet/AS4134) IPv4* — is **not implemented**. No ASN lookup, no Chinanet CIDR table, no OS check exists in the self-leg path; "AS4134" is only a comment (install_forward_runtime.py:497). The self-leg is enabled **declaratively** by `forward_combinations.allow_private_self_leg=1` (+ `self_leg_cf_transport`) plus a device session (`buildSelfLegCandidate` :2972-3054; `saveForwardCombination` :405-407/464-466/495-497).
+- **Work items:**
+  1. **Decide & reconcile** (docs/panel): either (a) restate the exception as operator/flag-driven (accurate today), or (b) if auto-detection is intended, implement client-IP ASN/CIDR classification (→ China Telecom) + OS check and wire it to `allow_private_self_leg` / candidate emission.
+  2. **Lock the "no per-client WG when disabled" half** (tests): assert NO `lw-self-*`/`lw-cfwg-*` peers or `self_leg_client_peers` are published when `allow_private_self_leg=0`.
+
+### B.3 Invariant B — exactly 2 WG legs (primary + backup)
+**Verdict: holds for healthy config; really "at most 2".**
+- Single producer hard-codes two lanes (`['primary'=>'p','backup'=>'b']`, ProvisioningService.php:5247-5348); each agent makes one `wg-quick` iface per lane; lanes are fully separated (distinct /30, listen port, local UDP, CF path-prefix); the selector requires ≥2 candidates.
+- **Gap:** a lane is silently **skipped** when `stableStaticSidecarUplinkPort` returns 0 (degenerate sidecar WG port range, :7294-7303 / 5251-5253), and full bailout yields **0** legs when IDs/keys are missing (:5213-5226).
+- **Work items (panel):**
+  1. Emit a **diagnostic** when `stableStaticSidecarUplinkPort` returns 0 (distinguish "no usable WG port range → 0 legs" from intentional disable).
+  2. Optionally **assert** one-primary+one-backup per `(combination,node)` at publish (warn first, hard-fail behind a flag); reject a 1-port WG range.
+  3. Tighten the documented invariant to "at most 2; exactly 2 when the sidecar WG port range and both public keys are valid".
+
+### B.4 Invariant C — latency watchdog on slave + client-as-a-slave
+**Verdict: holds, via two distinct latency watchers plus a separate handshake-only restarter.**
+- Slave: the `wg_allowed_ip_ping` sidecar-uplink selector — `SidecarUplinkSelectorProxy` actively `ping`s each lane, scores latency+mdev+loss, switches the active lane and restarts degraded lanes (slave_agent.py:2297-2416, 829-921; payload ProvisioningService.php:5622-5677).
+- Client-as-a-slave: `CfwgLatencyWatchdog` — ICMP RTT through `lw-cfwg-*`, windowed regression → restart runtime/`wg-quick`, default-enabled by the panel (client-agent/cfwg_latency_watchdog.py; ClientAgentController.php:297-329; live-confirmed on sh36 per the 2026-05-20 handoff).
+- **Not** latency: `leikwan-wg-watchdog.sh` only restarts on stale handshake (>180s), never pings (artifacts/leikwan-wg-watchdog.sh:1-61).
+- **Gaps & work items:**
+  1. **(docs)** Document the three-role split (handshake restarter vs slave latency selector vs client-as-a-slave latency watchdog) — the shared word "watchdog" invites the false belief the handshake script satisfies this invariant.
+  2. **(slave)** Single-lane slaves get **no** latency watch (selector only emitted with ≥2 uplinks, :5624/5659) — add a lightweight per-lane RTT check for the 1-lane case (reuse `parse_ping_summary` + restart-cooldown to avoid flapping).
+  3. **(client)** `CfwgLatencyWatchdog` defaults to `forward_ids='47'` only (ClientAgentController.php:301) — set the default empty so all active forwards are watched, or populate per-forward baselines. Per A.4, also extend the handshake watchdog to detect one-way WG (handshake present but rx==0 / 100% overlay-ping loss) and restart the lane.
+
+### B.5 Verification
+- **PHP (done):** `provisioning_static_sidecar_selector_port_regression_test.php` exit 0 (distinct/in-range/deterministic ports); `forward_combination_static_sidecar_wg_regression_test.php` still passes; the 14 other suite failures verified pre-existing (fail identically with the edit reverted).
+- **Python:** extend `slave-agent/tests/test_static_sidecar_uplinks.py` to assert two endpoints render two `{service_name}-sidecar-selector` units on distinct 127.0.0.1 ports.
+- **Live (selector):** on a slave with ≥2 forwards sharing a `(point,combination,node)`, after republish all `wstunnel-svc-*-sidecar-selector` units are active with ~0 restarts on unique 45xxx–49xxx loopback ports (`ss -ltnp`), no `EADDRINUSE`.
+- **Live (B):** exactly two `wg-quick` ifaces per `(combination,node)` on a healthy forward; the new diagnostic fires on a sidecar with no usable WG port range.
+- **Live (C):** selector probing on a ≥2-lane slave + the new single-lane check; `CfwgLatencyWatchdog` ticking on sh36 (forward 47), and on all active forwards once `forward_ids` is emptied.
+
+### B.6 Open questions
+- Does Linux + China-Telecom auto-detection exist **outside** this worktree (Android app on `feature/android-routing-v2`, an enrollment service, or a runbook) and set `allow_private_self_leg`? Here it is purely declarative.
+- Invariant B: hard "exactly 2" at publish, or "at most 2 + diagnostics"?
+- Safe `STATIC_SIDECAR_SELECTOR_PORT_RANGE_SIZE` upper bound vs other loopback listeners (45000–45999 confirmed clear; 45000–49999 not exhaustively proven free).
+- Single-lane slave latency watch: relax the ≥2 selector gate to ≥1, or a separate component (a 1-candidate selector cannot "switch")?
+
+---
+
+## Appendix C — Full implementation plan: Tokyo end-to-end + automation hardening
+
+Built from a 2026-05-31 end-to-end live diagnosis (node13 + node20 + Tokyo reachability) plus a four-lane read-only audit of the automation (panel / slave-agent / sidecar-agent / watchdog). This is the complete backlog for everything still undone. Items already shipped are marked **DONE**; the rest are ordered by priority in §C.10.
+
+### C.0 Diagnosis snapshot (live, 2026-05-31)
+
+- **Windows frontend:** the "no entry port" symptom is **fixed** (Phase-1, 105/105 .NET tests) — uncommitted in this worktree.
+- **node13 (`47.116.104.15`, the real Tokyo / point-5 slave): slave→Tokyo CF-WSTUNNEL is HEALTHY now.** Static uplinks `lws5c1n13p/b` tracked, confs present, `wg-quick@lws5c1n13*` active; CF carriers `udp://127.0.0.1:44397→14982` / `44398→14983` via `wss://162.159.39.5:2053` (SNI `nrt1.nbwly.com`) running; all three point-5 selectors report **both lanes healthy, 0% loss, ~41–43 ms**; 0 failed-update backlog. The old direct `lwsc13`→`185.220.238.143:14973` path is dead/superseded but harmless.
+- **Tokyo sidecar far-end: healthy by inference.** The selector pings reach the **sidecar overlay (`10.240.190.233/237`) through the WG tunnels at 0% loss**, which requires the Tokyo WG backend (`:14982/:14983`) to be up and replying bidirectionally; CF mux `:2053` is reachable. **Open direct check:** iperf3/`:5201` target + sidecar→target delivery + sidecar-agent key/heartbeat were not verified directly (the `root@cn2.dmt.mcbar.cc:2125` jump was too slow to complete a gather). See §C.1.1.
+- **node20 (`150.158.103.182`):** a point-4/CNIX slave, **not** a Tokyo member. Its `lws5` references are a **stale per-forward selector** (`wstunnel-svc-9-1772-udp-uot`) probing interfaces that were never provisioned; the agent already disabled the orphan `wg-quick@lws5*` units. This is the §C.2 bug in the field.
+- **Already fixed:** panel `selector_port` uniqueness (commit `a87bd4d`); slave-agent tear-down of incomplete uplinks instead of orphaning (`d8d87ba`).
+
+### C.1 Make a Tokyo forward actually pass (immediate goal)
+
+Because node13's slave→sidecar leg is healthy, a forward routed **client → node13 → point-5** should pass once the remaining two segments are confirmed:
+
+- **C.1.1 (live verify Tokyo far-end)** — via `root@cn2.dmt.mcbar.cc:2125` → `root@185.220.238.143` (port 22): confirm (a) the forward's target is served (e.g. `iperf3 -s` on `127.0.0.1:5201`), (b) the CF mux `:2053` routes the published path-prefix to WG `:14982/:14983`, (c) the sidecar WG peers for node13's lanes show **rx>0 and tx>0** (not one-way), (d) the sidecar-agent reports `wireguard_public_key` + a valid WG port range to the panel. *(plink note: cache the cn2 host key with `"y" | plink …` once; `-batch -m` aborts on an uncached key — that, not a network hang, stalled the first attempt.)*
+- **C.1.2 (client→slave segment)** — pick a Tokyo forward whose client→slave ingress is also healthy. For the bond/`plain_tcp_mux` path this is a direct domestic dial to node13's `7000–9000` ingress; for forward-47-style MPTCP it is the slave preconnect relay (`:38638`), which previously failed the TCP handshake (separate issue, §A.4).
+- **C.1.3 (Gate-C validation)** — run `iperf3 -c 127.0.0.1 -R -p <listen_port> -b 300M -t 3` through that forward's client listener; require real throughput (listener-up is insufficient, per §14.2).
+
+### C.2 Stale selector / orphan reconcile (HIGH — the node20 field bug)
+
+**Slave-agent** (`slave-agent/slave_agent.py`):
+- Make the **static-uplink set authoritative for selector candidates**: in `apply_static_sidecar_uplinks` (~L2208), after computing `active`, prune/disable any `*-sidecar-selector` whose candidate `interface_name` is no longer in `active` (re-`ensure` with pruned candidates, or remove if empty). Selectors are keyed by service_name and today are decoupled from the interface lifecycle (`remove_sidecar_uplink` ~L3997 never touches selectors).
+- In `probe_sidecar_selector_candidate` (~L2305) / `evaluate_sidecar_uplink_selector` (~L2342): **skip candidates whose interface is absent from `wg show` or whose `/etc/wireguard/<iface>.conf` is missing**, and never `restart_sidecar_selector_lane` a non-existent interface.
+- Add **`cleanup_orphan_sidecar_uplinks()`** mirroring `cleanup_orphan_mptcp_underlays` (~L4558): reconcile live `wg show` `lws*` + `systemctl` `wg-quick@lws*` / `leikwan-wgcf-*` / `*-sidecar-selector` against the active set; remove orphans. Call it next to the MPTCP cleanup (~L2104). **Write `sidecar_static_uplinks.json` atomically** (temp+rename) so a partial write can't zero the inventory and orphan every live interface.
+
+**Panel** (`ProvisioningService.php`): the selector is emitted only inside per-forward publish tasks (~L5735) while uplinks come via the management feed; on membership change the `destroy` payload (~L5442) omits selector teardown. Fix one of: move the selector into the authoritative management feed (recomputed each poll), or force-republish surviving forwards on the node when membership changes, or include explicit selector teardown in `destroy`.
+
+### C.3 selector_port crash-loop hardening (HIGH — agent side still unfixed)
+
+Panel-side port uniqueness is **DONE** (`a87bd4d`), but the agent has no defense against any future collision: a losing `*-sidecar-selector` unit (`Restart=always`, `RestartSec=3`, no `StartLimit*`) thrashed ~26k times.
+- `render_sidecar_uplink_selector_unit` (~L2418): add `StartLimitIntervalSec=300` + `StartLimitBurst=5`, `RestartSec=5`.
+- `serve()` (~L897): on `OSError: EADDRINUSE`, log + clean-exit (or bounded backoff) instead of crashing; optionally pre-bind-probe the port.
+
+### C.4 Republish convergence / drift detection (HIGH — panel)
+
+- **`reconcileForwardEndpoints` skips `active` endpoints** (~L5432: only `pending/error/degraded` re-published), so a silently-drifted-but-`active` endpoint is never re-converged by combination/sidecar/client saves. Add a **desired-payload fingerprint per endpoint**; re-publish when it changes even if `active`; add a periodic **non-convergence sweep** that re-pushes endpoints whose `updated_at` is stale vs the forward/combination and **escalates an alarm** after N non-convergent cycles (A.6.2).
+- **Node-heartbeat republish has no gate** (`NodeController.php:205` republishes all active endpoints every ~30 s) while the sidecar path gates on a WG fingerprint + 600 s; apply a symmetric fingerprint gate to the node path to avoid storms, and make the forced-interval republish **bypass the active-skip** so it actually re-converges drift.
+
+### C.5 Port / address allocation collisions (HIGH/MED — panel)
+
+- **Sidecar WG port range is ~30 slots** (`min(listen+30)`); `stableStaticSidecarUplinkPort` (~L7294) and `stableSidecarLegPort` (~L7337) hash `% rangeSize` with **no probing/assert** → distinct tuples silently collide on one sidecar UDP port (verified). **Fix:** widen the sidecar WG range materially or back it with a per-sidecar uniqueness-checked allocation table; carve **disjoint sub-ranges for leg vs uplink**; log+reject when `rangeSize < expected uplink count`.
+- **Interface-name truncation collision** (~L7284): the `>15`-char crc32b fallback drops `combinationId` and can truncate the hash → identical `lws…` names for distinct combinations (verified). **Fix:** `'lws' . substr(hash('crc32b', fullTuple), 0, 11)` (≤14 chars, hash never truncated).
+- **/30 subnet collision** (`staticSidecarUplinkAddressing` ~L7270, `% 16000`): distinct uplinks can get the same slave/sidecar IP pair (verified). **Fix:** uniqueness-checked addressing or assert no two active uplinks share a subnet.
+- **Selector TCP range (45000–49999) numerically overlaps the UoT UDP range (45000–59999)** — harmless (different L4 namespaces) but document it; don't share a protocol-agnostic "used ports" set.
+
+### C.6 Sidecar-agent reconcile (HIGH/MED — `sidecar-agent/sidecar_agent.py`)
+
+- **Disabled peers are never torn down** (~L1162/L1195 add `interface_name` to the active set *before* the `enabled` check; `apply_*` just early-returns): a peer flipped to `enabled:false` keeps running. **Fix:** only mark active when enabled; else call `remove_*` explicitly.
+- **State not persisted when the list goes empty** (~L1181/L1209 guarded by `if sidecar_uplinks:` / `if self_leg_client_peers:`): the last-departed peer's removal is never recorded → stale on-disk state + skipped scoped cleanup. **Fix:** persist unconditionally (empty list → `{}`).
+- **Orphaned CF slave-transit backends**: the CF sweep explicitly excludes `slave_transit_cf_wg` (~L1303) and the whole block is gated on `cf_runtime is not None` (~L1220) → a missed `remove_slave_sidecar_uplink` orphans the `leikwan-cf-slave-*` unit + its 260xx port + `cf-managed.json`/`cf-routes-2053.json` rows. **Fix:** authoritative sweep of CF backends vs active uplinks regardless of `cf_runtime`.
+- **260xx backend pool (100 ports) exhaustion raises `RuntimeError` that aborts the whole heartbeat reconcile** (~L865/L466). **Fix:** per-uplink try/catch so one bad uplink doesn't kill bond/mptcp/self-update; widen/config the range; prune leaked metadata.
+- **Silent keyless heartbeat**: `ensure_wireguard_identity` returns `""` on failure and the heartbeat reports `wireguard_public_key:""` as `status:ok` → panel publishes 0 legs with no signal (~L153/L1668); the companion `private.key` read can also crash the reconcile. **Fix:** `status:degraded` + log on empty key; guard the key read.
+- **One-way WG observability**: heartbeat carries no per-interface `wg show` rx/tx/handshake (~L1666), so a handshake-ok/rx==0 return-path failure is invisible. **Fix:** report per-peer rx/tx + handshake age; let the panel flag `tx>0 && rx==0 && handshake recent`.
+
+### C.7 Watchdog / health (HIGH/MED)
+
+- **Restart amplification across four siloed cooldowns** (shell handshake watchdog 300 s; slave `watch_static_sidecar_uplink` 30 s `slave_agent.py:2273`; selector lane 60 s `:2334`; `CfwgLatencyWatchdog` 240 s): they share no ledger, and a selector restart itself trips the handshake watcher → self-reinforcing flap. **Fix:** a shared per-interface restart ledger under `/run/leikwan/` + a circuit breaker (≥3 restarts/10 min → long backoff + alarm).
+- **Last-lane / single-lane restart of the only path** (`slave_agent.py:2378-2401`): when only one (degraded) lane remains, the selector restarts it every 60 s — guaranteed outage pulses with no escape. **Fix:** suppress restart when the selected lane is the sole candidate / `reason==all_unhealthy`; escalate an alarm instead.
+- **Single-lane slave has no latency watch** (selector emitted only with ≥2 uplinks, `ProvisioningService.php:5624/5659`): a single-lane forward that brownouts (fresh handshake, high RTT/loss) is unwatched. **Fix:** emit a monitor-only 1-candidate selector (no switch) behind `STATIC_SIDECAR_SELECTOR_SINGLE_LANE_RESTART`.
+- **`leikwan-wg-watchdog.sh` one-way blindness** (only checks handshake age ~L42–54): fresh handshake + frozen rx is never restarted. **Fix:** sample `wg show <iface> transfer`, persist last rx, restart when handshake fresh but rx delta == 0 for N polls.
+- **`leikwan-wg-watchdog.sh` glob misses `lws*`/`lwf*`** (matches `lw-*|wg*|lwm*`, not `lws…`): static-sidecar lanes have no out-of-process fallback if the slave agent wedges. **Fix:** broaden glob to `lw*|wg*`.
+- **`CfwgLatencyWatchdog` default `forward_ids='47'`** (`ClientAgentController.php:301`): only forward 47 is latency-watched; empty config silently watches nothing-or-all. **Fix:** default empty → all active CFWG forwards; log the resolved set; WARN when a configured id has no `lw-cfwg-*`/`wstunnel_udp` target.
+- **No "all lanes degraded" alarm + infinite probing of non-existent interfaces** (`slave_agent.py:2378-2416`, `:2297`): failures are only visible in state JSON. **Fix:** WARN + report a health event to the panel on sustained all-unhealthy; distinguish "interface missing" from "ping failed".
+
+### C.8 Slave self-update backlog (MED — `slave-agent/slave_agent.py`)
+
+Dozens of failed `leikwan-slave-update-*` transient units accumulate (~L2715, unique-named, never reset). **Fix:** `systemd-run --collect`; per-`request_token` failure circuit breaker (stop re-requesting after N failures using the existing `update_state.last_error`); periodic `systemctl reset-failed 'leikwan-slave-update-*'`.
+
+### C.9 Verification
+
+- **Unit:** panel — selector-port uniqueness (DONE) + tests for fingerprint-drift republish, interface-name/subnet/port collision helpers, "0/1 leg" diagnostics. slave-agent — incomplete-uplink teardown (DONE) + stale-selector pruning, orphan sweep, EADDRINUSE clean-exit. sidecar-agent — disabled-peer teardown, empty-list persistence, CF-backend orphan sweep, keyless-heartbeat `degraded`. watchdog — shared cooldown ledger, last-lane restart suppression, one-way rx detection.
+- **Live:** §C.1.3 Gate-C iperf3 through a Tokyo forward; confirm node13 lanes rx>0/tx>0 on the sidecar; confirm a removed uplink leaves **no** running selector; confirm a degraded sole lane is not restart-looped.
+
+### C.10 Sequencing & priority
+
+1. **C.1** confirm Tokyo far-end + run Gate-C on a node13 Tokyo forward (proves end-to-end now that slave→sidecar is healthy).
+2. **C.2** stale-selector / orphan reconcile (fixes the live node20 noise + prevents recurrence) — **highest-impact automation fix**.
+3. **C.3** selector EADDRINUSE hardening + **C.6** disabled-peer teardown / empty-list persistence (cheap, high-value safety).
+4. **C.4** republish drift convergence + **C.5** allocation-collision fixes (correctness at scale).
+5. **C.7** watchdog ledger / last-lane / one-way detection; **C.8** update backlog; **C.6** one-way observability + keyless `degraded`.
+
+**AUP / deploy note:** all of the above is defensive operational engineering on the operator's own product. Changes are code-first + unit-tested; **no production deploy** to live slaves/sidecars/panel without explicit confirmation and the §C.9 verification.

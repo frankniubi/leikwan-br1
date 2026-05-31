@@ -102,13 +102,19 @@ public sealed class BondEndpointHealthService
             || !string.Equals(forward.Bonding?.PolicyMode, "latency_first", StringComparison.OrdinalIgnoreCase))
             return endpoints;
 
+        var activeEndpoints = endpoints
+            .Where(endpoint => string.Equals(endpoint.HealthStatus, "active", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (activeEndpoints.Count == 0)
+            return [];
+
         var now = nowUnixSeconds ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
         var basePriority = forward.Bonding?.WsPriority > 0 ? forward.Bonding.WsPriority : 10;
         var health = _stateManager.LoadBondEndpointHealth();
         health.TryGetValue(forward.ForwardId.ToString(), out var scoped);
         scoped ??= [];
 
-        foreach (var endpoint in endpoints)
+        foreach (var endpoint in activeEndpoints)
         {
             scoped.TryGetValue(endpoint.EndpointId.ToString(), out var entry);
             var role = ResolveEffectiveRole(entry, now);
@@ -127,7 +133,7 @@ public sealed class BondEndpointHealthService
             };
         }
 
-        var healthy = SortEndpoints(endpoints.Where(endpoint => endpoint.HealthRole == "healthy")).ToList();
+        var healthy = SortEndpoints(activeEndpoints.Where(endpoint => endpoint.HealthRole == "healthy")).ToList();
         if (healthy.Count > 0)
         {
             var selected = string.Equals(forward.BackendMode, "cf_mode", StringComparison.OrdinalIgnoreCase)
@@ -138,14 +144,14 @@ public sealed class BondEndpointHealthService
             return selected;
         }
 
-        var probation = SortEndpoints(endpoints.Where(endpoint => endpoint.HealthRole == "probation")).ToList();
+        var probation = SortEndpoints(activeEndpoints.Where(endpoint => endpoint.HealthRole == "probation")).ToList();
         if (probation.Count > 0)
         {
             probation[0].LegRole = "primary";
             return [probation[0]];
         }
 
-        var fallback = SortEndpoints(endpoints).ToList();
+        var fallback = SortEndpoints(activeEndpoints).ToList();
         if (fallback.Count > 0)
         {
             fallback[0].LegRole = "primary";

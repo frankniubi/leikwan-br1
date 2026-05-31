@@ -246,8 +246,9 @@ public partial class MainWindow : Window
         try
         {
             var installerPath = await PrepareCachedInstallerAsync(_vm.AvailableUpdateArtifact);
+            var installerArguments = BuildSilentUpdateArguments(installerPath);
             ClearPendingUpdateState();
-            LaunchInstallerAndExit(installerPath);
+            LaunchInstallerAndExit(installerPath, installerArguments);
         }
         catch (Exception ex)
         {
@@ -327,17 +328,27 @@ public partial class MainWindow : Window
             return Task.FromResult(false);
         }
 
-        var actualSha = WindowsAppUpdateService.ComputeSha256(path);
-        if (!string.IsNullOrWhiteSpace(App.Config.PendingUpdateSha256)
-            && !string.Equals(actualSha, App.Config.PendingUpdateSha256, StringComparison.OrdinalIgnoreCase))
+        try
+        {
+            var actualSha = WindowsAppUpdateService.ComputeSha256(path);
+            if (!string.IsNullOrWhiteSpace(App.Config.PendingUpdateSha256)
+                && !string.Equals(actualSha, App.Config.PendingUpdateSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                ClearPendingUpdateState();
+                return Task.FromResult(false);
+            }
+
+            var installerArguments = BuildSilentUpdateArguments(path);
+            ClearPendingUpdateState();
+            LaunchInstallerAndExit(path, installerArguments);
+            return Task.FromResult(true);
+        }
+        catch (Exception ex)
         {
             ClearPendingUpdateState();
+            Log.Warning(ex, "pending update could not be applied");
             return Task.FromResult(false);
         }
-
-        ClearPendingUpdateState();
-        LaunchInstallerAndExit(path);
-        return Task.FromResult(true);
     }
 
     private async Task<string> PrepareCachedInstallerAsync(WindowsClientAppArtifact artifact)
@@ -362,20 +373,36 @@ public partial class MainWindow : Window
         return installerPath;
     }
 
-    private void LaunchInstallerAndExit(string installerPath)
+    private void LaunchInstallerAndExit(string installerPath, IReadOnlyList<string>? installerArguments = null)
     {
         _vm.DisconnectCommand.Execute(null);
         _trayLifecycle.RequestExit();
         DisposeTrayIcon();
-        var process = Process.Start(new ProcessStartInfo
+
+        var startInfo = new ProcessStartInfo
         {
             FileName = installerPath,
             UseShellExecute = true,
             WorkingDirectory = Path.GetDirectoryName(installerPath) ?? string.Empty,
-        });
+        };
+        if (installerArguments is not null)
+        {
+            foreach (var installerArgument in installerArguments)
+                startInfo.ArgumentList.Add(installerArgument);
+        }
+
+        var process = Process.Start(startInfo);
         if (process == null)
             throw new InvalidOperationException("failed to launch installer");
         System.Windows.Application.Current.Shutdown();
+    }
+
+    private static IReadOnlyList<string> BuildSilentUpdateArguments(string installerPath)
+    {
+        var installRoot = WindowsAppUpdateService.NormalizeInstallRoot(AppContext.BaseDirectory);
+        var state = WindowsAppUpdateService.LoadInstallState(installRoot)
+            ?? throw new InvalidOperationException("install-state missing for silent update");
+        return WindowsAppUpdateService.BuildSilentUpdateArguments(installerPath, installRoot, state);
     }
 
     private void ClearPendingUpdateState()
