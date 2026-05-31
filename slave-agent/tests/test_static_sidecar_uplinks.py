@@ -277,6 +277,38 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
         self.assertEqual(124, result.returncode)
         self.assertIn("timed out", result.stderr)
 
+    def test_enabled_uplink_with_missing_peer_key_is_torn_down_not_orphaned(self):
+        # Regression: an enabled static uplink whose sidecar WG public key is not
+        # yet known must NOT be left as an enabled wg-quick@ unit pointing at an
+        # absent /etc/wireguard/<iface>.conf (the EADDRINUSE / "conf does not
+        # exist" fail-loop observed on a slave). It must be torn down until the
+        # panel publishes complete data.
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        commands: list[str] = []
+        written: dict[str, str] = {}
+        management = self.static_uplink_management(sidecar_peer_public_key="")
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        def fake_write(path, content):
+            written[str(path)] = content
+            return True
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                        with mock.patch.object(agent, "write_text_if_changed", side_effect=fake_write):
+                            agent.apply_management_state(management)
+
+        self.assertIn("systemctl disable wg-quick@lws4c2n19p.service", commands)
+        self.assertNotIn("systemctl enable wg-quick@lws4c2n19p.service", commands)
+        self.assertFalse(any("lws4c2n19p" in path for path in written),
+                         "no WireGuard config should be written for an incomplete lane")
 
     def test_selector_scores_lanes_by_allowed_ip_ping_and_restarts_degraded_active_lane(self):
         agent = self.make_agent()
