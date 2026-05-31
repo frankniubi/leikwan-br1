@@ -27,6 +27,7 @@ class RoutingPolicyEngineTest {
         val engine = engine()
         val snapshot = engine.compile(
             globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = null,
             countryRules = listOf(
                 RoutingRule(
                     id = "country-cn",
@@ -61,6 +62,7 @@ class RoutingPolicyEngineTest {
         val engine = engine()
         val snapshot = engine.compile(
             globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = null,
             countryRules = listOf(
                 RoutingRule("country-cn", RoutingRuleKind.COUNTRY, "CN", UserTrafficOutcome.DIRECT)
             ),
@@ -90,6 +92,7 @@ class RoutingPolicyEngineTest {
         val engine = engine()
         val snapshot = engine.compile(
             globalDefault = UserTrafficOutcome.DIRECT,
+            globalDefaultNodeId = null,
             countryRules = emptyList(),
             categoryRules = emptyList(),
             rulePackVersions = emptyList(),
@@ -112,6 +115,7 @@ class RoutingPolicyEngineTest {
         val engine = engine()
         val snapshot = engine.compile(
             globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = null,
             countryRules = listOf(
                 RoutingRule("bad-country", RoutingRuleKind.COUNTRY, "  ", UserTrafficOutcome.DIRECT),
                 RoutingRule("ok-country", RoutingRuleKind.COUNTRY, "CN", UserTrafficOutcome.DIRECT),
@@ -140,6 +144,7 @@ class RoutingPolicyEngineTest {
         val engine = engine()
         val snapshot = engine.compile(
             globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = null,
             countryRules = listOf(
                 RoutingRule("off", RoutingRuleKind.COUNTRY, "JP", UserTrafficOutcome.DIRECT, enabled = false),
                 RoutingRule("on", RoutingRuleKind.COUNTRY, "CN", UserTrafficOutcome.DIRECT, enabled = true),
@@ -156,6 +161,7 @@ class RoutingPolicyEngineTest {
         val engine = engine()
         val snapshot = engine.compile(
             globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = null,
             countryRules = listOf(
                 RoutingRule("country-cn", RoutingRuleKind.COUNTRY, "CN", UserTrafficOutcome.DIRECT)
             ),
@@ -176,6 +182,7 @@ class RoutingPolicyEngineTest {
         val engine = engine()
         val snapshot = engine.compile(
             globalDefault = UserTrafficOutcome.DIRECT,
+            globalDefaultNodeId = null,
             countryRules = emptyList(),
             categoryRules = listOf(
                 RoutingRule("cat-video", RoutingRuleKind.WEBSITE_CATEGORY, "video", UserTrafficOutcome.TUNNEL)
@@ -198,6 +205,7 @@ class RoutingPolicyEngineTest {
         val engine = engine()
         val snapshot = engine.compile(
             globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = null,
             countryRules = listOf(
                 RoutingRule("cn1", RoutingRuleKind.COUNTRY, "CN", UserTrafficOutcome.DIRECT),
                 RoutingRule("cn2", RoutingRuleKind.COUNTRY, "cn", UserTrafficOutcome.DIRECT),
@@ -224,5 +232,72 @@ class RoutingPolicyEngineTest {
         // and the video geosite tags are present
         val videoTags = RoutingCategoryCatalog.default().ruleSetsFor("video").map { it.tag }
         assertTrue(tags.containsAll(videoTags))
+    }
+
+    @Test
+    fun `tunnel category rule with target node compiles to node sentinel`() {
+        val engine = engine()
+        val snapshot = engine.compile(
+            globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = 7L,
+            countryRules = emptyList(),
+            categoryRules = listOf(
+                RoutingRule(
+                    "video",
+                    RoutingRuleKind.WEBSITE_CATEGORY,
+                    "video",
+                    UserTrafficOutcome.TUNNEL,
+                    targetNodeId = 3L,
+                ),
+            ),
+            rulePackVersions = emptyList(),
+            compiledAtMs = 0L,
+        )
+        val compiled = engine.compileRouteRules(snapshot)
+        assertEquals("<NODE:3>", compiled.single().outbound)
+    }
+
+    @Test
+    fun `tunnel rule without target node uses default proxy sentinel`() {
+        val engine = engine()
+        val snapshot = engine.compile(
+            UserTrafficOutcome.TUNNEL,
+            null,
+            emptyList(),
+            listOf(
+                RoutingRule(
+                    "ai",
+                    RoutingRuleKind.WEBSITE_CATEGORY,
+                    "ai",
+                    UserTrafficOutcome.TUNNEL,
+                    targetNodeId = null,
+                ),
+            ),
+            emptyList(),
+            0L,
+        )
+        assertEquals("<PROXY>", engine.compileRouteRules(snapshot).single().outbound)
+    }
+
+    @Test
+    fun `direct rule ignores target node`() {
+        val engine = engine()
+        val snapshot = engine.compile(
+            UserTrafficOutcome.TUNNEL,
+            7L,
+            emptyList(),
+            listOf(
+                RoutingRule(
+                    "ai",
+                    RoutingRuleKind.WEBSITE_CATEGORY,
+                    "ai",
+                    UserTrafficOutcome.DIRECT,
+                    targetNodeId = 9L,
+                ),
+            ),
+            emptyList(),
+            0L,
+        )
+        assertEquals("direct", engine.compileRouteRules(snapshot).single().outbound)
     }
 }

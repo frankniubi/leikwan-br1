@@ -6,11 +6,11 @@ package com.leikwan.bridge.routing
  * - [compile] produces the authoritative [RoutingPolicySnapshot] for one rebuild cycle (dropping
  *   unsupported rules with a warning, never expanding outcomes beyond TUNNEL/DIRECT).
  * - [decide] is the canonical, unit-testable statement of precedence (and powers explainability). It
- *   is explicitly NOT in the data path — real per-packet routing is done by sing-box from the JSON.
- * - [compileRouteRules] / [requiredRuleSets] produce the lists that `SingboxConfigBuilder.buildRoute`
- *   emits into `route.rules` / `route.rule_set`.
+ *   is explicitly NOT in the data path; real per-packet routing is done by sing-box from the JSON.
+ * - [compileRouteRules] / [requiredRuleSets] produce the lists that SingboxConfigBuilder.buildRoute
+ *   emits into route.rules / route.rule_set.
  *
- * Precedence (enforced identically in [decide] and in `buildRoute`):
+ * Precedence (enforced identically in [decide] and in buildRoute):
  *   protected paths > runtime reachability > user country rules > user category rules > global default.
  * Protected paths win even when a user rule says TUNNEL.
  */
@@ -19,8 +19,11 @@ class RoutingPolicyEngine(
     private val categoryCatalog: RoutingCategoryCatalog,
 ) {
     companion object {
-        /** Sentinel outbound for TUNNEL rules; Task 3 swaps it for the real finalProxyTag. */
+        /** Sentinel outbound for TUNNEL rules; SingboxConfigBuilder swaps it for the fallback proxy tag. */
         const val PROXY_OUTBOUND_SENTINEL = "<PROXY>"
+
+        /** Sentinel for a TUNNEL rule pinned to a specific node; SingboxConfigBuilder resolves it. */
+        fun nodeSentinel(nodeId: Long): String = "<NODE:$nodeId>"
 
         private const val GEOIP_BASE =
             "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/"
@@ -36,6 +39,7 @@ class RoutingPolicyEngine(
      */
     fun compile(
         globalDefault: UserTrafficOutcome,
+        globalDefaultNodeId: Long?,
         countryRules: List<RoutingRule>,
         categoryRules: List<RoutingRule>,
         rulePackVersions: List<String>,
@@ -78,6 +82,7 @@ class RoutingPolicyEngine(
             userCountryRules = keptCountry,
             userCategoryRules = keptCategory,
             globalDefaultOutcome = globalDefault,
+            globalDefaultNodeId = globalDefaultNodeId,
             activeRulePackVersions = rulePackVersions,
             compileTimestampMs = compiledAtMs,
             warnings = warnings,
@@ -131,15 +136,15 @@ class RoutingPolicyEngine(
     }
 
     /**
-     * Project user rules into `route.rule`-shaped [CompiledRouteRule]s, in precedence order
-     * (country then category). DIRECT → outbound "direct"; TUNNEL → sentinel [PROXY_OUTBOUND_SENTINEL].
+     * Project user rules into route.rule-shaped [CompiledRouteRule]s, in precedence order
+     * (country then category). DIRECT -> outbound "direct"; TUNNEL -> proxy/node sentinel.
      */
     fun compileRouteRules(snapshot: RoutingPolicySnapshot): List<CompiledRouteRule> {
         val compiled = mutableListOf<CompiledRouteRule>()
         snapshot.userCountryRules.forEach { rule ->
             compiled += CompiledRouteRule(
                 ruleSetTags = listOf(geoipTag(rule.matchValue)),
-                outbound = outboundFor(rule.outcome),
+                outbound = outboundFor(rule),
                 sourceRuleId = rule.id,
             )
         }
@@ -148,7 +153,7 @@ class RoutingPolicyEngine(
             if (tags.isNotEmpty()) {
                 compiled += CompiledRouteRule(
                     ruleSetTags = tags,
-                    outbound = outboundFor(rule.outcome),
+                    outbound = outboundFor(rule),
                     sourceRuleId = rule.id,
                 )
             }
@@ -174,9 +179,9 @@ class RoutingPolicyEngine(
         return refs.values.toList()
     }
 
-    private fun outboundFor(outcome: UserTrafficOutcome): String = when (outcome) {
+    private fun outboundFor(rule: RoutingRule): String = when (rule.outcome) {
         UserTrafficOutcome.DIRECT -> "direct"
-        UserTrafficOutcome.TUNNEL -> PROXY_OUTBOUND_SENTINEL
+        UserTrafficOutcome.TUNNEL -> rule.targetNodeId?.let { nodeSentinel(it) } ?: PROXY_OUTBOUND_SENTINEL
     }
 
     private fun isSupportedCountry(matchValue: String): Boolean {

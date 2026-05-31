@@ -68,6 +68,7 @@ class TunnelOrchestrator internal constructor(
     internal suspend fun buildRoutingSnapshot(nowMs: Long): RoutingPolicySnapshot =
         routingEngine.compile(
             globalDefault = prefs.routingDefaultOutcome,
+            globalDefaultNodeId = null,
             countryRules = userRuleStore.countryRules(),
             categoryRules = userRuleStore.categoryRules(),
             rulePackVersions = rulePackManager.activeVersions(),
