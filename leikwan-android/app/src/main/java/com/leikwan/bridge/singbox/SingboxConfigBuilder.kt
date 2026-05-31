@@ -53,6 +53,7 @@ class SingboxConfigBuilder(
         runtimeContext: RuntimeContext?,
         routingPolicySnapshot: RoutingPolicySnapshot? = null,
         connectionMode: ProxyConnectionMode = ProxyConnectionMode.SERVICES,
+        enableIpv6Tun: Boolean = false,
     ): CompiledConfigResult {
         val activeProxyNodes = activeProxyNodes(proxyNodes, runtimeContext, connectionMode)
         val finalProxyTag = when {
@@ -72,8 +73,8 @@ class SingboxConfigBuilder(
         } else {
             emptySet()
         }
-        root.add("dns", buildDns(dnsProxyDetourTag, dnsBootstrapDomains))
-        root.add("inbounds", buildInbounds())
+        root.add("dns", buildDns(dnsProxyDetourTag, dnsBootstrapDomains, enableIpv6Tun))
+        root.add("inbounds", buildInbounds(enableIpv6Tun))
         root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode))
         root.add("route", buildRoute(runtimeContext?.bypassHosts ?: emptySet(), finalProxyTag, routingPolicySnapshot))
         return CompiledConfigResult(
@@ -86,6 +87,7 @@ class SingboxConfigBuilder(
     private fun buildDns(
         proxyDetourTag: String?,
         bootstrapDomains: Set<String>,
+        enableIpv6Tun: Boolean,
     ): JsonObject {
         val dns = JsonObject()
         val servers = JsonArray()
@@ -119,18 +121,20 @@ class SingboxConfigBuilder(
         }
         dns.add("rules", rules)
         dns.addProperty("final", "remote")
-        dns.addProperty("strategy", settings.dnsStrategy)
+        dns.addProperty("strategy", if (enableIpv6Tun) settings.dnsStrategy else "ipv4_only")
         return dns
     }
 
-    private fun buildInbounds(): JsonArray {
+    private fun buildInbounds(enableIpv6Tun: Boolean): JsonArray {
         return JsonArray().apply {
             add(JsonObject().apply {
                 addProperty("type", "tun")
                 addProperty("tag", "tun-in")
                 add("address", JsonArray().apply {
                     add("172.19.0.1/30")
-                    add("fdfe:dcba:9876::1/126")
+                    if (enableIpv6Tun) {
+                        add("fdfe:dcba:9876::1/126")
+                    }
                 })
                 addProperty("auto_route", true)
                 addProperty("strict_route", true)

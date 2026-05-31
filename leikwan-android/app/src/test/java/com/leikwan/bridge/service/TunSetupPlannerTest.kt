@@ -54,6 +54,26 @@ class TunSetupPlannerTest {
     }
 
     @Test
+    fun `planner does not synthesize ipv6 when libbox supplies ipv4 only tun options`() {
+        val plan = TunSetupPlanner.plan(
+            TunOptionSnapshot(
+                autoRoute = true,
+                strictRoute = true,
+                inet4Addresses = listOf(RoutePrefix("172.19.0.1", 30)),
+                inet6Addresses = emptyList(),
+                inet4Routes = listOf(RoutePrefix("0.0.0.0", 0)),
+                inet6Routes = emptyList(),
+                dnsServer = "172.19.0.2",
+            )
+        )
+
+        assertEquals(listOf(RoutePrefix("172.19.0.1", 30)), plan.inet4Addresses)
+        assertEquals(emptyList<RoutePrefix>(), plan.inet6Addresses)
+        assertEquals(listOf(RoutePrefix("0.0.0.0", 0)), plan.inet4Routes)
+        assertEquals(emptyList<RoutePrefix>(), plan.inet6Routes)
+    }
+
+    @Test
     fun `planner excludes the vpn owner package from captured app traffic`() {
         val plan = TunSetupPlanner.plan(
             snapshot = TunOptionSnapshot(
