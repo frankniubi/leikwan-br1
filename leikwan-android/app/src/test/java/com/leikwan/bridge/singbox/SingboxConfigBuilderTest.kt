@@ -232,6 +232,39 @@ class SingboxConfigBuilderTest {
     }
 
     @Test
+    fun `tun inbound omits ipv6 address by default to avoid v6 blackhole`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(ssNode(1)),
+                runtimeContext = null,
+                connectionMode = ProxyConnectionMode.DIRECT,
+            ).configJson
+        ).asJsonObject
+        val tunInbound = config.getAsJsonArray("inbounds").first().asJsonObject
+        val addresses = tunInbound.getAsJsonArray("address").map { it.asString }
+
+        assertTrue(addresses.any { it == "172.19.0.1/30" })
+        assertFalse(addresses.any { it.contains(":") })
+    }
+
+    @Test
+    fun `dns strategy is ipv4 only when ipv6 tun disabled`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(ssNode(1)),
+                runtimeContext = null,
+                connectionMode = ProxyConnectionMode.DIRECT,
+            ).configJson
+        ).asJsonObject
+
+        assertEquals("ipv4_only", config.getAsJsonObject("dns").get("strategy").asString)
+    }
+
+    @Test
     fun `builder keeps original proxy address in direct mode`() {
         val builder = SingboxConfigBuilder(
             settings = SingboxSettings(

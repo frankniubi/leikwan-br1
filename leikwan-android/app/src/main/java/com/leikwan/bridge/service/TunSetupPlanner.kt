@@ -37,17 +37,26 @@ object TunSetupPlanner {
         snapshot: TunOptionSnapshot,
         ownerPackageName: String? = null,
     ): TunSetupPlan {
-        val inet4Addresses = snapshot.inet4Addresses.ifEmpty { fallbackInet4Address }
-        val inet6Addresses = snapshot.inet6Addresses.ifEmpty { fallbackInet6Address }
+        val hasExplicitAddress = snapshot.inet4Addresses.isNotEmpty() || snapshot.inet6Addresses.isNotEmpty()
+        val inet4Addresses = snapshot.inet4Addresses.ifEmpty {
+            if (hasExplicitAddress) emptyList() else fallbackInet4Address
+        }
+        val inet6Addresses = snapshot.inet6Addresses.ifEmpty {
+            if (hasExplicitAddress) emptyList() else fallbackInet6Address
+        }
         val inet4Routes = if (snapshot.autoRoute && snapshot.inet4Routes.isNotEmpty()) {
             snapshot.inet4Routes
-        } else {
+        } else if (inet4Addresses.isNotEmpty()) {
             fallbackInet4Routes
+        } else {
+            emptyList()
         }
         val inet6Routes = if (snapshot.autoRoute && snapshot.inet6Routes.isNotEmpty()) {
             snapshot.inet6Routes
-        } else {
+        } else if (inet6Addresses.isNotEmpty()) {
             fallbackInet6Routes
+        } else {
+            emptyList()
         }
         val dnsServers = listOf(snapshot.dnsServer?.takeIf { it.isNotBlank() } ?: fallbackDnsServer)
         val disallowedPackageNames = ownerPackageName
