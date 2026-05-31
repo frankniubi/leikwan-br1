@@ -131,16 +131,26 @@ class TunnelOrchestratorTest {
                 legs.getValue(1L).processKey,
                 legs.getValue(2L).processKey,
             ),
-            processRunner.started.map { it.first },
+            processRunner.started.map { it.forwardId },
+        )
+        assertEquals(
+            listOf(true, false),
+            processRunner.started.map { it.cleanupStale },
         )
         assertTrue(legs.getValue(1L).localLegPorts.single() != legs.getValue(2L).localLegPorts.single())
     }
 
     private class RecordingProcessRunner : ProcessRunner() {
-        val started = mutableListOf<Pair<Long, RuntimeContext>>()
+        data class Started(
+            val forwardId: Long,
+            val runtimeContext: RuntimeContext,
+            val cleanupStale: Boolean,
+        )
 
-        override fun start(forwardId: Long, runtimeContext: RuntimeContext) {
-            started += forwardId to runtimeContext
+        val started = mutableListOf<Started>()
+
+        override fun start(forwardId: Long, runtimeContext: RuntimeContext, cleanupStale: Boolean) {
+            started += Started(forwardId, runtimeContext, cleanupStale)
         }
     }
 
