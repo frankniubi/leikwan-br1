@@ -152,6 +152,41 @@ public sealed class ForwardRuntimeManagerTests
     }
 
     [Fact]
+    public void ApplyForward_MptcpWindowsCompatibility_IgnoresPrivateSlaveRelayAddressWhenPublicRelayHostExists()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
+        config.MptcpRelayBin = @"C:\leikwan\bin\leikwan-mptcp-relay.exe";
+        var manager = new ForwardRuntimeManager(
+            config,
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+
+        var forward = CreateMptcpForward();
+        forward.Mptcp!.SlaveRelayHost = "10.203.201.178";
+        forward.Mptcp.SlaveRelayPort = 38638;
+        forward.Mptcp.RelayHost = "185.220.238.143";
+        forward.Mptcp.RelayPort = 8898;
+        forward.Mptcp.SidecarHost = "10.203.201.179";
+        forward.Mptcp.SidecarPort = 38638;
+
+        manager.ApplyForward(forward);
+
+        var runtimeConfigPath = Path.Combine(tempDir.Path, "runtime", "mptcp-forward-24.json");
+        using var document = JsonDocument.Parse(File.ReadAllText(runtimeConfigPath));
+        var root = document.RootElement;
+        Assert.Equal("185.220.238.143", root.GetProperty("remote_host").GetString());
+        Assert.Equal(8898, root.GetProperty("remote_port").GetInt32());
+        Assert.Equal(string.Empty, root.GetProperty("slave_relay_host").GetString());
+        Assert.Equal(0, root.GetProperty("slave_relay_port").GetInt32());
+    }
+
+    [Fact]
     public void ApplyForward_MptcpTcpUdp_EmitsPublicListenHostAndKeepsUdpTransport()
     {
         using var tempDir = new TempStateDirectory();
