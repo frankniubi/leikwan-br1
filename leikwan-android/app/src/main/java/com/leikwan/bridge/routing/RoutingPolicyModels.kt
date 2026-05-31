@@ -34,6 +34,8 @@ data class RoutingRule(
     val matchValue: String,
     val outcome: UserTrafficOutcome,
     val enabled: Boolean = true,
+    /** When [outcome] is TUNNEL: null = use the global-default node; non-null = pin to this node id. */
+    val targetNodeId: Long? = null,
 )
 
 /** A system-protected destination set that user rules can never override. */
@@ -65,11 +67,12 @@ data class RoutingDecision(
 data class RuleSetRef(val tag: String, val url: String)
 
 /**
- * A user rule compiled into a single sing-box `route.rule`. [outbound] is either `"direct"` or the
- * sentinel `"<PROXY>"`, which Task 3 (`SingboxConfigBuilder`) swaps for the real `finalProxyTag`.
+ * A user rule compiled into a single sing-box `route.rule`. [outbound] is either `"direct"`,
+ * the sentinel `"<PROXY>"`, or a node sentinel `"<NODE:{id}>"`.
  */
 data class CompiledRouteRule(
     val ruleSetTags: List<String>,
+    /** "direct" | "<PROXY>" (default node) | "<NODE:{id}>" (pinned node). */
     val outbound: String,
     val sourceRuleId: String?,
 )

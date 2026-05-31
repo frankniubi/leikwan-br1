@@ -438,6 +438,7 @@ class SingboxConfigBuilderTest {
         val builder = SingboxConfigBuilder(settings = baseSettings())
         val snapshot = engine().compile(
             globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = null,
             countryRules = listOf(RoutingRule("c-cn", RoutingRuleKind.COUNTRY, "CN", UserTrafficOutcome.TUNNEL)),
             categoryRules = emptyList(),
             rulePackVersions = listOf("test"),
@@ -465,6 +466,7 @@ class SingboxConfigBuilderTest {
         val builder = SingboxConfigBuilder(settings = baseSettings())
         val snapshot = engine().compile(
             globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = null,
             countryRules = listOf(RoutingRule("c-cn", RoutingRuleKind.COUNTRY, "CN", UserTrafficOutcome.DIRECT)),
             categoryRules = emptyList(),
             rulePackVersions = listOf("test"),
@@ -490,6 +492,7 @@ class SingboxConfigBuilderTest {
         val builder = SingboxConfigBuilder(settings = baseSettings())
         val snapshot = engine().compile(
             globalDefault = UserTrafficOutcome.DIRECT,
+            globalDefaultNodeId = null,
             countryRules = emptyList(),
             categoryRules = listOf(
                 RoutingRule("cat-video", RoutingRuleKind.WEBSITE_CATEGORY, "video", UserTrafficOutcome.TUNNEL)
@@ -512,6 +515,7 @@ class SingboxConfigBuilderTest {
         val builder = SingboxConfigBuilder(settings = baseSettings())
         val snapshot = engine().compile(
             globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = null,
             countryRules = emptyList(),
             categoryRules = emptyList(),
             rulePackVersions = listOf("test"),
