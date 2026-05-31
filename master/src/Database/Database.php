@@ -10,12 +10,29 @@ use Throwable;
 
 final class Database
 {
+    /**
+     * Maximum number of attempts for a write that fails with an InnoDB
+     * deadlock / lock-wait (SQLSTATE 40001, MySQL error 1213). The first
+     * attempt plus two retries.
+     */
+    private const DEADLOCK_MAX_ATTEMPTS = 3;
+
     private Config $config;
     private ?PDO $pdo = null;
 
     public function __construct(Config $config)
     {
         $this->config = $config;
+    }
+
+    /**
+     * Inject a PDO instance, primarily for tests that want to exercise the
+     * query/retry wrappers against a fake driver. Production code never calls
+     * this; the lazy connection in pdo() is used instead.
+     */
+    public function setPdo(PDO $pdo): void
+    {
+        $this->pdo = $pdo;
     }
 
     public function pdo(): PDO
@@ -86,12 +103,25 @@ final class Database
      */
     public function execute(string $sql, array $params = []): int
     {
-        try {
-            $stmt = $this->pdo()->prepare($sql);
-            $stmt->execute($this->sanitizeParams($sql, $params));
-            return $stmt->rowCount();
-        } catch (Throwable $throwable) {
-            throw $this->queryException($throwable, $sql, $params);
+        $attempt = 0;
+        while (true) {
+            $attempt++;
+            try {
+                $stmt = $this->pdo()->prepare($sql);
+                $stmt->execute($this->sanitizeParams($sql, $params));
+                return $stmt->rowCount();
+            } catch (Throwable $throwable) {
+                // Defense in depth: concurrent heartbeats can collide on the
+                // same provision_tasks rows and trip an InnoDB deadlock
+                // (SQLSTATE 40001 / error 1213). Retry a couple of times with a
+                // small backoff before surfacing the failure. Only deadlocks are
+                // retried; every other error is rethrown immediately.
+                if ($this->isDeadlock($throwable) && $attempt < self::DEADLOCK_MAX_ATTEMPTS) {
+                    usleep($attempt * 20000);
+                    continue;
+                }
+                throw $this->queryException($throwable, $sql, $params);
+            }
         }
     }
 
@@ -128,6 +158,28 @@ final class Database
             $pdo->rollBack();
             throw $throwable;
         }
+    }
+
+    /**
+     * Detect an InnoDB deadlock / lock-wait timeout. PDO reports the deadlock
+     * with SQLSTATE 40001 and driver error code 1213 (a lock-wait timeout is
+     * 40001/1205); both are safe to retry because the failed transaction was
+     * rolled back by the server.
+     */
+    private function isDeadlock(Throwable $throwable): bool
+    {
+        if ($throwable instanceof PDOException) {
+            $sqlState = (string) ($throwable->errorInfo[0] ?? $throwable->getCode());
+            if ($sqlState === '40001') {
+                return true;
+            }
+            $driverCode = (int) ($throwable->errorInfo[1] ?? 0);
+            if ($driverCode === 1213 || $driverCode === 1205) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

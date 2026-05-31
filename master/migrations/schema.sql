@@ -628,7 +628,11 @@ CREATE TABLE IF NOT EXISTS provision_tasks (
     CONSTRAINT fk_provision_tasks_service FOREIGN KEY (service_id) REFERENCES services(id),
     CONSTRAINT fk_provision_tasks_forward FOREIGN KEY (forward_id) REFERENCES forwards(id),
     CONSTRAINT fk_provision_tasks_endpoint FOREIGN KEY (endpoint_id) REFERENCES service_endpoints(id),
-    INDEX idx_provision_tasks_node_status (node_id, status)
+    INDEX idx_provision_tasks_node_status (node_id, status),
+    -- Composite index matching collapsePendingProvisionTasksForNode's WHERE predicate.
+    -- Without it MySQL used an index_merge intersect and locked rows in inconsistent
+    -- order across concurrent heartbeats, tripping InnoDB deadlocks (SQLSTATE 40001).
+    INDEX idx_provision_tasks_collapse (node_id, action, service_id, forward_id, endpoint_id, status)
 );
 
 CREATE TABLE IF NOT EXISTS node_heartbeats (
