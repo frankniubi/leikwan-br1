@@ -475,3 +475,57 @@ Republish itself is not starved: the node/slave path republishes on nearly every
 3. **Delivery-failure visibility** — mark a node whose task-pull/heartbeat has failed for > N intervals as `degraded` so operators see the stuck node and republish isn't aimed at an unreachable agent.
 
 These preserve `republish` idempotency (A.3 L1.4) while ensuring a slave that fails to converge is **detected and escalated**, not left in a permanent silent fail-loop.
+
+---
+
+## Appendix B — Implementation plan: selector_port fix + slave/sidecar WG invariants
+
+Investigated 2026-05-31 via a parallel multi-agent read-only review of the panel (`master/`) and the slave/sidecar/client agents. The `selector_port` fix (B.1) is **implemented in this commit**; the rest are scoped work items. All file:line citations are from this worktree.
+
+### B.1 selector_port collision fix — DONE (this commit)
+Implements A.6.1 (Option A):
+- New helper `ProvisioningService::stableSidecarSelectorPort(point, combination, node, forwardId, endpointId)` — mirrors `stableSidecarLegPort` (which already includes `forwardId`), folds `forward_id`+`endpoint_id` into the key, config-tunable via `STATIC_SIDECAR_SELECTOR_PORT_RANGE_START` (default 45000) / `_SIZE` (default 5000) → 45000–49999 TCP, disjoint from the TCP preconnect (38000–39999) and backend (20000–40000) ranges; stateless/deterministic so any single-task republish reproduces the same port.
+- `staticSidecarUplinkSelectorPayload()` now takes `forwardId, endpointId`; the inline `45000 + …%1000` literal is removed; the single caller (`publishTaskPayloadForForward`) passes `$forward['id']` + `$endpointId`.
+- New test `provisioning_static_sidecar_selector_port_regression_test.php`: two endpoints sharing `(point 4, combination 2, node 19)` now get **distinct** ports (the crash-loop bug), endpoint_id varies the port, ports are in-range, and allocation is deterministic. `forward_combination_static_sidecar_wg_regression_test.php` still passes; the 14 other suite failures are **pre-existing** (verified by reverting this edit and re-running — they fail identically).
+- Optional follow-up (not in this commit): A.6.2 node-level duplicate-port guard in `republishActiveEndpointsForNode` (linear-probe on the rare hash collision).
+
+### B.2 Invariant A — static slave↔sidecar WG; no per-client WG; client-as-a-slave exception
+**Verdict: structurally holds; the stated trigger does not exist in code.**
+- Holds: slave↔sidecar WG is static per `(sidecar_point_id, forward_combination_id, node_id, lane)` with no client dimension (`buildStaticSidecarUplinkPairForNode` ProvisioningService.php:5208-5349; iface `lws{point}c{combo}n{node}{p,b}` :7284-7292), reconciled idempotently by both agents (sidecar_agent.py:1158-1190; slave_agent.py:2208-2237). A client connecting at the slave creates **no** additional WG toward the sidecar — the slave fronts clients with a wstunnel/CF mux (`ensure_cfwg_relay_service` slave_agent.py:3714-3821), not WG.
+- The only per-client WG toward the sidecar is the gated **self-leg** (`lw-self-*`/`lw-cfwg-*`, ProvisioningService.php:2972-3106, 7628-7704; sidecar_agent.py:205-254) and the client **cfsr** relay leg (`lw-cfsr-*`, install_forward_runtime.py:491-603).
+- **Gap:** the invariant's trigger — *runtime detection of Linux + China Telecom (Chinanet/AS4134) IPv4* — is **not implemented**. No ASN lookup, no Chinanet CIDR table, no OS check exists in the self-leg path; "AS4134" is only a comment (install_forward_runtime.py:497). The self-leg is enabled **declaratively** by `forward_combinations.allow_private_self_leg=1` (+ `self_leg_cf_transport`) plus a device session (`buildSelfLegCandidate` :2972-3054; `saveForwardCombination` :405-407/464-466/495-497).
+- **Work items:**
+  1. **Decide & reconcile** (docs/panel): either (a) restate the exception as operator/flag-driven (accurate today), or (b) if auto-detection is intended, implement client-IP ASN/CIDR classification (→ China Telecom) + OS check and wire it to `allow_private_self_leg` / candidate emission.
+  2. **Lock the "no per-client WG when disabled" half** (tests): assert NO `lw-self-*`/`lw-cfwg-*` peers or `self_leg_client_peers` are published when `allow_private_self_leg=0`.
+
+### B.3 Invariant B — exactly 2 WG legs (primary + backup)
+**Verdict: holds for healthy config; really "at most 2".**
+- Single producer hard-codes two lanes (`['primary'=>'p','backup'=>'b']`, ProvisioningService.php:5247-5348); each agent makes one `wg-quick` iface per lane; lanes are fully separated (distinct /30, listen port, local UDP, CF path-prefix); the selector requires ≥2 candidates.
+- **Gap:** a lane is silently **skipped** when `stableStaticSidecarUplinkPort` returns 0 (degenerate sidecar WG port range, :7294-7303 / 5251-5253), and full bailout yields **0** legs when IDs/keys are missing (:5213-5226).
+- **Work items (panel):**
+  1. Emit a **diagnostic** when `stableStaticSidecarUplinkPort` returns 0 (distinguish "no usable WG port range → 0 legs" from intentional disable).
+  2. Optionally **assert** one-primary+one-backup per `(combination,node)` at publish (warn first, hard-fail behind a flag); reject a 1-port WG range.
+  3. Tighten the documented invariant to "at most 2; exactly 2 when the sidecar WG port range and both public keys are valid".
+
+### B.4 Invariant C — latency watchdog on slave + client-as-a-slave
+**Verdict: holds, via two distinct latency watchers plus a separate handshake-only restarter.**
+- Slave: the `wg_allowed_ip_ping` sidecar-uplink selector — `SidecarUplinkSelectorProxy` actively `ping`s each lane, scores latency+mdev+loss, switches the active lane and restarts degraded lanes (slave_agent.py:2297-2416, 829-921; payload ProvisioningService.php:5622-5677).
+- Client-as-a-slave: `CfwgLatencyWatchdog` — ICMP RTT through `lw-cfwg-*`, windowed regression → restart runtime/`wg-quick`, default-enabled by the panel (client-agent/cfwg_latency_watchdog.py; ClientAgentController.php:297-329; live-confirmed on sh36 per the 2026-05-20 handoff).
+- **Not** latency: `leikwan-wg-watchdog.sh` only restarts on stale handshake (>180s), never pings (artifacts/leikwan-wg-watchdog.sh:1-61).
+- **Gaps & work items:**
+  1. **(docs)** Document the three-role split (handshake restarter vs slave latency selector vs client-as-a-slave latency watchdog) — the shared word "watchdog" invites the false belief the handshake script satisfies this invariant.
+  2. **(slave)** Single-lane slaves get **no** latency watch (selector only emitted with ≥2 uplinks, :5624/5659) — add a lightweight per-lane RTT check for the 1-lane case (reuse `parse_ping_summary` + restart-cooldown to avoid flapping).
+  3. **(client)** `CfwgLatencyWatchdog` defaults to `forward_ids='47'` only (ClientAgentController.php:301) — set the default empty so all active forwards are watched, or populate per-forward baselines. Per A.4, also extend the handshake watchdog to detect one-way WG (handshake present but rx==0 / 100% overlay-ping loss) and restart the lane.
+
+### B.5 Verification
+- **PHP (done):** `provisioning_static_sidecar_selector_port_regression_test.php` exit 0 (distinct/in-range/deterministic ports); `forward_combination_static_sidecar_wg_regression_test.php` still passes; the 14 other suite failures verified pre-existing (fail identically with the edit reverted).
+- **Python:** extend `slave-agent/tests/test_static_sidecar_uplinks.py` to assert two endpoints render two `{service_name}-sidecar-selector` units on distinct 127.0.0.1 ports.
+- **Live (selector):** on a slave with ≥2 forwards sharing a `(point,combination,node)`, after republish all `wstunnel-svc-*-sidecar-selector` units are active with ~0 restarts on unique 45xxx–49xxx loopback ports (`ss -ltnp`), no `EADDRINUSE`.
+- **Live (B):** exactly two `wg-quick` ifaces per `(combination,node)` on a healthy forward; the new diagnostic fires on a sidecar with no usable WG port range.
+- **Live (C):** selector probing on a ≥2-lane slave + the new single-lane check; `CfwgLatencyWatchdog` ticking on sh36 (forward 47), and on all active forwards once `forward_ids` is emptied.
+
+### B.6 Open questions
+- Does Linux + China-Telecom auto-detection exist **outside** this worktree (Android app on `feature/android-routing-v2`, an enrollment service, or a runbook) and set `allow_private_self_leg`? Here it is purely declarative.
+- Invariant B: hard "exactly 2" at publish, or "at most 2 + diagnostics"?
+- Safe `STATIC_SIDECAR_SELECTOR_PORT_RANGE_SIZE` upper bound vs other loopback listeners (45000–45999 confirmed clear; 45000–49999 not exhaustively proven free).
+- Single-lane slave latency watch: relax the ≥2 selector gate to ≥1, or a separate component (a 1-candidate selector cannot "switch")?
