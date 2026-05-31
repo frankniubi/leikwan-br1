@@ -5619,7 +5619,7 @@ final class ProvisioningService
      * @param array<int, array<string, mixed>> $uplinks
      * @return array<string, mixed>
      */
-    private function staticSidecarUplinkSelectorPayload(array $uplinks, int $sidecarServicePort): array
+    private function staticSidecarUplinkSelectorPayload(array $uplinks, int $sidecarServicePort, int $forwardId, int $endpointId): array
     {
         if ($sidecarServicePort <= 0 || count($uplinks) < 2) {
             return [];
@@ -5660,7 +5660,7 @@ final class ProvisioningService
             return [];
         }
 
-        $selectorPort = 45000 + abs((($firstPointId * 1009) + ($firstCombinationId * 131) + ($firstNodeId * 17)) % 1000);
+        $selectorPort = $this->stableSidecarSelectorPort($firstPointId, $firstCombinationId, $firstNodeId, $forwardId, $endpointId);
         return [
             'enabled' => true,
             'strategy' => 'wg_allowed_ip_ping',
@@ -5697,7 +5697,7 @@ final class ProvisioningService
             ? (array_values(array_filter($staticSidecarUplinks, static fn(array $uplink): bool => ($uplink['lane'] ?? '') === 'primary'))[0] ?? null)
             : null;
         $staticSidecarSelector = $directSidecarTarget !== null
-            ? $this->staticSidecarUplinkSelectorPayload($staticSidecarUplinks, (int) ($directSidecarTarget['port'] ?? 0))
+            ? $this->staticSidecarUplinkSelectorPayload($staticSidecarUplinks, (int) ($directSidecarTarget['port'] ?? 0), (int) ($forward['id'] ?? 0), $endpointId)
             : [];
         $backendProtocol = $plainTcpIngress && ($backendMode !== 'cf_mode' || $staticSidecarUplink !== null)
             ? 'tcp_relay'
@@ -7300,6 +7300,28 @@ final class ProvisioningService
         $laneOffset = $lane === 'backup' ? 1 : 0;
         $stableIndex = abs((($pointId * 1009) + ($combinationId * 131) + ($nodeId * 2) + $laneOffset) % $rangeSize);
         return $sidecarListenPort + 1 + $stableIndex;
+    }
+
+    /**
+     * Stable loopback (TCP) port for the slave-side sidecar-uplink lane selector proxy.
+     *
+     * The selector binds 127.0.0.1:<port> and the slave runs one selector systemd unit
+     * per (service_id, endpoint_id). The port MUST therefore be unique per published
+     * selector service on a node. The original inline formula keyed only on
+     * (point, combination, node), so every forward/endpoint that shared a lane on the
+     * same node collided on one port and the losing units crash-looped with EADDRINUSE.
+     * We fold forward_id + endpoint_id into the key (mirroring stableSidecarLegPort,
+     * which includes forward_id) so distinct selector services get distinct ports, and
+     * keep it stateless/deterministic so any single-task republish reproduces the port.
+     * Range (default 45000-49999, TCP) is config-tunable and disjoint from the TCP
+     * preconnect (38000-39999) and backend (20000-40000) ranges.
+     */
+    private function stableSidecarSelectorPort(int $pointId, int $combinationId, int $nodeId, int $forwardId, int $endpointId): int
+    {
+        $rangeStart = max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_PORT_RANGE_START', 45000) ?? 45000));
+        $rangeSize = max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_PORT_RANGE_SIZE', 5000) ?? 5000));
+        $stableIndex = abs((($pointId * 1009) + ($combinationId * 131) + ($nodeId * 17) + ($forwardId * 257) + ($endpointId * 65537)) % $rangeSize);
+        return $rangeStart + $stableIndex;
     }
 
     private function staticSidecarCombinationUsesCf(array $combination): bool
