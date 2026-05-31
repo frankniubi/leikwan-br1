@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <style name="Theme.LeikwanBridge" parent="android:Theme.Material.NoActionBar" />
-    <color name="ic_launcher_background">#FFFFFF</color>
-</resources>
