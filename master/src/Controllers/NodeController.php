@@ -219,20 +219,59 @@ final class NodeController extends BaseController
             'created_at' => gmdate('Y-m-d H:i:s'),
         ]);
 
+        // Heartbeat resilience: the reconcile/republish provisioning calls below run
+        // inline on every heartbeat. They issue UPDATEs against provision_tasks that can
+        // deadlock under concurrent heartbeats (SQLSTATE 40001). Previously an uncaught
+        // throw here bubbled out as an HTTP 500, the agent skipped its task pull/ack
+        // cycle, and the fleet froze. Each call is now isolated: a failure is logged and
+        // the heartbeat still returns the node's normal management response.
+        $nodeId = (int) $node['id'];
         if ($groupKey !== '') {
-            $this->provisioning->reconcileActiveForwardsForGroup($groupKey);
+            $this->guardProvisioning($nodeId, 'reconcileActiveForwardsForGroup', function () use ($groupKey): void {
+                $this->provisioning->reconcileActiveForwardsForGroup($groupKey);
+            });
         } elseif (is_array($group ?? null) && !empty($group['group_key'])) {
-            $this->provisioning->reconcileActiveForwardsForGroup((string) $group['group_key']);
+            $this->guardProvisioning($nodeId, 'reconcileActiveForwardsForGroup', function () use ($group): void {
+                $this->provisioning->reconcileActiveForwardsForGroup((string) $group['group_key']);
+            });
         }
         if (array_key_exists('donation_self_check', $body) && is_array($body['donation_self_check'])) {
-            $this->provisioning->recordDonationSelfCheck((int) $node['id'], $body);
+            $this->guardProvisioning($nodeId, 'recordDonationSelfCheck', function () use ($nodeId, $body): void {
+                $this->provisioning->recordDonationSelfCheck($nodeId, $body);
+            });
         }
-        $this->provisioning->applyForwardChainRemediationSignals((int) $node['id'], $mergedCapabilities);
+        $this->guardProvisioning($nodeId, 'applyForwardChainRemediationSignals', function () use ($nodeId, $mergedCapabilities): void {
+            $this->provisioning->applyForwardChainRemediationSignals($nodeId, $mergedCapabilities);
+        });
         if ($shouldRepublishNodeEndpoints && (!array_key_exists('forward_chain_remediation', $body) || !is_array($body['forward_chain_remediation']))) {
-            $this->provisioning->republishActiveEndpointsForNode((int) $node['id']);
+            $this->guardProvisioning($nodeId, 'republishActiveEndpointsForNode', function () use ($nodeId): void {
+                $this->provisioning->republishActiveEndpointsForNode($nodeId);
+            });
         }
 
         return $this->json(['ok' => true]);
+    }
+
+    /**
+     * Run one inline provisioning step in isolation. Any \Throwable (e.g. a DB
+     * deadlock raised by queueTask's collapse UPDATE) is logged and swallowed so
+     * the heartbeat still returns the node's task/management response instead of
+     * 500ing and stalling the agent's pull/ack cycle.
+     */
+    protected function guardProvisioning(int $nodeId, string $step, callable $callback): void
+    {
+        try {
+            $callback();
+        } catch (\Throwable $throwable) {
+            error_log(sprintf(
+                '[node-heartbeat] node=%d %s failed: %s @ %s:%d',
+                $nodeId,
+                $step,
+                $throwable->getMessage(),
+                $throwable->getFile(),
+                $throwable->getLine()
+            ));
+        }
     }
 
     /**

@@ -98,6 +98,31 @@ try {
         echo "  would cancel {$countOffline} pending tasks for offline nodes\n";
     }
 
+    // 2b. Finalize endpoints stranded on offline nodes (deleting -> deleted, pending -> error).
+    //     A dead node never acks its destroy/publish tasks, so its endpoints otherwise stay
+    //     stuck forever. Drive them to a terminal state.
+    $endpointFinalize = \Leikwan\Master\Support\TaskCleanup::finalizeOfflineNodeEndpoints(
+        $db,
+        $offlineCutoff,
+        $now,
+        $offlineMinutes,
+        $dryRun
+    );
+    if ($dryRun) {
+        echo "  would finalize stranded endpoints on offline nodes (deleting->deleted, pending->error)\n";
+    } else {
+        echo "  finalized {$endpointFinalize['deleted']} endpoints (deleting->deleted) and {$endpointFinalize['errored']} endpoints (pending->error) on offline nodes\n";
+    }
+
+    // 2c. Demote nodes whose last heartbeat is older than the offline threshold so dead
+    //     nodes stop showing as "active". Re-promotion happens on the next heartbeat.
+    $demoted = \Leikwan\Master\Support\TaskCleanup::demoteStaleNodes($db, $offlineCutoff, $now, $dryRun);
+    if ($dryRun) {
+        echo "  would demote stale nodes to offline\n";
+    } else {
+        echo "  demoted {$demoted} stale nodes to offline\n";
+    }
+
     // 3. Reset stale running tasks (lease expired) back to pending for retry
     $countStale = (int) ($db->fetchOne(
         'SELECT COUNT(*) AS cnt FROM provision_tasks
