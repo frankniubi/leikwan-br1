@@ -286,6 +286,8 @@ This design **fixes the Windows symptom** ("no entry port") for any forward whos
 
 **Consequence for validation:** if Windows `bond_frontend` dials forward 47's slave ingress (`47.116.104.15:7000`) while that slave's onward `slave→sidecar` WG is still dead, the Windows listener will come up but end-to-end traffic will still fail. **Do not use forward 47 as the Phase-1 acceptance forward until its backend is repaired** — pick a forward with a known-healthy slave→sidecar path, or fix the backend first (separate work item: connect-target failover to the healthy CF/direct path + slave→sidecar WG watchdog).
 
+The concrete remediation plan for the slave→sidecar backend (including the 2026-05-31 slave→Tokyo CF-WSTUNNEL breakage) is **Appendix A**. It is Linux work, out of scope for the Windows release gates (§§15–16), but a prerequisite for selecting a backend-healthy acceptance forward (Gate C).
+
 This document does not change Linux behavior (§4).
 
 ---
@@ -393,3 +395,83 @@ Adopt the Windows simplification as specified, with explicit gates:
 - Linux owns all backend transport; `slave → sidecar` stays WireGuard.
 - Start with client-side projection (Phase 1), but do not ship until token semantics, capability/provisioning semantics, transport scope, and canary validation are all explicitly closed.
 - Then harden with an explicit panel `windows_frontend` contract and remove the active Windows MPTCP path (Phase 2).
+
+---
+
+## Appendix A — Linux backend remediation plan: slave → sidecar (Tokyo CF-WSTUNNEL)
+
+**Status:** Linux backend work. **Out of scope** for the Windows release gates (§§15–16), but a **prerequisite** for picking a backend-healthy acceptance forward (§13, Gate C). Windows `bond_frontend` cannot be validated end-to-end against a Tokyo (sidecar point 5) forward until at least one point-5 backend path is healthy.
+
+### A.1 Observed failure (2026-05-31)
+
+Investigated on **slave3 = `150.158.103.182`** (node20, hostname `VM-0-11-debian`; reached via the `sh36` domestic hop). Symptom: **no active WSTUNNEL(CF-IP) connection to the Tokyo sidecar (point 5)**.
+
+Evidence chain:
+- `/etc/wireguard/lws5c1n20p.conf` and `lws5c1n20b.conf` **do not exist** → `wg-quick@lws5c1n20{p,b}.service` **fail-loop every ~60 s** (`wg-quick: '/etc/wireguard/lws5c1n20p.conf' does not exist`).
+- The point-5 WG lanes therefore **never come up**: absent from `wg show`; overlay addrs `10.240.190.233/237` unassigned anywhere.
+- **No CF carrier** exists: no `wstunnel client` process and no carrier unit dialing a Cloudflare IP for point 5 (only the selector `wstunnel-svc-9-1772-udp-uot` runs).
+- The point-5 selector consequently reports **both lanes `healthy:false, loss 100%`**; the only TCP to Tokyo `:2053` seen is a stray `TIME-WAIT` (opened→closed, never ESTAB).
+- **Network is healthy / not the blocker:** CF edge `162.159.39.5` ping 31 ms / 0%; Tokyo `185.220.238.143:2053` TCP connect OK. Direct Tokyo WG `:14973` is unreachable and direct ICMP to Tokyo is 50% loss — i.e., the CF-WSTUNNEL path is *required*; direct WG cannot substitute.
+- **Contributing slave-agent reconcile faults:** 9 sidecar-uplink selectors share `selector_port` **45638** → `EADDRINUSE` crash-loop (~26,000 restarts); a large backlog of failed `leikwan-slave-update-*` units.
+- **Cross-slave contrast:** on node13 (`47.116.104.15`) the `lws5` lanes *were* up but had a dead return path (`lwsc13` → `185.220.238.143:14973` showed **sent 16 MiB / received 0**). Same failure family, different manifestation.
+- The same slave's **CNIX/HK uplinks** (`lws4*` → `138.252.162.120`) are **healthy** (22–29 ms, 0% loss, 71 MiB moved) — so the host and domestic network are fine; only the point-5/Tokyo CF provisioning is broken.
+
+### A.2 Root cause
+
+The slave-agent's reconcile **materializes control scaffolding without the data plane**: it created/enabled the `wg-quick@lws5*` systemd units and the selector config, but **never wrote the WireGuard `.conf` files nor the CF/wstunnel carrier**. It also **allocates colliding `selector_port`s**. The result is a permanently half-provisioned point-5 uplink that can never establish.
+
+### A.3 Fix plan (ordered)
+
+**Phase L0 — stop the bleeding (per-slave, reversible, no code):**
+1. `systemctl reset-failed` to clear the failed `leikwan-slave-update-*` backlog so the unit list/journal is legible and updates can re-run cleanly.
+2. Either let the agent regenerate (L1) or temporarily stop the fail-looping `wg-quick@lws5*` units so they aren't retrying every 60 s while the real fix lands. (Do not "fix" by hand-writing confs — that masks the reconcile bug.)
+
+**Phase L1 — slave-agent reconcile correctness (`slave-agent/slave_agent.py`):**
+1. **Atomic uplink provisioning:** before enabling/starting `wg-quick@<iface>` for a sidecar uplink, the agent MUST first write `/etc/wireguard/<iface>.conf` **and** create the CF/wstunnel carrier (the `wstunnel client` that maps the WG `Endpoint = 127.0.0.1:<localport>` over the selected CF IP/path). Never enable a `wg-quick@` unit whose `.conf` is absent.
+2. **Self-heal guard:** on every reconcile, if a `wg-quick@<iface>` unit is enabled but its `.conf` is missing (or the carrier is absent), regenerate the missing artifact (or tear down the orphan unit) and log it loudly. This converts the silent 60-s fail-loop into a healed state.
+3. **Unique `selector_port` allocation:** assign a stable, unique selector port per sidecar-uplink service (derive deterministically from `forward_id`/`endpoint_id`, mirroring `stableSidecarLegPort()` for WG ports). Assert no two enabled services share a `selector_port`. This removes the shared-`45638` `EADDRINUSE` crash-loop.
+4. **Idempotent warm reconcile:** republishing identical desired state must not tear down/recreate the WG interface or carrier (project invariant: republish is idempotent).
+
+**Phase L2 — Tokyo sidecar side (point 5, `185.220.238.143`; reach via `root@cn2.dmt.mcbar.cc:2125` jump if direct SSH is slow):**
+1. Confirm the CF/wstunnel backend mux on `:2053` is up and routes the published path-prefix to the sidecar WG backend (`:1498x`).
+2. Confirm the sidecar WG peer for the slave (node20 / node13) has the correct public key and `AllowedIPs`, **including the return route to the slave overlay** — this is the node13 "sent 16 MiB / received 0" return-path failure to rule out.
+3. Confirm the `slave → sidecar always WireGuard` invariant holds and the CF presentation maps onto the WG backend.
+
+**Phase L3 — verification (per fixed slave):**
+1. `wg show lws5c1n20{p,b}` shows a **fresh handshake (<2 min)** and **bidirectional** transfer (`rx>0` and `tx>0`).
+2. Selector state shows both lanes `healthy:true, loss 0%`.
+3. No `wg-quick@lws5*` failures; no `EADDRINUSE` selector crashes; failed-update backlog cleared.
+4. **End-to-end:** a point-5 (Tokyo) forward carries real traffic (iperf3 through the forward's client listener). Passing this makes that forward a valid **Gate-C** canary for the Windows `bond_frontend` acceptance (§14.2).
+
+### A.4 Related forward-47 backend items (same remediation family)
+
+Per §13, the forward-47 backend break is adjacent and should be addressed in the same pass:
+- **connect-target failover:** the relay must fail over from a dead slave-preconnect target to the healthy CF/direct path instead of pinning to the dead one;
+- **slave→sidecar WG watchdog:** detect a stale/one-way WG session (handshake present but `rx==0`, or 100% overlay-ping loss) and restart the lane/carrier — the existing `leikwan-wg-watchdog` was observed **inactive/dead** on the affected slaves and must be enabled and extended to cover these lanes.
+
+### A.5 Relationship to the Windows release
+
+Gate C (§15) requires a **named backend-healthy forward**. Until at least one point-5 path is repaired per this appendix (or a non-Tokyo backend-healthy forward is selected), the Windows `bond_frontend` end-to-end acceptance must not use a Tokyo forward. This appendix is the prerequisite that makes a Tokyo forward eligible.
+
+### A.6 Panel-side automation fixes (republish / uplink-selector allocation)
+
+The slave-agent reconcile faults (A.3) are aggravated by two control-plane issues in `master/`. These are **panel automation fixes** and should land with the backend remediation.
+
+**A.6.1 `selector_port` collision — confirmed bug.**
+`ProvisioningService::staticSidecarUplinkSelectorPayload()` (`master/src/Support/ProvisioningService.php`, ≈ line 5663) computes:
+```php
+$selectorPort = 45000 + abs((($firstPointId * 1009) + ($firstCombinationId * 131) + ($firstNodeId * 17)) % 1000);
+```
+The port is derived only from the **first** uplink's `(sidecar_point_id, forward_combination_id, node_id)`. Every published uplink-selector service that shares that tuple on a node therefore receives the **same** `selector_port`, and since the slave-agent runs each selector as a separate process binding `127.0.0.1:<selector_port>`, they collide → `EADDRINUSE` crash-loop (observed on node20: 9 services pinned to `45638`, ~26,000 restarts). `% 1000` also invites birthday collisions at scale.
+
+*Fix:* allocate a `selector_port` that is **unique per published selector service** (fold the service/forward/endpoint identity into the hash, not just the lane tuple), and **assert no duplicate `selector_port` within a node's published task set before emitting** (fail the publish loudly instead of shipping a collision). Widen the range and/or use the deterministic-but-collision-checked scheme already used for WG ports (`stableSidecarLegPort()`). If the intent is one shared selector per `(point, combination, node)` lane, the panel must emit exactly **one** selector service for that lane (and the agent run one), never N services on one port.
+
+**A.6.2 Republish converges on desired state but never detects non-convergence (drift) — hardening.**
+Republish itself is not starved: the node/slave path republishes on nearly every heartbeat (`NodeController::heartbeat` → `reconcileActiveForwardsForGroup` + `republishActiveEndpointsForNode`), and the sidecar path gates on a WG fingerprint with a 600 s force-interval safety net (`SidecarAgentController`). The gap is that republish **re-queues the same desired state with no convergence check**: when a slave is half-provisioned (e.g. `wg-quick@lws5*` fail-looping because its `.conf` was never written), the panel keeps publishing identical tasks the agent never applies, with no escalation; a slave that cannot pull at all (observed: node13 `failed to pull tasks/heartbeat: read operation timed out`) is likewise never surfaced.
+
+*Fix (automation):*
+1. **Drift-triggered force-republish** — when a node heartbeat reports an assigned uplink lane unhealthy / interface missing / handshake stale (surface the lane health the agent already computes), force a republish of that node's tasks regardless of the fingerprint gate.
+2. **Non-convergence escalation** — track, per `(node, forward/endpoint)`, consecutive republishes without the slave reporting that lane healthy; past a threshold raise an operational alarm (admin dashboard + log) instead of silently re-queueing forever.
+3. **Delivery-failure visibility** — mark a node whose task-pull/heartbeat has failed for > N intervals as `degraded` so operators see the stuck node and republish isn't aimed at an unreachable agent.
+
+These preserve `republish` idempotency (A.3 L1.4) while ensuring a slave that fails to converge is **detected and escalated**, not left in a permanent silent fail-loop.
