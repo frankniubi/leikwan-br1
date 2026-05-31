@@ -245,6 +245,22 @@ try {
         echo "  would purge {$countHeartbeats} old heartbeat rows (>24h)\n";
     }
 
+    // 9. Purge old bond leg reputation events (batched to avoid long locks)
+    $countRepEvents = (int) ($db->fetchOne(
+        'SELECT COUNT(*) AS cnt FROM bond_leg_reputation_events WHERE observed_at < :cutoff',
+        ['cutoff' => $retentionCutoff]
+    )['cnt'] ?? 0);
+
+    if (!$dryRun && $countRepEvents > 0) {
+        $deletedRepEvents = $db->execute(
+            'DELETE FROM bond_leg_reputation_events WHERE observed_at < :cutoff LIMIT 10000',
+            ['cutoff' => $retentionCutoff]
+        );
+        echo "  purged {$deletedRepEvents} old bond leg reputation events (>{$retentionDays}d)\n";
+    } else {
+        echo "  would purge {$countRepEvents} old bond leg reputation events (>{$retentionDays}d)\n";
+    }
+
     // Summary: show remaining queue depth
     $remaining = $db->fetchOne(
         'SELECT COUNT(*) AS cnt FROM provision_tasks WHERE status IN (:s1, :s2)',
