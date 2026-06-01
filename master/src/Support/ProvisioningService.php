@@ -5914,6 +5914,12 @@ final class ProvisioningService
      */
     private function staticSidecarUplinkSelectorPayload(array $uplinks, int $sidecarServicePort, int $forwardId, int $endpointId): array
     {
+        // Emergency relief valve: when STATIC_SIDECAR_SELECTOR_ENABLED is false, emit no selector at
+        // all. On the next reconcile each agent then calls remove_sidecar_uplink_selector and tears the
+        // selector services down fleet-wide. Default TRUE preserves the current behavior.
+        if (!$this->config->getBool('STATIC_SIDECAR_SELECTOR_ENABLED', true)) {
+            return [];
+        }
         if ($sidecarServicePort <= 0 || $uplinks === []) {
             return [];
         }
