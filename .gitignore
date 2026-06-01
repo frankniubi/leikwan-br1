@@ -73,3 +73,6 @@ node_modules/
 *.bak
 *.bak-*
 /artifacts/windows/_manual_install_stage/
+
+# Large Windows installer build artifact (served via deploy; >100MB, not tracked)
+artifacts/windows/leikwan-bridge-setup.exe
