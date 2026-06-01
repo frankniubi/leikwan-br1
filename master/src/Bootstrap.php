@@ -228,6 +228,7 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('POST', '/api/client/diagnostics/result', [$clientAgent, 'diagnosticsResult']);
         $this->router->add('POST', '/api/sidecar/heartbeat', [$sidecarAgent, 'heartbeat']);
 
+        $this->router->add('GET', '/artifacts/versions.json', [$artifacts, 'versionsManifest']);
         $this->router->add('GET', '/artifacts/slave-agent.py', [$artifacts, 'slaveAgent']);
         $this->router->add('GET', '/artifacts/leikwan-preconnect-relay.py', [$artifacts, 'slavePreconnectRelay']);
         $this->router->add('GET', '/artifacts/slave-manifest.json', [$artifacts, 'slaveManifest']);

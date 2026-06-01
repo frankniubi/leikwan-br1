@@ -114,6 +114,21 @@ try {
         echo "  finalized {$endpointFinalize['deleted']} endpoints (deleting->deleted) and {$endpointFinalize['errored']} endpoints (pending->error) on offline nodes\n";
     }
 
+    // 2b-2. Finalize flap-artifact endpoints stuck in 'deleting' on LIVE nodes: either a newer
+    //       active/pending endpoint exists for the same (forward_id,node_id) (duplicate) or the
+    //       endpoint's most recent destroy task already completed. Conservative; never races an
+    //       in-flight teardown.
+    $deletingFinalize = \Leikwan\Master\Support\TaskCleanup::finalizeStaleDeletingEndpoints(
+        $db,
+        $now,
+        $dryRun
+    );
+    if ($dryRun) {
+        echo "  would finalize flap-artifact 'deleting' endpoints (redundant duplicates or completed-destroy)\n";
+    } else {
+        echo "  finalized {$deletingFinalize['deleted']} flap-artifact 'deleting' endpoints (deleting->deleted)\n";
+    }
+
     // 2c. Demote nodes whose last heartbeat is older than the offline threshold so dead
     //     nodes stop showing as "active". Re-promotion happens on the next heartbeat.
     $demoted = \Leikwan\Master\Support\TaskCleanup::demoteStaleNodes($db, $offlineCutoff, $now, $dryRun);

@@ -84,6 +84,124 @@ final class TaskCleanup
     }
 
     /**
+     * Finalize service_endpoints stuck in 'deleting' that are FLAP ARTIFACTS, draining the
+     * accumulated backlog (e.g. ~1733 endpoints left in 'deleting'). This is independent of the
+     * offline-node path: these rows are on live nodes whose destroy already completed, or are
+     * duplicate rows superseded by a newer endpoint.
+     *
+     * Conservative finalization (deleting -> deleted) ONLY when:
+     *   (a) there is another service_endpoints row for the same (forward_id, node_id) that is
+     *       active or pending -- so this 'deleting' row is provably redundant; OR
+     *   (b) the endpoint's most recent destroy provision_task is 'completed'.
+     *
+     * A lone 'deleting' endpoint whose destroy task is still pending/running (or which has no
+     * destroy task and no active/pending sibling) is LEFT untouched so we never race an in-flight
+     * teardown. Dry-run aware like the sibling finalize methods.
+     *
+     * @return array{deleted:int} rows transitioned (0 on dry run)
+     */
+    public static function finalizeStaleDeletingEndpoints(
+        Database $db,
+        string $now,
+        bool $dryRun
+    ): array {
+        $candidates = $db->fetchAll(
+            'SELECT id, forward_id, node_id
+             FROM service_endpoints
+             WHERE health_status = :status
+             ORDER BY id ASC',
+            ['status' => 'deleting']
+        );
+
+        $finalized = 0;
+        foreach ($candidates as $candidate) {
+            $endpointId = (int) ($candidate['id'] ?? 0);
+            $forwardId = (int) ($candidate['forward_id'] ?? 0);
+            $nodeId = (int) ($candidate['node_id'] ?? 0);
+            if ($endpointId <= 0) {
+                continue;
+            }
+
+            $shouldFinalize = false;
+
+            // (a) Provably redundant: a sibling active/pending endpoint exists for this
+            //     (forward_id, node_id), so the 'deleting' row is a leftover flap artifact.
+            $siblingCount = (int) ($db->fetchOne(
+                'SELECT COUNT(*) AS cnt FROM service_endpoints
+                 WHERE forward_id = :forward_id
+                   AND node_id = :node_id
+                   AND id <> :id
+                   AND health_status IN (:active, :pending)',
+                [
+                    'forward_id' => $forwardId,
+                    'node_id' => $nodeId,
+                    'id' => $endpointId,
+                    'active' => 'active',
+                    'pending' => 'pending',
+                ]
+            )['cnt'] ?? 0);
+            if ($siblingCount > 0) {
+                $shouldFinalize = true;
+            }
+
+            // (b) Most recent destroy task GENUINELY executed by the agent and completed:
+            //     teardown is done, the row is safe to terminalize. We require attempt_count > 0
+            //     AND a result that is not a collapse-supersession, because
+            //     collapsePendingProvisionTasksForNode marks a *pending* destroy 'completed' with a
+            //     'superseded_by_new_publish_task' note WITHOUT the slave ever running the teardown.
+            //     Trusting a bare 'completed' would let such a tombstone finalize an endpoint whose
+            //     slave-side listener/selector was never torn down -> orphaned config. Requiring a
+            //     real agent ack (attempt_count > 0) + non-superseded result makes guard (b) safe by
+            //     design, not by accident.
+            if (!$shouldFinalize) {
+                $latestDestroy = $db->fetchOne(
+                    'SELECT status, attempt_count, result_json FROM provision_tasks
+                     WHERE endpoint_id = :endpoint_id
+                       AND action = :action
+                     ORDER BY id DESC
+                     LIMIT 1',
+                    ['endpoint_id' => $endpointId, 'action' => 'destroy']
+                );
+                if (is_array($latestDestroy)
+                    && (string) ($latestDestroy['status'] ?? '') === 'completed'
+                    && (int) ($latestDestroy['attempt_count'] ?? 0) > 0
+                    && !str_contains((string) ($latestDestroy['result_json'] ?? ''), 'superseded')
+                ) {
+                    $shouldFinalize = true;
+                }
+            }
+
+            if (!$shouldFinalize) {
+                continue;
+            }
+
+            if ($dryRun) {
+                $finalized++;
+                continue;
+            }
+
+            $finalized += $db->execute(
+                'UPDATE service_endpoints
+                 SET health_status = :new_status,
+                     updated_at = :now
+                 WHERE id = :id AND health_status = :old_status',
+                [
+                    'new_status' => 'deleted',
+                    'now' => $now,
+                    'id' => $endpointId,
+                    'old_status' => 'deleting',
+                ]
+            );
+        }
+
+        if ($dryRun) {
+            return ['deleted' => 0];
+        }
+
+        return ['deleted' => $finalized];
+    }
+
+    /**
      * Demote nodes whose last heartbeat is older than the offline threshold.
      * The heartbeat path keeps last_heartbeat_at fresh but never flips a node
      * back to "offline" when it stops reporting, so dead nodes used to linger

@@ -113,6 +113,48 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('api-default.html', 'text/html; charset=utf-8');
     }
 
+    /**
+     * Serve the AUTHORITATIVE artifact manifest at GET /artifacts/versions.json.
+     *
+     * The static master/public/artifacts/versions.json file historically drifted from the routed
+     * binaries (it advertised a stale slave_agent sha while the served binary had moved on). This route
+     * reads the top-level artifacts/versions.json and, for every entry that has a 'path', recomputes
+     * sha256 + size from the actual file -- mirroring BaseController::artifactMetadata's per-entry
+     * normalization. The served manifest therefore ALWAYS matches what artifactMetadata advertises and
+     * the routed binaries, eliminating manifest/binary divergence for installer flows that fetch the URL.
+     */
+    public function versionsManifest(Request $request, array $params): Response
+    {
+        $repoRoot = dirname(__DIR__, 3);
+        $manifest = [];
+        foreach ($this->versions() as $key => $entry) {
+            if (!is_array($entry)) {
+                $manifest[$key] = $entry;
+                continue;
+            }
+            $normalized = $entry;
+            if (isset($normalized['path']) && is_string($normalized['path']) && $normalized['path'] !== '') {
+                $absolute = $repoRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $normalized['path']);
+                if (is_file($absolute)) {
+                    $sha = hash_file('sha256', $absolute);
+                    $size = filesize($absolute);
+                    $normalized['sha256'] = $sha;
+                    $normalized['size_bytes'] = $size;
+                    // Some consumers read the legacy 'size' alias; keep it consistent when present.
+                    if (array_key_exists('size', $normalized)) {
+                        $normalized['size'] = $size;
+                    }
+                }
+            }
+            $manifest[$key] = $normalized;
+        }
+
+        return new Response(200, [
+            'Content-Type' => 'application/json; charset=utf-8',
+            'Cache-Control' => 'public, max-age=60',
+        ], (string) json_encode($manifest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+    }
+
     public function clientAgent(Request $request, array $params): Response
     {
         return $this->serveRepoFile('client-agent/client_agent.py', 'text/x-python; charset=utf-8');
