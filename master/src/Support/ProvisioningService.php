@@ -34,6 +34,13 @@ final class ProvisioningService
     private array $staticSidecarSubnetRegistry = [];
     /** @var array<string, bool> */
     private array $staticSidecarUndersizeReported = [];
+    /**
+     * FIX B: memoized combination_id -> sidecar_point_id used by the per-node collision-free selector
+     * port allocator to reproduce each non-target endpoint's deterministic hash bucket.
+     *
+     * @var array<int, int>
+     */
+    private array $sidecarPointIdByCombination = [];
 
     public function __construct(
         private Config $config,
@@ -4611,6 +4618,55 @@ final class ProvisioningService
         );
     }
 
+    /**
+     * FIX A: is there already a viable publish task the agent can pull for this
+     * (node_id, action='publish', forward_id, endpoint_id)?
+     *
+     * Viable = a 'pending' row, OR a 'running' row whose lease is still in the future. A 'pending'
+     * row that is OLDER than QUEUE_TASK_RESTALE_SECONDS (default 300s) is treated as NON-viable so a
+     * genuinely stuck / never-pulled task is allowed to be re-queued (staleness escape). When a
+     * viable task already exists we skip re-queueing an unconverged endpoint, so an unconverged
+     * endpoint carries at most ONE stable queued publish task instead of a fresh-superseded task
+     * every heartbeat.
+     */
+    private function hasViablePublishTask(int $nodeId, int $serviceId, int $forwardId, int $endpointId): bool
+    {
+        if ($nodeId <= 0 || $forwardId <= 0 || $endpointId <= 0) {
+            return false;
+        }
+
+        $restaleSeconds = max(0, (int) ($this->config->getInt('QUEUE_TASK_RESTALE_SECONDS', 300) ?? 300));
+        $now = $this->now();
+        $staleCutoff = gmdate('Y-m-d H:i:s', time() - $restaleSeconds);
+
+        $row = $this->db->fetchOne(
+            "SELECT COUNT(*) AS viable
+             FROM provision_tasks
+             WHERE node_id = :node_id
+               AND action = :action
+               AND service_id = :service_id
+               AND forward_id = :forward_id
+               AND endpoint_id = :endpoint_id
+               AND (
+                     (status = :pending_status AND created_at > :stale_cutoff)
+                  OR (status = :running_status AND lease_expires_at IS NOT NULL AND lease_expires_at > :now)
+               )",
+            [
+                'node_id' => $nodeId,
+                'action' => 'publish',
+                'service_id' => $serviceId,
+                'forward_id' => $forwardId,
+                'endpoint_id' => $endpointId,
+                'pending_status' => 'pending',
+                'running_status' => 'running',
+                'stale_cutoff' => $staleCutoff,
+                'now' => $now,
+            ]
+        );
+
+        return is_array($row) && (int) ($row['viable'] ?? 0) > 0;
+    }
+
     private function normalizeMalformedRepublishFailure(int $nodeId, int $forwardId, int $serviceEndpointId): void
     {
         if ($nodeId <= 0 || $forwardId <= 0 || $serviceEndpointId <= 0 || $forwardId === $serviceEndpointId) {
@@ -5563,7 +5619,18 @@ final class ProvisioningService
             // fingerprint we published for it. Unchanged active endpoints are left untouched so
             // we do not re-queue tasks on every reconcile cycle.
             $drifted = $this->endpointDesiredPayloadDrifted($endpointId, $fingerprint);
-            if ($isUnconverged || $drifted) {
+            // FIX A: an unconverged (pending|error|degraded) endpoint must NOT be re-published every
+            // heartbeat. queueTask -> collapsePendingProvisionTasksForNode supersedes the prior pending
+            // task, so a naive per-heartbeat re-queue created+superseded a fresh task every cycle and
+            // (with oldest-first LIMIT pulls) it was buried/superseded before any agent claimed it ->
+            // task-churn livelock. Only re-queue the unconverged case when there is NOT already a viable
+            // task the agent can pull (a pending row, or a running row with a future lease), with a
+            // staleness escape so a genuinely stuck pending task is eventually retried. The DRIFT path
+            // for ACTIVE endpoints is preserved exactly as-is (it must always re-publish on a payload
+            // change), and it is the agent-pull idempotency, not drift, that we are de-churning here.
+            $unconvergedShouldQueue = $isUnconverged
+                && !$this->hasViablePublishTask($nodeId, (int) ($forward['service_id'] ?? 0), $forwardId, $endpointId);
+            if ($unconvergedShouldQueue || $drifted) {
                 $this->queueTask($nodeId, 'publish', (int) ($forward['service_id'] ?? 0), $forwardId, $endpointId, $payload);
                 $this->storeEndpointDesiredPayloadFingerprint($endpointId, $fingerprint);
             }
@@ -5898,7 +5965,7 @@ final class ProvisioningService
             }
         }
 
-        $selectorPort = $this->stableSidecarSelectorPort($firstPointId, $firstCombinationId, $firstNodeId, $forwardId, $endpointId);
+        $selectorPort = $this->collisionFreeSidecarSelectorPort($firstNodeId, $firstPointId, $firstCombinationId, $forwardId, $endpointId);
         return [
             'enabled' => true,
             'strategy' => 'wg_allowed_ip_ping',
@@ -6241,7 +6308,12 @@ final class ProvisioningService
         }
 
         $sql .= $this->nodeSelectionFreshnessSql($params);
-        $sql .= ' ORDER BY n.current_load ASC, n.last_heartbeat_at DESC, n.id ASC LIMIT ' . max(1, $count);
+        // FIX C: order the LIMIT-bounded candidate window by current_load ASC then node_id ASC. Stale
+        // nodes are already excluded by nodeSelectionFreshnessSql(), so among fresh equal-load nodes the
+        // previous last_heartbeat_at DESC tie-break only injected volatility: it changed every heartbeat
+        // and flipped which equal-load node fell inside the LIMIT window, churning endpoint membership.
+        // node_id ASC is an immutable tie-break, so the selected window is deterministic across reconciles.
+        $sql .= ' ORDER BY n.current_load ASC, n.id ASC LIMIT ' . max(1, $count);
         return $this->db->fetchAll($sql, $params);
     }
 
@@ -6470,12 +6542,21 @@ final class ProvisioningService
             }
         }
 
+        // FIX C: stable, deterministic ordering. current_load is the primary signal, but
+        // last_heartbeat_at is a VOLATILE column that changes on every heartbeat. The previous
+        // sorter tie-broke equal-load nodes by last_heartbeat_at DESC, so two equal-load nodes
+        // flipped relative order across reconciles -> the desired-node set (hence endpoint
+        // membership) was non-deterministic -> endpoints flapped pending<->deleting and task
+        // churn compounded. Tie-break equal-load nodes by node_id ASC (a stable, immutable key)
+        // instead so the selected set + order is reproducible given unchanged membership inputs
+        // even when the heartbeat timestamps drift. (Load remains the real selection signal; the
+        // tie-break only governs which equal-load node wins, which must not flap on noise.)
         $sorter = static function (array $left, array $right): int {
             $loadCmp = ((int) $left['current_load']) <=> ((int) $right['current_load']);
             if ($loadCmp !== 0) {
                 return $loadCmp;
             }
-            return strcmp((string) ($right['last_heartbeat_at'] ?? ''), (string) ($left['last_heartbeat_at'] ?? ''));
+            return ((int) ($left['id'] ?? 0)) <=> ((int) ($right['id'] ?? 0));
         };
 
         $orderedPrimary = array_values($primary);
@@ -7561,8 +7642,124 @@ final class ProvisioningService
     {
         $rangeStart = max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_PORT_RANGE_START', 45000) ?? 45000));
         $rangeSize = max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_PORT_RANGE_SIZE', 5000) ?? 5000));
-        $stableIndex = abs((($pointId * 1009) + ($combinationId * 131) + ($nodeId * 17) + ($forwardId * 257) + ($endpointId * 65537)) % $rangeSize);
+        $stableIndex = abs($this->sidecarSelectorPortSeed($pointId, $combinationId, $nodeId, $forwardId, $endpointId) % $rangeSize);
         return $rangeStart + $stableIndex;
+    }
+
+    /**
+     * FIX B: the hash bucket seed for a selector's loopback port. Kept identical to the original
+     * stableSidecarSelectorPort formula so the collision-free allocator starts each endpoint at the
+     * SAME deterministic bucket it used before; only the post-collision probe-forward differs.
+     */
+    private function sidecarSelectorPortSeed(int $pointId, int $combinationId, int $nodeId, int $forwardId, int $endpointId): int
+    {
+        return ($pointId * 1009) + ($combinationId * 131) + ($nodeId * 17) + ($forwardId * 257) + ($endpointId * 65537);
+    }
+
+    /**
+     * FIX B: DETERMINISTIC, per-node COLLISION-FREE selector loopback-port allocation.
+     *
+     * The slave runs one selector systemd unit per (service_id, endpoint_id), each binding
+     * 127.0.0.1:<port>. The previous naive hash (45000 + seed % 5000) had NO collision check, so two
+     * different (forward, endpoint) selectors on the same node could hash to the SAME port; the agent
+     * crashed on EADDRINUSE and systemd Restart=on-failure crash-looped (14,972 restarts/30min).
+     *
+     * This enumerates ALL selector-bearing endpoints on the node in a STABLE order (endpoint_id ASC),
+     * assigns each a port via probeFreeSlotInSubrange (which starts at the endpoint's deterministic
+     * hash bucket and walks forward, skipping ports already assigned to OTHER endpoints on this node),
+     * and returns the port for the target endpoint. Because the input set + order are stable and the
+     * probe is deterministic, a republish reproduces the same port for the same endpoint (no gratuitous
+     * selector restarts). If the target endpoint is not yet persisted / not enumerated (e.g. a brand-new
+     * endpoint), it is allocated against the assigned-set built from the node's other endpoints so it
+     * still avoids known collisions.
+     */
+    private function collisionFreeSidecarSelectorPort(int $nodeId, int $pointId, int $combinationId, int $forwardId, int $endpointId): int
+    {
+        $rangeStart = max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_PORT_RANGE_START', 45000) ?? 45000));
+        $rangeSize = max(1, (int) ($this->config->getInt('STATIC_SIDECAR_SELECTOR_PORT_RANGE_SIZE', 5000) ?? 5000));
+
+        // Over-approximation per the plan: every non-deleted/non-deleting endpoint on this node whose
+        // forward has a forward_combination_id is treated as selector-bearing. Over-reserving ports is
+        // safe (it can only push a port further along the probe, never cause a collision).
+        $endpoints = $nodeId > 0
+            ? $this->db->fetchAll(
+                "SELECT se.id AS endpoint_id, se.forward_id AS forward_id, f.forward_combination_id AS forward_combination_id
+                 FROM service_endpoints se
+                 INNER JOIN forwards f ON f.id = se.forward_id
+                 WHERE se.node_id = :node_id
+                   AND se.health_status <> :deleted
+                   AND se.health_status <> :deleting
+                   AND f.forward_combination_id IS NOT NULL
+                 ORDER BY se.id ASC",
+                [
+                    'node_id' => $nodeId,
+                    'deleted' => 'deleted',
+                    'deleting' => 'deleting',
+                ]
+            )
+            : [];
+
+        $assigned = [];
+        $targetPort = 0;
+        $sawTarget = false;
+        foreach ($endpoints as $row) {
+            $rowEndpointId = (int) ($row['endpoint_id'] ?? 0);
+            $rowForwardId = (int) ($row['forward_id'] ?? 0);
+            $rowCombinationId = (int) ($row['forward_combination_id'] ?? 0);
+            if ($rowEndpointId <= 0) {
+                continue;
+            }
+            // The target endpoint uses the caller's resolved point/combination (its selector payload is
+            // being built right now); for every other endpoint we resolve its own point from its
+            // combination so its bucket matches what it would compute for itself.
+            if ($rowEndpointId === $endpointId) {
+                $rowPointId = $pointId;
+                $rowCombinationId = $combinationId > 0 ? $combinationId : $rowCombinationId;
+            } else {
+                $rowPointId = $this->sidecarPointIdForCombination($rowCombinationId);
+            }
+            $seed = $this->sidecarSelectorPortSeed($rowPointId, $rowCombinationId, $nodeId, $rowForwardId, $rowEndpointId);
+            $port = $this->probeFreeSlotInSubrange($rangeStart, $rangeSize, $seed, $assigned);
+            if ($port <= 0) {
+                // Subrange exhausted: fall back to the bucket (matches legacy behavior) rather than 0.
+                $port = $rangeStart + abs($seed % $rangeSize);
+            }
+            $assigned[$port] = true;
+            if ($rowEndpointId === $endpointId) {
+                $targetPort = $port;
+                $sawTarget = true;
+            }
+        }
+
+        if ($sawTarget) {
+            return $targetPort;
+        }
+
+        // Target not enumerated (new/unpersisted endpoint): allocate it against the node's assigned set.
+        $seed = $this->sidecarSelectorPortSeed($pointId, $combinationId, $nodeId, $forwardId, $endpointId);
+        $port = $this->probeFreeSlotInSubrange($rangeStart, $rangeSize, $seed, $assigned);
+        if ($port <= 0) {
+            $port = $rangeStart + abs($seed % $rangeSize);
+        }
+        return $port;
+    }
+
+    /**
+     * FIX B helper: resolve a forward combination's sidecar point id (memoized for the request) so the
+     * per-node collision-free allocator can reproduce each non-target endpoint's hash bucket.
+     */
+    private function sidecarPointIdForCombination(int $combinationId): int
+    {
+        if ($combinationId <= 0) {
+            return 0;
+        }
+        if (array_key_exists($combinationId, $this->sidecarPointIdByCombination)) {
+            return $this->sidecarPointIdByCombination[$combinationId];
+        }
+        $combination = $this->forwardCombinationById($combinationId);
+        $pointId = is_array($combination) ? (int) ($combination['sidecar_point_id'] ?? 0) : 0;
+        $this->sidecarPointIdByCombination[$combinationId] = $pointId;
+        return $pointId;
     }
 
     private function staticSidecarCombinationUsesCf(array $combination): bool
