@@ -3754,8 +3754,14 @@ final class ProvisioningService
                  FROM service_endpoints e
                  INNER JOIN nodes n ON n.id = e.node_id
                  WHERE e.forward_id = :forward_id
+                   AND e.health_status <> :deleted
+                   AND e.health_status <> :deleting
                  ORDER BY e.priority ASC, e.id ASC',
-                ['forward_id' => $forward['id']]
+                [
+                    'forward_id' => $forward['id'],
+                    'deleted' => 'deleted',
+                    'deleting' => 'deleting',
+                ]
             );
             foreach ($forward['endpoints'] as &$endpoint) {
                 $endpoint['public_host'] = $this->resolveEndpointPublicHost($endpoint);
@@ -5835,6 +5841,27 @@ final class ProvisioningService
      */
     private function staticSidecarUplinksForForwardNode(array $forward, array $node): array
     {
+        // Force direct-TCP to the sidecar (no WireGuard/UDP uplink) for forwards on
+        // UDP-hostile transit links (e.g. the HK CNIX line drops UDP but carries TCP
+        // fine). Listed forward IDs skip the static WG uplink + selector and fall
+        // through to resolveSidecarDirectTarget() = sidecar_host:bond_listen_port.
+        $directForwardIds = array_filter(array_map(
+            static fn($v): int => (int) trim((string) $v),
+            explode(',', (string) ($this->config->get('SIDECAR_DIRECT_TCP_FORWARD_IDS', '') ?? ''))
+        ));
+        if ($directForwardIds !== [] && in_array((int) ($forward['id'] ?? 0), $directForwardIds, true)) {
+            return [];
+        }
+        // Per-sidecar-point variant: every forward whose sidecar point is listed uses
+        // direct-TCP (e.g. the HK CNIX point), so existing + future forwards on that
+        // point are covered automatically without per-forward bookkeeping.
+        $directPointIds = array_filter(array_map(
+            static fn($v): int => (int) trim((string) $v),
+            explode(',', (string) ($this->config->get('SIDECAR_DIRECT_TCP_POINT_IDS', '') ?? ''))
+        ));
+        if ($directPointIds !== [] && in_array((int) ($forward['bond_sidecar_point_id'] ?? 0), $directPointIds, true)) {
+            return [];
+        }
         $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
         $nodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
         if ($combinationId <= 0 || $nodeId <= 0) {
@@ -8527,9 +8554,25 @@ final class ProvisioningService
             : null;
         $clientConfig = $this->decodeJsonAssoc($client['agent_config_json'] ?? null);
         $point = (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0
-            ? $this->db->fetchOne('SELECT agent_config_json, sidecar_host, listen_port, bond_listen_port, mptcp_listen_port FROM sidecar_points WHERE id = :id LIMIT 1', ['id' => (int) $forward['bond_sidecar_point_id']])
+            ? $this->db->fetchOne('SELECT agent_config_json, sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, token_secret FROM sidecar_points WHERE id = :id LIMIT 1', ['id' => (int) $forward['bond_sidecar_point_id']])
             : null;
         $sidecarConfig = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
+        // Slave pre-connect relay presents the session token to the sidecar on the
+        // client's behalf; it MUST be a valid signed token (else the sidecar rejects
+        // the handshake with "invalid token format: no dot separator"). Generate it
+        // here using the sidecar point's secret (same secret the sidecar validates with).
+        $uplinkTokenSecret = $this->bondTokenSecret(array_merge($forward, [
+            'bond_sidecar_point_token_secret' => trim((string) (is_array($point) ? ($point['token_secret'] ?? '') : '')),
+        ]));
+        ['issued_at' => $uplinkIssuedAt, 'expires_at' => $uplinkExpiresAt] = $this->bondTokenTimestamps();
+        $uplinkExistingTcpToken = trim((string) ($forward['tcp_session_token'] ?? $forward['session_token'] ?? ''));
+        $uplinkExistingUdpToken = trim((string) ($forward['udp_session_token'] ?? $forward['session_token'] ?? ''));
+        $uplinkTcpSessionToken = $uplinkExistingTcpToken !== ''
+            ? $uplinkExistingTcpToken
+            : $this->buildBondSessionToken($forward, $uplinkTokenSecret, $uplinkIssuedAt, $uplinkExpiresAt, 'tcp');
+        $uplinkUdpSessionToken = $uplinkExistingUdpToken !== ''
+            ? $uplinkExistingUdpToken
+            : $this->buildBondSessionToken($forward, $uplinkTokenSecret, $uplinkIssuedAt, $uplinkExpiresAt, 'udp');
 
         $clientPublicKey = trim((string) ($clientConfig['wireguard_public_key'] ?? ''));
         $sidecarPublicKey = trim((string) ($sidecarConfig['wireguard_public_key'] ?? ''));
@@ -8600,8 +8643,8 @@ final class ProvisioningService
             'slave_preconnect' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false),
             'preconnect_relay_port' => $this->stablePreconnectRelayPort($forwardId, $nodeId),
             'sidecar_mptcp_port' => (int) ($point['mptcp_listen_port'] ?? $point['bond_listen_port'] ?? $point['listen_port'] ?? 0),
-            'tcp_session_token' => trim((string) ($forward['tcp_session_token'] ?? $forward['session_token'] ?? '')),
-            'udp_session_token' => trim((string) ($forward['udp_session_token'] ?? $forward['session_token'] ?? '')),
+            'tcp_session_token' => $uplinkTcpSessionToken,
+            'udp_session_token' => $uplinkUdpSessionToken,
             'forward_id' => $forwardId,
         ];
     }
