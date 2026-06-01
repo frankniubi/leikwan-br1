@@ -98,6 +98,20 @@ try {
         echo "  would cancel {$countOffline} pending tasks for offline nodes\n";
     }
 
+    // 2a-2. FIX I: cancel OBSOLETE pending provision_tasks that bury the real publishes of live
+    //       forwards. A 'publish' onto a 'deleted'/'deleting' endpoint RESURRECTS it to 'active'
+    //       (NodeController::taskResult), which reconcile then re-deletes -> flap; a 'destroy' of an
+    //       already-'deleted' endpoint and any orphan-FK pending task are dead weight at the
+    //       oldest-first head of the queue. Cancelling these drains the backlog so agents reach the
+    //       newest real fwd publishes. Never touches active/pending endpoints or a 'deleting'
+    //       endpoint's destroy (the finalizer).
+    $obsolete = \Leikwan\Master\Support\TaskCleanup::cancelObsoletePendingTasks($db, $now, $dryRun);
+    if ($dryRun) {
+        echo "  would cancel {$obsolete['cancelled']} obsolete pending tasks (publish->deleted/deleting, destroy->deleted, orphan-FK)\n";
+    } else {
+        echo "  cancelled {$obsolete['cancelled']} obsolete pending tasks (resurrection-hazard publishes + dead destroys + orphan-FK)\n";
+    }
+
     // 2b. Finalize endpoints stranded on offline nodes (deleting -> deleted, pending -> error).
     //     A dead node never acks its destroy/publish tasks, so its endpoints otherwise stay
     //     stuck forever. Drive them to a terminal state.
@@ -127,6 +141,24 @@ try {
         echo "  would finalize flap-artifact 'deleting' endpoints (redundant duplicates or completed-destroy)\n";
     } else {
         echo "  finalized {$deletingFinalize['deleted']} flap-artifact 'deleting' endpoints (deleting->deleted)\n";
+    }
+
+    // 2b-3. FIX J: finalize ORPHANED 'deleting' endpoints whose destroy can never run because the
+    //       node is provably gone (missing/stale heartbeat) and which carry no live sibling -- e.g.
+    //       the aliyun fwd65 endpoints whose destroy tasks are queued to unreachable nodes. Finalize
+    //       deleting->deleted and cancel the lingering pending destroy. Conservative: skips fresh
+    //       nodes, running/completed destroys, and endpoints with a live sibling.
+    $orphanFinalize = \Leikwan\Master\Support\TaskCleanup::finalizeOrphanedDeletingEndpoints(
+        $db,
+        $offlineCutoff,
+        $now,
+        $offlineMinutes,
+        $dryRun
+    );
+    if ($dryRun) {
+        echo "  would finalize {$orphanFinalize['deleted']} orphaned 'deleting' endpoints + cancel {$orphanFinalize['cancelled']} unrunnable destroys (node gone, no live sibling)\n";
+    } else {
+        echo "  finalized {$orphanFinalize['deleted']} orphaned 'deleting' endpoints (deleting->deleted) and cancelled {$orphanFinalize['cancelled']} unrunnable destroy tasks\n";
     }
 
     // 2c. Demote nodes whose last heartbeat is older than the offline threshold so dead
