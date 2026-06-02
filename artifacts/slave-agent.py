@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.06.03.2"
+AGENT_VERSION = "2026.06.03.3"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -2555,6 +2555,7 @@ class SlaveAgent:
         if not self.sidecar_selector_candidate_interface_ready(interface_name):
             return {
                 "lane": lane,
+                "forward_combination_id": int(candidate.get("forward_combination_id", 0) or 0),
                 "interface_name": interface_name,
                 "ping_address": ping_address,
                 "sidecar_address": sidecar_address,
@@ -2587,6 +2588,7 @@ class SlaveAgent:
             score = float(latency) + (float(mdev or 0.0) * 2.0)
         return {
             "lane": lane,
+            "forward_combination_id": int(candidate.get("forward_combination_id", 0) or 0),
             "interface_name": interface_name,
             "ping_address": ping_address,
             "sidecar_address": sidecar_address,
@@ -2714,6 +2716,9 @@ class SlaveAgent:
         state: dict[str, Any] = {
             "active_lane": str(selected.get("lane", "") or ""),
             "active_interface": str(selected.get("interface_name", "") or ""),
+            # Forward Route racing: which basis (forward_combination) is currently live. Surfaced in the
+            # heartbeat so the panel can persist forwards.active_combination_id for admin observability.
+            "active_forward_combination_id": int(selected.get("forward_combination_id", 0) or 0),
             "active_target_host": active_target_host,
             "active_target_port": active_target_port,
             "switch_reason": reason,

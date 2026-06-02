@@ -207,6 +207,44 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
                 agent.apply_management_state({"leigod_session_json": "BLOB"}, schedule_updates=False)
         self.assertIn("BLOB", seen)
 
+    def test_selector_records_active_forward_combination_id(self):
+        agent = self.make_agent()
+        selector = {
+            "single_lane_monitor": False,
+            "sidecar_service_port": 9100,
+            "max_loss_percent": 0,
+            "ping_count": 1,
+            "ping_timeout_seconds": 1,
+            "switch_improvement_ms": 3,
+            "candidates": [
+                {"lane": "primary", "forward_combination_id": 10, "interface_name": "lws-cnix",
+                 "ping_interface": "lws-cnix", "ping_address": "10.0.0.2", "sidecar_address": "10.0.0.2", "sidecar_port": 9100},
+                {"lane": "backup", "forward_combination_id": 11, "interface_name": "lws-leig",
+                 "ping_interface": "lws-leig", "ping_address": "10.0.1.2", "sidecar_address": "10.0.1.2", "sidecar_port": 9100},
+            ],
+        }
+
+        def healthy_ping(command: str, check: bool = True):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="rtt min/avg/max/mdev = 1.000/2.000/3.000/0.500 ms\n5 packets transmitted, 5 received, 0% packet loss",
+                stderr="",
+            )
+
+        # Case 1: both bases healthy -> the active (first) candidate is recorded as live.
+        with mock.patch.object(slave_agent_module, "run_command", side_effect=healthy_ping):
+            with mock.patch.object(agent, "sidecar_selector_candidate_interface_ready", return_value=True):
+                state = agent.evaluate_sidecar_uplink_selector(selector, {})
+        self.assertEqual(10, state["active_forward_combination_id"])
+        self.assertEqual("10.0.0.2", state["active_target_host"])
+
+        # Case 2: the cnix basis is down (interface missing) -> selector fails over to leigod (id 11).
+        with mock.patch.object(slave_agent_module, "run_command", side_effect=healthy_ping):
+            with mock.patch.object(agent, "sidecar_selector_candidate_interface_ready", side_effect=lambda iface: iface == "lws-leig"):
+                state2 = agent.evaluate_sidecar_uplink_selector(selector, {})
+        self.assertEqual(11, state2["active_forward_combination_id"])
+        self.assertEqual("10.0.1.2", state2["active_target_host"])
+
     def test_wstunnel_udp_uplink_does_not_bind_wireguard_to_local_wstunnel_port(self):
         agent = self.make_agent()
         agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
