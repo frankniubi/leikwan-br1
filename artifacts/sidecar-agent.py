@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.06.02.2"
+AGENT_VERSION = "2026.06.03.4"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -369,6 +369,16 @@ class SidecarAgent:
                 logging.exception("slave-sidecar uplink %s skipped CF backend reconcile: %s", interface_name, exc)
         else:
             self.remove_sidecar_cf_wstunnel_backend(interface_name)
+        # LeiGod basis: terminate the slave's gost UDP-over-TCP carrier. The slave dials this gost
+        # SOCKS server through its LeiGod line; the server delivers the unwrapped UDP to the local WG
+        # ListenPort below, exactly like the legacy tcp/UoT server path.
+        gost_socks_listen_port = max(0, int(uplink.get("gost_socks_listen_port", 0) or 0))
+        socks_user = str(uplink.get("socks_user", "") or "").strip()
+        socks_pass = str(uplink.get("socks_pass", "") or "").strip()
+        if outer_transport == "leigod" and gost_socks_listen_port > 0 and listen_port > 0 and socks_user != "" and socks_pass != "":
+            self.ensure_sidecar_leigod_gost_server_service(interface_name, gost_socks_listen_port, socks_user, socks_pass)
+        else:
+            self.remove_sidecar_leigod_gost_server_service(interface_name)
         keepalive_line = f"PersistentKeepalive = {keepalive}\n" if keepalive > 0 else ""
         config = (
             "[Interface]\n"
@@ -410,6 +420,7 @@ class SidecarAgent:
             system_path.unlink()
         self.remove_sidecar_uot_server_service(interface_name)
         self.remove_sidecar_cf_wstunnel_backend(interface_name)
+        self.remove_sidecar_leigod_gost_server_service(interface_name)
 
     def restart_slave_sidecar_uplink(self, interface_name: str) -> None:
         iface = str(interface_name or "").strip()[:15]
@@ -511,6 +522,47 @@ WantedBy=multi-user.target
 
     def remove_sidecar_uot_server_service(self, interface_name: str) -> None:
         service_name = f"leikwan-uot-server-{interface_name}"
+        unit_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
+        if shutil.which("systemctl") is not None:
+            subprocess.run(["systemctl", "stop", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "disable", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+        if unit_path.exists():
+            unit_path.unlink()
+
+    def ensure_sidecar_leigod_gost_server_service(self, interface_name: str, listen_tcp_port: int, socks_user: str, socks_pass: str) -> None:
+        """gost UDP-over-TCP SOCKS server for the LeiGod basis (the SG-VM 'server' role).
+
+        The slave's gost client dials this over its LeiGod line; gost terminates the UoT framing and
+        delivers the unwrapped UDP to 127.0.0.1:<WG listen_port>. Must be gost (not leikwan-uot.py) so it
+        interoperates with the slave's gost UoT framing. The cloud security-group must allow inbound TCP
+        on listen_tcp_port -- the LeiGod line exit connects to it.
+        """
+        if listen_tcp_port <= 0 or socks_user == "" or socks_pass == "":
+            return
+        service_name = f"leikwan-leigod-gost-server-{interface_name}"
+        unit_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
+        body = f"""[Unit]
+Description=Leikwan LeiGod gost UoT Server {service_name}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gost -L socks5://{socks_user}:{socks_pass}@:{listen_tcp_port}?udp=true
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+        changed = write_text_if_changed(unit_path, body, mode=0o644)
+        if shutil.which("systemctl") is not None and changed:
+            subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "enable", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "restart", f"{service_name}.service"], text=True, capture_output=True, check=False)
+
+    def remove_sidecar_leigod_gost_server_service(self, interface_name: str) -> None:
+        service_name = f"leikwan-leigod-gost-server-{interface_name}"
         unit_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
         if shutil.which("systemctl") is not None:
             subprocess.run(["systemctl", "stop", f"{service_name}.service"], text=True, capture_output=True, check=False)
