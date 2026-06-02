@@ -221,6 +221,54 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
         self.assertEqual("162.159.39.16", service_args["args"][4])
         self.assertEqual("nrt.example.com", service_args["args"][6])
 
+    def test_wstunnel_udp_static_uplink_validates_cf_edge_with_real_probe_target(self):
+        # Regression for the CF-edge-selector blind-spot: an edge that 400s the routed
+        # lws-5-1-N websocket path passes the raw-socket probe (false 101) but fails a
+        # real wstunnel client. The slave-transit selection must therefore pass
+        # probe_target (= the real transit target) + validate_current so the selector
+        # validates the chosen edge with a real handshake and rotates off a 400 edge.
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        management = self.static_uplink_management(
+            outer_transport="wstunnel_udp",
+            sidecar_endpoint_host="127.0.0.1",
+            sidecar_endpoint_port=44499,
+            local_listen_port=44499,
+            local_wstunnel_udp_port=44499,
+            cf_target_host="127.0.0.1",
+            cf_target_port=14994,
+            cf_dial_host="185.220.238.143",
+            cf_dial_port=2053,
+            cf_sni_host="nrt.example.com",
+            cf_path_prefix="lws-5-1-19-p",
+            cf_mode={
+                "location_group_id": 7,
+                "cidrs": ["162.159.39.0/24"],
+                "probe_mode": "tcp",
+                "dial_port": 2053,
+            },
+        )
+
+        def fake_run(command: str, check: bool = True):
+            if command == "wg show lws4c2n19p latest-handshakes":
+                return SimpleNamespace(returncode=0, stdout="peer 999\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                        with mock.patch.object(agent, "write_text_if_changed", return_value=True):
+                            with mock.patch.object(agent, "select_cf_location_ip", return_value={"selected_ip": "162.159.39.16"}) as select_mock:
+                                with mock.patch.object(agent, "ensure_sidecar_wstunnel_udp_client_service"):
+                                    agent.apply_management_state(management)
+
+        select_mock.assert_called_once()
+        selection_mode = select_mock.call_args.args[0]
+        self.assertEqual("127.0.0.1:14994", selection_mode.get("probe_target"))
+        self.assertTrue(selection_mode.get("validate_current"))
+
     def test_static_uplink_start_falls_back_to_wg_quick_on_systemctl_timeout(self):
         agent = self.make_agent()
         agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
