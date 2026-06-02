@@ -6123,6 +6123,28 @@ final class ProvisioningService
         if ($directPointIds !== [] && in_array((int) ($forward['bond_sidecar_point_id'] ?? 0), $directPointIds, true)) {
             return [];
         }
+        // Forward Route racing: when the forward belongs to a race-ON route, emit ONE primary uplink
+        // per enabled route-combo (same sidecar, per B0/R2). The existing selector then races them and
+        // rewrites the active target. Falls through to the single-combo path otherwise.
+        $routeCombos = $this->enabledRouteCombinationsForForward($forward);
+        if (count($routeCombos) >= 2) {
+            $routeNodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
+            if ($routeNodeId <= 0) {
+                return [];
+            }
+            $routeUplinks = [];
+            foreach ($routeCombos as $routeCombo) {
+                $routeCombo = $this->hydrateCombinationSidecarFields($routeCombo, (int) ($forward['bond_sidecar_point_id'] ?? 0));
+                foreach ($this->buildStaticSidecarUplinkPairForNode($routeCombo, $node) as $lane) {
+                    if (($lane['slave']['lane'] ?? '') === 'primary') {
+                        $routeUplinks[] = $lane['slave'];
+                    }
+                }
+            }
+            if ($routeUplinks !== []) {
+                return array_values($routeUplinks);
+            }
+        }
         $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
         $nodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
         if ($combinationId <= 0 || $nodeId <= 0) {
@@ -6135,25 +6157,80 @@ final class ProvisioningService
         if ((int) ($combination['sidecar_point_id'] ?? 0) <= 0 && (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0) {
             $combination['sidecar_point_id'] = (int) $forward['bond_sidecar_point_id'];
         }
-        if (empty($combination['sidecar_host']) || empty($combination['sidecar_agent_config_json'])) {
-            $point = $this->db->fetchOne(
-                'SELECT sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, cf_listen_port, agent_config_json FROM sidecar_points WHERE id = :id LIMIT 1',
-                ['id' => (int) ($combination['sidecar_point_id'] ?? $forward['bond_sidecar_point_id'] ?? 0)]
-            );
-            if (is_array($point)) {
-                $combination['sidecar_host'] = (string) ($point['sidecar_host'] ?? '');
-                $combination['sidecar_listen_port'] = (int) ($point['listen_port'] ?? 0);
-                $combination['sidecar_bond_listen_port'] = (int) ($point['bond_listen_port'] ?? 0);
-                $combination['sidecar_mptcp_listen_port'] = (int) ($point['mptcp_listen_port'] ?? 0);
-                $combination['sidecar_cf_listen_port'] = (int) ($point['cf_listen_port'] ?? 0);
-                $combination['sidecar_agent_config_json'] = $point['agent_config_json'] ?? null;
-            }
-        }
+        $combination = $this->hydrateCombinationSidecarFields($combination, (int) ($forward['bond_sidecar_point_id'] ?? 0));
 
         return array_values(array_map(
             static fn(array $lane): array => $lane['slave'],
             $this->buildStaticSidecarUplinkPairForNode($combination, $node)
         ));
+    }
+
+    /**
+     * Fill a combination's sidecar_* fields (host, listen ports, agent config) from its sidecar_point
+     * when absent. Shared by the single-combo and the route-racing uplink builders.
+     */
+    private function hydrateCombinationSidecarFields(array $combination, int $fallbackPointId = 0): array
+    {
+        if (!empty($combination['sidecar_host']) && !empty($combination['sidecar_agent_config_json'])) {
+            return $combination;
+        }
+        $pointId = (int) ($combination['sidecar_point_id'] ?? 0);
+        if ($pointId <= 0) {
+            $pointId = $fallbackPointId;
+        }
+        if ($pointId <= 0) {
+            return $combination;
+        }
+        $point = $this->db->fetchOne(
+            'SELECT sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, cf_listen_port, agent_config_json FROM sidecar_points WHERE id = :id LIMIT 1',
+            ['id' => $pointId]
+        );
+        if (is_array($point)) {
+            $combination['sidecar_host'] = (string) ($point['sidecar_host'] ?? '');
+            $combination['sidecar_listen_port'] = (int) ($point['listen_port'] ?? 0);
+            $combination['sidecar_bond_listen_port'] = (int) ($point['bond_listen_port'] ?? 0);
+            $combination['sidecar_mptcp_listen_port'] = (int) ($point['mptcp_listen_port'] ?? 0);
+            $combination['sidecar_cf_listen_port'] = (int) ($point['cf_listen_port'] ?? 0);
+            $combination['sidecar_agent_config_json'] = $point['agent_config_json'] ?? null;
+        }
+        return $combination;
+    }
+
+    /**
+     * Enabled combinations of a forward's race-ON route, lowest sort_order first, capped, and
+     * restricted to the forward's sidecar point so all candidates share one sidecar service port.
+     * Returns [] when the forward has no route, the route is race-OFF, or fewer than the cap apply.
+     */
+    private function enabledRouteCombinationsForForward(array $forward): array
+    {
+        $routeId = (int) ($forward['forward_route_id'] ?? 0);
+        if ($routeId <= 0) {
+            return [];
+        }
+        $route = $this->db->fetchOne('SELECT race_enabled FROM forward_routes WHERE id = :id LIMIT 1', ['id' => $routeId]);
+        if (!is_array($route) || (int) ($route['race_enabled'] ?? 0) !== 1) {
+            return [];
+        }
+        $cap = max(1, (int) ($this->config->getInt('FORWARD_ROUTE_RACE_CANDIDATE_CAP', 3) ?? 3));
+        $rows = $this->db->fetchAll(
+            'SELECT fc.* FROM forward_route_combinations frc
+             INNER JOIN forward_combinations fc ON fc.id = frc.forward_combination_id
+             WHERE frc.forward_route_id = :id AND frc.enabled = 1 AND fc.is_active = 1
+             ORDER BY frc.sort_order ASC, frc.id ASC',
+            ['id' => $routeId]
+        );
+        $pointId = (int) ($forward['bond_sidecar_point_id'] ?? 0);
+        $out = [];
+        foreach ($rows as $fc) {
+            if ($pointId > 0 && (int) ($fc['sidecar_point_id'] ?? 0) > 0 && (int) ($fc['sidecar_point_id'] ?? 0) !== $pointId) {
+                continue; // same-sidecar only (R2): candidates must share the sidecar service port
+            }
+            $out[] = $fc;
+            if (count($out) >= $cap) {
+                break;
+            }
+        }
+        return $out;
     }
 
     private function staticSidecarPrimaryUplinkForForwardNode(array $forward, array $node, string $targetMode): ?array
@@ -6235,6 +6312,7 @@ final class ProvisioningService
             }
             $candidates[] = [
                 'lane' => (string) ($uplink['lane'] ?? ''),
+                'forward_combination_id' => $combinationId,
                 'interface_name' => $interface,
                 'ping_interface' => $interface,
                 'ping_address' => $peerAddress,
