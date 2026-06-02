@@ -1937,6 +1937,20 @@ final class AdminController extends BaseController
             $cfOptions .= '<option value="' . (int) ($group['id'] ?? 0) . '"' . $selected . '>' . $this->escape((string) ($group['name'] ?? '')) . ' [' . $this->escape((string) ($group['region_code'] ?? '')) . ']</option>';
         }
 
+        // LeiGod self-leg basis picker (feature-flagged behind LEIGOD_BASIS_ENABLED until per-slave
+        // accounts + capacity are provisioned). The form fields flow straight through saveForwardCombination.
+        $leigodField = '';
+        if (((string) $this->config->get('LEIGOD_BASIS_ENABLED', '0')) === '1') {
+            $selfLegOuter = (string) ($editing['self_leg_outer_transport'] ?? 'cnix');
+            $leigodLineId = (int) ($editing['leigod_line_id'] ?? 0);
+            $opt = static fn(string $v, string $label): string =>
+                '<option value="' . $v . '"' . ($selfLegOuter === $v ? ' selected' : '') . '>' . $label . '</option>';
+            $leigodField = '<div class="field"><label>Self-leg outer transport (basis)</label><select name="self_leg_outer_transport">'
+                . $opt('cnix', 'cnix (direct CNIX)') . $opt('cf', 'cf (Cloudflare wstunnel)') . $opt('leigod', 'leigod (LeiGod line)')
+                . '</select><p class="muted">leigod carries the slave&harr;sidecar WireGuard over a LeiGod accelerated line via gost UDP-over-TCP. Mutually exclusive with cf for the same hop.</p></div>'
+                . '<div class="field"><label>LeiGod line id</label><input type="number" name="leigod_line_id" min="0" value="' . $leigodLineId . '"><p class="muted">Required when basis = leigod. Slave SOCKS = 127.0.0.1:(20000 + line id).</p></div>';
+        }
+
         $latestHeartbeats = $this->db->fetchAll(
             'SELECT nh.node_id, nh.payload_json, n.name AS node_name
              FROM node_heartbeats nh
@@ -2093,6 +2107,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Max Legs Used (cap)</label><input type="number" name="helper_group_cap" min="0" value="' . $this->escape((string) ($editing['helper_group_cap'] ?? 4)) . '"><p class="muted">Default 4 for bond, CF Bond and MPTCP. 0 = unlimited.</p></div>
                     <div class="field"><label>Helper Escalation Policy</label><select name="helper_escalation_policy"><option value="disabled"' . (((string) ($editing['helper_escalation_policy'] ?? 'disabled')) === 'disabled' ? ' selected' : '') . '>disabled</option><option value="desired_latency_only"' . (((string) ($editing['helper_escalation_policy'] ?? 'disabled')) === 'desired_latency_only' ? ' selected' : '') . '>desired_latency_only</option></select></div>
                     <div class="field"><label>Self-leg CF transport</label><select name="self_leg_cf_transport"><option value="cf_direct"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_direct' ? ' selected' : '') . '>cf_direct (default)</option><option value="cf_wg"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_wg' ? ' selected' : '') . '>cf_wg (WG over CF IP)</option></select><p class="muted">Only effective when backend_mode = cf_mode. cf_wg routes the WireGuard underlay through wstunnel UDP-over-WSS to the CF IP.</p></div>
+                    ' . $leigodField . '
                     <div class="field"><label>Bond Ingress Mode</label><select name="bond_ingress_mode"><option value="plain_tcp_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'plain_tcp_mux' ? ' selected' : '') . '>plain_tcp_mux</option><option value="wss_path_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'wss_path_mux' ? ' selected' : '') . '>wss_path_mux</option></select></div>
                     <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . $this->escape((string) ($editing['sort_order'] ?? 100)) . '"></div>
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>inactive</option></select></div>
