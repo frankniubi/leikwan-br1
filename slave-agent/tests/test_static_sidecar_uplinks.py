@@ -140,6 +140,49 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
         rendered = "\n".join(written.values())
         self.assertIn("ListenPort = 43621", rendered)
 
+    def test_leigod_uplink_renders_gost_client_and_repins_endpoint(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        written: dict[str, str] = {}
+        management = self.static_uplink_management(
+            outer_transport="leigod",
+            sidecar_endpoint_host="127.0.0.1",
+            sidecar_endpoint_port=43123,
+            local_listen_port=43123,
+            gost_listen_udp_port=43123,
+            sidecar_wg_listen_port=14970,
+            leigod_line_id=451,
+            sidecar_gost_host="138.252.162.120",
+            sidecar_gost_port=47123,
+            socks_user="wguot",
+            socks_pass="s3cret",
+            mtu=1280,
+        )
+
+        def fake_run(command: str, check: bool = True):
+            if command == "wg show lws4c2n19p latest-handshakes":
+                return SimpleNamespace(returncode=0, stdout="peer 999\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                        with mock.patch.object(agent, "write_text_if_changed", side_effect=lambda path, content: written.setdefault(str(path), content) is not None):
+                            with mock.patch.object(agent, "ensure_leigod_line_service"):
+                                agent.apply_management_state(management)
+
+        rendered = "\n".join(written.values())
+        gost_unit = next((c for p, c in written.items() if "leikwan-gost-lws4c2n19p" in p), None)
+        self.assertIsNotNone(gost_unit, "gost client unit not written")
+        self.assertIn("-L udp://127.0.0.1:43123/127.0.0.1:14970?keepAlive=true&ttl=30s", gost_unit)
+        self.assertIn("-F socks5://127.0.0.1:20451", gost_unit)
+        self.assertIn("-F socks5://wguot:s3cret@138.252.162.120:47123?udp=true", gost_unit)
+        self.assertIn("Endpoint = 127.0.0.1:43123", rendered)
+        self.assertNotIn("ListenPort = 43123", rendered)
+        self.assertIn("MTU = 1280", rendered)
+
     def test_wstunnel_udp_uplink_does_not_bind_wireguard_to_local_wstunnel_port(self):
         agent = self.make_agent()
         agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
