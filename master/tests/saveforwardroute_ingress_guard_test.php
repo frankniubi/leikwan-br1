@@ -60,11 +60,12 @@ namespace {
     file_put_contents($envPath, "DEFAULT_TLS_CERT_REF=default-edge-cert\n");
 
     $db = new Database();
-    $ingress = ['node_group_key' => 'sha', 'client_mode' => 'bond', 'bond_ingress_mode' => 'plain_tcp_mux'];
+    $ingress = ['node_group_key' => 'sha', 'client_mode' => 'bond', 'bond_ingress_mode' => 'plain_tcp_mux', 'sidecar_point_id' => 4];
     $db->combos = [
         10 => ['backend_mode' => 'current_mode'] + $ingress,  // cnix
-        11 => ['backend_mode' => 'current_mode'] + $ingress,  // leigod (same ingress, differs only in self-leg)
+        11 => ['backend_mode' => 'current_mode'] + $ingress,  // leigod (same ingress + same sidecar, differs only in self-leg)
         12 => ['backend_mode' => 'cf_mode'] + $ingress,       // cf-bond (different backend_mode -> different ingress)
+        13 => ['backend_mode' => 'current_mode'] + ['node_group_key' => 'sha', 'client_mode' => 'bond', 'bond_ingress_mode' => 'plain_tcp_mux', 'sidecar_point_id' => 5], // same backend_mode, DIFFERENT sidecar
     ];
     $svc = new ProvisioningService(new Config($envPath), $db);
 
@@ -85,6 +86,19 @@ namespace {
     } catch (ApiException $e) {
         if ($e->getMessage() !== 'forward_route_combos_ingress_mismatch') {
             fail('expected ingress_mismatch, got ' . $e->getMessage());
+        }
+    }
+
+    // Same backend_mode but DIFFERENT sidecar_point_id (cnix point 4 vs point 5) -> mismatch
+    // (candidates must share one sidecar service port for the selector to race them — R2).
+    try {
+        $svc->saveForwardRoute(['name' => 'r-sidecar', 'combinations' => [
+            ['forward_combination_id' => 10], ['forward_combination_id' => 13],
+        ]]);
+        fail('expected forward_route_combos_ingress_mismatch for different sidecar_point_id');
+    } catch (ApiException $e) {
+        if ($e->getMessage() !== 'forward_route_combos_ingress_mismatch') {
+            fail('expected ingress_mismatch for different sidecar, got ' . $e->getMessage());
         }
     }
 
