@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.06.03.3"
+AGENT_VERSION = "2026.06.03.4"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -4499,6 +4499,12 @@ WantedBy=multi-user.target
         service_name = f"leikwan-gost-{interface_name}"
         unit_path = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system")) / f"{service_name}.service"
         gost_bin = str(self.config.get("gost_bin", "/usr/local/bin/gost") or "/usr/local/bin/gost")
+        # Do NOT write a Restart=always gost unit on a node that lacks the gost binary: it would fail every
+        # 3s in a systemd restart loop (the churn/storm failure mode). If gost is absent, remove any stale
+        # unit and skip; the leigod uplink simply won't realize on this node and the selector falls back.
+        if shutil.which(gost_bin) is None:
+            self.remove_sidecar_gost_uot_client_service(interface_name)
+            return
         exec_start = (
             f"{gost_bin} "
             f"-L udp://127.0.0.1:{gost_listen_udp_port}/127.0.0.1:{sidecar_wg_listen_port}?keepAlive=true&ttl=30s "
