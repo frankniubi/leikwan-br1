@@ -70,6 +70,13 @@ from the same ingress slave.
 - **Race OFF:** the panel publishes only the lowest-`sort_order` enabled combination (one candidate) →
   selector degrades to monitor-only/no-switch → behaves exactly like today's single-combination forward.
 
+> **RESOLVED (B0, 2026-06-02):** `backend_mode` selects the slave's per-service backend unit (behind the
+> stable client-facing WSS path-mux, so the client does NOT reconnect across modes); `self_leg_outer_transport`
+> selects the slave↔sidecar uplink the existing selector races. **v1 slave-raced set = combos sharing
+> `backend_mode` and differing only in `self_leg_outer_transport` → {cnix, leigod}.** cnix↔cf-bond (different
+> `backend_mode` → different backend unit) is NOT raced by the uplink selector → deferred to §10. The
+> `saveForwardRoute` guard therefore requires **same `backend_mode`** across enabled combos. (Original assumption text retained below for context.)
+>
 > **Key assumption (VERIFY in implementation).** This slave-orchestrated design works only if cnix-bond /
 > cf-bond / leigod differ **on the slave↔sidecar hop** (the basis the leigod spec models), so the slave can
 > swap the active basis while the client→slave ingress stays identical. The leigod spec frames cf as a
