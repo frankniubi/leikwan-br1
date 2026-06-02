@@ -52,3 +52,20 @@ of the leigod basis is validated.
 
 These need a fuller test deployment (deploy the new agents to a test slave+sidecar, configure a leigod
 combination + a 2-combo route). The mechanism they build on is now proven.
+
+## BLOCKER + architectural finding (2026-06-02): leigod sidecars must be internet-open
+Attempting the full test-pair loop, I probed whether a LeiGod line can reach the leikwan test sidecar
+`161.248.136.183` (HK CNIX IP). Result (from sh36):
+- via LeiGod SOCKS (lines 447/696/464/451): **0/2 ok on all** → not reachable.
+- **direct** (no SOCKS) to `161.248.136.183:14950`, `:22`, and `103.96.140.101:14950`: **0/2 ok on all**.
+- contrast: SG sidecar `77.93.90.45:58220` via line 464 = **2/2 ok, 98 ms**.
+
+So that CNIX sidecar is reachable ONLY over the CNIX private peering (sha-tencent slaves), NOT from the
+general internet or a LeiGod line's foreign exit. **Therefore the leigod basis cannot reuse the existing
+CNIX-restricted bond sidecars.** A leigod sidecar's gost-server port MUST be internet-reachable from the
+LeiGod line's exit PoP (the SG VM is, which is why the live rig works). This is a hard provisioning
+constraint: **leigod combinations must point at an internet-open sidecar**, not a CNIX-locked one.
+
+Consequence for the full-loop test: it is blocked until an internet-open leikwan sidecar exists (e.g.
+turn the SG VM into a leikwan sidecar_point, or stand up a new internet-open VM). The mechanism itself
+(gost-over-LeiGod carrying WG) is already proven on the SG path.
