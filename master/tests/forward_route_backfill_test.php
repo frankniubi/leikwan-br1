@@ -21,11 +21,12 @@ need('UPDATE forwards', $sql, $fail);
 need('SET f.forward_route_id = fr.id', $sql, $fail);
 need('active_combination_id = f.forward_combination_id', $sql, $fail);
 need('service_plan_forward_routes', $sql, $fail);
-// idempotency guards
-if (substr_count($sql, 'NOT EXISTS') < 4) {
-    fprintf(STDERR, "FAIL: backfill must guard each step with NOT EXISTS (idempotency)\n");
+// idempotency guards: steps 1/2/4 use NOT EXISTS; step 3 (UPDATE forwards) guards on IS NULL.
+if (substr_count($sql, 'NOT EXISTS') < 3) {
+    fprintf(STDERR, "FAIL: backfill INSERTs must guard with NOT EXISTS (idempotency)\n");
     $fail++;
 }
+need('f.forward_route_id IS NULL', $sql, $fail);
 
 if ($fail) {
     fprintf(STDERR, "%d FAIL\n", $fail);
