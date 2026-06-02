@@ -1,9 +1,9 @@
 {
   "slave_agent": {
-    "version": "2026.06.03.3",
+    "version": "2026.06.04.1",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "92f3fc18b63612675473b7b401648c008f60725c8b12a2d49c5848371dfd966e",
+    "sha256": "1af7ce76714ab430e02f282b11815649af98edd6a15543d8af679387cd7df93a",
     "size_bytes": 261147,
     "size": 261147
   },
@@ -11,16 +11,16 @@
     "version": "3.2.6",
     "path": "artifacts/gost/gost_linux_amd64",
     "artifact_url": "/artifacts/gost/gost_linux_amd64",
-    "sha256": "",
-    "size_bytes": 0,
+    "sha256": "a2aea24efb4597b5f57b35b8e1bbcc59f439b80723854d4371f6828b46682ffb",
+    "size_bytes": 9673064,
     "note": "gost v3.2.6 UoT carrier for the leigod basis (slave gost client + sidecar gost server). Fill sha256/size when the binary is published to the artifact store; empty sha forces a (safe) re-download."
   },
   "leigod_linux_amd64": {
     "version": "recovered",
     "path": "artifacts/leigod/leigod-linux-amd64",
     "artifact_url": "/artifacts/leigod/leigod-linux-amd64",
-    "sha256": "",
-    "size_bytes": 0,
+    "sha256": "b15fc09c4c03df82ab5fda97962ae175c124b6f61ce3167e77a0fb3d14a33b86",
+    "size_bytes": 10779919,
     "note": "recovered LeiGod accelerator (slave only); runs leigod@<line> exposing SOCKS 127.0.0.1:20000+line. Fill sha256/size when published."
   },
   "slave_installer": {
@@ -77,10 +77,10 @@
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
-    "version": "2026.06.02.2",
+    "version": "2026.06.03.4",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "0f824b52ee121d5bdf205400ee496a760c47f3c8481b099bf7595cecd27091b7",
+    "sha256": "1b0bce4137a8867d0f41c89214181854308402efe879a4654d2485ae8794cbe8",
     "size_bytes": 105529,
     "size": 105529
   },
