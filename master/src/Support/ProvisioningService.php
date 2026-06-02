@@ -455,6 +455,25 @@ final class ProvisioningService
         $notes = trim((string) ($payload['notes'] ?? ''));
         $helperNodeGroupKeys = $this->normalizeForwardCombinationHelperGroupKeys($payload);
 
+        // LeiGod self-leg basis (slave<->sidecar WG outer transport). Validate BEFORE the generic
+        // gate so a leigod combo missing its line/sidecar reports a leigod-specific 422 (and so the
+        // sidecar-required message surfaces ahead of invalid_forward_combination_payload).
+        $selfLegOuterTransport = strtolower(trim((string) ($payload['self_leg_outer_transport'] ?? 'cnix'))) ?: 'cnix';
+        if (!in_array($selfLegOuterTransport, ['cnix', 'cf', 'leigod'], true)) {
+            throw new ApiException('invalid_self_leg_outer_transport', 422, ['self_leg_outer_transport' => $selfLegOuterTransport]);
+        }
+        $leigodLineId = max(0, (int) ($payload['leigod_line_id'] ?? 0));
+        if ($selfLegOuterTransport === 'leigod') {
+            if ($leigodLineId <= 0) {
+                throw new ApiException('leigod_line_required', 422, []);
+            }
+            if ($sidecarPointId <= 0) {
+                throw new ApiException('sidecar_required_for_leigod', 422, []);
+            }
+        } else {
+            $leigodLineId = 0;
+        }
+
         if ($name === '' || $tenantLabel === '' || $nodeGroupKey === '' || $sidecarPointId <= 0) {
             throw new ApiException('invalid_forward_combination_payload', 422, ['payload' => $payload]);
         }
@@ -474,6 +493,37 @@ final class ProvisioningService
             $cfLocationGroupId = 0;
         }
 
+        // Panel-minted gost SOCKS credentials shared by the sidecar gost server + slave gost client.
+        // Mint once and persist so they stay stable across republishes (a rotating secret would churn
+        // the gost units every reconcile). On edit, preserve the stored secret when the payload omits it.
+        $leigodSocksUser = trim((string) ($payload['leigod_socks_user'] ?? ''));
+        $leigodSocksPass = trim((string) ($payload['leigod_socks_pass'] ?? ''));
+        if ($selfLegOuterTransport === 'leigod') {
+            if ($id > 0 && ($leigodSocksUser === '' || $leigodSocksPass === '')) {
+                $existingLeigod = $this->db->fetchOne(
+                    'SELECT leigod_socks_user, leigod_socks_pass FROM forward_combinations WHERE id = :id LIMIT 1',
+                    ['id' => $id]
+                );
+                if (is_array($existingLeigod)) {
+                    if ($leigodSocksUser === '') {
+                        $leigodSocksUser = trim((string) ($existingLeigod['leigod_socks_user'] ?? ''));
+                    }
+                    if ($leigodSocksPass === '') {
+                        $leigodSocksPass = trim((string) ($existingLeigod['leigod_socks_pass'] ?? ''));
+                    }
+                }
+            }
+            if ($leigodSocksUser === '') {
+                $leigodSocksUser = 'wguot';
+            }
+            if ($leigodSocksPass === '') {
+                $leigodSocksPass = rtrim(strtr(base64_encode(random_bytes(21)), '+/', '-_'), '=');
+            }
+        } else {
+            $leigodSocksUser = '';
+            $leigodSocksPass = '';
+        }
+
         $normalized = [
             'name' => $name,
             'tenant_label' => $tenantLabel,
@@ -491,6 +541,10 @@ final class ProvisioningService
             'helper_group_cap' => $helperGroupCap,
             'helper_escalation_policy' => $helperEscalationPolicy,
             'self_leg_cf_transport' => $selfLegCfTransport,
+            'self_leg_outer_transport' => $selfLegOuterTransport,
+            'leigod_line_id' => $leigodLineId > 0 ? $leigodLineId : null,
+            'leigod_socks_user' => $leigodSocksUser !== '' ? $leigodSocksUser : null,
+            'leigod_socks_pass' => $leigodSocksPass !== '' ? $leigodSocksPass : null,
             'desired_latency_ms' => $desiredLatencyMs,
             'allow_public_self_leg_donation' => $allowPublicSelfLegDonation,
             'donation_qualify_window_seconds' => $donationQualifyWindowSeconds,
@@ -522,6 +576,10 @@ final class ProvisioningService
                      helper_group_cap = :helper_group_cap,
                      helper_escalation_policy = :helper_escalation_policy,
                      self_leg_cf_transport = :self_leg_cf_transport,
+                     self_leg_outer_transport = :self_leg_outer_transport,
+                     leigod_line_id = :leigod_line_id,
+                     leigod_socks_user = :leigod_socks_user,
+                     leigod_socks_pass = :leigod_socks_pass,
                      desired_latency_ms = :desired_latency_ms,
                      allow_public_self_leg_donation = :allow_public_self_leg_donation,
                      donation_qualify_window_seconds = :donation_qualify_window_seconds,
@@ -5430,6 +5488,7 @@ final class ProvisioningService
         $sidecarListenPort = $this->sidecarWireguardListenPort($listenSource, $sidecarConfig);
         $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $sidecarConfig);
         $cfMode = $this->staticSidecarCombinationUsesCf($combination);
+        $leigodMode = $this->staticSidecarCombinationUsesLeigod($combination);
         $lanes = [];
         foreach (['primary' => 'p', 'backup' => 'b'] as $lane => $suffix) {
             $addresses = $this->allocateStaticSidecarUplinkSubnet($pointId, $combinationId, $nodeId, $lane);
@@ -5448,7 +5507,7 @@ final class ProvisioningService
                 'interface_name' => $interfaceName,
                 'subnet' => $addresses['subnet'],
                 'listen_port' => $listenPort,
-                'outer_transport' => $cfMode ? 'wstunnel_udp' : 'udp',
+                'outer_transport' => $leigodMode ? 'leigod' : ($cfMode ? 'wstunnel_udp' : 'udp'),
                 'peer_keepalive_seconds' => max(1, (int) ($this->config->getInt('STATIC_SIDECAR_WG_KEEPALIVE_SECONDS', 25) ?? 25)),
                 'watchdog' => [
                     'enabled' => true,
@@ -5527,6 +5586,26 @@ final class ProvisioningService
                         'path_prefix' => $pathPrefix,
                     ];
                 }
+            }
+            if ($leigodMode) {
+                // LeiGod basis: the slave<->sidecar WG hop rides a LeiGod line via gost UoT.
+                // Slave runs leigod@<line> (SOCKS 127.0.0.1:20000+line) + a gost client; the sidecar
+                // runs the matching gost UoT server. WG endpoint is re-pinned to the local gost listener.
+                $gostSocks = $this->stableSidecarGostSocksPort($combinationId, $nodeId, $lane);
+                [$socksUser, $socksPass] = $this->mintLeigodSocksCredentials($combination);
+                $slave['leigod_line_id'] = (int) ($combination['leigod_line_id'] ?? 0);
+                $slave['gost_listen_udp_port'] = $slaveListenPort;
+                $slave['sidecar_gost_host'] = $sidecarHost;
+                $slave['sidecar_gost_port'] = $gostSocks;
+                $slave['sidecar_wg_listen_port'] = $listenPort;
+                $slave['socks_user'] = $socksUser;
+                $slave['socks_pass'] = $socksPass;
+                $slave['mtu'] = 1280;
+                $slave['sidecar_endpoint_host'] = '127.0.0.1';
+                $slave['sidecar_endpoint_port'] = $slaveListenPort;
+                $sidecar['gost_socks_listen_port'] = $gostSocks;
+                $sidecar['socks_user'] = $socksUser;
+                $sidecar['socks_pass'] = $socksPass;
             }
             $lanes[] = ['sidecar' => $sidecar, 'slave' => $slave];
         }
@@ -7804,6 +7883,32 @@ final class ProvisioningService
             }
         }
         return false;
+    }
+
+    private function staticSidecarCombinationUsesLeigod(array $combination): bool
+    {
+        $t = strtolower(trim((string) ($combination['self_leg_outer_transport'] ?? 'cnix')));
+        return $t === 'leigod' && (int) ($combination['leigod_line_id'] ?? 0) > 0;
+    }
+
+    private function stableSidecarGostSocksPort(int $forwardCombinationId, int $nodeId, string $lane = ''): int
+    {
+        // Deterministic per (combination, node, lane) so the sidecar gost SOCKS port is stable across
+        // republishes. Band 47000-47999 is disjoint from backend (20000-40000), cf-backend (26000-26999),
+        // wg-local (43000+), and uot/selector (45000+) ranges. The lane keeps primary/backup distinct so
+        // the two lanes' gost servers do not collide on one port.
+        $seed = crc32("leigod-gost-socks:{$forwardCombinationId}:{$nodeId}:{$lane}");
+        return 47000 + ($seed % 1000);
+    }
+
+    private function mintLeigodSocksCredentials(array $combination): array
+    {
+        $user = (string) ($combination['leigod_socks_user'] ?? '') ?: 'wguot';
+        $pass = (string) ($combination['leigod_socks_pass'] ?? '');
+        if ($pass === '') {
+            $pass = rtrim(strtr(base64_encode(random_bytes(21)), '+/', '-_'), '=');
+        }
+        return [$user, $pass];
     }
 
     private function staticSidecarCfPathPrefix(int $pointId, int $combinationId, int $nodeId, string $lane): string
