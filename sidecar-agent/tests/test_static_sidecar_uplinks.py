@@ -96,6 +96,61 @@ class SidecarStaticSidecarUplinkTests(unittest.TestCase):
         state = json.loads(agent.sidecar_uplink_state_path().read_text(encoding="utf-8"))
         self.assertEqual({"slaves": {}}, state)
 
+    def test_leigod_uplink_renders_gost_server_unit(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = pathlib.Path(tmp_dir)
+            config_path = tmp / "agent.json"
+            config_path.write_text(json.dumps({
+                "state_dir": str(tmp),
+                "service_name": "leikwan-bond-sidecar-4",
+                "managed_iperf3_ports": [],
+            }), encoding="utf-8")
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+            (tmp / "wireguard").mkdir(parents=True, exist_ok=True)
+            (tmp / "wireguard" / "private.key").write_text("sidecar-private\n", encoding="utf-8")
+            (tmp / "wireguard" / "public.key").write_text("sidecar-public\n", encoding="utf-8")
+
+            writes: dict[str, str] = {}
+
+            def fake_write(path, body, mode=None):  # noqa: ANN001
+                writes[str(path)] = body
+                return True
+
+            def fake_run(args, **kwargs):
+                return SimpleNamespace(returncode=0, stdout="inactive", stderr="")
+
+            with mock.patch.object(sidecar_agent_module, "write_text_if_changed", side_effect=fake_write):
+                with mock.patch.object(sidecar_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+                    with mock.patch.object(sidecar_agent_module.subprocess, "run", side_effect=fake_run):
+                        agent.apply_slave_sidecar_uplink({
+                            "enabled": True,
+                            "interface_name": "lwsc4n9-r1",
+                            "local_address": "10.22.0.1",
+                            "peer_address": "10.22.0.2",
+                            "slave_peer_public_key": "PUBKEYAAA=",
+                            "listen_port": 51820,
+                            "outer_transport": "leigod",
+                            "gost_socks_listen_port": 47123,
+                            "socks_user": "wguot",
+                            "socks_pass": "s3cret",
+                        })
+
+            unit_body = next((b for p, b in writes.items() if "leikwan-leigod-gost-server-lwsc4n9-r1" in p), None)
+            self.assertIsNotNone(unit_body, "gost server unit was not written")
+            self.assertIn("gost -L socks5://wguot:s3cret@:47123?udp=true", unit_body)
+            wg_body = next((b for p, b in writes.items() if p.endswith("lwsc4n9-r1.conf")), None)
+            self.assertIsNotNone(wg_body, "WG conf was not written")
+            self.assertIn("ListenPort = 51820", wg_body)
+
+    def test_leigod_teardown_removes_gost_server_unit(self):
+        agent = self.make_agent()
+        calls: list[str] = []
+        with mock.patch.object(agent, "remove_sidecar_uot_server_service", side_effect=lambda i: None):
+            with mock.patch.object(agent, "remove_sidecar_cf_wstunnel_backend", side_effect=lambda i: None):
+                with mock.patch.object(agent, "remove_sidecar_leigod_gost_server_service", side_effect=lambda i: calls.append(i)):
+                    agent.remove_slave_sidecar_uplink({"interface_name": "lwsc4n9-r1"})
+        self.assertIn("lwsc4n9-r1", calls)
+
     def test_disabled_self_leg_peer_is_removed_and_empty_state_is_persisted(self):
         agent = self.make_agent()
         agent.save_self_leg_client_peer_state({"interfaces": {"lw-self-1": {"interface_name": "lw-self-1"}}})
