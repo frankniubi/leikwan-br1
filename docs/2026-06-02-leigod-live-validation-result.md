@@ -43,6 +43,25 @@ re-pinned to the local gost listener) **works on real infrastructure**, and the 
 slave + sidecar agents emit are **byte-identical** to the proven-working tunnel. The highest-risk part
 of the leigod basis is validated.
 
+## UPDATE — scoped end-to-end agent-unit test PASSED (2026-06-02)
+Beyond the byte-identical command match, I drove my **slave_agent's actual rendered artifacts** on sh36
+against the SG sidecar over LeiGod line 464 (isolated subnet, temp SG WG peer, `Table=off` so no route
+hijack, fully reversible):
+- Wrote my agent's exact `leikwan-gost-lwtest.service` systemd unit (`ExecStart=/usr/local/bin/gost -L
+  udp://127.0.0.1:51901/127.0.0.1:51820?keepAlive=true&ttl=30s -F socks5://127.0.0.1:20464 -F
+  socks5://wguot:<pass>@77.93.90.45:58220?udp=true`) → `systemctl start` → **active** (systemd handles the
+  literal `&` in ExecStart correctly).
+- Wrote my agent's exact WG conf (MTU=1280, Endpoint re-pinned to `127.0.0.1:51901`) → `wg-quick up`.
+- **`ping -I lwtest 10.99.0.1` = 5/5 received, 0% loss, rtt avg 67.1 ms, mdev 0.21 ms**; WG handshake fresh,
+  732 B rx / 820 B tx (full bidirectional data-plane).
+- Tore everything down (removed the temp SG peer + the sh36 unit/iface) — confirmed clean; the live rig was
+  never touched (fresh ports/subnet, no route changes).
+
+**Conclusion:** my slave-side leigod agent code (systemd unit render + WG conf render + endpoint re-pin +
+MTU + leigod line SOCKS chaining) establishes a real, working WG-over-LeiGod tunnel end-to-end. The sidecar
+gost-server command is identical to the proven-working SG server. The leigod basis is comprehensively
+de-risked on real infrastructure.
+
 ## NOT yet validated (remaining live steps)
 1. **Full leikwan agent loop** — `slave_agent.py` rendering `leikwan-gost-<iface>.service` +
    `sidecar_agent.py` rendering the gost server, driven by a panel-published `outer_transport=leigod`
