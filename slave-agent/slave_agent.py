@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.06.01.1"
+AGENT_VERSION = "2026.06.02.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -2001,6 +2001,7 @@ class SlaveAgent:
         touched_ports: set[int] = set()
         self.ensure_nft_table()
         self.cleanup_superseded_forward_services()
+        self.cleanup_orphan_wstunnel_svc_units()
 
         for metadata in self.load_all_service_metadata():
             try:
@@ -3654,6 +3655,50 @@ WantedBy=multi-user.target
                 keeper[1],
             )
             self.destroy_service(self.destroy_task_for_metadata(metadata))
+
+    def cleanup_orphan_wstunnel_svc_units(self) -> None:
+        """Reap orphaned wstunnel-svc-*.service units whose backing metadata file
+        no longer exists. Legacy orphans (deleted forwards / pre-allocator agents)
+        crash-loop forever on stale colliding backend ports, and the
+        metadata-driven reconcile never touches them because it iterates metadata,
+        not on-disk units. Safety: (a) NO-OP when no service metadata exists at all
+        (BUG-1 present-guard: a transiently-unreadable/empty services dir must never
+        wipe live units); (b) never reap a unit that is currently active."""
+        systemd_dir = Path(str(self.config.get("systemd_dir", "/etc/systemd/system")))
+        try:
+            unit_files = sorted(systemd_dir.glob("wstunnel-svc-*.service"))
+        except OSError:
+            return
+        if not unit_files:
+            return
+        if not any(self.services_dir.glob("*.json")):
+            return
+        have_systemctl = shutil.which("systemctl") is not None
+        reaped = 0
+        for unit_path in unit_files:
+            service_name = unit_path.stem
+            if self.metadata_path(service_name).exists():
+                continue
+            if have_systemctl:
+                state = run_command(f"systemctl is-active {service_name}.service", check=False).stdout.strip()
+                if state == "active":
+                    logging.warning(
+                        "orphan wstunnel-svc unit %s has no metadata but is active; skipping reap",
+                        service_name,
+                    )
+                    continue
+            logging.warning("reaping orphan wstunnel-svc unit with no metadata: %s", service_name)
+            if have_systemctl:
+                run_command(f"systemctl stop {service_name}.service", check=False)
+                run_command(f"systemctl disable {service_name}.service", check=False)
+                run_command(f"systemctl reset-failed {service_name}.service", check=False)
+            try:
+                unit_path.unlink()
+            except OSError:
+                logging.exception("failed to remove orphan unit file %s", unit_path)
+            reaped += 1
+        if reaped and have_systemctl:
+            run_command("systemctl daemon-reload", check=False)
 
     def udp_uot_sidepath_settings(self) -> dict[str, Any]:
         raw = self.config.get("udp_uot_sidepath", {})

@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.05.29.7"
+AGENT_VERSION = "2026.06.02.2"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -940,7 +940,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStartPre=/bin/bash -lc 'command -v {iperf3_bin} >/dev/null || command -v iperf3 >/dev/null || (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y iperf3)'
-ExecStart={iperf3_bin} -s -p {int(port)} --one-off
+ExecStart={iperf3_bin} -s -p {int(port)}
 Restart=always
 RestartSec=3
 
@@ -1227,23 +1227,10 @@ WantedBy=multi-user.target
         update_state = self.load_update_state()
         completed_request_token = str(update_state.get("last_completed_request_token", "") or "")
 
-        if explicit_request_token != "" and completed_request_token != explicit_request_token and not self.management_requires_local_update(management):
-            now = time.time()
-            update_state.update(
-                {
-                    "request_token": explicit_request_token,
-                    "status": "success",
-                    "last_attempt_at": now,
-                    "last_completed_request_token": explicit_request_token,
-                    "last_completed_at": now,
-                    "installed_version": AGENT_VERSION,
-                    "installed_bond_sha256": file_sha256(self.bond_binary_path()),
-                    "last_error": "",
-                }
-            )
-            self.save_update_state(update_state)
-            explicit_request_token = ""
-
+        # An explicit agent_update_request_token is a manual force-refresh: it must
+        # drive request_self_update even when no version/sha mismatch is present
+        # (the loop's last_completed_request_token check still prevents re-running a
+        # token that already completed, so this does not loop).
         for update_request_token in [token for token in [explicit_request_token, auto_request_token] if token]:
             if completed_request_token == update_request_token:
                 continue
@@ -1264,11 +1251,13 @@ WantedBy=multi-user.target
             try:
                 self.request_self_update(update_request_token)
             except Exception as exc:  # noqa: BLE001
-                update_state["status"] = "error"
+                # A transient launch failure (e.g. systemd-run hiccup) must not crash
+                # the heartbeat. Record it as "running" so should_retry_update throttles
+                # retries for UPDATE_STALE_SECONDS instead of hot-looping.
+                update_state["status"] = "running"
                 update_state["last_error"] = str(exc)
                 update_state["last_failed_at"] = now
                 self.save_update_state(update_state)
-                raise
             break
 
         bond_runtime = management.get("bond_runtime") if isinstance(management.get("bond_runtime"), dict) else None
@@ -1936,6 +1925,8 @@ WantedBy=multi-user.target
             "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
             "clock_sync": local_clock,
         }
+        payload["agent_sha256"] = file_sha256(pathlib.Path(__file__).resolve())
+        payload["agent_update_state"] = self.load_update_state()
         if health_error != "":
             payload["health_error"] = health_error
         bond_leg_reputation = self.load_bond_leg_reputation_snapshot()
@@ -1975,6 +1966,12 @@ WantedBy=multi-user.target
     def auto_update_request_token(self, management: dict) -> str:
         if not isinstance(management, dict):
             return ""
+        # Apply any panel config_patch (e.g. unpin disable_auto_update) before the
+        # disable gate so a standalone token computation honors the same unpin that
+        # apply_management would. apply_config_patch enforces disable_auto_update_lock.
+        config_patch = management.get("config_patch", {})
+        if isinstance(config_patch, dict) and config_patch != {}:
+            self.apply_config_patch(config_patch)
         if self.auto_update_disabled():
             return ""
 
@@ -2000,6 +1997,18 @@ WantedBy=multi-user.target
             local_bond_sha256 = file_sha256(self.bond_binary_path()).lower()
             if local_bond_sha256 != desired_bond_sha256:
                 mismatches.append(f"bond={desired_bond_sha256}")
+
+        desired_wss_mux_sha256 = str(management.get("desired_wss_mux_sha256", "") or "").strip().lower()
+        if desired_wss_mux_sha256:
+            local_wss_mux_sha256 = file_sha256(pathlib.Path("/usr/local/bin/leikwan-wss-mux.py")).lower()
+            if local_wss_mux_sha256 != desired_wss_mux_sha256:
+                mismatches.append(f"wss_mux={desired_wss_mux_sha256}")
+
+        desired_sidecar_runtime_sha256 = str(management.get("desired_sidecar_runtime_sha256", "") or "").strip().lower()
+        if desired_sidecar_runtime_sha256:
+            local_sidecar_runtime_sha256 = file_sha256(pathlib.Path(self.runtime_bin())).lower()
+            if local_sidecar_runtime_sha256 != desired_sidecar_runtime_sha256:
+                mismatches.append(f"sidecar_runtime={desired_sidecar_runtime_sha256}")
 
         if mismatches == []:
             return ""

@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.05.29.7"
+AGENT_VERSION = "2026.06.02.2"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -168,7 +168,13 @@ class SidecarAgent:
             if result.returncode != 0 or private_key == "":
                 return ""
             write_text_if_changed(private_key_path, private_key + "\n", mode=0o600)
-        private_key = private_key_path.read_text(encoding="utf-8").strip()
+        try:
+            private_key = private_key_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            logging.exception("WireGuard identity degraded: private key is unreadable")
+            return ""
+        if private_key == "":
+            return ""
         result = subprocess.run(["wg", "pubkey"], input=private_key + "\n", text=True, capture_output=True, check=False)
         public_key = result.stdout.strip()
         if result.returncode != 0 or public_key == "":
@@ -206,7 +212,14 @@ class SidecarAgent:
         if not peer.get("enabled", True) or shutil.which("wg") is None or shutil.which("wg-quick") is None:
             return
         self.ensure_wireguard_identity()
-        private_key = self.wireguard_private_key_path().read_text(encoding="utf-8").strip()
+        try:
+            private_key = self.wireguard_private_key_path().read_text(encoding="utf-8").strip()
+        except OSError:
+            logging.exception("self-leg peer skipped: WireGuard private key is unavailable")
+            return
+        if private_key == "":
+            logging.error("self-leg peer skipped: WireGuard private key is empty")
+            return
         interface_name = str(peer.get("interface_name", "") or "").strip()[:15]
         local_address = str(peer.get("sidecar_address", "") or peer.get("local_address", "") or "").strip()
         client_address = str(peer.get("client_address", "") or peer.get("peer_address", "") or "").strip()
@@ -324,7 +337,14 @@ class SidecarAgent:
         if not uplink.get("enabled") or shutil.which("wg") is None or shutil.which("wg-quick") is None:
             return
         self.ensure_wireguard_identity()
-        private_key = self.wireguard_private_key_path().read_text(encoding="utf-8").strip()
+        try:
+            private_key = self.wireguard_private_key_path().read_text(encoding="utf-8").strip()
+        except OSError:
+            logging.exception("slave-sidecar uplink skipped: WireGuard private key is unavailable")
+            return
+        if private_key == "":
+            logging.error("slave-sidecar uplink skipped: WireGuard private key is empty")
+            return
         interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
         local_address = str(uplink.get("local_address", "") or "").strip()
         peer_address = str(uplink.get("peer_address", "") or "").strip()
@@ -343,7 +363,10 @@ class SidecarAgent:
         else:
             self.remove_sidecar_uot_server_service(interface_name)
         if cf_path_prefix != "" and cf_target_host != "" and cf_target_port > 0:
-            self.ensure_sidecar_cf_wstunnel_backend(interface_name, cf_path_prefix, cf_target_host, cf_target_port)
+            try:
+                self.ensure_sidecar_cf_wstunnel_backend(interface_name, cf_path_prefix, cf_target_host, cf_target_port)
+            except Exception as exc:  # noqa: BLE001
+                logging.exception("slave-sidecar uplink %s skipped CF backend reconcile: %s", interface_name, exc)
         else:
             self.remove_sidecar_cf_wstunnel_backend(interface_name)
         keepalive_line = f"PersistentKeepalive = {keepalive}\n" if keepalive > 0 else ""
@@ -394,23 +417,72 @@ class SidecarAgent:
             return
         subprocess.run(["systemctl", "restart", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
 
-    def cleanup_stale_mptcp_transit_interfaces(self, point_id: int) -> None:
-        if point_id <= 0 or shutil.which("wg") is None:
+    @staticmethod
+    def wireguard_system_dir() -> pathlib.Path:
+        return pathlib.Path("/etc/wireguard")
+
+    def cleanup_stale_mptcp_transit_interfaces(self, point_id: int, keep: "set[str] | None" = None) -> None:
+        """Reap stale MPTCP slave-transit interfaces (lw-sc-<point>-<idx>).
+
+        These devices are created LIVE by the mptcp relay (not via wg-quick), so the
+        cleanup must actually delete the kernel device with `ip link del` — stopping
+        the (disabled/failed) wg-quick unit and removing the conf is a no-op against
+        the live device, which is why stale interfaces accumulated forever as the
+        published leg count shrank.
+
+        `keep` is the set of interface_names the panel published THIS cycle for this
+        point; any matching interface in `keep` is preserved so a mixed point (static
+        lws* uplinks AND active lw-sc transit legs) never loses its live traffic.
+        keep=None is treated as the empty set (reap everything for the point).
+        """
+        if point_id <= 0:
             return
-        result = subprocess.run(["wg", "show", "interfaces"], text=True, capture_output=True, check=False)
-        interfaces = result.stdout.strip().split() if result.returncode == 0 else []
+        keep_set = set(keep) if keep else set()
         scoped_prefix = f"lw-sc-{point_id}-"
-        for iface in interfaces:
-            if not iface.startswith(scoped_prefix):
-                continue
+
+        # Live kernel devices currently known to WireGuard for this point.
+        live_interfaces: list[str] = []
+        if shutil.which("wg") is not None:
+            result = subprocess.run(["wg", "show", "interfaces"], text=True, capture_output=True, check=False)
+            if result.returncode == 0:
+                live_interfaces = [
+                    iface for iface in result.stdout.strip().split()
+                    if iface.startswith(scoped_prefix) and iface not in keep_set
+                ]
+
+        wg_dir = self.wireguard_system_dir()
+        for iface in live_interfaces:
+            # Stop/disable any (likely failed) wg-quick unit and clear its failed state.
             if shutil.which("systemctl") is not None:
                 subprocess.run(["systemctl", "stop", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
                 subprocess.run(["systemctl", "disable", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
+                subprocess.run(["systemctl", "reset-failed", f"wg-quick@{iface}.service"], text=True, capture_output=True, check=False)
+            # ACTUALLY remove the live kernel device (the relay created it directly).
+            if shutil.which("ip") is not None:
+                subprocess.run(["ip", "link", "del", "dev", iface], text=True, capture_output=True, check=False)
             elif shutil.which("wg-quick") is not None:
                 subprocess.run(["wg-quick", "down", iface], text=True, capture_output=True, check=False)
-            conf_path = pathlib.Path(f"/etc/wireguard/{iface}.conf")
-            if conf_path.exists():
+            conf_path = wg_dir / f"{iface}.conf"
+            try:
+                if conf_path.exists():
+                    conf_path.unlink()
+            except OSError:
+                pass
+
+        # Reap conf-only orphans: lw-sc-<point>-*.conf with no live device and not kept.
+        live_now = set(live_interfaces)
+        try:
+            conf_orphans = list(wg_dir.glob(f"{scoped_prefix}*.conf")) if wg_dir.exists() else []
+        except OSError:
+            conf_orphans = []
+        for conf_path in conf_orphans:
+            iface = conf_path.name[: -len(".conf")]
+            if iface in keep_set or iface in live_now:
+                continue
+            try:
                 conf_path.unlink()
+            except OSError:
+                pass
 
     def ensure_sidecar_uot_server_service(self, interface_name: str, listen_tcp_port: int, target_udp_port: int) -> None:
         if listen_tcp_port <= 0 or target_udp_port <= 0:
@@ -451,7 +523,7 @@ WantedBy=multi-user.target
         """Create wstunnel server backend for cf_mode slave transit underlay.
 
         This creates a standalone wstunnel server that:
-        1. Listens on a dynamically allocated local port (26000-26099 range)
+        1. Listens on a dynamically allocated local port (26000-26999 by default)
         2. Accepts WebSocket connections with the specified path prefix
         3. Forwards UDP traffic to the target (WireGuard listen port)
 
@@ -510,6 +582,67 @@ WantedBy=multi-user.target
         metadata = self.load_managed_cf_metadata()
         metadata = [item for item in metadata if str(item.get("service_name", "")) != service_name]
         self.save_managed_cf_metadata(metadata)
+
+    def cleanup_orphan_slave_transit_cf_backends(self, active_interfaces: set[str]) -> None:
+        """Reconcile CF slave-transit backends against the authoritative active uplink set."""
+        active = {str(item or "").strip()[:15] for item in active_interfaces if str(item or "").strip() != ""}
+        metadata = self.load_managed_cf_metadata()
+        if metadata == []:
+            return
+        kept: list[dict[str, Any]] = []
+        removed_any = False
+        removed_services: set[str] = set()
+        for item in metadata:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("backend_type", "") or "") != "slave_transit_cf_wg":
+                kept.append(item)
+                continue
+            interface_name = str(item.get("interface_name", "") or "").strip()[:15]
+            service_name = str(item.get("service_name", "") or "").strip()
+            if interface_name != "" and interface_name in active:
+                kept.append(item)
+                continue
+            removed_any = True
+            if service_name != "":
+                removed_services.add(service_name)
+                logging.warning("removing orphan CF slave-transit backend %s for inactive interface %s", service_name, interface_name)
+                self.disable_runtime(service_name, self.unit_path_for(service_name))
+        if removed_any:
+            self.save_managed_cf_metadata(kept)
+            # C.6c: prune the swept slave-transit rows from any cf-routes-*.json the
+            # cf mux reads from. This must happen even when cf_runtime is absent from
+            # the current payload (the cf mux otherwise keeps routing to a dead leg).
+            if removed_services:
+                self.prune_cf_routes_files(removed_services)
+
+    def prune_cf_routes_files(self, removed_services: set[str]) -> None:
+        """Remove rows for the given service names from every cf-routes-<port>.json."""
+        targets = {str(name or "").strip() for name in removed_services if str(name or "").strip() != ""}
+        if not targets:
+            return
+        for routes_path in self.state_dir.glob("cf-routes-*.json"):
+            try:
+                payload = json.loads(routes_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            rows = payload.get("routes", [])
+            if not isinstance(rows, list):
+                continue
+            kept_rows = [
+                row
+                for row in rows
+                if not (isinstance(row, dict) and str(row.get("service_name", "") or "").strip() in targets)
+            ]
+            if len(kept_rows) == len(rows):
+                continue
+            payload["routes"] = kept_rows
+            try:
+                routes_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            except OSError:
+                logging.exception("failed to prune swept slave-transit rows from %s", routes_path)
 
     @staticmethod
     def detect_time_service() -> str:
@@ -807,7 +940,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStartPre=/bin/bash -lc 'command -v {iperf3_bin} >/dev/null || command -v iperf3 >/dev/null || (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y iperf3)'
-ExecStart={iperf3_bin} -s -p {int(port)} --one-off
+ExecStart={iperf3_bin} -s -p {int(port)}
 Restart=always
 RestartSec=3
 
@@ -862,6 +995,13 @@ WantedBy=multi-user.target
     def cf_uot_start_script_path(self, forward_id: int) -> pathlib.Path:
         return self.state_dir / f"start-cf-uot-{forward_id}.sh"
 
+    def cf_backend_port_range(self) -> range:
+        start = int(self.config.get("cf_backend_port_start", 26000) or 26000)
+        end = int(self.config.get("cf_backend_port_end", 26999) or 26999)
+        if start <= 0 or end < start:
+            start, end = 26000, 26999
+        return range(start, end + 1)
+
     def allocate_cf_backend_port(self, service_name: str, reserved_ports: set[int] | None = None) -> int:
         reserved = set(reserved_ports or set())
         used: set[int] = set()
@@ -878,7 +1018,7 @@ WantedBy=multi-user.target
             used.add(backend_port)
         if existing > 0 and existing not in used and existing not in reserved:
             return existing
-        for port in range(26000, 26100):
+        for port in self.cf_backend_port_range():
             if port not in used and port not in reserved and not self.cf_backend_port_listening(port):
                 return port
         raise RuntimeError("no free sidecar cf backend port available")
@@ -1087,23 +1227,10 @@ WantedBy=multi-user.target
         update_state = self.load_update_state()
         completed_request_token = str(update_state.get("last_completed_request_token", "") or "")
 
-        if explicit_request_token != "" and completed_request_token != explicit_request_token and not self.management_requires_local_update(management):
-            now = time.time()
-            update_state.update(
-                {
-                    "request_token": explicit_request_token,
-                    "status": "success",
-                    "last_attempt_at": now,
-                    "last_completed_request_token": explicit_request_token,
-                    "last_completed_at": now,
-                    "installed_version": AGENT_VERSION,
-                    "installed_bond_sha256": file_sha256(self.bond_binary_path()),
-                    "last_error": "",
-                }
-            )
-            self.save_update_state(update_state)
-            explicit_request_token = ""
-
+        # An explicit agent_update_request_token is a manual force-refresh: it must
+        # drive request_self_update even when no version/sha mismatch is present
+        # (the loop's last_completed_request_token check still prevents re-running a
+        # token that already completed, so this does not loop).
         for update_request_token in [token for token in [explicit_request_token, auto_request_token] if token]:
             if completed_request_token == update_request_token:
                 continue
@@ -1124,11 +1251,13 @@ WantedBy=multi-user.target
             try:
                 self.request_self_update(update_request_token)
             except Exception as exc:  # noqa: BLE001
-                update_state["status"] = "error"
+                # A transient launch failure (e.g. systemd-run hiccup) must not crash
+                # the heartbeat. Record it as "running" so should_retry_update throttles
+                # retries for UPDATE_STALE_SECONDS instead of hot-looping.
+                update_state["status"] = "running"
                 update_state["last_error"] = str(exc)
                 update_state["last_failed_at"] = now
                 self.save_update_state(update_state)
-                raise
             break
 
         bond_runtime = management.get("bond_runtime") if isinstance(management.get("bond_runtime"), dict) else None
@@ -1140,6 +1269,18 @@ WantedBy=multi-user.target
                 mptcp_runtime = legacy_runtime
             else:
                 bond_runtime = legacy_runtime
+
+        # Transit keep-set: the lw-sc-<point>-<idx> names the panel published THIS
+        # cycle. Computed from the RAW published underlays (not the later L1677
+        # processing) so the static-uplink cleanup site can preserve a mixed point's
+        # active transit legs while still reaping stale ones.
+        transit_keep: set[str] = set()
+        if isinstance(mptcp_runtime, dict):
+            for raw_ul in mptcp_runtime.get("underlays", []) or []:
+                if isinstance(raw_ul, dict):
+                    name = str(raw_ul.get("interface_name", "") or "")
+                    if name:
+                        transit_keep.add(name)
 
         primary_service_name = self.service_name()
         primary_unit_path = self.service_unit_path()
@@ -1155,61 +1296,92 @@ WantedBy=multi-user.target
         secondary_runtime_path = self.mptcp_runtime_config_path()
         secondary_start_script = self.mptcp_start_script_path()
 
-        sidecar_uplinks = management.get("sidecar_uplinks", []) if isinstance(management.get("sidecar_uplinks", []), list) else []
-        current_uplink_state = self.load_sidecar_uplink_state()
-        active_interfaces: set[str] = set()
-        static_uplink_point_ids: set[int] = set()
-        for uplink in sidecar_uplinks:
-            if not isinstance(uplink, dict):
-                continue
-            interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
-            if interface_name == "":
-                continue
-            point_for_uplink = int(uplink.get("sidecar_point_id", point_id) or point_id)
-            if interface_name.startswith("lws") and point_for_uplink > 0:
-                static_uplink_point_ids.add(point_for_uplink)
-            active_interfaces.add(interface_name)
-            self.apply_slave_sidecar_uplink(uplink)
-        for cleanup_point_id in sorted(static_uplink_point_ids):
-            self.cleanup_stale_mptcp_transit_interfaces(cleanup_point_id)
-        existing_slaves = current_uplink_state.get("slaves", {}) if isinstance(current_uplink_state.get("slaves", {}), dict) else {}
-        for slave_id, info in list(existing_slaves.items()):
-            iface = str((info if isinstance(info, dict) else {}).get("interface_name", "") or "").strip()[:15]
-            if iface != "" and iface not in active_interfaces:
-                self.remove_slave_sidecar_uplink({"interface_name": iface})
-                existing_slaves.pop(slave_id, None)
-        if sidecar_uplinks:
-            next_state = {"slaves": {}}
+        # Empty-feed authoritative-wipe guard (BUG-1): only treat the section as
+        # authoritative when the key is actually present in the payload. An ABSENT
+        # section (omitted key, or a fetch that returned nothing) must be a NO-OP:
+        # never tear down live uplinks/backends and never overwrite persisted state.
+        # Mirror slave_agent.py which uses `"key" in management`. An explicitly
+        # present (possibly empty) list IS authoritative -> empty means teardown.
+        sidecar_uplinks_present = "sidecar_uplinks" in management
+        raw_sidecar_uplinks = management.get("sidecar_uplinks", [])
+        sidecar_uplinks = raw_sidecar_uplinks if isinstance(raw_sidecar_uplinks, list) else []
+        if sidecar_uplinks_present:
+            current_uplink_state = self.load_sidecar_uplink_state()
+            active_interfaces: set[str] = set()
+            disabled_interfaces: set[str] = set()
+            static_uplink_point_ids: set[int] = set()
             for uplink in sidecar_uplinks:
                 if not isinstance(uplink, dict):
                     continue
                 interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
                 if interface_name == "":
                     continue
+                if not bool(uplink.get("enabled", True)):
+                    disabled_interfaces.add(interface_name)
+                    self.remove_slave_sidecar_uplink({"interface_name": interface_name})
+                    continue
+                point_for_uplink = int(uplink.get("sidecar_point_id", point_id) or point_id)
+                if interface_name.startswith("lws") and point_for_uplink > 0:
+                    static_uplink_point_ids.add(point_for_uplink)
+                active_interfaces.add(interface_name)
+                # Per-uplink isolation (BUG-2): one exhausted/bad uplink must not
+                # abort the whole heartbeat reconcile.
+                try:
+                    self.apply_slave_sidecar_uplink(uplink)
+                except Exception:  # noqa: BLE001
+                    logging.exception("slave-sidecar uplink %s reconcile failed; continuing", interface_name)
+            for cleanup_point_id in sorted(static_uplink_point_ids):
+                self.cleanup_stale_mptcp_transit_interfaces(cleanup_point_id, keep=transit_keep)
+            existing_slaves = current_uplink_state.get("slaves", {}) if isinstance(current_uplink_state.get("slaves", {}), dict) else {}
+            for slave_id, info in list(existing_slaves.items()):
+                iface = str((info if isinstance(info, dict) else {}).get("interface_name", "") or "").strip()[:15]
+                if iface != "" and iface not in active_interfaces:
+                    if iface not in disabled_interfaces:
+                        self.remove_slave_sidecar_uplink({"interface_name": iface})
+                    existing_slaves.pop(slave_id, None)
+            next_state = {"slaves": {}}
+            for uplink in sidecar_uplinks:
+                if not isinstance(uplink, dict) or not bool(uplink.get("enabled", True)):
+                    continue
+                interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+                if interface_name == "":
+                    continue
                 next_state["slaves"][interface_name] = {"interface_name": interface_name}
             self.save_sidecar_uplink_state(next_state)
+            self.cleanup_orphan_slave_transit_cf_backends(active_interfaces)
 
-        self_leg_client_peers = management.get("self_leg_client_peers", []) if isinstance(management.get("self_leg_client_peers", []), list) else []
-        current_self_leg_state = self.load_self_leg_client_peer_state()
-        active_self_leg_interfaces: set[str] = set()
-        for peer in self_leg_client_peers:
-            if not isinstance(peer, dict):
-                continue
-            interface_name = str(peer.get("interface_name", "") or "").strip()[:15]
-            if interface_name == "":
-                continue
-            active_self_leg_interfaces.add(interface_name)
-            self.apply_self_leg_client_peer(peer)
-        existing_self_leg = current_self_leg_state.get("interfaces", {}) if isinstance(current_self_leg_state.get("interfaces", {}), dict) else {}
-        for key, info in list(existing_self_leg.items()):
-            iface = str((info if isinstance(info, dict) else {}).get("interface_name", key) or "").strip()[:15]
-            if iface != "" and iface not in active_self_leg_interfaces:
-                self.remove_self_leg_client_peer({"interface_name": iface})
-                existing_self_leg.pop(key, None)
-        if self_leg_client_peers:
-            next_self_leg_state = {"interfaces": {}}
+        self_leg_present = "self_leg_client_peers" in management
+        raw_self_leg_peers = management.get("self_leg_client_peers", [])
+        self_leg_client_peers = raw_self_leg_peers if isinstance(raw_self_leg_peers, list) else []
+        if self_leg_present:
+            current_self_leg_state = self.load_self_leg_client_peer_state()
+            active_self_leg_interfaces: set[str] = set()
+            disabled_self_leg_interfaces: set[str] = set()
             for peer in self_leg_client_peers:
                 if not isinstance(peer, dict):
+                    continue
+                interface_name = str(peer.get("interface_name", "") or "").strip()[:15]
+                if interface_name == "":
+                    continue
+                if not bool(peer.get("enabled", True)):
+                    disabled_self_leg_interfaces.add(interface_name)
+                    self.remove_self_leg_client_peer({"interface_name": interface_name})
+                    continue
+                active_self_leg_interfaces.add(interface_name)
+                try:
+                    self.apply_self_leg_client_peer(peer)
+                except Exception:  # noqa: BLE001
+                    logging.exception("self-leg peer %s reconcile failed; continuing", interface_name)
+            existing_self_leg = current_self_leg_state.get("interfaces", {}) if isinstance(current_self_leg_state.get("interfaces", {}), dict) else {}
+            for key, info in list(existing_self_leg.items()):
+                iface = str((info if isinstance(info, dict) else {}).get("interface_name", key) or "").strip()[:15]
+                if iface != "" and iface not in active_self_leg_interfaces:
+                    if iface not in disabled_self_leg_interfaces:
+                        self.remove_self_leg_client_peer({"interface_name": iface})
+                    existing_self_leg.pop(key, None)
+            next_self_leg_state = {"interfaces": {}}
+            for peer in self_leg_client_peers:
+                if not isinstance(peer, dict) or not bool(peer.get("enabled", True)):
                     continue
                 interface_name = str(peer.get("interface_name", "") or "").strip()[:15]
                 if interface_name == "":
@@ -1254,39 +1426,46 @@ WantedBy=multi-user.target
                     target = str(route.get("target", "") or "").strip()
                     if service_name == "" or path_prefix == "" or target == "":
                         continue
-                    backend_mode = str(route.get("backend_mode", "") or "").strip().lower()
-                    target_host, _, target_port_text = target.rpartition(":")
-                    target_port = int(target_port_text) if target_host.strip() != "" and target_port_text.strip().isdigit() else 0
-                    direct_backend = backend_mode == "direct" and target_host.strip() != "" and target_port > 0
-                    if direct_backend:
-                        backend_port = target_port
-                        backend_host = target_host.strip()
-                        active_cf_services.add(service_name)
-                        stale_unit_path = self.unit_path_for(service_name)
-                        preview_path = self.state_dir / f"{service_name}.service.preview"
-                        if preview_path.exists():
-                            preview_path.unlink()
-                        if os.name != "nt" and stale_unit_path.exists():
-                            self.disable_runtime(service_name, stale_unit_path)
-                    else:
-                        backend_port = self.allocate_cf_backend_port(service_name, reserved_cf_backend_ports)
-                        reserved_cf_backend_ports.add(backend_port)
-                        backend_host = "127.0.0.1"
-                        unit_body = self.render_cf_backend_unit(service_name, backend_port, target, path_prefix)
-                        preview_path = self.state_dir / f"{service_name}.service.preview"
-                        preview_path.write_text(unit_body, encoding="utf-8")
-                        active_cf_services.add(service_name)
-                        if self.systemd_available():
-                            backend_unit_path = self.unit_path_for(service_name)
-                            try:
-                                unit_changed = write_text_if_changed(backend_unit_path, unit_body)
-                                if unit_changed:
-                                    subprocess.run("systemctl daemon-reload", shell=True, check=False)
-                                if unit_changed or not self.systemd_is_active(service_name):
-                                    subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
-                                    subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
-                            except OSError:
-                                logging.exception("failed to install CF backend service %s", service_name)
+                    # Per-route isolation (BUG-2): allocate_cf_backend_port raises
+                    # RuntimeError on port exhaustion. One exhausted/bad route must
+                    # not abort the whole cf_runtime reconcile (and later sections).
+                    try:
+                        backend_mode = str(route.get("backend_mode", "") or "").strip().lower()
+                        target_host, _, target_port_text = target.rpartition(":")
+                        target_port = int(target_port_text) if target_host.strip() != "" and target_port_text.strip().isdigit() else 0
+                        direct_backend = backend_mode == "direct" and target_host.strip() != "" and target_port > 0
+                        if direct_backend:
+                            backend_port = target_port
+                            backend_host = target_host.strip()
+                            active_cf_services.add(service_name)
+                            stale_unit_path = self.unit_path_for(service_name)
+                            preview_path = self.state_dir / f"{service_name}.service.preview"
+                            if preview_path.exists():
+                                preview_path.unlink()
+                            if os.name != "nt" and stale_unit_path.exists():
+                                self.disable_runtime(service_name, stale_unit_path)
+                        else:
+                            backend_port = self.allocate_cf_backend_port(service_name, reserved_cf_backend_ports)
+                            reserved_cf_backend_ports.add(backend_port)
+                            backend_host = "127.0.0.1"
+                            unit_body = self.render_cf_backend_unit(service_name, backend_port, target, path_prefix)
+                            preview_path = self.state_dir / f"{service_name}.service.preview"
+                            preview_path.write_text(unit_body, encoding="utf-8")
+                            active_cf_services.add(service_name)
+                            if self.systemd_available():
+                                backend_unit_path = self.unit_path_for(service_name)
+                                try:
+                                    unit_changed = write_text_if_changed(backend_unit_path, unit_body)
+                                    if unit_changed:
+                                        subprocess.run("systemctl daemon-reload", shell=True, check=False)
+                                    if unit_changed or not self.systemd_is_active(service_name):
+                                        subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
+                                        subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
+                                except OSError:
+                                    logging.exception("failed to install CF backend service %s", service_name)
+                    except Exception:  # noqa: BLE001
+                        logging.exception("CF backend route %s reconcile failed; skipping route", service_name)
+                        continue
                     rendered_routes.append(
                         {
                             "forward_id": int(route.get("forward_id", 0) or 0),
@@ -1317,23 +1496,30 @@ WantedBy=multi-user.target
                     if service_name in active_cf_services:
                         # Already processed
                         continue
-                    # Add this slave transit backend to the routes
-                    backend_port = self.reconcile_cf_backend_port(
-                        service_name,
-                        int(metadata_entry.get("backend_port", 0) or 0),
-                        reserved_cf_backend_ports,
-                    )
-                    reserved_cf_backend_ports.add(backend_port)
-                    path_prefix = str(metadata_entry.get("path_prefix", "") or "")
-                    target = str(metadata_entry.get("target", "") or "")
-                    if self.systemd_available() and path_prefix != "" and target != "":
-                        unit_body = self.render_cf_backend_unit(service_name, backend_port, target, path_prefix)
-                        unit_changed = write_text_if_changed(self.unit_path_for(service_name), unit_body)
-                        if unit_changed:
-                            subprocess.run("systemctl daemon-reload", shell=True, check=False)
-                        if unit_changed or not self.systemd_is_active(service_name):
-                            subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
-                            subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
+                    # Per-slave-transit isolation (BUG-2): reconcile_cf_backend_port
+                    # raises RuntimeError on port exhaustion. One bad slave-transit
+                    # backend must not abort the loop or the later sections.
+                    try:
+                        # Add this slave transit backend to the routes
+                        backend_port = self.reconcile_cf_backend_port(
+                            service_name,
+                            int(metadata_entry.get("backend_port", 0) or 0),
+                            reserved_cf_backend_ports,
+                        )
+                        reserved_cf_backend_ports.add(backend_port)
+                        path_prefix = str(metadata_entry.get("path_prefix", "") or "")
+                        target = str(metadata_entry.get("target", "") or "")
+                        if self.systemd_available() and path_prefix != "" and target != "":
+                            unit_body = self.render_cf_backend_unit(service_name, backend_port, target, path_prefix)
+                            unit_changed = write_text_if_changed(self.unit_path_for(service_name), unit_body)
+                            if unit_changed:
+                                subprocess.run("systemctl daemon-reload", shell=True, check=False)
+                            if unit_changed or not self.systemd_is_active(service_name):
+                                subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
+                                subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
+                    except Exception:  # noqa: BLE001
+                        logging.exception("CF slave-transit backend %s reconcile failed; skipping", service_name)
+                        continue
                     rendered_routes.append({
                         "forward_id": 0,  # Slave transit backends don't have a forward_id
                         "service_name": service_name,
@@ -1604,6 +1790,16 @@ WantedBy=multi-user.target
                 if unit_changed or runtime_changed or start_script_changed or not self.systemd_is_active(secondary_service_name):
                     subprocess.run(f"systemctl enable {secondary_service_name}.service", shell=True, check=False)
                     subprocess.run(f"systemctl restart {secondary_service_name}.service", shell=True, check=False)
+            # Accumulation fix: reap any lw-sc-<point>-* not in the currently-published
+            # set (e.g. when legs shrink from 5 to 2, indices 2,3,4 get deleted).
+            self.cleanup_stale_mptcp_transit_interfaces(
+                point_id,
+                keep={
+                    str(ul.get("interface_name", ""))
+                    for ul in underlays
+                    if str(ul.get("interface_name", ""))
+                },
+            )
         else:
             self.disable_runtime(secondary_service_name, secondary_unit_path, secondary_start_script, secondary_runtime_path)
             self.cleanup_stale_mptcp_transit_interfaces(point_id)
@@ -1663,12 +1859,63 @@ WantedBy=multi-user.target
                     setattr(self, last_key, now)
         return reports
 
+    def wireguard_peer_state_snapshot(self) -> list[dict]:
+        if shutil.which("wg") is None:
+            return []
+        try:
+            result = subprocess.run(
+                ["wg", "show", "all", "dump"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError:
+            return []
+        if result.returncode != 0:
+            return []
+        now = time.time()
+        peers: list[dict] = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 9:
+                continue
+            interface_name = parts[0].strip()
+            peer_public_key = parts[1].strip()
+            if interface_name == "" or peer_public_key == "":
+                continue
+            try:
+                latest_handshake = int(parts[5] or "0")
+                rx_bytes = int(parts[6] or "0")
+                tx_bytes = int(parts[7] or "0")
+            except ValueError:
+                continue
+            handshake_age = None
+            if latest_handshake > 0:
+                handshake_age = max(0, int(now - latest_handshake))
+            peers.append(
+                {
+                    "interface_name": interface_name,
+                    "peer_public_key": peer_public_key,
+                    "latest_handshake_epoch": latest_handshake,
+                    "handshake_age_seconds": handshake_age,
+                    "rx_bytes": max(0, rx_bytes),
+                    "tx_bytes": max(0, tx_bytes),
+                }
+            )
+        return peers
+
     def build_heartbeat_payload(self) -> dict:
         stats = self.load_runtime_stats()
         wireguard_public_key = self.ensure_wireguard_identity()
         local_clock = self.time_sync_state()
+        status = "ok"
+        health_error = ""
+        if wireguard_public_key == "":
+            status = "degraded"
+            health_error = "wireguard_identity_missing"
+            logging.error("WireGuard identity missing; reporting sidecar heartbeat as degraded")
         payload = {
-            "status": "ok",
+            "status": status,
             "version": AGENT_VERSION,
             "usage_bytes_in": int(stats.get("bytes_in", 0) or 0),
             "usage_bytes_out": int(stats.get("bytes_out", 0) or 0),
@@ -1678,9 +1925,16 @@ WantedBy=multi-user.target
             "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
             "clock_sync": local_clock,
         }
+        payload["agent_sha256"] = file_sha256(pathlib.Path(__file__).resolve())
+        payload["agent_update_state"] = self.load_update_state()
+        if health_error != "":
+            payload["health_error"] = health_error
         bond_leg_reputation = self.load_bond_leg_reputation_snapshot()
         if bond_leg_reputation is not None:
             payload["bond_leg_reputation"] = bond_leg_reputation
+        wireguard_peers = self.wireguard_peer_state_snapshot()
+        if wireguard_peers:
+            payload["wireguard_peer_state"] = wireguard_peers
         donation_reverse_probe = self.build_donation_reverse_probe_payload()
         if donation_reverse_probe:
             payload["donation_reverse_probe"] = donation_reverse_probe
@@ -1712,6 +1966,12 @@ WantedBy=multi-user.target
     def auto_update_request_token(self, management: dict) -> str:
         if not isinstance(management, dict):
             return ""
+        # Apply any panel config_patch (e.g. unpin disable_auto_update) before the
+        # disable gate so a standalone token computation honors the same unpin that
+        # apply_management would. apply_config_patch enforces disable_auto_update_lock.
+        config_patch = management.get("config_patch", {})
+        if isinstance(config_patch, dict) and config_patch != {}:
+            self.apply_config_patch(config_patch)
         if self.auto_update_disabled():
             return ""
 
@@ -1737,6 +1997,18 @@ WantedBy=multi-user.target
             local_bond_sha256 = file_sha256(self.bond_binary_path()).lower()
             if local_bond_sha256 != desired_bond_sha256:
                 mismatches.append(f"bond={desired_bond_sha256}")
+
+        desired_wss_mux_sha256 = str(management.get("desired_wss_mux_sha256", "") or "").strip().lower()
+        if desired_wss_mux_sha256:
+            local_wss_mux_sha256 = file_sha256(pathlib.Path("/usr/local/bin/leikwan-wss-mux.py")).lower()
+            if local_wss_mux_sha256 != desired_wss_mux_sha256:
+                mismatches.append(f"wss_mux={desired_wss_mux_sha256}")
+
+        desired_sidecar_runtime_sha256 = str(management.get("desired_sidecar_runtime_sha256", "") or "").strip().lower()
+        if desired_sidecar_runtime_sha256:
+            local_sidecar_runtime_sha256 = file_sha256(pathlib.Path(self.runtime_bin())).lower()
+            if local_sidecar_runtime_sha256 != desired_sidecar_runtime_sha256:
+                mismatches.append(f"sidecar_runtime={desired_sidecar_runtime_sha256}")
 
         if mismatches == []:
             return ""
