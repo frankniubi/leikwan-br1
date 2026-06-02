@@ -1714,18 +1714,25 @@ final class TenantController extends BaseController
             }
         }
 
-        $combinationOptions = '<option value="">Select a forward combination</option>';
-        foreach ($availableForwardCombinations as $combination) {
-            $combinationOptions .= '<option value="' . (int) ($combination['id'] ?? 0) . '"'
-                . ' data-description="' . $this->escape((string) ($combination['tenant_description'] ?? '')) . '"'
-                . ' data-badge="' . $this->escape((string) ($combination['tenant_badge'] ?? '')) . '">'
-                . $this->escape((string) ($combination['tenant_label'] ?? ''))
+        // Forward Route is the user-facing selection unit; the underlying combinations stay hidden.
+        $availableForwardRoutes = [];
+        try {
+            $availableForwardRoutes = $this->provisioning->availableForwardRoutesForService($serviceId);
+        } catch (\Throwable $throwable) {
+            $availableForwardRoutes = [];
+        }
+        $routeOptions = '<option value="">Select a forward route</option>';
+        foreach ($availableForwardRoutes as $route) {
+            $routeOptions .= '<option value="' . (int) ($route['id'] ?? 0) . '"'
+                . ' data-description="' . $this->escape((string) ($route['tenant_description'] ?? '')) . '"'
+                . ' data-badge="' . $this->escape((string) ($route['tenant_badge'] ?? '')) . '">'
+                . $this->escape((string) ($route['tenant_label'] ?? $route['name'] ?? ''))
                 . '</option>';
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
-        $emptyState = $availableForwardCombinations === []
-            ? '<div class="flash danger">No route package is available for this service yet. Ask admin to publish a forward combination first.</div>'
+        $emptyState = $availableForwardRoutes === []
+            ? '<div class="flash danger">No route package is available for this service yet. Ask admin to publish a forward route first.</div>'
             : '';
 
         $body = '
@@ -1741,7 +1748,7 @@ final class TenantController extends BaseController
               <form method="post" action="/tenant/services/' . $serviceId . '/create-forward">
                 <input type="hidden" name="csrf_token" value="' . $csrf . '">
                 <div class="form-grid">
-                  <div class="field"><label>Forward Combination</label><select name="forward_combination_id" required>' . $combinationOptions . '</select></div>
+                  <div class="field"><label>Forward Route</label><select name="forward_route_id" required>' . $routeOptions . '</select></div>
                   <div class="field"><label>Target Host</label><input type="text" name="target_host" placeholder="10.0.0.5 or example.com" required></div>
                   <div class="field"><label>Target Port</label><input type="number" name="target_port" placeholder="443" required></div>
                   <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" placeholder="auto from line range"></div>
@@ -2448,6 +2455,7 @@ final class TenantController extends BaseController
     {
         return [
             'forward_combination_id' => max(0, (int) ($payload['forward_combination_id'] ?? 0)),
+            'forward_route_id' => max(0, (int) ($payload['forward_route_id'] ?? 0)),
             'listen_port' => max(0, (int) ($payload['listen_port'] ?? 0)),
             'target_host' => trim((string) ($payload['target_host'] ?? '')),
             'target_port' => max(0, (int) ($payload['target_port'] ?? 0)),
