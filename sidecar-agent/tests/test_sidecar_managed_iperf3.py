@@ -29,7 +29,10 @@ class ManagedIperf3ServerTests(unittest.TestCase):
 
         self.assertIn("ExecStart=/usr/bin/iperf3 -s -p 5201", unit)
         self.assertIn("Restart=always", unit)
-        self.assertIn("--one-off", unit)
+        # Persistent server: a forward target must not exit after one session
+        # (--one-off leaves a ~RestartSec gap that drops in-flight forward traffic
+        # and makes back-to-back iperf3 probes fail with "control socket closed").
+        self.assertNotIn("--one-off", unit)
         self.assertNotIn("127.0.0.1", unit)
 
     def test_apply_config_patch_persists_disable_auto_update(self) -> None:
