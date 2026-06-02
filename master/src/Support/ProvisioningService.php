@@ -5060,6 +5060,135 @@ final class ProvisioningService
         }
     }
 
+    public function republishActiveForwardsForRoute(int $routeId): void
+    {
+        if ($routeId <= 0) {
+            return;
+        }
+        $forwards = $this->db->fetchAll(
+            'SELECT f.id
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.forward_route_id = :forward_route_id
+               AND f.enabled = 1
+               AND s.status = "active"',
+            ['forward_route_id' => $routeId]
+        );
+        foreach ($forwards as $row) {
+            $forwardId = (int) ($row['id'] ?? 0);
+            if ($forwardId <= 0) {
+                continue;
+            }
+            try {
+                $this->reconcileForwardEndpoints($forwardId);
+            } catch (\Throwable $e) {
+                error_log('republishActiveForwardsForRoute failed for forward ' . $forwardId . ': ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Persist a Forward Route (a bundle of forward combinations the ingress slave auto-races across).
+     * Guard: all ENABLED combos must share the client->slave ingress realization (backend_mode +
+     * node_group_key + client_mode + bond_ingress_mode) per B0 -- only the slave<->sidecar basis
+     * (self_leg_outer_transport / sidecar_point / leigod_line_id) may differ.
+     */
+    public function saveForwardRoute(array $payload): array
+    {
+        $id = (int) ($payload['id'] ?? 0);
+        $name = trim((string) ($payload['name'] ?? ''));
+        if ($name === '') {
+            throw new ApiException('invalid_forward_route_payload', 422, ['payload' => $payload]);
+        }
+        $tenantLabel = trim((string) ($payload['tenant_label'] ?? ''));
+        $tenantDescription = trim((string) ($payload['tenant_description'] ?? ''));
+        $tenantBadge = trim((string) ($payload['tenant_badge'] ?? ''));
+        $falsey = ['0', 'false', 'no', 'off', ''];
+        $raceEnabled = !in_array(strtolower(trim((string) ($payload['race_enabled'] ?? '1'))), $falsey, true) ? 1 : 0;
+        $isActive = !empty($payload['is_active']) ? 1 : 0;
+        $sortOrder = (int) ($payload['sort_order'] ?? 100);
+
+        $rawCombos = is_array($payload['combinations'] ?? null) ? $payload['combinations'] : [];
+        $combos = [];
+        foreach ($rawCombos as $row) {
+            $cid = (int) (is_array($row) ? ($row['forward_combination_id'] ?? 0) : $row);
+            if ($cid <= 0 || isset($combos[$cid])) {
+                continue;
+            }
+            $enabled = is_array($row)
+                ? (!in_array(strtolower(trim((string) ($row['enabled'] ?? '1'))), $falsey, true) ? 1 : 0)
+                : 1;
+            $combos[$cid] = [
+                'forward_combination_id' => $cid,
+                'enabled' => $enabled,
+                'sort_order' => (int) (is_array($row) ? ($row['sort_order'] ?? 100) : 100),
+            ];
+        }
+
+        $ingressKeys = [];
+        foreach ($combos as $cid => $info) {
+            if (!$info['enabled']) {
+                continue;
+            }
+            $combo = $this->db->fetchOne(
+                'SELECT backend_mode, node_group_key, client_mode, bond_ingress_mode FROM forward_combinations WHERE id = :id LIMIT 1',
+                ['id' => $cid]
+            );
+            if (!is_array($combo)) {
+                throw new ApiException('forward_route_combination_not_found', 422, ['forward_combination_id' => $cid]);
+            }
+            $ingressKeys[] = implode('|', [
+                (string) ($combo['backend_mode'] ?? ''),
+                (string) ($combo['node_group_key'] ?? ''),
+                (string) ($combo['client_mode'] ?? ''),
+                (string) ($combo['bond_ingress_mode'] ?? ''),
+            ]);
+        }
+        if (count(array_unique($ingressKeys)) > 1) {
+            throw new ApiException('forward_route_combos_ingress_mismatch', 422, [
+                'ingress_keys' => array_values(array_unique($ingressKeys)),
+            ]);
+        }
+
+        $normalized = [
+            'name' => $name,
+            'tenant_label' => $tenantLabel !== '' ? $tenantLabel : null,
+            'tenant_description' => $tenantDescription !== '' ? $tenantDescription : null,
+            'tenant_badge' => $tenantBadge !== '' ? $tenantBadge : null,
+            'race_enabled' => $raceEnabled,
+            'is_active' => $isActive,
+            'sort_order' => $sortOrder,
+            'updated_at' => $this->now(),
+        ];
+        if ($id > 0) {
+            $this->db->execute(
+                'UPDATE forward_routes
+                 SET name = :name, tenant_label = :tenant_label, tenant_description = :tenant_description,
+                     tenant_badge = :tenant_badge, race_enabled = :race_enabled, is_active = :is_active,
+                     sort_order = :sort_order, updated_at = :updated_at
+                 WHERE id = :id',
+                $normalized + ['id' => $id]
+            );
+        } else {
+            $id = $this->db->insert('forward_routes', $normalized + ['created_at' => $this->now()]);
+        }
+
+        $this->db->execute('DELETE FROM forward_route_combinations WHERE forward_route_id = :id', ['id' => $id]);
+        foreach ($combos as $info) {
+            $this->db->insert('forward_route_combinations', [
+                'forward_route_id' => $id,
+                'forward_combination_id' => $info['forward_combination_id'],
+                'enabled' => $info['enabled'],
+                'sort_order' => $info['sort_order'],
+                'created_at' => $this->now(),
+                'updated_at' => $this->now(),
+            ]);
+        }
+
+        $this->republishActiveForwardsForRoute($id);
+        return ['id' => $id];
+    }
+
     public function republishActiveForwardsForClient(int $clientId): void
     {
         if ($clientId <= 0) {

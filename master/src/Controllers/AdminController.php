@@ -2146,6 +2146,81 @@ final class AdminController extends BaseController
         return $this->adminPage('Forward Combinations', $body, $viewer, 'forward-combinations');
     }
 
+    public function forwardRoutesPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $editId = (int) ($request->query()['edit'] ?? 0);
+        $routes = $this->db->fetchAll('SELECT * FROM forward_routes ORDER BY sort_order ASC, id ASC');
+        $combos = $this->db->fetchAll('SELECT id, tenant_label, name, backend_mode, node_group_key, self_leg_outer_transport FROM forward_combinations WHERE is_active = 1 ORDER BY sort_order ASC, id ASC');
+        $editing = $editId > 0 ? $this->db->fetchOne('SELECT * FROM forward_routes WHERE id = :id LIMIT 1', ['id' => $editId]) : null;
+        $selected = [];
+        if ($editing !== null) {
+            foreach ($this->db->fetchAll('SELECT forward_combination_id, enabled, sort_order FROM forward_route_combinations WHERE forward_route_id = :id', ['id' => $editId]) as $rc) {
+                $selected[(int) ($rc['forward_combination_id'] ?? 0)] = $rc;
+            }
+        }
+        $comboRows = '';
+        foreach ($combos as $c) {
+            $cid = (int) ($c['id'] ?? 0);
+            $checked = isset($selected[$cid]) && (int) ($selected[$cid]['enabled'] ?? 1) === 1 ? ' checked' : '';
+            $sort = (int) ($selected[$cid]['sort_order'] ?? 100);
+            $label = $this->escape((string) ($c['tenant_label'] ?? $c['name'] ?? ('#' . $cid)));
+            $meta = $this->escape((string) ($c['backend_mode'] ?? '') . ' / ' . (string) ($c['self_leg_outer_transport'] ?? 'cnix') . ' / ' . (string) ($c['node_group_key'] ?? ''));
+            $comboRows .= '<tr><td><label><input type="checkbox" name="combinations[' . $cid . '][forward_combination_id]" value="' . $cid . '"' . $checked . '> ' . $label . '</label></td><td class="muted">' . $meta . '</td><td><input type="number" style="width:80px" name="combinations[' . $cid . '][sort_order]" value="' . $sort . '"></td></tr>';
+        }
+        $routeRows = '';
+        foreach ($routes as $r) {
+            $rid = (int) ($r['id'] ?? 0);
+            $routeRows .= '<tr><td>' . $rid . '</td><td>' . $this->escape((string) ($r['tenant_label'] ?? $r['name'] ?? '')) . '</td><td>' . ((int) ($r['race_enabled'] ?? 1) === 1 ? 'on' : 'off') . '</td><td>' . ((int) ($r['is_active'] ?? 1) === 1 ? 'active' : 'inactive') . '</td><td><a class="button secondary" href="/admin/forward-routes?edit=' . $rid . '">Edit</a></td></tr>';
+        }
+        $raceChecked = ($editing === null || (int) ($editing['race_enabled'] ?? 1) === 1) ? ' checked' : '';
+        $activeChecked = ($editing === null || (int) ($editing['is_active'] ?? 1) === 1) ? ' checked' : '';
+        $body = '<div class="grid">
+              <section class="card">
+                <h3>' . ($editing !== null ? 'Edit Forward Route #' . $editId : 'New Forward Route') . '</h3>
+                <p class="muted">A route bundles forward combinations that share the client&rarr;slave ingress (same backend_mode); the slave auto-races the enabled ones and fails over (cnix &harr; leigod). Mixed backend_mode is rejected.</p>
+                <form method="post" action="/admin/forward-routes">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  ' . ($editing !== null ? '<input type="hidden" name="id" value="' . $editId . '">' : '') . '
+                  <div class="field"><label>Name (internal)</label><input name="name" required value="' . $this->escape((string) ($editing['name'] ?? '')) . '"></div>
+                  <div class="field"><label>Tenant Label</label><input name="tenant_label" value="' . $this->escape((string) ($editing['tenant_label'] ?? '')) . '"></div>
+                  <div class="field"><label>Tenant Description</label><input name="tenant_description" value="' . $this->escape((string) ($editing['tenant_description'] ?? '')) . '"></div>
+                  <div class="field"><label><input type="checkbox" name="race_enabled" value="1"' . $raceChecked . '> Race enabled (off = pin lowest sort_order)</label></div>
+                  <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . (int) ($editing['sort_order'] ?? 100) . '"></div>
+                  <div class="field"><label><input type="checkbox" name="is_active" value="1"' . $activeChecked . '> Active</label></div>
+                  <h4 style="margin-top:12px;">Combinations in this route</h4>
+                  <div class="table-wrap"><table><thead><tr><th>Include / Combination</th><th>backend / self-leg / group</th><th>Priority</th></tr></thead><tbody>' . $comboRows . '</tbody></table></div>
+                  <div class="actions"><button class="button" type="submit">Save Route</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/forward-routes">Cancel</a>' : '') . '</div>
+                </form>
+              </section>
+              <section class="card">
+                <h3>Forward Routes</h3>
+                <div class="table-wrap"><table><thead><tr><th>ID</th><th>Tenant Label</th><th>Race</th><th>Status</th><th>Actions</th></tr></thead><tbody>' . $routeRows . '</tbody></table></div>
+              </section>
+            </div>';
+        return $this->adminPage('Forward Routes', $body, $viewer, 'forward-routes');
+    }
+
+    public function saveForwardRoute(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->provisioning?->saveForwardRoute(is_array($request->body()) ? $request->body() : []);
+            SessionAuth::flash('success', 'Forward route saved.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to save forward route: ' . $this->displayThrowableMessage($throwable));
+        }
+        return Response::redirect('/admin/forward-routes');
+    }
+
     public function saveForwardCombination(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();

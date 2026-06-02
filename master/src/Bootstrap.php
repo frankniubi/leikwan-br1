@@ -132,6 +132,8 @@ final class Bootstrap
         $this->router->add('POST', '/admin/cf-location-groups', [$admin, 'saveCfLocationGroup']);
         $this->router->add('GET', '/admin/forward-combinations', [$admin, 'forwardCombinationsPage']);
         $this->router->add('POST', '/admin/forward-combinations', [$admin, 'saveForwardCombination']);
+        $this->router->add('GET', '/admin/forward-routes', [$admin, 'forwardRoutesPage']);
+        $this->router->add('POST', '/admin/forward-routes', [$admin, 'saveForwardRoute']);
         $this->router->add('POST', '/admin/forward-combinations/{id}/donations/{donationId}/revoke', [$admin, 'revokeDonation']);
         $this->router->add('GET', '/admin/knowledgebase', [$admin, 'knowledgebaseThreadsPage']);
         $this->router->add('GET', '/admin/knowledgebase/new', [$admin, 'knowledgebaseEditorPage']);
