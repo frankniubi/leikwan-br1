@@ -5793,6 +5793,7 @@ final class ProvisioningService
                 $slave['mtu'] = 1280;
                 $slave['sidecar_endpoint_host'] = '127.0.0.1';
                 $slave['sidecar_endpoint_port'] = $slaveListenPort;
+                $slave['leigod_line_toml'] = $this->leigodLineToml((int) ($combination['leigod_line_id'] ?? 0));
                 $sidecar['gost_socks_listen_port'] = $gostSocks;
                 $sidecar['socks_user'] = $socksUser;
                 $sidecar['socks_pass'] = $socksPass;
@@ -8177,6 +8178,41 @@ final class ProvisioningService
             $pass = rtrim(strtr(base64_encode(random_bytes(21)), '+/', '-_'), '=');
         }
         return [$user, $pass];
+    }
+
+    /**
+     * The per-line LeiGod toml the slave writes to <leigod_root>/lines/<id>.toml, so the agent fully
+     * self-provisions the line (no manual file placement). Sourced from the operator-set env
+     * LEIGOD_LINE_TOML_<lineId> (base64-encoded toml). Empty when unset (the agent then assumes a
+     * pre-existing toml and just starts the line).
+     */
+    private function leigodLineToml(int $lineId): string
+    {
+        if ($lineId <= 0) {
+            return '';
+        }
+        $b64 = trim((string) ($this->config->get('LEIGOD_LINE_TOML_' . $lineId, '') ?? ''));
+        if ($b64 === '') {
+            return '';
+        }
+        $decoded = base64_decode($b64, true);
+        return is_string($decoded) ? $decoded : '';
+    }
+
+    /**
+     * The shared LeiGod account session.json the panel pushes to every slave running a leigod line.
+     * One account session works concurrently across many slaves (proven 2026-06-02), so a single
+     * operator-set env LEIGOD_SESSION_JSON_B64 (base64-encoded session.json) suffices for the fleet.
+     * Empty when unset. The LeiGod login needs mobile+captcha+SMS, so the agent can never mint it.
+     */
+    public function leigodSharedSessionJson(): string
+    {
+        $b64 = trim((string) ($this->config->get('LEIGOD_SESSION_JSON_B64', '') ?? ''));
+        if ($b64 === '') {
+            return '';
+        }
+        $decoded = base64_decode($b64, true);
+        return is_string($decoded) ? $decoded : '';
     }
 
     private function staticSidecarCfPathPrefix(int $pointId, int $combinationId, int $nodeId, string $lane): string

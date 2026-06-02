@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.06.03.4"
+AGENT_VERSION = "2026.06.04.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -4388,9 +4388,10 @@ WantedBy=multi-user.target
             sidecar_wg_listen_port = max(0, int(uplink.get("sidecar_wg_listen_port", 0) or 0))
             socks_user = str(uplink.get("socks_user", "") or "wguot").strip() or "wguot"
             socks_pass = str(uplink.get("socks_pass", "") or "").strip()
+            leigod_line_toml = str(uplink.get("leigod_line_toml", "") or "")
             if (gost_listen_udp_port > 0 and leigod_line_id > 0 and sidecar_gost_host != ""
                     and sidecar_gost_port > 0 and sidecar_wg_listen_port > 0 and socks_pass != ""):
-                self.ensure_leigod_line_service(leigod_line_id)
+                self.ensure_leigod_line_service(leigod_line_id, leigod_line_toml)
                 self.ensure_sidecar_gost_uot_client_service(
                     interface_name, gost_listen_udp_port, sidecar_wg_listen_port, leigod_line_id,
                     sidecar_gost_host, sidecar_gost_port, socks_user, socks_pass,
@@ -4469,17 +4470,59 @@ WantedBy=multi-user.target
             path.unlink()
         self.remove_sidecar_wstunnel_udp_client_service(interface_name)
 
-    def ensure_leigod_line_service(self, line_id: int) -> None:
-        # Start (and keep) leigod@<line>, which exposes the LeiGod SOCKS at 127.0.0.1:(20000+line).
-        # Line-scoped and shared across lanes; we only ever START it here. We deliberately do NOT
-        # auto-stop lines (a shared line might still back another lane); per-interface gost clients are
-        # reaped by remove_sidecar_uplink / cleanup_orphan_sidecar_uplinks instead.
+    def ensure_leigod_line_service(self, line_id: int, line_toml: str = "") -> None:
+        # Fully self-provision leigod@<line> from panel-published state: write the unit template (using
+        # the configured leigod binary + root) and the per-line config toml, then start it. The shared
+        # account session.json is delivered separately via apply_leigod_session (panel management). A
+        # single account session works concurrently across many slaves, so one published session + one
+        # published line toml is all a slave needs. Idempotent (write_text_if_changed). We only START
+        # lines here (never auto-stop: a shared line may back another lane); per-interface gost clients
+        # are reaped by remove_sidecar_uplink / cleanup_orphan_sidecar_uplinks.
         if int(line_id) <= 0 or not shutil.which("systemctl"):
             return
+        leigod_bin = str(self.config.get("leigod_bin", "/usr/local/bin/leigod-linux-amd64") or "/usr/local/bin/leigod-linux-amd64")
+        leigod_root = Path(str(self.config.get("leigod_root", "/opt/leigod") or "/opt/leigod"))
+        # Churn guard: never write a Restart=always unit on a node lacking the leigod accelerator binary.
+        if shutil.which(leigod_bin) is None and not Path(leigod_bin).exists():
+            return
+        if isinstance(line_toml, str) and line_toml.strip() != "":
+            try:
+                lines_dir = leigod_root / "lines"
+                lines_dir.mkdir(parents=True, exist_ok=True)
+                toml_path = lines_dir / f"{int(line_id)}.toml"
+                self.write_text_if_changed(toml_path, line_toml)
+                try:
+                    os.chmod(toml_path, 0o600)
+                except OSError:
+                    pass
+            except OSError as exc:  # noqa: BLE001
+                logging.warning("failed to write leigod line %s toml: %s", line_id, exc)
+        unit_body = (
+            "[Unit]\n"
+            "Description=leigod exit line %i\n"
+            "After=network-online.target\n"
+            "Wants=network-online.target\n\n"
+            "[Service]\n"
+            "Type=simple\n"
+            "User=root\n"
+            "ExecStartPre=/bin/bash -c 'sleep $((RANDOM %% 15))'\n"
+            f"ExecStart={leigod_bin} up --session {leigod_root}/session.json --config {leigod_root}/lines/%i.toml\n"
+            "Restart=always\n"
+            "RestartSec=12\n\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n"
+        )
+        unit_path = Path("/etc/systemd/system/leigod@.service")
+        unit_changed = self.write_text_if_changed(unit_path, unit_body)
+        if unit_changed:
+            run_command("systemctl daemon-reload", check=False)
+        # Don't start until the session exists, else leigod crash-loops on "no session".
+        if not (leigod_root / "session.json").exists():
+            return
         unit = f"leigod@{int(line_id)}.service"
-        if not self.systemd_is_active(unit):
+        if unit_changed or not self.systemd_is_active(unit):
             run_command(f"systemctl enable {unit}", check=False)
-            run_command(f"systemctl start {unit}", check=False)
+            run_command(f"systemctl {'restart' if unit_changed else 'start'} {unit}", check=False)
 
     def ensure_sidecar_gost_uot_client_service(
         self,

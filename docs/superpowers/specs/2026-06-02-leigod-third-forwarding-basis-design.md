@@ -41,8 +41,15 @@ changes the **outer transport of the slave↔sidecar WireGuard hop**.
    chained `-F socks5://127.0.0.1:<20000+line_id>` hop) — the proven `wg-auto.sh` path.
 4. **Bandwidth is not treated as capped.** The prior ~7-8 Mbit/s was the user's SG VM throttled on a
    traffic runout, not a LeiGod limit. (TCP-over-TCP stacking overhead still applies; see Risks.)
-5. **Per-slave LeiGod accounts.** Each leigod-capable slave has its own account-bound `session.json`,
-   provisioned out-of-band (SMS+captcha login can't be done by the agent). No shared-account fan-out.
+5. **~~Per-slave LeiGod accounts.~~ SUPERSEDED 2026-06-02 → ONE shared account session, fanned out.**
+   Live finding: a single account `session.json` works **concurrently across many slaves** — the
+   account's `pc_max_connects=1` does NOT cap line acceleration (proven: node 2/19/20 all ran
+   `leigod@453` off the same session at once, 0% loss, no kicking). LeiGod also needs **no active
+   membership** (paid or free) to connect to nodes. So the panel holds **one** shared session
+   (`LEIGOD_SESSION_JSON_B64`) and publishes it to every leigod node via `management['leigod_session_json']`
+   — no per-slave account provisioning. Login is still out-of-band (SMS+captcha), but only **once** for
+   the shared account. (Per-line `LEIGOD_LINE_TOML_<id>` is published the same way; the agent
+   self-provisions the `leigod@<line>` unit + line toml from these — no manual file placement.)
 6. **Deliverable** = this spec + a full task-by-task implementation plan (panel + slave-agent +
    sidecar-agent + install/update + tests).
 7. **Validation** = a WG-over-LeiGod intranet ping: slave WG /32 ↔ sidecar WG /32 (the user's

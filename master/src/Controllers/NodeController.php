@@ -491,19 +491,39 @@ final class NodeController extends BaseController
         }
         $agentConfig = $this->authoritativeAgentConfig($node, $agentConfig, $groupKey);
 
+        $uplinks = $this->provisioning->slaveSidecarUplinkManagementForNode((int) $node['id'])['uplinks'] ?? [];
+        $management = [
+            'agent_config_json' => $agentConfig,
+            'agent_update_request_token' => $updateRequestToken,
+            'agent_update_requested_at' => (string) ($node['agent_update_requested_at'] ?? ''),
+            'desired_agent_version' => (string) ($slaveAgent['version'] ?? ''),
+            'desired_agent_sha256' => (string) ($slaveAgent['sha256'] ?? ''),
+            'desired_installer_version' => (string) ($slaveInstaller['version'] ?? ''),
+            'desired_installer_sha256' => (string) ($slaveInstaller['sha256'] ?? ''),
+            'sidecar_static_uplinks' => $uplinks,
+        ];
+        // Deliver the shared LeiGod account session only to nodes that actually run a leigod line.
+        $usesLeigod = false;
+        foreach ((array) $uplinks as $uplink) {
+            if (!is_array($uplink)) {
+                continue;
+            }
+            if ((string) ($uplink['outer_transport'] ?? '') === 'leigod' || (int) ($uplink['leigod_line_id'] ?? 0) > 0) {
+                $usesLeigod = true;
+                break;
+            }
+        }
+        if ($usesLeigod) {
+            $leigodSession = $this->provisioning->leigodSharedSessionJson();
+            if ($leigodSession !== '') {
+                $management['leigod_session_json'] = $leigodSession;
+            }
+        }
+
         return $this->json([
             'ok' => true,
             'tasks' => $decodedTasks,
-            'management' => [
-                'agent_config_json' => $agentConfig,
-                'agent_update_request_token' => $updateRequestToken,
-                'agent_update_requested_at' => (string) ($node['agent_update_requested_at'] ?? ''),
-                'desired_agent_version' => (string) ($slaveAgent['version'] ?? ''),
-                'desired_agent_sha256' => (string) ($slaveAgent['sha256'] ?? ''),
-                'desired_installer_version' => (string) ($slaveInstaller['version'] ?? ''),
-                'desired_installer_sha256' => (string) ($slaveInstaller['sha256'] ?? ''),
-                'sidecar_static_uplinks' => $this->provisioning->slaveSidecarUplinkManagementForNode((int) $node['id'])['uplinks'] ?? [],
-            ],
+            'management' => $management,
         ]);
     }
 
