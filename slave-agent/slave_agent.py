@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.06.02.1"
+AGENT_VERSION = "2026.06.02.2"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -4286,6 +4286,15 @@ WantedBy=multi-user.target
                 selection_mode.setdefault("dial_port", cf_dial_port)
                 selection_mode.setdefault("sni_host", cf_sni_host)
                 selection_mode.setdefault("path_prefix", cf_path_prefix)
+                # Validate the chosen CF edge with a REAL wstunnel handshake to the
+                # transit target instead of the raw-socket probe. A CF edge that 400s
+                # the routed lws-5-1-N websocket path still passes the raw probe (false
+                # 101) but fails a real wstunnel client, so without probe_target the
+                # selector wedges on a 400-returning edge (the forward-relay path at
+                # reconcile_runtime already does this; mirror it for slave transit).
+                if cf_target_host != "" and cf_target_port > 0:
+                    selection_mode.setdefault("probe_target", f"{cf_target_host}:{cf_target_port}")
+                    selection_mode["validate_current"] = True
                 if selection_mode.get("location_group_id") and isinstance(selection_mode.get("cidrs"), list):
                     try:
                         cf_selection = self.select_cf_location_ip(selection_mode)
@@ -4304,6 +4313,10 @@ WantedBy=multi-user.target
                         "cache_ttl_seconds": int(uplink.get("cf_cache_ttl_seconds", 120) or 120),
                         "switch_improvement_ms": int(uplink.get("cf_switch_improvement_ms", 15) or 15),
                         "max_candidates": int(uplink.get("cf_max_candidates", 8) or 8),
+                        # Real-handshake validation so a 400-returning edge is rejected
+                        # (see the matching block in the cf_mode branch above).
+                        "probe_target": (f"{cf_target_host}:{cf_target_port}" if cf_target_host != "" and cf_target_port > 0 else ""),
+                        "validate_current": True,
                     }
                     try:
                         cf_selection = self.select_cf_location_ip(selection_mode)
