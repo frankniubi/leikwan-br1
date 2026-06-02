@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.06.03.1"
+AGENT_VERSION = "2026.06.03.2"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -2224,10 +2224,34 @@ class SlaveAgent:
         self.cleanup_orphan_sidecar_uplinks(section_present=sidecar_section_present)
         self.cleanup_orphan_mptcp_underlays()
 
+    def apply_leigod_session(self, session_json: Any) -> None:
+        """Write the per-slave LeiGod account session, pushed by the panel via management state.
+
+        The LeiGod login needs mobile + Tencent captcha + SMS, so the agent can never mint a session
+        itself -- the panel delivers the account-bound blob here. Written to <leigod_root>/session.json
+        mode 0600 (the leigod@<line> accelerator reads it). Never logged.
+        """
+        if not isinstance(session_json, str) or session_json.strip() == "":
+            return
+        leigod_root = Path(str(self.config.get("leigod_root", "/opt/leigod") or "/opt/leigod"))
+        try:
+            leigod_root.mkdir(parents=True, exist_ok=True)
+            session_path = leigod_root / "session.json"
+            changed = self.write_text_if_changed(session_path, session_json)
+            try:
+                os.chmod(session_path, 0o600)
+            except OSError:
+                pass
+            if changed:
+                logging.info("leigod session.json updated (%d bytes)", len(session_json))
+        except OSError as exc:  # noqa: BLE001
+            logging.warning("failed to write leigod session.json: %s", exc)
+
     def apply_management_state(self, management: Any, schedule_updates: bool = True) -> None:
         if not isinstance(management, dict):
             return
         self.apply_config_patch(management.get("agent_config_json"))
+        self.apply_leigod_session(management.get("leigod_session_json"))
         # BUG-1: only treat the static-uplink feed as authoritative when the
         # section was actually present in this management payload. A payload
         # that simply omitted the key must NOT be read as "tear everything

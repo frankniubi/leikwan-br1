@@ -183,6 +183,30 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
         self.assertNotIn("ListenPort = 43123", rendered)
         self.assertIn("MTU = 1280", rendered)
 
+    def test_apply_leigod_session_writes_file_0600(self):
+        agent = self.make_agent()
+        chmod_calls: list = []
+        with tempfile.TemporaryDirectory() as ld:
+            agent.config["leigod_root"] = ld
+            with mock.patch.object(slave_agent_module.os, "chmod", side_effect=lambda p, m: chmod_calls.append((str(p), m))):
+                agent.apply_leigod_session('{"client_token":"x"}')
+                # empty / non-str must be a no-op (no extra chmod, no crash)
+                agent.apply_leigod_session("")
+                agent.apply_leigod_session(None)
+            session_path = pathlib.Path(ld) / "session.json"
+            self.assertTrue(session_path.exists())
+            self.assertIn("client_token", session_path.read_text(encoding="utf-8"))
+            self.assertTrue(any(m == 0o600 and p.endswith("session.json") for p, m in chmod_calls), chmod_calls)
+            self.assertEqual(1, len(chmod_calls))  # only the real write chmod'd
+
+    def test_apply_management_state_pushes_leigod_session(self):
+        agent = self.make_agent()
+        seen: list = []
+        with mock.patch.object(agent, "apply_leigod_session", side_effect=lambda s: seen.append(s)):
+            with mock.patch.object(agent, "apply_static_sidecar_uplinks"):
+                agent.apply_management_state({"leigod_session_json": "BLOB"}, schedule_updates=False)
+        self.assertIn("BLOB", seen)
+
     def test_wstunnel_udp_uplink_does_not_bind_wireguard_to_local_wstunnel_port(self):
         agent = self.make_agent()
         agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
