@@ -5184,17 +5184,21 @@ final class ProvisioningService
                 continue;
             }
             $combo = $this->db->fetchOne(
-                'SELECT backend_mode, node_group_key, client_mode, bond_ingress_mode FROM forward_combinations WHERE id = :id LIMIT 1',
+                'SELECT backend_mode, node_group_key, client_mode, bond_ingress_mode, sidecar_point_id FROM forward_combinations WHERE id = :id LIMIT 1',
                 ['id' => $cid]
             );
             if (!is_array($combo)) {
                 throw new ApiException('forward_route_combination_not_found', 422, ['forward_combination_id' => $cid]);
             }
+            // Same client->slave ingress (backend_mode + node group + client_mode + bond_ingress_mode)
+            // AND same sidecar_point_id, so the slave selector's single sidecar_service_port + per-service
+            // backend unit are shared across candidates (B0/R2). Only the slave<->sidecar basis differs.
             $ingressKeys[] = implode('|', [
                 (string) ($combo['backend_mode'] ?? ''),
                 (string) ($combo['node_group_key'] ?? ''),
                 (string) ($combo['client_mode'] ?? ''),
                 (string) ($combo['bond_ingress_mode'] ?? ''),
+                (string) ($combo['sidecar_point_id'] ?? ''),
             ]);
         }
         if (count(array_unique($ingressKeys)) > 1) {
