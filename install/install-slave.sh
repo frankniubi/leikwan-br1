@@ -361,6 +361,24 @@ else
   download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
 fi
 
+# --- LeiGod basis binaries (gost UoT carrier + recovered LeiGod accelerator) ---
+# Both are self-hosted under leikwan's own artifact store (NOT the upstream leigod-forward
+# one-liner) and are gated by check_binary_current against versions.json sha256 so install
+# does not re-download an unchanged binary (the 100GB/day churn lesson).
+_sha=$(_vers_sha256 gost_linux_amd64)
+if check_binary_current "$BIN_DIR/gost" "$_sha"; then
+  echo "  gost up to date, skipping download"
+else
+  download_atomic "$ARTIFACT_BASE/artifacts/gost/gost_linux_amd64" "$BIN_DIR/gost"
+fi
+
+_sha=$(_vers_sha256 leigod_linux_amd64)
+if check_binary_current "$BIN_DIR/leigod-linux-amd64" "$_sha"; then
+  echo "  leigod accelerator up to date, skipping download"
+else
+  download_atomic "$ARTIFACT_BASE/artifacts/leigod/leigod-linux-amd64" "$BIN_DIR/leigod-linux-amd64"
+fi
+
 # --- WireGuard watchdog ---
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-wg-watchdog.sh" "$BIN_DIR/leikwan-wg-watchdog.sh"
 cat > /etc/systemd/system/leikwan-wg-watchdog.service <<'WDUNIT'
@@ -437,6 +455,8 @@ payload.update({
     "cloudflare_global_key": cloudflare_global_key,
     "state_dir": payload.get("state_dir", "/var/lib/leikwan-slave"),
     "ingress_bin": payload.get("ingress_bin", "/usr/local/bin/leikwan-ingress"),
+    "gost_bin": payload.get("gost_bin", "/usr/local/bin/gost"),
+    "leigod_bin": payload.get("leigod_bin", "/usr/local/bin/leigod-linux-amd64"),
     "log_level": payload.get("log_level", "INFO"),
     "installer_version": installer_version,
 })
