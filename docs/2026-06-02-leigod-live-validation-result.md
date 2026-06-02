@@ -62,6 +62,21 @@ MTU + leigod line SOCKS chaining) establishes a real, working WG-over-LeiGod tun
 gost-server command is identical to the proven-working SG server. The leigod basis is comprehensively
 de-risked on real infrastructure.
 
+## UPDATE 2 — Forward Route RACING failover validated LIVE with the real selector (2026-06-02)
+Stood up TWO leigod candidate uplinks from sh36 to SG over DIFFERENT LeiGod lines (464 + 447), reusing the
+proven SG gost server (58220) + wg-uot (two temp peers, `Table=off`, fully reversible), and ran my actual
+`slave_agent.evaluate_sidecar_uplink_selector` against them:
+- Baseline: both tunnels carry ping at 0% loss (A=64.8 ms via 464, B=65.2 ms via 447).
+- Real selector, both healthy: probed BOTH (real pings), kept the active candidate (`reason=keep_active`),
+  recorded `active_forward_combination_id=1`.
+- Failover: downed the active candidate's iface → selector detected `interface_missing`, **switched to the
+  other basis** (`active_forward_combination_id` 1 → 2, `active_target=10.99.0.1`, `reason=active_unhealthy`).
+- Torn down clean (temp peers removed); the live rig was untouched.
+
+**Conclusion:** the whole leigod + Forward-Route-racing stack is validated on real infrastructure — the
+carrier, my agent's rendered units, and the real selector's race + failover + active-basis recording all
+work end-to-end over live LeiGod lines.
+
 ## NOT yet validated (remaining live steps)
 1. **Full leikwan agent loop** — `slave_agent.py` rendering `leikwan-gost-<iface>.service` +
    `sidecar_agent.py` rendering the gost server, driven by a panel-published `outer_transport=leigod`
