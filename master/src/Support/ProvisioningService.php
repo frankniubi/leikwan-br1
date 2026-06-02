@@ -5673,8 +5673,12 @@ final class ProvisioningService
         ];
         $sidecarListenPort = $this->sidecarWireguardListenPort($listenSource, $sidecarConfig);
         $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $sidecarConfig);
-        $cfMode = $this->staticSidecarCombinationUsesCf($combination);
+        // A leigod self-leg is exclusive: even when the client->slave ingress is cf_mode (so the combo can
+        // race against a cf combo on the same sidecar), the slave<->sidecar uplink is built as leigod ONLY.
+        // Without this, a cf_mode + self_leg_outer_transport=leigod combo would trip BOTH branches and emit a
+        // hybrid (cf_* and leigod_* fields) uplink.
         $leigodMode = $this->staticSidecarCombinationUsesLeigod($combination);
+        $cfMode = $leigodMode ? false : $this->staticSidecarCombinationUsesCf($combination);
         $lanes = [];
         foreach (['primary' => 'p', 'backup' => 'b'] as $lane => $suffix) {
             $addresses = $this->allocateStaticSidecarUplinkSubnet($pointId, $combinationId, $nodeId, $lane);

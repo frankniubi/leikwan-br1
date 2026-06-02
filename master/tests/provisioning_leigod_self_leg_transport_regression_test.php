@@ -30,5 +30,12 @@ foreach ([
     }
 }
 
+// Exclusivity: a leigod self-leg must NOT also be built as cf, even when backend_mode=cf_mode
+// (so a cf-ingress forward can run a leigod self-leg AND race against a cf combo on the same sidecar).
+$svc = file_get_contents(__DIR__ . '/../src/Support/ProvisioningService.php') ?: '';
+if (!str_contains($svc, '$cfMode = $leigodMode ? false : $this->staticSidecarCombinationUsesCf($combination);')) {
+    fail('missing leigod-over-cf exclusivity: cfMode must be suppressed when leigodMode is true');
+}
+
 echo "OK\n";
 exit(0);
