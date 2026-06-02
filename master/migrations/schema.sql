@@ -157,6 +157,10 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     helper_escalation_policy VARCHAR(64) NOT NULL DEFAULT 'disabled',
     self_leg_cf_transport VARCHAR(16) NOT NULL DEFAULT 'cf_direct'
         COMMENT 'Self-leg transport under CF Bond. Values: cf_direct (default) | cf_wg.',
+    self_leg_outer_transport ENUM('cnix','cf','leigod') NOT NULL DEFAULT 'cnix',
+    leigod_line_id INT UNSIGNED NULL,
+    leigod_socks_user VARCHAR(64) NULL,
+    leigod_socks_pass VARCHAR(128) NULL,
     desired_latency_ms INT NOT NULL DEFAULT 0,
     allow_public_self_leg_donation TINYINT(1) NOT NULL DEFAULT 0,
     donation_qualify_window_seconds INT NOT NULL DEFAULT 60,
