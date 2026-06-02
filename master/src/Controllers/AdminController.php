@@ -2055,6 +2055,7 @@ final class AdminController extends BaseController
                     <p class="muted">Allow opted-in client self-leg capacity to become a public donated slave for this forward combination only. The donation gate is based on slave -&gt; sidecar -&gt; endpoint RTT.</p>
                     <div class="form-grid">
                       <div class="field"><label>Desired latency (ms)</label><input type="number" name="desired_latency_ms" min="0" value="' . $this->escape((string) ($editing['desired_latency_ms'] ?? 0)) . '"><p class="muted">Donation gate is 75% of this value.</p></div>
+                      <div class="field"><label>Ideal slave WG inner RTT (ms)</label><input type="number" name="slave_wg_ideal_latency_ms" min="0" value="' . $this->escape((string) ($editing['slave_wg_ideal_latency_ms'] ?? '')) . '"><p class="muted">0/blank uses Desired latency; blank disables if Desired latency is also 0.</p></div>
                       <div class="field"><label>Allow public client-as-a-slave donation</label><select name="allow_public_self_leg_donation"><option value="0"' . (((int) ($editing['allow_public_self_leg_donation'] ?? 0)) === 0 ? ' selected' : '') . '>No</option><option value="1"' . (((int) ($editing['allow_public_self_leg_donation'] ?? 0)) === 1 ? ' selected' : '') . '>Yes</option></select></div>
                       <div class="field"><label>Qualify window (s)</label><input type="number" name="donation_qualify_window_seconds" min="5" value="' . $this->escape((string) ($editing['donation_qualify_window_seconds'] ?? 60)) . '"></div>
                       <div class="field"><label>Revoke window (s)</label><input type="number" name="donation_revoke_window_seconds" min="5" value="' . $this->escape((string) ($editing['donation_revoke_window_seconds'] ?? 30)) . '"></div>
@@ -3482,6 +3483,7 @@ final class AdminController extends BaseController
                 'supports_quic',
                 'supports_bond_hybrid',
                 'supports_sidecar_quic',
+                'accept_panel_republish',
                 'bond_protocols',
                 'hybrid_modes',
             ] as $runtimeKey) {
