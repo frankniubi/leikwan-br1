@@ -661,6 +661,46 @@ final class ProvisioningService
     /**
      * @return array<int, array<string, mixed>>
      */
+    public function primaryCombinationIdForRoute(int $routeId): int
+    {
+        if ($routeId <= 0) {
+            return 0;
+        }
+        $row = $this->db->fetchOne(
+            'SELECT forward_combination_id FROM forward_route_combinations
+             WHERE forward_route_id = :id AND enabled = 1
+             ORDER BY sort_order ASC, id ASC LIMIT 1',
+            ['id' => $routeId]
+        );
+        return is_array($row) ? (int) ($row['forward_combination_id'] ?? 0) : 0;
+    }
+
+    /**
+     * Routes a service may select in the tenant add-forward UI. If the plan gates routes
+     * (service_plan_forward_routes), only those are offered; otherwise all active routes.
+     */
+    public function availableForwardRoutesForService(int $serviceId): array
+    {
+        $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+        $planId = (int) ($service['plan_id'] ?? 0);
+        $gated = $this->db->fetchAll(
+            'SELECT fr.* FROM forward_routes fr
+             INNER JOIN service_plan_forward_routes spfr ON spfr.forward_route_id = fr.id
+             WHERE spfr.plan_id = :plan_id AND fr.is_active = 1
+             ORDER BY fr.sort_order ASC, fr.id ASC',
+            ['plan_id' => $planId]
+        );
+        if ($gated !== []) {
+            return array_values($gated);
+        }
+        return array_values($this->db->fetchAll(
+            'SELECT * FROM forward_routes WHERE is_active = 1 ORDER BY sort_order ASC, id ASC'
+        ));
+    }
+
     public function availableForwardCombinationsForService(int $serviceId): array
     {
         $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
@@ -4029,6 +4069,13 @@ final class ProvisioningService
         unset($payload['endpoint_count']);
 
         $forwardCombinationId = (int) ($payload['forward_combination_id'] ?? 0);
+        $forwardRouteId = (int) ($payload['forward_route_id'] ?? 0);
+        if ($forwardCombinationId <= 0 && $forwardRouteId > 0) {
+            // Route selected: seed the forward from the route's primary (lowest sort_order enabled)
+            // combination so the existing combo-based realization keeps working. The slave's basis
+            // selector (Forward Route racing) may later promote a different enabled combo at runtime.
+            $forwardCombinationId = $this->primaryCombinationIdForRoute($forwardRouteId);
+        }
         $backendMode = trim((string) ($payload['backend_mode'] ?? 'current_mode'));
         $cfLocationGroupId = (int) ($payload['cf_location_group_id'] ?? 0);
         $listenPort = (int) ($payload['listen_port'] ?? 0);
@@ -4370,6 +4417,8 @@ final class ProvisioningService
                 'bond_ingress_mode' => $bondIngressMode,
                 'bond_sidecar_point_id' => $bondSidecarPointId > 0 ? $bondSidecarPointId : null,
                 'forward_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
+                'forward_route_id' => $forwardRouteId > 0 ? $forwardRouteId : null,
+                'active_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
                 'backend_mode' => $backendMode,
                 'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
                 'line_client_id' => $lineClientId > 0 ? $lineClientId : null,
@@ -4404,6 +4453,8 @@ final class ProvisioningService
                      bond_ingress_mode = :bond_ingress_mode,
                      bond_sidecar_point_id = :bond_sidecar_point_id,
                      forward_combination_id = :forward_combination_id,
+                     forward_route_id = :forward_route_id,
+                     active_combination_id = :active_combination_id,
                      backend_mode = :backend_mode,
                      cf_location_group_id = :cf_location_group_id,
                      line_client_id = :line_client_id,
@@ -4435,6 +4486,8 @@ final class ProvisioningService
                     'bond_ingress_mode' => $bondIngressMode,
                     'bond_sidecar_point_id' => $bondSidecarPointId > 0 ? $bondSidecarPointId : null,
                     'forward_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
+                    'forward_route_id' => $forwardRouteId > 0 ? $forwardRouteId : null,
+                    'active_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
                     'backend_mode' => $backendMode,
                     'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
                     'line_client_id' => $lineClientId > 0 ? $lineClientId : null,
