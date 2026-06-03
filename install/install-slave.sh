@@ -379,6 +379,15 @@ else
   download_atomic "$ARTIFACT_BASE/artifacts/leigod/leigod-linux-amd64" "$BIN_DIR/leigod-linux-amd64"
 fi
 
+# lguot: CPU-efficient UDP-over-TCP carrier (batched recvmmsg/sendmmsg) that replaces gost on the
+# leigod arm when a combination opts into it (leigod_uot_impl=lguot). ~2.4x throughput at 1/3 CPU.
+_sha=$(_vers_sha256 lguot_linux_amd64)
+if check_binary_current "$BIN_DIR/lguot" "$_sha"; then
+  echo "  lguot up to date, skipping download"
+else
+  download_atomic "$ARTIFACT_BASE/artifacts/lguot/lguot_linux_amd64" "$BIN_DIR/lguot"
+fi
+
 # --- WireGuard watchdog ---
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-wg-watchdog.sh" "$BIN_DIR/leikwan-wg-watchdog.sh"
 cat > /etc/systemd/system/leikwan-wg-watchdog.service <<'WDUNIT'

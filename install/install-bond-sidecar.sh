@@ -189,6 +189,8 @@ download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$B
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
 # LeiGod basis: the sidecar runs the gost UoT SOCKS server (leikwan-leigod-gost-server-<iface>).
 download_atomic "$ARTIFACT_BASE/artifacts/gost/gost_linux_amd64" "$BIN_DIR/gost"
+# lguot: CPU-efficient UoT server, the leigod_uot_impl=lguot alternative to the gost server.
+download_atomic "$ARTIFACT_BASE/artifacts/lguot/lguot_linux_amd64" "$BIN_DIR/lguot"
 
 # --- WireGuard watchdog ---
 download "$ARTIFACT_BASE/artifacts/leikwan-wg-watchdog.sh" "$BIN_DIR/leikwan-wg-watchdog.sh"
