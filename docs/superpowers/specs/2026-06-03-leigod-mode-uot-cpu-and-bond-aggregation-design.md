@@ -1,7 +1,7 @@
 # LeiGod Mode — UoT CPU Efficiency + Bond Aggregation (kernel-WG-first)
 
 **Date:** 2026-06-03
-**Status:** Approach approved (profile-first); pending spec review → phased plan.
+**Status:** ⚠️ **SUPERSEDED** by `2026-06-04-leigod-mode-transparent-uot-mptcp-design.md`. The "lift per-leg CPU to ~200 Mbit/s" premise was disproven by measurement (one lguot UoT/slave already reaches the ~175 line cap; the bottleneck is the shared sidecar, not per-leg CPU). The stability fix moved to running client→slave as **true MPTCP** (no bond binary) while reusing the existing leigod static sidecar uplink. Kept for the profile-first methodology + bond-aggregation analysis.
 **Supersedes:** `2026-06-03-leigod-mode-demoted-cf-anchor-design.md` and `2026-06-03-leigod-mode-client-direct-design.md` (CF floor and client-direct both dropped — see §2).
 **Related:** `docs/2026-06-03-leigod-mode-toplevel-feature.md`, `[[leigod-uot-cpu-bound]]`, `[[leigod-account-facts]]`, `[[leigod-throughput-measured]]`.
 
