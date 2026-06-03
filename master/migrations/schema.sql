@@ -145,6 +145,8 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     tenant_description VARCHAR(255) NULL,
     tenant_badge VARCHAR(64) NULL,
     node_group_key VARCHAR(191) NOT NULL,
+    -- Forward Mode: 'current_mode' (direct ingress) | 'cf_mode' (Cloudflare ingress) |
+    -- 'leigod_mode' (direct ingress + LeiGod self-leg; derives self_leg_outer_transport=leigod).
     backend_mode VARCHAR(32) NOT NULL DEFAULT 'current_mode',
     sidecar_point_id BIGINT UNSIGNED NOT NULL,
     cf_location_group_id BIGINT UNSIGNED NULL,
