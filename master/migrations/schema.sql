@@ -157,6 +157,11 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     helper_escalation_policy VARCHAR(64) NOT NULL DEFAULT 'disabled',
     self_leg_cf_transport VARCHAR(16) NOT NULL DEFAULT 'cf_direct'
         COMMENT 'Self-leg transport under CF Bond. Values: cf_direct (default) | cf_wg.',
+    self_leg_outer_transport ENUM('cnix','cf','leigod') NOT NULL DEFAULT 'cnix',
+    leigod_line_id INT UNSIGNED NULL,
+    leigod_socks_user VARCHAR(64) NULL,
+    leigod_socks_pass VARCHAR(128) NULL,
+    leigod_uot_impl ENUM('gost','lguot') NOT NULL DEFAULT 'gost',
     desired_latency_ms INT NOT NULL DEFAULT 0,
     allow_public_self_leg_donation TINYINT(1) NOT NULL DEFAULT 0,
     donation_qualify_window_seconds INT NOT NULL DEFAULT 60,
@@ -276,6 +281,43 @@ CREATE TABLE IF NOT EXISTS service_plan_forward_combinations (
     UNIQUE KEY uniq_plan_forward_combination (plan_id, forward_combination_id)
 );
 
+CREATE TABLE IF NOT EXISTS forward_routes (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(191) NOT NULL,
+    tenant_label VARCHAR(191) NULL,
+    tenant_description TEXT NULL,
+    tenant_badge VARCHAR(64) NULL,
+    race_enabled TINYINT(1) NOT NULL DEFAULT 1,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 100,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS forward_route_combinations (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    forward_route_id BIGINT UNSIGNED NOT NULL,
+    forward_combination_id BIGINT UNSIGNED NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 100,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_route_combo_route FOREIGN KEY (forward_route_id) REFERENCES forward_routes(id),
+    CONSTRAINT fk_route_combo_combo FOREIGN KEY (forward_combination_id) REFERENCES forward_combinations(id),
+    UNIQUE KEY uniq_route_combination (forward_route_id, forward_combination_id)
+);
+
+CREATE TABLE IF NOT EXISTS service_plan_forward_routes (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    forward_route_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_plan_route_plan FOREIGN KEY (plan_id) REFERENCES service_plans(id),
+    CONSTRAINT fk_plan_route_route FOREIGN KEY (forward_route_id) REFERENCES forward_routes(id),
+    UNIQUE KEY uniq_plan_forward_route (plan_id, forward_route_id)
+);
+
 CREATE TABLE IF NOT EXISTS services (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT UNSIGNED NOT NULL,
@@ -341,6 +383,8 @@ CREATE TABLE IF NOT EXISTS forwards (
     bond_ingress_mode VARCHAR(32) NOT NULL DEFAULT 'wss_path_mux',
     bond_sidecar_point_id BIGINT UNSIGNED NULL,
     forward_combination_id BIGINT UNSIGNED NULL,
+    forward_route_id BIGINT UNSIGNED NULL,
+    active_combination_id BIGINT UNSIGNED NULL,
     backend_mode VARCHAR(32) NOT NULL DEFAULT 'current_mode',
     cf_location_group_id BIGINT UNSIGNED NULL,
     line_client_id BIGINT UNSIGNED NULL,

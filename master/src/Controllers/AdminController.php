@@ -1937,6 +1937,20 @@ final class AdminController extends BaseController
             $cfOptions .= '<option value="' . (int) ($group['id'] ?? 0) . '"' . $selected . '>' . $this->escape((string) ($group['name'] ?? '')) . ' [' . $this->escape((string) ($group['region_code'] ?? '')) . ']</option>';
         }
 
+        // LeiGod self-leg basis picker (feature-flagged behind LEIGOD_BASIS_ENABLED until per-slave
+        // accounts + capacity are provisioned). The form fields flow straight through saveForwardCombination.
+        $leigodField = '';
+        if (((string) $this->config->get('LEIGOD_BASIS_ENABLED', '0')) === '1') {
+            $selfLegOuter = (string) ($editing['self_leg_outer_transport'] ?? 'cnix');
+            $leigodLineId = (int) ($editing['leigod_line_id'] ?? 0);
+            $opt = static fn(string $v, string $label): string =>
+                '<option value="' . $v . '"' . ($selfLegOuter === $v ? ' selected' : '') . '>' . $label . '</option>';
+            $leigodField = '<div class="field"><label>Self-leg outer transport (basis)</label><select name="self_leg_outer_transport">'
+                . $opt('cnix', 'cnix (direct CNIX)') . $opt('cf', 'cf (Cloudflare wstunnel)') . $opt('leigod', 'leigod (LeiGod line)')
+                . '</select><p class="muted">leigod carries the slave&harr;sidecar WireGuard over a LeiGod accelerated line via gost UDP-over-TCP. Mutually exclusive with cf for the same hop.</p></div>'
+                . '<div class="field"><label>LeiGod line id</label><input type="number" name="leigod_line_id" min="0" value="' . $leigodLineId . '"><p class="muted">Required when basis = leigod. Slave SOCKS = 127.0.0.1:(20000 + line id).</p></div>';
+        }
+
         $latestHeartbeats = $this->db->fetchAll(
             'SELECT nh.node_id, nh.payload_json, n.name AS node_name
              FROM node_heartbeats nh
@@ -2094,6 +2108,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Max Legs Used (cap)</label><input type="number" name="helper_group_cap" min="0" value="' . $this->escape((string) ($editing['helper_group_cap'] ?? 4)) . '"><p class="muted">Default 4 for bond, CF Bond and MPTCP. 0 = unlimited.</p></div>
                     <div class="field"><label>Helper Escalation Policy</label><select name="helper_escalation_policy"><option value="disabled"' . (((string) ($editing['helper_escalation_policy'] ?? 'disabled')) === 'disabled' ? ' selected' : '') . '>disabled</option><option value="desired_latency_only"' . (((string) ($editing['helper_escalation_policy'] ?? 'disabled')) === 'desired_latency_only' ? ' selected' : '') . '>desired_latency_only</option></select></div>
                     <div class="field"><label>Self-leg CF transport</label><select name="self_leg_cf_transport"><option value="cf_direct"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_direct' ? ' selected' : '') . '>cf_direct (default)</option><option value="cf_wg"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_wg' ? ' selected' : '') . '>cf_wg (WG over CF IP)</option></select><p class="muted">Only effective when backend_mode = cf_mode. cf_wg routes the WireGuard underlay through wstunnel UDP-over-WSS to the CF IP.</p></div>
+                    ' . $leigodField . '
                     <div class="field"><label>Bond Ingress Mode</label><select name="bond_ingress_mode"><option value="plain_tcp_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'plain_tcp_mux' ? ' selected' : '') . '>plain_tcp_mux</option><option value="wss_path_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'wss_path_mux' ? ' selected' : '') . '>wss_path_mux</option></select></div>
                     <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . $this->escape((string) ($editing['sort_order'] ?? 100)) . '"></div>
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>inactive</option></select></div>
@@ -2130,6 +2145,81 @@ final class AdminController extends BaseController
             </div>';
 
         return $this->adminPage('Forward Combinations', $body, $viewer, 'forward-combinations');
+    }
+
+    public function forwardRoutesPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $editId = (int) ($request->query()['edit'] ?? 0);
+        $routes = $this->db->fetchAll('SELECT * FROM forward_routes ORDER BY sort_order ASC, id ASC');
+        $combos = $this->db->fetchAll('SELECT id, tenant_label, name, backend_mode, node_group_key, self_leg_outer_transport FROM forward_combinations WHERE is_active = 1 ORDER BY sort_order ASC, id ASC');
+        $editing = $editId > 0 ? $this->db->fetchOne('SELECT * FROM forward_routes WHERE id = :id LIMIT 1', ['id' => $editId]) : null;
+        $selected = [];
+        if ($editing !== null) {
+            foreach ($this->db->fetchAll('SELECT forward_combination_id, enabled, sort_order FROM forward_route_combinations WHERE forward_route_id = :id', ['id' => $editId]) as $rc) {
+                $selected[(int) ($rc['forward_combination_id'] ?? 0)] = $rc;
+            }
+        }
+        $comboRows = '';
+        foreach ($combos as $c) {
+            $cid = (int) ($c['id'] ?? 0);
+            $checked = isset($selected[$cid]) && (int) ($selected[$cid]['enabled'] ?? 1) === 1 ? ' checked' : '';
+            $sort = (int) ($selected[$cid]['sort_order'] ?? 100);
+            $label = $this->escape((string) ($c['tenant_label'] ?? $c['name'] ?? ('#' . $cid)));
+            $meta = $this->escape((string) ($c['backend_mode'] ?? '') . ' / ' . (string) ($c['self_leg_outer_transport'] ?? 'cnix') . ' / ' . (string) ($c['node_group_key'] ?? ''));
+            $comboRows .= '<tr><td><label><input type="checkbox" name="combinations[' . $cid . '][forward_combination_id]" value="' . $cid . '"' . $checked . '> ' . $label . '</label></td><td class="muted">' . $meta . '</td><td><input type="number" style="width:80px" name="combinations[' . $cid . '][sort_order]" value="' . $sort . '"></td></tr>';
+        }
+        $routeRows = '';
+        foreach ($routes as $r) {
+            $rid = (int) ($r['id'] ?? 0);
+            $routeRows .= '<tr><td>' . $rid . '</td><td>' . $this->escape((string) ($r['tenant_label'] ?? $r['name'] ?? '')) . '</td><td>' . ((int) ($r['race_enabled'] ?? 1) === 1 ? 'on' : 'off') . '</td><td>' . ((int) ($r['is_active'] ?? 1) === 1 ? 'active' : 'inactive') . '</td><td><a class="button secondary" href="/admin/forward-routes?edit=' . $rid . '">Edit</a></td></tr>';
+        }
+        $raceChecked = ($editing === null || (int) ($editing['race_enabled'] ?? 1) === 1) ? ' checked' : '';
+        $activeChecked = ($editing === null || (int) ($editing['is_active'] ?? 1) === 1) ? ' checked' : '';
+        $body = '<div class="grid">
+              <section class="card">
+                <h3>' . ($editing !== null ? 'Edit Forward Route #' . $editId : 'New Forward Route') . '</h3>
+                <p class="muted">A route bundles forward combinations that share the client&rarr;slave ingress (same backend_mode); the slave auto-races the enabled ones and fails over (cnix &harr; leigod). Mixed backend_mode is rejected.</p>
+                <form method="post" action="/admin/forward-routes">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  ' . ($editing !== null ? '<input type="hidden" name="id" value="' . $editId . '">' : '') . '
+                  <div class="field"><label>Name (internal)</label><input name="name" required value="' . $this->escape((string) ($editing['name'] ?? '')) . '"></div>
+                  <div class="field"><label>Tenant Label</label><input name="tenant_label" value="' . $this->escape((string) ($editing['tenant_label'] ?? '')) . '"></div>
+                  <div class="field"><label>Tenant Description</label><input name="tenant_description" value="' . $this->escape((string) ($editing['tenant_description'] ?? '')) . '"></div>
+                  <div class="field"><label><input type="checkbox" name="race_enabled" value="1"' . $raceChecked . '> Race enabled (off = pin lowest sort_order)</label></div>
+                  <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . (int) ($editing['sort_order'] ?? 100) . '"></div>
+                  <div class="field"><label><input type="checkbox" name="is_active" value="1"' . $activeChecked . '> Active</label></div>
+                  <h4 style="margin-top:12px;">Combinations in this route</h4>
+                  <div class="table-wrap"><table><thead><tr><th>Include / Combination</th><th>backend / self-leg / group</th><th>Priority</th></tr></thead><tbody>' . $comboRows . '</tbody></table></div>
+                  <div class="actions"><button class="button" type="submit">Save Route</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/forward-routes">Cancel</a>' : '') . '</div>
+                </form>
+              </section>
+              <section class="card">
+                <h3>Forward Routes</h3>
+                <div class="table-wrap"><table><thead><tr><th>ID</th><th>Tenant Label</th><th>Race</th><th>Status</th><th>Actions</th></tr></thead><tbody>' . $routeRows . '</tbody></table></div>
+              </section>
+            </div>';
+        return $this->adminPage('Forward Routes', $body, $viewer, 'forward-routes');
+    }
+
+    public function saveForwardRoute(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->provisioning?->saveForwardRoute(is_array($request->body()) ? $request->body() : []);
+            SessionAuth::flash('success', 'Forward route saved.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to save forward route: ' . $this->displayThrowableMessage($throwable));
+        }
+        return Response::redirect('/admin/forward-routes');
     }
 
     public function saveForwardCombination(Request $request, array $params): Response

@@ -235,6 +235,21 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('artifacts/windows/leikwan-bridge-setup.exe', 'application/octet-stream');
     }
 
+    public function gostBinary(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/gost/gost_linux_amd64', 'application/octet-stream');
+    }
+
+    public function leigodBinary(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/leigod/leigod-linux-amd64', 'application/octet-stream');
+    }
+
+    public function lguotBinary(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/lguot/lguot_linux_amd64', 'application/octet-stream');
+    }
+
     public function legacyClient(Request $request, array $params): Response
     {
         return $this->serveRepoFile('client.sh');

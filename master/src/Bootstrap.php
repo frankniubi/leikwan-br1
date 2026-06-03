@@ -132,6 +132,8 @@ final class Bootstrap
         $this->router->add('POST', '/admin/cf-location-groups', [$admin, 'saveCfLocationGroup']);
         $this->router->add('GET', '/admin/forward-combinations', [$admin, 'forwardCombinationsPage']);
         $this->router->add('POST', '/admin/forward-combinations', [$admin, 'saveForwardCombination']);
+        $this->router->add('GET', '/admin/forward-routes', [$admin, 'forwardRoutesPage']);
+        $this->router->add('POST', '/admin/forward-routes', [$admin, 'saveForwardRoute']);
         $this->router->add('POST', '/admin/forward-combinations/{id}/donations/{donationId}/revoke', [$admin, 'revokeDonation']);
         $this->router->add('GET', '/admin/knowledgebase', [$admin, 'knowledgebaseThreadsPage']);
         $this->router->add('GET', '/admin/knowledgebase/new', [$admin, 'knowledgebaseEditorPage']);
@@ -237,6 +239,9 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/client-agent.py', [$artifacts, 'clientAgent']);
         $this->router->add('GET', '/artifacts/cfwg-latency-watchdog.py', [$artifacts, 'cfwgLatencyWatchdog']);
         $this->router->add('GET', '/artifacts/sidecar-agent.py', [$artifacts, 'sidecarAgent']);
+        $this->router->add('GET', '/artifacts/gost/gost_linux_amd64', [$artifacts, 'gostBinary']);
+        $this->router->add('GET', '/artifacts/leigod/leigod-linux-amd64', [$artifacts, 'leigodBinary']);
+        $this->router->add('GET', '/artifacts/lguot/lguot_linux_amd64', [$artifacts, 'lguotBinary']);
         $this->router->add('GET', '/artifacts/install-forward-runtime.py', [$artifacts, 'installForwardRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-mptcp-client.py', [$artifacts, 'mptcpClientRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-uot.py', [$artifacts, 'uotRuntime']);

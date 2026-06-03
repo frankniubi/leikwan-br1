@@ -455,6 +455,25 @@ final class ProvisioningService
         $notes = trim((string) ($payload['notes'] ?? ''));
         $helperNodeGroupKeys = $this->normalizeForwardCombinationHelperGroupKeys($payload);
 
+        // LeiGod self-leg basis (slave<->sidecar WG outer transport). Validate BEFORE the generic
+        // gate so a leigod combo missing its line/sidecar reports a leigod-specific 422 (and so the
+        // sidecar-required message surfaces ahead of invalid_forward_combination_payload).
+        $selfLegOuterTransport = strtolower(trim((string) ($payload['self_leg_outer_transport'] ?? 'cnix'))) ?: 'cnix';
+        if (!in_array($selfLegOuterTransport, ['cnix', 'cf', 'leigod'], true)) {
+            throw new ApiException('invalid_self_leg_outer_transport', 422, ['self_leg_outer_transport' => $selfLegOuterTransport]);
+        }
+        $leigodLineId = max(0, (int) ($payload['leigod_line_id'] ?? 0));
+        if ($selfLegOuterTransport === 'leigod') {
+            if ($leigodLineId <= 0) {
+                throw new ApiException('leigod_line_required', 422, []);
+            }
+            if ($sidecarPointId <= 0) {
+                throw new ApiException('sidecar_required_for_leigod', 422, []);
+            }
+        } else {
+            $leigodLineId = 0;
+        }
+
         if ($name === '' || $tenantLabel === '' || $nodeGroupKey === '' || $sidecarPointId <= 0) {
             throw new ApiException('invalid_forward_combination_payload', 422, ['payload' => $payload]);
         }
@@ -474,6 +493,37 @@ final class ProvisioningService
             $cfLocationGroupId = 0;
         }
 
+        // Panel-minted gost SOCKS credentials shared by the sidecar gost server + slave gost client.
+        // Mint once and persist so they stay stable across republishes (a rotating secret would churn
+        // the gost units every reconcile). On edit, preserve the stored secret when the payload omits it.
+        $leigodSocksUser = trim((string) ($payload['leigod_socks_user'] ?? ''));
+        $leigodSocksPass = trim((string) ($payload['leigod_socks_pass'] ?? ''));
+        if ($selfLegOuterTransport === 'leigod') {
+            if ($id > 0 && ($leigodSocksUser === '' || $leigodSocksPass === '')) {
+                $existingLeigod = $this->db->fetchOne(
+                    'SELECT leigod_socks_user, leigod_socks_pass FROM forward_combinations WHERE id = :id LIMIT 1',
+                    ['id' => $id]
+                );
+                if (is_array($existingLeigod)) {
+                    if ($leigodSocksUser === '') {
+                        $leigodSocksUser = trim((string) ($existingLeigod['leigod_socks_user'] ?? ''));
+                    }
+                    if ($leigodSocksPass === '') {
+                        $leigodSocksPass = trim((string) ($existingLeigod['leigod_socks_pass'] ?? ''));
+                    }
+                }
+            }
+            if ($leigodSocksUser === '') {
+                $leigodSocksUser = 'wguot';
+            }
+            if ($leigodSocksPass === '') {
+                $leigodSocksPass = rtrim(strtr(base64_encode(random_bytes(21)), '+/', '-_'), '=');
+            }
+        } else {
+            $leigodSocksUser = '';
+            $leigodSocksPass = '';
+        }
+
         $normalized = [
             'name' => $name,
             'tenant_label' => $tenantLabel,
@@ -491,6 +541,10 @@ final class ProvisioningService
             'helper_group_cap' => $helperGroupCap,
             'helper_escalation_policy' => $helperEscalationPolicy,
             'self_leg_cf_transport' => $selfLegCfTransport,
+            'self_leg_outer_transport' => $selfLegOuterTransport,
+            'leigod_line_id' => $leigodLineId > 0 ? $leigodLineId : null,
+            'leigod_socks_user' => $leigodSocksUser !== '' ? $leigodSocksUser : null,
+            'leigod_socks_pass' => $leigodSocksPass !== '' ? $leigodSocksPass : null,
             'desired_latency_ms' => $desiredLatencyMs,
             'allow_public_self_leg_donation' => $allowPublicSelfLegDonation,
             'donation_qualify_window_seconds' => $donationQualifyWindowSeconds,
@@ -522,6 +576,10 @@ final class ProvisioningService
                      helper_group_cap = :helper_group_cap,
                      helper_escalation_policy = :helper_escalation_policy,
                      self_leg_cf_transport = :self_leg_cf_transport,
+                     self_leg_outer_transport = :self_leg_outer_transport,
+                     leigod_line_id = :leigod_line_id,
+                     leigod_socks_user = :leigod_socks_user,
+                     leigod_socks_pass = :leigod_socks_pass,
                      desired_latency_ms = :desired_latency_ms,
                      allow_public_self_leg_donation = :allow_public_self_leg_donation,
                      donation_qualify_window_seconds = :donation_qualify_window_seconds,
@@ -603,6 +661,46 @@ final class ProvisioningService
     /**
      * @return array<int, array<string, mixed>>
      */
+    public function primaryCombinationIdForRoute(int $routeId): int
+    {
+        if ($routeId <= 0) {
+            return 0;
+        }
+        $row = $this->db->fetchOne(
+            'SELECT forward_combination_id FROM forward_route_combinations
+             WHERE forward_route_id = :id AND enabled = 1
+             ORDER BY sort_order ASC, id ASC LIMIT 1',
+            ['id' => $routeId]
+        );
+        return is_array($row) ? (int) ($row['forward_combination_id'] ?? 0) : 0;
+    }
+
+    /**
+     * Routes a service may select in the tenant add-forward UI. If the plan gates routes
+     * (service_plan_forward_routes), only those are offered; otherwise all active routes.
+     */
+    public function availableForwardRoutesForService(int $serviceId): array
+    {
+        $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+        $planId = (int) ($service['plan_id'] ?? 0);
+        $gated = $this->db->fetchAll(
+            'SELECT fr.* FROM forward_routes fr
+             INNER JOIN service_plan_forward_routes spfr ON spfr.forward_route_id = fr.id
+             WHERE spfr.plan_id = :plan_id AND fr.is_active = 1
+             ORDER BY fr.sort_order ASC, fr.id ASC',
+            ['plan_id' => $planId]
+        );
+        if ($gated !== []) {
+            return array_values($gated);
+        }
+        return array_values($this->db->fetchAll(
+            'SELECT * FROM forward_routes WHERE is_active = 1 ORDER BY sort_order ASC, id ASC'
+        ));
+    }
+
     public function availableForwardCombinationsForService(int $serviceId): array
     {
         $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
@@ -3971,6 +4069,13 @@ final class ProvisioningService
         unset($payload['endpoint_count']);
 
         $forwardCombinationId = (int) ($payload['forward_combination_id'] ?? 0);
+        $forwardRouteId = (int) ($payload['forward_route_id'] ?? 0);
+        if ($forwardCombinationId <= 0 && $forwardRouteId > 0) {
+            // Route selected: seed the forward from the route's primary (lowest sort_order enabled)
+            // combination so the existing combo-based realization keeps working. The slave's basis
+            // selector (Forward Route racing) may later promote a different enabled combo at runtime.
+            $forwardCombinationId = $this->primaryCombinationIdForRoute($forwardRouteId);
+        }
         $backendMode = trim((string) ($payload['backend_mode'] ?? 'current_mode'));
         $cfLocationGroupId = (int) ($payload['cf_location_group_id'] ?? 0);
         $listenPort = (int) ($payload['listen_port'] ?? 0);
@@ -4312,6 +4417,8 @@ final class ProvisioningService
                 'bond_ingress_mode' => $bondIngressMode,
                 'bond_sidecar_point_id' => $bondSidecarPointId > 0 ? $bondSidecarPointId : null,
                 'forward_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
+                'forward_route_id' => $forwardRouteId > 0 ? $forwardRouteId : null,
+                'active_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
                 'backend_mode' => $backendMode,
                 'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
                 'line_client_id' => $lineClientId > 0 ? $lineClientId : null,
@@ -4346,6 +4453,8 @@ final class ProvisioningService
                      bond_ingress_mode = :bond_ingress_mode,
                      bond_sidecar_point_id = :bond_sidecar_point_id,
                      forward_combination_id = :forward_combination_id,
+                     forward_route_id = :forward_route_id,
+                     active_combination_id = :active_combination_id,
                      backend_mode = :backend_mode,
                      cf_location_group_id = :cf_location_group_id,
                      line_client_id = :line_client_id,
@@ -4377,6 +4486,8 @@ final class ProvisioningService
                     'bond_ingress_mode' => $bondIngressMode,
                     'bond_sidecar_point_id' => $bondSidecarPointId > 0 ? $bondSidecarPointId : null,
                     'forward_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
+                    'forward_route_id' => $forwardRouteId > 0 ? $forwardRouteId : null,
+                    'active_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
                     'backend_mode' => $backendMode,
                     'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
                     'line_client_id' => $lineClientId > 0 ? $lineClientId : null,
@@ -5002,6 +5113,139 @@ final class ProvisioningService
         }
     }
 
+    public function republishActiveForwardsForRoute(int $routeId): void
+    {
+        if ($routeId <= 0) {
+            return;
+        }
+        $forwards = $this->db->fetchAll(
+            'SELECT f.id
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.forward_route_id = :forward_route_id
+               AND f.enabled = 1
+               AND s.status = "active"',
+            ['forward_route_id' => $routeId]
+        );
+        foreach ($forwards as $row) {
+            $forwardId = (int) ($row['id'] ?? 0);
+            if ($forwardId <= 0) {
+                continue;
+            }
+            try {
+                $this->reconcileForwardEndpoints($forwardId);
+            } catch (\Throwable $e) {
+                error_log('republishActiveForwardsForRoute failed for forward ' . $forwardId . ': ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Persist a Forward Route (a bundle of forward combinations the ingress slave auto-races across).
+     * Guard: all ENABLED combos must share the client->slave ingress realization (backend_mode +
+     * node_group_key + client_mode + bond_ingress_mode) per B0 -- only the slave<->sidecar basis
+     * (self_leg_outer_transport / sidecar_point / leigod_line_id) may differ.
+     */
+    public function saveForwardRoute(array $payload): array
+    {
+        $id = (int) ($payload['id'] ?? 0);
+        $name = trim((string) ($payload['name'] ?? ''));
+        if ($name === '') {
+            throw new ApiException('invalid_forward_route_payload', 422, ['payload' => $payload]);
+        }
+        $tenantLabel = trim((string) ($payload['tenant_label'] ?? ''));
+        $tenantDescription = trim((string) ($payload['tenant_description'] ?? ''));
+        $tenantBadge = trim((string) ($payload['tenant_badge'] ?? ''));
+        $falsey = ['0', 'false', 'no', 'off', ''];
+        $raceEnabled = !in_array(strtolower(trim((string) ($payload['race_enabled'] ?? '1'))), $falsey, true) ? 1 : 0;
+        $isActive = !empty($payload['is_active']) ? 1 : 0;
+        $sortOrder = (int) ($payload['sort_order'] ?? 100);
+
+        $rawCombos = is_array($payload['combinations'] ?? null) ? $payload['combinations'] : [];
+        $combos = [];
+        foreach ($rawCombos as $row) {
+            $cid = (int) (is_array($row) ? ($row['forward_combination_id'] ?? 0) : $row);
+            if ($cid <= 0 || isset($combos[$cid])) {
+                continue;
+            }
+            $enabled = is_array($row)
+                ? (!in_array(strtolower(trim((string) ($row['enabled'] ?? '1'))), $falsey, true) ? 1 : 0)
+                : 1;
+            $combos[$cid] = [
+                'forward_combination_id' => $cid,
+                'enabled' => $enabled,
+                'sort_order' => (int) (is_array($row) ? ($row['sort_order'] ?? 100) : 100),
+            ];
+        }
+
+        $ingressKeys = [];
+        foreach ($combos as $cid => $info) {
+            if (!$info['enabled']) {
+                continue;
+            }
+            $combo = $this->db->fetchOne(
+                'SELECT backend_mode, node_group_key, client_mode, bond_ingress_mode, sidecar_point_id FROM forward_combinations WHERE id = :id LIMIT 1',
+                ['id' => $cid]
+            );
+            if (!is_array($combo)) {
+                throw new ApiException('forward_route_combination_not_found', 422, ['forward_combination_id' => $cid]);
+            }
+            // Same client->slave ingress (backend_mode + node group + client_mode + bond_ingress_mode)
+            // AND same sidecar_point_id, so the slave selector's single sidecar_service_port + per-service
+            // backend unit are shared across candidates (B0/R2). Only the slave<->sidecar basis differs.
+            $ingressKeys[] = implode('|', [
+                (string) ($combo['backend_mode'] ?? ''),
+                (string) ($combo['node_group_key'] ?? ''),
+                (string) ($combo['client_mode'] ?? ''),
+                (string) ($combo['bond_ingress_mode'] ?? ''),
+                (string) ($combo['sidecar_point_id'] ?? ''),
+            ]);
+        }
+        if (count(array_unique($ingressKeys)) > 1) {
+            throw new ApiException('forward_route_combos_ingress_mismatch', 422, [
+                'ingress_keys' => array_values(array_unique($ingressKeys)),
+            ]);
+        }
+
+        $normalized = [
+            'name' => $name,
+            'tenant_label' => $tenantLabel !== '' ? $tenantLabel : null,
+            'tenant_description' => $tenantDescription !== '' ? $tenantDescription : null,
+            'tenant_badge' => $tenantBadge !== '' ? $tenantBadge : null,
+            'race_enabled' => $raceEnabled,
+            'is_active' => $isActive,
+            'sort_order' => $sortOrder,
+            'updated_at' => $this->now(),
+        ];
+        if ($id > 0) {
+            $this->db->execute(
+                'UPDATE forward_routes
+                 SET name = :name, tenant_label = :tenant_label, tenant_description = :tenant_description,
+                     tenant_badge = :tenant_badge, race_enabled = :race_enabled, is_active = :is_active,
+                     sort_order = :sort_order, updated_at = :updated_at
+                 WHERE id = :id',
+                $normalized + ['id' => $id]
+            );
+        } else {
+            $id = $this->db->insert('forward_routes', $normalized + ['created_at' => $this->now()]);
+        }
+
+        $this->db->execute('DELETE FROM forward_route_combinations WHERE forward_route_id = :id', ['id' => $id]);
+        foreach ($combos as $info) {
+            $this->db->insert('forward_route_combinations', [
+                'forward_route_id' => $id,
+                'forward_combination_id' => $info['forward_combination_id'],
+                'enabled' => $info['enabled'],
+                'sort_order' => $info['sort_order'],
+                'created_at' => $this->now(),
+                'updated_at' => $this->now(),
+            ]);
+        }
+
+        $this->republishActiveForwardsForRoute($id);
+        return ['id' => $id];
+    }
+
     public function republishActiveForwardsForClient(int $clientId): void
     {
         if ($clientId <= 0) {
@@ -5429,7 +5673,12 @@ final class ProvisioningService
         ];
         $sidecarListenPort = $this->sidecarWireguardListenPort($listenSource, $sidecarConfig);
         $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $sidecarConfig);
-        $cfMode = $this->staticSidecarCombinationUsesCf($combination);
+        // A leigod self-leg is exclusive: even when the client->slave ingress is cf_mode (so the combo can
+        // race against a cf combo on the same sidecar), the slave<->sidecar uplink is built as leigod ONLY.
+        // Without this, a cf_mode + self_leg_outer_transport=leigod combo would trip BOTH branches and emit a
+        // hybrid (cf_* and leigod_* fields) uplink.
+        $leigodMode = $this->staticSidecarCombinationUsesLeigod($combination);
+        $cfMode = $leigodMode ? false : $this->staticSidecarCombinationUsesCf($combination);
         $lanes = [];
         foreach (['primary' => 'p', 'backup' => 'b'] as $lane => $suffix) {
             $addresses = $this->allocateStaticSidecarUplinkSubnet($pointId, $combinationId, $nodeId, $lane);
@@ -5448,7 +5697,7 @@ final class ProvisioningService
                 'interface_name' => $interfaceName,
                 'subnet' => $addresses['subnet'],
                 'listen_port' => $listenPort,
-                'outer_transport' => $cfMode ? 'wstunnel_udp' : 'udp',
+                'outer_transport' => $leigodMode ? 'leigod' : ($cfMode ? 'wstunnel_udp' : 'udp'),
                 'peer_keepalive_seconds' => max(1, (int) ($this->config->getInt('STATIC_SIDECAR_WG_KEEPALIVE_SECONDS', 25) ?? 25)),
                 'watchdog' => [
                     'enabled' => true,
@@ -5527,6 +5776,32 @@ final class ProvisioningService
                         'path_prefix' => $pathPrefix,
                     ];
                 }
+            }
+            if ($leigodMode) {
+                // LeiGod basis: the slave<->sidecar WG hop rides a LeiGod line via gost UoT.
+                // Slave runs leigod@<line> (SOCKS 127.0.0.1:20000+line) + a gost client; the sidecar
+                // runs the matching gost UoT server. WG endpoint is re-pinned to the local gost listener.
+                $gostSocks = $this->stableSidecarGostSocksPort($combinationId, $nodeId, $lane);
+                [$socksUser, $socksPass] = $this->mintLeigodSocksCredentials($combination);
+                // leigod_uot_impl selects the UoT carrier published to BOTH ends of this lane:
+                // 'gost' (default) or 'lguot' (CPU-efficient batched recvmmsg/sendmmsg, ~2.4x/leg).
+                $leigodUotImpl = strtolower((string) ($combination['leigod_uot_impl'] ?? 'gost')) === 'lguot' ? 'lguot' : 'gost';
+                $slave['leigod_line_id'] = (int) ($combination['leigod_line_id'] ?? 0);
+                $slave['gost_listen_udp_port'] = $slaveListenPort;
+                $slave['sidecar_gost_host'] = $sidecarHost;
+                $slave['sidecar_gost_port'] = $gostSocks;
+                $slave['sidecar_wg_listen_port'] = $listenPort;
+                $slave['socks_user'] = $socksUser;
+                $slave['socks_pass'] = $socksPass;
+                $slave['leigod_uot_impl'] = $leigodUotImpl;
+                $slave['mtu'] = 1280;
+                $slave['sidecar_endpoint_host'] = '127.0.0.1';
+                $slave['sidecar_endpoint_port'] = $slaveListenPort;
+                $slave['leigod_line_toml'] = $this->leigodLineToml((int) ($combination['leigod_line_id'] ?? 0));
+                $sidecar['gost_socks_listen_port'] = $gostSocks;
+                $sidecar['socks_user'] = $socksUser;
+                $sidecar['socks_pass'] = $socksPass;
+                $sidecar['leigod_uot_impl'] = $leigodUotImpl;
             }
             $lanes[] = ['sidecar' => $sidecar, 'slave' => $slave];
         }
@@ -5862,6 +6137,28 @@ final class ProvisioningService
         if ($directPointIds !== [] && in_array((int) ($forward['bond_sidecar_point_id'] ?? 0), $directPointIds, true)) {
             return [];
         }
+        // Forward Route racing: when the forward belongs to a race-ON route, emit ONE primary uplink
+        // per enabled route-combo (same sidecar, per B0/R2). The existing selector then races them and
+        // rewrites the active target. Falls through to the single-combo path otherwise.
+        $routeCombos = $this->enabledRouteCombinationsForForward($forward);
+        if (count($routeCombos) >= 2) {
+            $routeNodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
+            if ($routeNodeId <= 0) {
+                return [];
+            }
+            $routeUplinks = [];
+            foreach ($routeCombos as $routeCombo) {
+                $routeCombo = $this->hydrateCombinationSidecarFields($routeCombo, (int) ($forward['bond_sidecar_point_id'] ?? 0));
+                foreach ($this->buildStaticSidecarUplinkPairForNode($routeCombo, $node) as $lane) {
+                    if (($lane['slave']['lane'] ?? '') === 'primary') {
+                        $routeUplinks[] = $lane['slave'];
+                    }
+                }
+            }
+            if ($routeUplinks !== []) {
+                return array_values($routeUplinks);
+            }
+        }
         $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
         $nodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
         if ($combinationId <= 0 || $nodeId <= 0) {
@@ -5874,25 +6171,80 @@ final class ProvisioningService
         if ((int) ($combination['sidecar_point_id'] ?? 0) <= 0 && (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0) {
             $combination['sidecar_point_id'] = (int) $forward['bond_sidecar_point_id'];
         }
-        if (empty($combination['sidecar_host']) || empty($combination['sidecar_agent_config_json'])) {
-            $point = $this->db->fetchOne(
-                'SELECT sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, cf_listen_port, agent_config_json FROM sidecar_points WHERE id = :id LIMIT 1',
-                ['id' => (int) ($combination['sidecar_point_id'] ?? $forward['bond_sidecar_point_id'] ?? 0)]
-            );
-            if (is_array($point)) {
-                $combination['sidecar_host'] = (string) ($point['sidecar_host'] ?? '');
-                $combination['sidecar_listen_port'] = (int) ($point['listen_port'] ?? 0);
-                $combination['sidecar_bond_listen_port'] = (int) ($point['bond_listen_port'] ?? 0);
-                $combination['sidecar_mptcp_listen_port'] = (int) ($point['mptcp_listen_port'] ?? 0);
-                $combination['sidecar_cf_listen_port'] = (int) ($point['cf_listen_port'] ?? 0);
-                $combination['sidecar_agent_config_json'] = $point['agent_config_json'] ?? null;
-            }
-        }
+        $combination = $this->hydrateCombinationSidecarFields($combination, (int) ($forward['bond_sidecar_point_id'] ?? 0));
 
         return array_values(array_map(
             static fn(array $lane): array => $lane['slave'],
             $this->buildStaticSidecarUplinkPairForNode($combination, $node)
         ));
+    }
+
+    /**
+     * Fill a combination's sidecar_* fields (host, listen ports, agent config) from its sidecar_point
+     * when absent. Shared by the single-combo and the route-racing uplink builders.
+     */
+    private function hydrateCombinationSidecarFields(array $combination, int $fallbackPointId = 0): array
+    {
+        if (!empty($combination['sidecar_host']) && !empty($combination['sidecar_agent_config_json'])) {
+            return $combination;
+        }
+        $pointId = (int) ($combination['sidecar_point_id'] ?? 0);
+        if ($pointId <= 0) {
+            $pointId = $fallbackPointId;
+        }
+        if ($pointId <= 0) {
+            return $combination;
+        }
+        $point = $this->db->fetchOne(
+            'SELECT sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, cf_listen_port, agent_config_json FROM sidecar_points WHERE id = :id LIMIT 1',
+            ['id' => $pointId]
+        );
+        if (is_array($point)) {
+            $combination['sidecar_host'] = (string) ($point['sidecar_host'] ?? '');
+            $combination['sidecar_listen_port'] = (int) ($point['listen_port'] ?? 0);
+            $combination['sidecar_bond_listen_port'] = (int) ($point['bond_listen_port'] ?? 0);
+            $combination['sidecar_mptcp_listen_port'] = (int) ($point['mptcp_listen_port'] ?? 0);
+            $combination['sidecar_cf_listen_port'] = (int) ($point['cf_listen_port'] ?? 0);
+            $combination['sidecar_agent_config_json'] = $point['agent_config_json'] ?? null;
+        }
+        return $combination;
+    }
+
+    /**
+     * Enabled combinations of a forward's race-ON route, lowest sort_order first, capped, and
+     * restricted to the forward's sidecar point so all candidates share one sidecar service port.
+     * Returns [] when the forward has no route, the route is race-OFF, or fewer than the cap apply.
+     */
+    private function enabledRouteCombinationsForForward(array $forward): array
+    {
+        $routeId = (int) ($forward['forward_route_id'] ?? 0);
+        if ($routeId <= 0) {
+            return [];
+        }
+        $route = $this->db->fetchOne('SELECT race_enabled FROM forward_routes WHERE id = :id LIMIT 1', ['id' => $routeId]);
+        if (!is_array($route) || (int) ($route['race_enabled'] ?? 0) !== 1) {
+            return [];
+        }
+        $cap = max(1, (int) ($this->config->getInt('FORWARD_ROUTE_RACE_CANDIDATE_CAP', 3) ?? 3));
+        $rows = $this->db->fetchAll(
+            'SELECT fc.* FROM forward_route_combinations frc
+             INNER JOIN forward_combinations fc ON fc.id = frc.forward_combination_id
+             WHERE frc.forward_route_id = :id AND frc.enabled = 1 AND fc.is_active = 1
+             ORDER BY frc.sort_order ASC, frc.id ASC',
+            ['id' => $routeId]
+        );
+        $pointId = (int) ($forward['bond_sidecar_point_id'] ?? 0);
+        $out = [];
+        foreach ($rows as $fc) {
+            if ($pointId > 0 && (int) ($fc['sidecar_point_id'] ?? 0) > 0 && (int) ($fc['sidecar_point_id'] ?? 0) !== $pointId) {
+                continue; // same-sidecar only (R2): candidates must share the sidecar service port
+            }
+            $out[] = $fc;
+            if (count($out) >= $cap) {
+                break;
+            }
+        }
+        return $out;
     }
 
     private function staticSidecarPrimaryUplinkForForwardNode(array $forward, array $node, string $targetMode): ?array
@@ -5974,6 +6326,7 @@ final class ProvisioningService
             }
             $candidates[] = [
                 'lane' => (string) ($uplink['lane'] ?? ''),
+                'forward_combination_id' => $combinationId,
                 'interface_name' => $interface,
                 'ping_interface' => $interface,
                 'ping_address' => $peerAddress,
@@ -7804,6 +8157,67 @@ final class ProvisioningService
             }
         }
         return false;
+    }
+
+    private function staticSidecarCombinationUsesLeigod(array $combination): bool
+    {
+        $t = strtolower(trim((string) ($combination['self_leg_outer_transport'] ?? 'cnix')));
+        return $t === 'leigod' && (int) ($combination['leigod_line_id'] ?? 0) > 0;
+    }
+
+    private function stableSidecarGostSocksPort(int $forwardCombinationId, int $nodeId, string $lane = ''): int
+    {
+        // Deterministic per (combination, node, lane) so the sidecar gost SOCKS port is stable across
+        // republishes. Band 47000-47999 is disjoint from backend (20000-40000), cf-backend (26000-26999),
+        // wg-local (43000+), and uot/selector (45000+) ranges. The lane keeps primary/backup distinct so
+        // the two lanes' gost servers do not collide on one port.
+        $seed = crc32("leigod-gost-socks:{$forwardCombinationId}:{$nodeId}:{$lane}");
+        return 47000 + ($seed % 1000);
+    }
+
+    private function mintLeigodSocksCredentials(array $combination): array
+    {
+        $user = (string) ($combination['leigod_socks_user'] ?? '') ?: 'wguot';
+        $pass = (string) ($combination['leigod_socks_pass'] ?? '');
+        if ($pass === '') {
+            $pass = rtrim(strtr(base64_encode(random_bytes(21)), '+/', '-_'), '=');
+        }
+        return [$user, $pass];
+    }
+
+    /**
+     * The per-line LeiGod toml the slave writes to <leigod_root>/lines/<id>.toml, so the agent fully
+     * self-provisions the line (no manual file placement). Sourced from the operator-set env
+     * LEIGOD_LINE_TOML_<lineId> (base64-encoded toml). Empty when unset (the agent then assumes a
+     * pre-existing toml and just starts the line).
+     */
+    private function leigodLineToml(int $lineId): string
+    {
+        if ($lineId <= 0) {
+            return '';
+        }
+        $b64 = trim((string) ($this->config->get('LEIGOD_LINE_TOML_' . $lineId, '') ?? ''));
+        if ($b64 === '') {
+            return '';
+        }
+        $decoded = base64_decode($b64, true);
+        return is_string($decoded) ? $decoded : '';
+    }
+
+    /**
+     * The shared LeiGod account session.json the panel pushes to every slave running a leigod line.
+     * One account session works concurrently across many slaves (proven 2026-06-02), so a single
+     * operator-set env LEIGOD_SESSION_JSON_B64 (base64-encoded session.json) suffices for the fleet.
+     * Empty when unset. The LeiGod login needs mobile+captcha+SMS, so the agent can never mint it.
+     */
+    public function leigodSharedSessionJson(): string
+    {
+        $b64 = trim((string) ($this->config->get('LEIGOD_SESSION_JSON_B64', '') ?? ''));
+        if ($b64 === '') {
+            return '';
+        }
+        $decoded = base64_decode($b64, true);
+        return is_string($decoded) ? $decoded : '';
     }
 
     private function staticSidecarCfPathPrefix(int $pointId, int $combinationId, int $nodeId, string $lane): string
