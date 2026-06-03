@@ -634,6 +634,29 @@ final class ProvisioningService
             ]);
         }
 
+        // Keep the denormalized per-forward INGRESS columns in sync with the combination BEFORE
+        // republishing. publishTaskPayloadForForward reads backend_mode + cf_location_group_id from
+        // the forwards row (and forwardUsesCfMode keys CF off forwards.cf_location_group_id > 0), so
+        // without this a live Forward-Mode flip (e.g. cf_mode -> leigod_mode) ships an incoherent
+        // task: a leigod self-leg alongside a still-armed CF ingress leg -- the exact cf/leigod
+        // mismatch that flaps bond legs. saveForward derives these two columns from the combination
+        // at forward-save time; mirror that here so a combination save converges the ingress axis too
+        // (the 20260603_promote_leigod_mode migration does the same UPDATE one-time, comment: "CRITICAL:
+        // without this the cutover is incomplete").
+        $this->db->execute(
+            'UPDATE forwards
+             SET backend_mode = :backend_mode,
+                 cf_location_group_id = :cf_location_group_id,
+                 updated_at = :updated_at
+             WHERE forward_combination_id = :forward_combination_id',
+            [
+                'backend_mode' => $backendMode,
+                'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
+                'updated_at' => $this->now(),
+                'forward_combination_id' => $id,
+            ]
+        );
+
         $this->republishActiveForwardsForCombination($id);
 
         return $this->forwardCombinationById($id) ?? [];
@@ -7688,7 +7711,16 @@ final class ProvisioningService
             'warmup_slice_bytes' => max(1024, (int) ($this->config->getInt('BOND_WARMUP_SLICE_BYTES', 64 * 1024) ?? (64 * 1024))),
             'warmup_leg_delay_ms' => max(5, (int) ($this->config->getInt('BOND_WARMUP_LEG_DELAY_MS', 20) ?? 20)),
             'bulk_promote_bytes' => max(1024, (int) ($this->config->getInt('BOND_BULK_PROMOTE_BYTES', 256 * 1024) ?? (256 * 1024))),
-            'leg_cooldown_ms' => max(1000, (int) ($this->config->getInt('BOND_LEG_COOLDOWN_MS', 30 * 60 * 1000) ?? (30 * 60 * 1000))),
+            // Mode-aware leg cooldown. cf_mode keeps the long (30 min) isolation -- a "bad leg" there
+            // is usually a structurally-bad CF edge IP that should stay sidelined. leigod_mode runs the
+            // bond over CPU-bound 2-vCPU slaves where a stall is almost always a TRANSIENT CPU spike
+            // that clears in seconds; the Rust cooldown is a FIXED duration with no escalating backoff
+            // (apply_leg_cooldown), so a 30-min value turns a ~2s stall into a half-hour capacity loss
+            // on a scarce few-leg bond (the combo-5 flap). Use a short, tunable cooldown for leigod_mode.
+            // (forwards.backend_mode is kept in sync with the combination on save, so this fires.)
+            'leg_cooldown_ms' => (string) ($forward['backend_mode'] ?? '') === 'leigod_mode'
+                ? max(1000, (int) ($this->config->getInt('BOND_LEIGOD_LEG_COOLDOWN_MS', 20000) ?? 20000))
+                : max(1000, (int) ($this->config->getInt('BOND_LEG_COOLDOWN_MS', 30 * 60 * 1000) ?? (30 * 60 * 1000))),
             // In the CNIX topology the client reaches sidecar through slave endpoints,
             // so QUIC legs must stay enabled while direct-to-sidecar experiments remain opt-in.
             'quic_enabled' => true,
