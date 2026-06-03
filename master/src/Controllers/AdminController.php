@@ -1937,19 +1937,24 @@ final class AdminController extends BaseController
             $cfOptions .= '<option value="' . (int) ($group['id'] ?? 0) . '"' . $selected . '>' . $this->escape((string) ($group['name'] ?? '')) . ' [' . $this->escape((string) ($group['region_code'] ?? '')) . ']</option>';
         }
 
-        // LeiGod self-leg basis picker (feature-flagged behind LEIGOD_BASIS_ENABLED until per-slave
-        // accounts + capacity are provisioned). The form fields flow straight through saveForwardCombination.
-        $leigodField = '';
-        if (((string) $this->config->get('LEIGOD_BASIS_ENABLED', '0')) === '1') {
-            $selfLegOuter = (string) ($editing['self_leg_outer_transport'] ?? 'cnix');
-            $leigodLineId = (int) ($editing['leigod_line_id'] ?? 0);
-            $opt = static fn(string $v, string $label): string =>
-                '<option value="' . $v . '"' . ($selfLegOuter === $v ? ' selected' : '') . '>' . $label . '</option>';
-            $leigodField = '<div class="field"><label>Self-leg outer transport (basis)</label><select name="self_leg_outer_transport">'
-                . $opt('cnix', 'cnix (direct CNIX)') . $opt('cf', 'cf (Cloudflare wstunnel)') . $opt('leigod', 'leigod (LeiGod line)')
-                . '</select><p class="muted">leigod carries the slave&harr;sidecar WireGuard over a LeiGod accelerated line via gost UDP-over-TCP. Mutually exclusive with cf for the same hop.</p></div>'
-                . '<div class="field"><label>LeiGod line id</label><input type="number" name="leigod_line_id" min="0" value="' . $leigodLineId . '"><p class="muted">Required when basis = leigod. Slave SOCKS = 127.0.0.1:(20000 + line id).</p></div>';
-        }
+        // LeiGod is a first-class Forward Mode now (backend_mode = leigod_mode); the standalone self-leg
+        // basis picker is retired -- the Forward Mode derives the self-leg in saveForwardCombination. The
+        // line-id + UoT-carrier fields below render for every combo but a small script shows them only
+        // when leigod_mode is selected (and the Cloudflare Location Group only when cf_mode).
+        $leigodLineId = (int) ($editing['leigod_line_id'] ?? 0);
+        $leigodUot = strtolower((string) ($editing['leigod_uot_impl'] ?? 'lguot'));
+        $leigodField = '<div class="field" data-mode-field="leigod_mode"><label>LeiGod line id</label>'
+            . '<input type="number" name="leigod_line_id" min="0" value="' . $leigodLineId . '">'
+            . '<p class="muted">Required when Forward Mode = leigod_mode. Slave SOCKS = 127.0.0.1:(20000 + line id).</p></div>'
+            . '<div class="field" data-mode-field="leigod_mode"><label>LeiGod UoT carrier</label>'
+            . '<select name="leigod_uot_impl"><option value="lguot"' . ($leigodUot !== 'gost' ? ' selected' : '') . '>lguot (recommended)</option>'
+            . '<option value="gost"' . ($leigodUot === 'gost' ? ' selected' : '') . '>gost</option></select>'
+            . '<p class="muted">CPU-efficient UDP-over-TCP carrier for the LeiGod self-leg (~2.4x gost throughput at 1/3 CPU).</p></div>'
+            . '<script>(function(){var bm=document.querySelector(\'select[name=backend_mode]\');if(!bm)return;'
+            . 'function sync(){var v=bm.value;'
+            . 'document.querySelectorAll(\'[data-mode-field]\').forEach(function(e){e.style.display=(e.getAttribute(\'data-mode-field\')===v)?\'\':\'none\';});'
+            . 'var cf=document.querySelector(\'select[name=cf_location_group_id]\');if(cf){var f=cf.closest(\'.field\');if(f){f.style.display=(v===\'cf_mode\')?\'\':\'none\';}}}'
+            . 'bm.addEventListener(\'change\',sync);sync();})();</script>';
 
         $latestHeartbeats = $this->db->fetchAll(
             'SELECT nh.node_id, nh.payload_json, n.name AS node_name
@@ -2097,7 +2102,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Tenant Description</label><input type="text" name="tenant_description" value="' . $this->escape((string) ($editing['tenant_description'] ?? '')) . '" placeholder="Best for Japan"></div>
                     <div class="field"><label>Tenant Badge</label><input type="text" name="tenant_badge" value="' . $this->escape((string) ($editing['tenant_badge'] ?? '')) . '" placeholder="Recommended"></div>
                     <div class="field"><label>Slave Group</label><select name="node_group_key" required>' . $groupOptions . '</select></div>
-                    <div class="field"><label>Backend Mode</label><select name="backend_mode"><option value="current_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'current_mode' ? ' selected' : '') . '>current_mode</option><option value="cf_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'cf_mode' ? ' selected' : '') . '>cf_mode</option></select></div>
+                    <div class="field"><label>Backend Mode</label><select name="backend_mode"><option value="current_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'current_mode' ? ' selected' : '') . '>current_mode</option><option value="cf_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'cf_mode' ? ' selected' : '') . '>cf_mode</option><option value="leigod_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'leigod_mode' ? ' selected' : '') . '>leigod_mode</option></select><p class="muted">leigod_mode = direct ingress (like current_mode, no Cloudflare) + a LeiGod self-leg.</p></div>
                     <div class="field"><label>Sidecar Point</label><select name="sidecar_point_id" required>' . $sidecarOptions . '</select></div>
                     <div class="field"><label>Cloudflare Location Group</label><select name="cf_location_group_id">' . $cfOptions . '</select></div>
                     <div class="field"><label>Client Mode</label><select name="client_mode"><option value="single"' . (((string) ($editing['client_mode'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="bond"' . (((string) ($editing['client_mode'] ?? 'single')) === 'bond' ? ' selected' : '') . '>bond</option></select></div>
