@@ -205,3 +205,18 @@ This is a product decision (accept a demoted anchor vs. invest in bigger slaves)
 - **Client:** only a 30 s per-forward restart throttle, no circuit breaker (`client_agent.py:1968`) — amplifies transient jitter.
 - **Sidecar:** leaves an *inert* stale `cf-routes` row after a flip (cosmetic; the dead unit is removed). `leigod_uot_impl=lguot` silently no-ops on a node missing the `lguot` binary.
 - **Tests:** still no automated coverage of a live 3-role mode transition (the §10.1/§10.2 tests cover the panel publish side only).
+
+### 10.5 Live cutover retry of combo 5 (2026-06-03) — fixes validated in prod, pure-leigod reverted
+
+Committed locally (`207bed9`). PHP deployed to prod (`ProvisioningService.php`, sha `d4ec5f3e`, `php -l` clean; backup `…/master/src/Support/ProvisioningService.php.bak-20260603-211156-ingressfix`). Combo 5 + forwards 65/67 flipped `cf_mode → leigod_mode` (targeted DB UPDATE mirroring the derivation) and republished via a one-off `republishActiveForwardsForCombination(5)` + `…ForSidecarPoint(5)`.
+
+**Validated LIVE (both fixes work):**
+- **Coherent config:** the client bond for fwd 65 (`:11035`) and 67 (`:11036`) came up with the **3 slave legs only and zero CF (`162.159`) legs** — §10.1's ingress sync produced a clean leigod config (the pre-flip slave tasks had `162.159`; the post-flip ones did not).
+- **20s cooldown live:** both forwards ran with `--leg-cooldown-ms 20000` (vs the untouched fwd 66 still at `1800000`) — §10.2 confirmed end-to-end.
+- **Auto-convergence, no manual restart:** the client agent reconciled and restarted only the two affected forward services on its own heartbeat (~2.5 min after DB+republish). No restart storm. **This is the automation gap closed, proven in prod.**
+
+**Reverted (pure-leigod still not throughput-stable — as §10.3 predicted):**
+- Post-flip warmup churned (~330 cooldowns/6 min) then settled to ~2–4/min idle, but under an iperf3 load test the path **could not complete a transfer** (the bond accepted the local connection but delivery stalled) — the 2-vCPU WG-crypto ceiling with no stability anchor. fwd 67 had been the stable ~300 Mbit/s producer on the hybrid.
+- Per the "one spaced measurement, then decide" discipline, combo 5 was **reverted to the `cf_mode` hybrid** (DB + republish; slaves re-applied, CF restored, verified). The improved PHP stays deployed (harmless under `cf_mode`; ready for a future leigod cutover).
+
+**Conclusion:** the automation gap (§10.1) and the cooldown pathology (§10.2) are **fixed and verified in prod**. Pure `leigod_mode` is now *automation-usable and recoverable* (catastrophic 30-min-sideline flap → recoverable 20 s churn) but still needs **§10.3 (leigod-primary + demoted anchor)** or bigger-vCPU slaves before it can replace the `cf_mode` hybrid for sustained throughput. The fixes cannot raise the CPU ceiling.
