@@ -1,7 +1,7 @@
 # LeiGod Mode — Demoted CF Anchor (stability floor) — Design Spec
 
 **Date:** 2026-06-03
-**Status:** Design approved (brainstorming); pending spec review → implementation plan.
+**Status:** ⚠️ **SUPERSEDED** by `2026-06-03-leigod-mode-client-direct-design.md`. The demoted-CF-anchor mechanism described here is retained as the *floor leg* of the new client-direct design, but the topology changed from slave-relayed to client-direct (no slave), so this spec is no longer the implementation target. Kept for the mechanism write-up (bond priority-tier fallback, the not-the-trap distinction).
 **Related:** `docs/2026-06-03-leigod-mode-toplevel-feature.md` §10.3 (the durable fix this spec realizes), `[[leigod-mode-automation-gap]]`, `[[leigod-uot-cpu-bound]]`.
 
 ---
