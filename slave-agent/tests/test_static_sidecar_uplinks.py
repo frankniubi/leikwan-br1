@@ -183,6 +183,54 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
         self.assertNotIn("ListenPort = 43123", rendered)
         self.assertIn("MTU = 1280", rendered)
 
+    def test_leigod_uplink_lguot_impl_renders_lguot_client(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        written: dict[str, str] = {}
+        management = self.static_uplink_management(
+            outer_transport="leigod",
+            sidecar_endpoint_host="127.0.0.1",
+            sidecar_endpoint_port=43123,
+            local_listen_port=43123,
+            gost_listen_udp_port=43123,
+            sidecar_wg_listen_port=14970,
+            leigod_line_id=451,
+            sidecar_gost_host="138.252.162.120",
+            sidecar_gost_port=47123,
+            socks_user="wguot",
+            socks_pass="s3cret",
+            leigod_uot_impl="lguot",
+            mtu=1280,
+        )
+
+        def fake_run(command: str, check: bool = True):
+            if command == "wg show lws4c2n19p latest-handshakes":
+                return SimpleNamespace(returncode=0, stdout="peer 999\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with mock.patch.object(slave_agent_module.time, "time", return_value=1000):
+                    with mock.patch.object(agent, "ensure_wireguard_identity", return_value="slave-pub"):
+                        with mock.patch.object(agent, "write_text_if_changed", side_effect=lambda path, content: written.setdefault(str(path), content) is not None):
+                            with mock.patch.object(agent, "ensure_leigod_line_service"):
+                                with mock.patch.object(agent, "ensure_lguot_binary"):
+                                    agent.apply_management_state(management)
+
+        rendered = "\n".join(written.values())
+        lguot_unit = next((c for p, c in written.items() if "leikwan-lguot-lws4c2n19p" in p), None)
+        self.assertIsNotNone(lguot_unit, "lguot client unit not written")
+        self.assertIn("/usr/local/bin/lguot client", lguot_unit)
+        self.assertIn("-listen 127.0.0.1:43123", lguot_unit)
+        self.assertIn("-socks 127.0.0.1:20451", lguot_unit)
+        self.assertIn("-target 138.252.162.120:47123", lguot_unit)
+        self.assertIn("-token s3cret", lguot_unit)
+        # gost client unit must NOT be written when the lguot impl is selected
+        gost_unit = next((c for p, c in written.items() if "leikwan-gost-lws4c2n19p" in p), None)
+        self.assertIsNone(gost_unit, "gost client unit should not be written for lguot impl")
+        self.assertIn("Endpoint = 127.0.0.1:43123", rendered)
+
     def test_apply_leigod_session_writes_file_0600(self):
         agent = self.make_agent()
         chmod_calls: list = []

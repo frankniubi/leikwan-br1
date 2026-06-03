@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.06.04.1"
+AGENT_VERSION = "2026.06.05.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -162,6 +162,7 @@ DEFAULT_CONFIG = {
     "ingress_bin": "/usr/local/bin/leikwan-ingress",
     "wstunnel_bin": "/usr/local/bin/wstunnel",
     "gost_bin": "/usr/local/bin/gost",
+    "lguot_bin": "/usr/local/bin/lguot",
     "leigod_bin": "/usr/local/bin/leigod-linux-amd64",
     "tls_cert_path": "/etc/wstunnel/ssl/server.crt",
     "tls_key_path": "/etc/wstunnel/ssl/server.key",
@@ -4389,23 +4390,39 @@ WantedBy=multi-user.target
             socks_user = str(uplink.get("socks_user", "") or "wguot").strip() or "wguot"
             socks_pass = str(uplink.get("socks_pass", "") or "").strip()
             leigod_line_toml = str(uplink.get("leigod_line_toml", "") or "")
+            # leigod_uot_impl selects the UoT carrier for this lane: "gost" (default) or "lguot"
+            # (CPU-efficient batched recvmmsg/sendmmsg). Both ends must agree -- the panel publishes
+            # the same value into the slave AND sidecar uplink for a lane.
+            leigod_uot_impl = str(uplink.get("leigod_uot_impl", "gost") or "gost").strip().lower()
             if (gost_listen_udp_port > 0 and leigod_line_id > 0 and sidecar_gost_host != ""
                     and sidecar_gost_port > 0 and sidecar_wg_listen_port > 0 and socks_pass != ""):
                 self.ensure_leigod_line_service(leigod_line_id, leigod_line_toml)
-                self.ensure_sidecar_gost_uot_client_service(
-                    interface_name, gost_listen_udp_port, sidecar_wg_listen_port, leigod_line_id,
-                    sidecar_gost_host, sidecar_gost_port, socks_user, socks_pass,
-                )
+                if leigod_uot_impl == "lguot":
+                    # lguot client SOCKS5-CONNECTs through the line to the sidecar's lguot server
+                    # (reuses sidecar_gost_port as the server port + socks_pass as the shared token).
+                    self.ensure_sidecar_lguot_client_service(
+                        interface_name, gost_listen_udp_port, leigod_line_id,
+                        sidecar_gost_host, sidecar_gost_port, socks_pass,
+                    )
+                    self.remove_sidecar_gost_uot_client_service(interface_name)
+                else:
+                    self.ensure_sidecar_gost_uot_client_service(
+                        interface_name, gost_listen_udp_port, sidecar_wg_listen_port, leigod_line_id,
+                        sidecar_gost_host, sidecar_gost_port, socks_user, socks_pass,
+                    )
+                    self.remove_sidecar_lguot_client_service(interface_name)
                 endpoint_host = "127.0.0.1"
                 endpoint_port = gost_listen_udp_port
             else:
                 self.remove_sidecar_gost_uot_client_service(interface_name)
+                self.remove_sidecar_lguot_client_service(interface_name)
             self.remove_sidecar_uot_client_service(interface_name)
             self.remove_sidecar_wstunnel_udp_client_service(interface_name)
         else:
             self.remove_sidecar_uot_client_service(interface_name)
             self.remove_sidecar_wstunnel_udp_client_service(interface_name)
             self.remove_sidecar_gost_uot_client_service(interface_name)
+            self.remove_sidecar_lguot_client_service(interface_name)
         if outer_transport == "leigod" and gost_listen_udp_port > 0 and local_listen_port == gost_listen_udp_port:
             # The local gost UDP listener owns gost_listen_udp_port; don't let WireGuard bind it too.
             local_listen_port = 0
@@ -4465,6 +4482,7 @@ WantedBy=multi-user.target
             run_command(f"ip link delete dev {interface_name}", check=False)
         self.remove_sidecar_uot_client_service(interface_name)
         self.remove_sidecar_gost_uot_client_service(interface_name)
+        self.remove_sidecar_lguot_client_service(interface_name)
         path = self.wireguard_interface_path(interface_name)
         if path.exists():
             path.unlink()
@@ -4576,6 +4594,91 @@ WantedBy=multi-user.target
 
     def remove_sidecar_gost_uot_client_service(self, interface_name: str) -> None:
         service_name = f"leikwan-gost-{interface_name}"
+        unit_path = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system")) / f"{service_name}.service"
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop {service_name}.service", check=False)
+            run_command(f"systemctl disable {service_name}.service", check=False)
+            run_command("systemctl daemon-reload", check=False)
+        if unit_path.exists():
+            unit_path.unlink()
+
+    def ensure_lguot_binary(self) -> None:
+        """Download the lguot UoT binary from the panel if it is missing -- self-heal for the
+        leigod_uot_impl=lguot rollout without re-running the installer. Sha-gating is the installer's
+        job; at runtime we only ensure presence (download-if-missing) to avoid a re-download churn loop.
+        """
+        lguot_bin = Path(str(self.config.get("lguot_bin", "/usr/local/bin/lguot") or "/usr/local/bin/lguot"))
+        if lguot_bin.exists() and os.access(str(lguot_bin), os.X_OK):
+            return
+        master = str(self.config.get("master_url", "") or "").rstrip("/")
+        if master == "":
+            return
+        url = f"{master}/artifacts/lguot/lguot_linux_amd64"
+        try:
+            with request.urlopen(request.Request(url), timeout=60) as resp:
+                tmp_path = lguot_bin.with_suffix(".tmp")
+                tmp_path.write_bytes(resp.read())
+                tmp_path.chmod(0o755)
+                tmp_path.rename(lguot_bin)
+            logging.info("lguot binary installed at %s", lguot_bin)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("failed to download lguot binary: %s", exc)
+
+    def ensure_sidecar_lguot_client_service(
+        self,
+        interface_name: str,
+        gost_listen_udp_port: int,
+        leigod_line_id: int,
+        sidecar_gost_host: str,
+        sidecar_gost_port: int,
+        token: str,
+    ) -> None:
+        """LeiGod basis, CPU-efficient carrier: lguot client takes WG UDP on the local
+        gost_listen_udp_port and frames it over a single TCP stream SOCKS5-CONNECTed through the line
+        (127.0.0.1:20000+line) to the sidecar's lguot server (sidecar_gost_host:sidecar_gost_port),
+        authenticated by the shared token (= socks_pass). Drop-in peer of the gost client arm."""
+        if (gost_listen_udp_port <= 0 or sidecar_gost_port <= 0 or sidecar_gost_host == "" or token == ""):
+            return
+        line_socks_port = 20000 + int(leigod_line_id)
+        service_name = f"leikwan-lguot-{interface_name}"
+        unit_path = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system")) / f"{service_name}.service"
+        lguot_bin = str(self.config.get("lguot_bin", "/usr/local/bin/lguot") or "/usr/local/bin/lguot")
+        self.ensure_lguot_binary()
+        # Churn guard: never write a Restart=always unit on a node lacking the lguot binary (the
+        # systemd restart-storm failure mode). If absent, remove any stale unit and skip; the selector
+        # falls back to the other bases.
+        if shutil.which(lguot_bin) is None and not Path(lguot_bin).exists():
+            self.remove_sidecar_lguot_client_service(interface_name)
+            return
+        exec_start = (
+            f"{lguot_bin} client "
+            f"-listen 127.0.0.1:{gost_listen_udp_port} "
+            f"-socks 127.0.0.1:{line_socks_port} "
+            f"-target {sidecar_gost_host}:{sidecar_gost_port} "
+            f"-token {token}"
+        )
+        body = f"""[Unit]
+Description=Leikwan LeiGod lguot UoT Client {service_name}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={exec_start}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+        changed = self.write_text_if_changed(unit_path, body)
+        if shutil.which("systemctl"):
+            if changed:
+                run_command("systemctl daemon-reload", check=False)
+                run_command(f"systemctl enable {service_name}.service", check=False)
+                run_command(f"systemctl restart {service_name}.service", check=False)
+
+    def remove_sidecar_lguot_client_service(self, interface_name: str) -> None:
+        service_name = f"leikwan-lguot-{interface_name}"
         unit_path = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system")) / f"{service_name}.service"
         if shutil.which("systemctl"):
             run_command(f"systemctl stop {service_name}.service", check=False)
@@ -5211,7 +5314,7 @@ WantedBy=multi-user.target
 
         if shutil.which("systemctl"):
             unit_result = run_command(
-                "systemctl list-units 'wg-quick@lws*' 'leikwan-wgcf-lws*' 'leikwan-gost-lws*' '*-sidecar-selector.service' --type=service --all --no-legend --no-pager",
+                "systemctl list-units 'wg-quick@lws*' 'leikwan-wgcf-lws*' 'leikwan-gost-lws*' 'leikwan-lguot-lws*' '*-sidecar-selector.service' --type=service --all --no-legend --no-pager",
                 check=False,
             )
             for line in str(getattr(unit_result, "stdout", "") or "").splitlines():
@@ -5221,6 +5324,7 @@ WantedBy=multi-user.target
                 wg_match = re.match(r"^wg-quick@(lws[^.]+)\.service$", unit_name)
                 cf_match = re.match(r"^leikwan-wgcf-(lws[^.]+)\.service$", unit_name)
                 gost_match = re.match(r"^leikwan-gost-(lws[^.]+)\.service$", unit_name)
+                lguot_match = re.match(r"^leikwan-lguot-(lws[^.]+)\.service$", unit_name)
                 selector_match = re.match(r"^(.+)-sidecar-selector\.service$", unit_name)
                 if wg_match is not None:
                     iface = wg_match.group(1)
@@ -5236,6 +5340,12 @@ WantedBy=multi-user.target
                         run_command(f"systemctl reset-failed {unit_name}", check=False)
                 elif gost_match is not None:
                     iface = gost_match.group(1)
+                    if iface not in active_interfaces:
+                        run_command(f"systemctl stop {unit_name}", check=False)
+                        run_command(f"systemctl disable {unit_name}", check=False)
+                        run_command(f"systemctl reset-failed {unit_name}", check=False)
+                elif lguot_match is not None:
+                    iface = lguot_match.group(1)
                     if iface not in active_interfaces:
                         run_command(f"systemctl stop {unit_name}", check=False)
                         run_command(f"systemctl disable {unit_name}", check=False)
