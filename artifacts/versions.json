@@ -23,6 +23,15 @@
     "size_bytes": 10779919,
     "note": "recovered LeiGod accelerator (slave only); runs leigod@<line> exposing SOCKS 127.0.0.1:20000+line. Fill sha256/size when published."
   },
+  "lguot_linux_amd64": {
+    "version": "2026.06.03.1",
+    "path": "artifacts/lguot/lguot_linux_amd64",
+    "artifact_url": "/artifacts/lguot/lguot_linux_amd64",
+    "sha256": "c06f8ba44964be5bfea792f3a4ff3e0280d6700402b1f3f9a31c2fce3180fd59",
+    "size_bytes": 3348813,
+    "size": 3348813,
+    "note": "CPU-efficient UDP-over-TCP carrier (batched recvmmsg/sendmmsg, SOCKS5-chained, token auth) for the leigod arm. Drop-in alt to gost when leigod_uot_impl=lguot: ~2.4x throughput at 1/3 CPU on a 2-vCPU slave (178 vs 73 Mbit/s). Source: tools/lguot/."
+  },
   "slave_installer": {
     "version": "2026.05.20.1",
     "path": "install/install-slave.sh",
