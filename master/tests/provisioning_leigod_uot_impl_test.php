@@ -53,6 +53,19 @@ foreach (['def ensure_sidecar_lguot_client_service', 'leigod_uot_impl', 'lguot c
         fail('slave_agent.py missing snippet: ' . $snippet);
     }
 }
+// Carrier-swap correctness: a gost<->lguot swap leaves the WG .conf byte-identical, so the agent MUST
+// force a fresh WG handshake (force_wg_reinit) or the new carrier sits behind a stale session (100% loss).
+foreach (['force_wg_reinit', 'changed or not is_active or force_wg_reinit'] as $snippet) {
+    if (!str_contains($slaveAgent, $snippet)) {
+        fail('slave_agent.py missing carrier-swap WG re-handshake: ' . $snippet);
+    }
+}
+// remove-before-add on the shared UoT port (avoid EADDRINUSE restart-storm on swap).
+$lguotPos = strpos($slaveAgent, 'self.ensure_sidecar_lguot_client_service');
+$removeGostPos = strpos($slaveAgent, 'self.remove_sidecar_gost_uot_client_service(interface_name)');
+if ($lguotPos === false || $removeGostPos === false || $removeGostPos > $lguotPos) {
+    fail('slave_agent.py must remove gost client BEFORE ensuring lguot client (remove-before-add)');
+}
 $sidecarAgent = file_get_contents($root . '/../sidecar-agent/sidecar_agent.py') ?: '';
 foreach (['def ensure_sidecar_leigod_lguot_server_service', 'leigod_uot_impl', 'lguot server', '-wg 127.0.0.1:'] as $snippet) {
     if (!str_contains($sidecarAgent, $snippet)) {

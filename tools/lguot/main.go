@@ -54,17 +54,23 @@ func makeMsgs(n int) []ipv4.Message {
 func udpToTCP(pc *ipv4.PacketConn, w *bufio.Writer, learn *atomic.Value) error {
 	ms := makeMsgs(batch)
 	hdr := make([]byte, 2)
-	learned := false
+	var last *net.UDPAddr
 	for {
 		n, err := pc.ReadBatch(ms, 0)
 		if err != nil {
 			return err
 		}
 		for i := 0; i < n; i++ {
-			if learn != nil && !learned && ms[i].Addr != nil {
+			// Follow the WireGuard source address rather than latching the first one. WG's socket
+			// port changes whenever the interface restarts or roams (carrier swap, agent reconcile,
+			// rekey). Latching would leave us replying to a stale port forever -> 100% loss after any
+			// WG source-port change. Update on change only (cheap; WG is the only sender here).
+			if learn != nil && ms[i].Addr != nil {
 				if ua, ok := ms[i].Addr.(*net.UDPAddr); ok {
-					learn.Store(ua)
-					learned = true
+					if last == nil || last.Port != ua.Port || !last.IP.Equal(ua.IP) {
+						learn.Store(ua)
+						last = ua
+					}
 				}
 			}
 			l := ms[i].N
@@ -87,6 +93,7 @@ func udpToTCP(pc *ipv4.PacketConn, w *bufio.Writer, learn *atomic.Value) error {
 func tcpToUDP(r *bufio.Reader, pc *ipv4.PacketConn, getDst func() *net.UDPAddr) error {
 	ms := makeMsgs(batch)
 	hdr := make([]byte, 2)
+	dropLogged := false
 	for {
 		k := 0
 		for k < batch {
@@ -105,6 +112,13 @@ func tcpToUDP(r *bufio.Reader, pc *ipv4.PacketConn, getDst func() *net.UDPAddr) 
 				ms[k].Buffers[0] = ms[k].Buffers[0][:l]
 				ms[k].Addr = dst
 				k++
+			} else if !dropLogged {
+				// Observability: a sidecar->slave frame arrived before we learned the WG source
+				// addr (no slave->sidecar packet seen yet). Turn the otherwise-silent black-hole
+				// into a grep-able symptom. The carrier-swap handover forces a slave-first
+				// handshake so this should be rare/transient.
+				fmt.Fprintln(os.Stderr, "lguot: dropping return frame, WG source addr not learned yet")
+				dropLogged = true
 			}
 			if r.Buffered() == 0 {
 				break

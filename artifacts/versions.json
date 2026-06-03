@@ -1,11 +1,11 @@
 {
   "slave_agent": {
-    "version": "2026.06.05.1",
+    "version": "2026.06.05.2",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "abc93cf9a4693ea6699ea9173609fc9de292dac811336e133464b3eca1ee0aac",
-    "size_bytes": 270106,
-    "size": 270106
+    "sha256": "45fbbacb6b2a11d9f2e79762c2c79642849f157f3dd21f2f97fbccde9b4ffd62",
+    "size_bytes": 271408,
+    "size": 271408
   },
   "gost_linux_amd64": {
     "version": "3.2.6",
@@ -24,12 +24,12 @@
     "note": "recovered LeiGod accelerator (slave only); runs leigod@<line> exposing SOCKS 127.0.0.1:20000+line. Fill sha256/size when published."
   },
   "lguot_linux_amd64": {
-    "version": "2026.06.03.1",
+    "version": "2026.06.03.2",
     "path": "artifacts/lguot/lguot_linux_amd64",
     "artifact_url": "/artifacts/lguot/lguot_linux_amd64",
-    "sha256": "c06f8ba44964be5bfea792f3a4ff3e0280d6700402b1f3f9a31c2fce3180fd59",
-    "size_bytes": 3348813,
-    "size": 3348813,
+    "sha256": "5480f352d2482334b1bde6198b83b7ef65fafa7eebbb3c22e15f8337a892fa1a",
+    "size_bytes": 3348125,
+    "size": 3348125,
     "note": "CPU-efficient UDP-over-TCP carrier (batched recvmmsg/sendmmsg, SOCKS5-chained, token auth) for the leigod arm. Drop-in alt to gost when leigod_uot_impl=lguot: ~2.4x throughput at 1/3 CPU on a 2-vCPU slave (178 vs 73 Mbit/s). Source: tools/lguot/."
   },
   "slave_installer": {
@@ -86,12 +86,12 @@
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
-    "version": "2026.06.05.1",
+    "version": "2026.06.05.2",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "5372af8c1b1eb958d174334c8442aa37c06d20f8080c9561275cd1ec93b488ce",
-    "size_bytes": 113559,
-    "size": 113559
+    "sha256": "f9ceb91f97b3016768b8abc7430b3bbc714d570bda6e0301c18e90600ff5f792",
+    "size_bytes": 113739,
+    "size": 113739
   },
   "mptcp_client_runtime": {
     "version": "2026.05.29.5",

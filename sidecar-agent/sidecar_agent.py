@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.06.05.1"
+AGENT_VERSION = "2026.06.05.2"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -382,11 +382,13 @@ class SidecarAgent:
             if leigod_uot_impl == "lguot":
                 # lguot server terminates the slave's framed-UDP stream and delivers it to the local WG
                 # ListenPort; the slave's socks_pass is the shared auth token. Reuses gost_socks_listen_port.
-                self.ensure_sidecar_leigod_lguot_server_service(interface_name, gost_socks_listen_port, listen_port, socks_pass)
+                # Remove the gost server FIRST -- both bind the same TCP port, so ensure-before-remove would
+                # EADDRINUSE-flap the new server under Restart=always.
                 self.remove_sidecar_leigod_gost_server_service(interface_name)
+                self.ensure_sidecar_leigod_lguot_server_service(interface_name, gost_socks_listen_port, listen_port, socks_pass)
             else:
-                self.ensure_sidecar_leigod_gost_server_service(interface_name, gost_socks_listen_port, socks_user, socks_pass)
                 self.remove_sidecar_leigod_lguot_server_service(interface_name)
+                self.ensure_sidecar_leigod_gost_server_service(interface_name, gost_socks_listen_port, socks_user, socks_pass)
         else:
             self.remove_sidecar_leigod_gost_server_service(interface_name)
             self.remove_sidecar_leigod_lguot_server_service(interface_name)

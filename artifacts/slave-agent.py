@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.06.05.1"
+AGENT_VERSION = "2026.06.05.2"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -4305,6 +4305,7 @@ WantedBy=multi-user.target
             )
             self.remove_sidecar_uplink(interface_name, {"interface_name": interface_name})
             return
+        force_wg_reinit = False  # set when a leigod carrier swap (gost<->lguot) needs a fresh WG handshake
         if outer_transport == "wstunnel_udp" and local_wstunnel_udp_port > 0:
             cf_target_host = str(uplink.get("cf_target_host", "") or "127.0.0.1").strip()
             cf_target_port = max(0, int(uplink.get("cf_target_port", 0) or 0))
@@ -4397,20 +4398,29 @@ WantedBy=multi-user.target
             if (gost_listen_udp_port > 0 and leigod_line_id > 0 and sidecar_gost_host != ""
                     and sidecar_gost_port > 0 and sidecar_wg_listen_port > 0 and socks_pass != ""):
                 self.ensure_leigod_line_service(leigod_line_id, leigod_line_toml)
+                systemd_dir = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system"))
+                gost_unit_present = (systemd_dir / f"leikwan-gost-{interface_name}.service").exists()
+                lguot_unit_present = (systemd_dir / f"leikwan-lguot-{interface_name}.service").exists()
                 if leigod_uot_impl == "lguot":
-                    # lguot client SOCKS5-CONNECTs through the line to the sidecar's lguot server
-                    # (reuses sidecar_gost_port as the server port + socks_pass as the shared token).
+                    # Carrier swap gost->lguot. Remove the gost client FIRST so it releases the shared
+                    # gost_listen_udp_port before lguot's ListenUDP binds it (no SO_REUSEPORT -> would
+                    # EADDRINUSE-flap under Restart=always). lguot client SOCKS5-CONNECTs through the line
+                    # to the sidecar lguot server (reuses sidecar_gost_port + socks_pass as the token).
+                    if gost_unit_present:
+                        force_wg_reinit = True
+                    self.remove_sidecar_gost_uot_client_service(interface_name)
                     self.ensure_sidecar_lguot_client_service(
                         interface_name, gost_listen_udp_port, leigod_line_id,
                         sidecar_gost_host, sidecar_gost_port, socks_pass,
                     )
-                    self.remove_sidecar_gost_uot_client_service(interface_name)
                 else:
+                    if lguot_unit_present:
+                        force_wg_reinit = True
+                    self.remove_sidecar_lguot_client_service(interface_name)
                     self.ensure_sidecar_gost_uot_client_service(
                         interface_name, gost_listen_udp_port, sidecar_wg_listen_port, leigod_line_id,
                         sidecar_gost_host, sidecar_gost_port, socks_user, socks_pass,
                     )
-                    self.remove_sidecar_lguot_client_service(interface_name)
                 endpoint_host = "127.0.0.1"
                 endpoint_port = gost_listen_udp_port
             else:
@@ -4457,9 +4467,13 @@ WantedBy=multi-user.target
             is_active = self.systemd_is_active(service_name)
             if changed:
                 run_command("systemctl daemon-reload", check=False)
-            if changed or not is_active:
+            if changed or not is_active or force_wg_reinit:
                 run_command(f"systemctl enable {service_name}.service", check=False)
-                action = "restart" if changed else "start"
+                # A leigod carrier swap (gost<->lguot) keeps the WG .conf byte-identical (same Endpoint),
+                # so write_text_if_changed is a no-op and WG would NOT restart -- but the UoT carrier under
+                # it changed. Bounce WG to force a fresh slave-initiated handshake: that (a) re-seeds the new
+                # lguot client's WG-source learn and (b) re-roams the sidecar WG peer onto the live socket.
+                action = "restart" if (changed or force_wg_reinit) else "start"
                 result = run_command(f"systemctl {action} {service_name}.service", check=False)
                 detail = str(getattr(result, "stderr", "") or getattr(result, "stdout", "") or "")
                 if int(getattr(result, "returncode", 0) or 0) != 0 and is_transient_systemd_error(detail):
