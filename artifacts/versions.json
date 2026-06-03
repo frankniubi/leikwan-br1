@@ -86,12 +86,12 @@
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
-    "version": "2026.06.03.4",
+    "version": "2026.06.05.1",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "1b0bce4137a8867d0f41c89214181854308402efe879a4654d2485ae8794cbe8",
-    "size_bytes": 105529,
-    "size": 105529
+    "sha256": "5372af8c1b1eb958d174334c8442aa37c06d20f8080c9561275cd1ec93b488ce",
+    "size_bytes": 113559,
+    "size": 113559
   },
   "mptcp_client_runtime": {
     "version": "2026.05.29.5",

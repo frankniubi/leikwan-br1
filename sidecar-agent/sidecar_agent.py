@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.06.03.4"
+AGENT_VERSION = "2026.06.05.1"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -375,10 +375,21 @@ class SidecarAgent:
         gost_socks_listen_port = max(0, int(uplink.get("gost_socks_listen_port", 0) or 0))
         socks_user = str(uplink.get("socks_user", "") or "").strip()
         socks_pass = str(uplink.get("socks_pass", "") or "").strip()
+        # leigod_uot_impl selects the UoT carrier for this lane (must match the slave side, the panel
+        # publishes the same value to both): "gost" (default) or "lguot" (CPU-efficient).
+        leigod_uot_impl = str(uplink.get("leigod_uot_impl", "gost") or "gost").strip().lower()
         if outer_transport == "leigod" and gost_socks_listen_port > 0 and listen_port > 0 and socks_user != "" and socks_pass != "":
-            self.ensure_sidecar_leigod_gost_server_service(interface_name, gost_socks_listen_port, socks_user, socks_pass)
+            if leigod_uot_impl == "lguot":
+                # lguot server terminates the slave's framed-UDP stream and delivers it to the local WG
+                # ListenPort; the slave's socks_pass is the shared auth token. Reuses gost_socks_listen_port.
+                self.ensure_sidecar_leigod_lguot_server_service(interface_name, gost_socks_listen_port, listen_port, socks_pass)
+                self.remove_sidecar_leigod_gost_server_service(interface_name)
+            else:
+                self.ensure_sidecar_leigod_gost_server_service(interface_name, gost_socks_listen_port, socks_user, socks_pass)
+                self.remove_sidecar_leigod_lguot_server_service(interface_name)
         else:
             self.remove_sidecar_leigod_gost_server_service(interface_name)
+            self.remove_sidecar_leigod_lguot_server_service(interface_name)
         keepalive_line = f"PersistentKeepalive = {keepalive}\n" if keepalive > 0 else ""
         config = (
             "[Interface]\n"
@@ -421,6 +432,7 @@ class SidecarAgent:
         self.remove_sidecar_uot_server_service(interface_name)
         self.remove_sidecar_cf_wstunnel_backend(interface_name)
         self.remove_sidecar_leigod_gost_server_service(interface_name)
+        self.remove_sidecar_leigod_lguot_server_service(interface_name)
 
     def restart_slave_sidecar_uplink(self, interface_name: str) -> None:
         iface = str(interface_name or "").strip()[:15]
@@ -563,6 +575,73 @@ WantedBy=multi-user.target
 
     def remove_sidecar_leigod_gost_server_service(self, interface_name: str) -> None:
         service_name = f"leikwan-leigod-gost-server-{interface_name}"
+        unit_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
+        if shutil.which("systemctl") is not None:
+            subprocess.run(["systemctl", "stop", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "disable", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+        if unit_path.exists():
+            unit_path.unlink()
+
+    def ensure_lguot_binary(self) -> None:
+        """Download the lguot UoT binary from the panel if missing (self-heal for the
+        leigod_uot_impl=lguot rollout without re-running the sidecar installer)."""
+        lguot_path = pathlib.Path("/usr/local/bin/lguot")
+        if lguot_path.exists() and os.access(str(lguot_path), os.X_OK):
+            return
+        master = str(self.config.get("master_url", "") or "").rstrip("/")
+        if not master:
+            return
+        url = f"{master}/artifacts/lguot/lguot_linux_amd64"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url), timeout=60) as resp:
+                tmp_path = lguot_path.with_suffix(".tmp")
+                tmp_path.write_bytes(resp.read())
+                tmp_path.chmod(0o755)
+                tmp_path.rename(lguot_path)
+            logging.info("lguot binary installed at %s", lguot_path)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("failed to download lguot binary: %s", exc)
+
+    def ensure_sidecar_leigod_lguot_server_service(self, interface_name: str, listen_tcp_port: int, wg_listen_port: int, token: str) -> None:
+        """lguot UoT server for the LeiGod basis (the leigod_uot_impl=lguot peer of the gost server).
+
+        The slave's lguot client SOCKS5-CONNECTs over its LeiGod line to :listen_tcp_port; the server
+        de-frames with batched sendmmsg and delivers the UDP to 127.0.0.1:<WG listen_port>, authenticated
+        by the shared token (= socks_pass). Unlike the gost SOCKS server, the WG target port is fixed at
+        the unit (-wg). The cloud security-group must allow inbound TCP on listen_tcp_port.
+        """
+        if listen_tcp_port <= 0 or wg_listen_port <= 0 or token == "":
+            return
+        self.ensure_lguot_binary()
+        lguot_bin = "/usr/local/bin/lguot"
+        # Churn guard: never write a Restart=always unit on a node lacking the lguot binary.
+        if shutil.which(lguot_bin) is None and not pathlib.Path(lguot_bin).exists():
+            self.remove_sidecar_leigod_lguot_server_service(interface_name)
+            return
+        service_name = f"leikwan-leigod-lguot-server-{interface_name}"
+        unit_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
+        body = f"""[Unit]
+Description=Leikwan LeiGod lguot UoT Server {service_name}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={lguot_bin} server -listen :{listen_tcp_port} -wg 127.0.0.1:{wg_listen_port} -token {token}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+        changed = write_text_if_changed(unit_path, body, mode=0o644)
+        if shutil.which("systemctl") is not None and changed:
+            subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "enable", f"{service_name}.service"], text=True, capture_output=True, check=False)
+            subprocess.run(["systemctl", "restart", f"{service_name}.service"], text=True, capture_output=True, check=False)
+
+    def remove_sidecar_leigod_lguot_server_service(self, interface_name: str) -> None:
+        service_name = f"leikwan-leigod-lguot-server-{interface_name}"
         unit_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
         if shutil.which("systemctl") is not None:
             subprocess.run(["systemctl", "stop", f"{service_name}.service"], text=True, capture_output=True, check=False)
