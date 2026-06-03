@@ -4,6 +4,8 @@
 **Branch merged to:** `master` (commits `bc5b48f`, `57394ea`, `5ad777c`, `d0d3834`, on top of merge `a9f3405`)
 **Status:** Panel code **complete, tested, deployed to prod (inert)**. Live cutover of production combo 5 was attempted, **failed (flapped), and rolled back**. The panel feature is sound; the *live leigod-direct data path* is not yet stable enough to drop CF. See [Test Results](#test-results) and [What To Do Next](#what-to-do-next).
 
+> **UPDATE 2026-06-03 (post-investigation):** the "panel feature is sound" claim was **incomplete**. A follow-up investigation found a real **panel automation gap** (a combo Forward-Mode flip did not converge the client/slave *ingress* axis — `forwards` row left stale) and applied two surgical, panel-only fixes (the ingress re-sync + a mode-aware leg cooldown). See **§10**. The "operator error / just restart all 3 roles" framing in §6.4 was partly a **mis-attribution** of that automation gap.
+
 ---
 
 ## 1. Goal & Motivation
@@ -159,3 +161,47 @@ On save the panel automatically: derives `self_leg_outer_transport='leigod'`, de
 - `[[leigod-uot-cpu-bound]]` — the 2-vCPU WG-crypto ceiling + the lguot work that lifted per-leg throughput.
 - `[[tokyo-forward-no-cf-ingress]]` — the earlier (also reverted) attempt to drop CF via `current_mode`; same instability class.
 - `[[ssh-password-trailing-dot]]` — host credentials (the root passwords end in a literal `.`).
+
+---
+
+## 10. Post-Investigation Update — automation gap fixed + stability remediation (2026-06-03, later)
+
+A follow-up systematic investigation (9-agent workflow + independent code re-read + 3 adversarial verifications) revised §5/§6: the *"panel feature is sound; only the data path is unstable"* framing was **incomplete**. Two distinct defects existed; both now have surgical, **panel-only** fixes (no agent/Rust rebuild — they flow to clients on the next config pull).
+
+### 10.1 Automation gap (NEW root cause — §6.4's "operator error" was a mis-attribution)
+
+`leigod_mode` was **not** automation-usable from the panel alone. `saveForwardCombination()` updates only the `forward_combinations` row (and `republishActiveForwardsForCombination()` only reconciles), but the published task reads the **denormalized `forwards` row**: `publishTaskPayloadForForward()` keys `backend_mode` + the `cf_mode` ingress block off `$forward['backend_mode']` (`ProvisioningService.php:6399,6435`), and `forwardUsesCfMode()` returns true while `forwards.cf_location_group_id > 0` (`:7967`). Those two columns are synced from the combination **only at forward-save time** (`saveForward` `:4147/4468`) — *not* on combo save.
+
+So a live panel flip `cf_mode → leigod_mode` shipped an **internally incoherent task**: a leigod self-leg (recomputed live from the combination) **plus a still-armed CF ingress leg** (stale `forwards` row) — exactly the cf/leigod mismatch that flaps bond legs. **No agent restart fixes this** — the served config is genuinely stale. The combo-5 test only looked clean because the operator hand-ran the migration (`20260603_promote_leigod_mode.sql` step 2, whose own comment says *"CRITICAL: without this the cutover is incomplete"*) — a one-time manual SQL, not automation.
+
+**Fix:** `saveForwardCombination()` now re-syncs the bound forwards' `backend_mode` + `cf_location_group_id` from the combination *before* republish (mirroring the migration). It generalizes to all 3 modes (leigod→`cf_location_group_id=NULL`, cf→the group, current→NULL).
+- `master/src/Support/ProvisioningService.php` — `UPDATE forwards SET backend_mode/cf_location_group_id … WHERE forward_combination_id` immediately before `republishActiveForwardsForCombination($id)`.
+- Test: `master/tests/saveforwardcombination_syncs_forwards_ingress_test.php`. **PASS** (RED→GREEN verified).
+
+### 10.2 Stability — mode-aware leg cooldown
+
+The combo-5 flap (173 cooldowns/2 min) was confirmed a **data-path** problem on an *already-coherent* config (so NOT the §10.1 gap — the migration had synced it). The bond's `apply_leg_cooldown` (`leikwan-bond/src/session.rs:4638`) is a **fixed duration with no escalating backoff**, controlled entirely by `--leg-cooldown-ms`. The published default was **30 minutes** (`BOND_LEG_COOLDOWN_MS`), which on a CPU-bound 2-vCPU leigod slave turns a transient ~2 s stall into a 30-min capacity loss on a scarce few-leg bond.
+
+**Fix:** `leg_cooldown_ms` is now **mode-aware** in `buildBondClientConfig()`:
+- `cf_mode` / legacy: keeps the 30-min isolation (a bad CF edge IP should stay sidelined).
+- `leigod_mode`: short cooldown, default **20 s**, tunable via the new env `BOND_LEIGOD_LEG_COOLDOWN_MS`. (Relies on §10.1: `forwards.backend_mode` is now reliably `leigod_mode`, so the mode check fires.)
+- `master/src/Support/ProvisioningService.php:7714` (mode-aware ternary).
+- Test: `master/tests/bond_leigod_leg_cooldown_publish_test.php`. **PASS** (RED→GREEN verified).
+
+This **mitigates** (does not eliminate) the flap: a transiently-stalled leigod leg rejoins in seconds instead of 30 min. Under *sustained* saturation the 2-vCPU WG-crypto ceiling (§6.2) still caps aggregate throughput — infra (Priority 4), unchanged by mode choice.
+
+### 10.3 Remaining durable work — leigod-primary + demoted-anchor (design scope, NOT implemented)
+
+Pure `leigod_mode` removed the CF **stability floor** (§6.1). The durable fix is **leigod-primary + a demoted CF/cnix anchor leg**: leigod legs carry the bulk, plus one low-priority standby leg (CF or cnix) that only carries traffic when all leigod legs are momentarily unavailable. Sketch:
+- **Panel:** for `leigod_mode`, additionally publish ONE demoted anchor leg, reusing the existing `ws_priority`/`quic_priority`/`wss_standby_enabled` leg-priority machinery (the bond already supports warm-passive standby legs). Gate behind a per-combo opt-in (e.g. `leigod_anchor_basis ∈ {none, cnix, cf}`).
+- **Agent:** render the anchor leg alongside the leigod legs (the slave already supports cnix/cf self-legs; this is a config-shape change, not a new transport).
+- **Rust:** likely no change — standby + priority ordering already express "use only when preferred legs are down"; verify the standby leg is not counted toward the active CPU-bound set.
+- **Tradeoff:** reintroduces a (demoted) CF/cnix international leg — the thing `leigod_mode` set out to drop — but only as a floor, not the primary path. Alternative lever: bigger-vCPU slaves (Priority 4) make pure-leigod viable without an anchor.
+
+This is a product decision (accept a demoted anchor vs. invest in bigger slaves) and a multi-role change; it warrants its own plan + review before implementation.
+
+### 10.4 Other findings (logged, not yet fixed)
+- **Slave:** the reconcile-issued `wg-quick` restart bypasses the circuit breaker (`slave_agent.py:4477`) — not throttled by nor counted against it. (Steady-state reconcile is idempotent; self-leg cutover is clean.)
+- **Client:** only a 30 s per-forward restart throttle, no circuit breaker (`client_agent.py:1968`) — amplifies transient jitter.
+- **Sidecar:** leaves an *inert* stale `cf-routes` row after a flip (cosmetic; the dead unit is removed). `leigod_uot_impl=lguot` silently no-ops on a node missing the `lguot` binary.
+- **Tests:** still no automated coverage of a live 3-role mode transition (the §10.1/§10.2 tests cover the panel publish side only).
