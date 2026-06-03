@@ -1,10 +1,11 @@
 <?php
 declare(strict_types=1);
 
-// Task A2: saveForwardCombination must reject malformed leigod-basis payloads BEFORE any DB
-// write or republish. Two guards:
-//   1. self_leg_outer_transport='leigod' with leigod_line_id<=0  -> 'leigod_line_required'
-//   2. self_leg_outer_transport='leigod' with sidecar_point_id<=0 -> message contains 'sidecar'
+// saveForwardCombination must reject malformed leigod_mode payloads BEFORE any DB write or
+// republish. leigod_mode (a first-class Forward Mode) derives the leigod self-leg, so the two
+// guards now fire under backend_mode='leigod_mode':
+//   1. leigod_mode with leigod_line_id<=0   -> 'leigod_line_required'
+//   2. leigod_mode with sidecar_point_id<=0 -> message contains 'sidecar'
 // Both throw ApiException (422). Because the guards fire before any persistence, a no-op
 // Database fake is sufficient.
 
@@ -68,12 +69,11 @@ namespace {
         'name' => 'leigod-combo',
         'tenant_label' => 'Leigod',
         'node_group_key' => 'sha-tencent',
-        'backend_mode' => 'current_mode',
+        'backend_mode' => 'leigod_mode',
         'sidecar_point_id' => 4,
         'client_mode' => 'single',
         'runtime_preference' => 'single',
         'is_active' => 1,
-        'self_leg_outer_transport' => 'leigod',
     ];
 
     // Guard 1: leigod with no line id.
@@ -107,16 +107,17 @@ namespace {
         }
     }
 
-    // Invalid axis value must also be rejected.
+    // An unknown Forward Mode must be rejected. (self_leg_outer_transport is now derived from the
+    // mode, so the legacy invalid_self_leg_outer_transport path is unreachable here.)
     $payload3 = $base;
     $payload3['leigod_line_id'] = 451;
-    $payload3['self_leg_outer_transport'] = 'bogus';
+    $payload3['backend_mode'] = 'bogus_mode';
     try {
         $service->saveForwardCombination($payload3);
-        fail('expected invalid_self_leg_outer_transport for bogus value');
+        fail('expected invalid_forward_combination_backend_mode for bogus mode');
     } catch (ApiException $e) {
-        if ($e->getMessage() !== 'invalid_self_leg_outer_transport') {
-            fail('expected invalid_self_leg_outer_transport, got ' . $e->getMessage());
+        if ($e->getMessage() !== 'invalid_forward_combination_backend_mode') {
+            fail('expected invalid_forward_combination_backend_mode, got ' . $e->getMessage());
         }
     }
 

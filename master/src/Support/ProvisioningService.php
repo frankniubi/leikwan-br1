@@ -458,7 +458,26 @@ final class ProvisioningService
         // LeiGod self-leg basis (slave<->sidecar WG outer transport). Validate BEFORE the generic
         // gate so a leigod combo missing its line/sidecar reports a leigod-specific 422 (and so the
         // sidecar-required message surfaces ahead of invalid_forward_combination_payload).
+        // Forward Mode derives the slave<->sidecar self-leg basis; the standalone picker is retired.
+        //   leigod_mode  -> leigod self-leg (DIRECT ingress like current_mode, all CF coupling cleared)
+        //   cf_mode      -> cf   (a realization no-op vs cnix -- staticSidecarCombinationUsesCf keys off
+        //                         backend_mode, not this column -- but keeps the stored column honest)
+        //   current_mode -> cnix (the direct CNIX self-leg)
+        // leigod_uot_impl was previously never persisted by saveForwardCombination; read+default it here
+        // (gost) and let leigod_mode override to the CPU-efficient lguot carrier.
+        $leigodUotImpl = strtolower(trim((string) ($payload['leigod_uot_impl'] ?? 'gost'))) === 'lguot' ? 'lguot' : 'gost';
         $selfLegOuterTransport = strtolower(trim((string) ($payload['self_leg_outer_transport'] ?? 'cnix'))) ?: 'cnix';
+        if ($backendMode === 'leigod_mode') {
+            $selfLegOuterTransport = 'leigod';
+            $allowPrivateSelfLeg = false;       // suppress the self-leg CF primary leg (publishedPrivateSelfLegCandidates returns null)
+            $cfLocationGroupId = 0;             // direct ingress, no CF
+            $selfLegCfTransport = 'cf_direct';  // belt-and-suspenders (also coerced when backend_mode!=cf_mode)
+            $leigodUotImpl = 'lguot';           // leigod_mode default carrier
+        } elseif ($backendMode === 'cf_mode') {
+            $selfLegOuterTransport = 'cf';
+        } else {
+            $selfLegOuterTransport = 'cnix';
+        }
         if (!in_array($selfLegOuterTransport, ['cnix', 'cf', 'leigod'], true)) {
             throw new ApiException('invalid_self_leg_outer_transport', 422, ['self_leg_outer_transport' => $selfLegOuterTransport]);
         }
@@ -477,7 +496,7 @@ final class ProvisioningService
         if ($name === '' || $tenantLabel === '' || $nodeGroupKey === '' || $sidecarPointId <= 0) {
             throw new ApiException('invalid_forward_combination_payload', 422, ['payload' => $payload]);
         }
-        if (!in_array($backendMode, ['current_mode', 'cf_mode'], true)) {
+        if (!in_array($backendMode, ['current_mode', 'cf_mode', 'leigod_mode'], true)) {
             throw new ApiException('invalid_forward_combination_backend_mode', 422, ['backend_mode' => $backendMode]);
         }
         if (!in_array($runtimePreference, ['single', 'mptcp_preferred_bond_fallback'], true)) {
@@ -543,6 +562,7 @@ final class ProvisioningService
             'self_leg_cf_transport' => $selfLegCfTransport,
             'self_leg_outer_transport' => $selfLegOuterTransport,
             'leigod_line_id' => $leigodLineId > 0 ? $leigodLineId : null,
+            'leigod_uot_impl' => $leigodUotImpl,
             'leigod_socks_user' => $leigodSocksUser !== '' ? $leigodSocksUser : null,
             'leigod_socks_pass' => $leigodSocksPass !== '' ? $leigodSocksPass : null,
             'desired_latency_ms' => $desiredLatencyMs,
@@ -578,6 +598,7 @@ final class ProvisioningService
                      self_leg_cf_transport = :self_leg_cf_transport,
                      self_leg_outer_transport = :self_leg_outer_transport,
                      leigod_line_id = :leigod_line_id,
+                     leigod_uot_impl = :leigod_uot_impl,
                      leigod_socks_user = :leigod_socks_user,
                      leigod_socks_pass = :leigod_socks_pass,
                      desired_latency_ms = :desired_latency_ms,
