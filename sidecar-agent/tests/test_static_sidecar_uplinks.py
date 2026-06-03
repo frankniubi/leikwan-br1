@@ -142,6 +142,54 @@ class SidecarStaticSidecarUplinkTests(unittest.TestCase):
             self.assertIsNotNone(wg_body, "WG conf was not written")
             self.assertIn("ListenPort = 51820", wg_body)
 
+    def test_leigod_uplink_lguot_impl_renders_lguot_server_unit(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = pathlib.Path(tmp_dir)
+            config_path = tmp / "agent.json"
+            config_path.write_text(json.dumps({
+                "state_dir": str(tmp),
+                "service_name": "leikwan-bond-sidecar-4",
+                "managed_iperf3_ports": [],
+            }), encoding="utf-8")
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+            (tmp / "wireguard").mkdir(parents=True, exist_ok=True)
+            (tmp / "wireguard" / "private.key").write_text("sidecar-private\n", encoding="utf-8")
+            (tmp / "wireguard" / "public.key").write_text("sidecar-public\n", encoding="utf-8")
+
+            writes: dict[str, str] = {}
+
+            def fake_write(path, body, mode=None):  # noqa: ANN001
+                writes[str(path)] = body
+                return True
+
+            def fake_run(args, **kwargs):
+                return SimpleNamespace(returncode=0, stdout="inactive", stderr="")
+
+            with mock.patch.object(sidecar_agent_module, "write_text_if_changed", side_effect=fake_write):
+                with mock.patch.object(sidecar_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+                    with mock.patch.object(sidecar_agent_module.subprocess, "run", side_effect=fake_run):
+                        with mock.patch.object(agent, "ensure_lguot_binary", side_effect=lambda: None):
+                            agent.apply_slave_sidecar_uplink({
+                                "enabled": True,
+                                "interface_name": "lwsc4n9-r1",
+                                "local_address": "10.22.0.1",
+                                "peer_address": "10.22.0.2",
+                                "slave_peer_public_key": "PUBKEYAAA=",
+                                "listen_port": 51820,
+                                "outer_transport": "leigod",
+                                "gost_socks_listen_port": 47123,
+                                "socks_user": "wguot",
+                                "socks_pass": "s3cret",
+                                "leigod_uot_impl": "lguot",
+                            })
+
+            unit_body = next((b for p, b in writes.items() if "leikwan-leigod-lguot-server-lwsc4n9-r1" in p), None)
+            self.assertIsNotNone(unit_body, "lguot server unit was not written")
+            self.assertIn("lguot server -listen :47123 -wg 127.0.0.1:51820 -token s3cret", unit_body)
+            # gost server unit must NOT be written for the lguot impl
+            gost_body = next((b for p, b in writes.items() if "leikwan-leigod-gost-server-lwsc4n9-r1" in p), None)
+            self.assertIsNone(gost_body, "gost server unit should not be written for lguot impl")
+
     def test_leigod_teardown_removes_gost_server_unit(self):
         agent = self.make_agent()
         calls: list[str] = []
