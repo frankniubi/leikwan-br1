@@ -5783,6 +5783,9 @@ final class ProvisioningService
                 // runs the matching gost UoT server. WG endpoint is re-pinned to the local gost listener.
                 $gostSocks = $this->stableSidecarGostSocksPort($combinationId, $nodeId, $lane);
                 [$socksUser, $socksPass] = $this->mintLeigodSocksCredentials($combination);
+                // leigod_uot_impl selects the UoT carrier published to BOTH ends of this lane:
+                // 'gost' (default) or 'lguot' (CPU-efficient batched recvmmsg/sendmmsg, ~2.4x/leg).
+                $leigodUotImpl = strtolower((string) ($combination['leigod_uot_impl'] ?? 'gost')) === 'lguot' ? 'lguot' : 'gost';
                 $slave['leigod_line_id'] = (int) ($combination['leigod_line_id'] ?? 0);
                 $slave['gost_listen_udp_port'] = $slaveListenPort;
                 $slave['sidecar_gost_host'] = $sidecarHost;
@@ -5790,6 +5793,7 @@ final class ProvisioningService
                 $slave['sidecar_wg_listen_port'] = $listenPort;
                 $slave['socks_user'] = $socksUser;
                 $slave['socks_pass'] = $socksPass;
+                $slave['leigod_uot_impl'] = $leigodUotImpl;
                 $slave['mtu'] = 1280;
                 $slave['sidecar_endpoint_host'] = '127.0.0.1';
                 $slave['sidecar_endpoint_port'] = $slaveListenPort;
@@ -5797,6 +5801,7 @@ final class ProvisioningService
                 $sidecar['gost_socks_listen_port'] = $gostSocks;
                 $sidecar['socks_user'] = $socksUser;
                 $sidecar['socks_pass'] = $socksPass;
+                $sidecar['leigod_uot_impl'] = $leigodUotImpl;
             }
             $lanes[] = ['sidecar' => $sidecar, 'slave' => $slave];
         }
