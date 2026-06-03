@@ -1,7 +1,7 @@
 # LeiGod Mode — Client-Direct Redesign (no slave, CF floor, client-metered billing, brand-hidden)
 
 **Date:** 2026-06-03
-**Status:** Design approved (brainstorming); pending spec review → phased implementation plans.
+**Status:** ⚠️ **SUPERSEDED** by `2026-06-03-leigod-mode-uot-cpu-and-bond-aggregation-design.md`. Client-direct was dropped: end-user clients running LeiGod churn the account's IP set → LeiGod anti-fraud ban. LeiGod must run on the slaves' bounded stable-IP set. Kept for the topology analysis + the leg-level-vs-mode-level failover write-up (§4).
 **Supersedes:** `docs/superpowers/specs/2026-06-03-leigod-mode-demoted-cf-anchor-design.md` (the demoted-CF-anchor is now Phase 1's floor leg, but the topology moved from slave-relayed to client-direct).
 **Related:** `docs/2026-06-03-leigod-mode-toplevel-feature.md` (§6 CPU ceiling, §10 fixes), `[[leigod-mode-automation-gap]]`, `[[leigod-uot-cpu-bound]]`, `[[leigod-account-facts]]`.
 
