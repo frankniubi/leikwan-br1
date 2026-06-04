@@ -403,6 +403,9 @@ final class ProvisioningService
         if (in_array($runtimePreference, $hybrid, true)) {
             return self::DEFAULT_MAX_LEGS_USED;
         }
+        if ($backendMode === 'leigod_mode' && $clientMode === 'mptcp') {
+            return self::DEFAULT_MAX_LEGS_USED;
+        }
         if ($backendMode === 'cf_mode') {
             return self::DEFAULT_MAX_LEGS_USED;
         }
@@ -426,6 +429,14 @@ final class ProvisioningService
         $cfLocationGroupId = (int) ($payload['cf_location_group_id'] ?? 0);
         $clientMode = $this->normalizeClientMode((string) ($payload['client_mode'] ?? 'single'));
         $runtimePreference = trim((string) ($payload['runtime_preference'] ?? 'single'));
+        if ($backendMode === 'leigod_mode') {
+            if (!in_array($clientMode, ['mptcp', 'bond'], true)) {
+                $clientMode = 'mptcp';
+            }
+            if ($clientMode === 'mptcp') {
+                $runtimePreference = 'single';
+            }
+        }
         $allowPrivateSelfLeg = !in_array(strtolower(trim((string) ($payload['allow_private_self_leg'] ?? '0'))), ['0', 'false', 'no', 'off', ''], true);
         $selfLegScope = trim((string) ($payload['self_leg_scope'] ?? 'none')) ?: 'none';
         $selfLegRole = trim((string) ($payload['self_leg_role'] ?? 'none')) ?: 'none';
@@ -635,22 +646,24 @@ final class ProvisioningService
         }
 
         // Keep the denormalized per-forward INGRESS columns in sync with the combination BEFORE
-        // republishing. publishTaskPayloadForForward reads backend_mode + cf_location_group_id from
-        // the forwards row (and forwardUsesCfMode keys CF off forwards.cf_location_group_id > 0), so
-        // without this a live Forward-Mode flip (e.g. cf_mode -> leigod_mode) ships an incoherent
-        // task: a leigod self-leg alongside a still-armed CF ingress leg -- the exact cf/leigod
-        // mismatch that flaps bond legs. saveForward derives these two columns from the combination
-        // at forward-save time; mirror that here so a combination save converges the ingress axis too
+        // republishing. publishTaskPayloadForForward reads client_mode + backend_mode +
+        // cf_location_group_id from the forwards row (and forwardUsesCfMode keys CF off
+        // forwards.cf_location_group_id > 0), so without this a live Forward-Mode/client-mode flip
+        // (e.g. cf_mode -> leigod_mode or leigod_mode/single -> leigod_mode/mptcp) ships an
+        // incoherent task. saveForward derives these columns from the combination at forward-save
+        // time; mirror that here so a combination save converges the ingress axis too
         // (the 20260603_promote_leigod_mode migration does the same UPDATE one-time, comment: "CRITICAL:
         // without this the cutover is incomplete").
         $this->db->execute(
             'UPDATE forwards
              SET backend_mode = :backend_mode,
+                 client_mode = :client_mode,
                  cf_location_group_id = :cf_location_group_id,
                  updated_at = :updated_at
              WHERE forward_combination_id = :forward_combination_id',
             [
                 'backend_mode' => $backendMode,
+                'client_mode' => $clientMode,
                 'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
                 'updated_at' => $this->now(),
                 'forward_combination_id' => $id,
