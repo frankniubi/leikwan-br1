@@ -5851,7 +5851,7 @@ final class ProvisioningService
                 $slave['socks_user'] = $socksUser;
                 $slave['socks_pass'] = $socksPass;
                 $slave['leigod_uot_impl'] = $leigodUotImpl;
-                $slave['mtu'] = 1280;
+                $slave['mtu'] = $this->config->getInt('BOND_LEIGOD_WG_MTU', 1280);
                 $slave['sidecar_endpoint_host'] = '127.0.0.1';
                 $slave['sidecar_endpoint_port'] = $slaveListenPort;
                 $slave['leigod_line_toml'] = $this->leigodLineToml((int) ($combination['leigod_line_id'] ?? 0));
