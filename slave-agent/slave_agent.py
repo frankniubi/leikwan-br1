@@ -3194,6 +3194,9 @@ WantedBy=multi-user.target
             }
             self.write_json(metadata_path, metadata)
             self.apply_mptcp_underlay(service_name, mptcp_underlay)
+            if sidecar_uplink.get("enabled"):
+                # compose model comment: true MPTCP underlay may ride over static uplink; early return used to skip it.
+                self.apply_sidecar_uplink(service_name, sidecar_uplink)
             if sidecar_uplink_selector.get("enabled"):
                 self.ensure_sidecar_uplink_selector(service_name, sidecar_uplink_selector)
             else:
