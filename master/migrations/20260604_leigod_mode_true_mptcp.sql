@@ -8,6 +8,10 @@
 UPDATE forward_combinations
 SET client_mode = 'mptcp',
     runtime_preference = 'single',
+    helper_group_cap = CASE
+        WHEN helper_group_cap <= 0 THEN 4
+        ELSE helper_group_cap
+    END,
     updated_at = NOW()
 WHERE backend_mode = 'leigod_mode'
   AND (client_mode IS NULL OR client_mode NOT IN ('mptcp', 'bond'));
@@ -15,6 +19,10 @@ WHERE backend_mode = 'leigod_mode'
 -- 2. leigod_mode+mptcp is true MPTCP, not the hybrid MPTCP-preferred bond fallback runtime.
 UPDATE forward_combinations
 SET runtime_preference = 'single',
+    helper_group_cap = CASE
+        WHEN helper_group_cap <= 0 THEN 4
+        ELSE helper_group_cap
+    END,
     updated_at = NOW()
 WHERE backend_mode = 'leigod_mode'
   AND client_mode = 'mptcp'
