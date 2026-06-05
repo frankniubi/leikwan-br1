@@ -6,3 +6,6 @@
 /slave-agent/slave_agent.py text eol=lf
 /artifacts/slave-agent.py text eol=lf
 /sidecar-agent/sidecar_agent.py text eol=lf
+/client-agent/client_agent.py text eol=lf
+/client-agent/leikwan_mptcp_client.py text eol=lf
+/artifacts/leikwan-mptcp-client.py text eol=lf

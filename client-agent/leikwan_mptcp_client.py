@@ -249,6 +249,13 @@ def build_wireguard_interface_config(config: dict[str, Any]) -> str:
         interface_lines.append(f"ListenPort = {listen_port}")
     if seen_addresses:
         interface_lines.append("Address = " + ", ".join(address + "/32" for address in seen_addresses))
+    # UoT/leigod underlays peer at 127.0.0.1 (the local carrier), so wg-quick auto-derives the
+    # interface MTU from loopback (65536 -> 65456). Oversized MPTCP segments then black-hole on the
+    # real ~1280 leigod path (handshake fits, bulk data stalls). Honor a panel-supplied MTU so the
+    # overlay segments fit the carrier path. Applies to current + future leigod forwards/slaves.
+    mtu = max(0, int(config.get("mtu", 0) or 0))
+    if mtu > 0:
+        interface_lines.append(f"MTU = {mtu}")
     interface_lines.extend(route_lines)
     interface_lines.append("")
     return "\n".join(interface_lines) + "\n" + "\n".join(peer_blocks)
