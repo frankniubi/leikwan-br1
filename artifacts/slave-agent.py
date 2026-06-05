@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.06.05.3"
+AGENT_VERSION = "2026.06.05.4"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -4294,6 +4294,15 @@ WantedBy=multi-user.target
         if local_listen_port <= 0:
             local_listen_port = self.stable_static_sidecar_local_udp_port(uplink)
         keepalive = max(0, int(uplink.get("peer_keepalive_seconds", 25) or 25))
+        # MPTCP overlay routing: the leigod/static uplink must carry the overlay sidecar
+        # address(es) so the slave routes overlay traffic (client->sidecar) over this hop.
+        # wg-quick auto-installs a route for each AllowedIP, so adding them here is what
+        # stitches the overlay across the leigod uplink (without it the overlay blackholes
+        # out the public default route -- the data-path gap that broke leigod_mode MPTCP).
+        overlay_peer_allowed_ips = [
+            str(ip).strip() for ip in (uplink.get("overlay_peer_allowed_ips") or [])
+            if str(ip).strip() != ""
+        ]
         if local_address == "" or peer_address == "" or peer_public_key == "":
             # Enabled uplink with incomplete data (e.g. the sidecar has not yet
             # reported its WireGuard public key, or the panel published a partial
@@ -4450,6 +4459,7 @@ WantedBy=multi-user.target
         listen_line = f"ListenPort = {local_listen_port}\n" if local_listen_port > 0 else ""
         keepalive_line = f"PersistentKeepalive = {keepalive}\n" if keepalive > 0 else ""
         mtu_line = f"MTU = {mtu}\n" if mtu > 0 else ""
+        allowed_ips = ", ".join([f"{peer_address}/32"] + [f"{ip}/32" for ip in overlay_peer_allowed_ips])
         config = (
             "[Interface]\n"
             f"PrivateKey = {private_key}\n"
@@ -4460,7 +4470,7 @@ WantedBy=multi-user.target
             "[Peer]\n"
             f"PublicKey = {peer_public_key}\n"
             f"{endpoint}"
-            f"AllowedIPs = {peer_address}/32\n"
+            f"AllowedIPs = {allowed_ips}\n"
             f"{keepalive_line}"
         )
         path = self.wireguard_interface_path(interface_name)

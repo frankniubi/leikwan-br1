@@ -5736,6 +5736,42 @@ final class ProvisioningService
         // hybrid (cf_* and leigod_* fields) uplink.
         $leigodMode = $this->staticSidecarCombinationUsesLeigod($combination);
         $cfMode = $leigodMode ? false : $this->staticSidecarCombinationUsesCf($combination);
+        // MPTCP overlay routing across the leigod uplink: collect the overlay client/sidecar
+        // addresses of every enabled MPTCP forward bound to this combination+node. The static
+        // uplink (shared per combo+node) must carry them so the slave routes overlay-sidecar
+        // traffic over the leigod hop and the sidecar owns the overlay-sidecar address (so its
+        // 0.0.0.0 MPTCP listener receives the subflow) + routes overlay-client return traffic
+        // back. Without this the overlay blackholes out the public default route and no MPTCP
+        // subflow reaches the sidecar -- the data-path gap that left leigod_mode unable to carry
+        // load despite a healthy WG/ICMP control plane.
+        $overlaySidecarIps = [];
+        $overlayClientIps = [];
+        if ($leigodMode) {
+            $overlayForwards = $this->db->fetchAll(
+                'SELECT DISTINCT f.id FROM forwards f
+                 JOIN service_endpoints se ON se.forward_id = f.id
+                 WHERE f.forward_combination_id = :cid AND f.enabled = 1
+                   AND f.client_mode = :mptcp AND se.node_id = :nid',
+                ['cid' => $combinationId, 'mptcp' => 'mptcp', 'nid' => $nodeId]
+            );
+            foreach ($overlayForwards as $overlayForwardRow) {
+                $overlayForwardId = (int) ($overlayForwardRow['id'] ?? 0);
+                if ($overlayForwardId <= 0) {
+                    continue;
+                }
+                $leg = $this->stableMptcpLegAddressing($overlayForwardId, $nodeId);
+                $overlaySidecar = trim((string) ($leg['sidecar_address'] ?? ''));
+                $overlayClient = trim((string) ($leg['client_address'] ?? ''));
+                if ($overlaySidecar !== '') {
+                    $overlaySidecarIps[] = $overlaySidecar;
+                }
+                if ($overlayClient !== '') {
+                    $overlayClientIps[] = $overlayClient;
+                }
+            }
+            $overlaySidecarIps = array_values(array_unique($overlaySidecarIps));
+            $overlayClientIps = array_values(array_unique($overlayClientIps));
+        }
         $lanes = [];
         foreach (['primary' => 'p', 'backup' => 'b'] as $lane => $suffix) {
             $addresses = $this->allocateStaticSidecarUplinkSubnet($pointId, $combinationId, $nodeId, $lane);
@@ -5859,6 +5895,10 @@ final class ProvisioningService
                 $sidecar['socks_user'] = $socksUser;
                 $sidecar['socks_pass'] = $socksPass;
                 $sidecar['leigod_uot_impl'] = $leigodUotImpl;
+                // MPTCP overlay stitching across the leigod hop (computed once above per combo+node).
+                $slave['overlay_peer_allowed_ips'] = $overlaySidecarIps;
+                $sidecar['overlay_peer_allowed_ips'] = $overlayClientIps;
+                $sidecar['overlay_local_addresses'] = $overlaySidecarIps;
             }
             $lanes[] = ['sidecar' => $sidecar, 'slave' => $slave];
         }
