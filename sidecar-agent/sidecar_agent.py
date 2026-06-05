@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.06.05.2"
+AGENT_VERSION = "2026.06.05.3"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -378,6 +378,19 @@ class SidecarAgent:
         # leigod_uot_impl selects the UoT carrier for this lane (must match the slave side, the panel
         # publishes the same value to both): "gost" (default) or "lguot" (CPU-efficient).
         leigod_uot_impl = str(uplink.get("leigod_uot_impl", "gost") or "gost").strip().lower()
+        # MPTCP overlay routing across the leigod hop: the sidecar must OWN each overlay
+        # sidecar address (extra Interface Address) so its 0.0.0.0 MPTCP listener receives
+        # the subflow, and carry each overlay client address in the peer AllowedIPs so the
+        # return path routes back over this uplink. Without this the overlay blackholes out
+        # the sidecar's public default route (the data-path gap that broke leigod_mode MPTCP).
+        overlay_peer_allowed_ips = [
+            str(ip).strip() for ip in (uplink.get("overlay_peer_allowed_ips") or [])
+            if str(ip).strip() != ""
+        ]
+        overlay_local_addresses = [
+            str(ip).strip() for ip in (uplink.get("overlay_local_addresses") or [])
+            if str(ip).strip() != ""
+        ]
         if outer_transport == "leigod" and gost_socks_listen_port > 0 and listen_port > 0 and socks_user != "" and socks_pass != "":
             if leigod_uot_impl == "lguot":
                 # lguot server terminates the slave's framed-UDP stream and delivers it to the local WG
@@ -393,15 +406,18 @@ class SidecarAgent:
             self.remove_sidecar_leigod_gost_server_service(interface_name)
             self.remove_sidecar_leigod_lguot_server_service(interface_name)
         keepalive_line = f"PersistentKeepalive = {keepalive}\n" if keepalive > 0 else ""
+        overlay_address_lines = "".join(f"Address = {addr}/32\n" for addr in overlay_local_addresses)
+        allowed_ips = ", ".join([f"{peer_address}/32"] + [f"{ip}/32" for ip in overlay_peer_allowed_ips])
         config = (
             "[Interface]\n"
             f"PrivateKey = {private_key}\n"
             f"ListenPort = {listen_port}\n"
             f"Address = {local_address}/32\n"
+            f"{overlay_address_lines}"
             "\n"
             "[Peer]\n"
             f"PublicKey = {peer_public_key}\n"
-            f"AllowedIPs = {peer_address}/32\n"
+            f"AllowedIPs = {allowed_ips}\n"
             f"{keepalive_line}"
         )
         path = self.sidecar_uplink_interfaces_dir() / f"{interface_name}.conf"

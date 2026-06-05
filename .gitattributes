@@ -5,3 +5,4 @@
 # fleet auto-update sha-check fails (see docs panel-artifact-serving notes).
 /slave-agent/slave_agent.py text eol=lf
 /artifacts/slave-agent.py text eol=lf
+/sidecar-agent/sidecar_agent.py text eol=lf
