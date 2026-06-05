@@ -7828,6 +7828,12 @@ final class ProvisioningService
         ['issued_at' => $issuedAt, 'expires_at' => $expiresAt] = $this->bondTokenTimestamps();
         $subflowLimitDefault = max(2, count($endpoints) > 0 ? count($endpoints) : 2);
         $underlayLegs = $this->mptcpUnderlayLegs($forward, $endpoints);
+        // leigod_mode is a DIRECT-ingress mode: the client relay's MPTCP connect must target the
+        // sidecar overlay directly (remote_host), NOT a per-forward slave pre-connect relay. The
+        // Rust relay's tcp_remote_addr() prefers slave_relay_host whenever set, so emitting it for a
+        // leigod forward makes the relay dial the (wrong/dead) preconnect target -> ETIMEDOUT and the
+        // client never uses the proven leigod overlay path. Suppress slave-preconnect for leigod_mode.
+        $leigodDirect = strtolower(trim((string) ($forward['backend_mode'] ?? ''))) === 'leigod_mode';
         $pathManager = (string) ($this->config->get('MPTCP_PATH_MANAGER', 'fullmesh') ?? 'fullmesh');
         $defaultRemoteHost = $direct['host'];
         if ($underlayLegs !== []) {
@@ -7882,10 +7888,10 @@ final class ProvisioningService
             'token_expires_at' => $expiresAt,
             // Slave pre-connect relay: when enabled, client connects to slave's
             // relay port via plain TCP. The slave handles MPTCP to sidecar.
-            'slave_relay_host' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && $underlayLegs !== []
+            'slave_relay_host' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && !$leigodDirect && $underlayLegs !== []
                 ? (string) ($underlayLegs[0]['slave_address'] ?? '')
                 : '',
-            'slave_relay_port' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && $underlayLegs !== []
+            'slave_relay_port' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && !$leigodDirect && $underlayLegs !== []
                 ? $this->stablePreconnectRelayPort((int) ($forward['id'] ?? 0), (int) ($underlayLegs[0]['node_id'] ?? 0))
                 : 0,
         ];
@@ -7899,6 +7905,9 @@ final class ProvisioningService
     private function mptcpUnderlayLegs(array $forward, array $endpoints): array
     {
         $sidecarConfig = $this->decodeJsonAssoc($forward['bond_sidecar_point_agent_config_json'] ?? null);
+        // leigod_mode rides the static leigod uplink directly; the per-forward slave pre-connect relay
+        // does not belong on its legs (see buildMptcpClientConfig). Suppress it for leigod forwards.
+        $leigodDirect = strtolower(trim((string) ($forward['backend_mode'] ?? ''))) === 'leigod_mode';
         $legs = [];
         foreach ($endpoints as $endpoint) {
             $nodeConfig = $this->decodeJsonAssoc($endpoint['node_agent_config_json'] ?? null);
@@ -7955,8 +7964,8 @@ final class ProvisioningService
                 'subnet' => $addresses['subnet'],
                 'sidecar_public_key' => trim((string) ($sidecarConfig['wireguard_public_key'] ?? '')),
                 'backup_only' => false,
-                'slave_preconnect' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false),
-                'preconnect_relay_port' => $this->stablePreconnectRelayPort(
+                'slave_preconnect' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && !$leigodDirect,
+                'preconnect_relay_port' => $leigodDirect ? 0 : $this->stablePreconnectRelayPort(
                     (int) ($forward['id'] ?? 0),
                     (int) ($endpoint['node_id'] ?? 0)
                 ),
