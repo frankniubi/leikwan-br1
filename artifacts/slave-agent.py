@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.06.05.2"
+AGENT_VERSION = "2026.06.05.3"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -3194,6 +3194,9 @@ WantedBy=multi-user.target
             }
             self.write_json(metadata_path, metadata)
             self.apply_mptcp_underlay(service_name, mptcp_underlay)
+            if sidecar_uplink.get("enabled"):
+                # compose model comment: true MPTCP underlay may ride over static uplink; early return used to skip it.
+                self.apply_sidecar_uplink(service_name, sidecar_uplink)
             if sidecar_uplink_selector.get("enabled"):
                 self.ensure_sidecar_uplink_selector(service_name, sidecar_uplink_selector)
             else:
