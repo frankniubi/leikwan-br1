@@ -94,12 +94,12 @@
     "size": 114776
   },
   "mptcp_client_runtime": {
-    "version": "2026.05.29.5",
+    "version": "2026.06.06.1",
     "path": "artifacts/leikwan-mptcp-client.py",
     "artifact_url": "/artifacts/leikwan-mptcp-client.py",
-    "sha256": "c68f1325f4b091cf1e3c9146126ba4c1c599b340b5c1c92302156949574b4540",
-    "size_bytes": 56282,
-    "size": 56282
+    "sha256": "26e4114873d3561023421cf6dcb0003f5ca4d7a408b401a8b8e8ab17e96bd266",
+    "size_bytes": 56785,
+    "size": 56785
   },
   "uot_runtime": {
     "version": "2026.05.29.1",

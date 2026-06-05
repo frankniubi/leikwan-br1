@@ -7834,6 +7834,13 @@ final class ProvisioningService
         // leigod forward makes the relay dial the (wrong/dead) preconnect target -> ETIMEDOUT and the
         // client never uses the proven leigod overlay path. Suppress slave-preconnect for leigod_mode.
         $leigodDirect = strtolower(trim((string) ($forward['backend_mode'] ?? ''))) === 'leigod_mode';
+        // leigod overlay rides MPTCP-WG inside the leigod UoT carrier; its WG peer endpoint is the
+        // local UoT listener (127.0.0.1), so wg-quick would auto-derive MTU from loopback (65456) and
+        // oversized segments black-hole on the ~1280 leigod path. Pin a conservative overlay MTU so
+        // bulk data fits. 0 = let wg-quick auto-derive (non-leigod direct-UDP paths, unchanged).
+        $overlayMtu = $leigodDirect
+            ? max(576, (int) ($this->config->getInt('MPTCP_LEIGOD_OVERLAY_WG_MTU', 1240) ?? 1240))
+            : 0;
         $pathManager = (string) ($this->config->get('MPTCP_PATH_MANAGER', 'fullmesh') ?? 'fullmesh');
         $defaultRemoteHost = $direct['host'];
         if ($underlayLegs !== []) {
@@ -7876,12 +7883,13 @@ final class ProvisioningService
                     'backup_only' => $leg['backup_only'] ?? false,
                 ];
             }, $underlayLegs, array_keys($underlayLegs))),
-            'underlays' => array_values(array_map(function ($leg, $idx) use ($forward) {
+            'underlays' => array_values(array_map(function ($leg, $idx) use ($forward, $overlayMtu) {
                 return [
                     'type' => (string) ($this->config->get('MPTCP_UNDERLAY_TYPE', 'wireguard') ?? 'wireguard'),
                     'mode' => 'slave_transit',
                     'interface_name' => 'lw-mptcp-' . (int) ($forward['id'] ?? 0) . '-' . $idx,
                     'peer_keepalive_seconds' => max(0, (int) ($this->config->getInt('MPTCP_PEER_KEEPALIVE_SECONDS', 25) ?? 25)),
+                    'mtu' => $overlayMtu,
                     'legs' => [$leg],
                 ];
             }, $underlayLegs, array_keys($underlayLegs))),
