@@ -1,0 +1,7 @@
+# Pin the fleet-served slave agent + its downloadable artifact to LF so the
+# versions.json sha256 is deterministic across checkouts/OSes. Without this a
+# Windows (CRLF) checkout hashes differently from the committed LF blob, so the
+# manifest sha mismatches what a clean checkout / Linux deploy serves and the
+# fleet auto-update sha-check fails (see docs panel-artifact-serving notes).
+/slave-agent/slave_agent.py text eol=lf
+/artifacts/slave-agent.py text eol=lf
