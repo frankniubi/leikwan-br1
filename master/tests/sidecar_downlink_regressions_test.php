@@ -25,8 +25,12 @@ if (!str_contains($controllerSource, "'runtime_config_path' => '/etc/leikwan-sid
     fail('expected sidecar config_patch to set a point-specific runtime_config_path');
 }
 
-if (!str_contains($controllerSource, "'udp_uot_sidepath' => \$runtimeState['udp_uot_sidepath'] ?? null")) {
-    fail('expected sidecar heartbeat management to preserve udp_uot_sidepath in config_patch');
+if (!str_contains($controllerSource, '$udpUotSidepath = $this->provisioning->udpUotSidepathConfigForSidecarPoint(')) {
+    fail('expected sidecar heartbeat management to derive udp_uot_sidepath per sidecar point');
+}
+
+if (!str_contains($controllerSource, "'udp_uot_sidepath' => \$udpUotSidepath")) {
+    fail('expected sidecar heartbeat management to publish derived udp_uot_sidepath in config_patch');
 }
 
 if (!str_contains($controllerSource, "'mode' => \$hasMptcpRuntime ? 'mptcp' : 'bond'")) {

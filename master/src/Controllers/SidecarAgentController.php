@@ -178,6 +178,10 @@ final class SidecarAgentController extends BaseController
                 || !empty($mptcpManagement['underlays'])
                 || !empty(($mptcpManagement['mptcp_policy']['endpoints'] ?? []))
             );
+        $udpUotSidepath = $this->provisioning->udpUotSidepathConfigForSidecarPoint(
+            $pointId,
+            is_array($runtimeState['udp_uot_sidepath'] ?? null) ? $runtimeState['udp_uot_sidepath'] : []
+        );
         $bondListenPort = $this->sidecarBondListenPortForHeartbeat($point);
         $mptcpListenPort = $this->sidecarMptcpListenPortForHeartbeat(array_merge($point, [
             'agent_config_json' => json_encode($runtimeState, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
@@ -256,7 +260,7 @@ final class SidecarAgentController extends BaseController
                 'service_name' => 'leikwan-bond-sidecar-' . $pointId,
                 'state_dir' => '/var/lib/leikwan-sidecar-' . $pointId,
                 'runtime_config_path' => '/etc/leikwan-sidecar-' . $pointId . '/bond-runtime.json',
-                'udp_uot_sidepath' => $runtimeState['udp_uot_sidepath'] ?? null,
+                'udp_uot_sidepath' => $udpUotSidepath,
                 'managed_iperf3_ports' => $runtimeState['managed_iperf3_ports'] ?? [],
                 'disable_auto_update' => $runtimeState['disable_auto_update'] ?? null,
             ],

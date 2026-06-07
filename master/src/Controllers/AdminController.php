@@ -1943,13 +1943,13 @@ final class AdminController extends BaseController
         // when leigod_mode is selected (and the Cloudflare Location Group only when cf_mode).
         $leigodLineId = (int) ($editing['leigod_line_id'] ?? 0);
         $leigodUot = strtolower((string) ($editing['leigod_uot_impl'] ?? 'lguot'));
-        $leigodField = '<div class="field" data-mode-field="leigod_mode"><label>LeiGod line id</label>'
+        $leigodField = '<div class="field" data-mode-field="leigod_mode"><label>Managed TYO route id</label>'
             . '<input type="number" name="leigod_line_id" min="0" value="' . $leigodLineId . '">'
-            . '<p class="muted">Required when Forward Mode = leigod_mode. Slave SOCKS = 127.0.0.1:(20000 + line id).</p></div>'
-            . '<div class="field" data-mode-field="leigod_mode"><label>LeiGod UoT carrier</label>'
+            . '<p class="muted">Required when Forward Mode = Managed TYO transport. Slave SOCKS = 127.0.0.1:(20000 + route id).</p></div>'
+            . '<div class="field" data-mode-field="leigod_mode"><label>Managed TYO carrier</label>'
             . '<select name="leigod_uot_impl"><option value="lguot"' . ($leigodUot !== 'gost' ? ' selected' : '') . '>lguot (recommended)</option>'
             . '<option value="gost"' . ($leigodUot === 'gost' ? ' selected' : '') . '>gost</option></select>'
-            . '<p class="muted">CPU-efficient UDP-over-TCP carrier for the LeiGod self-leg (~2.4x gost throughput at 1/3 CPU).</p></div>'
+            . '<p class="muted">CPU-efficient UDP-over-TCP carrier for the accelerated self-leg (~2.4x gost throughput at 1/3 CPU).</p></div>'
             . '<script>(function(){var bm=document.querySelector(\'select[name=backend_mode]\');if(!bm)return;'
             . 'function sync(){var v=bm.value;'
             . 'document.querySelectorAll(\'[data-mode-field]\').forEach(function(e){e.style.display=(e.getAttribute(\'data-mode-field\')===v)?\'\':\'none\';});'
@@ -2102,7 +2102,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Tenant Description</label><input type="text" name="tenant_description" value="' . $this->escape((string) ($editing['tenant_description'] ?? '')) . '" placeholder="Best for Japan"></div>
                     <div class="field"><label>Tenant Badge</label><input type="text" name="tenant_badge" value="' . $this->escape((string) ($editing['tenant_badge'] ?? '')) . '" placeholder="Recommended"></div>
                     <div class="field"><label>Slave Group</label><select name="node_group_key" required>' . $groupOptions . '</select></div>
-                    <div class="field"><label>Backend Mode</label><select name="backend_mode"><option value="current_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'current_mode' ? ' selected' : '') . '>current_mode</option><option value="cf_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'cf_mode' ? ' selected' : '') . '>cf_mode</option><option value="leigod_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'leigod_mode' ? ' selected' : '') . '>leigod_mode</option></select><p class="muted">leigod_mode = direct ingress (like current_mode, no Cloudflare) + a LeiGod self-leg.</p></div>
+                    <div class="field"><label>Backend Mode</label><select name="backend_mode"><option value="current_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'current_mode' ? ' selected' : '') . '>current_mode</option><option value="cf_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'cf_mode' ? ' selected' : '') . '>cf_mode</option><option value="leigod_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'leigod_mode' ? ' selected' : '') . '>Managed TYO transport</option></select><p class="muted">Managed TYO transport = direct ingress (like current_mode, no Cloudflare) + an accelerated self-leg.</p></div>
                     <div class="field"><label>Sidecar Point</label><select name="sidecar_point_id" required>' . $sidecarOptions . '</select></div>
                     <div class="field"><label>Cloudflare Location Group</label><select name="cf_location_group_id">' . $cfOptions . '</select></div>
                     <div class="field"><label>Client Mode</label><select name="client_mode"><option value="single"' . (((string) ($editing['client_mode'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="bond"' . (((string) ($editing['client_mode'] ?? 'single')) === 'bond' ? ' selected' : '') . '>bond</option></select></div>
@@ -2188,7 +2188,7 @@ final class AdminController extends BaseController
         $body = '<div class="grid">
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Forward Route #' . $editId : 'New Forward Route') . '</h3>
-                <p class="muted">A route bundles forward combinations that share the client&rarr;slave ingress (same backend_mode); the slave auto-races the enabled ones and fails over (cnix &harr; leigod). Mixed backend_mode is rejected.</p>
+                <p class="muted">A route bundles forward combinations that share the client&rarr;slave ingress (same backend_mode); the slave auto-races the enabled ones and fails over (standard &harr; Managed TYO). Mixed backend_mode is rejected.</p>
                 <form method="post" action="/admin/forward-routes">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
                   ' . ($editing !== null ? '<input type="hidden" name="id" value="' . $editId . '">' : '') . '

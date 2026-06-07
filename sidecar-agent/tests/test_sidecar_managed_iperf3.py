@@ -20,19 +20,24 @@ sidecar_agent = load_module("sidecar_agent_iperf_under_test", "sidecar-agent/sid
 
 
 class ManagedIperf3ServerTests(unittest.TestCase):
-    def test_render_managed_iperf3_unit_uses_requested_port_and_persistent_server(self) -> None:
+    def test_render_managed_iperf3_unit_uses_requested_port_and_self_healing_server_loop(self) -> None:
         unit = sidecar_agent.SidecarAgent.render_managed_iperf3_unit(
             service_name="leikwan-bond-sidecar-5-iperf3-5201",
             iperf3_bin="/usr/bin/iperf3",
             port=5201,
         )
 
-        self.assertIn("ExecStart=/usr/bin/iperf3 -s -p 5201", unit)
+        self.assertIn("ExecStart=/bin/bash -lc 'while true; do timeout --kill-after=3s 12s /usr/bin/iperf3 -s -p 5201 --one-off --idle-timeout 5", unit)
         self.assertIn("Restart=always", unit)
-        # Persistent server: a forward target must not exit after one session
-        # (--one-off leaves a ~RestartSec gap that drops in-flight forward traffic
-        # and makes back-to-back iperf3 probes fail with "control socket closed").
-        self.assertNotIn("--one-off", unit)
+        # iperf3's server accepts one active client at a time.  A raw or
+        # abandoned public TCP connection can occupy that server while systemd
+        # still reports the service active.  Run one client per iperf3 process,
+        # bound each process with timeout, and restart immediately in-process
+        # rather than waiting for systemd's RestartSec gap.
+        self.assertIn("--one-off", unit)
+        self.assertIn("timeout --kill-after=3s 12s", unit)
+        self.assertIn("--idle-timeout 5", unit)
+        self.assertIn("sleep 0.05", unit)
         self.assertNotIn("127.0.0.1", unit)
 
     def test_apply_config_patch_persists_disable_auto_update(self) -> None:

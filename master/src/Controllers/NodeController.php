@@ -490,6 +490,10 @@ final class NodeController extends BaseController
             $updateRequestToken = $this->autoUpdateTokenForVersion((string) ($node['agent_version'] ?? ''), 'slave_agent', 'auto-slave-agent');
         }
         $agentConfig = $this->authoritativeAgentConfig($node, $agentConfig, $groupKey);
+        $agentConfig['udp_uot_sidepath'] = $this->provisioning->udpUotSidepathConfigForNode(
+            (int) ($node['id'] ?? 0),
+            is_array($agentConfig['udp_uot_sidepath'] ?? null) ? $agentConfig['udp_uot_sidepath'] : []
+        );
 
         $uplinks = $this->provisioning->slaveSidecarUplinkManagementForNode((int) $node['id'])['uplinks'] ?? [];
         $management = [
