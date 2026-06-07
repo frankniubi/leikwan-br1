@@ -7973,6 +7973,43 @@ final class ProvisioningService
         // leigod forward makes the relay dial the (wrong/dead) preconnect target -> ETIMEDOUT and the
         // client never uses the proven leigod overlay path. Suppress slave-preconnect for leigod_mode.
         $leigodDirect = strtolower(trim((string) ($forward['backend_mode'] ?? ''))) === 'leigod_mode';
+        $leigodPreconnectReuse = $leigodDirect && $this->config->getBool('LEIGOD_SLAVE_PRECONNECT_REUSE', false);
+        $leigodPreconnectEndpoints = array_values($endpoints);
+        $leigodPreconnectEndpoint = $leigodPreconnectReuse && isset($leigodPreconnectEndpoints[0]) && is_array($leigodPreconnectEndpoints[0])
+            ? $leigodPreconnectEndpoints[0]
+            : [];
+        $leigodPreconnectHost = $leigodPreconnectEndpoint !== []
+            ? $this->resolveEndpointPublicHost($leigodPreconnectEndpoint)
+            : '';
+        if ($leigodPreconnectHost !== '' && !$this->isUsablePublicHost($leigodPreconnectHost)) {
+            $leigodPreconnectHost = '';
+        }
+        $leigodPreconnectReservedPorts = [];
+        if ($leigodPreconnectReuse && $leigodPreconnectEndpoint !== []) {
+            $leigodNodeConfig = $this->decodeJsonAssoc($leigodPreconnectEndpoint['node_agent_config_json'] ?? null);
+            $nodeBasePort = isset($leigodNodeConfig['wireguard_listen_port']) && (int) $leigodNodeConfig['wireguard_listen_port'] > 0
+                ? (int) $leigodNodeConfig['wireguard_listen_port']
+                : (int) ($forward['public_port'] ?? $leigodPreconnectEndpoint['public_port'] ?? 0);
+            $nodeBaseFallback = isset($leigodNodeConfig['wireguard_fallback_tcp_port']) && (int) $leigodNodeConfig['wireguard_fallback_tcp_port'] > 0
+                ? (int) $leigodNodeConfig['wireguard_fallback_tcp_port']
+                : ($nodeBasePort > 0 ? $nodeBasePort + 10000 : 0);
+            $leigodPreconnectReservedPorts = [
+                $this->stableMptcpSlavePort($nodeBasePort, (int) ($forward['id'] ?? 0)),
+                $this->stableMptcpSlavePort($nodeBaseFallback, (int) ($forward['id'] ?? 0)),
+            ];
+        }
+        if ($leigodPreconnectReuse && ($leigodPreconnectEndpoint === [] || $leigodPreconnectHost === '' || $leigodPreconnectReservedPorts === [])) {
+            $leigodPreconnectReuse = false;
+            $leigodPreconnectHost = '';
+            $leigodPreconnectReservedPorts = [];
+        }
+        $leigodPreconnectPort = $leigodPreconnectReuse
+            ? $this->stableLeigodPreconnectRelayPort(
+                (int) ($forward['id'] ?? 0),
+                (int) ($leigodPreconnectEndpoint['node_id'] ?? 0),
+                $leigodPreconnectReservedPorts
+            )
+            : 0;
         // leigod overlay rides MPTCP-WG inside the leigod UoT carrier; its WG peer endpoint is the
         // local UoT listener (127.0.0.1), so wg-quick would auto-derive MTU from loopback (65456) and
         // oversized segments black-hole on the ~1280 leigod path. Pin a conservative overlay MTU so
@@ -7985,6 +8022,10 @@ final class ProvisioningService
         if ($underlayLegs !== []) {
             $defaultRemoteHost = (string) ($underlayLegs[0]['sidecar_address'] ?? $defaultRemoteHost);
         }
+        $legacySlavePreconnect = $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && !$leigodDirect && $underlayLegs !== [];
+        $legacySlaveRelayPort = $legacySlavePreconnect
+            ? $this->stablePreconnectRelayPort((int) ($forward['id'] ?? 0), (int) ($underlayLegs[0]['node_id'] ?? 0))
+            : 0;
 
         return [
             'enabled' => true,
@@ -7999,7 +8040,7 @@ final class ProvisioningService
             'udp_mode' => (string) ($this->config->get('MPTCP_UDP_MODE', 'stream_compat') ?? 'stream_compat'),
             'path_manager' => $pathManager,
             'scheduler' => (string) ($this->config->get('MPTCP_SCHEDULER', 'default') ?? 'default'),
-            'subflow_limit' => max(1, (int) ($this->config->getInt('MPTCP_SUBFLOW_LIMIT', $subflowLimitDefault) ?? $subflowLimitDefault)),
+            'subflow_limit' => $leigodPreconnectReuse ? 1 : max(1, (int) ($this->config->getInt('MPTCP_SUBFLOW_LIMIT', $subflowLimitDefault) ?? $subflowLimitDefault)),
             'connect_timeout_ms' => max(100, (int) ($this->config->getInt('MPTCP_CONNECT_TIMEOUT_MS', 3000) ?? 3000)),
             'relay_idle_timeout_seconds' => max(15, (int) ($this->config->getInt('MPTCP_RELAY_IDLE_TIMEOUT_SECONDS', 120) ?? 120)),
             'allow_tcp_fallback' => $this->config->getBool('MPTCP_ALLOW_TCP_FALLBACK', true),
@@ -8010,9 +8051,9 @@ final class ProvisioningService
             'add_addr_timeout' => max(1, (int) ($this->config->getInt('MPTCP_ADD_ADDR_TIMEOUT', 5) ?? 5)),
             'tcp_wmem_max' => max(1048576, (int) ($this->config->getInt('MPTCP_TCP_WMEM_MAX', 16777216) ?? 16777216)),
             'tcp_rmem_max' => max(1048576, (int) ($this->config->getInt('MPTCP_TCP_RMEM_MAX', 16777216) ?? 16777216)),
-            'manage_mptcp_endpoints' => $underlayLegs !== [],
+            'manage_mptcp_endpoints' => $leigodPreconnectReuse ? false : $underlayLegs !== [],
             'mptcp_endpoint_id_base' => (((int) ($forward['id'] ?? 0) % 25) * 10) + 1,
-            'mptcp_endpoints' => array_values(array_map(function ($leg, $idx) use ($forward) {
+            'mptcp_endpoints' => $leigodPreconnectReuse ? [] : array_values(array_map(function ($leg, $idx) use ($forward) {
                 return [
                     'endpoint_id' => (int) ($leg['endpoint_id'] ?? 0),
                     'address' => $leg['local_address'],
@@ -8022,7 +8063,7 @@ final class ProvisioningService
                     'backup_only' => $leg['backup_only'] ?? false,
                 ];
             }, $underlayLegs, array_keys($underlayLegs))),
-            'underlays' => array_values(array_map(function ($leg, $idx) use ($forward, $overlayMtu) {
+            'underlays' => $leigodPreconnectReuse ? [] : array_values(array_map(function ($leg, $idx) use ($forward, $overlayMtu) {
                 return [
                     'type' => (string) ($this->config->get('MPTCP_UNDERLAY_TYPE', 'wireguard') ?? 'wireguard'),
                     'mode' => 'slave_transit',
@@ -8035,12 +8076,12 @@ final class ProvisioningService
             'token_expires_at' => $expiresAt,
             // Slave pre-connect relay: when enabled, client connects to slave's
             // relay port via plain TCP. The slave handles MPTCP to sidecar.
-            'slave_relay_host' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && !$leigodDirect && $underlayLegs !== []
-                ? (string) ($underlayLegs[0]['slave_address'] ?? '')
-                : '',
-            'slave_relay_port' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && !$leigodDirect && $underlayLegs !== []
-                ? $this->stablePreconnectRelayPort((int) ($forward['id'] ?? 0), (int) ($underlayLegs[0]['node_id'] ?? 0))
-                : 0,
+            'slave_relay_host' => $leigodPreconnectReuse ? $leigodPreconnectHost : (
+                $legacySlavePreconnect
+                    ? (string) ($underlayLegs[0]['slave_address'] ?? '')
+                    : ''
+            ),
+            'slave_relay_port' => $leigodPreconnectReuse ? $leigodPreconnectPort : $legacySlaveRelayPort,
         ];
     }
 
@@ -8497,6 +8538,40 @@ final class ProvisioningService
         $rangeEnd = max($rangeStart, (int) ($this->config->getInt('PRECONNECT_RELAY_PORT_RANGE_END', 39999) ?? 39999));
         $rangeSize = max(1, ($rangeEnd - $rangeStart) + 1);
         return $rangeStart + abs((($forwardId * 131) + ($nodeId * 37)) % $rangeSize);
+    }
+
+    /**
+     * Stable relay port for leigod slave pre-connect reuse.
+     * The data port stays in 7000-8999, so health_port=data+1 <= 9000.
+     */
+    private function stableLeigodPreconnectRelayPort(int $forwardId, int $nodeId, array $reservedPorts = []): int
+    {
+        $configuredStart = (int) ($this->config->getInt('LEIGOD_PRECONNECT_RELAY_PORT_RANGE_START', 7000) ?? 7000);
+        $configuredEnd = (int) ($this->config->getInt('LEIGOD_PRECONNECT_RELAY_PORT_RANGE_END', 8999) ?? 8999);
+        $rangeStart = max(7000, min(8999, $configuredStart));
+        $rangeEnd = max($rangeStart, min(8999, $configuredEnd));
+        $reserved = [];
+        foreach ($reservedPorts as $reservedPort) {
+            $port = (int) $reservedPort;
+            if ($port > 0) {
+                $reserved[$port] = true;
+            }
+        }
+
+        $seed = abs(($forwardId * 131) + ($nodeId * 37));
+        foreach ([[$rangeStart, $rangeEnd], [7000, 8999]] as $range) {
+            [$start, $end] = $range;
+            $rangeSize = max(1, ($end - $start) + 1);
+            for ($offset = 0; $offset < $rangeSize; $offset++) {
+                $candidate = $start + (($seed + $offset) % $rangeSize);
+                if (isset($reserved[$candidate]) || isset($reserved[$candidate + 1])) {
+                    continue;
+                }
+                return $candidate;
+            }
+        }
+
+        throw new \RuntimeException('No free LeiGod preconnect relay port in 7000-8999');
     }
 
     /**
@@ -9265,12 +9340,19 @@ final class ProvisioningService
 
         $forwardId = (int) ($forward['id'] ?? 0);
         $nodeId = (int) ($node['id'] ?? 0);
+        $leigodDirect = strtolower(trim((string) ($forward['backend_mode'] ?? ''))) === 'leigod_mode';
+        $leigodPreconnectReuse = $leigodDirect && $this->config->getBool('LEIGOD_SLAVE_PRECONNECT_REUSE', false);
         $nodeBasePort = isset($nodeConfig['wireguard_listen_port']) && (int) $nodeConfig['wireguard_listen_port'] > 0
             ? (int) $nodeConfig['wireguard_listen_port']
             : $publicPort;
         $nodeBaseFallback = isset($nodeConfig['wireguard_fallback_tcp_port']) && (int) $nodeConfig['wireguard_fallback_tcp_port'] > 0
             ? (int) $nodeConfig['wireguard_fallback_tcp_port']
             : ($nodeBasePort > 0 ? $nodeBasePort + 10000 : 0);
+        $slaveListenPort = $this->stableMptcpSlavePort($nodeBasePort, $forwardId);
+        $slaveFallbackTcpPort = $this->stableMptcpSlavePort($nodeBaseFallback, $forwardId);
+        $leigodPreconnectPort = $leigodPreconnectReuse
+            ? $this->stableLeigodPreconnectRelayPort($forwardId, $nodeId, [$slaveListenPort, $slaveFallbackTcpPort])
+            : 0;
 
         $sidecarListenPort = $this->sidecarWireguardListenPort(is_array($point) ? $point : [], $sidecarConfig);
         $sidecarPortRangeEnd = $this->sidecarWireguardPortRangeEnd($sidecarListenPort, $sidecarConfig);
@@ -9294,8 +9376,8 @@ final class ProvisioningService
         return [
             'enabled' => true,
             'interface_name' => 'lwf' . $forwardId . 'n' . $nodeId,
-            'listen_port' => $this->stableMptcpSlavePort($nodeBasePort, $forwardId),
-            'fallback_tcp_port' => $this->stableMptcpSlavePort($nodeBaseFallback, $forwardId),
+            'listen_port' => $slaveListenPort,
+            'fallback_tcp_port' => $slaveFallbackTcpPort,
             'local_uot_udp_port' => $this->stableLocalUotUdpPort($forwardId, $nodeId),
             'outer_transport' => $outerTransport,
             'sidecar_endpoint_host' => $effectiveSidecarEndpointHost,
@@ -9316,13 +9398,19 @@ final class ProvisioningService
             'client_cf_relay_target_port' => $clientCfRelayEnabled ? $this->stableMptcpSlavePort($nodeBasePort, $forwardId) : 0,
             // Slave pre-connect relay: slave opens MPTCP to sidecar on behalf of client.
             // Client only needs plain TCP to the slave's relay port.
-            'slave_preconnect' => $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false),
-            'preconnect_relay_port' => $this->stablePreconnectRelayPort($forwardId, $nodeId),
+            'slave_preconnect' => $leigodPreconnectReuse ? true : $this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && !$leigodDirect,
+            'preconnect_relay_port' => $leigodPreconnectReuse ? $leigodPreconnectPort : (
+                $leigodDirect ? 0 : $this->stablePreconnectRelayPort($forwardId, $nodeId)
+            ),
             'sidecar_mptcp_port' => (int) ($point['mptcp_listen_port'] ?? $point['bond_listen_port'] ?? $point['listen_port'] ?? 0),
             'tcp_session_token' => $uplinkTcpSessionToken,
             'udp_session_token' => $uplinkUdpSessionToken,
             'forward_id' => $forwardId,
-        ];
+        ] + ($leigodPreconnectReuse ? [
+            'preconnect_listen_host' => '0.0.0.0',
+            'preconnect_advertise_host' => $this->resolveNodePublicHost($node),
+            'preconnect_health_port' => $leigodPreconnectPort + 1,
+        ] : []);
     }
 
     /**
