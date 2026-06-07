@@ -5075,12 +5075,25 @@ WantedBy=multi-user.target
 
         slave_address = str(underlay.get("slave_address", "") or "").strip()
         sidecar_address = str(underlay.get("sidecar_address", "") or "").strip()
-        relay_port = int(underlay.get("preconnect_relay_port", 0) or 0)
-        sidecar_port = int(underlay.get("sidecar_mptcp_port", 0) or 0)
-        session_token = str(underlay.get("tcp_session_token", "") or "").strip()
-        forward_id = int(underlay.get("forward_id", 0) or 0)
+        relay_listen_host = str(underlay.get("preconnect_listen_host", "") or "").strip() or slave_address
+        relay_advertise_host = str(underlay.get("preconnect_advertise_host", "") or "").strip() or relay_listen_host
 
-        if slave_address == "" or sidecar_address == "" or relay_port <= 0 or sidecar_port <= 0:
+        def int_or_default(value: Any, default: int = 0) -> int:
+            try:
+                parsed = int(value or 0)
+            except (TypeError, ValueError):
+                return default
+            return parsed
+
+        relay_port = int_or_default(underlay.get("preconnect_relay_port", 0))
+        sidecar_port = int_or_default(underlay.get("sidecar_mptcp_port", 0))
+        health_port = int_or_default(underlay.get("preconnect_health_port", 0))
+        if health_port <= 0:
+            health_port = relay_port + 1
+        session_token = str(underlay.get("tcp_session_token", "") or "").strip()
+        forward_id = int_or_default(underlay.get("forward_id", 0))
+
+        if relay_listen_host == "" or sidecar_address == "" or relay_port <= 0 or sidecar_port <= 0:
             logging.warning("preconnect relay: missing required fields for %s", service_name)
             return {}
 
@@ -5090,9 +5103,10 @@ WantedBy=multi-user.target
 
         # Write relay config
         relay_config = {
-            "listen_host": slave_address,
+            "listen_host": relay_listen_host,
             "listen_port": relay_port,
-            "health_port": relay_port + 1,
+            "health_port": health_port,
+            "advertise_host": relay_advertise_host,
             "sidecar_host": sidecar_address,
             "sidecar_port": sidecar_port,
             "tcp_session_token": session_token,
@@ -5140,14 +5154,21 @@ WantedBy=multi-user.target
                 run_systemctl_tolerating_transient(f"systemctl start {relay_service}.service")
 
         logging.info(
-            "preconnect relay %s: listen=%s:%d sidecar=%s:%d forward_id=%d",
-            relay_service, slave_address, relay_port, sidecar_address, sidecar_port, forward_id,
+            "preconnect relay %s: listen=%s:%d advertise=%s sidecar=%s:%d forward_id=%d",
+            relay_service,
+            relay_listen_host,
+            relay_port,
+            relay_advertise_host,
+            sidecar_address,
+            sidecar_port,
+            forward_id,
         )
         return {
             "relay_service": relay_service,
-            "relay_host": slave_address,
+            "relay_host": relay_listen_host,
+            "relay_advertise_host": relay_advertise_host,
             "relay_port": relay_port,
-            "health_port": relay_port + 1,
+            "health_port": health_port,
         }
 
     def stop_preconnect_relay(self, service_name: str) -> None:

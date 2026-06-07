@@ -18,12 +18,15 @@ $svc = file_get_contents(__DIR__ . '/../src/Support/ProvisioningService.php') ?:
 foreach ([
     // the leigod_mode predicate is computed in both builders
     "\$leigodDirect = strtolower(trim((string) (\$forward['backend_mode'] ?? ''))) === 'leigod_mode';",
+    // leigod slave-preconnect reuse is explicitly opt-in, disabled by default
+    "\$leigodPreconnectReuse = \$leigodDirect && \$this->config->getBool('LEIGOD_SLAVE_PRECONNECT_REUSE', false);",
     // top-level slave relay suppressed for leigod
     "\$this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && !\$leigodDirect && \$underlayLegs !== []",
-    // per-leg slave_preconnect suppressed for leigod
-    "'slave_preconnect' => \$this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && !\$leigodDirect,",
-    // per-leg preconnect port zeroed for leigod
-    "'preconnect_relay_port' => \$leigodDirect ? 0 : \$this->stablePreconnectRelayPort(",
+    // per-leg slave_preconnect stays suppressed for leigod unless the new opt-in is true
+    "'slave_preconnect' => \$leigodPreconnectReuse ? true : \$this->config->getBool('MPTCP_SLAVE_PRECONNECT', false) && !\$leigodDirect,",
+    // per-leg preconnect port stays zeroed for leigod unless the new opt-in is true
+    "'preconnect_relay_port' => \$leigodPreconnectReuse ? \$leigodPreconnectPort : (",
+    "\$leigodDirect ? 0 : \$this->stablePreconnectRelayPort(",
 ] as $snippet) {
     if (!str_contains($svc, $snippet)) {
         fail('ProvisioningService missing leigod-no-preconnect snippet: ' . $snippet);
