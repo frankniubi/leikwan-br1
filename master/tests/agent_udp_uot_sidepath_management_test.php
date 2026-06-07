@@ -100,6 +100,7 @@ namespace {
     $config = new Config($envPath);
     $db = new Database();
     $provisioning = new ProvisioningService($config, $db);
+    $root = __DIR__ . '/..';
 
     $clientController = new ClientAgentController($config, $db, $provisioning);
     $nodeController = new NodeController($config, $db, $provisioning);
@@ -201,6 +202,64 @@ namespace {
     }
     if (($nodeConfig['udp_uot_sidepath'] ?? null) !== $sidepath) {
         fail('expected authoritative node config to preserve udp_uot_sidepath');
+    }
+
+    $clientControllerSource = file_get_contents($root . '/src/Controllers/ClientAgentController.php') ?: '';
+    foreach ([
+        '$agentConfig = $this->authoritativeAgentConfig($client);',
+        '$agentConfig[\'udp_uot_sidepath\'] = $this->provisioning->udpUotSidepathConfigForAssignedClientForwards(',
+    ] as $snippet) {
+        if (!str_contains($clientControllerSource, $snippet)) {
+            fail('expected ClientAgentController to derive udp_uot_sidepath from assigned forwards: ' . $snippet);
+        }
+    }
+
+    $nodeControllerSource = file_get_contents($root . '/src/Controllers/NodeController.php') ?: '';
+    if (!str_contains($nodeControllerSource, "\$agentConfig['udp_uot_sidepath'] = \$this->provisioning->udpUotSidepathConfigForNode(")) {
+        fail('expected NodeController authoritative agent config to derive udp_uot_sidepath per node');
+    }
+
+    $sidecarControllerSource = file_get_contents($root . '/src/Controllers/SidecarAgentController.php') ?: '';
+    foreach ([
+        '$udpUotSidepath = $this->provisioning->udpUotSidepathConfigForSidecarPoint(',
+        "'udp_uot_sidepath' => \$udpUotSidepath",
+    ] as $snippet) {
+        if (!str_contains($sidecarControllerSource, $snippet)) {
+            fail('expected SidecarAgentController to derive udp_uot_sidepath per sidecar point: ' . $snippet);
+        }
+    }
+
+    $provisioningSource = file_get_contents($root . '/src/Support/ProvisioningService.php') ?: '';
+    foreach ([
+        'public function udpUotSidepathConfigForAssignedClientForwards(array $forwards, array $existing = []): ?array',
+        'public function udpUotSidepathConfigForNode(int $nodeId, array $existing = []): ?array',
+        'public function udpUotSidepathConfigForSidecarPoint(int $pointId, array $existing = []): ?array',
+        'private function buildUdpUotSidepathConfig(array $forwardIds, array $existing = []): ?array',
+        'if ($this->normalizeClientMode((string) ($forward[\'mode\'] ?? \'single\')) !== \'bond\') {',
+    ] as $snippet) {
+        if (!str_contains($provisioningSource, $snippet)) {
+            fail('expected ProvisioningService UDP UoT sidepath automation helper: ' . $snippet);
+        }
+    }
+
+    $nodeHelperStart = strpos($provisioningSource, 'public function udpUotSidepathConfigForNode(int $nodeId, array $existing = []): ?array');
+    $sidecarHelperStart = strpos($provisioningSource, 'public function udpUotSidepathConfigForSidecarPoint(int $pointId, array $existing = []): ?array');
+    $buildHelperStart = strpos($provisioningSource, 'private function buildUdpUotSidepathConfig(array $forwardIds, array $existing = []): ?array');
+    if ($nodeHelperStart === false || $sidecarHelperStart === false || $buildHelperStart === false) {
+        fail('expected UDP UoT sidepath helper bodies to exist');
+    }
+    $nodeHelperBody = substr($provisioningSource, $nodeHelperStart, $sidecarHelperStart - $nodeHelperStart);
+    $sidecarHelperBody = substr($provisioningSource, $sidecarHelperStart, $buildHelperStart - $sidecarHelperStart);
+    foreach ([
+        $nodeHelperBody => 'node helper',
+        $sidecarHelperBody => 'sidecar helper',
+    ] as $body => $label) {
+        if (!str_contains($body, 'AND f.client_mode = :bond_mode')) {
+            fail('expected ' . $label . ' to scope UDP UoT sidepath to bond forwards only');
+        }
+        if (str_contains($body, 'mptcp_preferred_bond_fallback')) {
+            fail('expected ' . $label . ' to avoid widening UDP UoT sidepath selection via runtime_preference');
+        }
     }
 
     echo "ok\n";

@@ -662,7 +662,7 @@
     "bond": "bond",
     "cf_mode": "cf_mode",
     "current_mode": "current_mode",
-    "leigod_mode": "leigod_mode",
+    "leigod_mode": "Managed TYO transport",
     "disabled": "disabled",
     "icmp": "icmp",
     "inactive": "inactive",

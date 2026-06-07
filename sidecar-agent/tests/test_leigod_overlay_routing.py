@@ -74,6 +74,50 @@ class SidecarLeigodOverlayRoutingTests(unittest.TestCase):
             self.assertIn("Address = 10.203.28.159/32", rendered)
             self.assertIn("AllowedIPs = 10.240.29.6/32, 10.203.28.157/32", rendered)
 
+    def test_leigod_lguot_uplink_uses_lguot_server_and_overlay_addresses(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = pathlib.Path(tmp_dir)
+            config_path = tmp / "agent.json"
+            config_path.write_text(json.dumps({
+                "state_dir": str(tmp),
+                "service_name": "leikwan-bond-sidecar-5",
+                "managed_iperf3_ports": [],
+            }), encoding="utf-8")
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+            (tmp / "wireguard").mkdir(parents=True, exist_ok=True)
+            (tmp / "wireguard" / "private.key").write_text("sidecar-private\n", encoding="utf-8")
+            (tmp / "wireguard" / "public.key").write_text("sidecar-public\n", encoding="utf-8")
+            written: dict[str, str] = {}
+            calls: list[str] = []
+            uplink = {
+                "enabled": True,
+                "interface_name": "lws5c5n20p",
+                "local_address": "10.240.29.5",
+                "peer_address": "10.240.29.6",
+                "slave_peer_public_key": "slave-pub",
+                "listen_port": 14980,
+                "outer_transport": "leigod",
+                "gost_socks_listen_port": 47980,
+                "socks_user": "wguot",
+                "socks_pass": "s3cret",
+                "leigod_uot_impl": "lguot",
+                "overlay_peer_allowed_ips": ["10.203.28.157"],
+                "overlay_local_addresses": ["10.203.28.159"],
+            }
+
+            with mock.patch.object(sidecar_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+                with mock.patch.object(sidecar_agent_module.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="inactive", stderr="")):
+                    with mock.patch.object(sidecar_agent_module, "write_text_if_changed", side_effect=lambda path, content, mode=0o600: written.setdefault(str(path), content) is not None):
+                        with mock.patch.object(agent, "ensure_wireguard_identity", return_value="sidecar-public"):
+                            with mock.patch.object(agent, "remove_sidecar_leigod_gost_server_service", side_effect=lambda *args: calls.append("remove-gost")):
+                                with mock.patch.object(agent, "ensure_sidecar_leigod_lguot_server_service", side_effect=lambda *args: calls.append("ensure-lguot")):
+                                    agent.apply_slave_sidecar_uplink(uplink)
+
+            rendered = "\n".join(written.values())
+            self.assertIn("Address = 10.203.28.159/32", rendered)
+            self.assertIn("AllowedIPs = 10.240.29.6/32, 10.203.28.157/32", rendered)
+            self.assertEqual(["remove-gost", "ensure-lguot"], calls)
+
 
 if __name__ == "__main__":
     unittest.main()

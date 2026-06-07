@@ -26,9 +26,37 @@ foreach ([
     "\$leigodUotImpl = strtolower((string) (\$combination['leigod_uot_impl'] ?? 'gost')) === 'lguot' ? 'lguot' : 'gost';",
     "\$slave['leigod_uot_impl'] = \$leigodUotImpl;",
     "\$sidecar['leigod_uot_impl'] = \$leigodUotImpl;",
+    "\$slave['sidecar_gost_host'] = \$sidecarHost;",
+    "\$slave['sidecar_gost_port'] = \$gostSocks;",
+    "\$sidecar['gost_socks_listen_port'] = \$gostSocks;",
+    "\$slave['sidecar_endpoint_host'] = '127.0.0.1';",
+    "\$slave['sidecar_endpoint_port'] = \$slaveListenPort;",
 ] as $snippet) {
     if (!str_contains($svc, $snippet)) {
-        fail('ProvisioningService missing snippet: ' . $snippet);
+        fail('ProvisioningService missing managed TYO lane snippet: ' . $snippet);
+    }
+}
+
+foreach ([
+    "if (is_array(\$staticSidecarUplink) && trim((string) (\$staticSidecarUplink['relay_target'] ?? '')) !== '')",
+    "\$publishTarget = (string) \$staticSidecarUplink['relay_target'];",
+    "'sidecar_uplink' => \$staticSidecarUplink ?? []",
+    "'sidecar_uplink_selector' => \$staticSidecarSelector",
+] as $snippet) {
+    if (!str_contains($svc, $snippet)) {
+        fail('publishTaskPayloadForForward missing managed uplink target snippet: ' . $snippet);
+    }
+}
+
+$requiredPayloadSnippets = [
+    "'sidecar_uplink' => \$staticSidecarUplink ?? []",
+    "'sidecar_uplink_selector' => \$staticSidecarSelector",
+    "'mptcp_underlay' => \$clientMode === 'mptcp' ? \$this->buildMptcpSlaveUnderlayPayload",
+    "\$publishTarget = (string) \$staticSidecarUplink['relay_target'];",
+];
+foreach ($requiredPayloadSnippets as $snippet) {
+    if (!str_contains($svc, $snippet)) {
+        fail('publish payload missing managed TYO automation snippet: ' . $snippet);
     }
 }
 

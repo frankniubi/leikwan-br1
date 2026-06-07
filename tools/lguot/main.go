@@ -6,8 +6,8 @@
 // slave can push toward its ~200 Mbit/s network cap instead of saturating on per-datagram
 // userspace work.
 //
-//   client (slave):   WG --udp--> 127.0.0.1:LP  --[frame]--> TCP --(SOCKS5 line)--> sidecar:PORT
-//   server (sidecar): TCP :PORT --[deframe]--> udp --> 127.0.0.1:<WG listen>
+//	client (slave):   WG --udp--> 127.0.0.1:LP  --[frame]--> TCP --(SOCKS5 line)--> sidecar:PORT
+//	server (sidecar): TCP :PORT --[deframe]--> udp --> 127.0.0.1:<WG listen>
 //
 // Wire: a stream of [uint16 big-endian length][payload] datagrams. Up to `batch` datagrams are
 // read per recvmmsg and flushed as a single TCP write (amortised syscalls, coalesced without Nagle).
@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	batch   = 64
+	batch   = 128
 	bufSize = 2048 // > max WG datagram (MTU 1500 + WG overhead)
 	tcpBuf  = 1 << 20
 	udpBuf  = 16 << 20
@@ -49,17 +49,36 @@ func makeMsgs(n int) []ipv4.Message {
 	return ms
 }
 
-// udpToTCP reads batches of datagrams from pc, length-prefixes each, and flushes per batch.
-// If learn != nil, the first observed source address is stored (client learns the WG socket addr).
-func udpToTCP(pc *ipv4.PacketConn, w *bufio.Writer, learn *atomic.Value) error {
+// frameBatch appends [uint16 len][payload] iovecs for each payload into iov, reusing hdrs[i] for the
+// per-datagram length prefix (no payload copy). The caller flushes iov with a single writev via
+// net.Buffers.WriteTo. The wire format is byte-identical to the old per-datagram path, so the peer
+// (old or new lguot) stays compatible.
+func frameBatch(iov *net.Buffers, hdrs [][]byte, payloads [][]byte) {
+	for i, p := range payloads {
+		binary.BigEndian.PutUint16(hdrs[i], uint16(len(p)))
+		*iov = append(*iov, hdrs[i], p)
+	}
+}
+
+// udpToTCP reads batches of datagrams from pc, length-prefixes each, and writes the whole batch to the
+// TCP conn with a single writev (net.Buffers.WriteTo) — no per-datagram copy into a bufio buffer. This
+// cuts the per-packet CPU of the UoT carrier on both the slave (client send) and sidecar (server send)
+// sides. If learn != nil, the WG source address is followed (client learns the WG socket addr).
+func udpToTCP(pc *ipv4.PacketConn, c net.Conn, learn *atomic.Value) error {
 	ms := makeMsgs(batch)
-	hdr := make([]byte, 2)
+	hdrs := make([][]byte, batch)
+	for i := range hdrs {
+		hdrs[i] = make([]byte, 2)
+	}
+	backing := make(net.Buffers, 0, batch*2)
+	payloads := make([][]byte, 0, batch)
 	var last *net.UDPAddr
 	for {
 		n, err := pc.ReadBatch(ms, 0)
 		if err != nil {
 			return err
 		}
+		payloads = payloads[:0]
 		for i := 0; i < n; i++ {
 			// Follow the WireGuard source address rather than latching the first one. WG's socket
 			// port changes whenever the interface restarts or roams (carrier swap, agent reconcile,
@@ -73,16 +92,15 @@ func udpToTCP(pc *ipv4.PacketConn, w *bufio.Writer, learn *atomic.Value) error {
 					}
 				}
 			}
-			l := ms[i].N
-			binary.BigEndian.PutUint16(hdr, uint16(l))
-			if _, err := w.Write(hdr); err != nil {
-				return err
-			}
-			if _, err := w.Write(ms[i].Buffers[0][:l]); err != nil {
-				return err
-			}
+			payloads = append(payloads, ms[i].Buffers[0][:ms[i].N])
 		}
-		if err := w.Flush(); err != nil {
+		if len(payloads) == 0 {
+			continue
+		}
+		iov := backing[:0]
+		frameBatch(&iov, hdrs, payloads)
+		// Single writev; blocks until written, so the ms buffers are safe to reuse on the next ReadBatch.
+		if _, err := iov.WriteTo(c); err != nil {
 			return err
 		}
 	}
@@ -201,7 +219,7 @@ func pump(c net.Conn, pc *ipv4.PacketConn, learn *atomic.Value, getDst func() *n
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); _ = udpToTCP(pc, w, learn); c.Close() }()
+	go func() { defer wg.Done(); _ = udpToTCP(pc, c, learn); c.Close() }()
 	go func() { defer wg.Done(); _ = tcpToUDP(r, pc, getDst); c.Close() }()
 	wg.Wait()
 	return nil

@@ -1073,7 +1073,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStartPre=/bin/bash -lc 'command -v {iperf3_bin} >/dev/null || command -v iperf3 >/dev/null || (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y iperf3)'
-ExecStart={iperf3_bin} -s -p {int(port)}
+ExecStart=/bin/bash -lc 'while true; do timeout --kill-after=3s 12s {iperf3_bin} -s -p {int(port)} --one-off --idle-timeout 5; sleep 0.05; done'
 Restart=always
 RestartSec=3
 

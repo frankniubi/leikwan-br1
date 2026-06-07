@@ -39,6 +39,12 @@ final class ClientAgentController extends BaseController
             $updateRequestToken = $this->autoUpdateTokenForVersion((string) ($client['agent_version'] ?? ''), 'client_agent', 'auto-client-agent');
         }
 
+        $agentConfig = $this->authoritativeAgentConfig($client);
+        $agentConfig['udp_uot_sidepath'] = $this->provisioning->udpUotSidepathConfigForAssignedClientForwards(
+            is_array($forwards) ? $forwards : [],
+            is_array($agentConfig['udp_uot_sidepath'] ?? null) ? $agentConfig['udp_uot_sidepath'] : []
+        );
+
         return $this->json([
             'ok' => true,
             'client' => [
@@ -48,7 +54,7 @@ final class ClientAgentController extends BaseController
                 'group_id' => $client['group_id'] !== null ? (int) $client['group_id'] : null,
                 'diag_request_token' => (string) ($client['last_diag_request_token'] ?? ''),
                 'diag_status' => (string) ($client['last_diag_status'] ?? ''),
-                'agent_config_json' => $this->authoritativeAgentConfig($client),
+                'agent_config_json' => $agentConfig,
                 'agent_update_request_token' => $updateRequestToken,
                 'agent_update_requested_at' => (string) ($client['agent_update_requested_at'] ?? ''),
                 'desired_agent_version' => (string) ($clientAgent['version'] ?? ''),

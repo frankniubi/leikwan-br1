@@ -2905,6 +2905,145 @@ final class ProvisioningService
     }
 
     /**
+     * @param array<int, array<string, mixed>> $forwards
+     * @param array<string, mixed> $existing
+     * @return array<string, mixed>|null
+     */
+    public function udpUotSidepathConfigForAssignedClientForwards(array $forwards, array $existing = []): ?array
+    {
+        $forwardIds = [];
+        foreach ($forwards as $forward) {
+            if (!is_array($forward)) {
+                continue;
+            }
+            $forwardId = (int) ($forward['forward_id'] ?? 0);
+            if ($forwardId <= 0) {
+                continue;
+            }
+            if ($this->normalizeClientMode((string) ($forward['mode'] ?? 'single')) !== 'bond') {
+                continue;
+            }
+            $transport = strtolower(trim((string) ($forward['transport'] ?? 'tcp+udp')));
+            $bonding = is_array($forward['bonding'] ?? null) ? $forward['bonding'] : [];
+            $ingressMode = $this->normalizeBondIngressMode((string) ($bonding['ingress_mode'] ?? 'wss_path_mux'));
+            if (!str_contains($transport, 'udp') || $ingressMode !== 'plain_tcp_mux') {
+                continue;
+            }
+            $forwardIds[] = $forwardId;
+        }
+
+        return $this->buildUdpUotSidepathConfig($forwardIds, $existing);
+    }
+
+    /**
+     * @param array<string, mixed> $existing
+     * @return array<string, mixed>|null
+     */
+    public function udpUotSidepathConfigForNode(int $nodeId, array $existing = []): ?array
+    {
+        if ($nodeId <= 0) {
+            return null;
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT DISTINCT f.id
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             INNER JOIN service_endpoints se ON se.forward_id = f.id
+             WHERE se.node_id = :node_id
+               AND f.enabled = 1
+               AND s.status = :service_status
+               AND se.health_status <> :deleted
+               AND se.health_status <> :deleting
+               AND f.transport_mode LIKE :udp_transport
+               AND f.bond_ingress_mode = :ingress_mode
+               AND f.client_mode = :bond_mode
+             ORDER BY f.id ASC',
+            [
+                'node_id' => $nodeId,
+                'service_status' => 'active',
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+                'udp_transport' => '%udp%',
+                'ingress_mode' => 'plain_tcp_mux',
+                'bond_mode' => 'bond',
+            ]
+        );
+
+        $forwardIds = array_values(array_filter(array_map(
+            static fn(array $row): int => (int) ($row['id'] ?? 0),
+            $rows
+        ), static fn(int $forwardId): bool => $forwardId > 0));
+
+        return $this->buildUdpUotSidepathConfig($forwardIds, $existing);
+    }
+
+    /**
+     * @param array<string, mixed> $existing
+     * @return array<string, mixed>|null
+     */
+    public function udpUotSidepathConfigForSidecarPoint(int $pointId, array $existing = []): ?array
+    {
+        if ($pointId <= 0) {
+            return null;
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT DISTINCT f.id
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.bond_sidecar_point_id = :point_id
+               AND f.enabled = 1
+               AND s.status = :service_status
+               AND f.transport_mode LIKE :udp_transport
+               AND f.bond_ingress_mode = :ingress_mode
+               AND f.client_mode = :bond_mode
+             ORDER BY f.id ASC',
+            [
+                'point_id' => $pointId,
+                'service_status' => 'active',
+                'udp_transport' => '%udp%',
+                'ingress_mode' => 'plain_tcp_mux',
+                'bond_mode' => 'bond',
+            ]
+        );
+
+        $forwardIds = array_values(array_filter(array_map(
+            static fn(array $row): int => (int) ($row['id'] ?? 0),
+            $rows
+        ), static fn(int $forwardId): bool => $forwardId > 0));
+
+        return $this->buildUdpUotSidepathConfig($forwardIds, $existing);
+    }
+
+    /**
+     * @param array<int, int> $forwardIds
+     * @param array<string, mixed> $existing
+     * @return array<string, mixed>|null
+     */
+    private function buildUdpUotSidepathConfig(array $forwardIds, array $existing = []): ?array
+    {
+        $normalizedForwardIds = array_values(array_unique(array_filter(array_map(
+            static fn($value): int => (int) $value,
+            $forwardIds
+        ), static fn(int $forwardId): bool => $forwardId > 0)));
+
+        sort($normalizedForwardIds);
+        if ($normalizedForwardIds === []) {
+            return null;
+        }
+
+        return [
+            'enabled_forward_ids' => $normalizedForwardIds,
+            'shadow_route_suffix' => trim((string) ($existing['shadow_route_suffix'] ?? '.uot')) ?: '.uot',
+            'sidecar_port' => max(1, (int) ($existing['sidecar_port'] ?? 8999)),
+            'reorder_window_packets' => max(1, (int) ($existing['reorder_window_packets'] ?? 4096)),
+            'reorder_window_bytes' => max(1024, (int) ($existing['reorder_window_bytes'] ?? 16777216)),
+            'reorder_timeout_ms' => max(1, (int) ($existing['reorder_timeout_ms'] ?? 25)),
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $config
      * @param array<string, mixed> $client
      * @param array<string, mixed>|null $deviceSession
