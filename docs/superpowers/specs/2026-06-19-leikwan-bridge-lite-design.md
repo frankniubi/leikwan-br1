@@ -1,226 +1,428 @@
-﻿# LeiKwan Bridge Lite Design
+# LeiKwan Bridge Lite Design
 
 ## Goal
 
-Build a brand-new, separate `leikwan-bridge-lite` web app with its own database for user, package, node, credit, and WHMCS sync management. The product should expose only two user-facing runtime modes: **Simple mode** and **Self-owned mode**. External users connect to the customer's own exposed ports on the customer's machine or VM; only the customer client's connection to LeiKwan is authenticated.
+Build a separate `leikwan-bridge-lite` control plane and sidecar family that fixes the current admin exposure, moves the client experience to a VM-first workflow, adds auditable usage and ingress-IP tracking, and introduces a bridge-lite-specific sidecar agent with public-IP auto-reporting.
+
+The resulting product must satisfy these explicit requirements:
+
+1. `/admin` must not publicly redirect or expose the admin console.
+2. Sidecar records must support `name`, `internet access IP` or `auto`, `port list`, `carrier`, and `speed cap`.
+3. The sidecar agent must be a new bridge-lite-specific version, separate from legacy `leikwan-bridge`.
+4. Admin must be able to inspect each user's usage and ingress IP history.
+5. Client exposure flow must choose a concrete VM or order target, not start from a generic port list.
+6. New exposures must default to `TCP + UDP`.
+7. "User's Own Sidecar" must have a real install gate and registration flow.
+
+## Current problems to fix
+
+- The current bridge-lite bootstrap publicly serves `GET /admin`, which exposes the operator console shell to unauthenticated visitors.
+- Exposure management is too port-list-first, which is wrong for users who think in terms of concrete VMs or servers.
+- Sidecar state is too loose. It needs first-class fields, stronger policy enforcement, and auditability.
+- The current design draft is too generic. It does not yet lock the bridge-lite-specific sidecar protocol boundary or the required audit surfaces.
 
 ## What this is not
 
 - Not a trimmed copy of the old panel.
-- Not a public proxy product.
-- Not direct client-to-sidecar connectivity.
 - Not a shared database with the legacy system.
-- Not a user-facing `client -> slave -> sidecar` topology.
+- Not direct client-to-sidecar connectivity outside the bridge-lite control model.
+- Not a public proxy product.
+- Not a user-facing topology change away from the internal `client -> slave -> sidecar` rule set.
 
 ## Approaches considered
 
-1. **Fork the current panel and prune features**
-   - Fastest start, but keeps legacy coupling and confusing topology.
-2. **New bridge-lite app with a new DB, reusing existing runtime primitives where useful**
-   - Best balance of isolation and delivery risk. **Chosen.**
-3. **Full rewrite of control plane and client runtime**
-   - Cleanest on paper, but too much churn for the first version.
+1. **Fork the old panel and patch features in place**
+   - Fastest short-term path, but keeps legacy coupling and increases confusion around admin access, exposure flow, and sidecar identity.
+2. **Build a separate bridge-lite control plane and bridge-lite sidecar family, reusing only low-level primitives where useful**
+   - Best balance of isolation, security, and delivery risk. **Chosen.**
+3. **Rewrite everything including every runtime primitive**
+   - Cleanest in theory, but too much churn for the first bridge-lite release.
 
-## Product shape
+## High-level architecture
 
-The new app has three layers:
+The approved design has three layers:
 
-1. **Control plane web app**
-   - Admin and client UI
-   - API for client enrollment and config sync
-   - WHMCS adapter
-   - Credits and package accounting
-   - Node inventory and priority management
+1. **Bridge-lite control plane**
+   - Admin login and operator console
+   - Client UI and API
+   - WHMCS reconciliation
+   - Exposure policy, target inventory, and sidecar inventory
+   - Audit collection and reporting
 
-2. **Client gateway runtime**
-   - Installed on the user's Windows, Linux, or Android device
-   - Also runs on a self-owned VM in Self-owned mode
-   - Exposes the user's chosen ports on that machine/VM
-   - Uses one authenticated LeiKwan session to fetch policy and carry control/data-plane metadata
+2. **Client-facing bridge-lite runtime contract**
+   - VM-first target selection
+   - Exposure creation with default `TCP + UDP`
+   - Managed-sidecar and own-sidecar onboarding
+   - Per-target policy sync
 
-3. **LeiKwan-managed relay/network side**
-   - Internal only
-   - Carries customer traffic and control state
-   - Remains hidden from end users
-   - Still obeys the existing slave-hop rule internally
+3. **Bridge-lite sidecar agent**
+   - Separate product identity from legacy `leikwan-bridge`
+   - Registration against bridge-lite targets
+   - Heartbeat plus public-IP reporting
+   - Enforcement that only assigned ports can become services
 
 ## Core design rules
 
-- Only the client-to-LeiKwan path is authenticated.
-- External users connect normally to the customer's own exposed ports.
-- The product should not look like a public proxy service.
-- The port allocator should use as few ports as possible.
-- Freed ports should be reused before new ports are opened.
-- BGP bonding is premium and credit-based.
-- Speed bonding is only available in Simple mode and only when the account has credits to spend; Self-owned mode has no bonding in v1.
-- WHMCS remains the billing/validity source of truth.
-- Node selection should follow admin-set priority and speed caps.
-- DDNS should keep LeiKwan-managed addresses stable when the underlying IP changes.
+- Customer sign-in remains **WHMCS-only**.
+- Admin sign-in is a separate local-only bootstrap path, with `/frankniubi` as the default configured path.
+- Unauthenticated `GET /admin` must return **404**. It must not redirect to the bootstrap path.
+- The bootstrap path serves the **login page only**, not the admin shell.
+- Successful admin login creates a session that can access `/admin`.
+- The first operator admin account is seeded locally and stored hashed only.
+- The client UX is **VM/server first**. The user starts from a target machine, not a free-form port list.
+- Each target VM is linked back to an entitlement source such as order or package.
+- New exposures default to **TCP + UDP**.
+- Sidecar services may use **only** ports from the assigned sidecar port list.
+- Sidecar `auto` IP mode means the agent reports public IP periodically and the control plane updates the stored active IP on change.
+- Audit data must include both usage history and ingress-IP history.
+- The sidecar agent family for bridge-lite must have distinct naming, versioning, config, and update identity from legacy `leikwan-bridge`.
 
-## User-facing modes
+## Product model
 
-### 1) Simple mode
+### Runtime modes
 
-Simple mode is the default customer-facing mode for a machine the user already owns.
+Bridge-lite keeps two user-facing modes:
 
-- The client app runs on the user's computer or server.
-- The app exposes the ports the user chooses.
-- Those exposed ports are reachable by normal external traffic.
-- The app keeps one authenticated control session to LeiKwan.
-- The control session is used to sync routes, node choice, speed policy, and credits.
-- The control session can carry many exposure records and route definitions, but it must not change how external users connect to the customer's own ports.
-- Port use should be compact: one session may manage many local exposures, but the runtime should still open the minimum practical public ports.
+1. **Simple mode**
+   - User runs the client on a machine they own.
+   - The machine exposes public listener ports normally.
+   - Speed bonding may be enabled here if the account/package allows it and credits are available.
 
-### 2) Self-owned mode
+2. **Self-owned mode**
+   - User runs the bridge-lite-controlled runtime on a self-owned VM, usually with a stable IPv6 path.
+   - This mode can use `fakesip` and `fakehttp` transport profiles when required.
+   - In v1, this mode does not get the same bonding entitlement as Simple mode.
 
-Self-owned mode is for a user-controlled VM, typically with a stable IPv6 path.
+### Target-first model
 
-- The same client runtime is installed on the user-owned VM.
-- The user can use their own IPv6 for transport.
-- It is still controlled through the LeiKwan app and account.
-- This mode is better for stable high-volume workloads.
-- It must support camouflage transport profiles such as `fakesip` and `fakehttp` when needed.
+The primary user object is a **target VM/server**. An exposure always belongs to a concrete target record.
 
-## Admin capabilities
+Each target should track:
 
-### Users
+- `target_id`
+- `account_id`
+- `vm_label`
+- `vm_kind` such as `managed_vm`, `user_vm`, or `user_sidecar_vm`
+- `order_id`
+- `package_id`
+- `carrier_preference`
+- `speed_cap_mbps`
+- `default_protocols`
+- `sidecar_mode`
+- `status`
 
-Admin can manage:
+This keeps the UI VM-first while still allowing entitlement enforcement through orders and packages.
 
-- name
-- password
-- bound WHMCS email
-- credits
-- packages
-- valid period
+## Admin access model
 
-### Packages
+### Bootstrap path
 
-Admin can add, edit, and delete packages.
+- `GET /frankniubi` or the configured bootstrap path renders the admin login page only.
+- `POST /frankniubi/login` validates local operator credentials and creates the admin session.
+- `GET /admin` renders the admin shell only when the request already has a valid admin session.
+- `GET /admin` without a valid session returns `404`.
+- The system must not reveal the bootstrap path through automatic redirects from `/admin`.
 
-A package should capture at least:
+### Admin console areas
 
-- display name
-- WHMCS product mapping
-- validity period
-- included credits
-- base speed limit
-- allowed node class
-- allowed mode(s)
-- bonding entitlement
-- maximum active exposures
+The operator console should have these main areas:
 
-### Nodes
+- Users
+- Targets / VMs
+- Sidecars
+- Exposures
+- Audit
+- WHMCS Sync
 
-Admin can insert and manage:
+This separates account management, machine inventory, live exposure state, and compliance reporting.
 
-- **BGP intra nodes**
-- **single-line intra nodes**
+## Sidecar model
 
-Node records should include:
+Each sidecar is a first-class record attached to a target or target family.
 
-- node class
-- public host / DDNS label
-- region
-- current status
-- speed limit
-- priority
-- protocol support flags
+Required fields:
 
-Admin can also delete nodes and change their priority per user or package tier.
+- `name`
+- `internet_access_ip`
+- `ip_mode` where `manual` means operator-controlled and `auto` means agent-reported
+- `port_list`
+- `carrier`
+- `speed_cap`
+- `last_reported_ip`
+- `last_heartbeat_at`
+- `agent_version`
+- `status`
 
-### WHMCS sync
+### Port list rule
 
-Admin can force a sync so each user's validity matches the WHMCS products bound to that user.
+Only ports in the sidecar `port_list` may be activated as services. Both the control plane and the sidecar agent must reject exposure activation outside this list.
 
-## Client capabilities
+### Carrier and speed cap
 
-Client can:
+- Users can choose a carrier from the set allowed by their package or admin policy.
+- The effective sidecar speed cap is visible in both client and admin surfaces.
 
-- buy packages
-- renew packages
-- see package details
-- select local ports to expose
-- install on Windows, Linux, and Android
-- pay to use BGP nodes
-- view remaining credits and speed state
+## Bridge-lite sidecar agent
 
-## Port model
+### Product identity
 
-The port model should stay compact and predictable.
+The sidecar agent must be a separate bridge-lite family, not a relabeled legacy agent.
 
-- Each exposure gets a managed listener assignment on the customer side.
-- The allocator should pack listeners into the smallest practical range.
-- Reuse lower free ports first.
-- If multiple logical routes can safely share a session or compact range, do that.
-- Do not spread listeners across wide, proxy-looking port blocks unless there is no alternative.
+It should have:
 
-This keeps the product from resembling a public proxy service while still allowing multiple TCP/UDP destinations.
+- separate binary or package name
+- separate version string namespace
+- separate config file identity
+- separate registration endpoints
+- separate update or install channel
 
-## Transport model
+Example family naming:
 
-### Simple mode transport
+- `leikwan-bridge-lite-sidecar`
+- `bridge-lite-sidecar-agent`
 
-- The client app opens the public listener(s) on the user's machine/VM.
-- External users connect to those ports normally.
-- The client app uses an authenticated LeiKwan session to obtain config and policy.
-- The session can carry multiple route definitions and telemetry streams.
-- Speed bonding is only available here, and only when the account has paid credits.
+The exact package name can be chosen during implementation, but it must remain operationally distinct from legacy `leikwan-bridge`.
 
-### Self-owned transport
+### Registration flow
 
-- Same runtime contract as Simple mode.
-- Better suited to stable IPv6 or LeiKwan-hosted VM placement.
-- Supports `fakesip` / `fakehttp` profiles for harder network environments.
-- No bonding entitlement in v1.
+The bridge-lite sidecar agent registers through a dedicated endpoint such as:
 
-## WHMCS integration model
+- `POST /api/sidecar/register`
 
-WHMCS should remain the billing system of record.
+Agent sends:
 
-- Purchase/renew events from WHMCS update the bridge-lite account state.
-- Validity should be mirrored into the local database.
-- If WHMCS is temporarily unavailable, the last known valid state should remain visible but marked stale.
-- Manual admin sync should reconcile the local state back to WHMCS.
+- install token
+- `target_id`
+- platform
+- hostname or local node name
+- agent version
 
-## Data model boundaries
+Server returns:
 
-The new database should keep these concepts separate:
+- `sidecar_id`
+- sidecar name
+- allowed ports
+- carrier
+- speed cap
+- heartbeat interval
+- IP mode
+- config revision
 
-- **Account**: login, password, WHMCS email binding, credits, validity.
-- **Package**: quota, speed, mode, node class, bonding rights.
-- **Node**: address, DDNS label, class, priority, speed cap, status.
-- **Exposure**: local port, protocol, destination, mode, allocator result.
-- **Credit ledger**: purchases, deductions, bonding charges, admin adjustments.
-- **Sync job**: WHMCS reconciliation history.
-- **Device enrollment**: per-client runtime identity and auth material.
+### Heartbeat and public-IP reporting
 
-## Error handling
+The agent should report on a roughly 60-second interval.
 
-- If a node goes unhealthy, the next priority node should be selected.
-- If a client disconnects, the public exposure should fail closed rather than silently drifting.
-- If credits run out, bonding must stop before ordinary exposure does.
-- If DDNS updates lag, the node should be marked degraded until the name resolves correctly again.
-- If WHMCS sync fails, local billing state should not be overwritten by empty or partial data.
+Heartbeat payload includes:
+
+- `sidecar_id`
+- agent version
+- current detected public IP
+- health state
+- currently bound ports
+- lightweight usage counters
+
+Control-plane behavior:
+
+- if `ip_mode = auto` and the reported public IP changed, update the active sidecar IP and record an audit event
+- if the IP did not change, refresh `last_heartbeat_at` without spamming duplicate change records
+- if `ip_mode = manual`, keep the configured active IP unchanged even if the agent reports something different, but the report may still be retained as telemetry or operator evidence
+
+## Client experience
+
+### VM-first home
+
+The client home should center on **My Targets / VMs**.
+
+Each target row or card shows:
+
+- VM name
+- linked order or package
+- sidecar mode: managed or own
+- current public IP or reported IP
+- carrier
+- speed cap
+- exposure count
+- health / last heartbeat
+
+### Exposure creation flow
+
+The approved exposure flow is:
+
+1. Choose VM/server
+2. Choose service target on that VM
+3. Confirm protocols, defaulting to `TCP + UDP`
+4. Choose path: managed sidecar or own sidecar
+5. Review the assigned public service ports from the allowed port list
+6. Create the exposure
+
+The user should never start from a free-form port list page without first selecting the concrete target machine.
+
+### Default protocols
+
+For every new exposure:
+
+- `tcp = true`
+- `udp = true`
+
+The user can narrow the protocol set later, but the creation default must be both enabled.
+
+### User's Own Sidecar install gate
+
+For each eligible VM, the UI must expose a real **Install Own Sidecar** path.
+
+Eligibility requires:
+
+- self-owned mode permitted by package or admin policy
+- target VM marked eligible
+- self-owned sidecars not disabled for the account
+
+The install gate provides:
+
+- platform choice such as Linux or Windows
+- one-time or revocable install token
+- install command or package download
+- prefilled sidecar name
+- expected port list
+- expected carrier
+- expected speed cap
+- control-plane endpoint for registration
+
+After installation:
+
+1. agent boots with install token
+2. agent registers against the intended `target_id`
+3. target enters `pending` until first successful heartbeat
+4. target moves to `active` after registration plus first valid report
+
+### UX states
+
+Each target should clearly surface:
+
+- no sidecar installed
+- pending first heartbeat
+- active
+- IP changed, awaiting reconciliation
+- heartbeat stale
+- disabled by admin
+- package or order invalid
+
+## Auditing and compliance model
+
+### Audit data classes
+
+Bridge-lite must keep three audit classes:
+
+1. **Usage rollups**
+   - per account, per target, and per exposure
+   - bytes in
+   - bytes out
+   - connection count
+   - last active time
+
+2. **Ingress IP observations**
+   - account
+   - target
+   - exposure
+   - observed ingress IP
+   - first seen
+   - last seen
+   - connection count
+
+3. **Control-plane audit events**
+   - admin login success and failure
+   - sidecar registered
+   - sidecar public IP changed
+   - heartbeat stale or restored
+   - port list changed
+   - carrier changed
+   - speed cap changed
+   - exposure created or deleted
+   - own-sidecar install token issued or revoked
+
+### Audit views
+
+Admin UI should include:
+
+- **User audit summary**
+  - usage totals
+  - active targets
+  - recent ingress IPs
+  - recent config changes
+
+- **Exposure audit detail**
+  - target VM
+  - sidecar mode
+  - assigned ports
+  - recent ingress IP timeline
+  - recent traffic totals
+
+- **Sidecar audit detail**
+  - current public IP
+  - last heartbeat
+  - IP change history
+  - assigned port list
+  - version and health state
+
+- **Compliance export**
+  - CSV or JSON export by account and time range
+
+### Audit APIs
+
+Minimum admin endpoints:
+
+- `GET /api/admin/audit/users`
+- `GET /api/admin/audit/users/{id}`
+- `GET /api/admin/audit/exposures/{id}`
+- `GET /api/admin/audit/ingress`
+- `GET /api/admin/audit/sidecars/{id}`
+- `GET /api/admin/audit/export`
+
+## WHMCS and entitlement model
+
+- WHMCS remains the billing system of record.
+- Orders and packages remain the entitlement source for validity, limits, and permissions.
+- VM-first target selection does not remove entitlement checks. It only changes what the user sees first.
+- Purchase and renewal events reconcile into the bridge-lite account state.
+- Manual sync can recover local state when WHMCS comes back after an outage.
+- Empty or partial sync responses must never wipe valid local entitlement state.
+
+## Error handling and failure behavior
+
+- If a sidecar heartbeat stops, the sidecar becomes stale and the target state reflects that.
+- If a sidecar public IP changes in `auto` mode, record the change and update the active value.
+- If a sidecar reports an IP change in `manual` mode, retain the report without replacing the configured value.
+- If an exposure requests a port outside the assigned `port_list`, reject the request.
+- If a target loses entitlement, disable new exposure changes and surface the invalid state to the user.
+- If a node or carrier path becomes unhealthy, follow the existing bridge-lite path-selection logic without weakening auditability.
+- If credits run out, any premium bonding behavior must stop before ordinary exposure is removed.
+
+## Testing strategy
+
+The design is not complete unless implementation can prove these behaviors:
+
+- `/admin` returns `404` without a valid admin session
+- bootstrap path renders login only
+- successful admin login reaches `/admin`
+- target selection is VM-first for exposure creation
+- new exposures default to `tcp=true` and `udp=true`
+- own-sidecar install token binds to exactly the intended target
+- sidecar heartbeat updates `last_heartbeat_at`
+- sidecar public-IP change creates audit history
+- unchanged public-IP report does not create duplicate change spam
+- exposure activation rejects ports outside the assigned `port_list`
+- audit APIs return per-user usage plus ingress-IP records
 
 ## Success criteria
 
-- Admin can manage users, packages, nodes, node priority, and speed limits.
-- WHMCS validity sync matches product state.
-- Clients can buy/renew and see package details.
-- Customer-installed runtime exposes normal ports on the customer's own machine or VM.
-- Only the client-to-LeiKwan path is authenticated.
-- Port allocation stays compact and does not look like a public proxy deployment.
-- Simple mode bonding works only with paid credits.
-- Self-owned mode supports `fakesip` and `fakehttp` transport profiles.
-- Windows, Linux, and Android clients can all speak the same control-plane contract.
+This bridge-lite redesign is successful only when:
 
-## Session contract
-
-The exact wire protocol for the authenticated client session is implementation-defined in v1, but the contract is fixed:
-
-- authenticate the client
-- fetch policy and node selection
-- register and update exposure records
-- report health and usage
-- keep listener allocation compact and reusable
+- unauthenticated visitors cannot use `/admin` and receive `404`
+- admin login exists only through the configured bootstrap path
+- targets are modeled as first-class VMs or servers
+- exposure creation is VM-first
+- default exposure protocol is `TCP + UDP`
+- sidecars carry the required fields: name, IP/manual-or-auto, port list, carrier, speed cap
+- only assigned sidecar ports can become services
+- bridge-lite sidecar agent is distinct from legacy `leikwan-bridge`
+- the control plane records per-user usage and ingress-IP evidence
+- own-sidecar installation is a real guided flow, not a hidden configuration detail
