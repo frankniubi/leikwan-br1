@@ -415,11 +415,13 @@ CREATE TABLE IF NOT EXISTS forwards (
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     CONSTRAINT fk_forwards_service FOREIGN KEY (service_id) REFERENCES services(id),
+    CONSTRAINT fk_forwards_target_service FOREIGN KEY (target_service_id) REFERENCES services(id),
     CONSTRAINT fk_forwards_line_client FOREIGN KEY (line_client_id) REFERENCES clients(id),
     CONSTRAINT fk_forwards_line_client_group FOREIGN KEY (line_client_group_id) REFERENCES client_groups(id),
     CONSTRAINT fk_forwards_sidecar_point FOREIGN KEY (bond_sidecar_point_id) REFERENCES sidecar_points(id),
     CONSTRAINT fk_forwards_chain FOREIGN KEY (forward_chain_id) REFERENCES forward_chains(id),
-    INDEX idx_forwards_service (service_id)
+    INDEX idx_forwards_service (service_id),
+    INDEX idx_forwards_target_service (target_service_id)
 );
 
 CREATE TABLE IF NOT EXISTS node_groups (

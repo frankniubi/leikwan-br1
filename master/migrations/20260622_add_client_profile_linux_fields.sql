@@ -4,3 +4,5 @@ ALTER TABLE clients ADD COLUMN allow_paid_lines TINYINT(1) NOT NULL DEFAULT 0 AF
 
 ALTER TABLE forwards ADD COLUMN target_source VARCHAR(32) NOT NULL DEFAULT 'manual' AFTER service_id;
 ALTER TABLE forwards ADD COLUMN target_service_id BIGINT UNSIGNED NULL AFTER target_source;
+ALTER TABLE forwards ADD INDEX idx_forwards_target_service (target_service_id);
+ALTER TABLE forwards ADD CONSTRAINT fk_forwards_target_service FOREIGN KEY (target_service_id) REFERENCES services(id);
