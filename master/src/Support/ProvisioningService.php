@@ -69,6 +69,9 @@ final class ProvisioningService
         $productPayload = is_array($payload['products'][0] ?? null) ? $payload['products'][0] : [];
         if ($productPayload !== []) {
             $productIdentity = (new WhmcsClient($this->config))->normalizePurchasedServerIdentity($productPayload);
+            if (is_array($productIdentity) && (int) ($productIdentity['service_id'] ?? 0) > 0 && (int) ($productIdentity['service_id'] ?? 0) !== $whmcsServiceId) {
+                $productIdentity = null;
+            }
         }
         $serverHostname = is_array($productIdentity) ? $productIdentity['hostname'] : trim((string) ($payload['server_hostname'] ?? ''));
         $serverPublicIp = is_array($productIdentity) ? $productIdentity['server_ip'] : trim((string) ($payload['server_public_ip'] ?? ''));
