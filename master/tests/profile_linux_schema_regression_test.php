@@ -20,6 +20,8 @@ foreach ([
     [$schema, "runtime_platform_scope VARCHAR(32) NOT NULL DEFAULT 'all'"],
     [$schema, "target_source VARCHAR(32) NOT NULL DEFAULT 'manual'"],
     [$schema, 'target_service_id BIGINT UNSIGNED NULL'],
+    [$schema, 'CONSTRAINT fk_forwards_target_service FOREIGN KEY (target_service_id) REFERENCES services(id)'],
+    [$schema, 'INDEX idx_forwards_target_service (target_service_id)'],
     [$migration, 'ALTER TABLE services ADD COLUMN server_hostname VARCHAR(255) NULL'],
     [$migration, 'ADD COLUMN server_public_ip VARCHAR(64) NULL'],
     [$migration, "ADD COLUMN server_ip_state ENUM('fresh', 'stale', 'missing') NOT NULL DEFAULT 'missing'"],
@@ -29,6 +31,8 @@ foreach ([
     [$migration, "ADD COLUMN runtime_platform_scope VARCHAR(32) NOT NULL DEFAULT 'all'"],
     [$migration, "ALTER TABLE forwards ADD COLUMN target_source VARCHAR(32) NOT NULL DEFAULT 'manual'"],
     [$migration, 'ALTER TABLE forwards ADD COLUMN target_service_id BIGINT UNSIGNED NULL'],
+    [$migration, 'ALTER TABLE forwards ADD INDEX idx_forwards_target_service (target_service_id)'],
+    [$migration, 'ALTER TABLE forwards ADD CONSTRAINT fk_forwards_target_service FOREIGN KEY (target_service_id) REFERENCES services(id)'],
 ] as [$haystack, $needle]) {
     if (!is_string($haystack) || !str_contains($haystack, $needle)) {
         fail('missing profile-linux schema snippet: ' . $needle);
