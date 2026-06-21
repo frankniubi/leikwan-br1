@@ -205,6 +205,13 @@ final class MigrationRunner
     {
         $normalized = preg_replace('/\bADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\b/i', 'ADD COLUMN', $statement);
         $normalized = preg_replace('/\bADD\s+IF\s+NOT\s+EXISTS\b/i', 'ADD', $normalized ?? $statement);
+        $driver = $this->config->get('DB_DRIVER', 'mysql');
+        if ($driver === 'sqlite') {
+            $normalized = preg_replace('/\bENUM\s*\([^)]*\)/i', 'TEXT', $normalized ?? $statement);
+            if (preg_match('/^\s*ALTER\s+TABLE\b.*\bADD\s+CONSTRAINT\b.*\bFOREIGN\s+KEY\b/si', $normalized ?? $statement) === 1) {
+                return '';
+            }
+        }
         return $normalized ?? $statement;
     }
 
