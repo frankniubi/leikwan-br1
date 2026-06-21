@@ -82,6 +82,29 @@ final class WhmcsClient
     }
 
     /**
+     * @param array<string, mixed> $product
+     * @return array{service_id:int, hostname:string, server_ip:string}
+     */
+    public function normalizePurchasedServerIdentity(array $product): array
+    {
+        $serviceId = (int) ($product['id'] ?? $product['serviceid'] ?? 0);
+        $hostname = trim((string) ($product['domain'] ?? $product['hostname'] ?? ''));
+        $serverIp = trim((string) ($product['dedicatedip'] ?? ''));
+        if ($serverIp === '') {
+            $assigned = trim((string) ($product['assignedips'] ?? ''));
+            if ($assigned !== '') {
+                $serverIp = trim((string) strtok($assigned, ','));
+            }
+        }
+
+        return [
+            'service_id' => $serviceId,
+            'hostname' => $hostname,
+            'server_ip' => $serverIp,
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function validateLogin(string $email, string $password): array

@@ -65,6 +65,14 @@ final class ProvisioningService
         $trafficLimit = (int) ($payload['traffic_limit_gb'] ?? 1000);
         $status = (string) ($payload['status'] ?? 'active');
         $forwards = is_array($payload['forwards'] ?? null) ? $payload['forwards'] : [];
+        $productIdentity = null;
+        $productPayload = is_array($payload['products'][0] ?? null) ? $payload['products'][0] : [];
+        if ($productPayload !== []) {
+            $productIdentity = (new WhmcsClient($this->config))->normalizePurchasedServerIdentity($productPayload);
+        }
+        $serverHostname = is_array($productIdentity) ? $productIdentity['hostname'] : trim((string) ($payload['server_hostname'] ?? ''));
+        $serverPublicIp = is_array($productIdentity) ? $productIdentity['server_ip'] : trim((string) ($payload['server_public_ip'] ?? ''));
+        $serverIpState = $serverPublicIp !== '' ? 'fresh' : 'missing';
 
         return $this->db->transaction(function () use (
             $userEmail,
@@ -77,7 +85,10 @@ final class ProvisioningService
             $bandwidthLimit,
             $trafficLimit,
             $status,
-            $forwards
+            $forwards,
+            $serverHostname,
+            $serverPublicIp,
+            $serverIpState
         ): array {
             $user = $this->ensureUser($userEmail, $userName);
             $plan = $explicitPlanId > 0
@@ -95,6 +106,10 @@ final class ProvisioningService
                     'plan_id' => $plan['id'],
                     'name' => $serviceName,
                     'whmcs_service_id' => $whmcsServiceId,
+                    'server_hostname' => $serverHostname !== '' ? $serverHostname : null,
+                    'server_public_ip' => $serverPublicIp !== '' ? $serverPublicIp : null,
+                    'server_ip_state' => $serverIpState,
+                    'server_ip_last_synced_at' => $this->now(),
                     'status' => $status,
                     'expire_at' => $expireAt,
                     'bandwidth_limit_mbps' => $bandwidthLimit,
@@ -119,11 +134,18 @@ final class ProvisioningService
                     'source' => 'whmcs',
                 ]);
             } else {
+                $existingServerIp = trim((string) ($service['server_public_ip'] ?? ''));
+                $effectiveServerIp = $serverPublicIp !== '' ? $serverPublicIp : $existingServerIp;
+                $effectiveIpState = $serverPublicIp !== '' ? 'fresh' : ($effectiveServerIp !== '' ? 'stale' : 'missing');
                 $this->db->execute(
                     'UPDATE services
                      SET user_id = :user_id,
                          plan_id = :plan_id,
                          name = :name,
+                         server_hostname = :server_hostname,
+                         server_public_ip = :server_public_ip,
+                         server_ip_state = :server_ip_state,
+                         server_ip_last_synced_at = :server_ip_last_synced_at,
                         status = :status,
                         expire_at = :expire_at,
                         bandwidth_limit_mbps = :bandwidth_limit_mbps,
@@ -142,6 +164,10 @@ final class ProvisioningService
                         'user_id' => $user['id'],
                         'plan_id' => $plan['id'],
                         'name' => $serviceName,
+                        'server_hostname' => $serverHostname !== '' ? $serverHostname : ($service['server_hostname'] ?? null),
+                        'server_public_ip' => $effectiveServerIp !== '' ? $effectiveServerIp : null,
+                        'server_ip_state' => $effectiveIpState,
+                        'server_ip_last_synced_at' => $this->now(),
                         'status' => $status,
                         'expire_at' => $expireAt,
                         'bandwidth_limit_mbps' => $bandwidthLimit,
@@ -163,6 +189,12 @@ final class ProvisioningService
                 if (!is_array($forwardPayload)) {
                     continue;
                 }
+                $forwardPayload['target_service_id'] = (int) ($forwardPayload['target_service_id'] ?? 0) > 0
+                    ? (int) $forwardPayload['target_service_id']
+                    : $serviceId;
+                $forwardPayload['target_source'] = trim((string) ($forwardPayload['target_source'] ?? '')) !== ''
+                    ? (string) $forwardPayload['target_source']
+                    : 'manual';
                 $this->createForward($serviceId, $forwardPayload, 'whmcs');
             }
 
