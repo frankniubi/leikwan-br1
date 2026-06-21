@@ -4331,6 +4331,8 @@ final class ProvisioningService
         $publicPort = (int) ($payload['public_port'] ?? 0);
         $cdnHost = trim((string) ($payload['cdn_host'] ?? ''));
         $filterProfile = (string) ($payload['filter_profile'] ?? 'off');
+        $targetSource = trim((string) ($payload['target_source'] ?? 'manual'));
+        $targetServiceId = (int) ($payload['target_service_id'] ?? 0);
         $customEndpointIdsJson = $this->normalizeJsonField($payload['custom_endpoint_ids_json'] ?? null);
         $selectedLineClientGroupIds = [];
         foreach ((array) ($payload['line_client_group_ids'] ?? $payload['line_client_group_ids_json'] ?? []) as $groupId) {
@@ -4647,6 +4649,8 @@ final class ProvisioningService
                 'forward_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
                 'forward_route_id' => $forwardRouteId > 0 ? $forwardRouteId : null,
                 'active_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
+                'target_source' => $targetSource !== '' ? $targetSource : 'manual',
+                'target_service_id' => $targetServiceId > 0 ? $targetServiceId : null,
                 'backend_mode' => $backendMode,
                 'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
                 'line_client_id' => $lineClientId > 0 ? $lineClientId : null,
@@ -4683,6 +4687,8 @@ final class ProvisioningService
                      forward_combination_id = :forward_combination_id,
                      forward_route_id = :forward_route_id,
                      active_combination_id = :active_combination_id,
+                     target_source = :target_source,
+                     target_service_id = :target_service_id,
                      backend_mode = :backend_mode,
                      cf_location_group_id = :cf_location_group_id,
                      line_client_id = :line_client_id,
@@ -4716,6 +4722,8 @@ final class ProvisioningService
                     'forward_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
                     'forward_route_id' => $forwardRouteId > 0 ? $forwardRouteId : null,
                     'active_combination_id' => $forwardCombinationId > 0 ? $forwardCombinationId : null,
+                    'target_source' => $targetSource !== '' ? $targetSource : 'manual',
+                    'target_service_id' => $targetServiceId > 0 ? $targetServiceId : null,
                     'backend_mode' => $backendMode,
                     'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
                     'line_client_id' => $lineClientId > 0 ? $lineClientId : null,
