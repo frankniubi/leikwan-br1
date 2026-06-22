@@ -2103,7 +2103,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Tenant Badge</label><input type="text" name="tenant_badge" value="' . $this->escape((string) ($editing['tenant_badge'] ?? '')) . '" placeholder="Recommended"></div>
                     <div class="field"><label>Slave Group</label><select name="node_group_key" required>' . $groupOptions . '</select></div>
                     <div class="field"><label>Backend Mode</label><select name="backend_mode"><option value="current_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'current_mode' ? ' selected' : '') . '>current_mode</option><option value="cf_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'cf_mode' ? ' selected' : '') . '>cf_mode</option><option value="leigod_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'leigod_mode' ? ' selected' : '') . '>Managed TYO transport</option></select><p class="muted">Managed TYO transport = direct ingress (like current_mode, no Cloudflare) + an accelerated self-leg.</p></div>
-                    <div class="field"><label>Sidecar Point</label><select name="sidecar_point_id" required>' . $sidecarOptions . '</select></div>
+                    <div class="field"><label>Transport Endpoint</label><select name="sidecar_point_id" required>' . $sidecarOptions . '</select></div>
                     <div class="field"><label>Cloudflare Location Group</label><select name="cf_location_group_id">' . $cfOptions . '</select></div>
                     <div class="field"><label>Client Mode</label><select name="client_mode"><option value="single"' . (((string) ($editing['client_mode'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="bond"' . (((string) ($editing['client_mode'] ?? 'single')) === 'bond' ? ' selected' : '') . '>bond</option></select></div>
                     <div class="field"><label>Runtime Preference</label><select name="runtime_preference"><option value="single"' . (((string) ($editing['runtime_preference'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="mptcp_preferred_bond_fallback"' . (((string) ($editing['runtime_preference'] ?? 'single')) === 'mptcp_preferred_bond_fallback' ? ' selected' : '') . '>mptcp_preferred_bond_fallback</option></select></div>
@@ -2316,12 +2316,12 @@ final class AdminController extends BaseController
                 <td>' . (int) ($point['forward_count'] ?? 0) . '</td>
                 <td>
                     <div class="actions">
-                        <a class="button ghost" href="/admin" . "/sidecars?edit=' . (int) $point['id'] . '">Edit</a>
-                        <form class="inline" method="post" action="/admin" . "/sidecars/' . (int) $point['id'] . '/request-update">
+                        <a class="button ghost" href="/admin" . "/transport-endpoints?edit=' . (int) $point['id'] . '">Edit</a>
+                        <form class="inline" method="post" action="/admin" . "/transport-endpoints/' . (int) $point['id'] . '/request-update">
                             <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                             <button type="submit" class="button secondary">Request Update</button>
                         </form>
-                        <form class="inline" method="post" action="/admin" . "/sidecars/' . (int) $point['id'] . '/delete">
+                        <form class="inline" method="post" action="/admin" . "/transport-endpoints/' . (int) $point['id'] . '/delete">
                             <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                             <button type="submit" class="button danger">Delete</button>
                         </form>
@@ -2352,8 +2352,8 @@ final class AdminController extends BaseController
             </div>
             <div class="grid two">
               <section class="card">
-                <h3>' . ($editing !== null ? 'Edit Sidecar Point' : 'Create Sidecar Point') . '</h3>
-                <form method="post" action="/admin" . "/sidecars">
+                <h3>' . ($editing !== null ? 'Edit Transport Endpoint' : 'Create Transport Endpoint') . '</h3>
+                <form method="post" action="/admin" . "/transport-endpoints">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
                   <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
                   <div class="form-grid">
@@ -2370,11 +2370,11 @@ final class AdminController extends BaseController
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>disabled</option></select></div>
                     <div class="field"><label>Traffic Price / GB</label><input type="number" step="0.0001" min="0" name="traffic_price_per_gb" value="' . $this->escape((string) ($editingSidecarPrice['price_per_gb'] ?? '0')) . '" placeholder="0.0000"><p class="muted">Per-GB price for traffic through this sidecar. 0 = free.</p></div>
                   </div>
-                  <div class="actions"><button class="button" type="submit">Save Sidecar Point</button>' . ($editing !== null ? '<a class="button secondary" href="/admin" . "/sidecars">Cancel</a>' : '') . '</div>
+                  <div class="actions"><button class="button" type="submit">Save Transport Endpoint</button>' . ($editing !== null ? '<a class="button secondary" href="/admin" . "/transport-endpoints">Cancel</a>' : '') . '</div>
                 </form>
               </section>
               <section class="card">
-                <h3>Sidecar Point List</h3>
+                <h3>Transport Endpoint List</h3>
                 <div class="table-wrap">
                   <table>
                     <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Host</th><th>Ports</th><th>Bind</th><th>Total Limit</th><th>Status</th><th>Version</th><th>Heartbeat</th><th>Forwards</th><th>Actions</th></tr></thead>
@@ -2406,7 +2406,7 @@ final class AdminController extends BaseController
             if ($savedId > 0 && $this->provisioning !== null) {
                 $this->provisioning->upsertTrafficPrice('sidecar', $savedId, null, $trafficPrice);
             }
-            SessionAuth::flash('success', 'Sidecar point saved.');
+            SessionAuth::flash('success', 'Transport endpoint saved.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to save target transport endpoint: ' . $this->displayThrowableMessage($throwable));
         }
@@ -2425,7 +2425,7 @@ final class AdminController extends BaseController
         try {
             SessionAuth::validateCsrf($request);
             $this->provisioning?->deleteSidecarPoint($pointId);
-            SessionAuth::flash('success', 'Sidecar point deleted.');
+            SessionAuth::flash('success', 'Transport endpoint deleted.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to delete target transport endpoint: ' . $this->displayThrowableMessage($throwable));
         }

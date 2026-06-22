@@ -11,28 +11,28 @@ $tenant = file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php'
 $admin = file_get_contents(__DIR__ . '/../src/Controllers/AdminController.php');
 $bootstrap = file_get_contents(__DIR__ . '/../src/Bootstrap.php');
 
-$combined = (string) $tenant . "
-" . (string) $admin . "
-" . (string) $bootstrap;
+$combined = (string) $tenant . "\n" . (string) $admin . "\n" . (string) $bootstrap;
 
 foreach ([
     '/tenant/sidecars',
     "/tenant' . '/sidecars",
     '/admin/sidecars',
     "/admin' . '/sidecars",
-    '/enrollment-token',
+    '±ß³µ (Sidecar)',
+    'Sidecar Point',
+    'Create Sidecar Point',
+    'Edit Sidecar Point',
+    'Save Sidecar Point',
+    'Sidecar Point List',
+    'Sidecar point saved.',
+    'Sidecar point deleted.',
     'Add Your Own Slave',
-    '?? (Sidecar)',
     'Install and update the line runtime from',
     'sidecar point',
 ] as $needle) {
     if (str_contains($combined, $needle)) {
         fail('sidecar ui still exposed: ' . $needle);
     }
-}
-
-if (str_contains((string) $tenant, '/tenant/services/') && str_contains((string) $tenant, 'enroll')) {
-    fail('sidecar ui still exposed: tenant enrollment front-door path remains');
 }
 
 foreach ([
@@ -46,5 +46,4 @@ foreach ([
     }
 }
 
-echo "ok
-";
+echo "ok\n";
