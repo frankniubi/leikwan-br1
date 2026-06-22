@@ -86,7 +86,7 @@ final class TenantController extends BaseController
               <section class="card"><div class="muted">可用套餐</div><div class="stats">' . count($purchasePlans) . '</div></section>
               <section class="card"><div class="muted">活跃服务</div><div class="stats">' . (int) ($serviceSummary['active_total'] ?? 0) . '</div></section>
               <section class="card"><div class="muted">接入点</div><div class="stats">' . $clientCount . '</div></section>
-              <section class="card"><div class="muted">边车</div><div class="stats">' . $sidecarCount . '</div></section>
+              <section class="card"><div class="muted">传输端点</div><div class="stats">' . $sidecarCount . '</div></section>
             </div>
             <div class="grid two" style="margin-top:20px;">
               <section class="card">
@@ -95,7 +95,7 @@ final class TenantController extends BaseController
                   <li>到账户页面确认余额、绑定 Buy 账户。</li>
                   <li>到套餐页面购买或查看当前服务。</li>
                   <li>到转发配置为服务新增 Forward。</li>
-                  <li>需要自带线路时，再配置 Client 与 Sidecar。</li>
+                  <li>需要自带线路时，再配置 Client 与传输端点。</li>
                 </ol>
                 <div class="actions">
                   <a class="button" href="/tenant/account">打开账户</a>
@@ -111,7 +111,7 @@ final class TenantController extends BaseController
                   <div><strong>套餐</strong><div class="muted">购买套餐、查看当前服务。</div></div>
                   <div><strong>转发配置</strong><div class="muted">为服务添加或管理 Forward。</div></div>
                   <div><strong>接入点 (Client)</strong><div class="muted">自有线路、安装命令、诊断。</div></div>
-                  <div><strong>Transport Endpoints</strong><div class="muted">Advanced transport endpoint and target access details.</div></div>
+                  <div><strong>Transport Endpoints</strong><div class="muted">Advanced target transport setup and backend reachability details.</div></div>
                   <div><strong>知识库</strong><div class="muted">使用说明与排障入口。</div></div>
                 </div>
               </section>
@@ -120,11 +120,11 @@ final class TenantController extends BaseController
               ' . $latestServiceCard . '
               <section class="card">
                 <h3>下一步</h3>
-                <p class="muted">如果你刚完成登录，最常见的路径是：账户绑定 -> 购买套餐 -> 创建 Forward -> 按需安装 Client 或 Sidecar。</p>
+                <p class="muted">如果你刚完成登录，最常见的路径是：账户绑定 -> 购买套餐 -> 创建 Forward -> 按需安装 Client 或传输端点。</p>
                 <div class="actions">
                   <a class="button" href="/knowledgebase">打开知识库</a>
                   <a class="button ghost" href="/tenant/clients">管理 Client</a>
-                  <a class="button ghost" href="/tenant" . "/transport-endpoints">管理 Sidecar</a>
+                  <a class="button ghost" href="/tenant-transport-endpoints">Manage Transport Endpoints</a>
                 </div>
               </section>
             </div>';
@@ -1174,12 +1174,12 @@ final class TenantController extends BaseController
                 </div>
                 ' . $usageSummary . '
                 <div class="actions">
-                  ' . ($canManage ? '<a class="button ghost" href="/tenant" . "/transport-endpoints?edit=' . (int) $point['id'] . '">Edit</a>
-                  <form class="inline" method="post" action="/tenant" . "/transport-endpoints/' . (int) $point['id'] . '/request-update">
+                  ' . ($canManage ? '<a class="button ghost" href="/tenant-transport-endpoints?edit=' . (int) $point['id'] . '">Edit</a>
+                  <form class="inline" method="post" action="/tenant-transport-endpoints/' . (int) $point['id'] . '/request-update">
                     <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                     <button type="submit" class="button secondary">Request Update</button>
                   </form>
-                  <form class="inline" method="post" action="/tenant" . "/transport-endpoints/' . (int) $point['id'] . '/delete">
+                  <form class="inline" method="post" action="/tenant-transport-endpoints/' . (int) $point['id'] . '/delete">
                     <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                     <button type="submit" class="button danger">Delete</button>
                   </form>' : '<span class="muted">Shared target transport endpoints are read-only for tenants.</span>') . '
@@ -1204,14 +1204,14 @@ final class TenantController extends BaseController
             <div class="hero">
               <div>
                 <h2>Transport Endpoints</h2>
-                <p class="muted">这里管理 Bond 目标侧的边车入口。每个 target transport endpoint 代表一台 C 侧机器和它的监听端口。</p>
+                <p class="muted">这里管理高级目标传输设置与后端可达性细节。每个传输端点代表一台 C 侧机器及其监听端口。</p>
               </div>
             </div>
             <div class="grid two">
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Transport Endpoint' : 'Create Transport Endpoint') . '</h3>
                 <p class="muted">Tenant-owned target transport endpoints can be installed and monitored directly here. Admin-shared target transport endpoints will also appear in this list and can be selected in bond forwards.</p>
-                <form method="post" action="/tenant" . "/transport-endpoints">
+                <form method="post" action="/tenant-transport-endpoints">
                   <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                   <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
                   <div class="form-grid">
@@ -1228,7 +1228,7 @@ final class TenantController extends BaseController
                   </div>
                   <div class="actions">
                     <button class="button" type="submit">Save Transport Endpoint</button>
-                    ' . ($editing !== null ? '<a class="button secondary" href="/tenant" . "/transport-endpoints">Cancel</a>' : '') . '
+                    ' . ($editing !== null ? '<a class="button secondary" href="/tenant-transport-endpoints">Cancel</a>' : '') . '
                   </div>
                 </form>
               </section>

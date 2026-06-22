@@ -67,6 +67,28 @@ function assertNoAsciiQuestionMarks(array $dictionary, string $locale, array $ke
 }
 
 /**
+ * @param array{locale?: string, text?: array<string, string>, attributes?: array<string, string>} $dictionary
+ * @param array<string> $keys
+ */
+function assertLocalizedEntries(array $dictionary, string $locale, array $keys, string $dictionaryKey): void
+{
+    /** @var array<string, string> $entries */
+    $entries = $dictionary[$dictionaryKey] ?? [];
+    foreach ($keys as $key) {
+        $value = trim((string) ($entries[$key] ?? ''));
+        if ($value === '') {
+            fail('missing ' . $dictionaryKey . ' translation for [' . $locale . ']: ' . $key);
+        }
+        if (str_contains($value, '?')) {
+            fail('corrupted ' . $dictionaryKey . ' translation for [' . $locale . ']: ' . $key . ' => ' . $value);
+        }
+        if ($value === $key) {
+            fail('untranslated ' . $dictionaryKey . ' entry for [' . $locale . ']: ' . $key);
+        }
+    }
+}
+
+/**
  * @param array<string> $left
  * @param array<string> $right
  */
@@ -286,12 +308,60 @@ $requiredAttributeKeys = [
     '6-digit code',
 ];
 
+$frontendHardeningTextKeys = [
+    'Knowledgebase / Docs',
+    'Client Setup',
+    'Client Profiles',
+    'Transport Endpoints',
+    'Transport Endpoint List',
+    'Allow Paid Lines',
+    'Selected Carriers',
+    'Runtime Platform Scope',
+    'Target IP',
+    'This forward uses the purchased server IP automatically. Update the service sync if the IP is stale.',
+    'No target transport endpoint yet. Create one, install it on your C-side machine, then select it when you create a bond or MPTCP forward.',
+    'No visible package is available right now. Contact the administrator if you expected to self-purchase.',
+    'Optional comma-separated carrier codes for Linux profile runtime selection.',
+    'Order Now',
+    'Packages',
+    'Visible Packages',
+    'Current Services',
+    'Current Cycle Estimate',
+    'Save Transport Endpoint',
+    'Transport Endpoint',
+    'Transport Listen Port',
+    'Forward Route',
+    'Forward Routes',
+    'Client Device Limit',
+    'Max Client Profiles',
+    'Tenant Visibility',
+    'Visible to tenants',
+    'Transport Health',
+    'Admin-pinned rented slaves',
+    'Allow runtime selection of paid lines for this profile.',
+    'Manage Transport Endpoints',
+    'Advanced target transport setup and backend reachability details.',
+    'Open the panel that controls services, forwards, client profiles, transport endpoints, and route policy.',
+    'Blend exchange fabric and private-line paths by tenant plan, node group, region, and target transport policy.',
+    'One busy session should not crawl because one route is full. LeiKwan Bridge bonds IXP, IPLC, slave nodes, client profiles, and transport endpoints into one policy-visible delivery plane.',
+    'Install flow, route modes, diagnostics, transport endpoint rollout, and recovery notes live in the panel docs.',
+];
+
+$frontendHardeningAttributeKeys = [
+    'One feature per line for the tenant storefront card.',
+    'ct,cu',
+];
+
 assertTextKeys($zhTw, 'zh-TW', $requiredTextKeys);
 assertTextKeys($zhHans, 'zh-Hans', $requiredTextKeys);
 assertAttributeKeys($zhTw, 'zh-TW', $requiredAttributeKeys);
 assertAttributeKeys($zhHans, 'zh-Hans', $requiredAttributeKeys);
 assertNoAsciiQuestionMarks($zhTw, 'zh-TW', $requiredTextKeys);
 assertNoAsciiQuestionMarks($zhHans, 'zh-Hans', $requiredTextKeys);
+assertLocalizedEntries($zhTw, 'zh-TW', $frontendHardeningTextKeys, 'text');
+assertLocalizedEntries($zhHans, 'zh-Hans', $frontendHardeningTextKeys, 'text');
+assertLocalizedEntries($zhTw, 'zh-TW', $frontendHardeningAttributeKeys, 'attributes');
+assertLocalizedEntries($zhHans, 'zh-Hans', $frontendHardeningAttributeKeys, 'attributes');
 
 assertSameKeys(array_keys($zhTw['text'] ?? []), array_keys($zhHans['text'] ?? []), 'text');
 assertSameKeys(array_keys($zhTw['attributes'] ?? []), array_keys($zhHans['attributes'] ?? []), 'attributes');
