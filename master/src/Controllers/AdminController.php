@@ -2346,8 +2346,8 @@ final class AdminController extends BaseController
         $body = '
             <div class="hero">
               <div>
-                <h2>Sidecar Points</h2>
-                <p class="muted">Create tenant-owned or shared/admin-managed target-side sidecar points here. Shared points are visible to all tenants and can be selected in bond or MPTCP forwards.</p>
+                <h2>Target Transport Endpoints</h2>
+                <p class="muted">Create tenant-owned or shared/admin-managed target-side target transport endpoints here. Shared points are visible to all tenants and can be selected in bond or MPTCP forwards.</p>
               </div>
             </div>
             <div class="grid two">
@@ -2384,7 +2384,7 @@ final class AdminController extends BaseController
               </section>
             </div>';
 
-        return $this->adminPage('Sidecar Points', $body, $viewer, 'sidecars');
+        return $this->adminPage('Target Transport Endpoints', $body, $viewer, 'sidecars');
     }
 
     public function saveSidecarPoint(Request $request, array $params): Response
@@ -2408,10 +2408,10 @@ final class AdminController extends BaseController
             }
             SessionAuth::flash('success', 'Sidecar point saved.');
         } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to save sidecar point: ' . $this->displayThrowableMessage($throwable));
+            SessionAuth::flash('error', 'Failed to save target transport endpoint: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/admin' . '/sidecars');
+        return Response::redirect('/admin-transport-endpoints');
     }
 
     public function deleteSidecarPoint(Request $request, array $params): Response
@@ -2427,10 +2427,10 @@ final class AdminController extends BaseController
             $this->provisioning?->deleteSidecarPoint($pointId);
             SessionAuth::flash('success', 'Sidecar point deleted.');
         } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to delete sidecar point: ' . $this->displayThrowableMessage($throwable));
+            SessionAuth::flash('error', 'Failed to delete target transport endpoint: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/admin' . '/sidecars');
+        return Response::redirect('/admin-transport-endpoints');
     }
 
     public function requestSidecarUpdate(Request $request, array $params): Response
@@ -2466,7 +2466,7 @@ final class AdminController extends BaseController
             SessionAuth::flash('error', 'Failed to request sidecar update: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/admin' . '/sidecars');
+        return Response::redirect('/admin-transport-endpoints');
     }
 
     public function chainsPage(Request $request, array $params): Response
@@ -4202,7 +4202,7 @@ final class AdminController extends BaseController
     private function renderSidecarPointCheckboxes(array $points, string $name, array $selectedIds): string
     {
         if ($points === []) {
-            return '<span class="muted">No sidecar points available.</span>';
+            return '<span class="muted">No target transport endpoints available.</span>';
         }
 
         $html = '';

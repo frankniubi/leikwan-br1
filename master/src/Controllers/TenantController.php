@@ -60,7 +60,7 @@ final class TenantController extends BaseController
                 <div class="muted">状态: ' . $this->escape((string) ($latestService['status'] ?? 'unknown')) . '</div>
                 <div class="muted">到期: ' . $this->escape((string) ($latestService['expire_at'] ?? '-')) . '</div>
                 <div class="actions">
-                  <a class="button" href="/tenant/services/' . (int) ($latestService['id'] ?? 0) . '">打开详情</a>
+                  <a class="button" href="/tenant-services-internal/' . (int) ($latestService['id'] ?? 0) . '">打开详情</a>
                   <a class="button ghost" href="/tenant/forwards">查看全部转发</a>
                 </div>
               </section>'
@@ -171,7 +171,7 @@ final class TenantController extends BaseController
             $totalLimitBytes += $trafficLimitBytes;
             $rows .= '<tr>
                 <td>' . (int) $service['id'] . '</td>
-                <td><a href="/tenant/services/' . (int) $service['id'] . '"><strong>' . $this->escape((string) $service['name']) . '</strong></a></td>
+                <td><a href="/tenant-services-internal/' . (int) $service['id'] . '"><strong>' . $this->escape((string) $service['name']) . '</strong></a></td>
                 <td><span class="badge ' . $statusClass . '">' . $this->escape((string) $service['status']) . '</span></td>
                 <td>' . $this->escape((string) $service['whmcs_service_id']) . '</td>
                 <td>' . $this->escape((string) ($service['plan_name'] ?? '')) . '</td>
@@ -185,8 +185,8 @@ final class TenantController extends BaseController
                 <td>' . $this->escape($usageLabel) . '</td>
                 <td>
                     <div class="actions">
-                        <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Add Forward</a>
-                        <a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '">Manage</a>
+                        <a class="button" href="/tenant-services-internal/' . (int) $service['id'] . '/create-forward">Add Forward</a>
+                        <a class="button ghost" href="/tenant-services-internal/' . (int) $service['id'] . '">Manage</a>
                     </div>
                 </td>
             </tr>';
@@ -559,7 +559,7 @@ final class TenantController extends BaseController
                 : 'metered';
 
             $serviceRows .= '<tr>
-                <td><a href="/tenant/services/' . (int) $service['id'] . '"><strong>' . $this->escape((string) ($service['name'] ?? 'Service')) . '</strong></a></td>
+                <td><a href="/tenant-services-internal/' . (int) $service['id'] . '"><strong>' . $this->escape((string) ($service['name'] ?? 'Service')) . '</strong></a></td>
                 <td><span class="badge ' . $statusClass . '">' . $this->escape((string) ($service['status'] ?? 'unknown')) . '</span></td>
                 <td>' . $this->escape((string) ($service['plan_name'] ?? '')) . '</td>
                 <td>' . $currentBandwidth . ' Mbps</td>
@@ -568,8 +568,8 @@ final class TenantController extends BaseController
                 <td>' . $this->escape((string) ($service['expire_at'] ?? '')) . '</td>
                 <td>
                   <div class="actions">
-                    <a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '">Details</a>
-                    <a class="button" href="/tenant/services/' . (int) $service['id'] . '/forward-wizard">Create Forward</a>
+                    <a class="button ghost" href="/tenant-services-internal/' . (int) $service['id'] . '">Details</a>
+                    <a class="button" href="/tenant-services-internal/' . (int) $service['id'] . '/forward-wizard">Create Forward</a>
                   </div>
                 </td>
               </tr>';
@@ -752,7 +752,7 @@ final class TenantController extends BaseController
                 (string) $request->input('service_name', '')
             );
             SessionAuth::flash('success', 'Package purchased successfully. Your new service is ready.');
-            return Response::redirect('/tenant/services/' . (int) ($service['id'] ?? 0));
+            return Response::redirect('/tenant-services-internal/' . (int) ($service['id'] ?? 0));
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Package purchase failed: ' . $throwable->getMessage());
             return Response::redirect('/tenant/plans?buy=' . (int) $request->input('plan_id', 0) . '#plan-' . (int) $request->input('plan_id', 0));
@@ -775,7 +775,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', 'Traffic reset failed: ' . $throwable->getMessage());
         }
 
-        return Response::redirect('/tenant/services/' . $serviceId);
+        return Response::redirect('/tenant-services-internal/' . $serviceId);
     }
 
     public function updateFlexibleOptions(Request $request, array $params): Response
@@ -798,7 +798,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', 'Flexible package update failed: ' . $throwable->getMessage());
         }
 
-        return Response::redirect('/tenant/services/' . $serviceId);
+        return Response::redirect('/tenant-services-internal/' . $serviceId);
     }
 
     public function clientsPage(Request $request, array $params): Response
@@ -947,7 +947,7 @@ final class TenantController extends BaseController
                     <button type="submit" class="button danger"' . (empty($features['allow_delete_clients']) ? ' disabled' : '') . '>Delete</button>
                   </form>
                 </div>
-                <div class="muted" style="margin-top:14px;">Open <strong>View Diagnostics</strong> to check whether each bond leg is healthy and whether the tunnel was established. Slave addresses are hidden in that window. Reference only. Runtime already adapts automatically when a leg degrades. You usually do not need to take action unless the line itself is failing.</div>
+                <div class="muted" style="margin-top:14px;">Open <strong>View Diagnostics</strong> to check whether runtime links are healthy and whether the tunnel was established. Slave addresses are hidden in that window. Reference only. Runtime already adapts automatically when a link degrades. You usually do not need to take action unless the line itself is failing.</div>
                 ' . $diagDialog . '
               </section>';
         }
@@ -1128,7 +1128,7 @@ final class TenantController extends BaseController
             $installSection = $canManage
                 ? '<details style="margin-top:14px;">
                   <summary>Install Command</summary>
-                  <div class="muted" style="margin:10px 0 12px;">Run this on the C-side machine. It installs the bond sidecar service plus heartbeat timer.</div>
+                  <div class="muted" style="margin:10px 0 12px;">Run this on the C-side machine. It installs the bond target transport service plus heartbeat timer.</div>
                   <pre>' . $this->escape($this->bondSidecarInstallCommand($point)) . '</pre>
                 </details>
                 <details style="margin-top:14px;">
@@ -1137,7 +1137,7 @@ final class TenantController extends BaseController
                 </details>'
                 : '<details style="margin-top:14px;">
                   <summary>Install / Uninstall</summary>
-                  <div class="muted">This is an admin-shared sidecar point. You can select it in bond forwards, but installation and secret management stay with the administrator.</div>
+                  <div class="muted">This is an admin-shared target transport endpoint. You can select it in bond forwards, but installation and secret management stay with the administrator.</div>
                 </details>';
 
             $usage = $sidecarUsageMap[(int) ($point['id'] ?? 0)] ?? [];
@@ -1182,7 +1182,7 @@ final class TenantController extends BaseController
                   <form class="inline" method="post" action="/tenant" . "/sidecars/' . (int) $point['id'] . '/delete">
                     <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                     <button type="submit" class="button danger">Delete</button>
-                  </form>' : '<span class="muted">Shared sidecar points are read-only for tenants.</span>') . '
+                  </form>' : '<span class="muted">Shared target transport endpoints are read-only for tenants.</span>') . '
                 </div>
                 ' . $installSection . '
                 <details style="margin-top:14px;">
@@ -1197,28 +1197,28 @@ final class TenantController extends BaseController
         }
 
         if ($cards === '') {
-            $cards = '<div class="muted">No sidecar point yet. Create one, install it on your C-side machine, then select it when you create a bond or MPTCP forward.</div>';
+            $cards = '<div class="muted">No target transport endpoint yet. Create one, install it on your C-side machine, then select it when you create a bond or MPTCP forward.</div>';
         }
 
         $body = '
             <div class="hero">
               <div>
                 <h2>边车 (Sidecar)</h2>
-                <p class="muted">这里管理 Bond 目标侧的边车入口。每个 sidecar point 代表一台 C 侧机器和它的监听端口。</p>
+                <p class="muted">这里管理 Bond 目标侧的边车入口。每个 target transport endpoint 代表一台 C 侧机器和它的监听端口。</p>
               </div>
             </div>
             <div class="grid two">
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Sidecar Point' : 'Create Sidecar Point') . '</h3>
-                <p class="muted">Tenant-owned sidecar points can be installed and monitored directly here. Admin-shared sidecar points will also appear in this list and can be selected in bond forwards.</p>
+                <p class="muted">Tenant-owned target transport endpoints can be installed and monitored directly here. Admin-shared target transport endpoints will also appear in this list and can be selected in bond forwards.</p>
                 <form method="post" action="/tenant" . "/sidecars">
                   <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                   <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
                   <div class="form-grid">
                     <div class="field"><label>Name</label><input type="text" name="name" value="' . $this->escape((string) ($editing['name'] ?? '')) . '" required></div>
                     <div class="field"><label>Sidecar Host</label><input type="text" name="sidecar_host" value="' . $this->escape((string) ($editing['sidecar_host'] ?? '')) . '" placeholder="198.51.100.10 or c.example.com" required></div>
-                    <div class="field"><label>Bond Listen Port</label><input type="number" name="bond_listen_port" value="' . $this->escape((string) ($editing['bond_listen_port'] ?? $editing['listen_port'] ?? $this->defaultBondRemotePort())) . '" required></div>
-                    <div class="field"><label>MPTCP Listen Port</label><input type="number" name="mptcp_listen_port" value="' . $this->escape((string) ($editing['mptcp_listen_port'] ?? $this->sidecarMptcpListenPort($editing ?? []))) . '" required></div>
+                    <div class="field"><label>Transport Listen Port</label><input type="number" name="bond_listen_port" value="' . $this->escape((string) ($editing['bond_listen_port'] ?? $editing['listen_port'] ?? $this->defaultBondRemotePort())) . '" required></div>
+                    <div class="field"><label>Alternate Listen Port</label><input type="number" name="mptcp_listen_port" value="' . $this->escape((string) ($editing['mptcp_listen_port'] ?? $this->sidecarMptcpListenPort($editing ?? []))) . '" required></div>
                     <div class="field"><label>CF Listen Port</label><input type="number" name="cf_listen_port" value="' . $this->escape((string) ($editing['cf_listen_port'] ?? 443)) . '" required></div>
                     <div class="field"><label>CF TLS Cert Path</label><input type="text" name="cf_tls_cert_path" value="' . $this->escape((string) ($this->decodeJsonList($editing['agent_config_json'] ?? null)['cf_tls_cert_path'] ?? '')) . '" placeholder="/etc/ssl/cf/fullchain.pem"></div>
                     <div class="field"><label>CF TLS Key Path</label><input type="text" name="cf_tls_key_path" value="' . $this->escape((string) ($this->decodeJsonList($editing['agent_config_json'] ?? null)['cf_tls_key_path'] ?? '')) . '" placeholder="/etc/ssl/cf/privkey.pem"></div>
@@ -1263,10 +1263,10 @@ final class TenantController extends BaseController
             $this->provisioning->saveSidecarPoint($payload);
             SessionAuth::flash('success', 'Sidecar point saved.');
         } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to save sidecar point: ' . $this->displayThrowableMessage($throwable));
+            SessionAuth::flash('error', 'Failed to save target transport endpoint: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/tenant' . '/sidecars');
+        return Response::redirect('/tenant-transport-endpoints');
     }
 
     public function deleteSidecarPoint(Request $request, array $params): Response
@@ -1286,10 +1286,10 @@ final class TenantController extends BaseController
             $this->provisioning->deleteSidecarPoint($pointId);
             SessionAuth::flash('success', 'Sidecar point deleted.');
         } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to delete sidecar point: ' . $this->displayThrowableMessage($throwable));
+            SessionAuth::flash('error', 'Failed to delete target transport endpoint: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/tenant' . '/sidecars');
+        return Response::redirect('/tenant-transport-endpoints');
     }
 
     public function requestSidecarUpdate(Request $request, array $params): Response
@@ -1308,7 +1308,7 @@ final class TenantController extends BaseController
             }
             $token = bin2hex(random_bytes(24));
             $this->db->execute(
-                'UPDATE sidecar_points
+                'UPDATE target transport_points
                  SET agent_update_request_token = :request_token,
                      agent_update_requested_at = :requested_at,
                      updated_at = :updated_at
@@ -1320,12 +1320,12 @@ final class TenantController extends BaseController
                     'updated_at' => gmdate('Y-m-d H:i:s'),
                 ]
             );
-            SessionAuth::flash('success', 'Sidecar update requested. The installed sidecar heartbeat will pull the latest panel-hosted version automatically.');
+            SessionAuth::flash('success', 'Sidecar update requested. The installed target transport heartbeat will pull the latest panel-hosted version automatically.');
         } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to request sidecar update: ' . $this->displayThrowableMessage($throwable));
+            SessionAuth::flash('error', 'Failed to request target transport update: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/tenant' . '/sidecars');
+        return Response::redirect('/tenant-transport-endpoints');
     }
 
     public function serviceDetail(Request $request, array $params): Response
@@ -1380,7 +1380,7 @@ final class TenantController extends BaseController
             );
             $runtimeManagementHtml = '<div class="muted" style="margin-top:12px;">Manage client profiles and runtime installs from <a href="/tenant/clients"><strong>Client Profiles</strong></a>.</div>';
             if (in_array($this->canonicalClientMode((string) ($forward['client_mode'] ?? 'single')), ['bond', 'mptcp'], true) && !empty($forward['bond_remote_host'])) {
-                $runtimeManagementHtml .= '<div class="muted">Current sidecar target: '
+                $runtimeManagementHtml .= '<div class="muted">Current target transport target: '
                     . $this->escape((string) $forward['bond_remote_host'])
                     . ':'
                     . (int) (($forward['bond_remote_port'] ?? 0) ?: $this->defaultBondRemotePort())
@@ -1408,7 +1408,7 @@ final class TenantController extends BaseController
                 if (!empty($forward['bond_sidecar_point_name'])) {
                     $targetCell .= '<div class="muted">point ' . $this->escape((string) $forward['bond_sidecar_point_name']) . '</div>';
                 }
-                $targetCell .= '<div class="muted">sidecar ' . $this->escape((string) $forward['bond_remote_host']) . ':' . (int) ($forward['bond_remote_port'] ?? 0) . '</div>';
+                $targetCell .= '<div class="muted">target transport ' . $this->escape((string) $forward['bond_remote_host']) . ':' . (int) ($forward['bond_remote_port'] ?? 0) . '</div>';
             }
 
             $rows .= '<tr>
@@ -1515,7 +1515,7 @@ final class TenantController extends BaseController
             : '<div class="flash success">Start with Single mode and TCP.</div>';
         $bondNotice = $bondReady
             ? ''
-            : '<div class="flash danger">Bond / MPTCP sidecar mode is unavailable because this service has no usable token secret yet. Restore the service client token or ask admin to configure <code>BOND_TOKEN_SECRET</code> as a fallback.</div>';
+            : '<div class="flash danger">Bond / MPTCP transport mode is unavailable because this service has no usable token secret yet. Restore the service client token or ask admin to configure <code>BOND_TOKEN_SECRET</code> as a fallback.</div>';
         $endpointModeOptions = $this->renderEndpointModeOptions('slave_group', !empty($features['allow_forward_chain']));
 
         $mySlavesSection = '';
@@ -1549,9 +1549,9 @@ final class TenantController extends BaseController
                 </table>
               </div>
               <div class="actions" style="margin-top:12px;">
-                <form class="inline" method="post" action="/tenant/services/' . (int) $service['id'] . '/" . "enrollment-token">
+                <form class="inline" method="post" action="/tenant-services-internal/' . (int) $service['id'] . '/enroll-node>
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                  <button class="button" type="submit">Enroll Client Transit Node</button>
+                  <button class="button" type="submit">Generate Node Enrollment Token</button>
                 </form>
               </div>
             </section>';
@@ -1589,7 +1589,7 @@ final class TenantController extends BaseController
                   Extra Client Charge: ' . $this->escape((string) ($billing['extra_client_price_formatted'] ?? 'CNY 0.00')) . ' each month<br>
                   Current Extra Client Charge: ' . $this->escape((string) ($billing['client_addon_formatted'] ?? 'CNY 0.00')) . '
                 </div>
-                <form method="post" action="/tenant/services/' . (int) $service['id'] . '/flexible-options" style="margin-top:12px;">
+                <form method="post" action="/tenant-services-internal/' . (int) $service['id'] . '/flexible-options" style="margin-top:12px;">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
                   <div class="form-grid">
                     <div class="field">
@@ -1620,7 +1620,7 @@ final class TenantController extends BaseController
                   Reset Price: ' . $this->escape($trafficResetCurrency) . ' ' . $this->escape(number_format($trafficResetPrice, 2)) . '<br>
                   This action resets <code>Current Cycle Used Traffic</code> back to 0 for this service. Lifetime traffic stays unchanged.
                 </div>
-                <form method="post" action="/tenant/services/' . (int) $service['id'] . '/reset-traffic" style="margin-top:12px;">
+                <form method="post" action="/tenant-services-internal/' . (int) $service['id'] . '/reset-traffic" style="margin-top:12px;">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
                   <div class="actions">
                     <button class="button secondary" type="submit">Reset Traffic</button>
@@ -1643,9 +1643,9 @@ final class TenantController extends BaseController
                   4. Save. The panel keeps the backend route package fixed.
                 </div>
                 <div class="actions">
-                  <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Create New Forward</a>
+                  <a class="button" href="/tenant-services-internal/' . (int) $service['id'] . '/create-forward">Create New Forward</a>
                   <a class="button ghost" href="/knowledgebase?thread=getting-started-first-forward-checklist">Knowledgebase</a>
-                  <form class="inline" method="post" action="/tenant/services/' . (int) $service['id'] . '/regenerate-client-token">
+                  <form class="inline" method="post" action="/tenant-services-internal/' . (int) $service['id'] . '/regenerate-client-token">
                     <input type="hidden" name="csrf_token" value="' . $csrf . '">
                     <button class="button secondary" type="submit" ' . (empty($features['allow_rotate_client_token']) ? 'disabled' : '') . '>Rotate Client Token</button>
                   </form>
@@ -1659,7 +1659,7 @@ final class TenantController extends BaseController
                 ' . (empty($features['allow_manage_forwards']) ? '<div class="flash danger">Forward creation is disabled for your plan/account.</div>' : '') . '
                 ' . $createForwardNotice . '
                 <div class="actions" style="margin-top:12px;">
-                  <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Create Forward</a>
+                  <a class="button" href="/tenant-services-internal/' . (int) $service['id'] . '/create-forward">Create Forward</a>
                   <a class="button ghost" href="/knowledgebase?thread=getting-started-first-forward-checklist">Knowledgebase</a>
                 </div>
               </section>
@@ -1683,7 +1683,7 @@ final class TenantController extends BaseController
     public function forwardWizardRedirect(Request $request, array $params): Response
     {
         $serviceId = $this->idParam($params);
-        return Response::redirect('/tenant/services/' . $serviceId . '/create-forward');
+        return Response::redirect('/tenant-services-internal/' . $serviceId . '/create-forward');
     }
 
     public function quickCreateForward(Request $request, array $params): Response
@@ -1715,7 +1715,7 @@ final class TenantController extends BaseController
                 $payload = $this->normalizeTenantForwardPayload($request->body());
                 $this->provisioning->createForward($serviceId, $payload, 'tenant');
                 SessionAuth::flash('success', 'Forward created.');
-                return Response::redirect('/tenant/services/' . $serviceId);
+                return Response::redirect('/tenant-services-internal/' . $serviceId);
             } catch (\Throwable $throwable) {
                 SessionAuth::flash('error', $this->forwardCreateFlashMessage($throwable));
             }
@@ -1752,7 +1752,7 @@ final class TenantController extends BaseController
             <div class="card">
               ' . (empty($features['allow_manage_forwards']) ? '<div class="flash danger">Forward creation is disabled for your plan/account.</div>' : '') . '
               ' . $emptyState . '
-              <form method="post" action="/tenant/services/' . $serviceId . '/create-forward">
+              <form method="post" action="/tenant-services-internal/' . $serviceId . '/create-forward">
                 <input type="hidden" name="csrf_token" value="' . $csrf . '">
                 <input type="hidden" name="target_source" value="service_ip">
                 <input type="hidden" name="target_service_id" value="' . $serviceId . '">
@@ -1770,7 +1770,7 @@ final class TenantController extends BaseController
                 <div class="field-note" id="forward-combination-help">Choose one admin-defined route package. The panel keeps routing details hidden until you create the forward.</div>
                 <div class="actions" style="margin-top:20px;">
                   <button class="button" type="submit" ' . (empty($features['allow_manage_forwards']) || $availableForwardCombinations === [] ? 'disabled' : '') . '>Create Forward</button>
-                  <a class="button ghost" href="/tenant/services/' . $serviceId . '">Cancel</a>
+                  <a class="button ghost" href="/tenant-services-internal/' . $serviceId . '">Cancel</a>
                 </div>
               </form>
             </div>';
@@ -1808,7 +1808,7 @@ final class TenantController extends BaseController
               </div>
             </div>
             <div class="card">
-              <form method="post" action="/tenant/services/' . $serviceId . '/forward/' . $forwardId . '/edit">
+              <form method="post" action="/tenant-services-internal/' . $serviceId . '/forward/' . $forwardId . '/edit">
                 <input type="hidden" name="csrf_token" value="' . $csrf . '">
                 <div class="form-grid">
                   <div class="field"><label>Current Forward Combination</label><div class="value-chip">' . $this->escape((string) ($forward['forward_combination_label'] ?? '')) . '</div></div>
@@ -1819,7 +1819,7 @@ final class TenantController extends BaseController
                 </div>
                 <div class="actions" style="margin-top:20px;">
                   <button class="button" type="submit">Save Forward</button>
-                  <a class="button ghost" href="/tenant/services/' . $serviceId . '">Cancel</a>
+                  <a class="button ghost" href="/tenant-services-internal/' . $serviceId . '">Cancel</a>
                 </div>
               </form>
             </div>';
@@ -1853,18 +1853,18 @@ final class TenantController extends BaseController
             $payload = $this->normalizeTenantForwardEditPayload($request->body());
             $this->provisioning->updateForwardNonStructural($forwardId, $payload, 'tenant');
             SessionAuth::flash('success', 'Forward updated.');
-            return Response::redirect('/tenant/services/' . $serviceId);
+            return Response::redirect('/tenant-services-internal/' . $serviceId);
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to update forward: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/tenant/services/' . $serviceId . '/forward/' . $forwardId . '/edit');
+        return Response::redirect('/tenant-services-internal/' . $serviceId . '/forward/' . $forwardId . '/edit');
     }
 
     public function forwardWizard(Request $request, array $params): Response
     {
         $serviceId = $this->idParam($params);
-        return Response::redirect('/tenant/services/' . $serviceId . '/create-forward');
+        return Response::redirect('/tenant-services-internal/' . $serviceId . '/create-forward');
     }
 
     public function saveClient(Request $request, array $params): Response
@@ -2095,7 +2095,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', $this->forwardCreateFlashMessage($throwable));
         }
 
-        return Response::redirect('/tenant/services/' . $serviceId);
+        return Response::redirect('/tenant-services-internal/' . $serviceId);
     }
 
     public function generateEnrollmentToken(Request $request, array $params): Response
@@ -2137,7 +2137,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', 'Failed to generate token: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/tenant/services/' . $serviceId);
+        return Response::redirect('/tenant-services-internal/' . $serviceId);
     }
 
     public function removeUserNode(Request $request, array $params): Response
@@ -2167,7 +2167,7 @@ final class TenantController extends BaseController
                 'id' => $nodeId,
             ]);
             SessionAuth::flash('success', 'Node removed.');
-            return Response::redirect('/tenant/services/' . (int) $node['service_id']);
+            return Response::redirect('/tenant-services-internal/' . (int) $node['service_id']);
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to remove node: ' . $this->displayThrowableMessage($throwable));
         }
@@ -2202,7 +2202,7 @@ final class TenantController extends BaseController
 
             $this->provisioning->deleteForward($forwardId, 'tenant');
             SessionAuth::flash('success', 'Forward deleted.');
-            return Response::redirect('/tenant/services/' . (int) $forward['service_id']);
+            return Response::redirect('/tenant-services-internal/' . (int) $forward['service_id']);
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to delete forward: ' . $throwable->getMessage());
         }
@@ -2238,7 +2238,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', 'Failed to rotate client token: ' . $throwable->getMessage());
         }
 
-        return Response::redirect('/tenant/services/' . $serviceId);
+        return Response::redirect('/tenant-services-internal/' . $serviceId);
     }
 
     public function slaveGroupsPage(Request $request, array $params): Response
@@ -2680,20 +2680,20 @@ final class TenantController extends BaseController
                   summary.style.display = "block";
                   summary.textContent = option
                     ? "Using saved point: " + option.text
-                    : "Manual entry: fill the sidecar host and port.";
+                    : "Manual entry: fill the target transport host and port.";
                 }
 
                 function updateFields(sidecarMode, option) {
                   if (hostField) {
-                    hostField.style.display = sidecarMode && !option ? "" : "none";
+                    hostField.style.display = target transportMode && !option ? "" : "none";
                   }
                   if (portField) {
-                    portField.style.display = sidecarMode && !option ? "" : "none";
+                    portField.style.display = target transportMode && !option ? "" : "none";
                   }
                 }
 
                 function refresh() {
-                  var sidecarMode = isSidecarMode();
+                  var target transportMode = isSidecarMode();
                   var option = selectedPoint();
                   if (sidecarMode && option) {
                     hostInput.value = option.dataset.host || "";
@@ -2723,8 +2723,8 @@ final class TenantController extends BaseController
     ): string {
         return '
             <div id="' . $this->escape($helperId) . '" class="flash danger" style="display:none; margin-top:16px;">
-              <strong>Bond or MPTCP needs a sidecar point.</strong><br>
-              <span class="muted">Use an installed target-side sidecar point, then come back and pick it here.</span>
+              <strong>Bond or MPTCP needs a target transport endpoint.</strong><br>
+              <span class="muted">Use an installed target transport endpoint, then come back and pick it here.</span>
             </div>
             <script>
               (function () {
@@ -2769,16 +2769,16 @@ final class TenantController extends BaseController
                 return 'Your plan or account is not allowed to create or modify forwards.';
             }
         if ($message === 'bond_transport_not_supported') {
-            return 'The selected sidecar transport is not supported by the currently installed runtime yet. Update the client runtime and try again.';
+            return 'The selected target transport transport is not supported by the currently installed runtime yet. Update the client runtime and try again.';
         }
             if ($message === 'bond_not_configured') {
-                return 'Bond / MPTCP sidecar mode is not ready yet. This service needs a usable client token, or admin must configure BOND_TOKEN_SECRET as a fallback.';
+                return 'Bond / MPTCP transport mode is not ready yet. This service needs a usable client token, or admin must configure BOND_TOKEN_SECRET as a fallback.';
             }
             if ($message === 'bond_remote_target_required') {
-                return 'Bond / MPTCP sidecar mode needs a target-side sidecar host and port. Fill in Sidecar Host and Sidecar Port first.';
+                return 'Bond / MPTCP transport mode needs a target-side target transport host and port. Fill in Sidecar Host and Sidecar Port first.';
             }
             if ($message === 'bond_sidecar_point_not_allowed') {
-                return 'The selected sidecar point is not available for this service. Pick one of your own sidecar points or an admin-shared point.';
+                return 'The selected target transport endpoint is not available for this service. Pick one of your own target transport endpoints or an admin-shared point.';
             }
             if ($message === 'no_available_nodes') {
                 $available = implode(', ', $details['available_node_groups'] ?? []);
@@ -2835,21 +2835,21 @@ final class TenantController extends BaseController
             ['href' => '/tenant/plans', 'label' => '套餐', 'active' => $active === 'plans'],
             ['href' => '/tenant/forwards', 'label' => '转发配置', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
             ['href' => '/tenant/clients', 'label' => '接入点 (Client)', 'active' => $active === 'clients'],
-            ['href' => '/tenant' . '/sidecars', 'label' => '边车 (Sidecar)', 'active' => $active === 'sidecars'],
+            ['href' => '/tenant-transport-endpoints', 'label' => '边车 (Sidecar)', 'active' => $active === 'sidecars'],
             ['href' => '/tenant/slave-groups', 'label' => 'Slave 群组', 'active' => $active === 'slave-groups'],
             ['href' => '/knowledgebase', 'label' => '知识库', 'active' => $active === 'knowledgebase'],
         ];
 
         if ($serviceId !== null) {
             $nav[] = [
-                'href' => '/tenant/services/' . $serviceId,
+                'href' => '/tenant-services-internal/' . $serviceId,
                 'label' => '服务详情',
                 'active' => $active === 'service',
             ];
 
             if ($active === 'wizard') {
                 $nav[] = [
-                    'href' => '/tenant/services/' . $serviceId . '/create-forward',
+                    'href' => '/tenant-services-internal/' . $serviceId . '/create-forward',
                     'label' => '创建 Forward',
                     'active' => true,
                 ];
