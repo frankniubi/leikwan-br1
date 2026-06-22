@@ -4334,8 +4334,15 @@ final class ProvisioningService
         $publicPort = (int) ($payload['public_port'] ?? 0);
         $cdnHost = trim((string) ($payload['cdn_host'] ?? ''));
         $filterProfile = (string) ($payload['filter_profile'] ?? 'off');
+        $targetSource = (string) ($payload['target_source'] ?? 'manual');
         $targetSource = trim((string) ($payload['target_source'] ?? 'manual'));
         $targetServiceId = (int) ($payload['target_service_id'] ?? 0);
+        if ($targetSource === '') {
+            $targetSource = 'manual';
+        }
+        if (!in_array($targetSource, ['manual', 'service_ip'], true)) {
+            throw new ApiException('invalid_forward_target_source', 422, ['target_source' => $targetSource]);
+        }
         $customEndpointIdsJson = $this->normalizeJsonField($payload['custom_endpoint_ids_json'] ?? null);
         $selectedLineClientGroupIds = [];
         foreach ((array) ($payload['line_client_group_ids'] ?? $payload['line_client_group_ids_json'] ?? []) as $groupId) {
@@ -4352,6 +4359,25 @@ final class ProvisioningService
         $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
         if ($service === null) {
             throw new ApiException('service_not_found', 404);
+        }
+        if ($targetSource === 'service_ip') {
+            $targetServiceId = $targetServiceId > 0 ? $targetServiceId : $serviceId;
+            $targetService = $this->db->fetchOne(
+                'SELECT id, user_id, server_public_ip, server_ip_state FROM services WHERE id = :id LIMIT 1',
+                ['id' => $targetServiceId]
+            );
+            if (!is_array($targetService)) {
+                throw new ApiException('target_service_not_found', 404, ['target_service_id' => $targetServiceId]);
+            }
+            if ((int) ($targetService['user_id'] ?? 0) !== (int) ($service['user_id'] ?? 0)) {
+                throw new ApiException('target_service_not_allowed', 422, ['target_service_id' => $targetServiceId]);
+            }
+            $serviceIp = trim((string) ($targetService['server_public_ip'] ?? ''));
+            $serviceIpState = trim((string) ($targetService['server_ip_state'] ?? 'missing'));
+            if ($serviceIp === '' || $serviceIpState === 'missing') {
+                throw new ApiException('target_service_ip_missing', 422, ['target_service_id' => $targetServiceId]);
+            }
+            $targetHost = $serviceIp;
         }
 
         if ($forwardCombinationId > 0) {
