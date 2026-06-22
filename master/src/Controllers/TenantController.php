@@ -111,7 +111,7 @@ final class TenantController extends BaseController
                   <div><strong>套餐</strong><div class="muted">购买套餐、查看当前服务。</div></div>
                   <div><strong>转发配置</strong><div class="muted">为服务添加或管理 Forward。</div></div>
                   <div><strong>接入点 (Client)</strong><div class="muted">自有线路、安装命令、诊断。</div></div>
-                  <div><strong>边车 (Sidecar)</strong><div class="muted">Bond 侧边车与目标侧入口。</div></div>
+                  <div><strong>Transport Endpoints</strong><div class="muted">Advanced transport endpoint and target access details.</div></div>
                   <div><strong>知识库</strong><div class="muted">使用说明与排障入口。</div></div>
                 </div>
               </section>
@@ -1203,7 +1203,7 @@ final class TenantController extends BaseController
         $body = '
             <div class="hero">
               <div>
-                <h2>边车 (Sidecar)</h2>
+                <h2>Transport Endpoints</h2>
                 <p class="muted">这里管理 Bond 目标侧的边车入口。每个 target transport endpoint 代表一台 C 侧机器和它的监听端口。</p>
               </div>
             </div>
@@ -1238,7 +1238,7 @@ final class TenantController extends BaseController
               </section>
             </div>';
 
-        return $this->page('边车 (Sidecar)', $body, $user, $this->tenantNav('sidecars'));
+        return $this->page('Transport Endpoints', $body, $user, $this->tenantNav('transport-endpoints'));
     }
 
     public function saveSidecarPoint(Request $request, array $params): Response
@@ -2835,7 +2835,7 @@ final class TenantController extends BaseController
             ['href' => '/tenant/plans', 'label' => '套餐', 'active' => $active === 'plans'],
             ['href' => '/tenant/forwards', 'label' => '转发配置', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
             ['href' => '/tenant/clients', 'label' => '接入点 (Client)', 'active' => $active === 'clients'],
-            ['href' => '/tenant-transport-endpoints', 'label' => '边车 (Sidecar)', 'active' => $active === 'sidecars'],
+            ['href' => '/tenant-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
             ['href' => '/tenant/slave-groups', 'label' => 'Slave 群组', 'active' => $active === 'slave-groups'],
             ['href' => '/knowledgebase', 'label' => '知识库', 'active' => $active === 'knowledgebase'],
         ];
