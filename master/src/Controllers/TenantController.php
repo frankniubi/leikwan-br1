@@ -124,7 +124,7 @@ final class TenantController extends BaseController
                 <div class="actions">
                   <a class="button" href="/knowledgebase">打开知识库</a>
                   <a class="button ghost" href="/tenant/clients">管理 Client</a>
-                  <a class="button ghost" href="/tenant" . "/sidecars">管理 Sidecar</a>
+                  <a class="button ghost" href="/tenant" . "/transport-endpoints">管理 Sidecar</a>
                 </div>
               </section>
             </div>';
@@ -1174,12 +1174,12 @@ final class TenantController extends BaseController
                 </div>
                 ' . $usageSummary . '
                 <div class="actions">
-                  ' . ($canManage ? '<a class="button ghost" href="/tenant" . "/sidecars?edit=' . (int) $point['id'] . '">Edit</a>
-                  <form class="inline" method="post" action="/tenant" . "/sidecars/' . (int) $point['id'] . '/request-update">
+                  ' . ($canManage ? '<a class="button ghost" href="/tenant" . "/transport-endpoints?edit=' . (int) $point['id'] . '">Edit</a>
+                  <form class="inline" method="post" action="/tenant" . "/transport-endpoints/' . (int) $point['id'] . '/request-update">
                     <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                     <button type="submit" class="button secondary">Request Update</button>
                   </form>
-                  <form class="inline" method="post" action="/tenant" . "/sidecars/' . (int) $point['id'] . '/delete">
+                  <form class="inline" method="post" action="/tenant" . "/transport-endpoints/' . (int) $point['id'] . '/delete">
                     <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                     <button type="submit" class="button danger">Delete</button>
                   </form>' : '<span class="muted">Shared target transport endpoints are read-only for tenants.</span>') . '
@@ -1191,7 +1191,7 @@ final class TenantController extends BaseController
                 </details>
                 <details style="margin-top:14px;">
                   <summary>Forward Usage</summary>
-                  <div class="muted">Use this point from the service forward form by selecting it under <code>Bond Sidecar Point</code>. Shared points can be reused across multiple forwards.</div>
+                  <div class="muted">Use this point from the service forward form by selecting it under <code>Transport Endpoint</code>. Shared points can be reused across multiple forwards.</div>
                 </details>
               </section>';
         }
@@ -1209,9 +1209,9 @@ final class TenantController extends BaseController
             </div>
             <div class="grid two">
               <section class="card">
-                <h3>' . ($editing !== null ? 'Edit Sidecar Point' : 'Create Sidecar Point') . '</h3>
+                <h3>' . ($editing !== null ? 'Edit Transport Endpoint' : 'Create Transport Endpoint') . '</h3>
                 <p class="muted">Tenant-owned target transport endpoints can be installed and monitored directly here. Admin-shared target transport endpoints will also appear in this list and can be selected in bond forwards.</p>
-                <form method="post" action="/tenant" . "/sidecars">
+                <form method="post" action="/tenant" . "/transport-endpoints">
                   <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                   <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
                   <div class="form-grid">
@@ -1227,13 +1227,13 @@ final class TenantController extends BaseController
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>disabled</option></select></div>
                   </div>
                   <div class="actions">
-                    <button class="button" type="submit">Save Sidecar Point</button>
-                    ' . ($editing !== null ? '<a class="button secondary" href="/tenant" . "/sidecars">Cancel</a>' : '') . '
+                    <button class="button" type="submit">Save Transport Endpoint</button>
+                    ' . ($editing !== null ? '<a class="button secondary" href="/tenant" . "/transport-endpoints">Cancel</a>' : '') . '
                   </div>
                 </form>
               </section>
               <section class="card">
-                <h3>Sidecar Point List</h3>
+                <h3>Transport Endpoint List</h3>
                 <div class="stack">' . $cards . '</div>
               </section>
             </div>';
@@ -1261,7 +1261,7 @@ final class TenantController extends BaseController
             $payload = $request->body();
             $payload['owner_user_id'] = (int) $user['id'];
             $this->provisioning->saveSidecarPoint($payload);
-            SessionAuth::flash('success', 'Sidecar point saved.');
+            SessionAuth::flash('success', 'Transport endpoint saved.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to save target transport endpoint: ' . $this->displayThrowableMessage($throwable));
         }
@@ -1284,7 +1284,7 @@ final class TenantController extends BaseController
                 throw new ApiException('sidecar_point_not_found', 404);
             }
             $this->provisioning->deleteSidecarPoint($pointId);
-            SessionAuth::flash('success', 'Sidecar point deleted.');
+            SessionAuth::flash('success', 'Transport endpoint deleted.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to delete target transport endpoint: ' . $this->displayThrowableMessage($throwable));
         }
