@@ -34,7 +34,7 @@ $requiredHomepageSnippets = [
     'Policy proof',
     'Client',
     'Slave',
-    'Sidecar',
+    'Transport',
     'Target',
     'Bond speed',
     'Private paths',
@@ -43,7 +43,10 @@ $requiredHomepageSnippets = [
     'IXP + IPLC routing',
     'Lower regulatory exposure',
     'Tenant console',
-    'Open the panel that controls services, forwards, clients, sidecars, and route policy.',
+    'Open the panel that controls services, forwards, client profiles, transport endpoints, and route policy.',
+    'Blend exchange fabric and private-line paths by tenant plan, node group, region, and target transport policy.',
+    'LeiKwan Bridge bonds IXP, IPLC, slave nodes, client profiles, and transport endpoints into one policy-visible delivery plane.',
+    'Install flow, route modes, diagnostics, transport endpoint rollout, and recovery notes live in the panel docs.',
     'Operator setup',
     'Open Docs',
 ];
@@ -60,6 +63,10 @@ foreach ([
     'Use this page as the front door. Real work continues inside the tenant or admin console.',
     'Bonded IXP/IPLC acceleration for single-thread traffic.',
     'Fast paths, visible policy, controlled delivery.',
+    'Open the panel that controls services, forwards, clients, sidecars, and route policy.',
+    'Blend exchange fabric and private-line paths by tenant plan, node group, region, and sidecar target.',
+    'LeiKwan Bridge bonds IXP, IPLC, slave nodes, clients, and sidecars into one policy-visible delivery plane.',
+    'Install flow, route modes, diagnostics, sidecar rollout, and recovery notes live in the panel docs.',
 ] as $removedSnippet) {
     if (str_contains($auth, $removedSnippet)) {
         fail('old homepage description still present: ' . $removedSnippet);

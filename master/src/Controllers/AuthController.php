@@ -21,7 +21,7 @@ final class AuthController extends BaseController
         $heroPrimary = '<a class="button launch-primary" href="/login">Sign In</a>';
         $heroSecondary = '<a class="button launch-secondary" href="/register">Create Account</a>';
         $consoleTitle = 'Tenant console';
-        $consoleBody = 'Open the panel that controls services, forwards, clients, sidecars, and route policy.';
+        $consoleBody = 'Open the panel that controls services, forwards, client profiles, transport endpoints, and route policy.';
         $consoleAction = '<a class="button launch-secondary" href="/login">Open Panel</a>';
 
         if ($user !== null) {
@@ -45,7 +45,7 @@ final class AuthController extends BaseController
             [
                 'number' => '02',
                 'title' => 'IXP + IPLC routing',
-                'body' => 'Blend exchange fabric and private-line paths by tenant plan, node group, region, and sidecar target.',
+                'body' => 'Blend exchange fabric and private-line paths by tenant plan, node group, region, and target transport policy.',
             ],
             [
                 'number' => '03',
@@ -82,7 +82,7 @@ final class AuthController extends BaseController
               <div class="launch-copy">
                 <span class="launch-kicker">利群會聚 LeiKwan Bridge</span>
                 <h1>Bond speed. Private paths. Clean control.</h1>
-                <p>One busy session should not crawl because one route is full. LeiKwan Bridge bonds IXP, IPLC, slave nodes, clients, and sidecars into one policy-visible delivery plane.</p>
+                <p>One busy session should not crawl because one route is full. LeiKwan Bridge bonds IXP, IPLC, slave nodes, client profiles, and transport endpoints into one policy-visible delivery plane.</p>
                 <div class="hero-actions">' . $heroPrimary . $heroSecondary . '</div>
               </div>
               <div class="flow-visual" aria-label="LeiKwan Bridge bonded path diagram">
@@ -96,7 +96,7 @@ final class AuthController extends BaseController
                 <div class="flow-nodes">
                   <span>Client</span>
                   <span>Slave</span>
-                  <span>Sidecar</span>
+                  <span>Transport</span>
                   <span>Target</span>
                 </div>
                 <div class="flow-pills">
@@ -118,7 +118,7 @@ final class AuthController extends BaseController
               <section class="launch-entry">
                 <span>Knowledgebase</span>
                 <h3>Routing playbooks</h3>
-                <p>Install flow, route modes, diagnostics, sidecar rollout, and recovery notes live in the panel docs.</p>
+                <p>Install flow, route modes, diagnostics, transport endpoint rollout, and recovery notes live in the panel docs.</p>
                 <div class="actions"><a class="button launch-secondary" href="/knowledgebase">Open Docs</a></div>
               </section>
             </section>';
@@ -818,7 +818,7 @@ final class AuthController extends BaseController
             ['href' => '/tenant/plans', 'label' => 'Plans'],
             ['href' => '/tenant/forwards', 'label' => 'Forwards'],
             ['href' => '/tenant/clients', 'label' => 'Clients'],
-            ['href' => '/tenant/sidecars', 'label' => 'Sidecars'],
+            ['href' => '/tenant-transport-endpoints', 'label' => 'Transport Endpoints'],
             ['href' => '/tenant/slave-groups', 'label' => 'Slave Groups'],
             ['href' => '/knowledgebase', 'label' => 'Knowledgebase / Docs', 'active' => true],
         ];
