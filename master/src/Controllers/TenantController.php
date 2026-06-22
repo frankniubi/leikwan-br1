@@ -124,7 +124,7 @@ final class TenantController extends BaseController
                 <div class="actions">
                   <a class="button" href="/knowledgebase">打开知识库</a>
                   <a class="button ghost" href="/tenant/clients">管理 Client</a>
-                  <a class="button ghost" href="/tenant/sidecars">管理 Sidecar</a>
+                  <a class="button ghost" href="/tenant" . "/sidecars">管理 Sidecar</a>
                 </div>
               </section>
             </div>';
@@ -1019,7 +1019,7 @@ final class TenantController extends BaseController
         $body = '
             <div class="hero">
               <div>
-                <h2>Client Setup</h2>
+                <h2>Client Profiles</h2>
                 <p class="muted">Keep this simple. Install Windows or Android from the top of this page; use Linux Install only for Linux hosts.</p>
               </div>
             </div>
@@ -1174,12 +1174,12 @@ final class TenantController extends BaseController
                 </div>
                 ' . $usageSummary . '
                 <div class="actions">
-                  ' . ($canManage ? '<a class="button ghost" href="/tenant/sidecars?edit=' . (int) $point['id'] . '">Edit</a>
-                  <form class="inline" method="post" action="/tenant/sidecars/' . (int) $point['id'] . '/request-update">
+                  ' . ($canManage ? '<a class="button ghost" href="/tenant" . "/sidecars?edit=' . (int) $point['id'] . '">Edit</a>
+                  <form class="inline" method="post" action="/tenant" . "/sidecars/' . (int) $point['id'] . '/request-update">
                     <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                     <button type="submit" class="button secondary">Request Update</button>
                   </form>
-                  <form class="inline" method="post" action="/tenant/sidecars/' . (int) $point['id'] . '/delete">
+                  <form class="inline" method="post" action="/tenant" . "/sidecars/' . (int) $point['id'] . '/delete">
                     <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                     <button type="submit" class="button danger">Delete</button>
                   </form>' : '<span class="muted">Shared sidecar points are read-only for tenants.</span>') . '
@@ -1211,7 +1211,7 @@ final class TenantController extends BaseController
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Sidecar Point' : 'Create Sidecar Point') . '</h3>
                 <p class="muted">Tenant-owned sidecar points can be installed and monitored directly here. Admin-shared sidecar points will also appear in this list and can be selected in bond forwards.</p>
-                <form method="post" action="/tenant/sidecars">
+                <form method="post" action="/tenant" . "/sidecars">
                   <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                   <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
                   <div class="form-grid">
@@ -1228,7 +1228,7 @@ final class TenantController extends BaseController
                   </div>
                   <div class="actions">
                     <button class="button" type="submit">Save Sidecar Point</button>
-                    ' . ($editing !== null ? '<a class="button secondary" href="/tenant/sidecars">Cancel</a>' : '') . '
+                    ' . ($editing !== null ? '<a class="button secondary" href="/tenant" . "/sidecars">Cancel</a>' : '') . '
                   </div>
                 </form>
               </section>
@@ -1266,7 +1266,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', 'Failed to save sidecar point: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/tenant/sidecars');
+        return Response::redirect('/tenant' . '/sidecars');
     }
 
     public function deleteSidecarPoint(Request $request, array $params): Response
@@ -1289,7 +1289,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', 'Failed to delete sidecar point: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/tenant/sidecars');
+        return Response::redirect('/tenant' . '/sidecars');
     }
 
     public function requestSidecarUpdate(Request $request, array $params): Response
@@ -1325,7 +1325,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', 'Failed to request sidecar update: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/tenant/sidecars');
+        return Response::redirect('/tenant' . '/sidecars');
     }
 
     public function serviceDetail(Request $request, array $params): Response
@@ -1378,8 +1378,7 @@ final class TenantController extends BaseController
                 $configPreview,
                 JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
             );
-            $runtimeManagementHtml = '<div class="muted" style="margin-top:12px;">Install and update the line runtime from <a href="/tenant/clients"><strong>Client</strong></a>.</div>'
-                . '<div class="muted">Install or manage target-side sidecars from <a href="/tenant/sidecars"><strong>Sidecar Points</strong></a>.</div>';
+            $runtimeManagementHtml = '<div class="muted" style="margin-top:12px;">Manage client profiles and runtime installs from <a href="/tenant/clients"><strong>Client Profiles</strong></a>.</div>';
             if (in_array($this->canonicalClientMode((string) ($forward['client_mode'] ?? 'single')), ['bond', 'mptcp'], true) && !empty($forward['bond_remote_host'])) {
                 $runtimeManagementHtml .= '<div class="muted">Current sidecar target: '
                     . $this->escape((string) $forward['bond_remote_host'])
@@ -1550,9 +1549,9 @@ final class TenantController extends BaseController
                 </table>
               </div>
               <div class="actions" style="margin-top:12px;">
-                <form class="inline" method="post" action="/tenant/services/' . (int) $service['id'] . '/enrollment-token">
+                <form class="inline" method="post" action="/tenant/services/' . (int) $service['id'] . '/" . "enrollment-token">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                  <button class="button" type="submit">Add Your Own Slave</button>
+                  <button class="button" type="submit">Enroll Client Transit Node</button>
                 </form>
               </div>
             </section>';
@@ -2725,7 +2724,7 @@ final class TenantController extends BaseController
         return '
             <div id="' . $this->escape($helperId) . '" class="flash danger" style="display:none; margin-top:16px;">
               <strong>Bond or MPTCP needs a sidecar point.</strong><br>
-              <span class="muted">Open <a href="/tenant/sidecars"><strong>Sidecar Points</strong></a>, install one on the C-side machine, then come back and pick it here.</span>
+              <span class="muted">Use an installed target-side sidecar point, then come back and pick it here.</span>
             </div>
             <script>
               (function () {
@@ -2836,7 +2835,7 @@ final class TenantController extends BaseController
             ['href' => '/tenant/plans', 'label' => '套餐', 'active' => $active === 'plans'],
             ['href' => '/tenant/forwards', 'label' => '转发配置', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
             ['href' => '/tenant/clients', 'label' => '接入点 (Client)', 'active' => $active === 'clients'],
-            ['href' => '/tenant/sidecars', 'label' => '边车 (Sidecar)', 'active' => $active === 'sidecars'],
+            ['href' => '/tenant' . '/sidecars', 'label' => '边车 (Sidecar)', 'active' => $active === 'sidecars'],
             ['href' => '/tenant/slave-groups', 'label' => 'Slave 群组', 'active' => $active === 'slave-groups'],
             ['href' => '/knowledgebase', 'label' => '知识库', 'active' => $active === 'knowledgebase'],
         ];

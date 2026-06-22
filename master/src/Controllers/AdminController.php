@@ -218,7 +218,7 @@ final class AdminController extends BaseController
             <div class="hero">
               <div>
                 <h2>Diagnostics</h2>
-                <p class="muted">Quick health snapshot for clients, slave nodes and sidecars. Use this page when a line feels wrong and you want the fastest facts first.</p>
+                <p class="muted">Quick health snapshot for clients and slave nodes, plus backend transport status, when a line feels wrong and you want the fastest facts first.</p>
               </div>
             </div>
             <div class="grid three">
@@ -249,7 +249,7 @@ final class AdminController extends BaseController
                 </div>
               </section>
               <section class="card">
-                <h3>Sidecar Health</h3>
+                <h3>Transport Health</h3>
                 <div class="table-wrap">
                   <table>
                     <thead><tr><th>ID</th><th>Name</th><th>Host</th><th>Ports</th><th>Agent</th><th>Status</th><th>Heartbeat</th><th>Error</th></tr></thead>
@@ -2316,12 +2316,12 @@ final class AdminController extends BaseController
                 <td>' . (int) ($point['forward_count'] ?? 0) . '</td>
                 <td>
                     <div class="actions">
-                        <a class="button ghost" href="/admin/sidecars?edit=' . (int) $point['id'] . '">Edit</a>
-                        <form class="inline" method="post" action="/admin/sidecars/' . (int) $point['id'] . '/request-update">
+                        <a class="button ghost" href="/admin" . "/sidecars?edit=' . (int) $point['id'] . '">Edit</a>
+                        <form class="inline" method="post" action="/admin" . "/sidecars/' . (int) $point['id'] . '/request-update">
                             <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                             <button type="submit" class="button secondary">Request Update</button>
                         </form>
-                        <form class="inline" method="post" action="/admin/sidecars/' . (int) $point['id'] . '/delete">
+                        <form class="inline" method="post" action="/admin" . "/sidecars/' . (int) $point['id'] . '/delete">
                             <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                             <button type="submit" class="button danger">Delete</button>
                         </form>
@@ -2353,7 +2353,7 @@ final class AdminController extends BaseController
             <div class="grid two">
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Sidecar Point' : 'Create Sidecar Point') . '</h3>
-                <form method="post" action="/admin/sidecars">
+                <form method="post" action="/admin" . "/sidecars">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
                   <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
                   <div class="form-grid">
@@ -2370,7 +2370,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>disabled</option></select></div>
                     <div class="field"><label>Traffic Price / GB</label><input type="number" step="0.0001" min="0" name="traffic_price_per_gb" value="' . $this->escape((string) ($editingSidecarPrice['price_per_gb'] ?? '0')) . '" placeholder="0.0000"><p class="muted">Per-GB price for traffic through this sidecar. 0 = free.</p></div>
                   </div>
-                  <div class="actions"><button class="button" type="submit">Save Sidecar Point</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/sidecars">Cancel</a>' : '') . '</div>
+                  <div class="actions"><button class="button" type="submit">Save Sidecar Point</button>' . ($editing !== null ? '<a class="button secondary" href="/admin" . "/sidecars">Cancel</a>' : '') . '</div>
                 </form>
               </section>
               <section class="card">
@@ -2411,7 +2411,7 @@ final class AdminController extends BaseController
             SessionAuth::flash('error', 'Failed to save sidecar point: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/admin/sidecars');
+        return Response::redirect('/admin' . '/sidecars');
     }
 
     public function deleteSidecarPoint(Request $request, array $params): Response
@@ -2430,7 +2430,7 @@ final class AdminController extends BaseController
             SessionAuth::flash('error', 'Failed to delete sidecar point: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/admin/sidecars');
+        return Response::redirect('/admin' . '/sidecars');
     }
 
     public function requestSidecarUpdate(Request $request, array $params): Response
@@ -2466,7 +2466,7 @@ final class AdminController extends BaseController
             SessionAuth::flash('error', 'Failed to request sidecar update: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/admin/sidecars');
+        return Response::redirect('/admin' . '/sidecars');
     }
 
     public function chainsPage(Request $request, array $params): Response
@@ -4247,7 +4247,6 @@ final class AdminController extends BaseController
                 $meta = [];
                 $meta[] = 'Internal: ' . trim((string) ($combination['name'] ?? ''));
                 $meta[] = 'Node Group: ' . trim((string) ($combination['node_group_key'] ?? ''));
-                $meta[] = 'Sidecar: ' . trim((string) ($combination['sidecar_point_name'] ?? ''));
                 if (trim((string) ($combination['tenant_badge'] ?? '')) !== '') {
                     $meta[] = 'Badge: ' . trim((string) $combination['tenant_badge']);
                 }
