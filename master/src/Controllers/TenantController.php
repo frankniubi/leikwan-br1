@@ -962,6 +962,11 @@ final class TenantController extends BaseController
             $selected = $editing !== null && (int) ($editing['default_forward_chain_id'] ?? 0) === (int) $chain['id'] ? ' selected' : '';
             $chainOptions .= '<option value="' . (int) $chain['id'] . '"' . $selected . '>' . $this->escape((string) $chain['name']) . '</option>';
         }
+        $selectedCarrierValues = implode(',', array_values(array_filter(array_map(
+            static fn(mixed $value): string => strtolower(trim((string) $value)),
+            $this->decodeJsonList($editing['selected_carriers_json'] ?? null)
+        ), static fn(string $value): bool => $value !== '')));
+        $runtimePlatformScope = strtolower(trim((string) ($editing['runtime_platform_scope'] ?? 'all')));
 
         $notice = !$canManageClients
             ? '<div class="flash danger">Your plan/account is not allowed to manage self-provided clients.</div>'
@@ -983,6 +988,9 @@ final class TenantController extends BaseController
                     <div class="field"><label>Client Group</label><select name="group_id">' . $groupOptions . '</select></div>
                     <div class="field"><label>Status</label><select name="status"><option value="active"' . (((string) ($editing['status'] ?? 'active')) === 'active' ? ' selected' : '') . '>active</option><option value="disabled"' . (((string) ($editing['status'] ?? '')) === 'disabled' ? ' selected' : '') . '>disabled</option></select></div>
                     <div class="field"><label>Online device limit</label><input type="number" min="1" name="online_device_limit" value="' . $this->escape((string) ($editing['online_device_limit'] ?? '1')) . '" required><p class="muted">Limit the number of simultaneously online client devices for this client.</p></div>
+                    <div class="field"><label>Allow Paid Lines</label><input type="checkbox" name="allow_paid_lines" value="1"' . ((int) ($editing['allow_paid_lines'] ?? 0) === 1 ? ' checked' : '') . '><p class="muted">Allow runtime selection of paid lines for this profile.</p></div>
+                    <div class="field"><label>Selected Carriers</label><input type="text" name="selected_carriers[]" value="' . $this->escape($selectedCarrierValues) . '" placeholder="ct,cu"><p class="muted">Optional comma-separated carrier codes for Linux profile runtime selection.</p></div>
+                    <div class="field"><label>Runtime Platform Scope</label><select name="runtime_platform_scope"><option value="all"' . ($runtimePlatformScope === 'linux' ? '' : ' selected') . '>all</option><option value="linux"' . ($runtimePlatformScope === 'linux' ? ' selected' : '') . '>linux</option></select></div>
                   </div>
                   <details style="margin-top:14px;">
                     <summary>Advanced client settings</summary>
@@ -1897,6 +1905,22 @@ final class TenantController extends BaseController
                     );
                 }
             }
+            $selectedCarriersInput = $request->input('selected_carriers', []);
+            $selectedCarrierParts = is_array($selectedCarriersInput) ? $selectedCarriersInput : [$selectedCarriersInput];
+            $selectedCarriers = [];
+            foreach ($selectedCarrierParts as $value) {
+                foreach (explode(',', (string) $value) as $carrier) {
+                    $carrier = strtolower(trim($carrier));
+                    if ($carrier !== '') {
+                        $selectedCarriers[] = $carrier;
+                    }
+                }
+            }
+            $selectedCarriers = array_values(array_unique($selectedCarriers));
+            $runtimePlatformScope = strtolower(trim((string) $request->input('runtime_platform_scope', 'all')));
+            if (!in_array($runtimePlatformScope, ['all', 'linux'], true)) {
+                $runtimePlatformScope = 'all';
+            }
 
             $this->provisioning->saveClient([
                 'id' => $request->input('id'),
@@ -1915,6 +1939,9 @@ final class TenantController extends BaseController
                 'default_forward_chain_id' => $request->input('default_forward_chain_id'),
                 'agent_config_json' => $request->input('agent_config_json'),
                 'status' => $request->input('status', 'active'),
+                'allow_paid_lines' => $request->input('allow_paid_lines', 0),
+                'selected_carriers' => $selectedCarriers,
+                'runtime_platform_scope' => $runtimePlatformScope,
                 'allow_custom_endpoints' => 0,
                 'force_slave_mode' => 0,
                 'allow_forward_chain' => 1,
