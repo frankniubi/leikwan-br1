@@ -1826,6 +1826,9 @@ final class ProvisioningService
             'allow_forward_chain' => !empty($payload['allow_forward_chain']) ? 1 : 0,
             'allow_latency_test' => !empty($payload['allow_latency_test']) ? 1 : 0,
             'allow_inbound_proxy' => !empty($payload['allow_inbound_proxy']) ? 1 : 0,
+            'allow_paid_lines' => !empty($payload['allow_paid_lines']) ? 1 : 0,
+            'selected_carriers_json' => $this->normalizeJsonField($payload['selected_carriers'] ?? []),
+            'runtime_platform_scope' => trim((string) ($payload['runtime_platform_scope'] ?? ($existing['runtime_platform_scope'] ?? 'all'))) ?: 'all',
             'default_endpoint_mode' => (string) ($payload['default_endpoint_mode'] ?? 'slave_group'),
             'default_node_group_key' => ($payload['default_node_group_key'] ?? '') !== '' ? (string) $payload['default_node_group_key'] : null,
             'default_forward_chain_id' => ($payload['default_forward_chain_id'] ?? '') !== '' ? (int) $payload['default_forward_chain_id'] : null,
@@ -1866,6 +1869,9 @@ final class ProvisioningService
                      allow_forward_chain = :allow_forward_chain,
                      allow_latency_test = :allow_latency_test,
                      allow_inbound_proxy = :allow_inbound_proxy,
+                     allow_paid_lines = :allow_paid_lines,
+                     selected_carriers_json = :selected_carriers_json,
+                     runtime_platform_scope = :runtime_platform_scope,
                      default_endpoint_mode = :default_endpoint_mode,
                      default_node_group_key = :default_node_group_key,
                      default_forward_chain_id = :default_forward_chain_id,
@@ -1890,6 +1896,33 @@ final class ProvisioningService
         $this->republishActiveForwardsForClient($id);
 
         return $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $id]) ?? [];
+    }
+
+    /**
+     * @param array<string, mixed> $client
+     * @param array<int, array<string, mixed>> $forwards
+     * @return array<string, mixed>
+     */
+    public function linuxProfileRuntimeForClient(array $client, array $forwards): array
+    {
+        $selectedCarriers = [];
+        if (is_string($client['selected_carriers_json'] ?? null) && $client['selected_carriers_json'] !== '') {
+            $decoded = json_decode((string) $client['selected_carriers_json'], true);
+            if (is_array($decoded)) {
+                $selectedCarriers = array_values(array_filter(array_map(static fn($value): string => strtolower(trim((string) $value)), $decoded), static fn(string $value): bool => $value !== ''));
+            }
+        }
+
+        return [
+            'profile_id' => (int) ($client['id'] ?? 0),
+            'profile_name' => (string) ($client['name'] ?? ''),
+            'allow_paid_lines' => (int) ($client['allow_paid_lines'] ?? 0) === 1,
+            'selected_carriers' => $selectedCarriers,
+            'runtime_platform_scope' => (string) ($client['runtime_platform_scope'] ?? 'all'),
+            'selected_carrier' => null,
+            'used_paid_line' => false,
+            'forwards' => $forwards,
+        ];
     }
 
     /**
