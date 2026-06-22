@@ -19,6 +19,7 @@ foreach ([
     '/admin/sidecars',
     "/admin' . '/sidecars",
     '±ß³µ (Sidecar)',
+    'Sidecar)',
     'Sidecar Point',
     'Create Sidecar Point',
     'Edit Sidecar Point',
@@ -29,6 +30,7 @@ foreach ([
     'Add Your Own Slave',
     'Install and update the line runtime from',
     'sidecar point',
+    "tenantNav('sidecars')",
 ] as $needle) {
     if (str_contains($combined, $needle)) {
         fail('sidecar ui still exposed: ' . $needle);
