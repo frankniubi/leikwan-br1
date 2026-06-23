@@ -1037,7 +1037,7 @@ abstract class BaseController
             ['href' => '/admin/client-groups', 'label' => 'Client Groups', 'active' => $active === 'client-groups'],
             ['href' => '/admin/credentials', 'label' => 'Credentials', 'active' => $active === 'credentials'],
             ['href' => '/admin/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
-            ['href' => '/admin/sidecars', 'label' => 'Sidecar Points', 'active' => $active === 'sidecars'],
+            ['href' => '/admin-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
             ['href' => '/admin/cf-location-groups', 'label' => 'CF Location Groups', 'active' => $active === 'cf-location-groups'],
             ['href' => '/admin/forward-combinations', 'label' => 'Forward Combinations', 'active' => $active === 'forward-combinations'],
             ['href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],

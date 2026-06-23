@@ -140,7 +140,11 @@ final class Bootstrap
         $this->router->add('GET', '/admin/knowledgebase/{id}/edit', [$admin, 'knowledgebaseEditorPage']);
         $this->router->add('POST', '/admin/knowledgebase/save', [$admin, 'saveKnowledgebaseThread']);
         $this->router->add('POST', '/admin/knowledgebase/images', [$admin, 'uploadKnowledgebaseImage']);
-                                        $this->router->add('POST', '/admin/clients/{id}/diagnose', [$admin, 'requestClientDiagnostics']);
+        $this->router->add('GET', '/admin-transport-endpoints', [$admin, 'sidecarsPage']);
+        $this->router->add('POST', '/admin-transport-endpoints', [$admin, 'saveSidecarPoint']);
+        $this->router->add('POST', '/admin-transport-endpoints/{id}/delete', [$admin, 'deleteSidecarPoint']);
+        $this->router->add('POST', '/admin-transport-endpoints/{id}/request-update', [$admin, 'requestSidecarUpdate']);
+        $this->router->add('POST', '/admin/clients/{id}/diagnose', [$admin, 'requestClientDiagnostics']);
         $this->router->add('POST', '/admin/clients/{id}/request-update', [$admin, 'requestClientUpdate']);
         $this->router->add('GET', '/admin/node-groups', [$admin, 'nodeGroupsPage']);
         $this->router->add('POST', '/admin/node-groups', [$admin, 'saveNodeGroup']);
@@ -168,7 +172,11 @@ final class Bootstrap
         $this->router->add('GET', '/tenant/forwards', [$tenant, 'dashboard']);
         $this->router->add('GET', '/tenant/clients', [$tenant, 'clientsPage']);
         $this->router->add('POST', '/tenant/clients', [$tenant, 'saveClient']);
-$this->router->add('POST', '/tenant/clients/{id}/delete', [$tenant, 'deleteClient']);
+        $this->router->add('GET', '/tenant-transport-endpoints', [$tenant, 'sidecarsPage']);
+        $this->router->add('POST', '/tenant-transport-endpoints', [$tenant, 'saveSidecarPoint']);
+        $this->router->add('POST', '/tenant-transport-endpoints/{id}/delete', [$tenant, 'deleteSidecarPoint']);
+        $this->router->add('POST', '/tenant-transport-endpoints/{id}/request-update', [$tenant, 'requestSidecarUpdate']);
+        $this->router->add('POST', '/tenant/clients/{id}/delete', [$tenant, 'deleteClient']);
         $this->router->add('POST', '/tenant/clients/{id}/diagnose', [$tenant, 'requestClientDiagnostics']);
         $this->router->add('POST', '/tenant/clients/{id}/request-update', [$tenant, 'requestClientUpdate']);
         $this->router->add('GET', '/tenant/services/{id}', [$tenant, 'serviceDetail']);
@@ -178,7 +186,7 @@ $this->router->add('POST', '/tenant/clients/{id}/delete', [$tenant, 'deleteClien
         $this->router->add('POST', '/tenant/services/{id}/forward/{fid}/edit', [$tenant, 'saveForwardEdit']);
         $this->router->add('GET', '/tenant/services/{id}/forward-wizard', [$tenant, 'forwardWizardRedirect']);
         $this->router->add('POST', '/tenant/services/{id}/forward-wizard', [$tenant, 'forwardWizardRedirect']);
-                $this->router->add('POST', '/tenant/nodes/{id}/remove', [$tenant, 'removeUserNode']);
+        $this->router->add('POST', '/tenant/nodes/{id}/remove', [$tenant, 'removeUserNode']);
         $this->router->add('GET', '/tenant/slave-groups', [$tenant, 'slaveGroupsPage']);
         $this->router->add('POST', '/tenant/slave-groups', [$tenant, 'saveSlaveGroup']);
         $this->router->add('POST', '/tenant/slave-groups/join', [$tenant, 'joinSlaveGroup']);
