@@ -79,7 +79,10 @@ foreach ([
     assertContains($haystack, $needle);
 }
 
-$extDir = dirname(PHP_BINARY) . DIRECTORY_SEPARATOR . 'ext';
+$extDir = (string) ini_get('extension_dir');
+if ($extDir === '') {
+    $extDir = dirname(PHP_BINARY) . DIRECTORY_SEPARATOR . 'ext';
+}
 if (!is_dir($extDir)) {
     fail('sqlite smoke missing PHP extension directory: ' . $extDir);
 }
