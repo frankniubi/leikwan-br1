@@ -1308,7 +1308,7 @@ final class TenantController extends BaseController
             }
             $token = bin2hex(random_bytes(24));
             $this->db->execute(
-                'UPDATE target transport_points
+                'UPDATE sidecar_points
                  SET agent_update_request_token = :request_token,
                      agent_update_requested_at = :requested_at,
                      updated_at = :updated_at
@@ -1320,7 +1320,7 @@ final class TenantController extends BaseController
                     'updated_at' => gmdate('Y-m-d H:i:s'),
                 ]
             );
-            SessionAuth::flash('success', 'Sidecar update requested. The installed target transport heartbeat will pull the latest panel-hosted version automatically.');
+            SessionAuth::flash('success', 'Transport endpoint update requested. The installed target transport heartbeat will pull the latest panel-hosted version automatically.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to request target transport update: ' . $this->displayThrowableMessage($throwable));
         }
@@ -1380,7 +1380,7 @@ final class TenantController extends BaseController
             );
             $runtimeManagementHtml = '<div class="muted" style="margin-top:12px;">Manage client profiles and runtime installs from <a href="/tenant/clients"><strong>Client Profiles</strong></a>.</div>';
             if (in_array($this->canonicalClientMode((string) ($forward['client_mode'] ?? 'single')), ['bond', 'mptcp'], true) && !empty($forward['bond_remote_host'])) {
-                $runtimeManagementHtml .= '<div class="muted">Current target transport target: '
+                $runtimeManagementHtml .= '<div class="muted">Current target transport endpoint: '
                     . $this->escape((string) $forward['bond_remote_host'])
                     . ':'
                     . (int) (($forward['bond_remote_port'] ?? 0) ?: $this->defaultBondRemotePort())
@@ -2668,11 +2668,11 @@ final class TenantController extends BaseController
                   return option.dataset.bondPort || option.dataset.port || portInput.dataset.defaultPort || "";
                 }
 
-                function updateSummary(sidecarMode, option) {
+                function updateSummary(transportMode, option) {
                   if (!summary) {
                     return;
                   }
-                  if (!sidecarMode) {
+                  if (!transportMode) {
                     summary.style.display = "none";
                     summary.textContent = "";
                     return;
@@ -2683,26 +2683,26 @@ final class TenantController extends BaseController
                     : "Manual entry: fill the target transport host and port.";
                 }
 
-                function updateFields(sidecarMode, option) {
+                function updateFields(transportMode, option) {
                   if (hostField) {
-                    hostField.style.display = target transportMode && !option ? "" : "none";
+                    hostField.style.display = transportMode && !option ? "" : "none";
                   }
                   if (portField) {
-                    portField.style.display = target transportMode && !option ? "" : "none";
+                    portField.style.display = transportMode && !option ? "" : "none";
                   }
                 }
 
                 function refresh() {
-                  var target transportMode = isSidecarMode();
+                  var transportMode = isSidecarMode();
                   var option = selectedPoint();
-                  if (sidecarMode && option) {
+                  if (transportMode && option) {
                     hostInput.value = option.dataset.host || "";
                     portInput.value = selectedPortForMode(option);
                   } else if (!option) {
                     resetManualFields();
                   }
-                  updateFields(sidecarMode, option);
-                  updateSummary(sidecarMode, option);
+                  updateFields(transportMode, option);
+                  updateSummary(transportMode, option);
                 }
 
                 modeSelect.addEventListener("change", refresh);
@@ -2769,13 +2769,13 @@ final class TenantController extends BaseController
                 return 'Your plan or account is not allowed to create or modify forwards.';
             }
         if ($message === 'bond_transport_not_supported') {
-            return 'The selected target transport transport is not supported by the currently installed runtime yet. Update the client runtime and try again.';
+            return 'The selected target transport endpoint is not supported by the currently installed runtime yet. Update the client runtime and try again.';
         }
             if ($message === 'bond_not_configured') {
                 return 'Bond / MPTCP transport mode is not ready yet. This service needs a usable client token, or admin must configure BOND_TOKEN_SECRET as a fallback.';
             }
             if ($message === 'bond_remote_target_required') {
-                return 'Bond / MPTCP transport mode needs a target-side target transport host and port. Fill in Sidecar Host and Sidecar Port first.';
+                return 'Bond / MPTCP transport mode needs a target-side transport host and port. Fill in Transport Host and Transport Port first.';
             }
             if ($message === 'bond_sidecar_point_not_allowed') {
                 return 'The selected target transport endpoint is not available for this service. Pick one of your own target transport endpoints or an admin-shared point.';

@@ -2301,7 +2301,7 @@ final class AdminController extends BaseController
             $status = $this->sidecarPointStatusInfo($point);
             $installCommand = $this->bondSidecarInstallCommand($point);
             $uninstallCommand = $this->bondSidecarUninstallCommand($point);
-            $usagePanel = $this->renderUsageOverviewPanel($sidecarUsageMap[(int) ($point['id'] ?? 0)] ?? [], 'Sidecar Traffic');
+            $usagePanel = $this->renderUsageOverviewPanel($sidecarUsageMap[(int) ($point['id'] ?? 0)] ?? [], 'Transport Traffic');
             $rows .= '<tr>
                 <td>' . (int) $point['id'] . '</td>
                 <td>' . $this->escape((string) $point['name']) . '</td>
@@ -2316,12 +2316,12 @@ final class AdminController extends BaseController
                 <td>' . (int) ($point['forward_count'] ?? 0) . '</td>
                 <td>
                     <div class="actions">
-                        <a class="button ghost" href="/admin" . "/transport-endpoints?edit=' . (int) $point['id'] . '">Edit</a>
-                        <form class="inline" method="post" action="/admin" . "/transport-endpoints/' . (int) $point['id'] . '/request-update">
+                        <a class="button ghost" href="/admin-transport-endpoints?edit=' . (int) $point['id'] . '">Edit</a>
+                        <form class="inline" method="post" action="/admin-transport-endpoints/' . (int) $point['id'] . '/request-update">
                             <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                             <button type="submit" class="button secondary">Request Update</button>
                         </form>
-                        <form class="inline" method="post" action="/admin" . "/transport-endpoints/' . (int) $point['id'] . '/delete">
+                        <form class="inline" method="post" action="/admin-transport-endpoints/' . (int) $point['id'] . '/delete">
                             <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
                             <button type="submit" class="button danger">Delete</button>
                         </form>
@@ -2353,7 +2353,7 @@ final class AdminController extends BaseController
             <div class="grid two">
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Transport Endpoint' : 'Create Transport Endpoint') . '</h3>
-                <form method="post" action="/admin" . "/transport-endpoints">
+                <form method="post" action="/admin-transport-endpoints">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
                   <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
                   <div class="form-grid">
@@ -2368,9 +2368,9 @@ final class AdminController extends BaseController
                     <div class="field"><label>Bind Host</label><input type="text" name="bind_host" value="' . $this->escape((string) ($editing['bind_host'] ?? '0.0.0.0')) . '"></div>
                     <div class="field"><label>Total Limit Mbps</label><input type="number" name="total_speed_limit_mbps" value="' . $this->escape((string) ($editing['total_speed_limit_mbps'] ?? '')) . '" min="1" placeholder="optional"></div>
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>disabled</option></select></div>
-                    <div class="field"><label>Traffic Price / GB</label><input type="number" step="0.0001" min="0" name="traffic_price_per_gb" value="' . $this->escape((string) ($editingSidecarPrice['price_per_gb'] ?? '0')) . '" placeholder="0.0000"><p class="muted">Per-GB price for traffic through this sidecar. 0 = free.</p></div>
+                    <div class="field"><label>Traffic Price / GB</label><input type="number" step="0.0001" min="0" name="traffic_price_per_gb" value="' . $this->escape((string) ($editingSidecarPrice['price_per_gb'] ?? '0')) . '" placeholder="0.0000"><p class="muted">Per-GB price for traffic through this transport endpoint. 0 = free.</p></div>
                   </div>
-                  <div class="actions"><button class="button" type="submit">Save Transport Endpoint</button>' . ($editing !== null ? '<a class="button secondary" href="/admin" . "/transport-endpoints">Cancel</a>' : '') . '</div>
+                  <div class="actions"><button class="button" type="submit">Save Transport Endpoint</button>' . ($editing !== null ? '<a class="button secondary" href="/admin-transport-endpoints">Cancel</a>' : '') . '</div>
                 </form>
               </section>
               <section class="card">
@@ -2384,7 +2384,7 @@ final class AdminController extends BaseController
               </section>
             </div>';
 
-        return $this->adminPage('Target Transport Endpoints', $body, $viewer, 'sidecars');
+        return $this->adminPage('Target Transport Endpoints', $body, $viewer, 'transport-endpoints');
     }
 
     public function saveSidecarPoint(Request $request, array $params): Response
@@ -2461,9 +2461,9 @@ final class AdminController extends BaseController
                     'updated_at' => gmdate('Y-m-d H:i:s'),
                 ]
             );
-            SessionAuth::flash('success', 'Sidecar update requested. The installed sidecar heartbeat will pull the latest panel-hosted version automatically.');
+            SessionAuth::flash('success', 'Transport endpoint update requested. The installed target transport heartbeat will pull the latest panel-hosted version automatically.');
         } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to request sidecar update: ' . $this->displayThrowableMessage($throwable));
+            SessionAuth::flash('error', 'Failed to request transport endpoint update: ' . $this->displayThrowableMessage($throwable));
         }
 
         return Response::redirect('/admin-transport-endpoints');

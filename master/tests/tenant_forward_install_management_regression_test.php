@@ -13,8 +13,8 @@ if (!is_string($source) || $source === '') {
 }
 
 foreach ([
-    'Install and update the line runtime from <a href="/tenant/clients"><strong>Client</strong></a>.',
-    'Install or manage target-side sidecars from <a href="/tenant/sidecars"><strong>Sidecar Points</strong></a>.',
+    'Manage client profiles and runtime installs from <a href="/tenant/clients"><strong>Client Profiles</strong></a>.',
+    'Current target transport endpoint:',
 ] as $required) {
     if (!str_contains($source, $required)) {
         fail('missing required forward-management guidance: ' . $required);
@@ -23,9 +23,9 @@ foreach ([
 
 foreach ([
     '/artifacts/install-client.sh',
-    '/artifacts/install-client.ps1',
+    '/tenant/sidecars',
     '<summary>Install Commands</summary>',
-    '<summary>Install Bond Sidecar</summary>',
+    'Sidecar Points',
 ] as $forbidden) {
     if (str_contains($source, $forbidden)) {
         fail('stale forward-level install UI still present: ' . $forbidden);
