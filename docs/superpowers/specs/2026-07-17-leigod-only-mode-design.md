@@ -61,6 +61,7 @@ The design removes legacy **product modes and active publication paths**. It doe
 - The separate bond module embedded in `leikwan-mptcp-relay` is not the implementation target because its non-direct legs still create native MPTCP sockets and may silently fall back between runtime families.
 - One logical TCP leg is keyed by `(forward_id, node_id, endpoint_id)`. Array position, local port, process ID, and current IP address are attributes, not identity.
 - Speed Plus state is derived from fresh bond-native connection and byte-delivery evidence. Configured endpoint count and process liveness alone never prove aggregation.
+- If multi-leg aggregation is unavailable or unproductive, each existing application TCP stream remains in the standalone bond session and falls back to the best eligible slave leg. This is single-leg degradation, not a runtime-family or backend fallback.
 - TCP continues with one healthy leg when possible. Losing or recovering one leg does not rebuild unrelated leg processes or unrelated Forward runtime.
 - UDP may continue through the existing LeiGod compatibility path, but it is never described, displayed, or accepted as bandwidth aggregation.
 - The first formal Speed Plus support target is the Linux client agent. Other platforms must pass their own data-path, recovery, telemetry, and throughput gates before showing Speed Plus as supported.
@@ -236,10 +237,11 @@ The measured value is unique application-payload bytes offered to the scheduler 
 The scheduler also:
 
 - tracks unique acknowledged application-payload bytes, penalties, retransmissions, smoothed RTT, and in-flight bytes per logical leg,
-- retransmits a lost frame over another usable leg when possible, and
-- never counts a connected but cooling, quarantined, or probationary leg as contributing capacity.
+- retransmits a lost frame over another usable leg when possible,
+- never counts a connected but cooling, quarantined, or probationary leg as contributing capacity, and
+- selects the best eligible single leg deterministically. An ineligible current leg is replaced immediately; an eligible candidate in a lower scheduler-penalty tier replaces it immediately. Within the same penalty tier, a candidate replaces the current leg only when its measured smoothed RTT is both at least 10% and 5 ms better for three consecutive 10-second windows, or when the current leg has no measured RTT while the candidate does for those three windows. Stable logical key breaks an initial or otherwise exact tie but never forces churn between equivalent live legs.
 
-A one-leg session remains a valid TCP Forward but is not Speed Plus aggregation. Restoring a leg re-admits it within the existing bond transport session after handshake and probation; it does not recreate the Forward, the other ingress processes, or the sidecar target configuration.
+A one-leg session remains a valid TCP Forward but is not Speed Plus aggregation. When only one leg is eligible, or a qualifying useful-byte window shows fewer than two productive legs, every existing and new application TCP stream uses the selected best eligible leg inside the same standalone bond session. Already framed but unacknowledged data is retransmitted on that leg; byte sequence, remote target connection, and application socket stay intact when protocol conditions permit. The runtime reports `single_leg_only` for a one-node desired set or `degraded_single_leg` for a multi-node desired set and does not rewrite desired state. Restoring another leg re-admits it within the existing bond transport session after handshake and probation; it does not recreate the Forward, the other ingress processes, or the sidecar target configuration.
 
 #### Runtime states
 
@@ -261,11 +263,13 @@ Evidence is fresh only when effective observation age is less than 15 seconds: m
 
 - One failed leg is marked unavailable without terminating healthy leg workers.
 - Pending data assigned to a failed leg is retransmitted over another leg when possible.
-- New local TCP streams continue over one remaining leg.
+- If multi-leg establishment or productive aggregation fails while at least one leg remains eligible, the runtime selects the best eligible slave by the scheduler rule above and carries the same application TCP stream on that leg. It does not reconnect the application, replace the sidecar target session, or change runtime family.
+- New local TCP streams continue over the selected best remaining leg.
 - A recovered leg completes connect, bond Hello/ack, and bounded probation before receiving bulk data.
 - Reordering endpoints changes neither logical identity nor healthy worker processes.
 - Desired-state removal stops only the removed leg and releases only its owned local port lease after keep-set checks.
 - All-leg failure reports `unavailable` and retries in place with bounded backoff; it does not trigger an unbounded whole-Forward systemd restart loop.
+- Failure to start the standalone bond runtime itself, authenticate the bond session, or resolve the target is an explicit Forward error because no valid same-family session exists to preserve; it never authorizes MPTCP, CF, WSS, or classic-sidecar fallback.
 
 Speed Plus guarantees the ability to use multiple slave paths concurrently. Throughput remains bounded by client and sidecar CPU, sidecar access, LeiGod UoT carriers, congestion, loss, and target capacity.
 
@@ -416,6 +420,7 @@ The master stores only the latest accepted snapshot for each `(client_id, device
 - monotonically increasing sequence within the runtime epoch,
 - monotonic sample age at send time,
 - transport lifecycle state,
+- selected single-leg logical key and stable selection reason when state is `single_leg_only` or `degraded_single_leg`,
 - an optional complete traffic window with exact duration/end age, direction, counter epoch, total useful-byte delta, and per-leg useful-byte deltas,
 - bounded per-leg current state.
 
@@ -871,8 +876,10 @@ No partial artifact set is deployable: source agent, `artifacts/`, served public
 - One application TCP stream and reverse traffic transfer correctly over multiple legs with in-order reassembly.
 - Lost frames retransmit over another eligible leg, and useful-byte accounting credits only the finally accepted copy.
 - Scheduler thresholds exactly implement `leigod_bond_v1`; small traffic uses one leg and bulk traffic warms additional legs.
+- Best-leg selection orders eligible legs by scheduler penalty, measured smoothed RTT, and stable key; the exact 10% + 5 ms + three-window hysteresis prevents idle or noisy measurements from flapping selection.
 - Cooling/quarantined/probation legs receive no normal bulk data.
 - After Hello/ack, serialized probation sends exactly the bounded control probes, excludes them from target traffic/counters, passes within 5 seconds on three acknowledgements, or rotates the next due candidate after failure.
+- Multi-leg establishment failure, one-leg loss, and nonproductive multi-leg windows preserve the same application stream and sidecar target session while pinning payload to the best eligible slave; the state becomes `degraded_single_leg`, not a runtime-family fallback.
 - Removing one leg preserves streams when protocol conditions allow; recovery rejoins without restarting healthy workers or unrelated Forwards.
 - Standalone TCP legs use ordinary TCP and pass on a kernel without MPTCP support.
 
@@ -890,7 +897,7 @@ No partial artifact set is deployable: source agent, `artifacts/`, served public
 
 ### 14.6 Telemetry and state
 
-- Snapshots carry authenticated device session, desired generation/hash, supervisor identity, runtime epoch/sequence, nullable process/session epochs, canonical leg phase, applicable recovery counters/deadlines, and exact directional 10-second useful-byte window.
+- Snapshots carry authenticated device session, desired generation/hash, supervisor identity, runtime epoch/sequence, nullable process/session epochs, canonical leg phase, selected single-leg key/reason during degradation, applicable recovery counters/deadlines, and exact directional 10-second useful-byte window.
 - Atomic writer crash tests never expose partial JSON or a stale writer epoch.
 - Save/preflight rejects more than eight or duplicate-node legs. Reporting enforces 8 legs, 16 KiB per Forward, 64 Forwards/512 KiB per request, with item-level rejection isolation and no truncation-derived state.
 - Authentication rejects unassigned Forward, endpoint, client, device session, desired generation, and set hash.
@@ -971,7 +978,7 @@ The feature is complete only when all conditions hold:
 10. The standalone bond runtime reassembles one target TCP stream correctly and works without kernel MPTCP support.
 11. Port allocation is host-locked, collision-free against leases/listeners, atomically handed off, and generation-fenced with no formula-only ownership assumption.
 12. Supervisor process restart, bond connector retry, and scheduler quarantine/probation have disjoint counters, deadlines, reset rules, persistent budgets, and bounded recovery; one fault cannot cause whole-Forward churn.
-13. Multi-leg network failure degrades to one usable TCP leg when available with zero process restart, and recovery does not rebuild unrelated runtime.
+13. Multi-leg establishment failure, unproductive aggregation, or network-leg loss degrades the same application TCP stream to the deterministically selected best eligible slave when one remains, with zero application reconnect, target-session replacement, runtime-family fallback, or process restart; recovery does not rebuild unrelated runtime.
 14. `aggregating` requires fresh authenticated same-device, desired-generation, runtime-epoch, transport-session, direction, and exact useful-byte-window evidence from at least two distinct slave nodes; invalid/ambiguous evidence is `unknown` and idle valid multi-leg runtime is `ready_multi_leg`.
 15. The pre-enforcement controlled Linux canary passes both directional paired campaigns, exact payload integrity, per-node distribution, 10% median improvement, uncertainty, and bounded fault/recovery gates without post-hoc run selection.
 16. Windows, Android, unsupported platform/protocol, and UDP surfaces receive no unverified aggregation claim or silent fallback.
