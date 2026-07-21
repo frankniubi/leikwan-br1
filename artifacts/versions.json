@@ -72,9 +72,9 @@
     "version": "2026.05.29.9",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "a4a99130c7a173d5705dbb81477ab1599ba492b32ad3ab9928cfcddd0f868583",
-    "size_bytes": 221889,
-    "size": 221889
+    "sha256": "4452fc083179f2e8d0eacd7c32cdb6e61c64d19e98477acfe6d93e0143a77ab7",
+    "size_bytes": 221949,
+    "size": 221949
   },
   "client_agent_installer": {
     "version": "2026.05.20.1",
@@ -89,9 +89,9 @@
     "version": "2026.06.05.3",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "e98e094cb337f2be4ac94b6c6a656949c6e6e3aea237e0a45eb21597694fb390",
-    "size_bytes": 114776,
-    "size": 114776
+    "sha256": "587b0d06805bdccda6dbfc84293542290391ae61f441add7d91c1dc485684842",
+    "size_bytes": 114880,
+    "size": 114880
   },
   "mptcp_client_runtime": {
     "version": "2026.06.06.1",
