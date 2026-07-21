@@ -952,6 +952,38 @@ abstract class BaseController
             return [];
         }
 
+        return $this->normalizeArtifactMetadataEntry($entry);
+    }
+
+    /**
+     * @param list<string> $keys
+     * @return array<string, array<string, mixed>>
+     */
+    public function artifactMetadataForActivation(array $keys): array
+    {
+        $metadata = [];
+        $sourceMap = new \Leikwan\Master\Support\LeigodOnlyArtifactSourceBuildMap(dirname(__DIR__, 3));
+        $helperMap = $sourceMap->routeOnlyHelperMap();
+
+        foreach (array_values(array_unique(array_filter($keys, 'is_string'))) as $key) {
+            $entry = $this->artifactMetadata($key);
+            if ($entry === [] && isset($helperMap[$key]) && is_array($helperMap[$key])) {
+                $entry = $this->metadataFromSourceMapEntry($helperMap[$key]);
+            }
+            if ($entry !== []) {
+                $metadata[$key] = $entry;
+            }
+        }
+
+        return $metadata;
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     * @return array<string, mixed>
+     */
+    private function normalizeArtifactMetadataEntry(array $entry): array
+    {
         $normalized = $entry;
         if (isset($normalized['path']) && is_string($normalized['path']) && $normalized['path'] !== '') {
             $absolute = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $normalized['path']);
@@ -962,6 +994,38 @@ abstract class BaseController
         }
 
         return $normalized;
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     * @return array<string, mixed>
+     */
+    private function metadataFromSourceMapEntry(array $entry): array
+    {
+        $paths = is_array($entry['paths'] ?? null) ? $entry['paths'] : [];
+        $relativePath = '';
+        foreach ($paths as $path) {
+            if (is_string($path) && $path !== '') {
+                $relativePath = $path;
+                break;
+            }
+        }
+        $routePath = is_string($entry['route_path'] ?? null) ? $entry['route_path'] : '';
+        if ($relativePath === '' || $routePath === '') {
+            return [];
+        }
+
+        $absolute = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
+        if (!is_file($absolute)) {
+            return [];
+        }
+
+        return [
+            'path' => $relativePath,
+            'artifact_url' => $routePath,
+            'sha256' => hash_file('sha256', $absolute),
+            'size_bytes' => filesize($absolute),
+        ];
     }
 
     protected function autoUpdateTokenForVersion(string $currentVersion, string $artifactKey, string $prefix = 'auto-release'): string

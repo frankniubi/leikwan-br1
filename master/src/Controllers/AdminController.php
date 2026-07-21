@@ -7,6 +7,11 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\BondLegReputationService;
+use Leikwan\Master\Support\LeigodActivationGateContext;
+use Leikwan\Master\Support\LeigodNormalizationActivationContext;
+use Leikwan\Master\Support\LeigodOnlyActivationPlan;
+use Leikwan\Master\Support\LeigodOnlyPlatformFamilyGate;
+use Leikwan\Master\Support\LeigodRetirementActivationContext;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\KnowledgebaseService;
@@ -16,12 +21,17 @@ use Leikwan\Master\Support\TenantRegistrationService;
 final class AdminController extends BaseController
 {
     private ?SslCertificateService $sslCertificateService = null;
+    /** @var array<string, mixed> */
+    private array $leigodOnlyServices;
 
+    /** @param array<string, mixed> $leigodOnlyServices */
     public function __construct(
         \Leikwan\Master\Config $config,
         \Leikwan\Master\Database\Database $db,
         private ?ProvisioningService $provisioning = null,
+        array $leigodOnlyServices = [],
     ) {
+        $this->leigodOnlyServices = $leigodOnlyServices;
         parent::__construct($config, $db);
     }
 
@@ -263,6 +273,567 @@ final class AdminController extends BaseController
         return $this->adminPage('Diagnostics', $body, $viewer, 'overview');
     }
 
+
+    public function leigodOnlyRolloutPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $status = $this->callLeigodOnlyService('status', 'rolloutStatus', ['scope' => (string) $request->input('scope', 'global')]) ?? [];
+        $sections = [
+            'Artifact consistency',
+            'Runtime contract',
+            'Leg policy',
+            'Upload gate',
+            'Download gate',
+            'Canary cohorts',
+            'Normalization activation',
+            'Legacy retirement activation',
+            'Rollback preview',
+            'Audit events',
+        ];
+        $sectionHtml = '';
+        foreach ($sections as $section) {
+            $sectionHtml .= '<section class="card"><h3>' . $this->escape($section) . '</h3><p class="muted">Read-only rollout status.</p></section>';
+        }
+        $statusJson = $this->escape(json_encode($status, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) ?: '{}');
+        $body = '<div class="hero"><div><h2>LeiGod-only rollout</h2><p class="muted">Read-only control surface for activation readiness, canary status, guarded activation, and rollback preview.</p></div></div>'
+            . '<div class="grid two" style="margin-top:20px;">' . $sectionHtml . '</div>'
+            . '<section class="card" style="margin-top:20px;"><h3>Status payload</h3><pre>' . $statusJson . '</pre></section>';
+        return $this->adminPage('LeiGod-only rollout', $body, $viewer, 'overview');
+    }
+
+    public function leigodOnlyActivationDryRun(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::json(401, ['error' => 'authentication_required']);
+        }
+        try {
+            $this->requireCsrf($request);
+            $platformFamily = $this->platformFamilyFromRequest($request);
+            LeigodOnlyPlatformFamilyGate::assertSupported($platformFamily, 'admin_dry_run');
+            $result = $this->callRequiredLeigodOnlyService('planner', 'plan', [
+                'scope' => $this->scopeFromRequest($request),
+                'platform_family' => $platformFamily,
+                'write_mode' => 'dry_run',
+                'dry_run_only' => true,
+            ]);
+            return Response::json(200, $this->normalizeLeigodOnlyActivationPlanResponse($result));
+        } catch (ApiException $exception) {
+            return Response::json($exception->statusCode() === 419 ? 403 : $exception->statusCode(), ['error' => $exception->getMessage()]);
+        } catch (\Throwable $throwable) {
+            return Response::json(422, ['error' => $this->displayThrowableMessage($throwable)]);
+        }
+    }
+
+    public function leigodOnlyActivationApply(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::json(401, ['error' => 'authentication_required']);
+        }
+        try {
+            $this->requireCsrf($request);
+            $confirmPlanHash = $this->requiredHashInput($request, 'confirm_plan_hash');
+            $scope = $this->scopeFromRequest($request);
+            $planHash = $this->requiredHashInput($request, 'plan_hash');
+            if (!hash_equals($planHash, $confirmPlanHash)) {
+                throw new \InvalidArgumentException('plan_hash_confirmation_mismatch');
+            }
+            $planId = $this->requiredStringInput($request, 'plan_id');
+            $ownerToken = $this->requiredStringInput($request, 'owner_token');
+            $fencingToken = $this->requiredStringInput($request, 'fencing_token');
+            $platformFamily = $this->platformFamilyFromRequest($request);
+            LeigodOnlyPlatformFamilyGate::assertSupported($platformFamily, 'admin_activate');
+            $artifactSnapshotHash = $this->requiredHashInput($request, 'artifact_snapshot_hash');
+            $activationPayload = $this->leigodOnlyActivationPayloadFromRequest($request, $scope, $planId, $planHash, $ownerToken, $fencingToken, $platformFamily, $artifactSnapshotHash);
+            $runtimeContract = $this->runtimeContractRowFromActivationPayload($request, $activationPayload);
+            $activationShape = $this->activationShapeFromPayload($activationPayload);
+            $lockKey = $this->leigodOnlyActivationLockKey($activationPayload, $activationShape);
+            $this->callRequiredLeigodOnlyService('lock', 'requireHeld', [$scope, $lockKey, $ownerToken, $fencingToken]);
+            $artifactGate = $this->callRequiredLeigodOnlyService('artifact_gate', 'validateForActivation', $this->leigodOnlyArtifactGateContext($activationPayload, $scope, $platformFamily, $artifactSnapshotHash));
+            $this->assertSuccessfulLeigodOnlyResult($artifactGate, 'artifact_gate');
+            $runtimeGate = $this->callRequiredLeigodOnlyService('runtime_contract', 'assertActiveContract', [$runtimeContract, 'admin_activate']);
+            $this->assertSuccessfulLeigodOnlyResult($runtimeGate, 'runtime_contract_gate', true);
+            $result = $this->callRequiredLeigodOnlyActivationService($activationPayload);
+            $this->assertSuccessfulLeigodOnlyResult($result, 'activation_result');
+            return Response::json(200, ['ok' => true, 'result' => $result]);
+        } catch (ApiException $exception) {
+            return Response::json($exception->statusCode() === 419 ? 403 : $exception->statusCode(), ['error' => $exception->getMessage()]);
+        } catch (\Throwable $throwable) {
+            return Response::json(422, ['error' => $this->displayThrowableMessage($throwable)]);
+        }
+    }
+
+    public function leigodOnlyRollback(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::json(401, ['error' => 'authentication_required']);
+        }
+        try {
+            $this->requireCsrf($request);
+            $confirmBatchHash = $this->requiredHashInput($request, 'confirm_batch_hash');
+            $batchId = $this->requiredPositiveDecimalInput($request, 'batch_id');
+            $confirmBatchId = $this->requiredPositiveDecimalInput($request, 'confirm_batch_id');
+            if ($batchId !== $confirmBatchId) {
+                throw new \InvalidArgumentException('batch_id_confirmation_mismatch');
+            }
+            $scope = $this->scopeFromRequest($request);
+            $batchHash = $this->requiredHashInput($request, 'batch_hash');
+            if (!hash_equals($batchHash, $confirmBatchHash)) {
+                throw new \InvalidArgumentException('batch_hash_confirmation_mismatch');
+            }
+            $ownerToken = $this->requiredStringInput($request, 'owner_token');
+            $fencingToken = $this->requiredStringInput($request, 'fencing_token');
+            $platformFamily = $this->platformFamilyFromRequest($request);
+            LeigodOnlyPlatformFamilyGate::assertSupported($platformFamily, 'admin_rollback');
+            $this->callRequiredLeigodOnlyService('lock', 'requireHeld', [$scope, 'activation-batch:' . $batchId, $ownerToken, $fencingToken]);
+            $result = $this->callRequiredLeigodOnlyService('rollback', 'apply', [$batchId, $batchHash, $ownerToken, $fencingToken]);
+            $this->assertSuccessfulLeigodOnlyResult($result, 'rollback_result');
+            return Response::json(200, ['ok' => true, 'result' => $result]);
+        } catch (ApiException $exception) {
+            return Response::json($exception->statusCode() === 419 ? 403 : $exception->statusCode(), ['error' => $exception->getMessage()]);
+        } catch (\Throwable $throwable) {
+            return Response::json(422, ['error' => $this->displayThrowableMessage($throwable)]);
+        }
+    }
+
+    private function requireCsrf(Request $request): void
+    {
+        SessionAuth::validateCsrf($request);
+    }
+
+    private function scopeFromRequest(Request $request): string
+    {
+        return $this->requiredStringInput($request, 'scope');
+    }
+
+    private function platformFamilyFromRequest(Request $request): string
+    {
+        $platformFamily = trim((string) $request->input('platform_family', 'linux-bond'));
+        return $platformFamily !== '' ? $platformFamily : 'linux-bond';
+    }
+
+    private function requiredStringInput(Request $request, string $field): string
+    {
+        $value = trim((string) $request->input($field, ''));
+        if ($value === '') {
+            throw new \InvalidArgumentException(str_replace('-', '_', $field) . '_required');
+        }
+        return $value;
+    }
+
+    private function requiredPositiveDecimalInput(Request $request, string $field): int
+    {
+        $raw = $request->input($field, null);
+        if (!is_scalar($raw) || (string) $raw === '') {
+            throw new \InvalidArgumentException(str_replace('-', '_', $field) . '_required');
+        }
+        $value = (string) $raw;
+        if (!preg_match('/^[1-9][0-9]*$/', $value)) {
+            throw new \InvalidArgumentException(str_replace('-', '_', $field) . '_invalid');
+        }
+        return (int) $value;
+    }
+
+    private function requiredHashInput(Request $request, string $field): string
+    {
+        $value = $this->requiredStringInput($request, $field);
+        if (!preg_match('/^[a-f0-9]{64}$/i', $value)) {
+            throw new \InvalidArgumentException(str_replace('-', '_', $field) . '_required');
+        }
+        return strtolower($value);
+    }
+
+    private function optionalHashInput(Request $request, string $field): ?string
+    {
+        $value = trim((string) $request->input($field, ''));
+        if ($value === '') {
+            return null;
+        }
+        if (!preg_match('/^[a-f0-9]{64}$/i', $value)) {
+            throw new \InvalidArgumentException(str_replace('-', '_', $field) . '_required');
+        }
+        return strtolower($value);
+    }
+
+    /** @return array<string, mixed> */
+    private function normalizeLeigodOnlyActivationPlanResponse(mixed $result): array
+    {
+        if ($result instanceof LeigodOnlyActivationPlan) {
+            return $this->leigodOnlyActivationPlanResponseFromPayload($result->payload(), $result->hash(), null, []);
+        }
+        if (!is_array($result)) {
+            throw new \InvalidArgumentException('admin_rollout_plan_payload_unavailable');
+        }
+        $planHash = strtolower(trim((string) ($result['plan_hash'] ?? '')));
+        if (!preg_match('/^[a-f0-9]{64}$/i', $planHash)) {
+            throw new \InvalidArgumentException('admin_rollout_plan_hash_unavailable');
+        }
+        $payload = $result['payload'] ?? null;
+        if (!is_array($payload) || $payload === []) {
+            throw new \InvalidArgumentException('admin_rollout_plan_payload_unavailable');
+        }
+        return $this->leigodOnlyActivationPlanResponseFromPayload($payload, $planHash, $result['plan_id'] ?? ($payload['plan_id'] ?? null), $result);
+    }
+
+    /** @param array<string, mixed> $payload @param array<string, mixed> $source @return array<string, mixed> */
+    private function leigodOnlyActivationPlanResponseFromPayload(array $payload, string $planHash, mixed $planId, array $source): array
+    {
+        if ($payload === []) {
+            throw new \InvalidArgumentException('admin_rollout_plan_payload_unavailable');
+        }
+        $response = [
+            'ok' => true,
+            'plan_hash' => strtolower($planHash),
+            'payload' => $payload,
+            'blockers' => LeigodOnlyActivationPlan::stringList($payload['blockers'] ?? ($source['blockers'] ?? [])),
+            'dry_run_only' => (bool) ($payload['dry_run_only'] ?? ($source['dry_run_only'] ?? true)),
+            'scope' => (string) ($payload['scope'] ?? ($source['scope'] ?? 'global')),
+        ];
+        if (is_scalar($planId) && trim((string) $planId) !== '') {
+            $response['plan_id'] = trim((string) $planId);
+        }
+        if (array_key_exists('recorded', $source)) {
+            $response['recorded'] = (bool) $source['recorded'];
+        }
+        return $response;
+    }
+
+    /** @return array<string, mixed> */
+    private function leigodOnlyActivationPayloadFromRequest(Request $request, string $scope, string $planId, string $planHash, string $ownerToken, string $fencingToken, string $platformFamily, string $artifactSnapshotHash): array
+    {
+        $nestedPayload = $this->arrayInput($request, 'activation_payload') ?? [];
+        $payload = [];
+        foreach ($request->body() as $key => $value) {
+            $key = (string) $key;
+            if ($key === 'csrf_token' || $key === 'activation_payload') {
+                continue;
+            }
+            $payload[$key] = $value;
+        }
+        $runtimeContractFields = array_fill_keys(['runtime_row', 'active_runtime_row', 'runtime_contract_row', 'current_runtime_row', 'runtime_contract_json'], true);
+        foreach ($nestedPayload as $key => $value) {
+            $key = (string) $key;
+            if (array_key_exists($key, $payload) && !$this->sameActivationPayloadValue($payload[$key], $value)) {
+                if (array_key_exists($key, $runtimeContractFields)) {
+                    continue;
+                }
+                throw new \InvalidArgumentException('activation_payload_conflict:' . $key);
+            }
+            if (!array_key_exists($key, $payload)) {
+                $payload[$key] = $value;
+            }
+        }
+        $payload['scope'] = $scope;
+        $payload['plan_id'] = $planId;
+        $payload['plan_hash'] = $planHash;
+        $payload['owner_token'] = $ownerToken;
+        $payload['fencing_token'] = $fencingToken;
+        $payload['platform_family'] = $platformFamily;
+        $payload['artifact_snapshot_hash'] = $artifactSnapshotHash;
+        return $payload;
+    }
+
+    private function sameActivationPayloadValue(mixed $left, mixed $right): bool
+    {
+        if (is_array($left) || is_array($right)) {
+            return is_array($left) && is_array($right) && LeigodOnlyActivationPlan::canonicalJson($left) === LeigodOnlyActivationPlan::canonicalJson($right);
+        }
+        if (is_scalar($left) && is_scalar($right)) {
+            return (string) $left === (string) $right;
+        }
+        return $left === $right;
+    }
+
+    /** @param array<string, mixed> $payload @return array<string, mixed> */
+    private function leigodOnlyArtifactGateContext(array $payload, string $scope, string $platformFamily, string $artifactSnapshotHash): array
+    {
+        $context = ['scope' => $scope, 'platform_family' => $platformFamily, 'artifact_snapshot_hash' => $artifactSnapshotHash];
+        foreach (['activation_artifact_keys', 'route_only_helper_keys', 'manifest_package', 'static_mirror', 'expected_pins', 'expected_artifact_pins', 'source_build_provenance', 'expected_capabilities', 'capability_reports', 'test_mode'] as $field) {
+            if (array_key_exists($field, $payload)) {
+                $context[$field] = $payload[$field];
+            }
+        }
+        return $context;
+    }
+
+    /** @param array<string, mixed> $payload @return array<string, mixed> */
+    private function runtimeContractRowFromActivationPayload(Request $request, array $payload): array
+    {
+        $rows = [];
+        $sources = [];
+        $nestedPayload = $this->arrayInput($request, 'activation_payload') ?? [];
+        foreach (['runtime_row', 'active_runtime_row', 'runtime_contract_row', 'current_runtime_row', 'runtime_contract_json'] as $field) {
+            if (array_key_exists($field, $nestedPayload)) {
+                $this->collectRuntimeContractRow($rows, $sources, 'activation_payload.' . $field, $nestedPayload[$field], $field);
+            }
+            if (array_key_exists($field, $request->body())) {
+                $this->collectRuntimeContractRow($rows, $sources, $field, $request->body()[$field], $field);
+            }
+            if (!array_key_exists($field, $nestedPayload) && !array_key_exists($field, $request->body()) && array_key_exists($field, $payload)) {
+                $this->collectRuntimeContractRow($rows, $sources, $field, $payload[$field], $field);
+            }
+        }
+        if ($rows === []) {
+            throw new \InvalidArgumentException('runtime_contract_row_required');
+        }
+        if (count($rows) > 1) {
+            throw new \InvalidArgumentException('runtime_contract_row_conflict:' . implode(',', $sources));
+        }
+        return array_values($rows)[0];
+    }
+
+    /** @param array<string, array<string, mixed>> $rows @param list<string> $sources */
+    private function collectRuntimeContractRow(array &$rows, array &$sources, string $source, mixed $value, string $field): void
+    {
+        $row = $this->arrayValue($value, $field);
+        if ($row === null || $row === []) {
+            return;
+        }
+        $row = $this->runtimeContractPayloadFromRow($row);
+        $canonical = LeigodOnlyActivationPlan::canonicalJson($row);
+        if (!array_key_exists($canonical, $rows)) {
+            $rows[$canonical] = $row;
+            $sources[] = $source;
+        }
+    }
+
+    /** @param array<string, mixed> $row @return array<string, mixed> */
+    private function runtimeContractPayloadFromRow(array $row): array
+    {
+        foreach (['backend_mode', 'client_mode', 'runtime_preference', 'bond_ingress_mode', 'active_family'] as $field) {
+            if (!array_key_exists($field, $row)) {
+                throw new \InvalidArgumentException('runtime_contract_row_required');
+            }
+        }
+        return $row;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function arrayInput(Request $request, string $field): ?array
+    {
+        return $this->arrayValue($request->input($field, null), $field);
+    }
+
+    /** @return array<string, mixed>|null */
+    private function arrayValue(mixed $value, string $field): ?array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+        if (is_string($value) && trim($value) !== '') {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+            throw new \InvalidArgumentException(str_replace('-', '_', $field) . '_invalid_json');
+        }
+        return null;
+    }
+
+    private function assertSuccessfulLeigodOnlyResult(mixed $result, string $label, bool $allowNullSuccess = false): void
+    {
+        if ($result === null && $allowNullSuccess) {
+            return;
+        }
+        if (!is_array($result) || $result === []) {
+            throw new \InvalidArgumentException($label . '_unavailable');
+        }
+        $blockers = $this->strictLeigodOnlyResultBlockers($result, $label);
+        if (!array_key_exists('ok', $result) || $result['ok'] !== true || $blockers !== []) {
+            throw new \InvalidArgumentException($label . '_failed' . ($blockers !== [] ? ':' . implode(',', $blockers) : ''));
+        }
+    }
+
+    /** @param array<string, mixed> $result @return list<string> */
+    private function strictLeigodOnlyResultBlockers(array $result, string $label): array
+    {
+        if (!array_key_exists('blockers', $result)) {
+            return [];
+        }
+        if (!is_array($result['blockers'])) {
+            throw new \InvalidArgumentException($label . '_failed:malformed_blockers');
+        }
+        foreach ($result['blockers'] as $blocker) {
+            if (!is_scalar($blocker)) {
+                throw new \InvalidArgumentException($label . '_failed:malformed_blockers');
+            }
+        }
+        return LeigodOnlyActivationPlan::stringList($result['blockers']);
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function leigodOnlyActivationLockKey(array $payload, ?string $shape = null): string
+    {
+        $shape ??= $this->activationShapeFromPayload($payload);
+        if ($shape === 'retirement') {
+            return 'leigod-only-retirement';
+        }
+        if ($shape === 'normalization') {
+            return 'leigod-only-normalization';
+        }
+        $forwardId = $this->positiveIntValue($payload['forward_id'] ?? null);
+        if ($forwardId > 0) {
+            return 'leigod-only-activation:' . $forwardId;
+        }
+        throw new \InvalidArgumentException('activation_lock_key_required');
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function activationShapeFromPayload(array $payload): string
+    {
+        $explicit = strtolower(trim((string) ($payload['activation_type'] ?? $payload['activation_shape'] ?? '')));
+        if ($explicit !== '') {
+            if (!in_array($explicit, ['standalone', 'normalization', 'retirement'], true)) {
+                throw new \InvalidArgumentException('activation_shape_unknown');
+            }
+            if ($explicit === 'standalone' && ($this->hasRetirementActivationShape($payload) || $this->hasNormalizationActivationShape($payload))) {
+                throw new \InvalidArgumentException('activation_shape_ambiguous');
+            }
+            if ($explicit === 'normalization' && ($this->hasRetirementOnlyActivationMarkers($payload) || $this->positiveIntValue($payload['forward_id'] ?? null) > 0)) {
+                throw new \InvalidArgumentException('activation_shape_ambiguous');
+            }
+            if ($explicit === 'retirement' && $this->positiveIntValue($payload['forward_id'] ?? null) > 0) {
+                throw new \InvalidArgumentException('activation_shape_ambiguous');
+            }
+            return $explicit;
+        }
+
+        $matches = [];
+        if ($this->hasRetirementActivationShape($payload)) {
+            $matches[] = 'retirement';
+        }
+        if (!$this->hasRetirementOnlyActivationMarkers($payload) && $this->hasNormalizationActivationShape($payload)) {
+            $matches[] = 'normalization';
+        }
+        if ($this->positiveIntValue($payload['forward_id'] ?? null) > 0) {
+            $matches[] = 'standalone';
+        }
+        $matches = array_values(array_unique($matches));
+        if ($matches === []) {
+            throw new \InvalidArgumentException('activation_lock_key_required');
+        }
+        if (count($matches) > 1) {
+            throw new \InvalidArgumentException('activation_shape_ambiguous');
+        }
+        return $matches[0];
+    }
+
+    private function positiveIntValue(mixed $value): int
+    {
+        return is_numeric($value) ? (int) $value : 0;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function hasRetirementActivationShape(array $payload): bool
+    {
+        foreach (['batch_hash', 'current_batch_hash', 'retirement_forward_ids', 'cleanup_protocol', 'cleanup_lease_token', 'cleanup_result_token', 'replacement_map'] as $field) {
+            if (!array_key_exists($field, $payload)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function hasRetirementOnlyActivationMarkers(array $payload): bool
+    {
+        foreach (['batch_hash', 'current_batch_hash', 'retirement_forward_ids', 'cleanup_protocol', 'cleanup_lease_token', 'cleanup_result_token', 'replacement_map', 'runtime_retirements', 'active_keep_set'] as $field) {
+            if (array_key_exists($field, $payload)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function hasNormalizationActivationShape(array $payload): bool
+    {
+        foreach (['current_plan_hash', 'affected_forward_ids', 'expected_artifact_pins'] as $field) {
+            if (!array_key_exists($field, $payload)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function callRequiredLeigodOnlyActivationService(array $payload): mixed
+    {
+        $service = $this->leigodOnlyServices['activation'] ?? null;
+        if (!is_object($service)) {
+            throw new ApiException('leigod_only_service_unavailable:activation.activate', 422);
+        }
+        $shape = $this->activationShapeFromPayload($payload);
+        if (method_exists($service, 'activate')) {
+            return $this->invokeLeigodOnlyService($service, 'activate', $payload);
+        }
+        if ($shape === 'normalization' && method_exists($service, 'apply')) {
+            return $this->invokeLeigodOnlyService($service, 'apply', $payload);
+        }
+        throw new ApiException('leigod_only_service_unavailable:activation.activate', 422);
+    }
+
+    private function callLeigodOnlyService(string $serviceKey, string $method, mixed $argument = null): mixed
+    {
+        $service = $this->leigodOnlyServices[$serviceKey] ?? null;
+        if (!is_object($service) || !method_exists($service, $method)) {
+            return null;
+        }
+        return $this->invokeLeigodOnlyService($service, $method, $argument);
+    }
+
+    private function callRequiredLeigodOnlyService(string $serviceKey, string $method, mixed $argument = null): mixed
+    {
+        $service = $this->leigodOnlyServices[$serviceKey] ?? null;
+        if (!is_object($service) || !method_exists($service, $method)) {
+            throw new ApiException('leigod_only_service_unavailable:' . $serviceKey . '.' . $method, 422);
+        }
+        return $this->invokeLeigodOnlyService($service, $method, $argument);
+    }
+
+    private function invokeLeigodOnlyService(object $service, string $method, mixed $argument): mixed
+    {
+        $argument = $this->coerceLeigodOnlyServiceArgument($service, $method, $argument);
+        return is_array($argument) && array_is_list($argument)
+            ? $service->{$method}(...$argument)
+            : $service->{$method}($argument ?? []);
+    }
+
+    private function coerceLeigodOnlyServiceArgument(object $service, string $method, mixed $argument): mixed
+    {
+        if (!is_array($argument) || array_is_list($argument) || $argument instanceof LeigodActivationGateContext || $argument instanceof LeigodNormalizationActivationContext || $argument instanceof LeigodRetirementActivationContext) {
+            return $argument;
+        }
+        try {
+            $reflection = new \ReflectionMethod($service, $method);
+        } catch (\ReflectionException) {
+            return $argument;
+        }
+        $parameters = $reflection->getParameters();
+        if (count($parameters) !== 1) {
+            return $argument;
+        }
+        $type = $parameters[0]->getType();
+        if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+            return $argument;
+        }
+        if ($type->getName() === LeigodActivationGateContext::class) {
+            return LeigodActivationGateContext::fromArray($argument);
+        }
+        if ($type->getName() === LeigodNormalizationActivationContext::class) {
+            return LeigodNormalizationActivationContext::fromArray($argument);
+        }
+        if ($type->getName() === LeigodRetirementActivationContext::class) {
+            return LeigodRetirementActivationContext::fromArray($argument);
+        }
+        return $argument;
+    }
 
     public function republishProvisionEndpoint(Request $request, array $params): Response
     {

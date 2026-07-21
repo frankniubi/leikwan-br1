@@ -63,7 +63,7 @@ class SlaveInstallerHelperTests(unittest.TestCase):
             source,
         )
         self.assertIn("public function slavePreconnectRelay", artifact_controller)
-        self.assertIn("return $this->serveRepoFile('slave-agent/preconnect_relay.py', 'text/x-python; charset=utf-8');", artifact_controller)
+        self.assertIn("return $this->serveRepoFile('slave-agent/preconnect_relay.py', 'text/x-python; charset=utf-8', $request);", artifact_controller)
         self.assertIn("/artifacts/leikwan-preconnect-relay.py", bootstrap)
 
 
