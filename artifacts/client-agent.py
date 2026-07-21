@@ -4507,6 +4507,7 @@ class ClientAgent:
             "master_url": str(self.config.get("master_url", "")),
             "client_id": int(self.config.get("client_id", 0) or 0),
             "service_active": self.systemd_is_active("leikwan-client-agent"),
+            "agent_update_state": self.load_update_state(),
             "update_state": self.load_update_state(),
             "pull_state": self.load_pull_state(),
             "applied": self.load_applied(),
