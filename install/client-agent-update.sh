@@ -80,6 +80,8 @@ payload = dict(existing)
 payload["request_token"] = request_token
 payload["status"] = status
 payload["last_attempt_at"] = time.time()
+payload.setdefault("last_download_bytes", 0)
+payload.setdefault("download_skip", False)
 if error_message:
     payload["last_error"] = error_message
     payload["last_failed_at"] = time.time()
