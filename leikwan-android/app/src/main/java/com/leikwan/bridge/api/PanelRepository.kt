@@ -17,6 +17,7 @@ import com.leikwan.bridge.runtime.ForwardFilter
 import com.leikwan.bridge.net.AppDns
 import com.leikwan.bridge.net.MirrorNoSni
 import okhttp3.OkHttpClient
+import kotlinx.coroutines.CancellationException
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.net.URI
@@ -31,6 +32,7 @@ class PanelRepository(
     private val prefs = prefsOverride ?: Prefs.get(context)
     private val gson = Gson()
 
+    private val hasApiOverride = apiOverride != null
     private var api: PanelApi = apiOverride ?: buildApi(prefs.panelUrl)
     private var cachedForwardConfigs = mutableMapOf<Long, JsonElement>()
     private var cachedForwardContracts = mutableMapOf<Long, ForwardContract>()
@@ -63,9 +65,15 @@ class PanelRepository(
 
     private fun authHeader(): String = "Bearer ${prefs.token}"
 
+    private fun rebuildApiUnlessOverridden(baseUrl: String) {
+        if (!hasApiOverride) {
+            api = buildApi(baseUrl)
+        }
+    }
+
     suspend fun login(panelUrl: String, email: String, password: String): LoginResponse {
         prefs.panelUrl = panelUrl
-        api = buildApi(panelUrl)
+        rebuildApiUnlessOverridden(panelUrl)
         val resp = executeLogin(LoginRequest(email, password))
         if (needsClientSelection(resp)) {
             return resp
@@ -89,7 +97,7 @@ class PanelRepository(
         username: String? = null,
     ): ClientSelectionResponse {
         prefs.panelUrl = panelUrl
-        api = buildApi(panelUrl)
+        rebuildApiUnlessOverridden(panelUrl)
         val token = sessionToken.takeIf { it.isNotBlank() }
             ?: executeLogin(LoginRequest(email, password)).token?.takeIf { it.isNotBlank() }
             ?: throw Exception("Login response missing session token")
@@ -196,7 +204,14 @@ class PanelRepository(
     }
 
     suspend fun pullCatalog(selectedForwardId: Long = prefs.selectedForwardId): ForwardCatalog {
-        runCatching { api.heartbeat(authHeader(), HeartbeatRequest()) }
+        try {
+            api.heartbeat(authHeader(), HeartbeatRequest())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Capability advertisement is best-effort; older or temporarily unavailable
+            // panels must not block the authoritative pull.
+        }
         val resp = api.pullConfigs(authHeader())
         if (!resp.ok) throw Exception("Pull configs failed")
         routeRuleStore.replaceFromPull(
@@ -256,6 +271,8 @@ class PanelRepository(
                 throw Exception(code)
             }
             routeRuleStore.applyServerRule(body.clientRule, local.id)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             routeRuleStore.markPendingError(local.id, e.message ?: "client_rule_write_failed")
             throw e
@@ -275,6 +292,8 @@ class PanelRepository(
                 throw Exception(code)
             }
             routeRuleStore.applyServerRule(body.clientRule, local.id)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             routeRuleStore.markPendingError(ruleId, e.message ?: "client_rule_write_failed")
             throw e
@@ -294,6 +313,8 @@ class PanelRepository(
                 throw Exception(code)
             }
             routeRuleStore.applyServerRule(body.clientRule, local.id)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             routeRuleStore.markPendingError(ruleId, e.message ?: "client_rule_write_failed")
             throw e
@@ -301,10 +322,10 @@ class PanelRepository(
     }
 
     private fun ClientRuleWriteDraft.toRequest(): ClientRuleWriteRequest = ClientRuleWriteRequest(
-        serviceScopeId = serviceScopeId,
-        destinationIp = destinationIp,
+        serviceScopeId = serviceScopeId?.trim(),
+        destinationIp = destinationIp?.trim(),
         destinationPort = destinationPort,
-        directionId = directionId,
+        directionId = directionId?.trim(),
         enabled = enabled,
         syncVersion = syncVersion,
     )

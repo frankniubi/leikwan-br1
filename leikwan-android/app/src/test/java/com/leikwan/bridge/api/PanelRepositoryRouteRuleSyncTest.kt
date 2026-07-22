@@ -10,9 +10,11 @@ import com.leikwan.bridge.clientrules.ClientRuleWriteDraft
 import com.leikwan.bridge.clientrules.PendingClientRuleOperation
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -228,6 +230,133 @@ class PanelRepositoryRouteRuleSyncTest {
     }
 
     @Test
+    fun `heartbeat cancellation stops pull without mutating route rule store`() = runBlocking {
+        api.heartbeatException = CancellationException("scope cancelled")
+        api.pullResponse = PullConfigsResponse(
+            ok = true,
+            client = JsonObject(),
+            forwards = emptyList(),
+            clientRules = listOf(ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", true, "active", 1L)),
+        )
+
+        val thrown = runCatching { repo.pullCatalog() }.exceptionOrNull()
+
+        assertTrue(thrown is CancellationException)
+        assertEquals(listOf("heartbeat"), api.calls)
+        assertTrue(store.current().rules.isEmpty())
+    }
+
+    @Test
+    fun `write cancellation does not mark pending create as server error`() = runBlocking {
+        api.createException = CancellationException("scope cancelled")
+
+        val thrown = runCatching {
+            repo.createClientRule(ClientRuleWriteDraft("svc_scope_7", "93.184.216.34", 443, "dir_sh_jp_1", true))
+        }.exceptionOrNull()
+
+        assertTrue(thrown is CancellationException)
+        val pending = store.current().rules.single()
+        assertEquals(PendingClientRuleOperation.CREATE, pending.pendingOperation)
+        assertEquals(ClientRuleEffectiveState.SYNCING, pending.effectiveState)
+        assertNull(pending.pendingError)
+    }
+
+    @Test
+    fun `delete failure followed by pull restores server-confirmed rule`() = runBlocking {
+        store.replaceFromPull(
+            routeDirections = emptyList(),
+            entitlements = emptyList(),
+            rules = listOf(ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", true, "active", 1L)),
+            bindings = emptyList(),
+            capabilities = null,
+        )
+        api.deleteResponse = Response.success(ClientRuleWriteResponse(ok = false, error = "delete_rejected"))
+
+        val thrown = runCatching { repo.deleteClientRule("rule_1") }.exceptionOrNull()
+
+        assertEquals("delete_rejected", thrown?.message)
+        val errored = store.current().rules.single()
+        assertEquals(ClientRuleEffectiveState.ERROR, errored.effectiveState)
+        assertEquals(PendingClientRuleOperation.NONE, errored.pendingOperation)
+        assertNull(errored.deletedAtMs)
+
+        api.pullResponse = PullConfigsResponse(
+            ok = true,
+            client = JsonObject(),
+            forwards = emptyList(),
+            clientRules = listOf(ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", true, "active", 2L)),
+        )
+
+        repo.pullCatalog()
+
+        val restored = store.current().rules.single()
+        assertEquals(PendingClientRuleOperation.NONE, restored.pendingOperation)
+        assertEquals(ClientRuleEffectiveState.ACTIVE, restored.effectiveState)
+        assertNull(restored.pendingError)
+        assertNull(restored.deletedAtMs)
+        assertTrue(store.activeRulesForScope("svc_scope_7").isNotEmpty())
+    }
+
+    @Test
+    fun `create and update send normalized destination and identifiers`() = runBlocking {
+        api.createResponse = Response.success(
+            ClientRuleWriteResponse(
+                ok = true,
+                clientRule = ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", true, "active", 1L),
+            )
+        )
+
+        repo.createClientRule(ClientRuleWriteDraft(" svc_scope_7 ", " 93.184.216.34 ", 443, " dir_sh_jp_1 ", true))
+
+        assertEquals("svc_scope_7", api.lastCreateRequest?.serviceScopeId)
+        assertEquals("93.184.216.34", api.lastCreateRequest?.destinationIp)
+        assertEquals("dir_sh_jp_1", api.lastCreateRequest?.directionId)
+
+        api.updateResponse = Response.success(
+            ClientRuleWriteResponse(
+                ok = true,
+                clientRule = ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.35", 443, "tcp_udp", "dir_sh_jp_2", true, "active", 2L),
+            )
+        )
+
+        repo.updateClientRule("rule_1", ClientRuleWriteDraft(destinationIp = " 93.184.216.35 ", directionId = " dir_sh_jp_2 ", syncVersion = 1L))
+
+        assertEquals("93.184.216.35", api.lastUpdateRequest?.destinationIp)
+        assertEquals("dir_sh_jp_2", api.lastUpdateRequest?.directionId)
+    }
+
+    @Test
+    fun `api override is retained across login and client selection`() = runBlocking {
+        api.loginResponse = Response.success(
+            LoginResponse(
+                ok = true,
+                token = "session-token",
+                clientId = 7L,
+                clients = listOf(ClientInfo(7L, "phone")),
+                username = "user",
+            )
+        )
+        api.selectResponse = Response.success(ClientSelectionResponse(ok = true, clientId = 7L, clientName = "phone", agentToken = "agent-token-2"))
+
+        repo.login("https://other.example", "user@example.com", "secret")
+
+        assertEquals(listOf("login", "select"), api.calls)
+
+        api.calls.clear()
+        repo.selectClient(
+            panelUrl = "https://third.example",
+            email = "user@example.com",
+            password = "secret",
+            sessionToken = "session-token",
+            clientId = 7L,
+            clients = listOf(ClientInfo(7L, "phone")),
+            username = "user",
+        )
+
+        assertEquals(listOf("select"), api.calls)
+    }
+
+    @Test
     fun `logout clears route rule cache`() = runBlocking {
         store.replaceFromPull(
             routeDirections = listOf(RouteDirectionDto(id = "dir_sh_jp_1", label = "沪日1", status = "available", sortOrder = 10)),
@@ -266,9 +395,15 @@ class PanelRepositoryRouteRuleSyncTest {
 
     private class FakePanelApi : PanelApi {
         var pullResponse = PullConfigsResponse(true, JsonObject(), emptyList())
+        var loginResponse: Response<LoginResponse> = Response.success(LoginResponse(ok = true))
+        var selectResponse: Response<ClientSelectionResponse> = Response.success(
+            ClientSelectionResponse(ok = true, clientId = 7L, clientName = "phone", agentToken = "agent-token-2")
+        )
         var createResponse: Response<ClientRuleWriteResponse> = Response.success(ClientRuleWriteResponse(false, error = "not_configured"))
         var updateResponse: Response<ClientRuleWriteResponse> = Response.success(ClientRuleWriteResponse(false, error = "not_configured"))
         var deleteResponse: Response<ClientRuleWriteResponse> = Response.success(ClientRuleWriteResponse(false, error = "not_configured"))
+        var heartbeatException: Exception? = null
+        var createException: Exception? = null
         val calls = mutableListOf<String>()
         var lastHeartbeatAuth: String? = null
         var lastHeartbeatRequest: HeartbeatRequest? = null
@@ -278,14 +413,21 @@ class PanelRepositoryRouteRuleSyncTest {
         var lastUpdateRequest: ClientRuleWriteRequest? = null
         val deletedRuleIds = mutableListOf<String>()
 
-        override suspend fun login(request: LoginRequest): Response<LoginResponse> = Response.success(LoginResponse(ok = true))
+        override suspend fun login(request: LoginRequest): Response<LoginResponse> {
+            calls += "login"
+            return loginResponse
+        }
 
-        override suspend fun selectClient(request: ClientSelectionRequest): Response<ClientSelectionResponse> = throw UnsupportedOperationException()
+        override suspend fun selectClient(request: ClientSelectionRequest): Response<ClientSelectionResponse> {
+            calls += "select"
+            return selectResponse
+        }
 
         override suspend fun heartbeat(auth: String, request: HeartbeatRequest): HeartbeatResponse {
             calls += "heartbeat"
             lastHeartbeatAuth = auth
             lastHeartbeatRequest = request
+            heartbeatException?.let { throw it }
             return HeartbeatResponse(ok = true)
         }
 
@@ -297,6 +439,7 @@ class PanelRepositoryRouteRuleSyncTest {
         override suspend fun createClientRule(auth: String, request: ClientRuleWriteRequest): Response<ClientRuleWriteResponse> {
             lastWriteAuth = auth
             lastCreateRequest = request
+            createException?.let { throw it }
             return createResponse
         }
 
