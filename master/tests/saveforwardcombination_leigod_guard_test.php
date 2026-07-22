@@ -2,11 +2,11 @@
 declare(strict_types=1);
 
 // saveForwardCombination must reject malformed leigod_mode payloads BEFORE any DB write or
-// republish. leigod_mode (a first-class Forward Mode) derives the leigod self-leg, so the two
-// guards now fire under backend_mode='leigod_mode':
-//   1. leigod_mode with leigod_line_id<=0   -> 'leigod_line_required'
-//   2. leigod_mode with sidecar_point_id<=0 -> message contains 'sidecar'
-// Both throw ApiException (422). Because the guards fire before any persistence, a no-op
+// republish. leigod_mode (a first-class Forward Mode) derives the leigod self-leg:
+//   1. leigod_mode with leigod_line_id<=0                      -> 'leigod_line_required'
+//   2. leigod_mode aggregation with sidecar_point_id<=0        -> message contains 'sidecar'
+// Dedicated leigod_mode/single deliberately permits sidecar_point_id<=0 because the slave can act as
+// the forward node. Guards throw ApiException (422). Because they fire before persistence, a no-op
 // Database fake is sufficient.
 
 namespace Leikwan\Master\Database {
@@ -91,13 +91,24 @@ namespace {
         }
     }
 
-    // Guard 2: leigod with a valid line id but no sidecar point.
+    // Dedicated leigod_mode with a valid line id and no sidecar is valid.
     $payload2 = $base;
     $payload2['leigod_line_id'] = 451;
     $payload2['sidecar_point_id'] = 0;
     try {
         $service->saveForwardCombination($payload2);
-        fail('expected a sidecar-required failure when sidecar_point_id=0 for leigod');
+    } catch (ApiException $e) {
+        fail('dedicated leigod_mode must not require sidecar, got ' . $e->getMessage());
+    }
+
+    // Guard 2: leigod aggregation with a valid line id but no sidecar point.
+    $payload3 = $base;
+    $payload3['leigod_line_id'] = 451;
+    $payload3['client_mode'] = 'mptcp';
+    $payload3['sidecar_point_id'] = 0;
+    try {
+        $service->saveForwardCombination($payload3);
+        fail('expected a sidecar-required failure when sidecar_point_id=0 for leigod aggregation');
     } catch (ApiException $e) {
         if (!str_contains($e->getMessage(), 'sidecar')) {
             fail('expected sidecar-related message, got ' . $e->getMessage());
@@ -109,11 +120,11 @@ namespace {
 
     // An unknown Forward Mode must be rejected. (self_leg_outer_transport is now derived from the
     // mode, so the legacy invalid_self_leg_outer_transport path is unreachable here.)
-    $payload3 = $base;
-    $payload3['leigod_line_id'] = 451;
-    $payload3['backend_mode'] = 'bogus_mode';
+    $payload4 = $base;
+    $payload4['leigod_line_id'] = 451;
+    $payload4['backend_mode'] = 'bogus_mode';
     try {
-        $service->saveForwardCombination($payload3);
+        $service->saveForwardCombination($payload4);
         fail('expected invalid_forward_combination_backend_mode for bogus mode');
     } catch (ApiException $e) {
         if ($e->getMessage() !== 'invalid_forward_combination_backend_mode') {

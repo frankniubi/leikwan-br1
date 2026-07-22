@@ -412,6 +412,50 @@ final class ProvisioningService
         return 0;
     }
 
+    private function combinationUsesAggregation(string $clientMode, string $runtimePreference): bool
+    {
+        return in_array($this->normalizeClientMode($clientMode), ['bond', 'mptcp'], true)
+            || trim($runtimePreference) === 'mptcp_preferred_bond_fallback';
+    }
+
+    private function sidecarRequiredForRuntime(string $backendMode, string $clientMode, string $runtimePreference): bool
+    {
+        return $backendMode === 'cf_mode' || $this->combinationUsesAggregation($clientMode, $runtimePreference);
+    }
+
+    private function activeFamilyForRuntime(string $backendMode, string $clientMode, string $runtimePreference): string
+    {
+        if ($this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference)) {
+            return 'sidecar_aggregation';
+        }
+        if ($backendMode === 'leigod_mode') {
+            return 'leigod_only';
+        }
+        return $this->normalizeClientMode($clientMode);
+    }
+
+    private function targetContractForRuntime(string $backendMode, string $clientMode, string $runtimePreference): string
+    {
+        if ($backendMode === 'leigod_mode' && !$this->combinationUsesAggregation($clientMode, $runtimePreference)) {
+            return 'dedicated_forward_node';
+        }
+        if ($this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference)) {
+            return 'sidecar_aggregation';
+        }
+        return 'direct_forward_node';
+    }
+
+    private function sidecarPointOverseasEligible(array $point): bool
+    {
+        $config = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
+        $scope = strtolower(trim((string) ($config['aggregation_region_scope'] ?? $config['region_scope'] ?? 'overseas')));
+        if (in_array($scope, ['mainland', 'domestic', 'china', 'cn', 'local'], true)) {
+            return false;
+        }
+        $countryCode = strtolower(trim((string) ($config['country_code'] ?? $config['country'] ?? '')));
+        return !in_array($countryCode, ['cn', 'china', 'mainland'], true);
+    }
+
     /**
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
@@ -429,13 +473,8 @@ final class ProvisioningService
         $cfLocationGroupId = (int) ($payload['cf_location_group_id'] ?? 0);
         $clientMode = $this->normalizeClientMode((string) ($payload['client_mode'] ?? 'single'));
         $runtimePreference = trim((string) ($payload['runtime_preference'] ?? 'single'));
-        if ($backendMode === 'leigod_mode') {
-            if (!in_array($clientMode, ['mptcp', 'bond'], true)) {
-                $clientMode = 'mptcp';
-            }
-            if ($clientMode === 'mptcp') {
-                $runtimePreference = 'single';
-            }
+        if ($backendMode === 'leigod_mode' && $clientMode === 'mptcp') {
+            $runtimePreference = 'single';
         }
         $allowPrivateSelfLeg = !in_array(strtolower(trim((string) ($payload['allow_private_self_leg'] ?? '0'))), ['0', 'false', 'no', 'off', ''], true);
         $selfLegScope = trim((string) ($payload['self_leg_scope'] ?? 'none')) ?: 'none';
@@ -493,18 +532,25 @@ final class ProvisioningService
             throw new ApiException('invalid_self_leg_outer_transport', 422, ['self_leg_outer_transport' => $selfLegOuterTransport]);
         }
         $leigodLineId = max(0, (int) ($payload['leigod_line_id'] ?? 0));
+        $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
         if ($selfLegOuterTransport === 'leigod') {
             if ($leigodLineId <= 0) {
                 throw new ApiException('leigod_line_required', 422, []);
             }
-            if ($sidecarPointId <= 0) {
-                throw new ApiException('sidecar_required_for_leigod', 422, []);
+            if ($sidecarRequired && $sidecarPointId <= 0) {
+                throw new ApiException('sidecar_required_for_leigod_aggregation', 422, []);
             }
         } else {
             $leigodLineId = 0;
         }
+        if ($sidecarRequired && $sidecarPointId <= 0) {
+            throw new ApiException('sidecar_required_for_forward_aggregation', 422, ['client_mode' => $clientMode]);
+        }
+        if (!$sidecarRequired) {
+            $sidecarPointId = 0;
+        }
 
-        if ($name === '' || $tenantLabel === '' || $nodeGroupKey === '' || $sidecarPointId <= 0) {
+        if ($name === '' || $tenantLabel === '' || $nodeGroupKey === '') {
             throw new ApiException('invalid_forward_combination_payload', 422, ['payload' => $payload]);
         }
         if (!in_array($backendMode, ['current_mode', 'cf_mode', 'leigod_mode'], true)) {
@@ -521,6 +567,15 @@ final class ProvisioningService
         }
         if ($backendMode !== 'cf_mode') {
             $cfLocationGroupId = 0;
+        }
+        if ($sidecarRequired && $sidecarPointId > 0) {
+            $sidecarPoint = $this->sidecarPointById($sidecarPointId);
+            if ($sidecarPoint === null || (int) ($sidecarPoint['is_active'] ?? 0) !== 1) {
+                throw new ApiException('sidecar_point_not_allowed_for_aggregation', 422, ['sidecar_point_id' => $sidecarPointId]);
+            }
+            if (!$this->sidecarPointOverseasEligible($sidecarPoint)) {
+                throw new ApiException('sidecar_must_be_overseas_for_aggregation', 422, ['sidecar_point_id' => $sidecarPointId]);
+            }
         }
 
         // Panel-minted gost SOCKS credentials shared by the sidecar gost server + slave gost client.
@@ -561,7 +616,7 @@ final class ProvisioningService
             'tenant_badge' => $tenantBadge !== '' ? $tenantBadge : null,
             'node_group_key' => $nodeGroupKey,
             'backend_mode' => $backendMode,
-            'sidecar_point_id' => $sidecarPointId,
+            'sidecar_point_id' => $sidecarPointId > 0 ? $sidecarPointId : null,
             'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
             'client_mode' => $clientMode,
             'runtime_preference' => $runtimePreference,
@@ -658,12 +713,14 @@ final class ProvisioningService
             'UPDATE forwards
              SET backend_mode = :backend_mode,
                  client_mode = :client_mode,
+                 bond_sidecar_point_id = :bond_sidecar_point_id,
                  cf_location_group_id = :cf_location_group_id,
                  updated_at = :updated_at
              WHERE forward_combination_id = :forward_combination_id',
             [
                 'backend_mode' => $backendMode,
                 'client_mode' => $clientMode,
+                'bond_sidecar_point_id' => $sidecarPointId > 0 ? $sidecarPointId : null,
                 'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
                 'updated_at' => $this->now(),
                 'forward_combination_id' => $id,
@@ -693,6 +750,21 @@ final class ProvisioningService
         ) !== null;
     }
 
+    private function planUsesForwardRoutes(int $planId): bool
+    {
+        if ($planId <= 0) {
+            return false;
+        }
+
+        return $this->db->fetchOne(
+            'SELECT id
+             FROM service_plan_forward_routes
+             WHERE plan_id = :plan_id
+             LIMIT 1',
+            ['plan_id' => $planId]
+        ) !== null;
+    }
+
     /**
      * @return array<int, array<string, mixed>>
      */
@@ -706,7 +778,7 @@ final class ProvisioningService
             'SELECT fc.*, sp.name AS sidecar_point_name, cg.name AS cf_location_group_name
              FROM service_plan_forward_combinations spfc
              INNER JOIN forward_combinations fc ON fc.id = spfc.forward_combination_id
-             INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+             LEFT JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
              LEFT JOIN cf_location_groups cg ON cg.id = fc.cf_location_group_id
              WHERE spfc.plan_id = :plan_id
              ORDER BY fc.sort_order ASC, fc.id ASC',
@@ -750,12 +822,46 @@ final class ProvisioningService
              ORDER BY fr.sort_order ASC, fr.id ASC',
             ['plan_id' => $planId]
         );
-        if ($gated !== []) {
+        if ($gated !== [] || $this->planUsesForwardRoutes($planId)) {
             return array_values($gated);
         }
         return array_values($this->db->fetchAll(
             'SELECT * FROM forward_routes WHERE is_active = 1 ORDER BY sort_order ASC, id ASC'
         ));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function visibleForwardRouteForService(int $routeId, int $serviceId): array
+    {
+        if ($routeId <= 0) {
+            throw new ApiException('forward_route_not_allowed', 422, ['forward_route_id' => $routeId]);
+        }
+        foreach ($this->availableForwardRoutesForService($serviceId) as $route) {
+            if ((int) ($route['id'] ?? 0) === $routeId) {
+                return $route;
+            }
+        }
+        throw new ApiException('forward_route_not_allowed', 422, ['forward_route_id' => $routeId]);
+    }
+
+    private function forwardRouteContainsCombination(int $routeId, int $combinationId): bool
+    {
+        if ($routeId <= 0 || $combinationId <= 0) {
+            return false;
+        }
+        return $this->db->fetchOne(
+            'SELECT id FROM forward_route_combinations
+             WHERE forward_route_id = :forward_route_id
+               AND forward_combination_id = :forward_combination_id
+               AND enabled = 1
+             LIMIT 1',
+            [
+                'forward_route_id' => $routeId,
+                'forward_combination_id' => $combinationId,
+            ]
+        ) !== null;
     }
 
     public function availableForwardCombinationsForService(int $serviceId): array
@@ -777,7 +883,7 @@ final class ProvisioningService
         $rows = $this->db->fetchAll(
             'SELECT fc.*, sp.name AS sidecar_point_name, cg.name AS cf_location_group_name
              FROM forward_combinations fc
-             INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+             LEFT JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
              LEFT JOIN cf_location_groups cg ON cg.id = fc.cf_location_group_id
              WHERE fc.is_active = 1
              ORDER BY fc.sort_order ASC, fc.id ASC'
@@ -786,7 +892,8 @@ final class ProvisioningService
 
         return array_values(array_filter($rows, static function (array $row) use ($allowedGroupKeys, $allowedSidecarIds): bool {
             $groupOk = $allowedGroupKeys === [] || in_array((string) ($row['node_group_key'] ?? ''), $allowedGroupKeys, true);
-            $sidecarOk = $allowedSidecarIds === [] || in_array((int) ($row['sidecar_point_id'] ?? 0), $allowedSidecarIds, true);
+            $rowSidecarId = (int) ($row['sidecar_point_id'] ?? 0);
+            $sidecarOk = $allowedSidecarIds === [] || $rowSidecarId <= 0 || in_array($rowSidecarId, $allowedSidecarIds, true);
             return $groupOk && $sidecarOk;
         }));
     }
@@ -800,7 +907,7 @@ final class ProvisioningService
         $rows = $this->db->fetchAll(
             'SELECT fc.*, sp.name AS sidecar_point_name, cg.name AS cf_location_group_name
              FROM forward_combinations fc
-             INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+             LEFT JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
              LEFT JOIN cf_location_groups cg ON cg.id = fc.cf_location_group_id
              ORDER BY fc.sort_order ASC, fc.id ASC'
         );
@@ -819,7 +926,7 @@ final class ProvisioningService
         $row = $this->db->fetchOne(
             'SELECT fc.*, sp.name AS sidecar_point_name, cg.name AS cf_location_group_name
              FROM forward_combinations fc
-             INNER JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
+             LEFT JOIN sidecar_points sp ON sp.id = fc.sidecar_point_id
              LEFT JOIN cf_location_groups cg ON cg.id = fc.cf_location_group_id
              WHERE fc.id = :id LIMIT 1',
             ['id' => $combinationId]
@@ -2413,15 +2520,32 @@ final class ProvisioningService
                 'SELECT g.id, g.group_key, g.name, ' . $descriptionSelect . ',
                         ' . $ingressSelect . ',
                         g.created_at, g.updated_at, COUNT(n.id) AS node_count
-                 FROM service_plan_forward_combinations spfc
-                 INNER JOIN forward_combinations fc ON fc.id = spfc.forward_combination_id
-                 INNER JOIN node_groups g ON g.group_key = fc.node_group_key
+                 FROM (
+                     SELECT fc.node_group_key
+                     FROM service_plan_forward_combinations spfc
+                     INNER JOIN forward_combinations fc ON fc.id = spfc.forward_combination_id
+                     WHERE spfc.plan_id = :plan_id_primary
+                     UNION
+                     SELECT fchg.node_group_key
+                     FROM service_plan_forward_combinations spfc
+                     INNER JOIN forward_combination_helper_groups fchg ON fchg.forward_combination_id = spfc.forward_combination_id
+                     WHERE spfc.plan_id = :plan_id_helper AND fchg.is_active = 1
+                     UNION
+                     SELECT g2.group_key
+                     FROM service_plan_forward_combinations spfc
+                     INNER JOIN forward_combination_slaves fcs ON fcs.forward_combination_id = spfc.forward_combination_id
+                     INNER JOIN nodes n2 ON n2.id = fcs.node_id
+                     INNER JOIN node_groups g2 ON g2.id = n2.group_id
+                     WHERE spfc.plan_id = :plan_id_pinned AND fcs.is_active = 1
+                 ) allowed_groups
+                 INNER JOIN node_groups g ON g.group_key = allowed_groups.node_group_key
                  LEFT JOIN nodes n ON n.group_id = g.id AND (n.status = :active OR n.status = :degraded)
-                 WHERE spfc.plan_id = :plan_id
                  GROUP BY ' . $groupBy . '
                  ORDER BY g.name ASC, g.id ASC',
                 [
-                    'plan_id' => $planId,
+                    'plan_id_primary' => $planId,
+                    'plan_id_helper' => $planId,
+                    'plan_id_pinned' => $planId,
                     'active' => 'active',
                     'degraded' => 'degraded',
                 ]
@@ -3497,8 +3621,10 @@ final class ProvisioningService
             throw new ApiException('forward_not_found', 404);
         }
 
-        $this->revokeForwardEndpoints($forwardId, 'update');
-        return $this->saveForward((int) $forward['service_id'], $forwardId, $payload, $actor);
+        return $this->db->transaction(function () use ($forwardId, $forward, $payload, $actor): array {
+            $this->revokeForwardEndpoints($forwardId, 'update');
+            return $this->saveForward((int) $forward['service_id'], $forwardId, $payload, $actor);
+        });
     }
 
     /**
@@ -3681,16 +3807,25 @@ final class ProvisioningService
         $clientMode = $this->normalizeClientMode((string) $forward['client_mode']);
         $bondIngressMode = $this->normalizeBondIngressMode((string) ($forward['bond_ingress_mode'] ?? 'wss_path_mux'));
         $runtimePreference = trim((string) ($forward['forward_combination_runtime_preference'] ?? 'single'));
-        $publishesBondRuntime = $clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback';
-        $pointConfig = $this->decodeJsonAssoc($forward['bond_sidecar_point_agent_config_json'] ?? null);
-        $pointPortSource = [
+        $backendMode = (string) ($forward['backend_mode'] ?? 'current_mode');
+        $aggregationEnabled = $this->combinationUsesAggregation($clientMode, $runtimePreference);
+        $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+        $activeFamily = $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
+        $targetContract = $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
+        $publishesBondRuntime = $aggregationEnabled && ($clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback');
+        $pointConfig = $sidecarRequired ? $this->decodeJsonAssoc($forward['bond_sidecar_point_agent_config_json'] ?? null) : [];
+        $pointPortSource = $sidecarRequired ? [
             'listen_port' => (int) ($forward['bond_sidecar_legacy_port'] ?? 0),
             'bond_listen_port' => (int) ($forward['bond_sidecar_port'] ?? 0),
             'mptcp_listen_port' => (int) ($forward['mptcp_sidecar_port'] ?? 0),
+        ] : [
+            'listen_port' => 0,
+            'bond_listen_port' => 0,
+            'mptcp_listen_port' => 0,
         ];
         $effectiveBondSidecarPort = $this->sidecarBondListenPort($pointPortSource);
         $effectiveMptcpSidecarPort = $this->sidecarMptcpListenPort($pointPortSource, $pointConfig);
-        $effectiveSidecarTarget = in_array($clientMode, ['bond', 'mptcp'], true)
+        $effectiveSidecarTarget = $sidecarRequired && in_array($clientMode, ['bond', 'mptcp'], true)
             ? $this->resolveSidecarDirectTarget(
                 array_merge($forward, [
                     'bond_sidecar_port' => $effectiveBondSidecarPort,
@@ -3699,8 +3834,8 @@ final class ProvisioningService
                 $clientMode
             )
             : [
-                'host' => (string) ($forward['bond_remote_host'] ?? ''),
-                'port' => isset($forward['bond_remote_port']) && (int) $forward['bond_remote_port'] > 0 ? (int) $forward['bond_remote_port'] : 0,
+                'host' => '',
+                'port' => 0,
             ];
         $ingressGroup = $this->nodeGroupByKey((string) ($forward['node_group_key'] ?? ''));
         $resolvedSniHost = $this->resolveIngressSniHost((string) ($forward['sni_host'] ?? ''), $ingressGroup);
@@ -3713,7 +3848,7 @@ final class ProvisioningService
                 $endpoints
             )
             : null;
-        $mptcpConfig = $clientMode === 'mptcp' ? $this->buildMptcpClientConfig($forward, $endpoints) : null;
+        $mptcpConfig = $sidecarRequired && $clientMode === 'mptcp' ? $this->buildMptcpClientConfig($forward, $endpoints) : null;
         $serviceBandwidthLimitMbps = max(0, (int) ($forward['service_bandwidth_limit_mbps'] ?? 0));
         $lineSpeedLimitMbps = max(0, (int) ($forward['line_speed_limit_mbps'] ?? 0));
         $limitCandidates = array_values(array_filter([$serviceBandwidthLimitMbps, $lineSpeedLimitMbps], static fn(int $value): bool => $value > 0));
@@ -3726,8 +3861,8 @@ final class ProvisioningService
             'service_name' => (string) $forward['service_name'],
             'listen_port' => (int) $forward['listen_port'],
             'target' => $forward['target_host'] . ':' . $forward['target_port'],
-            'bond_sidecar_point_id' => $forward['bond_sidecar_point_id'] !== null ? (int) $forward['bond_sidecar_point_id'] : null,
-            'bond_sidecar_point_name' => (string) ($forward['bond_sidecar_point_name'] ?? ''),
+            'bond_sidecar_point_id' => $sidecarRequired && $forward['bond_sidecar_point_id'] !== null ? (int) $forward['bond_sidecar_point_id'] : null,
+            'bond_sidecar_point_name' => $sidecarRequired ? (string) ($forward['bond_sidecar_point_name'] ?? '') : '',
             'forward_combination_id' => $forward['forward_combination_id'] !== null ? (int) $forward['forward_combination_id'] : null,
             'forward_combination_name' => (string) ($forward['forward_combination_name'] ?? ''),
             'forward_combination_label' => (string) ($forward['forward_combination_label'] ?? ''),
@@ -3744,15 +3879,20 @@ final class ProvisioningService
             'donation_revoke_window_seconds' => (int) ($forward['forward_combination_donation_revoke_window_seconds'] ?? 30),
             'donation_min_open_ports' => (int) ($forward['forward_combination_donation_min_open_ports'] ?? 1),
             'forward_combination_helper_node_group_keys' => $this->forwardCombinationHelperNodeGroupKeys((int) ($forward['forward_combination_id'] ?? 0)),
-            'backend_mode' => (string) ($forward['backend_mode'] ?? 'current_mode'),
+            'contract_version' => 1,
+            'backend_mode' => $backendMode,
+            'active_family' => $activeFamily,
+            'aggregation_enabled' => $aggregationEnabled,
+            'target_contract' => $targetContract,
+            'sidecar_required' => $sidecarRequired,
             'cf_location_group_id' => $forward['cf_location_group_id'] !== null ? (int) $forward['cf_location_group_id'] : null,
-            'bond_sidecar_host' => (string) ($forward['bond_sidecar_host'] ?? ''),
-            'bond_sidecar_port' => $effectiveBondSidecarPort > 0 ? $effectiveBondSidecarPort : null,
-            'mptcp_sidecar_port' => $effectiveMptcpSidecarPort > 0 ? $effectiveMptcpSidecarPort : null,
-            'bond_sidecar_cf_listen_port' => (int) ($forward['bond_sidecar_cf_listen_port'] ?? 0) > 0 ? (int) ($forward['bond_sidecar_cf_listen_port'] ?? 0) : null,
-            'bond_sidecar_cf_sni_host' => (string) ($pointConfig['cf_sni_host'] ?? $pointConfig['cf_sni'] ?? ''),
-            'bond_sidecar_approved_upstream_realizations' => $this->approvedCfUpstreamRealizations($pointConfig),
-            'bond_sidecar_point_agent_config_json' => (string) ($forward['bond_sidecar_point_agent_config_json'] ?? ''),
+            'bond_sidecar_host' => $sidecarRequired ? (string) ($forward['bond_sidecar_host'] ?? '') : '',
+            'bond_sidecar_port' => $sidecarRequired && $effectiveBondSidecarPort > 0 ? $effectiveBondSidecarPort : null,
+            'mptcp_sidecar_port' => $sidecarRequired && $effectiveMptcpSidecarPort > 0 ? $effectiveMptcpSidecarPort : null,
+            'bond_sidecar_cf_listen_port' => $sidecarRequired && (int) ($forward['bond_sidecar_cf_listen_port'] ?? 0) > 0 ? (int) ($forward['bond_sidecar_cf_listen_port'] ?? 0) : null,
+            'bond_sidecar_cf_sni_host' => $sidecarRequired ? (string) ($pointConfig['cf_sni_host'] ?? $pointConfig['cf_sni'] ?? '') : '',
+            'bond_sidecar_approved_upstream_realizations' => $sidecarRequired ? $this->approvedCfUpstreamRealizations($pointConfig) : [],
+            'bond_sidecar_point_agent_config_json' => $sidecarRequired ? (string) ($forward['bond_sidecar_point_agent_config_json'] ?? '') : '',
             'line_client_agent_config_json' => (string) ($forward['line_client_agent_config_json'] ?? ''),
             'bond_remote_host' => (string) ($effectiveSidecarTarget['host'] ?? $forward['bond_remote_host'] ?? ''),
             'bond_remote_port' => (int) ($effectiveSidecarTarget['port'] ?? $forward['bond_remote_port'] ?? 0) > 0 ? (int) ($effectiveSidecarTarget['port'] ?? $forward['bond_remote_port'] ?? 0) : null,
@@ -4264,14 +4404,27 @@ final class ProvisioningService
     {
         unset($payload['endpoint_count']);
 
-        $forwardCombinationId = (int) ($payload['forward_combination_id'] ?? 0);
-        $forwardRouteId = (int) ($payload['forward_route_id'] ?? 0);
-        if ($forwardCombinationId <= 0 && $forwardRouteId > 0) {
-            // Route selected: seed the forward from the route's primary (lowest sort_order enabled)
-            // combination so the existing combo-based realization keeps working. The slave's basis
-            // selector (Forward Route racing) may later promote a different enabled combo at runtime.
-            $forwardCombinationId = $this->primaryCombinationIdForRoute($forwardRouteId);
+        $existingForward = null;
+        if ($forwardId !== null) {
+            $existingForward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
+            if ($existingForward === null) {
+                throw new ApiException('forward_not_found', 404);
+            }
         }
+
+        $hasForwardCombinationPayload = array_key_exists('forward_combination_id', $payload);
+        $hasForwardRoutePayload = array_key_exists('forward_route_id', $payload);
+        $catalogPlacementPayloadProvided = $hasForwardCombinationPayload || $hasForwardRoutePayload;
+        $forwardCombinationId = $catalogPlacementPayloadProvided
+            ? (int) ($payload['forward_combination_id'] ?? 0)
+            : (int) ($existingForward['forward_combination_id'] ?? 0);
+        $forwardRouteId = $catalogPlacementPayloadProvided
+            ? (int) ($payload['forward_route_id'] ?? 0)
+            : (int) ($existingForward['forward_route_id'] ?? 0);
+        $catalogPlacementRequested = $forwardCombinationId > 0 || $forwardRouteId > 0;
+        $catalogPlacementClearRequested = $catalogPlacementPayloadProvided
+            && !$catalogPlacementRequested
+            && ((int) ($existingForward['forward_combination_id'] ?? 0) > 0 || (int) ($existingForward['forward_route_id'] ?? 0) > 0);
         $backendMode = trim((string) ($payload['backend_mode'] ?? 'current_mode'));
         $cfLocationGroupId = (int) ($payload['cf_location_group_id'] ?? 0);
         $listenPort = (int) ($payload['listen_port'] ?? 0);
@@ -4283,6 +4436,7 @@ final class ProvisioningService
         $bondSidecarPointId = (int) ($payload['bond_sidecar_point_id'] ?? 0);
         $transportMode = (string) ($payload['transport_mode'] ?? $this->config->get('DEFAULT_TRANSPORT_MODE', 'tcp+udp'));
         $clientMode = $this->normalizeClientMode((string) ($payload['client_mode'] ?? $this->config->get('DEFAULT_CLIENT_MODE', 'single')));
+        $forwardRuntimePreference = 'single';
         $lineClientId = (int) ($payload['line_client_id'] ?? 0);
         $lineClientGroupId = (int) ($payload['line_client_group_id'] ?? 0);
         $lineGroupMode = trim((string) ($payload['line_group_mode'] ?? 'selected'));
@@ -4290,16 +4444,15 @@ final class ProvisioningService
         $forwardChainId = (int) ($payload['forward_chain_id'] ?? 0);
         $sniHost = trim((string) ($payload['sni_host'] ?? ''));
         $pathPrefix = trim((string) ($payload['path_prefix'] ?? ''));
-        $nodeGroup = trim((string) ($payload['node_group'] ?? $this->config->get('DEFAULT_NODE_GROUP', 'default')));
+        $nodeGroup = trim((string) ($payload['node_group'] ?? ($existingForward['node_group_key'] ?? $this->config->get('DEFAULT_NODE_GROUP', 'default'))));
         $specificNodeId = null;
-        if (str_starts_with($nodeGroup, '_user_node_')) {
-            $specificNodeId = (int) substr($nodeGroup, strlen('_user_node_'));
-            $nodeGroup = '';
-        }
+        $specificNode = null;
         $publicPort = (int) ($payload['public_port'] ?? 0);
         $cdnHost = trim((string) ($payload['cdn_host'] ?? ''));
         $filterProfile = (string) ($payload['filter_profile'] ?? 'off');
-        $customEndpointIdsJson = $this->normalizeJsonField($payload['custom_endpoint_ids_json'] ?? null);
+        $customEndpointIdsJson = array_key_exists('custom_endpoint_ids_json', $payload)
+            ? $this->normalizeJsonField($payload['custom_endpoint_ids_json'])
+            : ($existingForward['custom_endpoint_ids_json'] ?? null);
         $selectedLineClientGroupIds = [];
         foreach ((array) ($payload['line_client_group_ids'] ?? $payload['line_client_group_ids_json'] ?? []) as $groupId) {
             $casted = (int) $groupId;
@@ -4317,17 +4470,48 @@ final class ProvisioningService
             throw new ApiException('service_not_found', 404);
         }
 
+        if ($forwardRouteId > 0) {
+            $this->visibleForwardRouteForService($forwardRouteId, $serviceId);
+            if ($forwardCombinationId <= 0) {
+                // Route selected: seed the forward from the route's primary (lowest sort_order enabled)
+                // combination so the existing combo-based realization keeps working. The slave's basis
+                // selector (Forward Route racing) may later promote a different enabled combo at runtime.
+                $forwardCombinationId = $this->primaryCombinationIdForRoute($forwardRouteId);
+                if ($forwardCombinationId <= 0) {
+                    throw new ApiException('forward_route_has_no_enabled_combination', 422, ['forward_route_id' => $forwardRouteId]);
+                }
+            } elseif (!$this->forwardRouteContainsCombination($forwardRouteId, $forwardCombinationId)) {
+                throw new ApiException('forward_route_combination_mismatch', 422, [
+                    'forward_route_id' => $forwardRouteId,
+                    'forward_combination_id' => $forwardCombinationId,
+                ]);
+            }
+        }
+
         if ($forwardCombinationId > 0) {
             $combination = $this->visibleForwardCombinationForService($forwardCombinationId, $serviceId);
             $backendMode = (string) ($combination['backend_mode'] ?? 'current_mode');
+            $combinationRuntimePreference = trim((string) ($combination['runtime_preference'] ?? 'single'));
             $clientMode = $this->normalizeClientMode((string) ($combination['client_mode'] ?? 'single'));
             if (!in_array($clientMode, ['single', 'bond', 'mptcp'], true)) {
                 throw new ApiException('invalid_forward_combination_client_mode', 422, ['client_mode' => $clientMode]);
             }
+            $specificNodeId = null;
+            $specificNode = null;
             $nodeGroup = (string) ($combination['node_group_key'] ?? '');
             $bondSidecarPointId = (int) ($combination['sidecar_point_id'] ?? 0);
+            $forwardRuntimePreference = $combinationRuntimePreference !== '' ? $combinationRuntimePreference : 'single';
             $bondIngressMode = $this->normalizeBondIngressMode((string) ($combination['bond_ingress_mode'] ?? 'plain_tcp_mux'));
             $cfLocationGroupId = $backendMode === 'cf_mode' ? (int) ($combination['cf_location_group_id'] ?? 0) : 0;
+        } else {
+            if (array_key_exists('node_group', $payload) && !$catalogPlacementRequested) {
+                $specificNodeId = $this->specificNodeIdFromNodeGroupSelector($nodeGroup);
+            } elseif ($forwardId !== null && !$catalogPlacementRequested && !$catalogPlacementClearRequested) {
+                $specificNodeId = $this->specificNodeIdFromCustomEndpointIds($customEndpointIdsJson);
+            }
+            if ($specificNodeId !== null) {
+                $nodeGroup = '';
+            }
         }
 
         $availableClients = $this->availableClientsForService($serviceId);
@@ -4412,9 +4596,27 @@ final class ProvisioningService
         }
 
         $allowedGroups = $this->allowedNodeGroupsForPlan((int) ($service['plan_id'] ?? 0));
+        $allowedGroupKeys = array_map(static fn(array $group): string => (string) ($group['group_key'] ?? ''), $allowedGroups);
         $endpointGroupKeys = [];
 
-        if ($forwardChainId > 0) {
+        if ($specificNodeId !== null) {
+            $specificNode = $this->specificNodeForForward($specificNodeId, $serviceId);
+            if ($specificNode === null) {
+                throw new ApiException('specific_node_not_allowed', 404, ['node_id' => $specificNodeId]);
+            }
+            $nodeGroup = trim((string) ($specificNode['node_group_key'] ?? ''));
+            if ($nodeGroup === '') {
+                throw new ApiException('specific_node_no_group', 422, ['node_id' => $specificNodeId]);
+            }
+            $specificPublicHost = $this->resolveNodePublicHost($specificNode);
+            if ($specificPublicHost === '') {
+                throw new ApiException('specific_node_no_public_host', 409, ['node_id' => $specificNodeId]);
+            }
+            $specificNode['resolved_public_host'] = $specificPublicHost;
+            $endpointMode = 'slave_group';
+            $forwardChainId = 0;
+            $endpointGroupKeys = [$nodeGroup];
+        } elseif ($forwardChainId > 0) {
             $chain = $this->db->fetchOne('SELECT * FROM forward_chains WHERE id = :id LIMIT 1', ['id' => $forwardChainId]);
             if ($chain === null || (int) ($chain['is_active'] ?? 0) !== 1) {
                 throw new ApiException('forward_chain_not_found', 404, ['forward_chain_id' => $forwardChainId]);
@@ -4470,6 +4672,21 @@ final class ProvisioningService
             $endpointGroupKeys = array_values(array_unique(array_filter($endpointGroupKeys, static fn(string $value): bool => $value !== '')));
         }
 
+        if ($allowedGroups !== [] && $endpointGroupKeys !== []) {
+            if (($nodeGroup === '' || $nodeGroup === 'default') && $endpointMode !== 'forward_chain') {
+                $nodeGroup = $allowedGroupKeys[0];
+                $endpointGroupKeys = [$nodeGroup];
+            }
+            foreach ($endpointGroupKeys as $groupKey) {
+                if (!in_array($groupKey, $allowedGroupKeys, true)) {
+                    throw new ApiException('node_group_not_allowed', 422, [
+                        'requested_node_group' => $groupKey,
+                        'allowed_node_groups' => $allowedGroupKeys,
+                    ]);
+                }
+            }
+        }
+
         $defaultClient = $selectedClient ?? ($candidateClients[0] ?? null);
         $ingressGroupKey = $nodeGroup !== '' ? $nodeGroup : ($endpointGroupKeys[0] ?? '');
         $ingressGroup = null;
@@ -4515,21 +4732,26 @@ final class ProvisioningService
             throw new ApiException('invalid_forward_payload', 422, ['payload' => $payload]);
         }
 
-        if (in_array($clientMode, ['bond', 'mptcp'], true)) {
-            if ($bondSidecarPointId > 0) {
-                $sidecarPoint = $this->visibleSidecarPointForUser($bondSidecarPointId, (int) ($service['user_id'] ?? 0));
-                if ($sidecarPoint === null || (int) ($sidecarPoint['is_active'] ?? 0) !== 1) {
-                    throw new ApiException('bond_sidecar_point_not_allowed', 422, ['bond_sidecar_point_id' => $bondSidecarPointId]);
-                }
-                if ($bondRemoteHost === '') {
-                    $bondRemoteHost = trim((string) ($sidecarPoint['sidecar_host'] ?? ''));
-                }
-                $selectedSidecarPort = $clientMode === 'mptcp'
-                    ? $this->sidecarMptcpListenPort($sidecarPoint, $this->decodeJsonAssoc($sidecarPoint['agent_config_json'] ?? null))
-                    : $this->sidecarBondListenPort($sidecarPoint);
-                if ($selectedSidecarPort > 0) {
-                    $bondRemotePort = $selectedSidecarPort;
-                }
+        $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $forwardRuntimePreference);
+        if ($sidecarRequired) {
+            if ($bondSidecarPointId <= 0) {
+                throw new ApiException('bond_sidecar_point_required_for_aggregation', 422, ['client_mode' => $clientMode]);
+            }
+            $sidecarPoint = $this->visibleSidecarPointForUser($bondSidecarPointId, (int) ($service['user_id'] ?? 0));
+            if ($sidecarPoint === null || (int) ($sidecarPoint['is_active'] ?? 0) !== 1) {
+                throw new ApiException('bond_sidecar_point_not_allowed', 422, ['bond_sidecar_point_id' => $bondSidecarPointId]);
+            }
+            if (!$this->sidecarPointOverseasEligible($sidecarPoint)) {
+                throw new ApiException('sidecar_must_be_overseas_for_aggregation', 422, ['bond_sidecar_point_id' => $bondSidecarPointId]);
+            }
+            if ($bondRemoteHost === '') {
+                $bondRemoteHost = trim((string) ($sidecarPoint['sidecar_host'] ?? ''));
+            }
+            $selectedSidecarPort = $clientMode === 'mptcp'
+                ? $this->sidecarMptcpListenPort($sidecarPoint, $this->decodeJsonAssoc($sidecarPoint['agent_config_json'] ?? null))
+                : $this->sidecarBondListenPort($sidecarPoint);
+            if ($selectedSidecarPort > 0) {
+                $bondRemotePort = $selectedSidecarPort;
             }
             $bondRemote = $this->resolveBondRemoteTarget([
                 'bond_remote_host' => $bondRemoteHost,
@@ -4540,22 +4762,8 @@ final class ProvisioningService
             $this->bondTokenSecret($service);
         } else {
             $bondSidecarPointId = 0;
-        }
-
-        if ($allowedGroups !== [] && $endpointGroupKeys !== []) {
-            $allowedGroupKeys = array_map(static fn(array $group): string => (string) $group['group_key'], $allowedGroups);
-            if (($nodeGroup === '' || $nodeGroup === 'default') && $endpointMode !== 'forward_chain') {
-                $nodeGroup = $allowedGroupKeys[0];
-                $endpointGroupKeys = [$nodeGroup];
-            }
-            foreach ($endpointGroupKeys as $groupKey) {
-                if (!in_array($groupKey, $allowedGroupKeys, true)) {
-                    throw new ApiException('node_group_not_allowed', 422, [
-                        'requested_node_group' => $groupKey,
-                        'allowed_node_groups' => $allowedGroupKeys,
-                    ]);
-                }
-            }
+            $bondRemoteHost = '';
+            $bondRemotePort = 0;
         }
 
         if ($endpointMode === 'direct') {
@@ -4593,14 +4801,19 @@ final class ProvisioningService
             }
         }
 
-        if ($allowedGroups !== [] && $nodeGroup !== '' && !in_array($nodeGroup, array_map(static fn(array $group): string => (string) $group['group_key'], $allowedGroups), true)) {
+        if ($specificNodeId !== null) {
+            $endpointGroupKeys = [$nodeGroup];
+        }
+
+        if ($allowedGroups !== [] && $nodeGroup !== '' && !in_array($nodeGroup, $allowedGroupKeys, true)) {
                 throw new ApiException('node_group_not_allowed', 422, [
                     'requested_node_group' => $nodeGroup,
-                    'allowed_node_groups' => array_map(static fn(array $group): string => (string) $group['group_key'], $allowedGroups),
+                    'allowed_node_groups' => $allowedGroupKeys,
                 ]);
         }
 
         $endpointCount = $specificNodeId !== null ? 1 : $this->panelManagedEndpointCount($clientMode, $endpointGroupKeys, $serviceId);
+        $customEndpointIdsJson = $this->customEndpointIdsJsonWithSpecificNode($customEndpointIdsJson, $specificNodeId);
 
         if ($forwardId === null) {
             $forwardId = $this->db->insert('forwards', [
@@ -4710,43 +4923,10 @@ final class ProvisioningService
 
         $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
 
-        // Specific user-node bypass: publish directly to the requested node
-        if ($specificNodeId !== null) {
-            $specificNode = $this->db->fetchOne('SELECT * FROM nodes WHERE id = :id LIMIT 1', ['id' => $specificNodeId]);
-            if ($specificNode === null) {
-                throw new ApiException('specific_node_not_found', 404, ['node_id' => $specificNodeId]);
-            }
-            $specificPublicHost = $this->resolveNodePublicHost($specificNode);
-            if ($specificPublicHost === '') {
-                throw new ApiException('specific_node_no_public_host', 409, ['node_id' => $specificNodeId]);
-            }
-            $specificNode['resolved_public_host'] = $specificPublicHost;
-            $directSidecarTarget = in_array($clientMode, ['bond', 'mptcp'], true)
-                ? $this->resolveSidecarDirectTarget($forward, $clientMode)
-                : null;
-            $publishTarget = $directSidecarTarget !== null
-                ? ($directSidecarTarget['host'] . ':' . $directSidecarTarget['port'])
-                : $forward['target_host'] . ':' . $forward['target_port'];
-            $endpointId = $this->db->insert('service_endpoints', [
-                'forward_id' => $forwardId,
-                'node_id' => $specificNodeId,
-                'public_host' => $specificPublicHost,
-                'public_ip' => (string) ($specificNode['public_ip'] ?? ''),
-                'public_port' => (int) $forward['public_port'],
-                'cdn_host' => (string) ($forward['cdn_host'] ?? ''),
-                'priority' => 10,
-                'weight' => 100,
-                'health_status' => 'pending',
-                'last_error' => null,
-                'created_at' => $this->now(),
-                'updated_at' => $this->now(),
-            ]);
-            $this->queueTask($specificNodeId, 'publish', $serviceId, $forwardId, $endpointId, $this->publishTaskPayloadForForward($forward, $specificNode, $endpointId));
-            return $this->buildClientConfig($forwardId);
-        }
-
         $desiredEndpointCount = max((int) $forward['endpoint_count'], count($endpointGroupKeys));
-        $nodes = $this->pickNodesForGroups($endpointGroupKeys, $desiredEndpointCount, $serviceId);
+        $nodes = $specificNodeId !== null && is_array($specificNode)
+            ? [$specificNode]
+            : $this->pickNodesForGroups($endpointGroupKeys, $desiredEndpointCount, $serviceId);
         $reachableNodes = [];
         $skippedNodes = [];
         foreach ($nodes as $node) {
@@ -6062,7 +6242,8 @@ final class ProvisioningService
         }
         $groupKeys = $this->orderedHelperGroupKeysForForward($forward);
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
-        $desiredCount = $this->panelManagedEndpointCount($clientMode, $groupKeys, (int) ($forward['service_id'] ?? 0) ?: null);
+        $serviceId = (int) ($forward['service_id'] ?? 0);
+        $desiredCount = $this->panelManagedEndpointCount($clientMode, $groupKeys, $serviceId ?: null);
         $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
         if ($combinationId > 0) {
             $combination = $this->forwardCombinationById($combinationId) ?? [];
@@ -6073,7 +6254,13 @@ final class ProvisioningService
                 array_filter($selectedSlaves, static fn(array $candidate): bool => ($candidate['candidate_source'] ?? '') === 'rented_node')
             ));
         } else {
-            $desiredNodes = $this->pickNodesForGroups($groupKeys, $desiredCount, (int) ($forward['service_id'] ?? 0) ?: null);
+            $specificNodeId = $this->specificNodeIdFromCustomEndpointIds($forward['custom_endpoint_ids_json'] ?? null);
+            if ($specificNodeId !== null) {
+                $specificNode = $this->specificNodeForForward($specificNodeId, $serviceId);
+                $desiredNodes = is_array($specificNode) ? [$specificNode] : [];
+            } else {
+                $desiredNodes = $this->pickNodesForGroups($groupKeys, $desiredCount, $serviceId ?: null);
+            }
         }
         $reachableNodes = [];
         foreach ($desiredNodes as $node) {
@@ -6610,12 +6797,16 @@ final class ProvisioningService
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
         $bondIngressMode = $this->normalizeBondIngressMode((string) ($forward['bond_ingress_mode'] ?? 'wss_path_mux'));
         $runtimePreference = $this->runtimePreferenceForForward($forward);
-        $publishesBondRuntime = $clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback';
         $backendMode = (string) ($forward['backend_mode'] ?? 'current_mode');
+        $aggregationEnabled = $this->combinationUsesAggregation($clientMode, $runtimePreference);
+        $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+        $activeFamily = $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
+        $targetContract = $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
+        $publishesBondRuntime = $aggregationEnabled && ($clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback');
         $plainTcpIngress = $publishesBondRuntime && $bondIngressMode === 'plain_tcp_mux';
         $routeKey = (string) ($forward['path_prefix'] ?? '');
         $directTargetMode = $publishesBondRuntime ? 'bond' : $clientMode;
-        $directSidecarTarget = in_array($directTargetMode, ['bond', 'mptcp'], true)
+        $directSidecarTarget = $sidecarRequired && in_array($directTargetMode, ['bond', 'mptcp'], true)
             ? $this->resolveSidecarDirectTarget($forward, $directTargetMode)
             : null;
         $staticSidecarUplinks = $directSidecarTarget !== null
@@ -6645,7 +6836,15 @@ final class ProvisioningService
             'target' => $publishTarget,
             'origin_group_key' => (string) ($node['node_group_key'] ?? $node['group_key'] ?? ''),
             'forward_combination_id' => ($forward['forward_combination_id'] ?? null) !== null ? (int) $forward['forward_combination_id'] : null,
+            'contract_version' => 1,
             'backend_mode' => $backendMode,
+            'client_mode' => $clientMode,
+            'runtime_preference' => $runtimePreference,
+            'bond_ingress_mode' => $bondIngressMode,
+            'active_family' => $activeFamily,
+            'aggregation_enabled' => $aggregationEnabled,
+            'target_contract' => $targetContract,
+            'sidecar_required' => $sidecarRequired,
             'publish_bond_runtime' => $publishesBondRuntime,
             'cf_mode' => $backendMode === 'cf_mode'
                 ? $this->buildCfModePayload($forward, $node)
@@ -6893,9 +7092,105 @@ final class ProvisioningService
         return $this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id', ['id' => $planId]) ?? [];
     }
 
+    private function specificNodeIdFromNodeGroupSelector(string $nodeGroup): ?int
+    {
+        if (!str_starts_with($nodeGroup, '_user_node_')) {
+            return null;
+        }
+        $suffix = substr($nodeGroup, strlen('_user_node_'));
+        if (!preg_match('/^[1-9]\d*$/', $suffix)) {
+            throw new ApiException('invalid_specific_node_selector', 422, ['node_group' => $nodeGroup]);
+        }
+        return (int) $suffix;
+    }
+
+    private function specificNodeIdFromCustomEndpointIds(mixed $value): ?int
+    {
+        $decoded = $this->decodeCustomEndpointIdsJson($value);
+        if (!array_key_exists('specific_node_id', $decoded)) {
+            return null;
+        }
+        $nodeId = $decoded['specific_node_id'];
+        if (is_int($nodeId) && $nodeId > 0) {
+            return $nodeId;
+        }
+        if (is_string($nodeId) && preg_match('/^[1-9]\d*$/', $nodeId) === 1) {
+            return (int) $nodeId;
+        }
+        throw new ApiException('invalid_specific_node_metadata', 422, ['specific_node_id' => $nodeId]);
+    }
+
+    private function customEndpointIdsJsonWithSpecificNode(mixed $value, ?int $specificNodeId): ?string
+    {
+        $decoded = $this->decodeCustomEndpointIdsJson($value);
+        unset($decoded['specific_node_id']);
+        if ($specificNodeId !== null) {
+            $decoded['specific_node_id'] = $specificNodeId;
+        }
+        return $decoded !== [] ? $this->normalizeJsonField($decoded) : null;
+    }
+
     /**
-     * @return array<int, array<string, mixed>>
+     * @return array<string|int, mixed>
      */
+    private function decodeCustomEndpointIdsJson(mixed $value): array
+    {
+        if ($value === null || $value === '') {
+            return [];
+        }
+        if (is_array($value)) {
+            return $value;
+        }
+        if (!is_string($value)) {
+            throw new ApiException('invalid_custom_endpoint_ids_json', 422);
+        }
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return [];
+        }
+        $decoded = json_decode($trimmed, true);
+        if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
+            throw new ApiException('invalid_custom_endpoint_ids_json', 422);
+        }
+        return $decoded;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function specificNodeForForward(int $nodeId, int $serviceId): ?array
+    {
+        if ($nodeId <= 0 || $serviceId <= 0) {
+            return null;
+        }
+        $params = [
+            'id' => $nodeId,
+            'active' => 'active',
+            'degraded' => 'degraded',
+            'owner_service_id' => $serviceId,
+            'shared' => 'group_shared',
+            'svc_id_for_group' => $serviceId,
+        ];
+        $freshnessSql = $this->nodeSelectionFreshnessSql($params);
+
+        return $this->db->fetchOne(
+            'SELECT n.*, g.group_key AS node_group_key
+             FROM nodes n
+             LEFT JOIN node_groups g ON g.id = n.group_id
+             WHERE n.id = :id
+               AND (n.status = :active OR n.status = :degraded)
+               AND (n.owner_service_id IS NULL OR n.owner_service_id = :owner_service_id
+                    OR (n.sharing_mode = :shared AND n.user_slave_group_id IN (
+                        SELECT m.group_id FROM user_slave_group_members m
+                        INNER JOIN services s ON s.user_id = m.user_id
+                        WHERE s.id = :svc_id_for_group
+                    )))'
+            . $freshnessSql .
+            ' LIMIT 1',
+            $params
+        );
+    }
+
     private function pickNodes(string $groupKey, int $count, ?int $serviceId = null): array
     {
         $params = [
@@ -7227,8 +7522,15 @@ final class ProvisioningService
 
         $ownerClause = '';
         if ($serviceId !== null) {
-            $ownerClause = ' AND (n.owner_service_id IS NULL OR n.owner_service_id = :owner_service_id)';
+            $ownerClause = ' AND (n.owner_service_id IS NULL OR n.owner_service_id = :owner_service_id
+                OR (n.sharing_mode = :shared AND n.user_slave_group_id IN (
+                    SELECT m.group_id FROM user_slave_group_members m
+                    INNER JOIN services s ON s.user_id = m.user_id
+                    WHERE s.id = :svc_id_for_group
+                )))';
             $params['owner_service_id'] = $serviceId;
+            $params['shared'] = 'group_shared';
+            $params['svc_id_for_group'] = $serviceId;
         }
         $freshnessClause = $this->nodeSelectionFreshnessSql($params);
 

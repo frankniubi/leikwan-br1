@@ -73,6 +73,78 @@ def truthy(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def contract_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"", "0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def forward_contract_is_sidecar_aggregation(forward: dict) -> bool:
+    if not isinstance(forward, dict):
+        return False
+    active_family = str(forward.get("active_family", "") or "").strip().lower()
+    target_contract = str(forward.get("target_contract", "") or "").strip().lower()
+    sidecar_required = contract_bool(forward.get("sidecar_required"))
+    aggregation_enabled = contract_bool(forward.get("aggregation_enabled"))
+    if active_family == "sidecar_aggregation" or target_contract == "sidecar_aggregation":
+        return True
+    if target_contract == "dedicated_forward_node" and sidecar_required is False and aggregation_enabled is False:
+        return False
+    if active_family == "leigod_only" and sidecar_required is False and aggregation_enabled is False:
+        return False
+    return sidecar_required is True or aggregation_enabled is True
+
+
+def forward_contract_is_dedicated_leigod(forward: dict) -> bool:
+    if not isinstance(forward, dict) or forward_contract_is_sidecar_aggregation(forward):
+        return False
+    backend_mode = str(forward.get("backend_mode", "") or "").strip().lower()
+    active_family = str(forward.get("active_family", "") or "").strip().lower()
+    target_contract = str(forward.get("target_contract", "") or "").strip().lower()
+    sidecar_required = contract_bool(forward.get("sidecar_required"))
+    aggregation_enabled = contract_bool(forward.get("aggregation_enabled"))
+    no_sidecar = sidecar_required is False and aggregation_enabled is False
+    if target_contract == "dedicated_forward_node" and no_sidecar:
+        return True
+    if backend_mode == "leigod_mode" and (active_family == "leigod_only" or no_sidecar):
+        return True
+    return False
+
+
+def canonicalize_forward_runtime_contract(forward: dict) -> dict:
+    normalized = dict(forward)
+    if not forward_contract_is_dedicated_leigod(normalized):
+        return normalized
+    normalized["mode"] = "single"
+    normalized["client_mode"] = "single"
+    normalized["runtime_preference"] = "single"
+    normalized["active_family"] = "leigod_only"
+    normalized["target_contract"] = "dedicated_forward_node"
+    normalized["aggregation_enabled"] = False
+    normalized["sidecar_required"] = False
+    for key in (
+        "bonding",
+        "mptcp",
+        "bond_remote_host",
+        "bond_remote_port",
+        "sidecar_uplink",
+        "sidecar_uplink_selector",
+        "publish_bond_runtime",
+    ):
+        normalized.pop(key, None)
+    for key in list(normalized.keys()):
+        if key.startswith("bond_sidecar_") or key.startswith("mptcp_sidecar_"):
+            normalized.pop(key, None)
+    return normalized
+
+
 def int_or_default(value: object, default: int) -> int:
     try:
         return int(value)
@@ -648,6 +720,7 @@ def endpoint_path_prefix(endpoint: dict, default_path_prefix: str) -> str:
 def endpoint_sni(endpoint: dict, default_sni: str) -> str:
     return str(endpoint.get("cf_sni_host", "") or endpoint.get("sni_host", "") or endpoint.get("cdn_host", "") or default_sni or endpoint.get("host", "") or "").strip()
 def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
+    forward = canonicalize_forward_runtime_contract(forward)
     forward_id = int(forward["forward_id"])
     listen_port = int(forward["listen_port"])
     target = str(forward["target"])

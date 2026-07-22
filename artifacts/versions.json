@@ -69,12 +69,12 @@
     "install_url": "/artifacts/uninstall-bond-sidecar.sh"
   },
   "client_agent": {
-    "version": "2026.05.29.9",
+    "version": "2026.07.22.1",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "4452fc083179f2e8d0eacd7c32cdb6e61c64d19e98477acfe6d93e0143a77ab7",
-    "size_bytes": 221949,
-    "size": 221949
+    "sha256": "2cb3e4dac9e38a20bcbf410f15cdcefca8440be9f890dc71a94156ab758fe0b2",
+    "size_bytes": 226926,
+    "size": 226926
   },
   "client_agent_installer": {
     "version": "2026.05.20.1",
@@ -127,7 +127,7 @@
     "artifact_url": "/artifacts/leikwan-udp-uot-merge.py"
   },
   "leikwan_bond_linux_amd64": {
-    "version": "0.1.16",
+    "version": "0.1.15",
     "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64",
     "sha256": "8f5f8da7efe93a65e3a6217ef51002b632ca3add019e2a0a3689edcde9c51fbe",
@@ -148,7 +148,7 @@
     "size_bytes": 3079928
   },
   "leikwan_bond_windows_amd64": {
-    "version": "0.1.16",
+    "version": "0.1.15",
     "path": "artifacts/wstunnel/leikwan-bond_windows_amd64.exe",
     "artifact_url": "/artifacts/wstunnel/leikwan-bond_windows_amd64.exe"
   },
@@ -173,16 +173,23 @@
     "version": "0.1.18.1",
     "path": "artifacts/windows/leikwan-bridge-setup.exe",
     "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
-    "sha256": "9781bfb726f3b13fc1d33285dc0877c533074b5b636a58032bf25b6d7fa370f1",
-    "size_bytes": 8335360
+    "sha256": "e152f578e90f01b91d0bc0f8e8b3402c15037566edf6736424c1e7c895820977",
+    "size_bytes": 8609924
+  },
+  "android_client_apk": {
+    "version": "0.1.0",
+    "path": "artifacts/android/leikwan-android-client.apk",
+    "artifact_url": "/artifacts/leikwan-android-client.apk",
+    "sha256": "286321c01d35623ff9ab5bf1f62ed35e1ad8df591c8e84c0afe23b6ac1ac2342",
+    "size_bytes": 55574824
   },
   "install_forward_runtime": {
     "version": "2026.05.28.4",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "6fb07af32c9bbb906c4bb46c353a566326d6e2401b8fb599a17181625edf7842",
-    "size_bytes": 68630,
-    "size": 68630
+    "sha256": "5abdaa6e530228e8d12c779807b5f31850bd3ab17bee61accede4cb0d9b6dbdb",
+    "size_bytes": 71684,
+    "size": 71684
   },
   "cfwg_latency_watchdog": {
     "version": "2026.06.01.1",

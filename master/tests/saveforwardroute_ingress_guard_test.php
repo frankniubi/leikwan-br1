@@ -2,8 +2,10 @@
 declare(strict_types=1);
 
 // B2: saveForwardRoute must reject a route whose ENABLED combos do not share the client->slave ingress
-// realization (backend_mode + node_group_key + client_mode + bond_ingress_mode), per B0. Combos that
-// differ only in the slave<->sidecar basis (e.g. cnix vs leigod, both current_mode) are accepted.
+// realization (backend_mode + node_group_key + client_mode + bond_ingress_mode), per B0. Aggregation
+// combos must also share sidecar_point_id because the slave selector has one sidecar_service_port.
+// Dedicated sidecar-less LeiGod combos share the null sidecar key safely: no selector sidecar port is
+// assumed for that route.
 
 namespace Leikwan\Master\Database {
     final class Database
@@ -61,11 +63,15 @@ namespace {
 
     $db = new Database();
     $ingress = ['node_group_key' => 'sha', 'client_mode' => 'bond', 'bond_ingress_mode' => 'plain_tcp_mux', 'sidecar_point_id' => 4];
+    $dedicated = ['backend_mode' => 'leigod_mode', 'node_group_key' => 'sha', 'client_mode' => 'single', 'bond_ingress_mode' => 'plain_tcp_mux', 'sidecar_point_id' => null];
     $db->combos = [
         10 => ['backend_mode' => 'current_mode'] + $ingress,  // cnix
         11 => ['backend_mode' => 'current_mode'] + $ingress,  // leigod (same ingress + same sidecar, differs only in self-leg)
         12 => ['backend_mode' => 'cf_mode'] + $ingress,       // cf-bond (different backend_mode -> different ingress)
         13 => ['backend_mode' => 'current_mode'] + ['node_group_key' => 'sha', 'client_mode' => 'bond', 'bond_ingress_mode' => 'plain_tcp_mux', 'sidecar_point_id' => 5], // same backend_mode, DIFFERENT sidecar
+        20 => $dedicated,
+        21 => ['sort_order' => 2] + $dedicated,
+        22 => ['backend_mode' => 'leigod_mode', 'node_group_key' => 'sha', 'client_mode' => 'single', 'bond_ingress_mode' => 'plain_tcp_mux', 'sidecar_point_id' => 4], // stale mixed sidecar on dedicated route -> mismatch
     ];
     $svc = new ProvisioningService(new Config($envPath), $db);
 
@@ -99,6 +105,26 @@ namespace {
     } catch (ApiException $e) {
         if ($e->getMessage() !== 'forward_route_combos_ingress_mismatch') {
             fail('expected ingress_mismatch for different sidecar, got ' . $e->getMessage());
+        }
+    }
+
+    // Dedicated sidecar-less LeiGod combos share the null sidecar key -> OK.
+    $rDedicated = $svc->saveForwardRoute(['name' => 'r-dedicated', 'combinations' => [
+        ['forward_combination_id' => 20], ['forward_combination_id' => 21],
+    ]]);
+    if ((int) ($rDedicated['id'] ?? 0) !== 7) {
+        fail('expected route id 7 for dedicated sidecar-less combos');
+    }
+
+    // Null sidecar and stale non-null sidecar do not share the same route contract -> mismatch.
+    try {
+        $svc->saveForwardRoute(['name' => 'r-mixed-dedicated-sidecar', 'combinations' => [
+            ['forward_combination_id' => 20], ['forward_combination_id' => 22],
+        ]]);
+        fail('expected forward_route_combos_ingress_mismatch for null/non-null sidecar mix');
+    } catch (ApiException $e) {
+        if ($e->getMessage() !== 'forward_route_combos_ingress_mismatch') {
+            fail('expected ingress_mismatch for null/non-null sidecar mix, got ' . $e->getMessage());
         }
     }
 

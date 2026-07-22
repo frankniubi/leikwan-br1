@@ -19,6 +19,17 @@
     <system:String x:Key="DashBytesIn">流入字节</system:String>
     <system:String x:Key="DashBytesOut">流出字节</system:String>
     <system:String x:Key="DashUptime">运行时间</system:String>
+    <system:String x:Key="DashSummaryTitle">控制中心</system:String>
+    <system:String x:Key="DashSummarySubtitle">监控雷神转发状态，并在同一处控制运行时恢复。</system:String>
+    <system:String x:Key="DashQuickActions">快捷操作</system:String>
+    <system:String x:Key="DashForwardControls">转发控制</system:String>
+    <system:String x:Key="DashRecentLogs">最近运行日志</system:String>
+    <system:String x:Key="DashVisibleForwards">{0} 个转发已显示</system:String>
+    <system:String x:Key="DashModeFilter">线路方式</system:String>
+    <system:String x:Key="DashLeiGodMethod">雷神转发会自动选择。</system:String>
+    <system:String x:Key="DashOpenLogs">打开完整日志</system:String>
+    <system:String x:Key="DashOpenSettings">打开设置</system:String>
+    <system:String x:Key="DashNoVisibleForwards">当前没有可显示的转发。</system:String>
 
     <!-- Forward Card -->
     <system:String x:Key="FwdId">转发 ID</system:String>
@@ -77,10 +88,10 @@
     <system:String x:Key="TrayExit">退出</system:String>
     <system:String x:Key="TrayForwardsActive">{0} 个转发运行中</system:String>
 
-    <!-- Mode Labels -->
-    <system:String x:Key="ModeMptcpFallback">MPTCP（Bond 回退）</system:String>
-    <system:String x:Key="ModeMptcp">MPTCP</system:String>
-    <system:String x:Key="ModeBond">Bond 聚合</system:String>
-    <system:String x:Key="ModeRace">Race 竞速</system:String>
-    <system:String x:Key="ModeSingle">单路径</system:String>
+    <!-- Method Labels -->
+    <system:String x:Key="ModeMptcpFallback">雷神</system:String>
+    <system:String x:Key="ModeMptcp">雷神</system:String>
+    <system:String x:Key="ModeBond">雷神</system:String>
+    <system:String x:Key="ModeRace">雷神</system:String>
+    <system:String x:Key="ModeSingle">雷神</system:String>
 </ResourceDictionary>

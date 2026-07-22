@@ -2,6 +2,7 @@ package com.leikwan.bridge.service
 
 import com.leikwan.bridge.data.ProxyNode
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -28,7 +29,7 @@ class ProxySelectionPolicyTest {
         )
 
         require(result is ProxySelectionResult.Success)
-        assertEquals(1L, result.selectedNode.id)
+        assertEquals(1L, result.selectedNode?.id)
         assertEquals(listOf(1L), result.activeNodes.map { it.id })
     }
 
@@ -97,7 +98,59 @@ class ProxySelectionPolicyTest {
     }
 
     @Test
-    fun `policy rejects when no proxy id is selected`() {
+    fun `policy allows dedicated leigod service without selected proxy`() {
+        val result = ProxySelectionPolicy.validate(
+            selectedProxyId = 0L,
+            forwardId = 65L,
+            connectionMode = ProxyConnectionMode.SERVICES,
+            proxyNodes = listOf(
+                ProxyNode(
+                    id = 1,
+                    name = "unrelated-proxy",
+                    type = "ss",
+                    originalServer = "127.0.0.1",
+                    originalPort = 32215,
+                    configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                    forwardId = 45L,
+                    enabled = true,
+                )
+            ),
+            proxyOptional = true,
+        )
+
+        require(result is ProxySelectionResult.Success)
+        assertNull(result.selectedNode)
+        assertEquals(emptyList<Long>(), result.activeNodes.map { it.id })
+    }
+
+    @Test
+    fun `policy ignores stale selected proxy for dedicated leigod service`() {
+        val result = ProxySelectionPolicy.validate(
+            selectedProxyId = 1L,
+            forwardId = 65L,
+            connectionMode = ProxyConnectionMode.SERVICES,
+            proxyNodes = listOf(
+                ProxyNode(
+                    id = 1,
+                    name = "stale-proxy",
+                    type = "ss",
+                    originalServer = "127.0.0.1",
+                    originalPort = 32215,
+                    configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                    forwardId = 45L,
+                    enabled = true,
+                )
+            ),
+            proxyOptional = true,
+        )
+
+        require(result is ProxySelectionResult.Success)
+        assertNull(result.selectedNode)
+        assertEquals(emptyList<Long>(), result.activeNodes.map { it.id })
+    }
+
+    @Test
+    fun `policy rejects when no proxy id is selected and proxy is required`() {
         val result = ProxySelectionPolicy.validate(
             selectedProxyId = 0L,
             forwardId = 45L,
@@ -165,12 +218,12 @@ class ProxySelectionPolicyTest {
         )
 
         require(result is ProxySelectionResult.Success)
-        assertEquals(3L, result.selectedNode.id)
+        assertEquals(3L, result.selectedNode?.id)
         assertEquals(listOf(3L), result.activeNodes.map { it.id })
     }
 
     @Test
-    fun `policy allows direct mode without service binding`() {
+    fun `policy still validates direct mode as an internal config builder path`() {
         val result = ProxySelectionPolicy.validate(
             selectedProxyId = 4L,
             forwardId = 0L,
@@ -190,6 +243,6 @@ class ProxySelectionPolicyTest {
         )
 
         require(result is ProxySelectionResult.Success)
-        assertEquals(4L, result.selectedNode.id)
+        assertEquals(4L, result.selectedNode?.id)
     }
 }

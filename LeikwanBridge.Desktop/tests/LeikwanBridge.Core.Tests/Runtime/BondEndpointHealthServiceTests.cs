@@ -29,7 +29,7 @@ public sealed class BondEndpointHealthServiceTests
     }
 
     [Fact]
-    public void SelectRuntimeEndpoints_NonLatencyFirstBond_DoesNotFilterInactiveEndpoints()
+    public void SelectRuntimeEndpoints_NonLatencyFirstBond_ExcludesPanelInactiveEndpoints()
     {
         using var tempDir = new TempStateDirectory();
         var stateManager = new StateManager(tempDir.Path);
@@ -51,7 +51,7 @@ public sealed class BondEndpointHealthServiceTests
 
         var selected = service.SelectRuntimeEndpoints(forward, nowUnixSeconds: 100);
 
-        Assert.Equal(new[] { 1, 2 }, selected.Select(endpoint => endpoint.EndpointId).ToArray());
+        Assert.Equal(new[] { 2 }, selected.Select(endpoint => endpoint.EndpointId).ToArray());
     }
 
     [Fact]

@@ -17,13 +17,6 @@ public static class ModeNormalizer
 
     public static string DisplayName(string normalizedMode, bool isFallback = false)
     {
-        return normalizedMode switch
-        {
-            "mptcp" when isFallback => "MPTCP (Bond Fallback)",
-            "mptcp" => "MPTCP",
-            "bond" => "Bond",
-            "race" => "Race",
-            _ => "Single",
-        };
+        return "LeiGod";
     }
 }

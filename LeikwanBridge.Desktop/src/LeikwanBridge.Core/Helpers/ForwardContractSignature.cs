@@ -19,6 +19,15 @@ public static class ForwardContractSignature
             forward.PathPrefix,
             forward.Transport,
             forward.BackendMode,
+            forward.ContractVersion,
+            forward.ClientMode,
+            forward.RuntimePreference,
+            forward.BondIngressMode,
+            forward.ActiveFamily,
+            forward.AggregationEnabled,
+            forward.TargetContract,
+            forward.SidecarRequired,
+            forward.BondSidecarPointId,
             forward.SpeedLimitMbps,
             Bonding = forward.Bonding is null ? null : new
             {
