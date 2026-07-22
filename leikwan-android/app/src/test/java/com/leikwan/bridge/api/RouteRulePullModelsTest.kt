@@ -1,15 +1,33 @@
 package com.leikwan.bridge.api
 
 import com.google.gson.Gson
+import kotlinx.coroutines.runBlocking
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
 
 class RouteRulePullModelsTest {
     private val gson = Gson()
+    private var server: MockWebServer? = null
+
+    @Before
+    fun setUp() {
+        server = null
+    }
+
+    @After
+    fun tearDown() {
+        server?.shutdown()
+    }
 
     @Test
     fun `old pull payload remains parseable without route rule fields`() {
@@ -50,7 +68,22 @@ class RouteRulePullModelsTest {
                 {"id":"rule_abc","service_scope_id":"svc_scope_7","destination_ip":"93.184.216.34","destination_port":443,"protocol":"tcp_udp","direction_id":"dir_sh_jp_1","enabled":true,"effective_state":"active","sync_version":3}
               ],
               "direction_runtime_bindings": [
-                {"direction_id":"dir_sh_jp_1","binding_state":"ready","local_tcp_port":12001,"local_udp_port":12001,"runtime_ref":{"type":"forward_ref","forward_id":77,"selectable":false,"transport":"tcp_udp"}}
+                {
+                  "service_scope_id":"svc_scope_7",
+                  "direction_id":"dir_sh_jp_1",
+                  "binding_state":"ready",
+                  "client_runtime_binding_id":"crb_svc_scope_7_dir_sh_jp_1",
+                  "runtime_ref":{"type":"forward_ref","forward_id":77,"selectable":false,"transport":"tcp_udp"},
+                  "local_endpoint":{"host":"127.0.0.1","tcp_port":12001,"udp_port":12001}
+                },
+                {
+                  "service_scope_id":"svc_scope_8",
+                  "direction_id":"dir_sh_jp_1",
+                  "binding_state":"ready",
+                  "client_runtime_binding_id":"crb_svc_scope_8_dir_sh_jp_1",
+                  "runtime_ref":{"type":"forward_ref","forward_id":78,"selectable":false,"transport":"tcp_udp"},
+                  "local_endpoint":{"host":"127.0.0.2","tcp_port":12002,"udp_port":12002}
+                }
               ],
               "capabilities": {"route_direction_rules":true,"exact_destination_rules":true}
             }
@@ -78,17 +111,60 @@ class RouteRulePullModelsTest {
         assertEquals("active", rule.effectiveState)
         assertEquals(3L, rule.syncVersion)
 
-        val binding = parsed.directionRuntimeBindings.orEmpty().single()
+        val bindings = parsed.directionRuntimeBindings.orEmpty()
+        assertEquals(2, bindings.size)
+        val binding = bindings.first()
+        assertEquals("svc_scope_7", binding.serviceScopeId)
         assertEquals("dir_sh_jp_1", binding.directionId)
         assertEquals("ready", binding.bindingState)
-        assertEquals(12001, binding.localTcpPort)
-        assertEquals(12001, binding.localUdpPort)
+        assertEquals("crb_svc_scope_7_dir_sh_jp_1", binding.clientRuntimeBindingId)
+        assertEquals("127.0.0.1", binding.localEndpoint?.host)
+        assertEquals(12001, binding.localEndpoint?.tcpPort)
+        assertEquals(12001, binding.localEndpoint?.udpPort)
         assertNotNull(binding.runtimeRef)
         assertEquals(77L, binding.runtimeRef?.forwardId)
         assertFalse(binding.runtimeRef?.selectable ?: true)
 
+        val otherScopeBinding = bindings.last()
+        assertEquals("svc_scope_8", otherScopeBinding.serviceScopeId)
+        assertEquals("dir_sh_jp_1", otherScopeBinding.directionId)
+        assertEquals("crb_svc_scope_8_dir_sh_jp_1", otherScopeBinding.clientRuntimeBindingId)
+        assertEquals(12002, otherScopeBinding.localEndpoint?.tcpPort)
+
         assertTrue(parsed.routeRuleCapabilities?.routeDirectionRules == true)
         assertTrue(parsed.routeRuleCapabilities?.exactDestinationRules == true)
+    }
+
+    @Test
+    fun `heartbeat request does not advertise unsupported route rule runtime by default`() {
+        val request = HeartbeatRequest()
+
+        assertEquals("android", request.clientPlatform)
+        assertFalse(request.supportsRouteDirectionRules)
+        assertFalse(request.supportsExactDestinationRules)
+    }
+
+    @Test
+    fun `delete client rule request sends sync version for conflict detection`() = runBlocking {
+        val mockServer = MockWebServer()
+        server = mockServer
+        mockServer.enqueue(MockResponse().setResponseCode(200).setBody("""
+            {"ok":true,"client_rule":{"id":"rule_abc","service_scope_id":"svc_scope_7","destination_ip":"93.184.216.34","destination_port":443,"protocol":"tcp_udp","direction_id":"dir_sh_jp_1","enabled":false,"effective_state":"disabled","sync_version":4}}
+        """.trimIndent()))
+        mockServer.start()
+        val api = Retrofit.Builder()
+            .baseUrl(mockServer.url("/"))
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(PanelApi::class.java)
+
+        api.deleteClientRule("Bearer token", "rule_abc", ClientRuleDeleteRequest(syncVersion = 3L))
+
+        val request = mockServer.takeRequest()
+        assertEquals("DELETE", request.method)
+        assertEquals("/api/client/client-rules/rule_abc", request.path)
+        assertEquals("Bearer token", request.getHeader("Authorization"))
+        assertEquals("{\"sync_version\":3}", request.body.readUtf8())
     }
 
     @Test
