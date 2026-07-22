@@ -89,6 +89,8 @@ data class DirectionRuntimeBindingDto(
     @SerializedName("binding_state") val bindingState: String = "missing",
     @SerializedName("client_runtime_binding_id") val clientRuntimeBindingId: String = "",
     @SerializedName("runtime_ref") val runtimeRef: DirectionRuntimeRefDto? = null,
+    @SerializedName("local_tcp_port") val localTcpPort: Int = 0,
+    @SerializedName("local_udp_port") val localUdpPort: Int = 0,
     @SerializedName("local_endpoint") val localEndpoint: DirectionLocalEndpointDto? = null,
 )
 
@@ -117,10 +119,6 @@ data class ClientRuleWriteRequest(
     @SerializedName("direction_id") val directionId: String? = null,
     val enabled: Boolean? = null,
     @SerializedName("sync_version") val syncVersion: Long? = null,
-)
-
-data class ClientRuleDeleteRequest(
-    @SerializedName("sync_version") val syncVersion: Long,
 )
 
 data class ClientRuleWriteResponse(
