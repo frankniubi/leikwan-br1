@@ -49,8 +49,8 @@ data class PullConfigsResponse(
 
 data class HeartbeatRequest(
     @SerializedName("client_platform") val clientPlatform: String = "android",
-    @SerializedName("supports_route_direction_rules") val supportsRouteDirectionRules: Boolean = false,
-    @SerializedName("supports_exact_destination_rules") val supportsExactDestinationRules: Boolean = false,
+    @SerializedName("supports_route_direction_rules") val supportsRouteDirectionRules: Boolean = true,
+    @SerializedName("supports_exact_destination_rules") val supportsExactDestinationRules: Boolean = true,
 )
 
 data class HeartbeatResponse(val ok: Boolean)
