@@ -6,6 +6,7 @@ import com.leikwan.bridge.clientrules.ClientRouteRuleSnapshot
 import com.leikwan.bridge.clientrules.ClientRuleEffectiveState
 import com.leikwan.bridge.clientrules.DirectionRuntimeBinding
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -185,6 +186,64 @@ class RouteDirectionRuntimePlannerTest {
     }
 
     @Test
+    fun `planner assigns unique process keys when active direction ids collide`() {
+        val snapshot = ClientRouteRuleSnapshot(
+            rules = listOf(
+                routeRule("rule_1", "dir_5soa6056", ClientRuleEffectiveState.ACTIVE),
+                routeRule("rule_2", "dir_3xb4ea4_", ClientRuleEffectiveState.ACTIVE),
+            ),
+            bindings = listOf(
+                DirectionRuntimeBinding(
+                    serviceScopeId = "svc_scope_7",
+                    directionId = "dir_5soa6056",
+                    bindingState = "ready",
+                    clientRuntimeBindingId = "binding_1",
+                    localTcpPort = 12001,
+                    localUdpPort = 12001,
+                    runtimeForwardId = 77L,
+                    selectable = false,
+                    transport = "tcp_udp",
+                ),
+                DirectionRuntimeBinding(
+                    serviceScopeId = "svc_scope_7",
+                    directionId = "dir_3xb4ea4_",
+                    bindingState = "ready",
+                    clientRuntimeBindingId = "binding_2",
+                    localTcpPort = 12002,
+                    localUdpPort = 12002,
+                    runtimeForwardId = 88L,
+                    selectable = false,
+                    transport = "tcp_udp",
+                ),
+            ),
+        )
+        val helperForwardOne = helperForward(forwardId = 77L)
+        val helperForwardTwo = helperForward(forwardId = 88L)
+
+        val plan = RouteDirectionRuntimePlanner.plan(
+            snapshot = snapshot,
+            forwardContractsById = mapOf(77L to helperForwardOne, 88L to helperForwardTwo),
+            buildRuntimeContext = { directionId, forward, listenPort ->
+                RuntimeContext(
+                    forwardId = forward.forwardId,
+                    mode = forward.mode,
+                    localListenPort = listenPort,
+                    localLegPorts = emptyList(),
+                    processPlans = emptyList(),
+                    bypassHosts = AndroidEffectiveForwardBuilder.build(forward)!!.bypassHosts,
+                    routeRuleProcessKey = RouteDirectionRuntimePlanner.processKey(directionId),
+                )
+            },
+        )
+
+        val keys = plan.runtimeContexts.map { it.routeRuleProcessKey }
+        assertEquals(2, keys.size)
+        assertNotEquals(keys[0], keys[1])
+        assertEquals(listOf(12001, 12002), plan.runtimeContexts.map { it.localListenPort })
+        assertEquals(listOf("dir_5soa6056", "dir_3xb4ea4_"), plan.singboxBindings.map { it.directionId })
+    }
+
+    @Test
     fun `planner leaves directions fail closed when binding is not Android ready`() {
         val snapshot = ClientRouteRuleSnapshot(
             rules = listOf(routeRule("rule_1", "dir_sh_jp_1", ClientRuleEffectiveState.ACTIVE)),
@@ -226,8 +285,9 @@ class RouteDirectionRuntimePlannerTest {
         bonding: BondingContract? = null,
         sni: String = "",
         pathPrefix: String = "",
+        forwardId: Long = 77L,
     ): ForwardContract = ForwardContract(
-        forwardId = 77L,
+        forwardId = forwardId,
         serviceName = "helper-dir-sh-jp-1",
         target = "93.184.216.34:443",
         listenPort = 11077,
