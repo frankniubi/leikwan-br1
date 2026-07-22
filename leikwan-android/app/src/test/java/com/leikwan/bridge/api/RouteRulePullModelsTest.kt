@@ -136,12 +136,12 @@ class RouteRulePullModelsTest {
     }
 
     @Test
-    fun `heartbeat request does not advertise unsupported route rule runtime by default`() {
+    fun `heartbeat request advertises Android route rule capabilities by default`() {
         val request = HeartbeatRequest()
 
         assertEquals("android", request.clientPlatform)
-        assertFalse(request.supportsRouteDirectionRules)
-        assertFalse(request.supportsExactDestinationRules)
+        assertTrue(request.supportsRouteDirectionRules)
+        assertTrue(request.supportsExactDestinationRules)
     }
 
     @Test
