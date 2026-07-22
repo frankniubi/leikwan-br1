@@ -140,6 +140,7 @@ class PanelRepository(
         prefs.clientName = selection.clientName
         prefs.clientsJson = gson.toJson(clients)
         prefs.selectedForwardId = 0L
+        routeRuleStore.clear()
     }
 
     private suspend fun executeLogin(request: LoginRequest, fallback: String = "Login failed"): LoginResponse {
@@ -312,7 +313,7 @@ class PanelRepository(
                 routeRuleStore.markPendingError(ruleId, code)
                 throw Exception(code)
             }
-            routeRuleStore.applyServerRule(body.clientRule, local.id)
+            routeRuleStore.applyServerDelete(body.clientRule, local.id)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

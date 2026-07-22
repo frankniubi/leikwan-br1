@@ -26,7 +26,16 @@ class ClientRouteRuleStore(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val _snapshot = MutableStateFlow(loadSnapshot())
+    private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == KEY_SNAPSHOT || key == null) {
+            _snapshot.value = loadSnapshot()
+        }
+    }
     val snapshot: StateFlow<ClientRouteRuleSnapshot> = _snapshot.asStateFlow()
+
+    init {
+        prefs.registerOnSharedPreferenceChangeListener(prefListener)
+    }
 
     fun current(): ClientRouteRuleSnapshot = _snapshot.value
 
@@ -39,7 +48,9 @@ class ClientRouteRuleStore(
     ) {
         val now = clock()
         val previousRules = current().rules
-        val pending = previousRules.filter { it.pendingOperation != PendingClientRuleOperation.NONE }
+        val pending = previousRules.filter {
+            it.pendingOperation != PendingClientRuleOperation.NONE && it.effectiveState != ClientRuleEffectiveState.ERROR
+        }
         val pendingById = pending.associateBy { it.id }
         val serverRules = rules.map { it.toDomain(now) }
         val serverRuleIds = serverRules.mapTo(mutableSetOf()) { it.id }
@@ -68,11 +79,11 @@ class ClientRouteRuleStore(
         val now = clock()
         val rule = ClientRouteRule(
             id = "local_${UUID.randomUUID().toString().replace("-", "")}",
-            serviceScopeId = draft.serviceScopeId.orEmpty(),
+            serviceScopeId = draft.serviceScopeId.orEmpty().trim(),
             destinationIp = draft.destinationIp.orEmpty().trim(),
             destinationPort = draft.destinationPort ?: 0,
             protocol = "tcp_udp",
-            directionId = draft.directionId.orEmpty(),
+            directionId = draft.directionId.orEmpty().trim(),
             enabled = draft.enabled ?: true,
             effectiveState = ClientRuleEffectiveState.SYNCING,
             syncVersion = 0L,
@@ -87,9 +98,10 @@ class ClientRouteRuleStore(
         val now = clock()
         val existing = current().rules.first { it.id == ruleId }
         val updated = existing.copy(
+            serviceScopeId = draft.serviceScopeId?.trim() ?: existing.serviceScopeId,
             destinationIp = draft.destinationIp?.trim() ?: existing.destinationIp,
             destinationPort = draft.destinationPort ?: existing.destinationPort,
-            directionId = draft.directionId ?: existing.directionId,
+            directionId = draft.directionId?.trim() ?: existing.directionId,
             enabled = draft.enabled ?: existing.enabled,
             effectiveState = ClientRuleEffectiveState.SYNCING,
             pendingOperation = if (existing.pendingOperation == PendingClientRuleOperation.CREATE) {
@@ -131,6 +143,20 @@ class ClientRouteRuleStore(
     fun applyServerRule(dto: ClientRouteRuleDto, localId: String? = null): ClientRouteRule {
         val now = clock()
         val server = dto.toDomain(now)
+        val kept = current().rules.filterNot { it.id == server.id || (localId != null && it.id == localId) }
+        save(current().copy(rules = kept + server, updatedAtMs = now))
+        return server
+    }
+
+    fun applyServerDelete(dto: ClientRouteRuleDto, localId: String? = null): ClientRouteRule {
+        val now = clock()
+        val server = dto.toDomain(now).copy(
+            effectiveState = ClientRuleEffectiveState.DISABLED,
+            pendingOperation = PendingClientRuleOperation.NONE,
+            pendingError = null,
+            deletedAtMs = now,
+            updatedAtMs = now,
+        )
         val kept = current().rules.filterNot { it.id == server.id || (localId != null && it.id == localId) }
         save(current().copy(rules = kept + server, updatedAtMs = now))
         return server
