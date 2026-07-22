@@ -126,7 +126,7 @@ object BondForwardRunner {
                         ?: throw IllegalArgumentException("bond mode missing bonding.udp_session_token for udp transport"),
                 )
             )
-            "tcp+udp" -> listOf(
+            "tcp+udp", "tcp_udp" -> listOf(
                 ProtocolSegment(
                     protocol = "tcp",
                     portOffset = 0,
