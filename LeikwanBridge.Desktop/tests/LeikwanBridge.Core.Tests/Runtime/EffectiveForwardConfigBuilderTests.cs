@@ -26,4 +26,41 @@ public sealed class EffectiveForwardConfigBuilderTests
 
         Assert.DoesNotContain(effective.Endpoints, endpoint => endpoint.EndpointId == 255);
     }
+
+    [Fact]
+    public void Build_PreservesCanonicalBackendContractFields()
+    {
+        var forward = new ForwardConfig
+        {
+            ForwardId = 47,
+            Mode = "single",
+            BackendMode = "leigod_mode",
+            ContractVersion = 1,
+            ClientMode = "single",
+            RuntimePreference = "single",
+            BondIngressMode = "plain_tcp_mux",
+            ActiveFamily = "leigod_only",
+            AggregationEnabled = false,
+            TargetContract = "dedicated_forward_node",
+            SidecarRequired = false,
+            BondSidecarPointId = null,
+            Target = "162.245.221.78:80",
+            Endpoints =
+            [
+                new EndpointConfig { EndpointId = 316, Host = "203.0.113.12", Port = 443, HealthStatus = "active" },
+            ],
+        };
+
+        var effective = EffectiveForwardConfigBuilder.Build(forward);
+
+        Assert.Equal(1, effective.ContractVersion);
+        Assert.Equal("single", effective.ClientMode);
+        Assert.Equal("single", effective.RuntimePreference);
+        Assert.Equal("plain_tcp_mux", effective.BondIngressMode);
+        Assert.Equal("leigod_only", effective.ActiveFamily);
+        Assert.False(effective.AggregationEnabled);
+        Assert.Equal("dedicated_forward_node", effective.TargetContract);
+        Assert.False(effective.SidecarRequired);
+        Assert.Null(effective.BondSidecarPointId);
+    }
 }

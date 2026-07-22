@@ -3,6 +3,7 @@ package com.leikwan.bridge.service
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.google.gson.JsonParser
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
@@ -17,6 +18,8 @@ import com.leikwan.bridge.runtime.NodeLeg
 import com.leikwan.bridge.runtime.ProcessRunner
 import com.leikwan.bridge.runtime.RuntimeBinaryPaths
 import com.leikwan.bridge.runtime.RuntimeContext
+import com.leikwan.bridge.singbox.SingboxConfigBuilder
+import com.leikwan.bridge.singbox.SingboxSettings
 import com.leikwan.bridge.routing.RoutingCategoryCatalog
 import com.leikwan.bridge.routing.RoutingPolicyEngine
 import com.leikwan.bridge.routing.RoutingRule
@@ -303,6 +306,106 @@ class TunnelOrchestratorTest {
             snapshot.warnings.any {
                 it.contains("category-video") && it.contains(failedNodeId.toString())
             },
+        )
+    }
+
+    @Test
+    fun `buildRoutingSnapshot ignores stale user routing state for dedicated leigod startup`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val sharedPrefs = context.getSharedPreferences("orchestrator-dedicated-leigod-test-prefs", Context.MODE_PRIVATE)
+        sharedPrefs.edit().clear().apply()
+        val prefs = Prefs(sharedPrefs)
+        val staleNodeId = db.proxyNodeDao().insert(ssNode("stale"))
+        prefs.selectedProxyId = staleNodeId
+        prefs.routingDefaultOutcome = UserTrafficOutcome.DIRECT
+        prefs.routingDefaultNodeId = staleNodeId
+        prefs.routingSelectorEnabled = true
+
+        val userRuleStore = UserRoutingRuleStore(db)
+        userRuleStore.upsert(
+            RoutingRule(
+                id = "country-cn",
+                kind = RoutingRuleKind.COUNTRY,
+                matchValue = "CN",
+                outcome = UserTrafficOutcome.DIRECT,
+                enabled = true,
+            )
+        )
+        userRuleStore.upsert(
+            RoutingRule(
+                id = "category-ai",
+                kind = RoutingRuleKind.WEBSITE_CATEGORY,
+                matchValue = "ai",
+                outcome = UserTrafficOutcome.TUNNEL,
+                enabled = true,
+                targetNodeId = staleNodeId,
+            )
+        )
+
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = userRuleStore,
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+        )
+
+        val snapshot = orchestrator.buildRoutingSnapshot(
+            nowMs = 11L,
+            ignoreProxyNodeTargets = true,
+        )
+        assertEquals(UserTrafficOutcome.TUNNEL, snapshot.globalDefaultOutcome)
+        assertEquals(null, snapshot.globalDefaultNodeId)
+        assertEquals(emptyList<RoutingRule>(), snapshot.userCountryRules)
+        assertEquals(emptyList<RoutingRule>(), snapshot.userCategoryRules)
+        assertEquals(emptyList<String>(), snapshot.warnings)
+
+        val runtimeContext = RuntimeContext(
+            forwardId = 65L,
+            mode = ForwardMode.SINGLE,
+            localListenPort = 11065,
+            localLegPorts = emptyList(),
+            processPlans = emptyList(),
+            bypassHosts = linkedSetOf("162.245.221.78"),
+        )
+        val config = JsonParser.parseString(
+            SingboxConfigBuilder(
+                settings = SingboxSettings(
+                    panelUrl = prefs.panelUrl,
+                    dnsServer = prefs.dnsServer,
+                    dnsFallback = prefs.dnsFallback,
+                    dnsStrategy = prefs.dnsStrategy,
+                    bypassLan = prefs.bypassLan,
+                    bypassChina = prefs.bypassChina,
+                    customBypassRules = prefs.customBypassRules,
+                )
+            ).build(
+                proxyNodes = emptyList(),
+                runtimeContext = runtimeContext,
+                routingPolicySnapshot = snapshot,
+                connectionMode = ProxyConnectionMode.SERVICES,
+                runtimeOnlyProxy = true,
+            ).configJson
+        ).asJsonObject
+        val proxy = config.getAsJsonArray("outbounds")
+            .map { it.asJsonObject }
+            .first { it.get("tag").asString == "proxy" }
+        val route = config.getAsJsonObject("route")
+
+        assertEquals("127.0.0.1", proxy.get("override_address").asString)
+        assertEquals(11065, proxy.get("override_port").asInt)
+        assertEquals("proxy", route.get("final").asString)
+        assertFalse(route.has("rule_set"))
+        assertFalse(
+            route.getAsJsonArray("rules").any {
+                it.asJsonObject.has("rule_set")
+            }
         )
     }
 

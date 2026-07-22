@@ -5,18 +5,15 @@ object ForwardFilter {
         contracts: List<ForwardContract>,
         selectedForwardId: Long?,
     ): ForwardCatalog {
-        val hiddenIds = mutableSetOf<Long>()
-        var hiddenMptcpCount = 0
         val visible = mutableListOf<ForwardListItem>()
+        val hiddenIds = mutableSetOf<Long>()
 
         for (contract in contracts) {
-            when (contract.mode) {
-                ForwardMode.MPTCP -> {
-                    hiddenIds += contract.forwardId
-                    hiddenMptcpCount += 1
-                }
-                ForwardMode.SINGLE, ForwardMode.BOND -> visible += contract.toListItem()
-                ForwardMode.RACE -> hiddenIds += contract.forwardId
+            val effective = AndroidEffectiveForwardBuilder.build(contract)
+            if (effective == null) {
+                hiddenIds += contract.forwardId
+            } else {
+                visible += effective.toListItem()
             }
         }
 
@@ -26,7 +23,7 @@ object ForwardFilter {
 
         return ForwardCatalog(
             visibleForwards = visible,
-            hiddenUnsupportedMptcpCount = hiddenMptcpCount,
+            hiddenUnsupportedMptcpCount = 0,
             hiddenForwardIds = hiddenIds,
             selectedForwardId = finalSelected,
         )

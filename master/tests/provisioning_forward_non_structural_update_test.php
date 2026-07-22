@@ -135,10 +135,13 @@ namespace Leikwan\Master\Database {
                 return $rows;
             }
 
-            if (str_contains($normalized, 'SELECT n.* FROM nodes n LEFT JOIN node_groups g ON g.id = n.group_id')) {
+            if (str_contains($normalized, 'FROM nodes n LEFT JOIN node_groups g ON g.id = n.group_id')) {
                 $active = (string) ($params['active'] ?? 'active');
                 $degraded = (string) ($params['degraded'] ?? 'degraded');
                 $groupKeys = [];
+                if (array_key_exists('group_key', $params)) {
+                    $groupKeys[] = (string) $params['group_key'];
+                }
                 foreach ($params as $key => $value) {
                     if (str_starts_with((string) $key, 'group_key_')) {
                         $groupKeys[] = (string) $value;
@@ -146,11 +149,11 @@ namespace Leikwan\Master\Database {
                 }
                 $groupIds = [];
                 foreach ($this->tables['node_groups'] ?? [] as $group) {
-                    if (in_array((string) ($group['group_key'] ?? ''), $groupKeys, true)) {
+                    if ($groupKeys === [] || in_array((string) ($group['group_key'] ?? ''), $groupKeys, true)) {
                         $groupIds[] = (int) ($group['id'] ?? 0);
                     }
                 }
-                $rows = array_values(array_filter($this->tables['nodes'] ?? [], static function (array $node) use ($active, $degraded, $groupIds, $params): bool {
+                $rows = array_values(array_filter($this->tables['nodes'] ?? [], function (array $node) use ($active, $degraded, $groupIds, $params): bool {
                     $status = (string) ($node['status'] ?? '');
                     if (!in_array($status, [$active, $degraded], true)) {
                         return false;
@@ -159,8 +162,7 @@ namespace Leikwan\Master\Database {
                         return false;
                     }
                     if (array_key_exists('owner_service_id', $params)) {
-                        $owner = $node['owner_service_id'] ?? null;
-                        return $owner === null || (int) $owner === (int) $params['owner_service_id'];
+                        return $this->nodeVisibleToService($node, (int) $params['owner_service_id']);
                     }
                     return true;
                 }));
@@ -169,7 +171,7 @@ namespace Leikwan\Master\Database {
                     if ($loadCmp !== 0) {
                         return $loadCmp;
                     }
-                    return strcmp((string) ($right['last_heartbeat_at'] ?? ''), (string) ($left['last_heartbeat_at'] ?? ''));
+                    return ((int) ($left['id'] ?? 0)) <=> ((int) ($right['id'] ?? 0));
                 });
                 if (preg_match('/LIMIT (\d+)$/', $normalized, $matches) === 1) {
                     $rows = array_slice($rows, 0, (int) $matches[1]);
@@ -318,6 +320,32 @@ namespace Leikwan\Master\Database {
             return $callback($this);
         }
 
+        private function nodeVisibleToService(array $node, int $serviceId): bool
+        {
+            $owner = $node['owner_service_id'] ?? null;
+            if ($owner === null || (int) $owner === $serviceId) {
+                return true;
+            }
+            if ((string) ($node['sharing_mode'] ?? '') !== 'group_shared') {
+                return false;
+            }
+
+            $userId = 0;
+            foreach ($this->tables['services'] ?? [] as $service) {
+                if ((int) ($service['id'] ?? 0) === $serviceId) {
+                    $userId = (int) ($service['user_id'] ?? 0);
+                    break;
+                }
+            }
+            foreach ($this->tables['user_slave_group_members'] ?? [] as $member) {
+                if ((int) ($member['group_id'] ?? 0) === (int) ($node['user_slave_group_id'] ?? 0)
+                    && (int) ($member['user_id'] ?? 0) === $userId) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private function normalizeSql(string $sql): string
         {
             return preg_replace('/\s+/', ' ', trim($sql)) ?? trim($sql);
@@ -390,7 +418,7 @@ namespace {
         'client_mode' => 'single',
         'sni_host' => 'edge.example.com',
         'path_prefix' => 'route-9',
-        'node_group_key' => 'default',
+        'node_group_key' => 'edge',
         'endpoint_count' => 1,
         'public_port' => 443,
         'cdn_host' => '',
@@ -403,19 +431,44 @@ namespace {
         'bond_ingress_mode' => 'plain_tcp_mux',
         'bond_sidecar_point_id' => null,
     ]]);
-    $db->seed('node_groups', [[
-        'id' => 1,
-        'group_key' => 'default',
-    ]]);
-    $db->seed('nodes', [[
-        'id' => 11,
-        'group_id' => 1,
-        'name' => 'edge-1.example.com',
-        'public_ip' => '8.8.8.8',
-        'status' => 'active',
-        'current_load' => 0,
-        'last_heartbeat_at' => '2026-04-21 09:00:00',
-        'owner_service_id' => null,
+    $db->seed('node_groups', [
+        [
+            'id' => 1,
+            'group_key' => 'edge',
+        ],
+        [
+            'id' => 2,
+            'group_key' => 'other',
+        ],
+    ]);
+    $db->seed('nodes', [
+        [
+            'id' => 10,
+            'group_id' => 2,
+            'name' => 'other-group-lower-load.example.com',
+            'public_ip' => '1.1.1.1',
+            'status' => 'active',
+            'current_load' => 0,
+            'last_heartbeat_at' => '2026-04-21 09:00:00',
+            'owner_service_id' => null,
+        ],
+        [
+            'id' => 11,
+            'group_id' => 1,
+            'name' => 'edge-1.example.com',
+            'public_ip' => '8.8.8.8',
+            'status' => 'active',
+            'current_load' => 10,
+            'last_heartbeat_at' => '2026-04-21 09:00:00',
+            'owner_service_id' => 99,
+            'sharing_mode' => 'group_shared',
+            'user_slave_group_id' => 501,
+        ],
+    ]);
+    $db->seed('user_slave_group_members', [[
+        'group_id' => 501,
+        'user_id' => 7,
+        'role' => 'member',
     ]]);
     $db->seed('service_endpoints', [[
         'id' => 70,
@@ -495,6 +548,10 @@ namespace {
     $tasks = $db->fetchAll('SELECT action, payload_json FROM provision_tasks ORDER BY id ASC');
     if (count($tasks) < 2) {
         fail('expected destroy and publish tasks after valid edit');
+    }
+    $publishTasks = array_values(array_filter($tasks, static fn(array $task): bool => ($task['action'] ?? null) === 'publish'));
+    if ($publishTasks === [] || (int) ($publishTasks[0]['node_id'] ?? 0) !== 11) {
+        fail('valid edit must republish to the locked forward group, not the lower-load unrelated group');
     }
 
     $serviceController = file_get_contents(__DIR__ . '/../src/Controllers/ServiceController.php');

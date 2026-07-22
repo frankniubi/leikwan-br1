@@ -112,6 +112,43 @@ public sealed class ForwardContractSignatureTests
     }
 
     [Fact]
+    public void Compute_ChangesWhenCanonicalBackendContractChanges()
+    {
+        var forward = new ForwardConfig
+        {
+            ForwardId = 47,
+            Mode = "single",
+            BackendMode = "leigod_mode",
+            ContractVersion = 1,
+            ClientMode = "single",
+            RuntimePreference = "single",
+            BondIngressMode = "plain_tcp_mux",
+            ActiveFamily = "leigod_only",
+            AggregationEnabled = false,
+            TargetContract = "dedicated_forward_node",
+            SidecarRequired = false,
+            BondSidecarPointId = null,
+            ListenPort = 11047,
+            Target = "162.245.221.78:80",
+            Endpoints =
+            [
+                new EndpointConfig { EndpointId = 316, Host = "203.0.113.12", Port = 443, HealthStatus = "active" },
+            ],
+        };
+
+        var dedicated = ForwardContractSignature.Compute(EffectiveForwardConfigBuilder.Build(forward));
+        forward.ClientMode = "bond";
+        forward.ActiveFamily = "sidecar_aggregation";
+        forward.AggregationEnabled = true;
+        forward.TargetContract = "sidecar_aggregation";
+        forward.SidecarRequired = true;
+        forward.BondSidecarPointId = 4;
+        var aggregation = ForwardContractSignature.Compute(EffectiveForwardConfigBuilder.Build(forward));
+
+        Assert.NotEqual(dedicated, aggregation);
+    }
+
+    [Fact]
     public void AppliedForwardState_RoundTripsContractSignature_AndEndpointClonePreservesHealthStatus()
     {
         var endpoint = new EndpointConfig

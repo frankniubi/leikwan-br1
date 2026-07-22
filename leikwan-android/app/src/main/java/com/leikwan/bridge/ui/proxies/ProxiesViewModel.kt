@@ -13,7 +13,6 @@ import com.leikwan.bridge.proxy.ImportRouter
 import com.leikwan.bridge.proxy.ProxyUriParser
 import com.leikwan.bridge.proxy.SubscriptionFetcher
 import com.leikwan.bridge.service.ProxyConnectionMode
-import com.leikwan.bridge.service.TunnelOrchestrator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -35,13 +34,11 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
     private val db = AppDatabase.get(app)
     private val nodeDao = db.proxyNodeDao()
     private val subDao = db.subscriptionDao()
-    private val orchestrator = TunnelOrchestrator(app)
-
     private val _state = MutableStateFlow(
         ProxiesUiState(
             selectedProxyId = prefs.selectedProxyId,
-            connectionMode = prefs.proxyConnectionMode,
-            routingSelectorEnabled = prefs.routingSelectorEnabled,
+            connectionMode = ProxyConnectionMode.SERVICES,
+            routingSelectorEnabled = false,
         )
     )
     val state = _state.asStateFlow()
@@ -54,6 +51,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
+        enforceLeiGodOnlyMode()
         viewModelScope.launch {
             nodeDao.getAll().collectLatest { nodes ->
                 val selectedId = _state.value.selectedProxyId.takeIf { selected ->
@@ -110,8 +108,9 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val updated = node.copy(enabled = !node.enabled)
             nodeDao.update(updated)
-            if (!updated.enabled && prefs.selectedProxyId == node.id && prefs.proxyConnectionMode == ProxyConnectionMode.DIRECT) {
-                orchestrator.stop()
+            if (!updated.enabled && prefs.selectedProxyId == node.id) {
+                prefs.selectedProxyId = 0L
+                _state.value = _state.value.copy(selectedProxyId = 0L)
             }
         }
     }
@@ -126,12 +125,11 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setConnectionMode(mode: ProxyConnectionMode) {
-        prefs.proxyConnectionMode = mode
-        _state.value = _state.value.copy(connectionMode = mode)
-        if (mode == ProxyConnectionMode.SERVICES) {
-            orchestrator.stop()
+    fun enforceLeiGodOnlyMode() {
+        if (prefs.proxyConnectionMode != ProxyConnectionMode.SERVICES) {
+            prefs.proxyConnectionMode = ProxyConnectionMode.SERVICES
         }
+        _state.value = _state.value.copy(connectionMode = ProxyConnectionMode.SERVICES)
     }
 
     fun deleteNode(node: ProxyNode) {
@@ -169,20 +167,6 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun startDirectSelected() {
-        viewModelScope.launch {
-            if (prefs.proxyConnectionMode != ProxyConnectionMode.DIRECT) return@launch
-            _state.value = _state.value.copy(isLoading = true, error = null)
-            try {
-                orchestrator.startForForward(0L)
-                _state.value = _state.value.copy(isLoading = false, error = null)
-                _snackbar.value = s(R.string.direct_vpn_started)
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(isLoading = false, error = e.message)
-            }
-        }
-    }
-
     fun deleteSubscription(sub: Subscription) {
         viewModelScope.launch {
             nodeDao.deleteBySubscription(sub.id)
@@ -192,10 +176,6 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearError() {
         _state.value = _state.value.copy(error = null)
-    }
-
-    fun refreshRoutingSelectorState() {
-        _state.value = _state.value.copy(routingSelectorEnabled = prefs.routingSelectorEnabled)
     }
 
     fun importAny(text: String) {

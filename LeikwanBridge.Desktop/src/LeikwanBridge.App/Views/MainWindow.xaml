@@ -224,20 +224,10 @@
                                                DockPanel.Dock="Right" VerticalAlignment="Center"
                                                Foreground="{StaticResource MutedTextBrush}"/>
                                 </DockPanel>
-                                <Grid Margin="0,0,0,12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="240"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="{DynamicResource DashModeFilter}"
-                                               VerticalAlignment="Center" Margin="0,0,12,0"
-                                               Foreground="{StaticResource MutedTextBrush}" FontWeight="SemiBold"/>
-                                    <ComboBox Grid.Column="1"
-                                              ItemsSource="{Binding AvailableModeFilters}"
-                                              SelectedItem="{Binding ActiveModeFilter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                              Padding="8,4"/>
-                                </Grid>
+                                <TextBlock Text="{DynamicResource DashLeiGodMethod}"
+                                           Foreground="{StaticResource MutedTextBrush}"
+                                           FontWeight="SemiBold"
+                                           Margin="0,0,0,12"/>
 
                                 <TextBlock Text="{DynamicResource DashNoVisibleForwards}" Foreground="{StaticResource MutedTextBrush}"
                                            Margin="0,0,0,12">

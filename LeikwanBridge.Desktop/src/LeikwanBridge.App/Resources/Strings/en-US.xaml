@@ -20,12 +20,13 @@
     <system:String x:Key="DashBytesOut">Bytes Out</system:String>
     <system:String x:Key="DashUptime">Uptime</system:String>
     <system:String x:Key="DashSummaryTitle">Control Center</system:String>
-    <system:String x:Key="DashSummarySubtitle">Monitor connection state, focus on MPTCP forwards first, and control runtime recovery from one place.</system:String>
+    <system:String x:Key="DashSummarySubtitle">Monitor LeiGod forwarding state and control runtime recovery from one place.</system:String>
     <system:String x:Key="DashQuickActions">Quick Actions</system:String>
     <system:String x:Key="DashForwardControls">Forward Controls</system:String>
     <system:String x:Key="DashRecentLogs">Recent Runtime Logs</system:String>
     <system:String x:Key="DashVisibleForwards">{0} forwards shown</system:String>
-    <system:String x:Key="DashModeFilter">Mode Filter</system:String>
+    <system:String x:Key="DashModeFilter">Method</system:String>
+    <system:String x:Key="DashLeiGodMethod">LeiGod forwarding is selected automatically.</system:String>
     <system:String x:Key="DashOpenLogs">Open Full Log</system:String>
     <system:String x:Key="DashOpenSettings">Open Settings</system:String>
     <system:String x:Key="DashNoVisibleForwards">No forwards match the current filter.</system:String>
@@ -87,12 +88,12 @@
     <system:String x:Key="TrayExit">Exit</system:String>
     <system:String x:Key="TrayForwardsActive">{0} forwards active</system:String>
 
-    <!-- Mode Labels -->
-    <system:String x:Key="ModeMptcpFallback">MPTCP (Bond Fallback)</system:String>
-    <system:String x:Key="ModeMptcp">MPTCP</system:String>
-    <system:String x:Key="ModeBond">Bond</system:String>
-    <system:String x:Key="ModeRace">Race</system:String>
-    <system:String x:Key="ModeSingle">Single</system:String>
-    <system:String x:Key="ModeFilterAll">All</system:String>
-    <system:String x:Key="ModeFilterMptcp">MPTCP</system:String>
+    <!-- Method Labels -->
+    <system:String x:Key="ModeMptcpFallback">LeiGod</system:String>
+    <system:String x:Key="ModeMptcp">LeiGod</system:String>
+    <system:String x:Key="ModeBond">LeiGod</system:String>
+    <system:String x:Key="ModeRace">LeiGod</system:String>
+    <system:String x:Key="ModeSingle">LeiGod</system:String>
+    <system:String x:Key="ModeFilterAll">LeiGod</system:String>
+    <system:String x:Key="ModeFilterMptcp">LeiGod</system:String>
 </ResourceDictionary>

@@ -24,7 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.05.29.9"
+AGENT_VERSION = "2026.07.22.1"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -398,9 +398,8 @@ class ClientAgent:
         if candidate_pool:
             render_forward["candidate_pool"] = candidate_pool
         runtime_mode = self.choose_runtime_family(render_forward, self.running_kernel_supports_mptcp())
-        if runtime_mode in {"bond", "mptcp"}:
-            mode = runtime_mode
-            render_forward["mode"] = runtime_mode
+        mode = runtime_mode
+        render_forward = self.canonicalize_forward_runtime_contract(render_forward, runtime_mode)
         if mode == "bond":
             render_forward = self.apply_latency_target_candidate_escalation(render_forward)
             render_forward["endpoints"] = self.select_bond_runtime_endpoints(render_forward)
@@ -411,7 +410,7 @@ class ClientAgent:
             )
             render_forward = self.apply_mptcp_runtime_health_policy(render_forward)
             return self.forward_contract_signature(self.strip_runtime_observation_fields(render_forward))
-        return self.forward_contract_signature(forward)
+        return self.forward_contract_signature(self.strip_runtime_observation_fields(render_forward))
 
     @staticmethod
     def rendered_runtime_signature(rendered: dict, mode: str, transport: str, listen_port: int) -> str:
@@ -949,7 +948,8 @@ class ClientAgent:
         force_runtime_refresh_ids = self.consume_local_refresh_requests()
         for forward in forwards:
             forward_id = int(forward["forward_id"])
-            mode = self.normalize_mode(forward.get("mode", "single"))
+            mode = self.choose_runtime_family(forward, self.running_kernel_supports_mptcp())
+            forward = self.canonicalize_forward_runtime_contract(forward, mode)
             if str(forward.get("service_status", "active")) != "active":
                 inactive_forward_ids.append(forward_id)
                 self.stop_forward(forward_id)
@@ -1395,9 +1395,8 @@ class ClientAgent:
         if candidate_pool:
             render_forward["candidate_pool"] = candidate_pool
         runtime_mode = self.choose_runtime_family(render_forward, self.running_kernel_supports_mptcp())
-        if runtime_mode in {"bond", "mptcp"}:
-            mode = runtime_mode
-            render_forward["mode"] = runtime_mode
+        render_forward = self.canonicalize_forward_runtime_contract(render_forward, runtime_mode)
+        mode = self.normalize_mode(render_forward.get("mode", runtime_mode))
 
         if mode == "bond":
             render_forward = self.apply_latency_target_candidate_escalation(render_forward)
@@ -1546,6 +1545,15 @@ class ClientAgent:
             "managed_paths": sorted(current_managed_paths),
             "published_mode": self.normalize_mode(forward.get("mode", "single")),
             "runtime_mode": mode,
+            "backend_mode": str(contract_forward.get("backend_mode", "") or ""),
+            "client_mode": str(contract_forward.get("client_mode", "") or ""),
+            "runtime_preference": str(contract_forward.get("runtime_preference", "") or ""),
+            "bond_ingress_mode": str(contract_forward.get("bond_ingress_mode", "") or ""),
+            "active_family": str(contract_forward.get("active_family", "") or ""),
+            "aggregation_enabled": contract_forward.get("aggregation_enabled"),
+            "target_contract": str(contract_forward.get("target_contract", "") or ""),
+            "sidecar_required": contract_forward.get("sidecar_required"),
+            "bond_sidecar_point_id": contract_forward.get("bond_sidecar_point_id"),
             "contract_signature": contract_signature,
             "rendered_signature": rendered_signature,
             "updated_at": int(time.time()),
@@ -2629,8 +2637,90 @@ class ClientAgent:
             port = 0
         return port > 0
 
+    @staticmethod
+    def contract_bool(value: object) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"", "0", "false", "no", "off"}:
+            return False
+        return None
+
+    @classmethod
+    def forward_contract_is_sidecar_aggregation(cls, forward: dict) -> bool:
+        if not isinstance(forward, dict):
+            return False
+        active_family = str(forward.get("active_family", "") or "").strip().lower()
+        target_contract = str(forward.get("target_contract", "") or "").strip().lower()
+        sidecar_required = cls.contract_bool(forward.get("sidecar_required"))
+        aggregation_enabled = cls.contract_bool(forward.get("aggregation_enabled"))
+        if active_family == "sidecar_aggregation" or target_contract == "sidecar_aggregation":
+            return True
+        if target_contract == "dedicated_forward_node" and sidecar_required is False and aggregation_enabled is False:
+            return False
+        if active_family == "leigod_only" and sidecar_required is False and aggregation_enabled is False:
+            return False
+        if sidecar_required is True or aggregation_enabled is True:
+            return True
+        try:
+            return int(forward.get("bond_sidecar_point_id", 0) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def forward_contract_is_dedicated_leigod(cls, forward: dict) -> bool:
+        if not isinstance(forward, dict) or cls.forward_contract_is_sidecar_aggregation(forward):
+            return False
+        backend_mode = str(forward.get("backend_mode", "") or "").strip().lower()
+        active_family = str(forward.get("active_family", "") or "").strip().lower()
+        target_contract = str(forward.get("target_contract", "") or "").strip().lower()
+        sidecar_required = cls.contract_bool(forward.get("sidecar_required"))
+        aggregation_enabled = cls.contract_bool(forward.get("aggregation_enabled"))
+        no_sidecar = sidecar_required is False and aggregation_enabled is False
+        if target_contract == "dedicated_forward_node" and no_sidecar:
+            return True
+        if backend_mode == "leigod_mode" and (active_family == "leigod_only" or no_sidecar):
+            return True
+        return False
+
+    def canonicalize_forward_runtime_contract(self, forward: dict, runtime_mode: str | None = None) -> dict:
+        normalized = dict(forward)
+        if self.forward_contract_is_dedicated_leigod(normalized):
+            normalized["mode"] = "single"
+            normalized["client_mode"] = "single"
+            normalized["runtime_preference"] = "single"
+            normalized["active_family"] = "leigod_only"
+            normalized["target_contract"] = "dedicated_forward_node"
+            normalized["aggregation_enabled"] = False
+            normalized["sidecar_required"] = False
+            for key in (
+                "bonding",
+                "mptcp",
+                "bond_remote_host",
+                "bond_remote_port",
+                "sidecar_uplink",
+                "sidecar_uplink_selector",
+                "publish_bond_runtime",
+            ):
+                normalized.pop(key, None)
+            for key in list(normalized.keys()):
+                if key.startswith("bond_sidecar_") or key.startswith("mptcp_sidecar_"):
+                    normalized.pop(key, None)
+            return normalized
+        if runtime_mode is not None:
+            normalized["mode"] = self.normalize_mode(runtime_mode)
+        return normalized
+
     def choose_runtime_family(self, forward: dict, mptcp_supported: bool) -> str:
         requested_mode = self.normalize_mode(forward.get("mode", "single"))
+        if self.forward_contract_is_dedicated_leigod(forward):
+            return "single"
+        if self.forward_contract_is_sidecar_aggregation(forward):
+            return "bond"
         runtime_preference = str(forward.get("runtime_preference", "single") or "single").strip()
         if runtime_preference != "mptcp_preferred_bond_fallback":
             return requested_mode
@@ -2866,7 +2956,7 @@ class ClientAgent:
             next_forward["candidate_pool"] = candidate_pool
 
         mptcp = next_forward.get("mptcp", {})
-        if isinstance(mptcp, dict):
+        if "mptcp" in next_forward and isinstance(mptcp, dict):
             mptcp_copy = dict(mptcp)
             mptcp_endpoints = []
             for endpoint in mptcp_copy.get("mptcp_endpoints", []):
@@ -2896,7 +2986,10 @@ class ClientAgent:
                 underlays.append(underlay_copy)
             if underlays:
                 mptcp_copy["underlays"] = underlays
-            next_forward["mptcp"] = mptcp_copy
+            if mptcp_copy:
+                next_forward["mptcp"] = mptcp_copy
+            else:
+                next_forward.pop("mptcp", None)
         return next_forward
 
     def apply_latency_target_candidate_escalation(self, forward: dict) -> dict:

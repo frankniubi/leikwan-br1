@@ -92,6 +92,57 @@ class SingboxConfigBuilderTest {
     }
 
     @Test
+    fun `dedicated leigod build routes proxy tag through local runtime`() {
+        val builder = SingboxConfigBuilder(
+            settings = SingboxSettings(
+                panelUrl = "https://panel.example.com",
+                dnsServer = "1.1.1.1",
+                dnsFallback = "8.8.8.8",
+                dnsStrategy = "prefer_ipv4",
+                bypassLan = true,
+                bypassChina = false,
+                customBypassRules = "",
+            )
+        )
+        val runtimeContext = RuntimeContext(
+            forwardId = 65L,
+            mode = ForwardMode.SINGLE,
+            localListenPort = 11065,
+            localLegPorts = emptyList(),
+            processPlans = emptyList(),
+            bypassHosts = linkedSetOf("162.245.221.78"),
+        )
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = emptyList(),
+                runtimeContext = runtimeContext,
+                routingPolicySnapshot = null,
+                connectionMode = ProxyConnectionMode.SERVICES,
+                runtimeOnlyProxy = true,
+            ).configJson
+        ).asJsonObject
+        val outbounds = config.getAsJsonArray("outbounds").map { it.asJsonObject }
+        val dnsServers = config.getAsJsonObject("dns").getAsJsonArray("servers").map { it.asJsonObject }
+        val remoteDns = dnsServers.first { it.get("tag").asString == "remote" }
+        val directDns = dnsServers.first { it.get("tag").asString == "direct-dns" }
+        val proxy = outbounds.first { it.get("tag").asString == "proxy" }
+        val direct = outbounds.first { it.get("tag").asString == "direct" }
+
+        assertEquals("direct", proxy.get("type").asString)
+        assertEquals("127.0.0.1", proxy.get("override_address").asString)
+        assertEquals(11065, proxy.get("override_port").asInt)
+        assertEquals("udp", remoteDns.get("type").asString)
+        assertFalse(remoteDns.has("detour"))
+        assertFalse(directDns.has("detour"))
+        assertEquals("direct", direct.get("type").asString)
+        assertFalse(direct.has("override_address"))
+        assertFalse(direct.has("override_port"))
+        assertFalse(outbounds.any { it.get("tag").asString.startsWith("proxy-") })
+        assertEquals("proxy", config.getAsJsonObject("route").get("final").asString)
+    }
+
+    @Test
     fun `builder falls back to direct selector when no nodes match selected forward`() {
         val builder = SingboxConfigBuilder(
             settings = SingboxSettings(

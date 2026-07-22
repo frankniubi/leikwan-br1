@@ -178,7 +178,7 @@ class PanelRepository(context: Context) {
                 serviceName = item.serviceName,
                 target = item.target,
                 listenPort = item.listenPort,
-                mode = item.mode.wireValue,
+                mode = "leigod",
                 transport = item.transport,
                 serviceStatus = item.serviceStatus,
                 endpointMode = item.endpointMode,

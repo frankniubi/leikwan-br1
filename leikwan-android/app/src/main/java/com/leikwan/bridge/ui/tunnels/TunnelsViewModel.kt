@@ -40,7 +40,7 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(
         TunnelsUiState(
             selectedForwardId = prefs.selectedForwardId,
-            connectionMode = prefs.proxyConnectionMode,
+            connectionMode = ProxyConnectionMode.SERVICES,
             vpnStatus = if (LeikwanVpnService.isRunning) VpnStatus.CONNECTED else VpnStatus.DISCONNECTED,
             routingDiagnostics = runCatching {
                 RoutingDiagnosticsSource.from(app).latest()
@@ -65,7 +65,7 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
                     isLoading = false,
                     selectedForwardId = selectedId,
                     hiddenUnsupportedMptcpCount = catalog.hiddenUnsupportedMptcpCount,
-                    connectionMode = prefs.proxyConnectionMode,
+                    connectionMode = ProxyConnectionMode.SERVICES,
                 )
             } catch (e: Exception) {
                 _state.value = _state.value.copy(error = e.message, isLoading = false)
@@ -82,12 +82,8 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleVpn() {
         viewModelScope.launch {
-            if (prefs.proxyConnectionMode == ProxyConnectionMode.DIRECT && _state.value.vpnStatus == VpnStatus.DISCONNECTED) {
-                _state.value = _state.value.copy(
-                    connectionMode = prefs.proxyConnectionMode,
-                    error = s(R.string.tunnels_error_direct_from_proxies),
-                )
-                return@launch
+            if (prefs.proxyConnectionMode != ProxyConnectionMode.SERVICES) {
+                prefs.proxyConnectionMode = ProxyConnectionMode.SERVICES
             }
             val wantDisconnect = _state.value.vpnStatus != VpnStatus.DISCONNECTED
             if (wantDisconnect) {
@@ -99,14 +95,11 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } else {
                 val selectedId = _state.value.selectedForwardId
-                if (prefs.proxyConnectionMode == com.leikwan.bridge.service.ProxyConnectionMode.SERVICES && selectedId == 0L) {
+                if (selectedId == 0L) {
                     _state.value = _state.value.copy(error = s(R.string.tunnels_error_select_service))
                     return@launch
                 }
-                if (
-                    prefs.proxyConnectionMode == com.leikwan.bridge.service.ProxyConnectionMode.SERVICES &&
-                    _state.value.forwards.none { it.forwardId == selectedId }
-                ) {
+                if (_state.value.forwards.none { it.forwardId == selectedId }) {
                     prefs.selectedForwardId = 0L
                     _state.value = _state.value.copy(
                         selectedForwardId = 0L,

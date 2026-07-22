@@ -62,6 +62,7 @@ class SingboxConfigBuilder(
         routingPolicySnapshot: RoutingPolicySnapshot? = null,
         connectionMode: ProxyConnectionMode = ProxyConnectionMode.SERVICES,
         enableIpv6Tun: Boolean = false,
+        runtimeOnlyProxy: Boolean = false,
     ): CompiledConfigResult {
         val activeProxyNodes = activeProxyNodes(proxyNodes, runtimeContext, connectionMode)
         val finalProxyTag = when {
@@ -84,7 +85,7 @@ class SingboxConfigBuilder(
         }
         root.add("dns", buildDns(dnsProxyDetourTag, dnsBootstrapDomains, enableIpv6Tun))
         root.add("inbounds", buildInbounds(enableIpv6Tun))
-        root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode))
+        root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode, runtimeOnlyProxy))
         buildEndpoints(activeProxyNodes).takeIf { it.size() > 0 }?.let { root.add("endpoints", it) }
         root.add("route", buildRoute(runtimeContext?.allBypassHosts() ?: emptySet(), finalProxyTag, routingPolicySnapshot))
         return CompiledConfigResult(
@@ -164,6 +165,7 @@ class SingboxConfigBuilder(
         proxyNodes: List<ProxyNode>,
         runtimeContext: RuntimeContext?,
         connectionMode: ProxyConnectionMode,
+        runtimeOnlyProxy: Boolean,
     ): JsonArray {
         val outbounds = JsonArray()
         val proxyTags = mutableListOf<String>()
@@ -190,6 +192,10 @@ class SingboxConfigBuilder(
             outbounds.add(JsonObject().apply {
                 addProperty("type", "direct")
                 addProperty("tag", "proxy")
+                if (runtimeOnlyProxy && runtimeContext != null && connectionMode == ProxyConnectionMode.SERVICES) {
+                    addProperty("override_address", "127.0.0.1")
+                    addProperty("override_port", runtimeContext.localListenPort)
+                }
             })
         }
 

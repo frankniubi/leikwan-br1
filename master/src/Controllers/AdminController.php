@@ -2497,9 +2497,10 @@ final class AdminController extends BaseController
             $selected = (string) ($editing['node_group_key'] ?? '') === (string) ($group['group_key'] ?? '') ? ' selected' : '';
             $groupOptions .= '<option value="' . $this->escape((string) ($group['group_key'] ?? '')) . '"' . $selected . '>' . $this->escape((string) ($group['name'] ?? '')) . '</option>';
         }
-        $sidecarOptions = '';
+        $editingSidecarPointId = (int) ($editing['sidecar_point_id'] ?? 0);
+        $sidecarOptions = '<option value=""' . ($editingSidecarPointId <= 0 ? ' selected' : '') . '>None (dedicated LeiGod forward node)</option>';
         foreach ($sidecars as $point) {
-            $selected = (int) ($editing['sidecar_point_id'] ?? 0) === (int) ($point['id'] ?? 0) ? ' selected' : '';
+            $selected = $editingSidecarPointId === (int) ($point['id'] ?? 0) ? ' selected' : '';
             $sidecarOptions .= '<option value="' . (int) ($point['id'] ?? 0) . '"' . $selected . '>' . $this->escape((string) ($point['name'] ?? '')) . ' (' . $this->escape((string) ($point['sidecar_host'] ?? '')) . ' ' . $this->escape($this->sidecarPortSummary($point)) . ')</option>';
         }
         $cfOptions = '<option value="">None</option>';
@@ -2674,7 +2675,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Tenant Badge</label><input type="text" name="tenant_badge" value="' . $this->escape((string) ($editing['tenant_badge'] ?? '')) . '" placeholder="Recommended"></div>
                     <div class="field"><label>Slave Group</label><select name="node_group_key" required>' . $groupOptions . '</select></div>
                     <div class="field"><label>Backend Mode</label><select name="backend_mode"><option value="current_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'current_mode' ? ' selected' : '') . '>current_mode</option><option value="cf_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'cf_mode' ? ' selected' : '') . '>cf_mode</option><option value="leigod_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'leigod_mode' ? ' selected' : '') . '>Managed TYO transport</option></select><p class="muted">Managed TYO transport = direct ingress (like current_mode, no Cloudflare) + an accelerated self-leg.</p></div>
-                    <div class="field"><label>Sidecar Point</label><select name="sidecar_point_id" required>' . $sidecarOptions . '</select></div>
+                    <div class="field"><label>Sidecar Point</label><select name="sidecar_point_id">' . $sidecarOptions . '</select><p class="muted">Optional for dedicated LeiGod forward-node routes. Required for bond/MPTCP aggregation and CF mode; aggregation sidecars must be overseas.</p></div>
                     <div class="field"><label>Cloudflare Location Group</label><select name="cf_location_group_id">' . $cfOptions . '</select></div>
                     <div class="field"><label>Client Mode</label><select name="client_mode"><option value="single"' . (((string) ($editing['client_mode'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="bond"' . (((string) ($editing['client_mode'] ?? 'single')) === 'bond' ? ' selected' : '') . '>bond</option></select></div>
                     <div class="field"><label>Runtime Preference</label><select name="runtime_preference"><option value="single"' . (((string) ($editing['runtime_preference'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="mptcp_preferred_bond_fallback"' . (((string) ($editing['runtime_preference'] ?? 'single')) === 'mptcp_preferred_bond_fallback' ? ' selected' : '') . '>mptcp_preferred_bond_fallback</option></select></div>

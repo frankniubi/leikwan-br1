@@ -33,7 +33,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _totalBytesOut = "0 B";
     [ObservableProperty] private string _currentView = "Dashboard";
     [ObservableProperty] private bool _showSetupWizard = true;
-    [ObservableProperty] private string _activeModeFilter = "All";
+    [ObservableProperty] private string _activeModeFilter = "LeiGod";
     [ObservableProperty] private bool _showClientPicker;
     [ObservableProperty] private int _pendingClientSelectionId;
     [ObservableProperty] private string _signedInUsername = "";
@@ -46,7 +46,7 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<ForwardViewModel> Forwards { get; } = [];
     public ObservableCollection<ForwardViewModel> VisibleForwards { get; } = [];
     public ObservableCollection<ConnectionQualityForwardViewModel> ConnectionQualityForwards { get; } = [];
-    public ObservableCollection<string> AvailableModeFilters { get; } = ["All"];
+    public ObservableCollection<string> AvailableModeFilters { get; } = ["LeiGod"];
     public ObservableCollection<DesktopClientChoice> AvailableClientChoices { get; } = [];
     public ObservableCollection<string> LogEntries { get; } = [];
     public bool ShouldAutoConnectOnStartup => !ShowSetupWizard && !IsConnected;
@@ -255,7 +255,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void ApplyModeFilter(string filter)
     {
-        ActiveModeFilter = string.IsNullOrWhiteSpace(filter) ? "All" : filter;
+        ActiveModeFilter = "LeiGod";
     }
 
     [RelayCommand]
@@ -342,9 +342,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         RebuildAvailableModeFilters();
-        ActiveModeFilter = Forwards.Any(forward => string.Equals(forward.Mode, "mptcp", StringComparison.OrdinalIgnoreCase))
-            ? "MPTCP"
-            : "All";
+        ActiveModeFilter = "LeiGod";
         RebuildVisibleForwards();
         ActiveForwardCount = Forwards.Count;
     }
@@ -577,20 +575,8 @@ public partial class MainViewModel : ObservableObject
 
     private void RebuildAvailableModeFilters()
     {
-        var filters = new List<string> { "All" };
-
-        if (Forwards.Any(forward => string.Equals(forward.Mode, "mptcp", StringComparison.OrdinalIgnoreCase)))
-            filters.Add("MPTCP");
-        if (Forwards.Any(forward => string.Equals(forward.Mode, "bond", StringComparison.OrdinalIgnoreCase)))
-            filters.Add("Bond");
-        if (Forwards.Any(forward => string.Equals(forward.Mode, "race", StringComparison.OrdinalIgnoreCase)))
-            filters.Add("Race");
-        if (Forwards.Any(forward => string.Equals(forward.Mode, "single", StringComparison.OrdinalIgnoreCase)))
-            filters.Add("Single");
-
         AvailableModeFilters.Clear();
-        foreach (var filter in filters)
-            AvailableModeFilters.Add(filter);
+        AvailableModeFilters.Add("LeiGod");
     }
 
     private void RebuildVisibleForwards()

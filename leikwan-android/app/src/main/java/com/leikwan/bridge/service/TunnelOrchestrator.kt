@@ -29,7 +29,6 @@ import com.leikwan.bridge.runtime.SingleForwardRunner
 import com.leikwan.bridge.singbox.SingboxConfigBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.File
 
 private const val TAG = "TunnelOrchestrator"
 
@@ -79,12 +78,27 @@ class TunnelOrchestrator internal constructor(
     internal suspend fun buildRoutingSnapshot(
         nowMs: Long,
         unavailableNodeIds: Set<Long> = emptySet(),
+        ignoreProxyNodeTargets: Boolean = false,
     ): RoutingPolicySnapshot {
-        val enabledNodeIds = db.proxyNodeDao().getEnabled().map { it.id }.toSet()
+        val enabledNodeIds = if (ignoreProxyNodeTargets) {
+            emptySet()
+        } else {
+            db.proxyNodeDao().getEnabled().map { it.id }.toSet()
+        }
         val availableNodeIds = enabledNodeIds - unavailableNodeIds
         val effectiveRoutingEngine = RulePackManifest.fromSnapshot(rulePackManager.current())
             ?.let { manifest -> routingEngine.withCategoryCatalog(RoutingCategoryCatalog.fromManifest(manifest)) }
             ?: routingEngine
+        if (ignoreProxyNodeTargets) {
+            return effectiveRoutingEngine.compile(
+                globalDefault = UserTrafficOutcome.TUNNEL,
+                globalDefaultNodeId = null,
+                countryRules = emptyList(),
+                categoryRules = emptyList(),
+                rulePackVersions = rulePackManager.activeVersions(),
+                compiledAtMs = nowMs,
+            )
+        }
         if (!prefs.routingSelectorEnabled) {
             return effectiveRoutingEngine.compile(
                 globalDefault = UserTrafficOutcome.TUNNEL,
@@ -109,7 +123,10 @@ class TunnelOrchestrator internal constructor(
 
     suspend fun startForForward(forwardId: Long) = withContext(Dispatchers.IO) {
         Log.i(TAG, "Pulling forward configs...")
-        val connectionMode = prefs.proxyConnectionMode
+        val connectionMode = ProxyConnectionMode.SERVICES
+        if (prefs.proxyConnectionMode != ProxyConnectionMode.SERVICES) {
+            prefs.proxyConnectionMode = ProxyConnectionMode.SERVICES
+        }
         val proxyNodes = db.proxyNodeDao().getAllList()
         val selectedProxyId = prefs.selectedProxyId
         if (selectedProxyId > 0L && proxyNodes.none { it.id == selectedProxyId }) {
@@ -118,19 +135,25 @@ class TunnelOrchestrator internal constructor(
 
         val catalog = panelRepo.pullCatalog(forwardId.takeIf { it > 0L } ?: prefs.selectedForwardId)
         val selectedForward = forwardId.takeIf { it > 0L }
+            ?: catalog.selectedForwardId
+            ?: catalog.visibleForwards.firstOrNull()?.forwardId
+        if (selectedForward != null && prefs.selectedForwardId != selectedForward) {
+            prefs.selectedForwardId = selectedForward
+        }
 
-        if (
-            connectionMode == ProxyConnectionMode.SERVICES &&
-            (selectedForward == null || catalog.visibleForwards.none { it.forwardId == selectedForward })
-        ) {
+        if (selectedForward == null || catalog.visibleForwards.none { it.forwardId == selectedForward }) {
             throw Exception("Select a service before starting in Services mode")
         }
+        val selectedEffective = panelRepo.getCachedEffectiveForward(selectedForward)
+            ?: throw Exception("Forward $selectedForward is not supported on Android")
+        val isDedicatedLeiGod = selectedEffective.isDedicatedLeiGod
 
         val selection = ProxySelectionPolicy.validate(
             selectedProxyId = prefs.selectedProxyId,
-            forwardId = selectedForward ?: 0L,
+            forwardId = selectedForward,
             connectionMode = connectionMode,
             proxyNodes = proxyNodes,
+            proxyOptional = isDedicatedLeiGod,
         )
         if (selection is ProxySelectionResult.Error) {
             throw Exception(selection.message)
@@ -140,17 +163,20 @@ class TunnelOrchestrator internal constructor(
         stop()
 
         var unavailableNodeIds: Set<Long> = emptySet()
-        val runtimeContext = if (connectionMode == ProxyConnectionMode.SERVICES) {
-            val forward = panelRepo.getCachedContract(selectedForward ?: 0L)
-                ?: throw Exception("Forward ${selectedForward ?: 0L} not found")
-            Log.i(TAG, "Starting forward ${forward.forwardId}: ${forward.serviceName}")
+        val runtimeContext = run {
+            val forward = selectedEffective.runtimeContract
+            Log.i(TAG, "Starting LeiGod forward ${forward.forwardId}: ${forward.serviceName}")
             val binaries = binaryInstaller.prepareBinaryPaths()
-            val relayNodes = selection.activeNodes.filter { it.type.lowercase() != "wireguard" }
+            val relayNodes = if (isDedicatedLeiGod) {
+                emptyList()
+            } else {
+                selection.activeNodes.filter { it.type.lowercase() != "wireguard" }
+            }
             val missingRelayNodeIds = mutableSetOf<Long>()
             val relayNodeForwards = relayNodes.mapNotNull { node ->
                 val nodeForwardId = node.forwardId
                 val nodeForward = if (nodeForwardId != null) {
-                    panelRepo.getCachedContract(nodeForwardId)
+                    panelRepo.getCachedEffectiveForward(nodeForwardId)?.runtimeContract
                 } else {
                     forward
                 }
@@ -187,27 +213,26 @@ class TunnelOrchestrator internal constructor(
                 processRunner.start(singleForward.forwardId, planned)
                 planned
             }
-        } else {
-            null
         }
 
         val activeRulePackManifest = RulePackManifest.fromSnapshot(rulePackManager.current())
         val routingSnapshot = buildRoutingSnapshot(
             System.currentTimeMillis(),
             unavailableNodeIds = unavailableNodeIds,
+            ignoreProxyNodeTargets = isDedicatedLeiGod,
         )
         val compiled = SingboxConfigBuilder
             .fromPrefs(prefs, activeRulePackManifest)
             .build(
-                proxyNodes = selection.activeNodes,
+                proxyNodes = if (isDedicatedLeiGod) emptyList() else selection.activeNodes,
                 runtimeContext = runtimeContext,
                 routingPolicySnapshot = routingSnapshot,
                 connectionMode = connectionMode,
+                runtimeOnlyProxy = isDedicatedLeiGod,
             )
-        recordExplainability(routingSnapshot, compiled.configJson)
+        recordExplainability(routingSnapshot)
         val configJson = compiled.configJson
-        writeDebugConfig(configJson)
-        Log.d(TAG, "Generated sing-box config: $configJson")
+        Log.d(TAG, "Generated sing-box config for LeiGod forward ${runtimeContext.forwardId}")
 
         LeikwanVpnService.configJson = configJson
         val intent = Intent(context, LeikwanVpnService::class.java)
@@ -315,17 +340,11 @@ class TunnelOrchestrator internal constructor(
             }
         }
 
-    private fun writeDebugConfig(configJson: String) {
-        runCatching {
-            File(context.filesDir, "latest-singbox-config.json").writeText(configJson)
-        }
-    }
-
     /**
      * Persist a routing explainability snapshot for the diagnostics UI. Best-effort: a failure here
      * must never break VPN startup.
      */
-    private suspend fun recordExplainability(snapshot: RoutingPolicySnapshot, configJson: String) {
+    private suspend fun recordExplainability(snapshot: RoutingPolicySnapshot) {
         runCatching {
             val activeUserRules = (snapshot.userCountryRules + snapshot.userCategoryRules).map { rule ->
                 "${rule.kind.name}:${rule.matchValue}->${rule.outcome.name}"
@@ -339,7 +358,7 @@ class TunnelOrchestrator internal constructor(
                     activeUserRules = activeUserRules,
                     protectedPaths = snapshot.protectedPaths.map { it.id },
                     warnings = snapshot.warnings,
-                    payloadJson = configJson,
+                    payloadJson = "{}",
                 )
             )
         }.onFailure { Log.w(TAG, "Failed to record routing explainability snapshot", it) }

@@ -19,6 +19,16 @@ class PanelModelsContractParsingTest {
               "target": "193.227.109.82:5201",
               "listen_port": 11024,
               "mode": "bond",
+              "backend_mode": "leigod_mode",
+              "contract_version": 1,
+              "client_mode": "mptcp",
+              "runtime_preference": "mptcp_preferred_bond_fallback",
+              "bond_ingress_mode": "plain_tcp_mux",
+              "active_family": "sidecar_aggregation",
+              "aggregation_enabled": true,
+              "target_contract": "sidecar_aggregation",
+              "sidecar_required": true,
+              "bond_sidecar_point_id": 9,
               "transport": "tcp",
               "service_status": "active",
               "endpoint_mode": "manual",
@@ -26,7 +36,6 @@ class PanelModelsContractParsingTest {
               "path_prefix": "/route-key",
               "speed_limit_mbps": 500,
               "bonding": {
-                "ingress_mode": "plain_tcp_mux",
                 "route_key": "/route-key",
                 "remote_target": "138.252.162.120:9000",
                 "session_token": "tcp-token",
@@ -87,6 +96,16 @@ class PanelModelsContractParsingTest {
         parsed!!
         assertEquals(26L, parsed.forwardId)
         assertEquals(ForwardMode.BOND, parsed.mode)
+        assertEquals("leigod_mode", parsed.backendMode)
+        assertEquals(1, parsed.contractVersion)
+        assertEquals("mptcp", parsed.clientMode)
+        assertEquals("mptcp_preferred_bond_fallback", parsed.runtimePreference)
+        assertEquals("plain_tcp_mux", parsed.bondIngressMode)
+        assertEquals("sidecar_aggregation", parsed.activeFamily)
+        assertEquals(true, parsed.aggregationEnabled)
+        assertEquals("sidecar_aggregation", parsed.targetContract)
+        assertEquals(true, parsed.sidecarRequired)
+        assertEquals(9L, parsed.bondSidecarPointId)
         assertEquals("plain_tcp_mux", parsed.bonding?.ingressMode)
         assertEquals("/route-key", parsed.bonding?.routeKey)
         assertEquals("138.252.162.120:9000", parsed.bonding?.remoteTarget)
