@@ -142,7 +142,17 @@ class ClientRouteRuleStore(
             if (rule.id == ruleId) {
                 rule.copy(
                     effectiveState = ClientRuleEffectiveState.ERROR,
+                    pendingOperation = if (rule.pendingOperation == PendingClientRuleOperation.DELETE) {
+                        PendingClientRuleOperation.NONE
+                    } else {
+                        rule.pendingOperation
+                    },
                     pendingError = error,
+                    deletedAtMs = if (rule.pendingOperation == PendingClientRuleOperation.DELETE) {
+                        null
+                    } else {
+                        rule.deletedAtMs
+                    },
                     updatedAtMs = now,
                 )
             } else {
