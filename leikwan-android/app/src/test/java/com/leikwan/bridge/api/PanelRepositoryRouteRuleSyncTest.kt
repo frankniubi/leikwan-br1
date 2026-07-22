@@ -27,6 +27,7 @@ import retrofit2.Response
 @Config(sdk = [34])
 class PanelRepositoryRouteRuleSyncTest {
     private lateinit var context: Context
+    private lateinit var testPrefs: Prefs
     private lateinit var store: ClientRouteRuleStore
     private lateinit var api: FakePanelApi
     private lateinit var repo: PanelRepository
@@ -34,17 +35,18 @@ class PanelRepositoryRouteRuleSyncTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
-        val prefs = Prefs(context.getSharedPreferences("route-rule-repo-test-prefs", Context.MODE_PRIVATE).also {
+        testPrefs = Prefs(context.getSharedPreferences("route-rule-repo-test-prefs", Context.MODE_PRIVATE).also {
             it.edit().clear().commit()
         })
-        prefs.token = "agent-token"
+        testPrefs.token = "agent-token"
         context.getSharedPreferences("route-rule-repo-store", Context.MODE_PRIVATE).edit().clear().commit()
+        context.getSharedPreferences("client-route-rules", Context.MODE_PRIVATE).edit().clear().commit()
         store = ClientRouteRuleStore(
             prefs = context.getSharedPreferences("route-rule-repo-store", Context.MODE_PRIVATE),
             clock = { 10L },
         )
         api = FakePanelApi()
-        repo = PanelRepository(context, prefsOverride = prefs, apiOverride = api, routeRuleStore = store)
+        repo = PanelRepository(context, prefsOverride = testPrefs, apiOverride = api, routeRuleStore = store)
     }
 
     @Test
@@ -210,8 +212,31 @@ class PanelRepositoryRouteRuleSyncTest {
         val deleted = repo.deleteClientRule("rule_1")
 
         assertEquals("rule_1", deleted.id)
-        assertEquals(PendingClientRuleOperation.NONE, store.current().rules.single().pendingOperation)
+        assertTrue(store.current().rules.none { it.id == "rule_1" && it.deletedAtMs == null })
+        assertTrue(store.activeRulesForScope("svc_scope_7").none { it.id == "rule_1" })
         assertEquals(listOf("rule_1"), api.deletedRuleIds)
+    }
+
+    @Test
+    fun `successful delete acknowledgement hides rule before next pull`() = runBlocking {
+        store.replaceFromPull(
+            routeDirections = emptyList(),
+            entitlements = emptyList(),
+            rules = listOf(ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", true, "active", 1L)),
+            bindings = emptyList(),
+            capabilities = null,
+        )
+        api.deleteResponse = Response.success(
+            ClientRuleWriteResponse(
+                ok = true,
+                clientRule = ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", false, "disabled", 2L),
+            )
+        )
+
+        repo.deleteClientRule("rule_1")
+
+        assertTrue(store.current().rules.none { it.id == "rule_1" && it.deletedAtMs == null })
+        assertTrue(store.activeRulesForScope("svc_scope_7").none { it.id == "rule_1" })
     }
 
     @Test
@@ -262,6 +287,39 @@ class PanelRepositoryRouteRuleSyncTest {
     }
 
     @Test
+    fun `rejected update followed by pull restores server-confirmed active rule`() = runBlocking {
+        store.replaceFromPull(
+            routeDirections = emptyList(),
+            entitlements = emptyList(),
+            rules = listOf(ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", true, "active", 1L)),
+            bindings = emptyList(),
+            capabilities = null,
+        )
+        api.updateResponse = Response.success(ClientRuleWriteResponse(ok = false, error = "update_rejected"))
+
+        val thrown = runCatching { repo.updateClientRule("rule_1", ClientRuleWriteDraft(enabled = false, syncVersion = 1L)) }.exceptionOrNull()
+
+        assertEquals("update_rejected", thrown?.message)
+        assertEquals(ClientRuleEffectiveState.ERROR, store.current().rules.single().effectiveState)
+
+        api.pullResponse = PullConfigsResponse(
+            ok = true,
+            client = JsonObject(),
+            forwards = emptyList(),
+            clientRules = listOf(ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", true, "active", 2L)),
+        )
+
+        repo.pullCatalog()
+
+        val restored = store.current().rules.single()
+        assertTrue(restored.enabled)
+        assertEquals(PendingClientRuleOperation.NONE, restored.pendingOperation)
+        assertEquals(ClientRuleEffectiveState.ACTIVE, restored.effectiveState)
+        assertNull(restored.pendingError)
+        assertTrue(store.activeRulesForScope("svc_scope_7").single().enabled)
+    }
+
+    @Test
     fun `delete failure followed by pull restores server-confirmed rule`() = runBlocking {
         store.replaceFromPull(
             routeDirections = emptyList(),
@@ -298,6 +356,73 @@ class PanelRepositoryRouteRuleSyncTest {
     }
 
     @Test
+    fun `client switch clears route rule cache before next pull`() = runBlocking {
+        store.replaceFromPull(
+            routeDirections = listOf(RouteDirectionDto(id = "dir_a", label = "A", status = "available", sortOrder = 1)),
+            entitlements = emptyList(),
+            rules = listOf(ClientRouteRuleDto("rule_a", "svc_scope_a", "93.184.216.34", 443, "tcp_udp", "dir_a", true, "active", 1L)),
+            bindings = emptyList(),
+            capabilities = RouteRuleCapabilitiesDto(true, true),
+        )
+        testPrefs.email = "user@example.com"
+        testPrefs.password = "secret"
+        testPrefs.clientId = 7L
+        api.loginResponse = Response.success(
+            LoginResponse(
+                ok = true,
+                token = "session-token-b",
+                clientId = 8L,
+                clients = listOf(ClientInfo(7L, "phone-a"), ClientInfo(8L, "phone-b")),
+                username = "user",
+            )
+        )
+        api.selectResponse = Response.success(ClientSelectionResponse(ok = true, clientId = 8L, clientName = "phone-b", agentToken = "agent-token-b"))
+
+        repo.switchClient(8L)
+
+        assertTrue(store.current().rules.isEmpty())
+        assertTrue(store.current().directions.isEmpty())
+        assertEquals(8L, testPrefs.clientId)
+    }
+
+    @Test
+    fun `repository pull through one store is observable from another store instance`() = runBlocking {
+        val sharedStore = ClientRouteRuleStore.from(context)
+        val consumerStore = ClientRouteRuleStore.from(context)
+        val sharedRepo = PanelRepository(context, prefsOverride = testPrefs, apiOverride = api, routeRuleStore = sharedStore)
+        api.pullResponse = PullConfigsResponse(
+            ok = true,
+            client = JsonObject(),
+            forwards = emptyList(),
+            routeDirections = listOf(RouteDirectionDto(id = "dir_sh_jp_1", label = "沪日1", status = "available", sortOrder = 10)),
+            clientRules = listOf(ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", true, "active", 1L)),
+        )
+
+        sharedRepo.pullCatalog()
+
+        assertEquals("rule_1", consumerStore.current().rules.single().id)
+        assertEquals("沪日1", consumerStore.current().directions.single().label)
+    }
+
+    @Test
+    fun `repository write through one store is observable from another store instance`() = runBlocking {
+        val sharedStore = ClientRouteRuleStore.from(context)
+        val consumerStore = ClientRouteRuleStore.from(context)
+        val sharedRepo = PanelRepository(context, prefsOverride = testPrefs, apiOverride = api, routeRuleStore = sharedStore)
+        api.createResponse = Response.success(
+            ClientRuleWriteResponse(
+                ok = true,
+                clientRule = ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", true, "active", 1L),
+            )
+        )
+
+        sharedRepo.createClientRule(ClientRuleWriteDraft("svc_scope_7", "93.184.216.34", 443, "dir_sh_jp_1", true))
+
+        assertEquals("rule_1", consumerStore.current().rules.single().id)
+        assertEquals(ClientRuleEffectiveState.ACTIVE, consumerStore.current().rules.single().effectiveState)
+    }
+
+    @Test
     fun `create and update send normalized destination and identifiers`() = runBlocking {
         api.createResponse = Response.success(
             ClientRuleWriteResponse(
@@ -311,6 +436,8 @@ class PanelRepositoryRouteRuleSyncTest {
         assertEquals("svc_scope_7", api.lastCreateRequest?.serviceScopeId)
         assertEquals("93.184.216.34", api.lastCreateRequest?.destinationIp)
         assertEquals("dir_sh_jp_1", api.lastCreateRequest?.directionId)
+        assertEquals("svc_scope_7", store.current().rules.single().serviceScopeId)
+        assertEquals("dir_sh_jp_1", store.current().rules.single().directionId)
 
         api.updateResponse = Response.success(
             ClientRuleWriteResponse(
@@ -323,6 +450,8 @@ class PanelRepositoryRouteRuleSyncTest {
 
         assertEquals("93.184.216.35", api.lastUpdateRequest?.destinationIp)
         assertEquals("dir_sh_jp_2", api.lastUpdateRequest?.directionId)
+        assertEquals("svc_scope_7", store.current().rules.single().serviceScopeId)
+        assertEquals("dir_sh_jp_2", store.current().rules.single().directionId)
     }
 
     @Test
