@@ -4,7 +4,10 @@ import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonElement
+import com.leikwan.bridge.clientrules.ClientRouteRule
+import com.leikwan.bridge.clientrules.ClientRuleWriteDraft
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.runtime.AndroidEffectiveForward
 import com.leikwan.bridge.runtime.AndroidEffectiveForwardBuilder
 import com.leikwan.bridge.runtime.ForwardCatalog
@@ -19,11 +22,16 @@ import retrofit2.converter.gson.GsonConverterFactory
 import java.net.URI
 import java.util.concurrent.TimeUnit
 
-class PanelRepository(context: Context) {
-    private val prefs = Prefs.get(context)
+class PanelRepository(
+    context: Context,
+    prefsOverride: Prefs? = null,
+    apiOverride: PanelApi? = null,
+    private val routeRuleStore: ClientRouteRuleStore = ClientRouteRuleStore.from(context),
+) {
+    private val prefs = prefsOverride ?: Prefs.get(context)
     private val gson = Gson()
 
-    private var api: PanelApi = buildApi(prefs.panelUrl)
+    private var api: PanelApi = apiOverride ?: buildApi(prefs.panelUrl)
     private var cachedForwardConfigs = mutableMapOf<Long, JsonElement>()
     private var cachedForwardContracts = mutableMapOf<Long, ForwardContract>()
     private var cachedEffectiveForwards = mutableMapOf<Long, AndroidEffectiveForward>()
@@ -188,8 +196,16 @@ class PanelRepository(context: Context) {
     }
 
     suspend fun pullCatalog(selectedForwardId: Long = prefs.selectedForwardId): ForwardCatalog {
+        runCatching { api.heartbeat(authHeader(), HeartbeatRequest()) }
         val resp = api.pullConfigs(authHeader())
         if (!resp.ok) throw Exception("Pull configs failed")
+        routeRuleStore.replaceFromPull(
+            routeDirections = resp.routeDirections.orEmpty(),
+            entitlements = resp.routeRuleEntitlements.orEmpty(),
+            rules = resp.clientRules.orEmpty(),
+            bindings = resp.directionRuntimeBindings.orEmpty(),
+            capabilities = resp.routeRuleCapabilities,
+        )
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
@@ -227,10 +243,77 @@ class PanelRepository(context: Context) {
         }
     }
 
+    suspend fun createClientRule(draft: ClientRuleWriteDraft): ClientRouteRule {
+        val local = routeRuleStore.markPendingCreate(draft)
+        return try {
+            val response = api.createClientRule(authHeader(), draft.toRequest())
+            val body = response.body()
+            if (!response.isSuccessful || body?.ok != true || body.clientRule == null) {
+                val code = body?.error?.takeIf { it.isNotBlank() }
+                    ?: body?.message?.takeIf { it.isNotBlank() }
+                    ?: PanelErrorParser.messageFromHttp(response.code(), response.message(), response.errorBody()?.string())
+                routeRuleStore.markPendingError(local.id, code)
+                throw Exception(code)
+            }
+            routeRuleStore.applyServerRule(body.clientRule, local.id)
+        } catch (e: Exception) {
+            routeRuleStore.markPendingError(local.id, e.message ?: "client_rule_write_failed")
+            throw e
+        }
+    }
+
+    suspend fun updateClientRule(ruleId: String, draft: ClientRuleWriteDraft): ClientRouteRule {
+        val local = routeRuleStore.markPendingUpdate(ruleId, draft)
+        return try {
+            val response = api.updateClientRule(authHeader(), ruleId, draft.toRequest())
+            val body = response.body()
+            if (!response.isSuccessful || body?.ok != true || body.clientRule == null) {
+                val code = body?.error?.takeIf { it.isNotBlank() }
+                    ?: body?.message?.takeIf { it.isNotBlank() }
+                    ?: PanelErrorParser.messageFromHttp(response.code(), response.message(), response.errorBody()?.string())
+                routeRuleStore.markPendingError(ruleId, code)
+                throw Exception(code)
+            }
+            routeRuleStore.applyServerRule(body.clientRule, local.id)
+        } catch (e: Exception) {
+            routeRuleStore.markPendingError(ruleId, e.message ?: "client_rule_write_failed")
+            throw e
+        }
+    }
+
+    suspend fun deleteClientRule(ruleId: String): ClientRouteRule {
+        val local = routeRuleStore.markPendingTombstone(ruleId)
+        return try {
+            val response = api.deleteClientRule(authHeader(), ruleId)
+            val body = response.body()
+            if (!response.isSuccessful || body?.ok != true || body.clientRule == null) {
+                val code = body?.error?.takeIf { it.isNotBlank() }
+                    ?: body?.message?.takeIf { it.isNotBlank() }
+                    ?: PanelErrorParser.messageFromHttp(response.code(), response.message(), response.errorBody()?.string())
+                routeRuleStore.markPendingError(ruleId, code)
+                throw Exception(code)
+            }
+            routeRuleStore.applyServerRule(body.clientRule, local.id)
+        } catch (e: Exception) {
+            routeRuleStore.markPendingError(ruleId, e.message ?: "client_rule_write_failed")
+            throw e
+        }
+    }
+
+    private fun ClientRuleWriteDraft.toRequest(): ClientRuleWriteRequest = ClientRuleWriteRequest(
+        serviceScopeId = serviceScopeId,
+        destinationIp = destinationIp,
+        destinationPort = destinationPort,
+        directionId = directionId,
+        enabled = enabled,
+        syncVersion = syncVersion,
+    )
+
     fun isLoggedIn(): Boolean = prefs.isLoggedIn()
 
     fun logout() {
         prefs.logout()
+        routeRuleStore.clear()
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
