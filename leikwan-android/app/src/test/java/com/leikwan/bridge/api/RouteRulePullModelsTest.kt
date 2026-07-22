@@ -74,6 +74,8 @@ class RouteRulePullModelsTest {
                   "binding_state":"ready",
                   "client_runtime_binding_id":"crb_svc_scope_7_dir_sh_jp_1",
                   "runtime_ref":{"type":"forward_ref","forward_id":77,"selectable":false,"transport":"tcp_udp"},
+                  "local_tcp_port":12001,
+                  "local_udp_port":12001,
                   "local_endpoint":{"host":"127.0.0.1","tcp_port":12001,"udp_port":12001}
                 },
                 {
@@ -82,6 +84,8 @@ class RouteRulePullModelsTest {
                   "binding_state":"ready",
                   "client_runtime_binding_id":"crb_svc_scope_8_dir_sh_jp_1",
                   "runtime_ref":{"type":"forward_ref","forward_id":78,"selectable":false,"transport":"tcp_udp"},
+                  "local_tcp_port":12002,
+                  "local_udp_port":12002,
                   "local_endpoint":{"host":"127.0.0.2","tcp_port":12002,"udp_port":12002}
                 }
               ],
@@ -118,6 +122,8 @@ class RouteRulePullModelsTest {
         assertEquals("dir_sh_jp_1", binding.directionId)
         assertEquals("ready", binding.bindingState)
         assertEquals("crb_svc_scope_7_dir_sh_jp_1", binding.clientRuntimeBindingId)
+        assertEquals(12001, binding.localTcpPort)
+        assertEquals(12001, binding.localUdpPort)
         assertEquals("127.0.0.1", binding.localEndpoint?.host)
         assertEquals(12001, binding.localEndpoint?.tcpPort)
         assertEquals(12001, binding.localEndpoint?.udpPort)
@@ -129,6 +135,8 @@ class RouteRulePullModelsTest {
         assertEquals("svc_scope_8", otherScopeBinding.serviceScopeId)
         assertEquals("dir_sh_jp_1", otherScopeBinding.directionId)
         assertEquals("crb_svc_scope_8_dir_sh_jp_1", otherScopeBinding.clientRuntimeBindingId)
+        assertEquals(12002, otherScopeBinding.localTcpPort)
+        assertEquals(12002, otherScopeBinding.localUdpPort)
         assertEquals(12002, otherScopeBinding.localEndpoint?.tcpPort)
 
         assertTrue(parsed.routeRuleCapabilities?.routeDirectionRules == true)
@@ -145,7 +153,7 @@ class RouteRulePullModelsTest {
     }
 
     @Test
-    fun `delete client rule request sends sync version for conflict detection`() = runBlocking {
+    fun `delete client rule request uses rule id path without request body`() = runBlocking {
         val mockServer = MockWebServer()
         server = mockServer
         mockServer.enqueue(MockResponse().setResponseCode(200).setBody("""
@@ -158,13 +166,13 @@ class RouteRulePullModelsTest {
             .build()
             .create(PanelApi::class.java)
 
-        api.deleteClientRule("Bearer token", "rule_abc", ClientRuleDeleteRequest(syncVersion = 3L))
+        api.deleteClientRule("Bearer token", "rule_abc")
 
         val request = mockServer.takeRequest()
         assertEquals("DELETE", request.method)
         assertEquals("/api/client/client-rules/rule_abc", request.path)
         assertEquals("Bearer token", request.getHeader("Authorization"))
-        assertEquals("{\"sync_version\":3}", request.body.readUtf8())
+        assertEquals("", request.body.readUtf8())
     }
 
     @Test
