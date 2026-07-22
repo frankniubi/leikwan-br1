@@ -49,8 +49,8 @@ data class PullConfigsResponse(
 
 data class HeartbeatRequest(
     @SerializedName("client_platform") val clientPlatform: String = "android",
-    @SerializedName("supports_route_direction_rules") val supportsRouteDirectionRules: Boolean = true,
-    @SerializedName("supports_exact_destination_rules") val supportsExactDestinationRules: Boolean = true,
+    @SerializedName("supports_route_direction_rules") val supportsRouteDirectionRules: Boolean = false,
+    @SerializedName("supports_exact_destination_rules") val supportsExactDestinationRules: Boolean = false,
 )
 
 data class HeartbeatResponse(val ok: Boolean)
@@ -84,11 +84,12 @@ data class ClientRouteRuleDto(
 )
 
 data class DirectionRuntimeBindingDto(
+    @SerializedName("service_scope_id") val serviceScopeId: String = "",
     @SerializedName("direction_id") val directionId: String = "",
     @SerializedName("binding_state") val bindingState: String = "missing",
-    @SerializedName("local_tcp_port") val localTcpPort: Int = 0,
-    @SerializedName("local_udp_port") val localUdpPort: Int = 0,
+    @SerializedName("client_runtime_binding_id") val clientRuntimeBindingId: String = "",
     @SerializedName("runtime_ref") val runtimeRef: DirectionRuntimeRefDto? = null,
+    @SerializedName("local_endpoint") val localEndpoint: DirectionLocalEndpointDto? = null,
 )
 
 data class DirectionRuntimeRefDto(
@@ -96,6 +97,12 @@ data class DirectionRuntimeRefDto(
     @SerializedName("forward_id") val forwardId: Long? = null,
     val selectable: Boolean = false,
     val transport: String = "tcp_udp",
+)
+
+data class DirectionLocalEndpointDto(
+    val host: String = "",
+    @SerializedName("tcp_port") val tcpPort: Int = 0,
+    @SerializedName("udp_port") val udpPort: Int = 0,
 )
 
 data class RouteRuleCapabilitiesDto(
@@ -110,6 +117,10 @@ data class ClientRuleWriteRequest(
     @SerializedName("direction_id") val directionId: String? = null,
     val enabled: Boolean? = null,
     @SerializedName("sync_version") val syncVersion: Long? = null,
+)
+
+data class ClientRuleDeleteRequest(
+    @SerializedName("sync_version") val syncVersion: Long,
 )
 
 data class ClientRuleWriteResponse(
