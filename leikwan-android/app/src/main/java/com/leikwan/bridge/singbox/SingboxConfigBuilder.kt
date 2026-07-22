@@ -3,6 +3,9 @@ package com.leikwan.bridge.singbox
 import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import com.leikwan.bridge.clientrules.ClientRouteRule
+import com.leikwan.bridge.clientrules.ClientRouteRuleSnapshot
+import com.leikwan.bridge.clientrules.PendingClientRuleOperation
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.data.routing.RulePackManifest
@@ -12,6 +15,7 @@ import com.leikwan.bridge.routing.RoutingPolicyEngine
 import com.leikwan.bridge.routing.RoutingPolicySnapshot
 import com.leikwan.bridge.routing.SafePathRegistry
 import com.leikwan.bridge.routing.UserTrafficOutcome
+import com.leikwan.bridge.runtime.ClientRuleSingboxBinding
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.service.ProxyConnectionMode
 import java.net.URI
@@ -62,6 +66,8 @@ class SingboxConfigBuilder(
         routingPolicySnapshot: RoutingPolicySnapshot? = null,
         connectionMode: ProxyConnectionMode = ProxyConnectionMode.SERVICES,
         enableIpv6Tun: Boolean = false,
+        routeRuleSnapshot: ClientRouteRuleSnapshot? = null,
+        routeRuleRuntimeBindings: List<ClientRuleSingboxBinding> = emptyList(),
         runtimeOnlyProxy: Boolean = false,
     ): CompiledConfigResult {
         val activeProxyNodes = activeProxyNodes(proxyNodes, runtimeContext, connectionMode)
@@ -85,9 +91,18 @@ class SingboxConfigBuilder(
         }
         root.add("dns", buildDns(dnsProxyDetourTag, dnsBootstrapDomains, enableIpv6Tun))
         root.add("inbounds", buildInbounds(enableIpv6Tun))
-        root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode, runtimeOnlyProxy))
+        root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode, runtimeOnlyProxy, routeRuleRuntimeBindings))
         buildEndpoints(activeProxyNodes).takeIf { it.size() > 0 }?.let { root.add("endpoints", it) }
-        root.add("route", buildRoute(runtimeContext?.allBypassHosts() ?: emptySet(), finalProxyTag, routingPolicySnapshot))
+        root.add(
+            "route",
+            buildRoute(
+                runtimeContext?.allBypassHosts() ?: emptySet(),
+                finalProxyTag,
+                routingPolicySnapshot,
+                routeRuleSnapshot,
+                routeRuleRuntimeBindings,
+            )
+        )
         return CompiledConfigResult(
             configJson = gson.toJson(root),
             finalProxyTag = finalProxyTag,
@@ -166,6 +181,7 @@ class SingboxConfigBuilder(
         runtimeContext: RuntimeContext?,
         connectionMode: ProxyConnectionMode,
         runtimeOnlyProxy: Boolean,
+        routeRuleRuntimeBindings: List<ClientRuleSingboxBinding>,
     ): JsonArray {
         val outbounds = JsonArray()
         val proxyTags = mutableListOf<String>()
@@ -203,7 +219,18 @@ class SingboxConfigBuilder(
             addProperty("type", "direct")
             addProperty("tag", "direct")
         })
+        routeRuleRuntimeBindings.forEach { binding ->
+            outbounds.add(routeRuleDirectOutbound(binding.tcpOutboundTag, binding.localTcpPort))
+            outbounds.add(routeRuleDirectOutbound(binding.udpOutboundTag, binding.localUdpPort))
+        }
         return outbounds
+    }
+
+    private fun routeRuleDirectOutbound(tag: String, port: Int): JsonObject = JsonObject().apply {
+        addProperty("type", "direct")
+        addProperty("tag", tag)
+        addProperty("override_address", "127.0.0.1")
+        addProperty("override_port", port)
     }
 
     private fun buildEndpoints(proxyNodes: List<ProxyNode>): JsonArray {
@@ -362,6 +389,8 @@ class SingboxConfigBuilder(
         runtimeBypassHosts: Set<String>,
         finalProxyTag: String,
         snapshot: RoutingPolicySnapshot?,
+        routeRuleSnapshot: ClientRouteRuleSnapshot?,
+        routeRuleRuntimeBindings: List<ClientRuleSingboxBinding>,
     ): JsonObject {
         val route = JsonObject()
         val rules = JsonArray()
@@ -418,7 +447,11 @@ class SingboxConfigBuilder(
             })
         }
 
-        // (3) User country/category rules (the 用户自定义分流 surface). Each compiled rule routes its
+        // (3) Server-synced Client Rules: exact destination IP:PORT rules. These sit after
+        //     protected/runtime reachability and before country/category/default routing.
+        addClientRuleRoutes(rules, routeRuleSnapshot, routeRuleRuntimeBindings)
+
+        // (4) User country/category rules (the 用户自定义分流 surface). Each compiled rule routes its
         //     rule_set(s) to "direct" (DIRECT) or the proxy tag (TUNNEL, sentinel swapped here).
         if (snapshot != null) {
             effectiveRoutingEngine.compileRouteRules(snapshot).forEach { compiled ->
@@ -435,7 +468,7 @@ class SingboxConfigBuilder(
             }
         }
 
-        // (4) bypassChina toggle (also expressible as a CN->DIRECT user rule; kept for back-compat).
+        // (5) bypassChina toggle (also expressible as a CN->DIRECT user rule; kept for back-compat).
         if (settings.bypassChina) {
             rules.add(JsonObject().apply {
                 add("rule_set", JsonArray().apply {
@@ -446,7 +479,7 @@ class SingboxConfigBuilder(
             })
         }
 
-        // (5) Custom bypass rules.
+        // (6) Custom bypass rules.
         val custom = settings.customBypassRules.trim()
         if (custom.isNotEmpty()) {
             val ips = JsonArray()
@@ -506,6 +539,43 @@ class SingboxConfigBuilder(
         }
 
         return route
+    }
+
+    private fun addClientRuleRoutes(
+        rules: JsonArray,
+        snapshot: ClientRouteRuleSnapshot?,
+        runtimeBindings: List<ClientRuleSingboxBinding>,
+    ) {
+        snapshot ?: return
+        val bindingByDirection = runtimeBindings.associateBy { it.directionId }
+        snapshot.rules
+            .filter { it.enabled && it.deletedAtMs == null && it.pendingOperation != PendingClientRuleOperation.DELETE }
+            .forEach { rule ->
+                val binding = bindingByDirection[rule.directionId]
+                if (rule.installable && binding != null) {
+                    rules.add(routeRuleMatch(rule, "tcp", binding.tcpOutboundTag))
+                    rules.add(routeRuleMatch(rule, "udp", binding.udpOutboundTag))
+                } else {
+                    rules.add(routeRuleReject(rule, "tcp"))
+                    rules.add(routeRuleReject(rule, "udp"))
+                }
+            }
+    }
+
+    private fun routeRuleMatch(rule: ClientRouteRule, network: String, outbound: String): JsonObject =
+        routeRuleBase(rule, network).apply {
+            addProperty("outbound", outbound)
+        }
+
+    private fun routeRuleReject(rule: ClientRouteRule, network: String): JsonObject =
+        routeRuleBase(rule, network).apply {
+            addProperty("action", "reject")
+        }
+
+    private fun routeRuleBase(rule: ClientRouteRule, network: String): JsonObject = JsonObject().apply {
+        add("ip_cidr", JsonArray().apply { add(normalizeIpCidr(rule.destinationIp)) })
+        add("port", JsonArray().apply { add(rule.destinationPort) })
+        addProperty("network", network)
     }
 
     private fun remoteRuleSet(tag: String, url: String): JsonObject = JsonObject().apply {

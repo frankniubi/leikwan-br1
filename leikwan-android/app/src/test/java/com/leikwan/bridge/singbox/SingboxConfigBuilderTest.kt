@@ -1,6 +1,9 @@
 package com.leikwan.bridge.singbox
 
 import com.google.gson.JsonParser
+import com.leikwan.bridge.clientrules.ClientRouteRule
+import com.leikwan.bridge.clientrules.ClientRouteRuleSnapshot
+import com.leikwan.bridge.clientrules.ClientRuleEffectiveState
 import com.leikwan.bridge.data.routing.RulePackManifest
 import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.routing.RoutingCategoryCatalog
@@ -9,6 +12,7 @@ import com.leikwan.bridge.routing.RoutingRule
 import com.leikwan.bridge.routing.RoutingRuleKind
 import com.leikwan.bridge.routing.SafePathRegistry
 import com.leikwan.bridge.routing.UserTrafficOutcome
+import com.leikwan.bridge.runtime.ClientRuleSingboxBinding
 import com.leikwan.bridge.runtime.ForwardMode
 import com.leikwan.bridge.runtime.NodeLeg
 import com.leikwan.bridge.runtime.RuntimeContext
@@ -812,6 +816,157 @@ class SingboxConfigBuilderTest {
             "https://cdn.example/geosite-cn.srs",
             refs.first { it.get("tag").asString == "geosite-cn" }.get("url").asString,
         )
+    }
+
+    @Test
+    fun `client rules are exact ip port rules after protected paths and before country rules`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+        val runtimeContext = RuntimeContext(
+            forwardId = 65L,
+            mode = ForwardMode.SINGLE,
+            localListenPort = 11065,
+            localLegPorts = emptyList(),
+            processPlans = emptyList(),
+            bypassHosts = linkedSetOf("198.51.100.10"),
+        )
+        val routeRuleSnapshot = ClientRouteRuleSnapshot(
+            rules = listOf(
+                ClientRouteRule(
+                    id = "rule_active",
+                    serviceScopeId = "svc_scope_7",
+                    destinationIp = "93.184.216.34",
+                    destinationPort = 443,
+                    directionId = "dir_sh_jp_1",
+                    enabled = true,
+                    effectiveState = ClientRuleEffectiveState.ACTIVE,
+                    syncVersion = 1L,
+                    updatedAtMs = 1L,
+                ),
+                ClientRouteRule(
+                    id = "rule_missing",
+                    serviceScopeId = "svc_scope_7",
+                    destinationIp = "203.0.113.9",
+                    destinationPort = 8443,
+                    directionId = "dir_sh_hk_1",
+                    enabled = true,
+                    effectiveState = ClientRuleEffectiveState.RUNTIME_MISSING,
+                    syncVersion = 1L,
+                    updatedAtMs = 1L,
+                ),
+                ClientRouteRule(
+                    id = "rule_disabled",
+                    serviceScopeId = "svc_scope_7",
+                    destinationIp = "203.0.113.10",
+                    destinationPort = 9443,
+                    directionId = "dir_sh_jp_1",
+                    enabled = false,
+                    effectiveState = ClientRuleEffectiveState.ACTIVE,
+                    syncVersion = 1L,
+                    updatedAtMs = 1L,
+                ),
+                ClientRouteRule(
+                    id = "rule_deleted",
+                    serviceScopeId = "svc_scope_7",
+                    destinationIp = "203.0.113.11",
+                    destinationPort = 10443,
+                    directionId = "dir_sh_jp_1",
+                    enabled = true,
+                    effectiveState = ClientRuleEffectiveState.ACTIVE,
+                    syncVersion = 1L,
+                    deletedAtMs = 2L,
+                    updatedAtMs = 1L,
+                ),
+            ),
+        )
+        val routeRuleBindings = listOf(
+            ClientRuleSingboxBinding(
+                directionId = "dir_sh_jp_1",
+                tcpOutboundTag = "route-direction-dir_sh_jp_1-tcp",
+                udpOutboundTag = "route-direction-dir_sh_jp_1-udp",
+                localTcpPort = 12001,
+                localUdpPort = 12002,
+            )
+        )
+        val policySnapshot = RoutingPolicyEngine(
+            SafePathRegistry.androidBaseline("https://panel.example.com", "v3-mirror.leikwanhost.com"),
+            RoutingCategoryCatalog.default(),
+        ).compile(
+            globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = null,
+            countryRules = listOf(RoutingRule("country-cn", RoutingRuleKind.COUNTRY, "CN", UserTrafficOutcome.DIRECT)),
+            categoryRules = emptyList(),
+            rulePackVersions = emptyList(),
+            compiledAtMs = 1L,
+        )
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = emptyList(),
+                runtimeContext = runtimeContext,
+                routingPolicySnapshot = policySnapshot,
+                connectionMode = ProxyConnectionMode.SERVICES,
+                routeRuleSnapshot = routeRuleSnapshot,
+                routeRuleRuntimeBindings = routeRuleBindings,
+            ).configJson
+        ).asJsonObject
+        val outbounds = config.getAsJsonArray("outbounds").map { it.asJsonObject }
+        val rules = config.getAsJsonObject("route").getAsJsonArray("rules").map { it.asJsonObject }
+
+        val tcpOutbound = outbounds.first { it.get("tag").asString == "route-direction-dir_sh_jp_1-tcp" }
+        assertEquals("direct", tcpOutbound.get("type").asString)
+        assertEquals("127.0.0.1", tcpOutbound.get("override_address").asString)
+        assertEquals(12001, tcpOutbound.get("override_port").asInt)
+        val udpOutbound = outbounds.first { it.get("tag").asString == "route-direction-dir_sh_jp_1-udp" }
+        assertEquals("direct", udpOutbound.get("type").asString)
+        assertEquals("127.0.0.1", udpOutbound.get("override_address").asString)
+        assertEquals(12002, udpOutbound.get("override_port").asInt)
+
+        val activeTcpIndex = rules.indexOfFirst { rule ->
+            rule.get("network")?.asString == "tcp" &&
+                rule.get("outbound")?.asString == "route-direction-dir_sh_jp_1-tcp" &&
+                rule.getAsJsonArray("ip_cidr")?.any { it.asString == "93.184.216.34/32" } == true &&
+                rule.getAsJsonArray("port")?.any { it.asInt == 443 } == true
+        }
+        val activeUdpIndex = rules.indexOfFirst { rule ->
+            rule.get("network")?.asString == "udp" &&
+                rule.get("outbound")?.asString == "route-direction-dir_sh_jp_1-udp" &&
+                rule.getAsJsonArray("ip_cidr")?.any { it.asString == "93.184.216.34/32" } == true &&
+                rule.getAsJsonArray("port")?.any { it.asInt == 443 } == true
+        }
+        val rejectTcpIndex = rules.indexOfFirst { rule ->
+            rule.get("network")?.asString == "tcp" &&
+                rule.get("action")?.asString == "reject" &&
+                rule.getAsJsonArray("ip_cidr")?.any { it.asString == "203.0.113.9/32" } == true &&
+                rule.getAsJsonArray("port")?.any { it.asInt == 8443 } == true
+        }
+        val rejectUdpIndex = rules.indexOfFirst { rule ->
+            rule.get("network")?.asString == "udp" &&
+                rule.get("action")?.asString == "reject" &&
+                rule.getAsJsonArray("ip_cidr")?.any { it.asString == "203.0.113.9/32" } == true &&
+                rule.getAsJsonArray("port")?.any { it.asInt == 8443 } == true
+        }
+        val countryRuleIndex = rules.indexOfFirst { rule ->
+            rule.getAsJsonArray("rule_set")?.any { it.asString == "geoip-cn" } == true
+        }
+        val runtimeBypassIndex = rules.indexOfFirst { rule ->
+            rule.getAsJsonArray("ip_cidr")?.any { it.asString == "198.51.100.10/32" } == true
+        }
+
+        assertTrue(runtimeBypassIndex >= 0)
+        assertTrue(activeTcpIndex > runtimeBypassIndex)
+        assertTrue(activeUdpIndex > runtimeBypassIndex)
+        assertTrue(rejectTcpIndex > runtimeBypassIndex)
+        assertTrue(rejectUdpIndex > runtimeBypassIndex)
+        assertTrue(countryRuleIndex > activeTcpIndex)
+        assertTrue(countryRuleIndex > activeUdpIndex)
+        assertTrue(countryRuleIndex > rejectTcpIndex)
+        assertTrue(countryRuleIndex > rejectUdpIndex)
+        assertFalse(rules.any { rule ->
+            rule.getAsJsonArray("ip_cidr")?.any { it.asString == "203.0.113.10/32" } == true
+        })
+        assertFalse(rules.any { rule ->
+            rule.getAsJsonArray("ip_cidr")?.any { it.asString == "203.0.113.11/32" } == true
+        })
     }
 
     @Test
