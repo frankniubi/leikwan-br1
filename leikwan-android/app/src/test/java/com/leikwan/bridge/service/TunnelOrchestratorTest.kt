@@ -3,9 +3,28 @@ package com.leikwan.bridge.service
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.leikwan.bridge.api.ClientRouteRuleDto
+import com.leikwan.bridge.api.ClientRuleWriteRequest
+import com.leikwan.bridge.api.ClientRuleWriteResponse
+import com.leikwan.bridge.api.ClientSelectionRequest
+import com.leikwan.bridge.api.ClientSelectionResponse
+import com.leikwan.bridge.api.DirectionRuntimeBindingDto
+import com.leikwan.bridge.api.DirectionRuntimeRefDto
+import com.leikwan.bridge.api.HeartbeatRequest
+import com.leikwan.bridge.api.HeartbeatResponse
+import com.leikwan.bridge.api.LoginRequest
+import com.leikwan.bridge.api.LoginResponse
+import com.leikwan.bridge.api.PanelApi
+import com.leikwan.bridge.api.PanelRepository
+import com.leikwan.bridge.api.PullConfigsResponse
+import com.leikwan.bridge.api.RouteDirectionDto
+import com.leikwan.bridge.api.RouteRuleCapabilitiesDto
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.data.routing.RoutingExplainabilityStore
 import com.leikwan.bridge.data.routing.RulePackManager
@@ -16,6 +35,7 @@ import com.leikwan.bridge.runtime.ForwardEndpoint
 import com.leikwan.bridge.runtime.ForwardMode
 import com.leikwan.bridge.runtime.NodeLeg
 import com.leikwan.bridge.runtime.ProcessRunner
+import com.leikwan.bridge.runtime.RuntimeBinaryInstaller
 import com.leikwan.bridge.runtime.RuntimeBinaryPaths
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.singbox.SingboxConfigBuilder
@@ -31,10 +51,12 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import retrofit2.Response
 
 /**
  * Exercises the [TunnelOrchestrator] DI seam: with an in-memory database, a real
@@ -47,6 +69,13 @@ import org.robolectric.annotation.Config
 class TunnelOrchestratorTest {
 
     private lateinit var db: AppDatabase
+
+    @Before
+    fun resetVpnState() {
+        LeikwanVpnService.startupState = VpnStartupState.RUNNING
+        LeikwanVpnService.lastStartError = null
+        LeikwanVpnService.configJson = ""
+    }
 
     @After
     fun tearDown() {
@@ -410,6 +439,120 @@ class TunnelOrchestratorTest {
     }
 
     @Test
+    fun `route rule runtime plan is passed into sing-box after helper runtimes start`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val prefs = Prefs(context.getSharedPreferences("orchestrator-route-rule-test-prefs", Context.MODE_PRIVATE))
+        prefs.token = "agent-token"
+        val processRunner = RecordingProcessRunner()
+        val binaries = RuntimeBinaryPaths("/runtime/wstunnel", "/runtime/leikwan-ingress", "/runtime/leikwan-bond")
+        val binaryInstaller = RecordingBinaryInstaller(context, binaries)
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val routeRuleStore = ClientRouteRuleStore(
+            context.getSharedPreferences("orchestrator-route-rule-store", Context.MODE_PRIVATE).also { it.edit().clear().commit() },
+            clock = { 1L },
+        )
+        routeRuleStore.replaceFromPull(
+            routeDirections = listOf(RouteDirectionDto("dir_sh_jp_1", "沪日1", "available", 10)),
+            entitlements = emptyList(),
+            rules = listOf(ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", true, "active", 1L)),
+            bindings = listOf(
+                DirectionRuntimeBindingDto(
+                    directionId = "dir_sh_jp_1",
+                    bindingState = "ready",
+                    runtimeRef = DirectionRuntimeRefDto("forward_ref", 77L, false, "tcp_udp"),
+                    localTcpPort = 12001,
+                    localUdpPort = 12001,
+                )
+            ),
+            capabilities = RouteRuleCapabilitiesDto(true, true),
+        )
+        val baseForward = sampleBondForward(
+            forwardId = 65L,
+            listenPort = 11065,
+            remoteTarget = "base.example:9000",
+            routeRuleHelperOnly = false,
+        ).copy(
+            backendMode = "leigod_mode",
+            targetContract = "dedicated_forward_node",
+            sidecarRequired = false,
+            aggregationEnabled = false,
+            mode = ForwardMode.SINGLE,
+            transport = "tcp_udp",
+        )
+        val helperForward = sampleBondForward(
+            forwardId = 77L,
+            listenPort = 11077,
+            remoteTarget = "helper.example:9000",
+            routeRuleHelperOnly = true,
+        ).copy(transport = "tcp_udp")
+        val panelApi = FakePanelApi(
+            forwards = listOf(baseForward.toPanelJson(), helperForward.toPanelJson()),
+            routeDirections = listOf(RouteDirectionDto("dir_sh_jp_1", "沪日1", "available", 10)),
+            clientRules = listOf(ClientRouteRuleDto("rule_1", "svc_scope_7", "93.184.216.34", 443, "tcp_udp", "dir_sh_jp_1", true, "active", 1L)),
+            bindings = listOf(
+                DirectionRuntimeBindingDto(
+                    directionId = "dir_sh_jp_1",
+                    bindingState = "ready",
+                    runtimeRef = DirectionRuntimeRefDto("forward_ref", 77L, false, "tcp_udp"),
+                    localTcpPort = 12001,
+                    localUdpPort = 12001,
+                )
+            ),
+            capabilities = RouteRuleCapabilitiesDto(true, true),
+        )
+        val panelRepo = PanelRepository(context, prefsOverride = prefs, apiOverride = panelApi, routeRuleStore = routeRuleStore)
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = UserRoutingRuleStore(db),
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+            panelRepoFactory = { panelRepo },
+            binaryInstallerFactory = { binaryInstaller },
+            processRunnerFactory = { processRunner },
+            routeRuleStore = routeRuleStore,
+        )
+
+        orchestrator.startForForward(65L)
+
+        val routeProcessKey = com.leikwan.bridge.runtime.RouteDirectionRuntimePlanner.processKey("dir_sh_jp_1")
+        assertEquals(1, binaryInstaller.prepareCalls)
+        assertEquals(listOf(65L, routeProcessKey), processRunner.started.map { it.forwardId })
+        assertEquals(listOf(true, false), processRunner.started.map { it.cleanupStale })
+        val helperRuntime = processRunner.started.single { it.forwardId == routeProcessKey }.runtimeContext
+        assertEquals(12001, helperRuntime.localListenPort)
+        assertEquals(routeProcessKey, helperRuntime.routeRuleProcessKey)
+
+        val config = JsonParser.parseString(LeikwanVpnService.configJson).asJsonObject
+        val outbounds = config.getAsJsonArray("outbounds").map { it.asJsonObject }
+        assertTrue(outbounds.any { it.get("tag").asString == "route-direction-dir_sh_jp_1-tcp" })
+        val rules = config.getAsJsonObject("route").getAsJsonArray("rules").map { it.asJsonObject }
+        assertTrue(
+            rules.any { rule ->
+                rule.getAsJsonArray("ip_cidr")?.any { it.asString == "8.163.90.132/32" } == true &&
+                    rule.get("outbound")?.asString == "direct"
+            }
+        )
+        assertTrue(
+            rules.any { rule ->
+                rule.getAsJsonArray("ip_cidr")?.any { it.asString == "93.184.216.34/32" } == true &&
+                    rule.getAsJsonArray("port")?.any { it.asInt == 443 } == true &&
+                    rule.get("outbound")?.asString == "route-direction-dir_sh_jp_1-tcp"
+            }
+        )
+
+        orchestrator.stop()
+
+        assertEquals(listOf(routeProcessKey), processRunner.stopped)
+        assertTrue(processRunner.stopAllCalled)
+    }
+
+    @Test
     fun `buildRoutingSnapshot gates user rules behind selector switch`() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
@@ -466,6 +609,8 @@ class TunnelOrchestratorTest {
         )
 
         val started = mutableListOf<Started>()
+        val stopped = mutableListOf<Long>()
+        var stopAllCalled = false
 
         override fun start(forwardId: Long, runtimeContext: RuntimeContext, cleanupStale: Boolean) {
             if (forwardId in failForProcessKeys) {
@@ -473,6 +618,51 @@ class TunnelOrchestratorTest {
             }
             started += Started(forwardId, runtimeContext, cleanupStale)
         }
+
+        override fun stopForward(forwardId: Long) {
+            stopped += forwardId
+        }
+
+        override fun stopAll() {
+            stopAllCalled = true
+        }
+    }
+
+    private class RecordingBinaryInstaller(
+        context: Context,
+        private val binaries: RuntimeBinaryPaths,
+    ) : RuntimeBinaryInstaller(context) {
+        var prepareCalls = 0
+
+        override fun prepareBinaryPaths(): RuntimeBinaryPaths {
+            prepareCalls += 1
+            return binaries
+        }
+    }
+
+    private class FakePanelApi(
+        private val forwards: List<JsonElement>,
+        private val routeDirections: List<RouteDirectionDto> = emptyList(),
+        private val clientRules: List<ClientRouteRuleDto> = emptyList(),
+        private val bindings: List<DirectionRuntimeBindingDto> = emptyList(),
+        private val capabilities: RouteRuleCapabilitiesDto? = null,
+    ) : PanelApi {
+        override suspend fun login(request: LoginRequest): Response<LoginResponse> = Response.success(LoginResponse(ok = true))
+        override suspend fun selectClient(request: ClientSelectionRequest): Response<ClientSelectionResponse> = throw UnsupportedOperationException()
+        override suspend fun heartbeat(auth: String, request: HeartbeatRequest): HeartbeatResponse = HeartbeatResponse(ok = true)
+        override suspend fun pullConfigs(auth: String): PullConfigsResponse = PullConfigsResponse(
+            ok = true,
+            client = JsonObject(),
+            forwards = forwards,
+            routeDirections = routeDirections,
+            clientRules = clientRules,
+            directionRuntimeBindings = bindings,
+            routeRuleCapabilities = capabilities,
+        )
+        override suspend fun createClientRule(auth: String, request: ClientRuleWriteRequest): Response<ClientRuleWriteResponse> = throw UnsupportedOperationException()
+        override suspend fun updateClientRule(auth: String, ruleId: String, request: ClientRuleWriteRequest): Response<ClientRuleWriteResponse> = throw UnsupportedOperationException()
+        override suspend fun deleteClientRule(auth: String, ruleId: String): Response<ClientRuleWriteResponse> = throw UnsupportedOperationException()
+        override suspend fun getForwardConfig(auth: String, forwardId: Long): JsonElement = JsonObject()
     }
 
     private fun ssNode(name: String): ProxyNode = ProxyNode(
@@ -488,6 +678,7 @@ class TunnelOrchestratorTest {
         forwardId: Long = 26L,
         listenPort: Int = 11024,
         remoteTarget: String = "138.252.162.120:9000",
+        routeRuleHelperOnly: Boolean = false,
     ): ForwardContract = ForwardContract(
         forwardId = forwardId,
         serviceName = "bond-26",
@@ -516,6 +707,7 @@ class TunnelOrchestratorTest {
                 ingressAuthToken = null,
             ),
         ),
+        routeRuleHelperOnly = routeRuleHelperOnly,
         bonding = BondingContract(
             ingressMode = "wss_path_mux",
             routeKey = "/route-key",
@@ -551,5 +743,52 @@ class TunnelOrchestratorTest {
             wsPriority = 10,
         ),
         mptcp = null,
+    )
+
+    private fun ForwardContract.toPanelJson(): JsonElement = JsonParser.parseString(
+        """
+        {
+          "forward_id": $forwardId,
+          "service_name": "$serviceName",
+          "target": "$target",
+          "listen_port": $listenPort,
+          "mode": "${mode.wireValue}",
+          "backend_mode": "$backendMode",
+          "contract_version": $contractVersion,
+          "client_mode": "$clientMode",
+          "runtime_preference": "$runtimePreference",
+          "bond_ingress_mode": "$bondIngressMode",
+          "active_family": "$activeFamily",
+          "aggregation_enabled": $aggregationEnabled,
+          "target_contract": "$targetContract",
+          "sidecar_required": $sidecarRequired,
+          "transport": "$transport",
+          "service_status": "$serviceStatus",
+          "endpoint_mode": "$endpointMode",
+          "sni": "$sni",
+          "path_prefix": "$pathPrefix",
+          "speed_limit_mbps": $speedLimitMbps,
+          "route_rule_helper_only": $routeRuleHelperOnly,
+          "endpoints": [
+            {"endpoint_id":184,"node":"gz-1","host":"8.163.90.132","port":7001,"priority":1,"weight":1,"health_status":"healthy","supports_quic_leg":false}
+          ],
+          "bonding": {
+            "ingress_mode": "wss_path_mux",
+            "route_key": "/route-key",
+            "remote_target": "${bonding?.remoteTarget}",
+            "session_token": "tcp-token",
+            "udp_session_token": "udp-token",
+            "wss_standby_enabled": true,
+            "disable_local_rate_limit": true,
+            "quic_enabled": false,
+            "quic_via_slave": false,
+            "active_leg_limit": 0,
+            "quic_active_leg_limit": 0,
+            "quic_insecure": true,
+            "quic_priority": 0,
+            "ws_priority": 10
+          }
+        }
+        """.trimIndent()
     )
 }
