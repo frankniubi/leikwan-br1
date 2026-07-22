@@ -9,6 +9,10 @@ object ForwardFilter {
         val hiddenIds = mutableSetOf<Long>()
 
         for (contract in contracts) {
+            if (contract.routeRuleHelperOnly) {
+                hiddenIds += contract.forwardId
+                continue
+            }
             val effective = AndroidEffectiveForwardBuilder.build(contract)
             if (effective == null) {
                 hiddenIds += contract.forwardId

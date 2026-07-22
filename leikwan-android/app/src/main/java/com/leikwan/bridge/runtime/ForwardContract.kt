@@ -84,6 +84,7 @@ data class ForwardContract(
     val endpoints: List<ForwardEndpoint>,
     val bonding: BondingContract?,
     val mptcp: MptcpContract?,
+    val routeRuleHelperOnly: Boolean = false,
 ) {
     fun toListItem(methodDisplay: String = "LeiGod", runtimeMode: ForwardMode = mode): ForwardListItem {
         return ForwardListItem(
@@ -197,6 +198,7 @@ object ForwardContractParser {
             endpoints = endpoints,
             bonding = obj.objectOrNull("bonding")?.toBondingContract(obj.stringOrNull("bond_ingress_mode")),
             mptcp = obj.objectOrNull("mptcp")?.toMptcpContract(),
+            routeRuleHelperOnly = obj.boolOrNull("route_rule_helper_only") ?: false,
         )
     }
 }
