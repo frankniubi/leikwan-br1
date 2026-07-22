@@ -26,6 +26,17 @@ object RouteDirectionRuntimePlanner {
         return ROUTE_RULE_PROCESS_KEY_BASE + ((hash and Long.MAX_VALUE) % ROUTE_RULE_PROCESS_KEY_RANGE)
     }
 
+    private fun uniqueProcessKey(directionId: String, usedProcessKeys: MutableSet<Long>): Long {
+        var candidate = processKey(directionId)
+        while (!usedProcessKeys.add(candidate)) {
+            candidate++
+            if (candidate >= ROUTE_RULE_PROCESS_KEY_BASE + ROUTE_RULE_PROCESS_KEY_RANGE) {
+                candidate = ROUTE_RULE_PROCESS_KEY_BASE
+            }
+        }
+        return candidate
+    }
+
     fun plan(
         snapshot: ClientRouteRuleSnapshot,
         forwardContractsById: Map<Long, ForwardContract>,
@@ -38,6 +49,7 @@ object RouteDirectionRuntimePlanner {
         val runtimeContexts = mutableListOf<RuntimeContext>()
         val singboxBindings = mutableListOf<ClientRuleSingboxBinding>()
         val bypassHosts = linkedSetOf<String>()
+        val usedProcessKeys = mutableSetOf<Long>()
 
         activeDirectionIds.forEach { directionId ->
             val binding = snapshot.bindingFor(directionId) ?: return@forEach
@@ -45,6 +57,7 @@ object RouteDirectionRuntimePlanner {
             val forwardId = binding.runtimeForwardId ?: return@forEach
             val forward = forwardContractsById[forwardId] ?: return@forEach
             val runtimeContext = buildRuntimeContext(directionId, forward, binding.localTcpPort)
+                .copy(routeRuleProcessKey = uniqueProcessKey(directionId, usedProcessKeys))
             runtimeContexts += runtimeContext
             bypassHosts += runtimeContext.allBypassHosts()
             singboxBindings += ClientRuleSingboxBinding(
