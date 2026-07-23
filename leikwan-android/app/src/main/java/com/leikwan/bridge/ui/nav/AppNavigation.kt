@@ -2,6 +2,7 @@ package com.leikwan.bridge.ui.nav
 
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Rule
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
@@ -33,6 +34,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.leikwan.bridge.R
 import com.leikwan.bridge.ui.MainActivity
+import com.leikwan.bridge.ui.clientrules.ClientRulesScreen
 import com.leikwan.bridge.ui.proxies.ProxiesScreen
 import com.leikwan.bridge.ui.proxies.ProxiesViewModel
 import com.leikwan.bridge.ui.settings.SettingsScreen
@@ -41,6 +43,7 @@ import com.leikwan.bridge.ui.tunnels.TunnelsScreen
 enum class Screen(val route: String, @StringRes val labelRes: Int, val icon: ImageVector) {
     Tunnels("tunnels", R.string.nav_tunnels, Icons.Default.Lan),
     Proxies("proxies", R.string.nav_proxies, Icons.Default.Shield),
+    ClientRules("client-rules", R.string.nav_client_rules, Icons.AutoMirrored.Filled.Rule),
     Settings("settings", R.string.nav_settings, Icons.Default.Settings),
 }
 
@@ -93,6 +96,7 @@ fun MainScreen(onLogout: () -> Unit = {}) {
         ) {
             composable(Screen.Tunnels.route) { TunnelsScreen() }
             composable(Screen.Proxies.route) { ProxiesScreen(viewModel = proxiesViewModel) }
+            composable(Screen.ClientRules.route) { ClientRulesScreen() }
             composable(Screen.Settings.route) { SettingsScreen(onLogout = onLogout) }
         }
     }
