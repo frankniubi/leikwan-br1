@@ -72,6 +72,36 @@ public sealed class MasterApiClientDesktopLoginTests
     }
 
     [Fact]
+    public async Task PullConfigsAsync_UsesInjectedHttpClientFactory_ForProtectedLeikwanMasterUrl()
+    {
+        using var http = new HttpClient(new StubPullResponseHandler()) { Timeout = TimeSpan.FromSeconds(5) };
+        var requestedUrls = new List<Uri>();
+        using var api = new MasterApiClient(
+            "https://v3-mirror.leikwanhost.com",
+            "agent-token-27",
+            httpClientFactory: () => http,
+            ownsHttpClient: false,
+            onRequestForTest: request => requestedUrls.Add(request.RequestUri!));
+
+        var response = await api.PullConfigsAsync();
+
+        Assert.True(response.Ok);
+        Assert.Equal("https://v3-mirror.leikwanhost.com/api/client/configs/pull", requestedUrls.Single().ToString());
+    }
+
+    [Fact]
+    public async Task PullConfigsAsync_LocalhostMasterUrl_RemainsUsableWithDefaultClient()
+    {
+        using var server = new HeaderCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token-27");
+
+        var response = await api.PullConfigsAsync();
+
+        Assert.True(response.Ok);
+        Assert.Equal("127.0.0.1", new Uri(server.LastRequestUrl).Host);
+    }
+
+    [Fact]
     public void BuildWindowsDeviceId_IsStableForSameClientAndMachine()
     {
         var first = MasterApiClient.BuildWindowsDeviceId(27, "DEVBOX");
@@ -114,6 +144,25 @@ public sealed class MasterApiClientDesktopLoginTests
         Assert.Contains("1 / 1", api.LastErrorMessage);
     }
 
+    private sealed class StubPullResponseHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent("""
+                    {
+                      "ok": true,
+                      "client": { "id": 27, "name": "Client 27", "display_host": "devbox", "agent_config_json": {} },
+                      "forwards": []
+                    }
+                    """, Encoding.UTF8, "application/json"),
+            };
+            return Task.FromResult(response);
+        }
+    }
+
     private sealed class HeaderCaptureServer : IDisposable
     {
         private readonly HttpListener _listener = new();
@@ -140,6 +189,7 @@ public sealed class MasterApiClientDesktopLoginTests
         }
 
         public string BaseUrl { get; }
+        public string LastRequestUrl { get; private set; } = "";
         public Dictionary<string, string> LastRequestHeaders { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         private async Task ServeLoopAsync()
@@ -160,6 +210,7 @@ public sealed class MasterApiClientDesktopLoginTests
                     break;
                 }
 
+                LastRequestUrl = context.Request.Url?.ToString() ?? "";
                 foreach (var key in context.Request.Headers.AllKeys)
                 {
                     if (!string.IsNullOrWhiteSpace(key))
