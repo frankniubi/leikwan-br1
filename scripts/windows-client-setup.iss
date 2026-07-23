@@ -246,6 +246,157 @@ begin
   SilentUpdateDesktopShortcut := ReadCmdParameter('LEIKWANDESKTOPSHORTCUT');
 end;
 
+function SkipJsonWhitespace(const JsonText: string; Position: Integer): Integer;
+begin
+  Result := Position;
+  while Result <= Length(JsonText) do begin
+    if (Copy(JsonText, Result, 1) = ' ') or (Copy(JsonText, Result, 1) = #9) or
+       (Copy(JsonText, Result, 1) = #10) or (Copy(JsonText, Result, 1) = #13) then
+      Result := Result + 1
+    else
+      Exit;
+  end;
+end;
+
+function FindJsonPropertyValueStart(const JsonText, PropertyName: string): Integer;
+var
+  Needle: string;
+  I: Integer;
+begin
+  Result := 0;
+  Needle := '"' + PropertyName + '"';
+  I := Pos(Needle, JsonText);
+  if I = 0 then
+    Exit;
+
+  I := SkipJsonWhitespace(JsonText, I + Length(Needle));
+  if (I > Length(JsonText)) or (Copy(JsonText, I, 1) <> ':') then
+    Exit;
+
+  Result := SkipJsonWhitespace(JsonText, I + 1);
+end;
+
+function ExtractJsonStringValue(const JsonText, PropertyName: string; var Value: string): Boolean;
+var
+  I: Integer;
+  Ch: string;
+  Escaped: Boolean;
+begin
+  Result := False;
+  Value := '';
+  I := FindJsonPropertyValueStart(JsonText, PropertyName);
+  if (I = 0) or (Copy(JsonText, I, 1) <> '"') then
+    Exit;
+
+  I := I + 1;
+  Escaped := False;
+  while I <= Length(JsonText) do begin
+    Ch := Copy(JsonText, I, 1);
+    if Escaped then begin
+      if Ch = '"' then
+        Value := Value + '"'
+      else if Ch = '\' then
+        Value := Value + '\'
+      else if Ch = '/' then
+        Value := Value + '/'
+      else if Ch = 'n' then
+        Value := Value + #10
+      else if Ch = 'r' then
+        Value := Value + #13
+      else if Ch = 't' then
+        Value := Value + #9
+      else
+        Value := Value + Ch;
+      Escaped := False;
+    end else if Ch = '\' then begin
+      Escaped := True;
+    end else if Ch = '"' then begin
+      Result := True;
+      Exit;
+    end else begin
+      Value := Value + Ch;
+    end;
+    I := I + 1;
+  end;
+end;
+
+function ExtractJsonBooleanValue(const JsonText, PropertyName: string; var Value: Boolean): Boolean;
+var
+  I: Integer;
+  Token: string;
+begin
+  Result := False;
+  I := FindJsonPropertyValueStart(JsonText, PropertyName);
+  if I = 0 then
+    Exit;
+
+  Token := Lowercase(Copy(JsonText, I, 5));
+  if Token = 'false' then begin
+    Value := False;
+    Result := True;
+    Exit;
+  end;
+
+  Token := Lowercase(Copy(JsonText, I, 4));
+  if Token = 'true' then begin
+    Value := True;
+    Result := True;
+  end;
+end;
+
+procedure ValidateSilentUpdateExistingInstallState;
+var
+  StatePath: string;
+  StateTextBytes: AnsiString;
+  StateText: string;
+  DeclaredInstallDir: string;
+  ExistingInstallMode: string;
+  ExistingDesktopShortcutText: string;
+  ExpectedDesktopShortcutText: string;
+  ExistingDesktopShortcut: Boolean;
+  ExpectedDesktopShortcut: Boolean;
+begin
+  if not SilentUpdateRequested then
+    Exit;
+
+  StatePath := AddBackslash(NormalizeInstallDir(SilentUpdateInstallDir)) + 'install-state.json';
+  if not FileExists(StatePath) then
+    RaiseException('existing install-state.json missing for silent update');
+  if not LoadStringFromFile(StatePath, StateTextBytes) then
+    RaiseException('existing install-state.json could not be read');
+  StateText := StateTextBytes;
+
+  if (not ExtractJsonStringValue(StateText, 'install_dir', DeclaredInstallDir)) or (Trim(DeclaredInstallDir) = '') then
+    RaiseException('existing install-state.json is missing install_dir');
+  if not IsSameInstallDir(SilentUpdateInstallDir, DeclaredInstallDir) then
+    RaiseException(
+      'existing install-state.json install_dir mismatch: expected ' +
+      NormalizeInstallDir(SilentUpdateInstallDir) + ' but found ' + NormalizeInstallDir(DeclaredInstallDir));
+
+  if (not ExtractJsonStringValue(StateText, 'install_mode', ExistingInstallMode)) or (Trim(ExistingInstallMode) = '') then
+    RaiseException('existing install-state.json is missing install_mode');
+  if CompareText(Trim(ExistingInstallMode), Trim(SilentUpdateInstallMode)) <> 0 then
+    RaiseException(
+      'existing install-state.json install_mode mismatch: expected ' + Trim(SilentUpdateInstallMode) +
+      ' but found ' + Trim(ExistingInstallMode));
+
+  if not ExtractJsonBooleanValue(StateText, 'desktop_shortcut', ExistingDesktopShortcut) then
+    RaiseException('existing install-state.json is missing desktop_shortcut');
+  ExpectedDesktopShortcut := Trim(SilentUpdateDesktopShortcut) = '1';
+  if ExistingDesktopShortcut then
+    ExistingDesktopShortcutText := '1'
+  else
+    ExistingDesktopShortcutText := '0';
+  if ExpectedDesktopShortcut then
+    ExpectedDesktopShortcutText := '1'
+  else
+    ExpectedDesktopShortcutText := '0';
+  if ExistingDesktopShortcut <> ExpectedDesktopShortcut then
+    RaiseException(
+      'existing install-state.json desktop_shortcut mismatch: expected ' + ExpectedDesktopShortcutText +
+      ' but found ' + ExistingDesktopShortcutText);
+end;
+
 function GetEffectiveInstallDirForHelper: string;
 begin
   if SilentUpdateRequested and (Trim(SilentUpdateInstallDir) <> '') then
@@ -282,6 +433,14 @@ begin
     RaiseException('LEIKWANINSTALLMODE is required for silent updates');
   if (Trim(SilentUpdateDesktopShortcut) <> '1') and (Trim(SilentUpdateDesktopShortcut) <> '0') then
     RaiseException('LEIKWANDESKTOPSHORTCUT is required for silent updates');
+end;
+
+function InitializeSetup: Boolean;
+begin
+  InitializeSilentUpdateParameters;
+  ValidateSilentUpdateParameters;
+  ValidateSilentUpdateExistingInstallState;
+  Result := True;
 end;
 
 function GetHelperCommandLine: string;
@@ -423,7 +582,6 @@ begin
   AllUsersRadio.Checked := True;
   CurrentUserRadio.Checked := False;
 
-  InitializeSilentUpdateParameters;
   ExistingInstallDetected := False;
   ExistingInstallDir := '';
   MigrationSelectedDir := '';

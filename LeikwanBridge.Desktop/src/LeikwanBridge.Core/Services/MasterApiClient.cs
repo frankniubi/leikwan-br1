@@ -14,6 +14,8 @@ public sealed class MasterApiClient : IDisposable
     private readonly HttpClient _http;
     private readonly string _masterUrl;
     private readonly string _agentToken;
+    private readonly bool _ownsHttpClient;
+    private readonly Action<HttpRequestMessage>? _onRequestForTest;
 
     public string LastErrorMessage { get; private set; } = "";
 
@@ -28,11 +30,16 @@ public sealed class MasterApiClient : IDisposable
         string agentToken,
         string deviceId = "",
         string deviceName = "",
-        string devicePlatform = "")
+        string devicePlatform = "",
+        Func<HttpClient>? httpClientFactory = null,
+        bool ownsHttpClient = true,
+        Action<HttpRequestMessage>? onRequestForTest = null)
     {
         _masterUrl = masterUrl.TrimEnd('/');
         _agentToken = agentToken;
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _http = httpClientFactory?.Invoke() ?? LeikwanHttpClientFactory.CreateFor(new Uri(_masterUrl));
+        _ownsHttpClient = ownsHttpClient;
+        _onRequestForTest = onRequestForTest;
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _agentToken);
         _http.DefaultRequestHeaders.UserAgent.ParseAdd($"Leikwan-Windows-GUI/{AgentVersion}");
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -48,7 +55,7 @@ public sealed class MasterApiClient : IDisposable
         var json = JsonSerializer.Serialize(payload, JsonOptions);
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
         using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
-        var response = await _http.SendAsync(request, ct);
+        var response = await SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadAsStringAsync(ct);
         return JsonSerializer.Deserialize<DesktopLoginResponse>(body, JsonOptions)
@@ -62,7 +69,7 @@ public sealed class MasterApiClient : IDisposable
         var json = JsonSerializer.Serialize(payload, JsonOptions);
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
         using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
-        var response = await _http.SendAsync(request, ct);
+        var response = await SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadAsStringAsync(ct);
         return JsonSerializer.Deserialize<ClientSelectionResponse>(body, JsonOptions)
@@ -73,7 +80,8 @@ public sealed class MasterApiClient : IDisposable
     {
         var url = $"{_masterUrl}/api/client/configs/pull";
         Log.Debug("pulling configs from {Url}", url);
-        var response = await _http.GetAsync(url, ct);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        var response = await SendAsync(request, ct);
         await EnsureSuccessOrThrowAsync(response, ct);
         var json = await response.Content.ReadAsStringAsync(ct);
         return JsonSerializer.Deserialize<PullResponse>(json, JsonOptions)
@@ -85,8 +93,9 @@ public sealed class MasterApiClient : IDisposable
         var url = $"{_masterUrl}/api/client/heartbeat";
         var json = JsonSerializer.Serialize(payload, JsonOptions);
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
         Log.Debug("sending heartbeat to {Url}", url);
-        var response = await _http.PostAsync(url, content, ct);
+        var response = await SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
     }
 
@@ -96,8 +105,9 @@ public sealed class MasterApiClient : IDisposable
         var payload = new { request_token = requestToken, results, error };
         var json = JsonSerializer.Serialize(payload, JsonOptions);
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
         Log.Debug("submitting diagnostics to {Url}", url);
-        var response = await _http.PostAsync(url, content, ct);
+        var response = await SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
     }
 
@@ -137,6 +147,12 @@ public sealed class MasterApiClient : IDisposable
     {
         if (!string.IsNullOrWhiteSpace(value))
             _http.DefaultRequestHeaders.TryAddWithoutValidation(name, value.Trim());
+    }
+
+    private Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        _onRequestForTest?.Invoke(request);
+        return _http.SendAsync(request, ct);
     }
 
     private static async Task EnsureSuccessOrThrowAsync(HttpResponseMessage response, CancellationToken ct)
@@ -186,7 +202,11 @@ public sealed class MasterApiClient : IDisposable
         return $"HTTP {(int) response.StatusCode} {response.ReasonPhrase}".Trim();
     }
 
-    public void Dispose() => _http.Dispose();
+    public void Dispose()
+    {
+        if (_ownsHttpClient)
+            _http.Dispose();
+    }
 }
 
 public sealed class MasterApiException : Exception

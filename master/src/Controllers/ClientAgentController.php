@@ -102,6 +102,30 @@ final class ClientAgentController extends BaseController
             'wireguard_listen_port' => $request->input('wireguard_listen_port'),
             'wireguard_fallback_tcp_port' => $request->input('wireguard_fallback_tcp_port'),
         ]);
+
+        // Regression sentinel: client_heartbeat_republish_on_wireguard_identity_change
+        // Client heartbeats are frequent, so only republish assigned forwards when the
+        // client's WG identity changes, with a periodic safety-net force interval.
+        $existingFingerprint = trim((string) ($existingAgentConfig['last_heartbeat_fingerprint'] ?? ''));
+        $existingFingerprintAt = (int) ($existingAgentConfig['last_heartbeat_republish_at'] ?? 0);
+        $forceIntervalSeconds = max(60, (int) ($this->config->getInt('CLIENT_REPUBLISH_FORCE_INTERVAL_SECONDS', 600) ?? 600));
+        $wgFingerprintInputs = [
+            (string) ($runtimeState['wireguard_public_key'] ?? ''),
+            (string) ((int) ($runtimeState['wireguard_listen_port'] ?? 0)),
+            (string) ((int) ($runtimeState['wireguard_fallback_tcp_port'] ?? 0)),
+        ];
+        $wgFingerprint = sha1(implode(':', $wgFingerprintInputs));
+        $now = time();
+        $shouldRepublish = ($wgFingerprint !== $existingFingerprint)
+            || ($existingFingerprintAt <= 0)
+            || (($now - $existingFingerprintAt) >= $forceIntervalSeconds);
+        $runtimeState['last_heartbeat_fingerprint'] = $wgFingerprint;
+        if ($shouldRepublish) {
+            $runtimeState['last_heartbeat_republish_at'] = $now;
+        } elseif ($existingFingerprintAt > 0) {
+            $runtimeState['last_heartbeat_republish_at'] = $existingFingerprintAt;
+        }
+
         $this->db->execute(
             'UPDATE clients
              SET agent_version = :agent_version,
@@ -125,6 +149,9 @@ final class ClientAgentController extends BaseController
             );
         }
         $this->provisioning->recordAgentUsage('client', (int) $client['id'], $usageBytesIn, $usageBytesOut);
+        if ($shouldRepublish) {
+            $this->provisioning->republishActiveForwardsForClient((int) $client['id']);
+        }
 
         return $this->json(['ok' => true]);
     }

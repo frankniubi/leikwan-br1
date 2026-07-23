@@ -42,11 +42,14 @@ data class SettingsUiState(
     val rulePackMessage: String? = null,
 )
 
-class SettingsViewModel(app: Application) : AndroidViewModel(app) {
+class SettingsViewModel @JvmOverloads constructor(
+    app: Application,
+    prefsOverride: Prefs? = null,
+) : AndroidViewModel(app) {
     private val appContext = app.applicationContext
-    private val prefs = Prefs.get(app)
+    private val prefs = prefsOverride ?: Prefs.get(app)
     private val db = AppDatabase.get(app)
-    private val repo = PanelRepository(app)
+    private val repo = PanelRepository(app, prefsOverride = prefs)
     private val gson = Gson()
     private val rulePackManager = RulePackManager(db, prefs)
     private val rulePackFetcher = RulePackFetcher(manager = rulePackManager)
@@ -173,7 +176,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun logout() {
-        prefs.logout()
+        repo.logout()
     }
 
     private fun rulePackLabelFromPrefs(): String {

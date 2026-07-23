@@ -8,6 +8,7 @@
 /infoandcredentials.txt
 *.env.local
 .env
+/tmp-artifact-config.env
 
 # Scratch files from live debugging and handoff planning.
 /.codex-tmp/
@@ -76,3 +77,4 @@ node_modules/
 
 # Large Windows installer build artifact (served via deploy; >100MB, not tracked)
 artifacts/windows/leikwan-bridge-setup.exe
+.gstack/

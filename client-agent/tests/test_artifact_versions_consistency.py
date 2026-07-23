@@ -28,6 +28,12 @@ class ArtifactVersionsConsistencyTests(unittest.TestCase):
         self.assertEqual(digest, client_agent["sha256"])
         self.assertEqual(agent_path.stat().st_size, client_agent["size_bytes"])
 
+    def test_client_agent_artifact_mirror_matches_source(self) -> None:
+        agent_path = REPO_ROOT / "client-agent" / "client_agent.py"
+        artifact_path = REPO_ROOT / "artifacts" / "client-agent.py"
+
+        self.assertEqual(agent_path.read_bytes(), artifact_path.read_bytes())
+
 
     def test_client_agent_installer_artifact_hash_is_current(self) -> None:
         installer_path = REPO_ROOT / "install" / "install-client-agent.sh"
@@ -36,6 +42,11 @@ class ArtifactVersionsConsistencyTests(unittest.TestCase):
         import hashlib
         versions = json.loads(versions_path.read_text(encoding="utf-8"))
         client_agent_installer = versions["client_agent_installer"]
+
+        text = installer_path.read_text(encoding="utf-8")
+        match = re.search(r'INSTALLER_VERSION="([^"]+)"', text)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), client_agent_installer["version"])
 
         digest = hashlib.sha256(installer_path.read_bytes()).hexdigest()
         self.assertEqual(digest, client_agent_installer["sha256"])

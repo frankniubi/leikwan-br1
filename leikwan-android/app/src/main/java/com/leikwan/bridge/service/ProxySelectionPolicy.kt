@@ -4,8 +4,8 @@ import com.leikwan.bridge.data.ProxyNode
 
 sealed interface ProxySelectionResult {
     data class Success(
-        val selectedNode: ProxyNode,
-        val activeNodes: List<ProxyNode> = listOf(selectedNode),
+        val selectedNode: ProxyNode?,
+        val activeNodes: List<ProxyNode> = selectedNode?.let { listOf(it) } ?: emptyList(),
     ) : ProxySelectionResult
     data class Error(val message: String) : ProxySelectionResult
 }
@@ -16,7 +16,14 @@ object ProxySelectionPolicy {
         forwardId: Long,
         connectionMode: ProxyConnectionMode,
         proxyNodes: List<ProxyNode>,
+        proxyOptional: Boolean = false,
     ): ProxySelectionResult {
+        if (connectionMode == ProxyConnectionMode.SERVICES && proxyOptional) {
+            return ProxySelectionResult.Success(
+                selectedNode = null,
+                activeNodes = emptyList(),
+            )
+        }
         if (selectedProxyId == 0L) {
             return ProxySelectionResult.Error("Select a proxy before starting this service")
         }

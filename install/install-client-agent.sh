@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.05.20.1"
+INSTALLER_VERSION="2026.07.23.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -172,10 +172,269 @@ STATE_DIR="/var/lib/leikwan-client-agent"
 INSTALLER_SHA256="$(current_installer_sha256)"
 mkdir -p "$CONFIG_DIR" "$BIN_DIR" "$STATE_DIR"
 
+leikwan_protected_download() {
+  local url="$1"
+  local path="$2"
+  python3 - "$url" "$path" <<'PY'
+import http.client
+import ipaddress
+import os
+import pathlib
+import socket
+import ssl
+import struct
+import subprocess
+import sys
+import urllib.parse
+
+STRICT_DOH_PROVIDERS = [
+    ("AliDNS", "https://dns.alidns.com/dns-query", ("223.5.5.5", "223.6.6.6")),
+    ("DNSPod", "https://doh.pub/dns-query", ("1.12.12.12", "120.53.53.53")),
+    ("360", "https://doh.360.cn/dns-query", ("101.226.4.6", "218.30.118.6")),
+]
+LEIKWAN_PROTECTED_APEX = "leikwanhost.com"
+LEIKWAN_PROTECTED_SUFFIX = ".leikwanhost.com"
+USER_AGENT = "Leikwan-Client-Agent-Installer/strict-doh"
+
+
+class StrictDoHError(RuntimeError):
+    pass
+
+
+def normalize_dns_host(host):
+    normalized = host.strip().rstrip(".").lower()
+    if not normalized:
+        raise StrictDoHError("empty host")
+    normalized.encode("ascii")
+    return normalized
+
+
+def host_is_ip_literal(host):
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+def is_protected_leikwan_url(url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").strip().strip("[]").rstrip(".").lower()
+    if host in {"", "localhost", "ip6-localhost", "ip6-loopback"}:
+        return False
+    if host_is_ip_literal(host):
+        return False
+    return host == LEIKWAN_PROTECTED_APEX or host.endswith(LEIKWAN_PROTECTED_SUFFIX)
+
+
+def build_dns_a_query(host, query_id=None):
+    normalized = normalize_dns_host(host)
+    if query_id is None:
+        query_id = int.from_bytes(os.urandom(2), "big")
+    question = bytearray()
+    for label in normalized.split("."):
+        encoded = label.encode("ascii")
+        if not encoded or len(encoded) > 63:
+            raise StrictDoHError(f"invalid DNS label in {host}")
+        question.append(len(encoded))
+        question.extend(encoded)
+    question.append(0)
+    question.extend(struct.pack("!HH", 1, 1))
+    return struct.pack("!HHHHHH", query_id, 0x0100, 1, 0, 0, 0) + bytes(question), query_id
+
+
+def skip_dns_name(message, offset):
+    seen = 0
+    while True:
+        if offset >= len(message):
+            raise StrictDoHError("truncated DNS name")
+        length = message[offset]
+        if length & 0xC0 == 0xC0:
+            if offset + 1 >= len(message):
+                raise StrictDoHError("truncated DNS pointer")
+            return offset + 2
+        if length & 0xC0:
+            raise StrictDoHError("unsupported DNS label type")
+        offset += 1
+        if length == 0:
+            return offset
+        offset += length
+        seen += 1
+        if offset > len(message) or seen > 128:
+            raise StrictDoHError("invalid DNS name")
+
+
+def parse_dns_a_response(message, query_id):
+    if len(message) < 12:
+        raise StrictDoHError("truncated DNS response")
+    resp_id, flags, qdcount, ancount, _nscount, _arcount = struct.unpack("!HHHHHH", message[:12])
+    if resp_id != query_id:
+        raise StrictDoHError("DNS response id mismatch")
+    if flags & 0x8000 == 0:
+        raise StrictDoHError("DNS response is not a response")
+    rcode = flags & 0x000F
+    if rcode != 0:
+        raise StrictDoHError(f"DNS response error rcode={rcode}")
+    offset = 12
+    for _ in range(qdcount):
+        offset = skip_dns_name(message, offset)
+        if offset + 4 > len(message):
+            raise StrictDoHError("truncated DNS question")
+        offset += 4
+    addresses = []
+    for _ in range(ancount):
+        offset = skip_dns_name(message, offset)
+        if offset + 10 > len(message):
+            raise StrictDoHError("truncated DNS answer")
+        rtype, rclass, _ttl, rdlength = struct.unpack("!HHIH", message[offset : offset + 10])
+        offset += 10
+        if offset + rdlength > len(message):
+            raise StrictDoHError("truncated DNS answer data")
+        rdata = message[offset : offset + rdlength]
+        offset += rdlength
+        if rtype == 1 and rclass == 1 and rdlength == 4:
+            addresses.append(socket.inet_ntoa(rdata))
+    return addresses
+
+
+class ResolvedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host, port=None, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, *, resolved_ip):
+        super().__init__(host, port=port, timeout=timeout, source_address=source_address)
+        self.resolved_ip = resolved_ip
+
+    def connect(self):
+        self.sock = socket.create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class ResolvedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, port=None, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, *, resolved_ip):
+        super().__init__(host, port=port, timeout=timeout, source_address=source_address)
+        self.resolved_ip = resolved_ip
+
+    def connect(self):
+        sock = socket.create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
+        if self._tunnel_host:
+            self.sock = sock
+            self._tunnel()
+            sock = self.sock
+        # Linux strict DoH keeps SNI/certificate verification on the original host; no SNI disabling or cert bypass is applied.
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def resolve_a_via_doh_provider(host, provider_url, bootstrap_ip, timeout=5.0):
+    query, query_id = build_dns_a_query(host)
+    parsed = urllib.parse.urlparse(provider_url)
+    provider_host = parsed.hostname or ""
+    provider_port = parsed.port or 443
+    provider_path = parsed.path or "/dns-query"
+    if parsed.query:
+        provider_path = f"{provider_path}?{parsed.query}"
+    conn = ResolvedHTTPSConnection(provider_host, port=provider_port, timeout=timeout, resolved_ip=bootstrap_ip)
+    try:
+        conn.request(
+            "POST",
+            provider_path,
+            body=query,
+            headers={
+                "Host": parsed.netloc,
+                "Accept": "application/dns-message",
+                "Content-Type": "application/dns-message",
+                "Content-Length": str(len(query)),
+                "User-Agent": USER_AGENT,
+            },
+        )
+        response = conn.getresponse()
+        body = response.read()
+        if response.status != 200:
+            raise StrictDoHError(f"DoH HTTP {response.status}")
+        return parse_dns_a_response(body, query_id)
+    finally:
+        conn.close()
+
+
+def strict_resolve_a(host):
+    normalized = normalize_dns_host(host)
+    errors = []
+    for provider_name, provider_url, bootstrap_ips in STRICT_DOH_PROVIDERS:
+        for bootstrap_ip in bootstrap_ips:
+            try:
+                addresses = resolve_a_via_doh_provider(normalized, provider_url, bootstrap_ip)
+            except Exception as exc:
+                errors.append(f"{provider_name}@{bootstrap_ip}: {exc}")
+                continue
+            if addresses:
+                return addresses
+            errors.append(f"{provider_name}@{bootstrap_ip}: no A records")
+    raise StrictDoHError(f"strict DoH failed for {normalized}: {'; '.join(errors)}")
+
+
+def fetch_protected(url, redirects=5):
+    if redirects < 0:
+        raise RuntimeError("too many redirects")
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    target = urllib.parse.urlunparse(("", "", parsed.path or "/", parsed.params, parsed.query, ""))
+    host_header = host if parsed.port is None else f"{host}:{parsed.port}"
+    headers = {"Host": host_header, "Accept": "*/*", "User-Agent": USER_AGENT, "Connection": "close"}
+    errors = []
+    for resolved_ip in strict_resolve_a(host):
+        conn_cls = ResolvedHTTPSConnection if parsed.scheme == "https" else ResolvedHTTPConnection
+        conn = conn_cls(host, port=port, timeout=30.0, resolved_ip=resolved_ip)
+        try:
+            conn.request("GET", target, headers=headers)
+            response = conn.getresponse()
+            body = response.read()
+            if 300 <= response.status < 400:
+                location = response.getheader("Location")
+                if not location:
+                    raise RuntimeError(f"redirect without Location from {url}")
+                next_url = urllib.parse.urljoin(url, location)
+                if is_protected_leikwan_url(next_url):
+                    return fetch_protected(next_url, redirects - 1)
+                return curl_download(next_url, None)
+            if response.status >= 400:
+                raise RuntimeError(f"HTTP {response.status} from {url}: {body[:200]!r}")
+            return body
+        except Exception as exc:
+            errors.append(f"{resolved_ip}: {exc}")
+        finally:
+            conn.close()
+    raise RuntimeError(f"protected download failed for {url}: {'; '.join(errors)}")
+
+
+def curl_download(url, path):
+    # Non-protected URL fallback intentionally stays equivalent to curl -fsSL.
+    cmd = ["curl", "-fsSL", url]
+    if path is None:
+        completed = subprocess.run(cmd, check=True, stdout=subprocess.PIPE)
+        return completed.stdout
+    subprocess.run(cmd + ["-o", path], check=True)
+    return b""
+
+
+def main():
+    url = sys.argv[1]
+    path = sys.argv[2]
+    if is_protected_leikwan_url(url):
+        pathlib.Path(path).write_bytes(fetch_protected(url))
+    else:
+        curl_download(url, path)
+
+
+if __name__ == "__main__":
+    main()
+PY
+}
+
 download() {
   local url="$1"
   local path="$2"
-  curl -fsSL "$url" -o "$path"
+  leikwan_protected_download "$url" "$path"
   chmod 0755 "$path"
 }
 
@@ -183,7 +442,7 @@ download_atomic() {
   local url="$1"
   local path="$2"
   local tmp_path="${path}.new"
-  curl -fsSL "$url" -o "$tmp_path"
+  leikwan_protected_download "$url" "$tmp_path"
   chmod 0755 "$tmp_path"
   mv "$tmp_path" "$path"
 }

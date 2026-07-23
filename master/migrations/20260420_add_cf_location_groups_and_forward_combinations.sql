@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     tenant_badge VARCHAR(64) NULL,
     node_group_key VARCHAR(191) NOT NULL,
     backend_mode VARCHAR(32) NOT NULL DEFAULT 'current_mode',
-    sidecar_point_id BIGINT UNSIGNED NOT NULL,
+    sidecar_point_id BIGINT UNSIGNED NULL,
     cf_location_group_id BIGINT UNSIGNED NULL,
     client_mode VARCHAR(32) NOT NULL DEFAULT 'single',
     bond_ingress_mode VARCHAR(32) NOT NULL DEFAULT 'plain_tcp_mux',

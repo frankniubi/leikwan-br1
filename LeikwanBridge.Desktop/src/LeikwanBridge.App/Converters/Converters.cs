@@ -54,13 +54,7 @@ public class ModeToColorConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        return (value as string)?.ToLowerInvariant() switch
-        {
-            "mptcp" => new SolidColorBrush(MediaColor.FromRgb(0x7C, 0x3A, 0xED)), // purple
-            "bond" => new SolidColorBrush(MediaColor.FromRgb(0x25, 0x63, 0xEB)), // blue
-            "race" => new SolidColorBrush(MediaColor.FromRgb(0xD9, 0x77, 0x06)), // amber
-            _ => new SolidColorBrush(MediaColor.FromRgb(0x64, 0x74, 0x8B)),       // gray
-        };
+        return new SolidColorBrush(MediaColor.FromRgb(0x16, 0xA3, 0x4A)); // LeiGod green
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)

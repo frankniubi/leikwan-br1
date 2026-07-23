@@ -30,10 +30,15 @@ need('name="leigod_line_id"', $src, $fail);
 need('name="leigod_uot_impl"', $src, $fail);
 need('data-mode-field="leigod_mode"', $src, $fail);
 need('$leigodField', $src, $fail);
+need('None (dedicated LeiGod forward node)', $src, $fail);
+need('Optional for dedicated LeiGod forward-node routes', $src, $fail);
+need('aggregation sidecars must be overseas', $src, $fail);
 
-// Retired: the feature flag and the standalone self-leg basis picker.
+// Retired: the feature flag, standalone self-leg basis picker, and unconditional sidecar requirement.
 forbid('LEIGOD_BASIS_ENABLED', $src, $fail);
 forbid('name="self_leg_outer_transport"', $src, $fail);
+forbid('<select name="sidecar_point_id" required>', $src, $fail);
+forbid('<select name="sidecar_point_id" required ', $src, $fail);
 
 if ($fail) {
     fprintf(STDERR, "%d FAIL\n", $fail);

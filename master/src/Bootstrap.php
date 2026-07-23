@@ -16,6 +16,13 @@ use Leikwan\Master\Controllers\WhmcsController;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
+use Leikwan\Master\Support\LeigodOnlyAdminRolloutStatusService;
+use Leikwan\Master\Support\LeigodOnlyArtifactConsistencyService;
+use Leikwan\Master\Support\LeigodOnlyArtifactMetadataProbe;
+use Leikwan\Master\Support\LeigodOnlyArtifactRouteProbe;
+use Leikwan\Master\Support\LeigodOnlyArtifactSourceBuildMap;
+use Leikwan\Master\Support\LeigodOnlyRolloutLockService;
+use Leikwan\Master\Support\LeigodOnlyRuntimeContractService;
 use Leikwan\Master\Support\MigrationRunner;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\WhmcsClient;
@@ -28,9 +35,13 @@ final class Bootstrap
     private ProvisioningService $provisioning;
     private WhmcsClient $whmcsClient;
     private MigrationRunner $migrationRunner;
+    /** @var array<string, mixed> */
+    private array $services;
 
-    public function __construct(string $envPath)
+    /** @param array<string, mixed> $services */
+    public function __construct(string $envPath, array $services = [])
     {
+        $this->services = $services;
         $this->config = new Config($envPath);
         $this->db = new Database($this->config);
         $this->router = new Router();
@@ -73,11 +84,33 @@ final class Bootstrap
         return $this->router->dispatch($request);
     }
 
+    /** @return array<string, mixed> */
+    private function leigodOnlyAdminServices(): array
+    {
+        if (array_key_exists('leigod_only_services', $this->services)) {
+            $services = $this->services['leigod_only_services'];
+            return is_array($services) ? $services : [];
+        }
+
+        $artifactGate = new LeigodOnlyArtifactConsistencyService(
+            new LeigodOnlyArtifactRouteProbe($this->config),
+            new LeigodOnlyArtifactMetadataProbe($this->config),
+            new LeigodOnlyArtifactSourceBuildMap(dirname(__DIR__, 2)),
+        );
+
+        return [
+            'status' => new LeigodOnlyAdminRolloutStatusService(['status', 'lock', 'artifact_gate', 'runtime_contract']),
+            'lock' => new LeigodOnlyRolloutLockService($this->db),
+            'artifact_gate' => $artifactGate,
+            'runtime_contract' => new LeigodOnlyRuntimeContractService(),
+        ];
+    }
+
     private function registerRoutes(): void
     {
         $health = new HealthController($this->config, $this->db);
         $auth = new AuthController($this->config, $this->db);
-        $admin = new AdminController($this->config, $this->db, $this->provisioning);
+        $admin = new AdminController($this->config, $this->db, $this->provisioning, $this->leigodOnlyAdminServices());
         $whmcs = new WhmcsController($this->config, $this->db, $this->provisioning);
         $services = new ServiceController($this->config, $this->db, $this->provisioning);
         $nodes = new NodeController($this->config, $this->db, $this->provisioning);
@@ -103,6 +136,10 @@ final class Bootstrap
         $this->router->add('POST', '/logout', [$auth, 'logout']);
         $this->router->add('GET', '/admin', [$admin, 'dashboard']);
         $this->router->add('POST', '/admin/republish/all', [$admin, 'republishAllForwards']);
+        $this->router->add('GET', '/admin/leigod-only-rollout', [$admin, 'leigodOnlyRolloutPage']);
+        $this->router->add('POST', '/admin/leigod-only-rollout/dry-run', [$admin, 'leigodOnlyActivationDryRun']);
+        $this->router->add('POST', '/admin/leigod-only-rollout/activate', [$admin, 'leigodOnlyActivationApply']);
+        $this->router->add('POST', '/admin/leigod-only-rollout/rollback', [$admin, 'leigodOnlyRollback']);
         $this->router->add('POST', '/admin/provision-tasks/purge-stale', [$admin, 'purgeStaleProvisionTasks']);
         $this->router->add('POST', '/admin/provision-queue/repair', [$admin, 'repairProvisionQueue']);
         $this->router->add('POST', '/admin/provision-queue/republish-endpoint', [$admin, 'republishProvisionEndpoint']);

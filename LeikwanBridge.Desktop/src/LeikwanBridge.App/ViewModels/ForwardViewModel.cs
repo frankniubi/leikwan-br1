@@ -8,7 +8,7 @@ public partial class ForwardViewModel : ObservableObject
 {
     [ObservableProperty] private int _forwardId;
     [ObservableProperty] private string _mode = "single";
-    [ObservableProperty] private string _modeDisplay = "Single";
+    [ObservableProperty] private string _modeDisplay = "LeiGod";
     [ObservableProperty] private int _listenPort;
     [ObservableProperty] private string _target = "";
     [ObservableProperty] private string _transport = "tcp+udp";
@@ -48,16 +48,6 @@ public partial class ForwardViewModel : ObservableObject
 
     public bool MatchesModeFilter(string filter)
     {
-        if (string.IsNullOrWhiteSpace(filter) || string.Equals(filter, "All", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        return filter.ToLowerInvariant() switch
-        {
-            "mptcp" => string.Equals(Mode, "mptcp", StringComparison.OrdinalIgnoreCase),
-            "bond" => string.Equals(Mode, "bond", StringComparison.OrdinalIgnoreCase),
-            "race" => string.Equals(Mode, "race", StringComparison.OrdinalIgnoreCase),
-            "single" => string.Equals(Mode, "single", StringComparison.OrdinalIgnoreCase),
-            _ => true,
-        };
+        return true;
     }
 }

@@ -50,6 +50,7 @@ data class RuntimeContext(
     val processPlans: List<RuntimeProcessPlan>,
     val bypassHosts: Set<String>,
     val nodeLegs: Map<Long, NodeLeg> = emptyMap(),
+    val routeRuleProcessKey: Long? = null,
 ) {
     fun relayListenPortForNode(nodeId: Long): Int? =
         nodeLegs[nodeId]?.localListenPort ?: localListenPort

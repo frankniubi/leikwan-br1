@@ -4,9 +4,22 @@ using LeikwanBridge.Core.Models;
 
 namespace LeikwanBridge.Core.Services;
 
-public sealed class WindowsAppUpdateService
+public sealed class WindowsAppUpdateService : IDisposable
 {
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly Func<LeikwanHttpClientKind, HttpClient> _httpClientFactory;
+    private readonly bool _ownsHttpClient;
+    private readonly Action<HttpRequestMessage>? _onRequestForTest;
+    private readonly Dictionary<LeikwanHttpClientKind, HttpClient> _clients = [];
+
+    public WindowsAppUpdateService(
+        Func<LeikwanHttpClientKind, HttpClient>? httpClientFactory = null,
+        bool ownsHttpClient = true,
+        Action<HttpRequestMessage>? onRequestForTest = null)
+    {
+        _httpClientFactory = httpClientFactory ?? LeikwanHttpClientFactory.Create;
+        _ownsHttpClient = ownsHttpClient;
+        _onRequestForTest = onRequestForTest;
+    }
 
     public static bool IsRemoteVersionNewer(string remoteVersion, string localVersion)
     {
@@ -138,8 +151,11 @@ public sealed class WindowsAppUpdateService
 
     public async Task<WindowsClientAppArtifact> FetchWindowsClientArtifactAsync(string masterUrl, CancellationToken ct = default)
     {
-        var url = masterUrl.TrimEnd('/') + "/artifacts/client-manifest.json";
-        var json = await _http.GetStringAsync(url, ct);
+        var uri = new Uri(masterUrl.TrimEnd('/') + "/artifacts/client-manifest.json");
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        using var responseMessage = await SendAsync(request, ct);
+        responseMessage.EnsureSuccessStatusCode();
+        var json = await responseMessage.Content.ReadAsStringAsync(ct);
         var response = JsonSerializer.Deserialize<WindowsClientArtifactManifestResponse>(json)
             ?? throw new InvalidOperationException("null client manifest response");
         return response.Manifest.WindowsClientApp;
@@ -151,7 +167,8 @@ public sealed class WindowsAppUpdateService
         if (!string.IsNullOrWhiteSpace(dir))
             Directory.CreateDirectory(dir);
 
-        using var response = await _http.GetAsync(artifactUrl, ct);
+        using var request = new HttpRequestMessage(HttpMethod.Get, artifactUrl);
+        using var response = await SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         await using var file = File.Create(destinationPath);
@@ -164,5 +181,32 @@ public sealed class WindowsAppUpdateService
         using var sha = SHA256.Create();
         var hash = sha.ComputeHash(stream);
         return Convert.ToHexString(hash);
+    }
+
+    private Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        _onRequestForTest?.Invoke(request);
+        var kind = LeikwanHttpClientFactory.SelectKind(request.RequestUri ?? throw new InvalidOperationException("request URI is missing"));
+        return GetClient(kind).SendAsync(request, ct);
+    }
+
+    private HttpClient GetClient(LeikwanHttpClientKind kind)
+    {
+        if (!_clients.TryGetValue(kind, out var client))
+        {
+            client = _httpClientFactory(kind);
+            _clients[kind] = client;
+        }
+        return client;
+    }
+
+    public void Dispose()
+    {
+        if (!_ownsHttpClient)
+            return;
+
+        foreach (var client in _clients.Values)
+            client.Dispose();
+        _clients.Clear();
     }
 }
