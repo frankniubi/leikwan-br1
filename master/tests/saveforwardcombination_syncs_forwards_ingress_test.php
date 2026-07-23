@@ -24,7 +24,17 @@ namespace Leikwan\Master\Database {
         public function seed(string $table, array $rows): void {}
 
         /** @param array<string, mixed> $params */
-        public function fetchOne(string $sql, array $params = []): ?array { return null; }
+        public function fetchOne(string $sql, array $params = []): ?array
+        {
+            if (str_contains($sql, 'FROM sidecar_points')) {
+                return [
+                    'id' => 4,
+                    'is_active' => 1,
+                    'agent_config_json' => '{"country_code":"jp","aggregation_region_scope":"overseas"}',
+                ];
+            }
+            return null;
+        }
 
         /** @param array<string, mixed> $params */
         public function fetchAll(string $sql, array $params = []): array { return []; }
@@ -112,6 +122,9 @@ namespace {
     if (($p['backend_mode'] ?? null) !== 'leigod_mode') {
         fail('leigod sync must set forwards.backend_mode=leigod_mode, got ' . var_export($p['backend_mode'] ?? 'MISSING', true));
     }
+    if (($p['bond_sidecar_point_id'] ?? null) !== 4) {
+        fail('leigod aggregation sync must set forwards.bond_sidecar_point_id=4, got ' . var_export($p['bond_sidecar_point_id'] ?? 'MISSING', true));
+    }
     if (!array_key_exists('cf_location_group_id', $p) || $p['cf_location_group_id'] !== null) {
         fail('leigod sync must clear forwards.cf_location_group_id to null, got ' . var_export($p['cf_location_group_id'] ?? 'MISSING', true));
     }
@@ -124,6 +137,9 @@ namespace {
     if (($p['backend_mode'] ?? null) !== 'cf_mode') {
         fail('cf sync must set forwards.backend_mode=cf_mode, got ' . var_export($p['backend_mode'] ?? 'MISSING', true));
     }
+    if (($p['bond_sidecar_point_id'] ?? null) !== 4) {
+        fail('cf aggregation sync must set forwards.bond_sidecar_point_id=4, got ' . var_export($p['bond_sidecar_point_id'] ?? 'MISSING', true));
+    }
     if ((int) ($p['cf_location_group_id'] ?? 0) !== 7) {
         fail('cf sync must keep forwards.cf_location_group_id=7, got ' . var_export($p['cf_location_group_id'] ?? 'MISSING', true));
     }
@@ -135,6 +151,9 @@ namespace {
     $p = findForwardsIngressSync($db->executes);
     if (($p['backend_mode'] ?? null) !== 'current_mode') {
         fail('current_mode sync must set forwards.backend_mode=current_mode, got ' . var_export($p['backend_mode'] ?? 'MISSING', true));
+    }
+    if (($p['bond_sidecar_point_id'] ?? null) !== 4) {
+        fail('current_mode aggregation sync must set forwards.bond_sidecar_point_id=4, got ' . var_export($p['bond_sidecar_point_id'] ?? 'MISSING', true));
     }
     if (!array_key_exists('cf_location_group_id', $p) || $p['cf_location_group_id'] !== null) {
         fail('current_mode sync must clear forwards.cf_location_group_id, got ' . var_export($p['cf_location_group_id'] ?? 'MISSING', true));

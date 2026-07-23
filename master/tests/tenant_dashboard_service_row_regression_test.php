@@ -8,8 +8,12 @@ function fail(string $message): never
 }
 
 $source = file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php');
+$bootstrap = file_get_contents(__DIR__ . '/../src/Bootstrap.php');
 if (!is_string($source) || $source === '') {
     fail('failed to read TenantController source');
+}
+if (!is_string($bootstrap) || $bootstrap === '') {
+    fail('failed to read Bootstrap source');
 }
 
 $start = strpos($source, 'public function dashboard(Request $request, array $params): Response');
@@ -40,6 +44,13 @@ foreach ([
     if (str_contains($dashboard, $forbidden)) {
         fail('dashboard still contains forward-detail snippet: ' . $forbidden);
     }
+}
+
+if (str_contains($source, '/tenant-services-internal/')) {
+    fail('TenantController still emits retired tenant-services-internal routes');
+}
+if (!str_contains($bootstrap, "'/tenant/services/{id}/enrollment-token'")) {
+    fail('Bootstrap missing the tenant enrollment-token route');
 }
 
 echo "ok\n";

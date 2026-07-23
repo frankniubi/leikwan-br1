@@ -1092,6 +1092,48 @@ class ClientAgent:
         existing.update(payload)
         self.pull_state_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def bridge_lite_filter_candidate_nodes(self, profile: dict, candidates: list[dict]) -> list[dict]:
+        carriers = {str(item).strip().lower() for item in profile.get("selected_carriers", []) if str(item).strip() != ""}
+        allow_paid = bool(profile.get("allow_paid_lines", False))
+        result = []
+        for candidate in candidates:
+            carrier = str(candidate.get("carrier", "") or "").strip().lower()
+            pricing = str(candidate.get("pricing_class", "free") or "free").strip().lower()
+            if carriers and carrier not in carriers:
+                continue
+            if not allow_paid and pricing == "paid":
+                continue
+            result.append(candidate)
+        return result
+
+    def bridge_lite_select_best_node(self, candidates: list[dict]) -> dict:
+        ordered = sorted(
+            candidates,
+            key=lambda item: (
+                float(item.get("probe_latency_ms", item.get("latency_ms", 1e9)) or 1e9),
+                int(item.get("priority", 1000) or 1000),
+                int(item.get("id", 0) or 0),
+            ),
+        )
+        if not ordered:
+            raise RuntimeError("no allowed bridge-lite entry candidates")
+        return ordered[0]
+
+    def bridge_lite_runtime_status_payload(self, profile: dict, selected_node: dict, status: str) -> dict:
+        pricing = str(selected_node.get("pricing_class", "free") or "free").strip().lower()
+        return {
+            "status": status,
+            "profile_id": int(profile.get("profile_id", profile.get("id", 0)) or 0),
+            "profile_name": str(profile.get("profile_name", profile.get("name", "")) or ""),
+            "selected_entry": int(selected_node.get("id", 0) or 0),
+            "selected_carrier": str(selected_node.get("carrier", "") or ""),
+            "used_paid_line": pricing == "paid",
+        }
+
+    def bridge_lite_fetch_linux_profile_runtime(self, master: str, token: str) -> dict:
+        payload = http_json_with_headers("GET", f"{master.rstrip('/')}/api/client/configs/pull", token)[0]
+        return payload.get("linux_profile_runtime", {}) if isinstance(payload, dict) else {}
+
     def bond_leg_snapshot_dir(self) -> pathlib.Path:
         configured = str(self.config.get("bond_leg_snapshot_dir", "") or "").strip()
         if configured != "":
