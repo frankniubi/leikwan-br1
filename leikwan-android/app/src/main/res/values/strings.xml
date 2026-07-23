@@ -161,6 +161,7 @@
     <string name="route_direction_unavailable">Unavailable Route Direction</string>
     <string name="client_rule_destination_ip">Exact IPv4 address</string>
     <string name="client_rule_destination_port">Destination port</string>
+    <string name="client_rule_destination_format">%1$s:%2$d</string>
     <string name="client_rule_enabled">Enabled</string>
     <string name="client_rules_create">Create Client Rule</string>
     <string name="client_rules_existing_title">Client Rules</string>
