@@ -151,6 +151,11 @@
     <string name="client_rules_description">为可用的路线方向创建精确目标规则。</string>
     <string name="client_rules_service_scope">服务</string>
     <string name="client_rules_no_service_scope">未选择服务。</string>
+    <string name="client_rules_quota_remaining">还可创建 %1$d / %2$d 条客户端规则</string>
+    <string name="client_rules_service_label">服务 %1$d</string>
+    <string name="client_rules_service_plan_label">服务 %1$d / 套餐 %2$d</string>
+    <string name="client_rules_unavailable_client">此客户端暂不能使用客户端规则。</string>
+    <string name="client_rules_unavailable_no_directions">此服务暂无可用路线方向。</string>
     <string name="client_rules_new_title">新建客户端规则</string>
     <string name="route_direction_label">路线方向</string>
     <string name="route_direction_unavailable">不可用路线方向</string>
@@ -162,6 +167,14 @@
     <string name="client_rules_empty">暂无客户端规则。</string>
     <string name="client_rule_syncing">保存中</string>
     <string name="client_rule_delete">删除</string>
+    <string name="client_rule_status_active">已生效</string>
+    <string name="client_rule_status_disabled">已停用</string>
+    <string name="client_rule_status_unavailable">不可用</string>
+    <string name="client_rule_status_not_allowed_by_plan">当前套餐不支持</string>
+    <string name="client_rule_status_over_quota">数量已达上限</string>
+    <string name="client_rule_status_not_ready">尚未就绪</string>
+    <string name="client_rule_status_saving">保存中</string>
+    <string name="client_rule_status_error">出错</string>
     <string name="client_rule_error_invalid_destination_ip">请输入精确 IPv4 地址。</string>
     <string name="client_rule_error_invalid_destination_port">请输入 1 到 65535 之间的目标端口。</string>
     <string name="client_rule_error_destination_unavailable">此目标暂不能用于客户端规则。</string>

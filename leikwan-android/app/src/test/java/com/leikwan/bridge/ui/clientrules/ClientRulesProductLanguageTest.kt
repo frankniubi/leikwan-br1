@@ -66,6 +66,52 @@ class ClientRulesProductLanguageTest {
     }
 
     @Test
+    fun `Client Rules user-facing labels are localized resources`() {
+        val root = File(requireNotNull(System.getProperty("user.dir")))
+        val viewModelSource = File(
+            root,
+            "src/main/java/com/leikwan/bridge/ui/clientrules/ClientRulesViewModel.kt",
+        ).readText()
+        val screenSource = File(
+            root,
+            "src/main/java/com/leikwan/bridge/ui/clientrules/ClientRulesScreen.kt",
+        ).readText()
+        val resources = listOf(
+            File(root, "src/main/res/values/strings.xml").readText(),
+            File(root, "src/main/res/values-zh-rCN/strings.xml").readText(),
+        )
+
+        assertFalse("Quota labels must not be pre-rendered English in ViewModel state", viewModelSource.contains("val quotaLabel: String"))
+        assertFalse("Unavailable reasons must not be pre-rendered English in ViewModel state", viewModelSource.contains("val unavailableReason: String?"))
+        assertFalse("Service labels must not be pre-rendered English in ViewModel state", viewModelSource.contains("val label: String"))
+        assertFalse(
+            "Client Rule status chips must use localized string resources",
+            Regex("ClientRuleEffectiveState\\.[A-Z_]+\\s*->\\s*\"").containsMatchIn(screenSource),
+        )
+
+        val requiredKeys = listOf(
+            "client_rules_quota_remaining",
+            "client_rules_service_label",
+            "client_rules_service_plan_label",
+            "client_rules_unavailable_client",
+            "client_rules_unavailable_no_directions",
+            "client_rule_status_active",
+            "client_rule_status_disabled",
+            "client_rule_status_unavailable",
+            "client_rule_status_not_allowed_by_plan",
+            "client_rule_status_over_quota",
+            "client_rule_status_not_ready",
+            "client_rule_status_saving",
+            "client_rule_status_error",
+        )
+        resources.forEach { resourceText ->
+            requiredKeys.forEach { key ->
+                assertTrue("Missing localized Client Rules resource $key", resourceText.contains("name=\"$key\""))
+            }
+        }
+    }
+
+    @Test
     fun `Client Rules UI never falls back to raw error codes or messages`() {
         val root = File(requireNotNull(System.getProperty("user.dir")))
         val screenSource = File(
