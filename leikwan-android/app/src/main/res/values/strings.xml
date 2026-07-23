@@ -162,6 +162,17 @@
     <string name="client_rules_empty">No Client Rules yet.</string>
     <string name="client_rule_syncing">Saving</string>
     <string name="client_rule_delete">Delete</string>
+    <string name="client_rule_error_invalid_destination_ip">Enter an exact IPv4 address.</string>
+    <string name="client_rule_error_invalid_destination_port">Enter a destination port from 1 to 65535.</string>
+    <string name="client_rule_error_destination_unavailable">This destination is not available for Client Rules.</string>
+    <string name="client_rule_error_direction_not_allowed">Choose an allowed Route Direction.</string>
+    <string name="client_rule_error_not_allowed_by_plan">This Client Rule is not allowed by the current plan.</string>
+    <string name="client_rule_error_over_quota">Client Rule quota reached.</string>
+    <string name="client_rule_error_duplicate_destination">A Client Rule already uses this destination.</string>
+    <string name="client_rule_error_service_unavailable">Client Rules are not available for this service.</string>
+    <string name="client_rule_error_rule_unavailable">This Client Rule is no longer available.</string>
+    <string name="client_rule_error_version_conflict">This Client Rule changed elsewhere. Try again.</string>
+    <string name="client_rule_error_generic">This Client Rule could not be saved. Try again.</string>
     <string name="settings_title">Settings</string>
     <string name="settings_client">Client</string>
     <string name="settings_active_client">Active Client</string>

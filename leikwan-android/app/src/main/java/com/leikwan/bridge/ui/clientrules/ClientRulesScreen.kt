@@ -1,5 +1,6 @@
 package com.leikwan.bridge.ui.clientrules
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -92,7 +93,7 @@ internal fun ClientRulesScreenContent(
             Spacer(Modifier.height(12.dp))
         }
         state.errorCode?.takeUnless { it == "client_rules_unavailable" }?.let { error ->
-            Text(error.toClientRuleMessage(), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            Text(stringResource(error.clientRuleMessageRes()), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(12.dp))
         }
 
@@ -310,7 +311,7 @@ private fun RuleCard(
             }
             rule.pendingError?.let { error ->
                 Spacer(Modifier.height(4.dp))
-                Text(error.toClientRuleMessage(), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(error.clientRuleMessageRes()), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(8.dp))
             OutlinedButton(
@@ -334,11 +335,17 @@ private fun ClientRuleEffectiveState.displayLabel(): String = when (this) {
     ClientRuleEffectiveState.ERROR -> "Error"
 }
 
-private fun String.toClientRuleMessage(): String = when (this) {
-    "invalid_destination_ip" -> "Enter an exact IPv4 address."
-    "invalid_destination_port" -> "Enter a destination port from 1 to 65535."
-    "direction_not_allowed" -> "Choose an allowed Route Direction."
-    "not_allowed_by_plan" -> "This Client Rule is not allowed by the current plan."
-    "over_quota" -> "Client Rule quota reached."
-    else -> this
+@StringRes
+internal fun String.clientRuleMessageRes(): Int = when (this) {
+    "invalid_destination_ip", "unsupported_destination_address_family" -> R.string.client_rule_error_invalid_destination_ip
+    "invalid_destination_port" -> R.string.client_rule_error_invalid_destination_port
+    "destination_blocked_by_policy" -> R.string.client_rule_error_destination_unavailable
+    "direction_not_allowed", "direction_unavailable" -> R.string.client_rule_error_direction_not_allowed
+    "not_allowed_by_plan" -> R.string.client_rule_error_not_allowed_by_plan
+    "over_quota", "rule_quota_exceeded" -> R.string.client_rule_error_over_quota
+    "duplicate_destination" -> R.string.client_rule_error_duplicate_destination
+    "service_not_active", "not_configured" -> R.string.client_rule_error_service_unavailable
+    "rule_not_found" -> R.string.client_rule_error_rule_unavailable
+    "version_conflict" -> R.string.client_rule_error_version_conflict
+    else -> R.string.client_rule_error_generic
 }

@@ -162,6 +162,17 @@
     <string name="client_rules_empty">暂无客户端规则。</string>
     <string name="client_rule_syncing">保存中</string>
     <string name="client_rule_delete">删除</string>
+    <string name="client_rule_error_invalid_destination_ip">请输入精确 IPv4 地址。</string>
+    <string name="client_rule_error_invalid_destination_port">请输入 1 到 65535 之间的目标端口。</string>
+    <string name="client_rule_error_destination_unavailable">此目标暂不能用于客户端规则。</string>
+    <string name="client_rule_error_direction_not_allowed">请选择允许的路线方向。</string>
+    <string name="client_rule_error_not_allowed_by_plan">当前套餐不支持此客户端规则。</string>
+    <string name="client_rule_error_over_quota">客户端规则数量已达上限。</string>
+    <string name="client_rule_error_duplicate_destination">已有客户端规则使用此目标。</string>
+    <string name="client_rule_error_service_unavailable">此服务暂不能使用客户端规则。</string>
+    <string name="client_rule_error_rule_unavailable">此客户端规则已不可用。</string>
+    <string name="client_rule_error_version_conflict">此客户端规则已在其他位置变更，请重试。</string>
+    <string name="client_rule_error_generic">此客户端规则未能保存，请重试。</string>
     <string name="settings_title">设置</string>
     <string name="settings_client">客户端</string>
     <string name="settings_active_client">当前客户端</string>

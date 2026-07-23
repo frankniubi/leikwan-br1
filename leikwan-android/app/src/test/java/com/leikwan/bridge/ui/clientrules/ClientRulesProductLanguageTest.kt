@@ -1,6 +1,8 @@
 package com.leikwan.bridge.ui.clientrules
 
+import com.leikwan.bridge.R
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -61,5 +63,22 @@ class ClientRulesProductLanguageTest {
             "Client Rules UI must use a product-safe Route Direction fallback instead of raw identifiers",
             rawDirectionFallback.containsMatchIn(screenSource),
         )
+    }
+
+    @Test
+    fun `Client Rules UI never falls back to raw error codes or messages`() {
+        val root = File(requireNotNull(System.getProperty("user.dir")))
+        val screenSource = File(
+            root,
+            "src/main/java/com/leikwan/bridge/ui/clientrules/ClientRulesScreen.kt",
+        ).readText()
+        val rawErrorFallback = Regex("else\\s*->\\s*this\\b")
+
+        assertFalse(
+            "Unknown state.errorCode and rule.pendingError values must use a localized Client Rule message instead of rendering verbatim",
+            rawErrorFallback.containsMatchIn(screenSource),
+        )
+        assertEquals(R.string.client_rule_error_generic, "backend_internal_code".clientRuleMessageRes())
+        assertEquals(R.string.client_rule_error_generic, "raw backend failure: forward_combination missing".clientRuleMessageRes())
     }
 }
