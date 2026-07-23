@@ -60,7 +60,7 @@ final class TenantController extends BaseController
                 <div class="muted">状态: ' . $this->escape((string) ($latestService['status'] ?? 'unknown')) . '</div>
                 <div class="muted">到期: ' . $this->escape((string) ($latestService['expire_at'] ?? '-')) . '</div>
                 <div class="actions">
-                  <a class="button" href="/tenant-services-internal/' . (int) ($latestService['id'] ?? 0) . '">打开详情</a>
+                  <a class="button" href="/tenant/services/' . (int) ($latestService['id'] ?? 0) . '">打开详情</a>
                   <a class="button ghost" href="/tenant/forwards">查看全部转发</a>
                 </div>
               </section>'
@@ -171,7 +171,7 @@ final class TenantController extends BaseController
             $totalLimitBytes += $trafficLimitBytes;
             $rows .= '<tr>
                 <td>' . (int) $service['id'] . '</td>
-                <td><a href="/tenant-services-internal/' . (int) $service['id'] . '"><strong>' . $this->escape((string) $service['name']) . '</strong></a></td>
+                <td><a href="/tenant/services/' . (int) $service['id'] . '"><strong>' . $this->escape((string) $service['name']) . '</strong></a></td>
                 <td><span class="badge ' . $statusClass . '">' . $this->escape((string) $service['status']) . '</span></td>
                 <td>' . $this->escape((string) $service['whmcs_service_id']) . '</td>
                 <td>' . $this->escape((string) ($service['plan_name'] ?? '')) . '</td>
@@ -185,8 +185,8 @@ final class TenantController extends BaseController
                 <td>' . $this->escape($usageLabel) . '</td>
                 <td>
                     <div class="actions">
-                        <a class="button" href="/tenant-services-internal/' . (int) $service['id'] . '/create-forward">Add Forward</a>
-                        <a class="button ghost" href="/tenant-services-internal/' . (int) $service['id'] . '">Manage</a>
+                        <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Add Forward</a>
+                        <a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '">Manage</a>
                     </div>
                 </td>
             </tr>';
@@ -559,7 +559,7 @@ final class TenantController extends BaseController
                 : 'metered';
 
             $serviceRows .= '<tr>
-                <td><a href="/tenant-services-internal/' . (int) $service['id'] . '"><strong>' . $this->escape((string) ($service['name'] ?? 'Service')) . '</strong></a></td>
+                <td><a href="/tenant/services/' . (int) $service['id'] . '"><strong>' . $this->escape((string) ($service['name'] ?? 'Service')) . '</strong></a></td>
                 <td><span class="badge ' . $statusClass . '">' . $this->escape((string) ($service['status'] ?? 'unknown')) . '</span></td>
                 <td>' . $this->escape((string) ($service['plan_name'] ?? '')) . '</td>
                 <td>' . $currentBandwidth . ' Mbps</td>
@@ -568,8 +568,8 @@ final class TenantController extends BaseController
                 <td>' . $this->escape((string) ($service['expire_at'] ?? '')) . '</td>
                 <td>
                   <div class="actions">
-                    <a class="button ghost" href="/tenant-services-internal/' . (int) $service['id'] . '">Details</a>
-                    <a class="button" href="/tenant-services-internal/' . (int) $service['id'] . '/forward-wizard">Create Forward</a>
+                    <a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '">Details</a>
+                    <a class="button" href="/tenant/services/' . (int) $service['id'] . '/forward-wizard">Create Forward</a>
                   </div>
                 </td>
               </tr>';
@@ -752,7 +752,7 @@ final class TenantController extends BaseController
                 (string) $request->input('service_name', '')
             );
             SessionAuth::flash('success', 'Package purchased successfully. Your new service is ready.');
-            return Response::redirect('/tenant-services-internal/' . (int) ($service['id'] ?? 0));
+            return Response::redirect('/tenant/services/' . (int) ($service['id'] ?? 0));
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Package purchase failed: ' . $throwable->getMessage());
             return Response::redirect('/tenant/plans?buy=' . (int) $request->input('plan_id', 0) . '#plan-' . (int) $request->input('plan_id', 0));
@@ -775,7 +775,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', 'Traffic reset failed: ' . $throwable->getMessage());
         }
 
-        return Response::redirect('/tenant-services-internal/' . $serviceId);
+        return Response::redirect('/tenant/services/' . $serviceId);
     }
 
     public function updateFlexibleOptions(Request $request, array $params): Response
@@ -798,7 +798,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', 'Flexible package update failed: ' . $throwable->getMessage());
         }
 
-        return Response::redirect('/tenant-services-internal/' . $serviceId);
+        return Response::redirect('/tenant/services/' . $serviceId);
     }
 
     public function clientsPage(Request $request, array $params): Response
@@ -1549,7 +1549,7 @@ final class TenantController extends BaseController
                 </table>
               </div>
               <div class="actions" style="margin-top:12px;">
-                <form class="inline" method="post" action="/tenant-services-internal/' . (int) $service['id'] . '/enroll-node>
+                <form class="inline" method="post" action="/tenant/services/' . (int) $service['id'] . '/enrollment-token">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
                   <button class="button" type="submit">Generate Node Enrollment Token</button>
                 </form>
@@ -1589,7 +1589,7 @@ final class TenantController extends BaseController
                   Extra Client Charge: ' . $this->escape((string) ($billing['extra_client_price_formatted'] ?? 'CNY 0.00')) . ' each month<br>
                   Current Extra Client Charge: ' . $this->escape((string) ($billing['client_addon_formatted'] ?? 'CNY 0.00')) . '
                 </div>
-                <form method="post" action="/tenant-services-internal/' . (int) $service['id'] . '/flexible-options" style="margin-top:12px;">
+                <form method="post" action="/tenant/services/' . (int) $service['id'] . '/flexible-options" style="margin-top:12px;">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
                   <div class="form-grid">
                     <div class="field">
@@ -1620,7 +1620,7 @@ final class TenantController extends BaseController
                   Reset Price: ' . $this->escape($trafficResetCurrency) . ' ' . $this->escape(number_format($trafficResetPrice, 2)) . '<br>
                   This action resets <code>Current Cycle Used Traffic</code> back to 0 for this service. Lifetime traffic stays unchanged.
                 </div>
-                <form method="post" action="/tenant-services-internal/' . (int) $service['id'] . '/reset-traffic" style="margin-top:12px;">
+                <form method="post" action="/tenant/services/' . (int) $service['id'] . '/reset-traffic" style="margin-top:12px;">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
                   <div class="actions">
                     <button class="button secondary" type="submit">Reset Traffic</button>
@@ -1643,9 +1643,9 @@ final class TenantController extends BaseController
                   4. Save. The panel keeps the backend route package fixed.
                 </div>
                 <div class="actions">
-                  <a class="button" href="/tenant-services-internal/' . (int) $service['id'] . '/create-forward">Create New Forward</a>
+                  <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Create New Forward</a>
                   <a class="button ghost" href="/knowledgebase?thread=getting-started-first-forward-checklist">Knowledgebase</a>
-                  <form class="inline" method="post" action="/tenant-services-internal/' . (int) $service['id'] . '/regenerate-client-token">
+                  <form class="inline" method="post" action="/tenant/services/' . (int) $service['id'] . '/regenerate-client-token">
                     <input type="hidden" name="csrf_token" value="' . $csrf . '">
                     <button class="button secondary" type="submit" ' . (empty($features['allow_rotate_client_token']) ? 'disabled' : '') . '>Rotate Client Token</button>
                   </form>
@@ -1659,7 +1659,7 @@ final class TenantController extends BaseController
                 ' . (empty($features['allow_manage_forwards']) ? '<div class="flash danger">Forward creation is disabled for your plan/account.</div>' : '') . '
                 ' . $createForwardNotice . '
                 <div class="actions" style="margin-top:12px;">
-                  <a class="button" href="/tenant-services-internal/' . (int) $service['id'] . '/create-forward">Create Forward</a>
+                  <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Create Forward</a>
                   <a class="button ghost" href="/knowledgebase?thread=getting-started-first-forward-checklist">Knowledgebase</a>
                 </div>
               </section>
@@ -1683,7 +1683,7 @@ final class TenantController extends BaseController
     public function forwardWizardRedirect(Request $request, array $params): Response
     {
         $serviceId = $this->idParam($params);
-        return Response::redirect('/tenant-services-internal/' . $serviceId . '/create-forward');
+        return Response::redirect('/tenant/services/' . $serviceId . '/create-forward');
     }
 
     public function quickCreateForward(Request $request, array $params): Response
@@ -1715,7 +1715,7 @@ final class TenantController extends BaseController
                 $payload = $this->normalizeTenantForwardPayload($request->body());
                 $this->provisioning->createForward($serviceId, $payload, 'tenant');
                 SessionAuth::flash('success', 'Forward created.');
-                return Response::redirect('/tenant-services-internal/' . $serviceId);
+                return Response::redirect('/tenant/services/' . $serviceId);
             } catch (\Throwable $throwable) {
                 SessionAuth::flash('error', $this->forwardCreateFlashMessage($throwable));
             }
@@ -1752,7 +1752,7 @@ final class TenantController extends BaseController
             <div class="card">
               ' . (empty($features['allow_manage_forwards']) ? '<div class="flash danger">Forward creation is disabled for your plan/account.</div>' : '') . '
               ' . $emptyState . '
-              <form method="post" action="/tenant-services-internal/' . $serviceId . '/create-forward">
+              <form method="post" action="/tenant/services/' . $serviceId . '/create-forward">
                 <input type="hidden" name="csrf_token" value="' . $csrf . '">
                 <input type="hidden" name="target_source" value="service_ip">
                 <input type="hidden" name="target_service_id" value="' . $serviceId . '">
@@ -1770,7 +1770,7 @@ final class TenantController extends BaseController
                 <div class="field-note" id="forward-combination-help">Choose one admin-defined route package. The panel keeps routing details hidden until you create the forward.</div>
                 <div class="actions" style="margin-top:20px;">
                   <button class="button" type="submit" ' . (empty($features['allow_manage_forwards']) || $availableForwardCombinations === [] ? 'disabled' : '') . '>Create Forward</button>
-                  <a class="button ghost" href="/tenant-services-internal/' . $serviceId . '">Cancel</a>
+                  <a class="button ghost" href="/tenant/services/' . $serviceId . '">Cancel</a>
                 </div>
               </form>
             </div>';
@@ -1808,7 +1808,7 @@ final class TenantController extends BaseController
               </div>
             </div>
             <div class="card">
-              <form method="post" action="/tenant-services-internal/' . $serviceId . '/forward/' . $forwardId . '/edit">
+              <form method="post" action="/tenant/services/' . $serviceId . '/forward/' . $forwardId . '/edit">
                 <input type="hidden" name="csrf_token" value="' . $csrf . '">
                 <div class="form-grid">
                   <div class="field"><label>Current Forward Combination</label><div class="value-chip">' . $this->escape((string) ($forward['forward_combination_label'] ?? '')) . '</div></div>
@@ -1819,7 +1819,7 @@ final class TenantController extends BaseController
                 </div>
                 <div class="actions" style="margin-top:20px;">
                   <button class="button" type="submit">Save Forward</button>
-                  <a class="button ghost" href="/tenant-services-internal/' . $serviceId . '">Cancel</a>
+                  <a class="button ghost" href="/tenant/services/' . $serviceId . '">Cancel</a>
                 </div>
               </form>
             </div>';
@@ -1853,18 +1853,18 @@ final class TenantController extends BaseController
             $payload = $this->normalizeTenantForwardEditPayload($request->body());
             $this->provisioning->updateForwardNonStructural($forwardId, $payload, 'tenant');
             SessionAuth::flash('success', 'Forward updated.');
-            return Response::redirect('/tenant-services-internal/' . $serviceId);
+            return Response::redirect('/tenant/services/' . $serviceId);
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to update forward: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/tenant-services-internal/' . $serviceId . '/forward/' . $forwardId . '/edit');
+        return Response::redirect('/tenant/services/' . $serviceId . '/forward/' . $forwardId . '/edit');
     }
 
     public function forwardWizard(Request $request, array $params): Response
     {
         $serviceId = $this->idParam($params);
-        return Response::redirect('/tenant-services-internal/' . $serviceId . '/create-forward');
+        return Response::redirect('/tenant/services/' . $serviceId . '/create-forward');
     }
 
     public function saveClient(Request $request, array $params): Response
@@ -2095,7 +2095,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', $this->forwardCreateFlashMessage($throwable));
         }
 
-        return Response::redirect('/tenant-services-internal/' . $serviceId);
+        return Response::redirect('/tenant/services/' . $serviceId);
     }
 
     public function generateEnrollmentToken(Request $request, array $params): Response
@@ -2137,7 +2137,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', 'Failed to generate token: ' . $this->displayThrowableMessage($throwable));
         }
 
-        return Response::redirect('/tenant-services-internal/' . $serviceId);
+        return Response::redirect('/tenant/services/' . $serviceId);
     }
 
     public function removeUserNode(Request $request, array $params): Response
@@ -2167,7 +2167,7 @@ final class TenantController extends BaseController
                 'id' => $nodeId,
             ]);
             SessionAuth::flash('success', 'Node removed.');
-            return Response::redirect('/tenant-services-internal/' . (int) $node['service_id']);
+            return Response::redirect('/tenant/services/' . (int) $node['service_id']);
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to remove node: ' . $this->displayThrowableMessage($throwable));
         }
@@ -2202,7 +2202,7 @@ final class TenantController extends BaseController
 
             $this->provisioning->deleteForward($forwardId, 'tenant');
             SessionAuth::flash('success', 'Forward deleted.');
-            return Response::redirect('/tenant-services-internal/' . (int) $forward['service_id']);
+            return Response::redirect('/tenant/services/' . (int) $forward['service_id']);
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to delete forward: ' . $throwable->getMessage());
         }
@@ -2238,7 +2238,7 @@ final class TenantController extends BaseController
             SessionAuth::flash('error', 'Failed to rotate client token: ' . $throwable->getMessage());
         }
 
-        return Response::redirect('/tenant-services-internal/' . $serviceId);
+        return Response::redirect('/tenant/services/' . $serviceId);
     }
 
     public function slaveGroupsPage(Request $request, array $params): Response
@@ -2842,14 +2842,14 @@ final class TenantController extends BaseController
 
         if ($serviceId !== null) {
             $nav[] = [
-                'href' => '/tenant-services-internal/' . $serviceId,
+                'href' => '/tenant/services/' . $serviceId,
                 'label' => '服务详情',
                 'active' => $active === 'service',
             ];
 
             if ($active === 'wizard') {
                 $nav[] = [
-                    'href' => '/tenant-services-internal/' . $serviceId . '/create-forward',
+                    'href' => '/tenant/services/' . $serviceId . '/create-forward',
                     'label' => '创建 Forward',
                     'active' => true,
                 ];

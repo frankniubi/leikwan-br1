@@ -3,9 +3,9 @@
     "version": "2026.06.05.4",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "fcf0680e191ac76229d72fa99ce2425d0812062804887c69167fb737997d6da6",
-    "size_bytes": 272368,
-    "size": 272368
+    "sha256": "37d77d10676f9f1cf44f3b2ca413780422487b139c449be3465a0ea96da8a553",
+    "size_bytes": 273213,
+    "size": 273213
   },
   "gost_linux_amd64": {
     "version": "3.2.6",
@@ -72,9 +72,9 @@
     "version": "2026.07.23.3",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "16eb14b93e7f84ae4abf0631d21b5653eda4f193b9443a4b7e95b803e84b7390",
-    "size_bytes": 238360,
-    "size": 238360
+    "sha256": "147c63f139aac0cf6125c34753de6a5ccfc48d849fc91b1cb894bf8bd5b1b21a",
+    "size_bytes": 240511,
+    "size": 240511
   },
   "client_agent_installer": {
     "version": "2026.07.23.1",

@@ -31,8 +31,9 @@ need('name="leigod_uot_impl"', $src, $fail);
 need('data-mode-field="leigod_mode"', $src, $fail);
 need('$leigodField', $src, $fail);
 need('None (dedicated LeiGod forward node)', $src, $fail);
-need('Optional for dedicated LeiGod forward-node routes', $src, $fail);
-need('aggregation sidecars must be overseas', $src, $fail);
+need('<label>Transport Endpoint</label>', $src, $fail);
+need('Optional for dedicated Managed TYO forward-node routes', $src, $fail);
+need('aggregation transport endpoints must be overseas', $src, $fail);
 
 // Retired: the feature flag, standalone self-leg basis picker, and unconditional sidecar requirement.
 forbid('LEIGOD_BASIS_ENABLED', $src, $fail);
