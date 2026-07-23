@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import email.message
 import email.utils
 import contextlib
 import hashlib
+import http.client
 import importlib.util
+import io
 import json
 import ipaddress
 import logging
@@ -16,6 +19,7 @@ import re
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -24,7 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.07.22.1"
+AGENT_VERSION = "2026.07.23.3"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -43,7 +47,324 @@ DEFAULT_MANAGED_CONFIG = {
 MPTCP_PROTOCOL = getattr(socket, "IPPROTO_MPTCP", 262)
 MPTCP_FALSE_VALUES = {"", "0", "false", "no", "off", "disabled"}
 HELPER_CANDIDATE_KINDS = {"rented_group_leg", "donated_slave_leg"}  # donor_candidate_consumed_as_helper
+STRICT_DOH_PROVIDERS = [
+    ("AliDNS", "https://dns.alidns.com/dns-query", ("223.5.5.5", "223.6.6.6")),
+    ("DNSPod", "https://doh.pub/dns-query", ("1.12.12.12", "120.53.53.53")),
+    ("360", "https://doh.360.cn/dns-query", ("101.226.4.6", "218.30.118.6")),
+]
+STRICT_DOH_CACHE_TTL_SECONDS = 60.0
+LEIKWAN_PROTECTED_SUFFIX = ".leikwanhost.com"
+LEIKWAN_PROTECTED_APEX = "leikwanhost.com"
 
+
+class StrictDoHError(RuntimeError):
+    pass
+
+
+class StrictDoHResolver:
+    def __init__(self, ttl_seconds: float = STRICT_DOH_CACHE_TTL_SECONDS):
+        self.ttl_seconds = ttl_seconds
+        self._cache: dict[str, tuple[float, list[str]]] = {}
+
+    def resolve_a(self, host: str) -> list[str]:
+        normalized = normalize_dns_host(host)
+        now = time.time()
+        cached = self._cache.get(normalized)
+        if cached is not None and cached[0] > now:
+            return list(cached[1])
+        errors: list[str] = []
+        for provider_name, provider_url, bootstrap_ips in STRICT_DOH_PROVIDERS:
+            for bootstrap_ip in bootstrap_ips:
+                try:
+                    addresses = resolve_a_via_doh_provider(normalized, provider_url, bootstrap_ip)
+                except Exception as exc:  # noqa: BLE001 - strict fallback tries the next China-first provider/IP.
+                    errors.append(f"{provider_name}@{bootstrap_ip}: {exc}")
+                    continue
+                if addresses:
+                    self._cache[normalized] = (now + self.ttl_seconds, list(addresses))
+                    return list(addresses)
+                errors.append(f"{provider_name}@{bootstrap_ip}: no A records")
+        raise StrictDoHError(f"strict DoH failed for {normalized}: {'; '.join(errors)}")
+
+
+_STRICT_DOH_RESOLVER = StrictDoHResolver()
+
+
+def normalize_dns_host(host: str) -> str:
+    normalized = host.strip().rstrip(".").lower()
+    if not normalized:
+        raise StrictDoHError("empty host")
+    try:
+        normalized.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise StrictDoHError(f"non-ascii host is not supported: {host}") from exc
+    return normalized
+
+
+def host_is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+def host_is_private_or_loopback_literal(host: str) -> bool:
+    try:
+        address = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    return bool(address.is_private or address.is_loopback or address.is_link_local)
+
+
+def is_protected_leikwan_host(host: str) -> bool:
+    normalized = host.strip().strip("[]").rstrip(".").lower()
+    if normalized in {"localhost", "ip6-localhost", "ip6-loopback"}:
+        return False
+    if host_is_ip_literal(normalized):
+        return False
+    return normalized == LEIKWAN_PROTECTED_APEX or normalized.endswith(LEIKWAN_PROTECTED_SUFFIX)
+
+
+def is_protected_leikwan_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = parsed.hostname or ""
+    if not is_protected_leikwan_host(host):
+        return False
+    if host_is_private_or_loopback_literal(host):
+        return False
+    return True
+
+
+def build_dns_a_query(host: str, query_id: int | None = None) -> tuple[bytes, int]:
+    normalized = normalize_dns_host(host)
+    if query_id is None:
+        query_id = int.from_bytes(os.urandom(2), "big")
+    parts = normalized.split(".")
+    question = bytearray()
+    for part in parts:
+        encoded = part.encode("ascii")
+        if len(encoded) == 0 or len(encoded) > 63:
+            raise StrictDoHError(f"invalid DNS label in {host}")
+        question.append(len(encoded))
+        question.extend(encoded)
+    question.append(0)
+    question.extend(struct.pack("!HH", 1, 1))  # A, IN
+    header = struct.pack("!HHHHHH", query_id, 0x0100, 1, 0, 0, 0)
+    return header + bytes(question), query_id
+
+
+def _skip_dns_name(message: bytes, offset: int) -> int:
+    jumped = False
+    seen = 0
+    while True:
+        if offset >= len(message):
+            raise StrictDoHError("truncated DNS name")
+        length = message[offset]
+        if length & 0xC0 == 0xC0:
+            if offset + 1 >= len(message):
+                raise StrictDoHError("truncated DNS pointer")
+            offset += 2
+            jumped = True
+            return offset
+        if length & 0xC0:
+            raise StrictDoHError("unsupported DNS label type")
+        offset += 1
+        if length == 0:
+            return offset
+        offset += length
+        seen += 1
+        if offset > len(message) or seen > 128:
+            raise StrictDoHError("invalid DNS name")
+        if jumped:
+            return offset
+
+
+def parse_dns_a_response(message: bytes, query_id: int) -> list[str]:
+    if len(message) < 12:
+        raise StrictDoHError("truncated DNS response")
+    resp_id, flags, qdcount, ancount, _nscount, _arcount = struct.unpack("!HHHHHH", message[:12])
+    if resp_id != query_id:
+        raise StrictDoHError("DNS response id mismatch")
+    if flags & 0x8000 == 0:
+        raise StrictDoHError("DNS response is not a response")
+    rcode = flags & 0x000F
+    if rcode != 0:
+        raise StrictDoHError(f"DNS response error rcode={rcode}")
+    offset = 12
+    for _ in range(qdcount):
+        offset = _skip_dns_name(message, offset)
+        if offset + 4 > len(message):
+            raise StrictDoHError("truncated DNS question")
+        offset += 4
+    addresses: list[str] = []
+    for _ in range(ancount):
+        offset = _skip_dns_name(message, offset)
+        if offset + 10 > len(message):
+            raise StrictDoHError("truncated DNS answer")
+        rtype, rclass, _ttl, rdlength = struct.unpack("!HHIH", message[offset : offset + 10])
+        offset += 10
+        if offset + rdlength > len(message):
+            raise StrictDoHError("truncated DNS answer data")
+        rdata = message[offset : offset + rdlength]
+        offset += rdlength
+        if rtype == 1 and rclass == 1 and rdlength == 4:
+            addresses.append(socket.inet_ntoa(rdata))
+    return addresses
+
+
+def resolve_a_via_doh_provider(host: str, provider_url: str, bootstrap_ip: str, timeout: float = 5.0) -> list[str]:
+    query, query_id = build_dns_a_query(host)
+    parsed = urllib.parse.urlparse(provider_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise StrictDoHError(f"unsupported DoH provider URL: {provider_url}")
+    port = parsed.port or 443
+    path = parsed.path or "/dns-query"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    conn = ResolvedHTTPSConnection(parsed.hostname, port=port, timeout=timeout, resolved_ip=bootstrap_ip)
+    try:
+        conn.request(
+            "POST",
+            path,
+            body=query,
+            headers={
+                "Host": parsed.netloc,
+                "Accept": "application/dns-message",
+                "Content-Type": "application/dns-message",
+                "Content-Length": str(len(query)),
+                "User-Agent": f"Leikwan-Client-Agent/{AGENT_VERSION}",
+            },
+        )
+        response = conn.getresponse()
+        body = response.read()
+        if response.status != 200:
+            raise StrictDoHError(f"DoH HTTP {response.status}")
+        return parse_dns_a_response(body, query_id)
+    finally:
+        conn.close()
+
+
+class ResolvedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host: str, port: int | None = None, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, *, resolved_ip: str):
+        super().__init__(host, port=port, timeout=timeout, source_address=source_address)
+        self.resolved_ip = resolved_ip
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class ResolvedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(
+        self,
+        host: str,
+        port: int | None = None,
+        timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+        source_address=None,
+        *,
+        resolved_ip: str,
+        context: ssl.SSLContext | None = None,
+    ):
+        super().__init__(host, port=port, timeout=timeout, source_address=source_address, context=context)
+        self.resolved_ip = resolved_ip
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
+        if self._tunnel_host:
+            self.sock = sock
+            self._tunnel()
+            sock = self.sock
+        # Strict DoH preserves normal certificate verification and SNI for the original host;
+        # it only bypasses poisoned system DNS by dialing the resolved IPv4 address.
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _HTTPClientResponseAdapter:
+    def __init__(self, response: http.client.HTTPResponse):
+        self._response = response
+        self.status = response.status
+        self.code = response.status
+        self.reason = response.reason
+        self.headers = response.headers
+
+    def read(self, *args, **kwargs) -> bytes:
+        return self._response.read(*args, **kwargs)
+
+    def close(self) -> None:
+        self._response.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.close()
+        return False
+
+
+def _request_headers_for_http_client(req: urllib.request.Request, host_header: str) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for key, value in req.header_items():
+        if key.lower() not in {"host", "connection"}:
+            headers[key] = value
+    headers["Host"] = host_header
+    headers["Connection"] = "close"
+    return headers
+
+
+def urlopen_with_leikwan_doh(req: urllib.request.Request, timeout: float = 30, resolver: StrictDoHResolver | None = None):
+    url = req.full_url
+    if not is_protected_leikwan_url(url):
+        return urllib.request.urlopen(req, timeout=timeout)
+    resolver = resolver or _STRICT_DOH_RESOLVER
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    addresses = resolver.resolve_a(host)
+    if not addresses:
+        raise urllib.error.URLError(f"strict DoH returned no A records for {host}")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    target = urllib.parse.urlunparse(("", "", parsed.path or "/", parsed.params, parsed.query, ""))
+    host_header = host
+    if parsed.port is not None:
+        host_header = f"{host}:{parsed.port}"
+    data = req.data
+    headers = _request_headers_for_http_client(req, host_header)
+    if data is not None and "Content-Length" not in headers:
+        headers["Content-Length"] = str(len(data))
+
+    last_error: Exception | None = None
+    for resolved_ip in addresses:
+        if parsed.scheme == "https":
+            conn = ResolvedHTTPSConnection(host, port=port, timeout=timeout, resolved_ip=resolved_ip)
+        else:
+            conn = ResolvedHTTPConnection(host, port=port, timeout=timeout, resolved_ip=resolved_ip)
+        try:
+            conn.request(req.get_method(), target, body=data, headers=headers)
+            response = conn.getresponse()
+            if response.status >= 400:
+                body = response.read()
+                message = email.message.Message()
+                for key, value in response.headers.items():
+                    message[key] = value
+                raise urllib.error.HTTPError(url, response.status, response.reason, message, io.BytesIO(body))
+            return _HTTPClientResponseAdapter(response)
+        except urllib.error.HTTPError:
+            conn.close()
+            raise
+        except Exception as exc:
+            last_error = exc
+            conn.close()
+
+    raise urllib.error.URLError(f"strict DoH connection failed for {host}: {last_error}")
+
+
+def _urlopen_for_request(req: urllib.request.Request, timeout: float = 30):
+    if is_protected_leikwan_url(req.full_url):
+        return urlopen_with_leikwan_doh(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
 
 
 def http_json(method: str, url: str, token: str, payload: dict | None = None) -> dict:
@@ -58,7 +379,7 @@ def http_json(method: str, url: str, token: str, payload: dict | None = None) ->
         data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with _urlopen_for_request(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
@@ -77,7 +398,7 @@ def http_json_with_headers(method: str, url: str, token: str, payload: dict | No
         data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with _urlopen_for_request(req, timeout=30) as resp:
             content = resp.read().decode("utf-8")
             response_headers = {key.lower(): value for key, value in resp.headers.items()}
     except urllib.error.HTTPError as exc:
@@ -392,24 +713,21 @@ class ClientAgent:
         )
 
     def effective_forward_contract_signature(self, forward: dict) -> str:
-        mode = self.normalize_mode(forward.get("mode", "single"))
         render_forward = dict(forward)
         candidate_pool = self.select_forward_candidates(render_forward)
         if candidate_pool:
             render_forward["candidate_pool"] = candidate_pool
         runtime_mode = self.choose_runtime_family(render_forward, self.running_kernel_supports_mptcp())
-        mode = runtime_mode
         render_forward = self.canonicalize_forward_runtime_contract(render_forward, runtime_mode)
+        mode = self.normalize_mode(render_forward.get("mode", runtime_mode))
         if mode == "bond":
             render_forward = self.apply_latency_target_candidate_escalation(render_forward)
             render_forward["endpoints"] = self.select_bond_runtime_endpoints(render_forward)
-            return self.forward_contract_signature(self.strip_runtime_observation_fields(render_forward))
-        if mode == "mptcp":
+        elif mode == "mptcp":
             render_forward["candidate_pool"] = self.filter_mptcp_capable_candidates(
                 [item for item in render_forward.get("candidate_pool", []) if isinstance(item, dict)]
             )
             render_forward = self.apply_mptcp_runtime_health_policy(render_forward)
-            return self.forward_contract_signature(self.strip_runtime_observation_fields(render_forward))
         return self.forward_contract_signature(self.strip_runtime_observation_fields(render_forward))
 
     @staticmethod
@@ -948,14 +1266,19 @@ class ClientAgent:
         force_runtime_refresh_ids = self.consume_local_refresh_requests()
         for forward in forwards:
             forward_id = int(forward["forward_id"])
-            mode = self.choose_runtime_family(forward, self.running_kernel_supports_mptcp())
-            forward = self.canonicalize_forward_runtime_contract(forward, mode)
+            validation_forward = dict(forward)
+            candidate_pool = self.select_forward_candidates(validation_forward)
+            if candidate_pool:
+                validation_forward["candidate_pool"] = candidate_pool
+            runtime_mode = self.choose_runtime_family(validation_forward, self.running_kernel_supports_mptcp())
+            validation_forward = self.canonicalize_forward_runtime_contract(validation_forward, runtime_mode)
+            mode = self.normalize_mode(validation_forward.get("mode", runtime_mode))
             if str(forward.get("service_status", "active")) != "active":
                 inactive_forward_ids.append(forward_id)
                 self.stop_forward(forward_id)
                 continue
-            usable_endpoints = self.usable_endpoints(forward)
-            if usable_endpoints == [] and self.normalize_mode(forward.get("mode", "single")) != "mptcp":
+            usable_endpoints = self.usable_endpoints(validation_forward)
+            if usable_endpoints == [] and mode != "mptcp":
                 skipped_invalid_forward_ids.append(forward_id)
                 self.log_invalid_forward(
                     forward_id,
@@ -1545,15 +1868,6 @@ class ClientAgent:
             "managed_paths": sorted(current_managed_paths),
             "published_mode": self.normalize_mode(forward.get("mode", "single")),
             "runtime_mode": mode,
-            "backend_mode": str(contract_forward.get("backend_mode", "") or ""),
-            "client_mode": str(contract_forward.get("client_mode", "") or ""),
-            "runtime_preference": str(contract_forward.get("runtime_preference", "") or ""),
-            "bond_ingress_mode": str(contract_forward.get("bond_ingress_mode", "") or ""),
-            "active_family": str(contract_forward.get("active_family", "") or ""),
-            "aggregation_enabled": contract_forward.get("aggregation_enabled"),
-            "target_contract": str(contract_forward.get("target_contract", "") or ""),
-            "sidecar_required": contract_forward.get("sidecar_required"),
-            "bond_sidecar_point_id": contract_forward.get("bond_sidecar_point_id"),
             "contract_signature": contract_signature,
             "rendered_signature": rendered_signature,
             "updated_at": int(time.time()),
@@ -2955,8 +3269,8 @@ class ClientAgent:
         if candidate_pool:
             next_forward["candidate_pool"] = candidate_pool
 
-        mptcp = next_forward.get("mptcp", {})
-        if "mptcp" in next_forward and isinstance(mptcp, dict):
+        mptcp = next_forward.get("mptcp")
+        if isinstance(mptcp, dict):
             mptcp_copy = dict(mptcp)
             mptcp_endpoints = []
             for endpoint in mptcp_copy.get("mptcp_endpoints", []):
@@ -2986,10 +3300,7 @@ class ClientAgent:
                 underlays.append(underlay_copy)
             if underlays:
                 mptcp_copy["underlays"] = underlays
-            if mptcp_copy:
-                next_forward["mptcp"] = mptcp_copy
-            else:
-                next_forward.pop("mptcp", None)
+            next_forward["mptcp"] = mptcp_copy
         return next_forward
 
     def apply_latency_target_candidate_escalation(self, forward: dict) -> dict:

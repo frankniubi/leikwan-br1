@@ -11,6 +11,7 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
 
         self.assertIn("leikwan-client-agent-update", source)
         self.assertIn("download_atomic \"$ARTIFACT_BASE/artifacts/client-agent-update.sh\"", source)
+        self.assertIn("leikwan_protected_download", source)
 
 
     def test_update_helper_uses_artifact_base_when_present(self) -> None:
@@ -51,6 +52,40 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
             source,
         )
 
+    def test_installer_uses_protected_downloader_for_artifact_urls(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+
+        self.assertIn("leikwan_protected_download()", source)
+        self.assertIn("python3 - \"$url\" \"$path\" <<'PY'", source)
+        self.assertIn("is_protected_leikwan_url", source)
+        self.assertIn("STRICT_DOH_PROVIDERS", source)
+        self.assertNotIn("curl -fsSL \"$url\" -o \"$path\"", source)
+        self.assertNotIn("curl -fsSL \"$url\" -o \"$tmp_path\"", source)
+        self.assertIn("leikwan_protected_download \"$url\" \"$path\"", source)
+        self.assertIn("leikwan_protected_download \"$url\" \"$tmp_path\"", source)
+
+    def test_update_helper_uses_protected_downloader_for_installer_artifact(self) -> None:
+        source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
+
+        self.assertIn("leikwan_protected_download()", source)
+        self.assertIn("python3 - \"$url\" \"$path\" <<'PY'", source)
+        self.assertIn("is_protected_leikwan_url", source)
+        self.assertIn("STRICT_DOH_PROVIDERS", source)
+        self.assertNotIn("curl --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -fsSL", source)
+        self.assertIn(
+            'leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/install-client-agent.sh" /tmp/leikwan-install-client-agent.sh',
+            source,
+        )
+
+    def test_update_helper_refreshes_itself_after_reinstall(self) -> None:
+        source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
+
+        self.assertIn("LEIKWAN_SKIP_UPDATE_HELPER=1 /tmp/leikwan-install-client-agent.sh", source)
+        self.assertIn(
+            'leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/client-agent-update.sh" /tmp/leikwan-client-agent-update.sh',
+            source,
+        )
+        self.assertIn("mv /tmp/leikwan-client-agent-update.sh /usr/local/bin/leikwan-client-agent-update", source)
 
     def test_installer_downloads_mptcp_relay_binary(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
