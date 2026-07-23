@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -19,7 +18,6 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -35,25 +33,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leikwan.bridge.R
-import com.leikwan.bridge.ui.MainActivity
-import com.leikwan.bridge.service.ProxyConnectionMode
 
 @Composable
 fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
-    val activity = LocalContext.current as? MainActivity
-    LaunchedEffect(Unit) {
-        viewModel.refreshRoutingSelectorState()
-    }
     var showAddUri by remember { mutableStateOf(false) }
     var showAddSub by remember { mutableStateOf(false) }
     var showQrScan by remember { mutableStateOf(false) }
@@ -74,43 +63,11 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
             Spacer(Modifier.height(8.dp))
             Text(stringResource(R.string.proxies_connection_mode), style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ProxyModeChip(
-                    label = stringResource(R.string.proxy_mode_services),
-                    selected = state.connectionMode == ProxyConnectionMode.SERVICES,
-                    onClick = { viewModel.setConnectionMode(ProxyConnectionMode.SERVICES) },
-                )
-                ProxyModeChip(
-                    label = stringResource(R.string.proxy_mode_direct),
-                    selected = state.connectionMode == ProxyConnectionMode.DIRECT,
-                    onClick = { viewModel.setConnectionMode(ProxyConnectionMode.DIRECT) },
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                onClick = { activity?.navigateToRouting() },
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        if (state.routingSelectorEnabled) {
-                            stringResource(R.string.proxies_routing_rules_on)
-                        } else {
-                            stringResource(R.string.proxies_routing_rules_off)
-                        },
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Text(
-                        if (state.routingSelectorEnabled) {
-                            stringResource(R.string.proxies_routing_rules_on_detail)
-                        } else {
-                            stringResource(R.string.proxies_routing_rules_off_detail)
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+            Text(
+                stringResource(R.string.proxy_mode_leigod_only),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Spacer(Modifier.height(8.dp))
 
             state.error?.let { err ->
@@ -159,10 +116,6 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                                 modifier = Modifier.fillMaxWidth(),
                                 onClick = {
                                     viewModel.selectNode(node)
-                                    if (state.connectionMode == ProxyConnectionMode.DIRECT && node.enabled) {
-                                        activity?.requestVpnPermission { viewModel.startDirectSelected() }
-                                            ?: viewModel.startDirectSelected()
-                                    }
                                 },
                                 border = if (state.selectedProxyId == node.id) {
                                     BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
@@ -216,10 +169,6 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                                                 viewModel.toggleNode(node)
                                                 if (willEnable) {
                                                     viewModel.selectNode(node)
-                                                    if (state.connectionMode == ProxyConnectionMode.DIRECT) {
-                                                        activity?.requestVpnPermission { viewModel.startDirectSelected() }
-                                                            ?: viewModel.startDirectSelected()
-                                                    }
                                                 }
                                             },
                                         )
@@ -282,17 +231,4 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
             },
         )
     }
-}
-
-@Composable
-private fun ProxyModeChip(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    AssistChip(
-        onClick = onClick,
-        label = { Text(label) },
-        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
-    )
 }

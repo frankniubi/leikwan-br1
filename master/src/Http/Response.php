@@ -43,6 +43,30 @@ final class Response
         return new self($status, ['Location' => $location], '');
     }
 
+    /**
+     * @param array<string, string> $headers
+     */
+    public function withHeaders(array $headers): self
+    {
+        return new self($this->status, array_merge($this->headers, $headers), $this->body);
+    }
+
+    public function status(): int
+    {
+        return $this->status;
+    }
+
+    /** @return array<string, string> */
+    public function headers(): array
+    {
+        return $this->headers;
+    }
+
+    public function body(): string
+    {
+        return $this->body;
+    }
+
     public function send(): void
     {
         http_response_code($this->status);

@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.leikwan.bridge.api.PanelRepository
+import com.leikwan.bridge.clientrules.ClientRouteRuleSnapshot
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.data.routing.RoutingExplainabilitySnapshot
 import com.leikwan.bridge.data.routing.RoutingExplainabilityStore
 import com.leikwan.bridge.data.routing.RulePackManifest
@@ -22,6 +24,8 @@ import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardMode
 import com.leikwan.bridge.runtime.NodeLeg
 import com.leikwan.bridge.runtime.ProcessRunner
+import com.leikwan.bridge.runtime.RouteDirectionRuntimePlan
+import com.leikwan.bridge.runtime.RouteDirectionRuntimePlanner
 import com.leikwan.bridge.runtime.RuntimeBinaryInstaller
 import com.leikwan.bridge.runtime.RuntimeBinaryPaths
 import com.leikwan.bridge.runtime.RuntimeContext
@@ -29,7 +33,6 @@ import com.leikwan.bridge.runtime.SingleForwardRunner
 import com.leikwan.bridge.singbox.SingboxConfigBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.File
 
 private const val TAG = "TunnelOrchestrator"
 
@@ -46,12 +49,23 @@ class TunnelOrchestrator internal constructor(
     private val rulePackManager: RulePackManager,
     private val explainabilityStore: RoutingExplainabilityStore,
     private val routingEngine: RoutingPolicyEngine,
+    private val routeRuleStore: ClientRouteRuleStore = ClientRouteRuleStore.from(context),
     // Network/process collaborators are only exercised by startForForward(). They are constructed
     // lazily so snapshot-only seams (buildRoutingSnapshot) stay unit-testable without an
     // EncryptedSharedPreferences-backed PanelRepository (no AndroidKeyStore under Robolectric).
     panelRepoFactory: () -> PanelRepository = { PanelRepository(context) },
     binaryInstallerFactory: () -> RuntimeBinaryInstaller = { RuntimeBinaryInstaller(context) },
     processRunnerFactory: () -> ProcessRunner = { ProcessRunner() },
+    private val vpnServiceStarter: (Context) -> Unit = { appContext ->
+        val intent = Intent(appContext, LeikwanVpnService::class.java)
+        appContext.startForegroundService(intent)
+    },
+    private val vpnStartupAwaiter: suspend () -> VpnStartupAwaitResult = {
+        VpnStartupMonitor.await(
+            timeoutMs = 10_000,
+            readState = { LeikwanVpnService.startupSnapshot() },
+        )
+    },
 ) {
     constructor(context: Context) : this(
         context = context,
@@ -64,6 +78,7 @@ class TunnelOrchestrator internal constructor(
             SafePathRegistry.androidBaseline(Prefs.get(context).panelUrl, "v3-mirror.leikwanhost.com"),
             RoutingCategoryCatalog.default(),
         ),
+        routeRuleStore = ClientRouteRuleStore.from(context),
     )
 
     private val panelRepo: PanelRepository by lazy(panelRepoFactory)
@@ -71,6 +86,7 @@ class TunnelOrchestrator internal constructor(
     private val processRunner: ProcessRunner by lazy(processRunnerFactory)
 
     private var activeRuntime: RuntimeContext? = null
+    private var activeRouteRuleRuntimeKeys: Set<Long> = emptySet()
 
     /**
      * Build the authoritative [RoutingPolicySnapshot] for one startup/rebuild cycle from the
@@ -79,12 +95,27 @@ class TunnelOrchestrator internal constructor(
     internal suspend fun buildRoutingSnapshot(
         nowMs: Long,
         unavailableNodeIds: Set<Long> = emptySet(),
+        ignoreProxyNodeTargets: Boolean = false,
     ): RoutingPolicySnapshot {
-        val enabledNodeIds = db.proxyNodeDao().getEnabled().map { it.id }.toSet()
+        val enabledNodeIds = if (ignoreProxyNodeTargets) {
+            emptySet()
+        } else {
+            db.proxyNodeDao().getEnabled().map { it.id }.toSet()
+        }
         val availableNodeIds = enabledNodeIds - unavailableNodeIds
         val effectiveRoutingEngine = RulePackManifest.fromSnapshot(rulePackManager.current())
             ?.let { manifest -> routingEngine.withCategoryCatalog(RoutingCategoryCatalog.fromManifest(manifest)) }
             ?: routingEngine
+        if (ignoreProxyNodeTargets) {
+            return effectiveRoutingEngine.compile(
+                globalDefault = UserTrafficOutcome.TUNNEL,
+                globalDefaultNodeId = null,
+                countryRules = emptyList(),
+                categoryRules = emptyList(),
+                rulePackVersions = rulePackManager.activeVersions(),
+                compiledAtMs = nowMs,
+            )
+        }
         if (!prefs.routingSelectorEnabled) {
             return effectiveRoutingEngine.compile(
                 globalDefault = UserTrafficOutcome.TUNNEL,
@@ -109,7 +140,10 @@ class TunnelOrchestrator internal constructor(
 
     suspend fun startForForward(forwardId: Long) = withContext(Dispatchers.IO) {
         Log.i(TAG, "Pulling forward configs...")
-        val connectionMode = prefs.proxyConnectionMode
+        val connectionMode = ProxyConnectionMode.SERVICES
+        if (prefs.proxyConnectionMode != ProxyConnectionMode.SERVICES) {
+            prefs.proxyConnectionMode = ProxyConnectionMode.SERVICES
+        }
         val proxyNodes = db.proxyNodeDao().getAllList()
         val selectedProxyId = prefs.selectedProxyId
         if (selectedProxyId > 0L && proxyNodes.none { it.id == selectedProxyId }) {
@@ -118,19 +152,25 @@ class TunnelOrchestrator internal constructor(
 
         val catalog = panelRepo.pullCatalog(forwardId.takeIf { it > 0L } ?: prefs.selectedForwardId)
         val selectedForward = forwardId.takeIf { it > 0L }
+            ?: catalog.selectedForwardId
+            ?: catalog.visibleForwards.firstOrNull()?.forwardId
+        if (selectedForward != null && prefs.selectedForwardId != selectedForward) {
+            prefs.selectedForwardId = selectedForward
+        }
 
-        if (
-            connectionMode == ProxyConnectionMode.SERVICES &&
-            (selectedForward == null || catalog.visibleForwards.none { it.forwardId == selectedForward })
-        ) {
+        if (selectedForward == null || catalog.visibleForwards.none { it.forwardId == selectedForward }) {
             throw Exception("Select a service before starting in Services mode")
         }
+        val selectedEffective = panelRepo.getCachedEffectiveForward(selectedForward)
+            ?: throw Exception("Forward $selectedForward is not supported on Android")
+        val isDedicatedLeiGod = selectedEffective.isDedicatedLeiGod
 
         val selection = ProxySelectionPolicy.validate(
             selectedProxyId = prefs.selectedProxyId,
-            forwardId = selectedForward ?: 0L,
+            forwardId = selectedForward,
             connectionMode = connectionMode,
             proxyNodes = proxyNodes,
+            proxyOptional = isDedicatedLeiGod,
         )
         if (selection is ProxySelectionResult.Error) {
             throw Exception(selection.message)
@@ -140,17 +180,20 @@ class TunnelOrchestrator internal constructor(
         stop()
 
         var unavailableNodeIds: Set<Long> = emptySet()
-        val runtimeContext = if (connectionMode == ProxyConnectionMode.SERVICES) {
-            val forward = panelRepo.getCachedContract(selectedForward ?: 0L)
-                ?: throw Exception("Forward ${selectedForward ?: 0L} not found")
-            Log.i(TAG, "Starting forward ${forward.forwardId}: ${forward.serviceName}")
-            val binaries = binaryInstaller.prepareBinaryPaths()
-            val relayNodes = selection.activeNodes.filter { it.type.lowercase() != "wireguard" }
+        val binaries = binaryInstaller.prepareBinaryPaths()
+        val runtimeContext = run {
+            val forward = selectedEffective.runtimeContract
+            Log.i(TAG, "Starting LeiGod forward ${forward.forwardId}: ${forward.serviceName}")
+            val relayNodes = if (isDedicatedLeiGod) {
+                emptyList()
+            } else {
+                selection.activeNodes.filter { it.type.lowercase() != "wireguard" }
+            }
             val missingRelayNodeIds = mutableSetOf<Long>()
             val relayNodeForwards = relayNodes.mapNotNull { node ->
                 val nodeForwardId = node.forwardId
                 val nodeForward = if (nodeForwardId != null) {
-                    panelRepo.getCachedContract(nodeForwardId)
+                    panelRepo.getCachedEffectiveForward(nodeForwardId)?.runtimeContract
                 } else {
                     forward
                 }
@@ -187,36 +230,48 @@ class TunnelOrchestrator internal constructor(
                 processRunner.start(singleForward.forwardId, planned)
                 planned
             }
-        } else {
-            null
         }
+
+        val routeRuleSnapshot = routeRuleStore.current()
+        val routeRuleForwardIds = routeRuleSnapshot.bindings.mapNotNull { it.runtimeForwardId }.distinct()
+        val routeRuleForwardContracts = routeRuleForwardIds.mapNotNull { routeForwardId ->
+            panelRepo.getCachedContract(routeForwardId)?.let { routeForwardId to it }
+        }.toMap()
+        val routeRuleRuntimePlan = buildRouteDirectionRuntimePlan(routeRuleSnapshot, routeRuleForwardContracts, binaries)
+        routeRuleRuntimePlan.runtimeContexts.forEach { routeRuntime ->
+            val processKey = routeRuntime.routeRuleProcessKey ?: return@forEach
+            processRunner.start(processKey, routeRuntime, cleanupStale = false)
+        }
+        activeRouteRuleRuntimeKeys = routeRuleRuntimePlan.runtimeContexts.mapNotNull { it.routeRuleProcessKey }.toSet()
+        val singboxRuntimeContext = runtimeContext.copy(
+            bypassHosts = runtimeContext.bypassHosts + routeRuleRuntimePlan.bypassHosts,
+        )
 
         val activeRulePackManifest = RulePackManifest.fromSnapshot(rulePackManager.current())
         val routingSnapshot = buildRoutingSnapshot(
             System.currentTimeMillis(),
             unavailableNodeIds = unavailableNodeIds,
+            ignoreProxyNodeTargets = isDedicatedLeiGod,
         )
         val compiled = SingboxConfigBuilder
             .fromPrefs(prefs, activeRulePackManifest)
             .build(
-                proxyNodes = selection.activeNodes,
-                runtimeContext = runtimeContext,
+                proxyNodes = if (isDedicatedLeiGod) emptyList() else selection.activeNodes,
+                runtimeContext = singboxRuntimeContext,
                 routingPolicySnapshot = routingSnapshot,
                 connectionMode = connectionMode,
+                routeRuleSnapshot = routeRuleSnapshot,
+                routeRuleRuntimeBindings = routeRuleRuntimePlan.singboxBindings,
+                runtimeOnlyProxy = isDedicatedLeiGod,
             )
-        recordExplainability(routingSnapshot, compiled.configJson)
+        recordExplainability(routingSnapshot)
         val configJson = compiled.configJson
-        writeDebugConfig(configJson)
-        Log.d(TAG, "Generated sing-box config: $configJson")
+        Log.d(TAG, "Generated sing-box config for LeiGod forward ${runtimeContext.forwardId}")
 
         LeikwanVpnService.configJson = configJson
-        val intent = Intent(context, LeikwanVpnService::class.java)
-        context.startForegroundService(intent)
+        vpnServiceStarter(context)
 
-        when (val vpnResult = VpnStartupMonitor.await(
-            timeoutMs = 10_000,
-            readState = { LeikwanVpnService.startupSnapshot() },
-        )) {
+        when (val vpnResult = vpnStartupAwaiter()) {
             VpnStartupAwaitResult.Running -> {
                 activeRuntime = runtimeContext
             }
@@ -237,6 +292,8 @@ class TunnelOrchestrator internal constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping VPN service", e)
         }
+        activeRouteRuleRuntimeKeys.forEach { processRunner.stopForward(it) }
+        activeRouteRuleRuntimeKeys = emptySet()
         processRunner.stopAll()
         activeRuntime = null
     }
@@ -252,6 +309,26 @@ class TunnelOrchestrator internal constructor(
         ForwardMode.BOND -> BondForwardRunner.buildPlan(forward, binaries, portSalt)
         else -> throw Exception("Forward ${forward.forwardId} mode ${forward.mode.wireValue} is not supported on Android")
     }
+
+    internal fun buildRouteDirectionRuntimePlanForTest(
+        snapshot: ClientRouteRuleSnapshot,
+        forwardContractsById: Map<Long, ForwardContract>,
+        binaries: RuntimeBinaryPaths,
+    ): RouteDirectionRuntimePlan = buildRouteDirectionRuntimePlan(snapshot, forwardContractsById, binaries)
+
+    private fun buildRouteDirectionRuntimePlan(
+        snapshot: ClientRouteRuleSnapshot,
+        forwardContractsById: Map<Long, ForwardContract>,
+        binaries: RuntimeBinaryPaths,
+    ): RouteDirectionRuntimePlan = RouteDirectionRuntimePlanner.plan(
+        snapshot = snapshot,
+        forwardContractsById = forwardContractsById,
+        buildRuntimeContext = { directionId, forward, listenPort ->
+            buildRuntimePlan(forward.withListenPort(listenPort), binaries).copy(
+                routeRuleProcessKey = RouteDirectionRuntimePlanner.processKey(directionId),
+            )
+        },
+    )
 
     internal fun startNodeLegs(
         nodeForwards: List<Pair<Long, ForwardContract>>,
@@ -315,17 +392,11 @@ class TunnelOrchestrator internal constructor(
             }
         }
 
-    private fun writeDebugConfig(configJson: String) {
-        runCatching {
-            File(context.filesDir, "latest-singbox-config.json").writeText(configJson)
-        }
-    }
-
     /**
      * Persist a routing explainability snapshot for the diagnostics UI. Best-effort: a failure here
      * must never break VPN startup.
      */
-    private suspend fun recordExplainability(snapshot: RoutingPolicySnapshot, configJson: String) {
+    private suspend fun recordExplainability(snapshot: RoutingPolicySnapshot) {
         runCatching {
             val activeUserRules = (snapshot.userCountryRules + snapshot.userCategoryRules).map { rule ->
                 "${rule.kind.name}:${rule.matchValue}->${rule.outcome.name}"
@@ -339,7 +410,7 @@ class TunnelOrchestrator internal constructor(
                     activeUserRules = activeUserRules,
                     protectedPaths = snapshot.protectedPaths.map { it.id },
                     warnings = snapshot.warnings,
-                    payloadJson = configJson,
+                    payloadJson = "{}",
                 )
             )
         }.onFailure { Log.w(TAG, "Failed to record routing explainability snapshot", it) }

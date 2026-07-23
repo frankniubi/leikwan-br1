@@ -20,62 +20,62 @@ final class ArtifactController extends BaseController
 
     public function slaveAgent(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('slave-agent/slave_agent.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('slave-agent/slave_agent.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function slavePreconnectRelay(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('slave-agent/preconnect_relay.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('slave-agent/preconnect_relay.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function installSlave(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/install-slave.sh');
+        return $this->serveRepoFile('install/install-slave.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function uninstallSlave(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/uninstall-slave.sh');
+        return $this->serveRepoFile('install/uninstall-slave.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function dedupeSlave(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/dedupe-slave.sh');
+        return $this->serveRepoFile('install/dedupe-slave.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function installClient(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/install-client.sh');
+        return $this->serveRepoFile('install/install-client.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function installBondSidecar(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/install-bond-sidecar.sh');
+        return $this->serveRepoFile('install/install-bond-sidecar.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function wgWatchdog(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('artifacts/leikwan-wg-watchdog.sh');
+        return $this->serveRepoFile('artifacts/leikwan-wg-watchdog.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function uninstallBondSidecar(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/uninstall-bond-sidecar.sh');
+        return $this->serveRepoFile('install/uninstall-bond-sidecar.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function sidecarAgentUpdate(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/sidecar-agent-update.sh');
+        return $this->serveRepoFile('install/sidecar-agent-update.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function slaveAgentUpdate(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/leikwan-slave-update');
+        return $this->serveRepoFile('install/leikwan-slave-update', 'text/plain; charset=utf-8', $request);
     }
 
     public function uninstallClient(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/uninstall-client.sh');
+        return $this->serveRepoFile('install/uninstall-client.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function installClientPowerShell(Request $request, array $params): Response
@@ -90,7 +90,7 @@ final class ArtifactController extends BaseController
             ], $script);
         }
 
-        return $this->serveRepoFile('install/install-client.ps1', 'text/plain; charset=utf-8');
+        return $this->serveRepoFile('install/install-client.ps1', 'text/plain; charset=utf-8', $request);
     }
 
     public function manageClientPowerShell(Request $request, array $params): Response
@@ -105,12 +105,12 @@ final class ArtifactController extends BaseController
             ], $script);
         }
 
-        return $this->serveRepoFile('install/manage-client.ps1', 'text/plain; charset=utf-8');
+        return $this->serveRepoFile('install/manage-client.ps1', 'text/plain; charset=utf-8', $request);
     }
 
     public function apiDefaultPage(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('api-default.html', 'text/html; charset=utf-8');
+        return $this->serveRepoFile('api-default.html', 'text/html; charset=utf-8', $request);
     }
 
     /**
@@ -157,102 +157,102 @@ final class ArtifactController extends BaseController
 
     public function clientAgent(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('client-agent/client_agent.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('client-agent/client_agent.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function sidecarAgent(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('sidecar-agent/sidecar_agent.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('sidecar-agent/sidecar_agent.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function cfwgLatencyWatchdog(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('client-agent/cfwg_latency_watchdog.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('client-agent/cfwg_latency_watchdog.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function installForwardRuntime(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('client-agent/install_forward_runtime.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('client-agent/install_forward_runtime.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function mptcpClientRuntime(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('client-agent/leikwan_mptcp_client.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('client-agent/leikwan_mptcp_client.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function uotRuntime(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('client-agent/leikwan_uot.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('client-agent/leikwan_uot.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function uotBondRuntime(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('client-agent/leikwan_uot_bond.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('client-agent/leikwan_uot_bond.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function mptcpSidecarRuntime(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('sidecar-agent/leikwan_mptcp_sidecar.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('sidecar-agent/leikwan_mptcp_sidecar.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function udpUotMergeRuntime(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('sidecar-agent/leikwan_udp_uot_merge.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('sidecar-agent/leikwan_udp_uot_merge.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function wssMuxRuntime(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('sidecar-agent/leikwan_wss_mux.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('sidecar-agent/leikwan_wss_mux.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function clientRateLimitHelper(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('client-agent/leikwan_rate_limit.py', 'text/x-python; charset=utf-8');
+        return $this->serveRepoFile('client-agent/leikwan_rate_limit.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function installClientAgent(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/install-client-agent.sh');
+        return $this->serveRepoFile('install/install-client-agent.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function clientAgentUpdate(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/client-agent-update.sh');
+        return $this->serveRepoFile('install/client-agent-update.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function uninstallClientAgent(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('install/uninstall-client-agent.sh');
+        return $this->serveRepoFile('install/uninstall-client-agent.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function androidClientApk(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('artifacts/android/leikwan-android-client.apk', 'application/vnd.android.package-archive');
+        return $this->serveRepoFile('artifacts/android/leikwan-android-client.apk', 'application/vnd.android.package-archive', $request);
     }
 
     public function windowsClientApp(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('artifacts/windows/leikwan-bridge-setup.exe', 'application/octet-stream');
+        return $this->serveRepoFile('artifacts/windows/leikwan-bridge-setup.exe', 'application/octet-stream', $request);
     }
 
     public function gostBinary(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('artifacts/gost/gost_linux_amd64', 'application/octet-stream');
+        return $this->serveRepoFile('artifacts/gost/gost_linux_amd64', 'application/octet-stream', $request);
     }
 
     public function leigodBinary(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('artifacts/leigod/leigod-linux-amd64', 'application/octet-stream');
+        return $this->serveRepoFile('artifacts/leigod/leigod-linux-amd64', 'application/octet-stream', $request);
     }
 
     public function lguotBinary(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('artifacts/lguot/lguot_linux_amd64', 'application/octet-stream');
+        return $this->serveRepoFile('artifacts/lguot/lguot_linux_amd64', 'application/octet-stream', $request);
     }
 
     public function legacyClient(Request $request, array $params): Response
     {
-        return $this->serveRepoFile('client.sh');
+        return $this->serveRepoFile('client.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function wstunnelPackage(Request $request, array $params): Response
@@ -280,11 +280,9 @@ final class ArtifactController extends BaseController
             ? 'application/gzip'
             : 'application/octet-stream';
 
-        return new Response(200, [
-            'Content-Type' => $contentType,
-            'Content-Length' => (string) filesize($path),
+        return $this->serveRepoFile(self::WSTUNNEL_ARTIFACT_DIR . '/' . $filename, $contentType, $request, [
             'Content-Disposition' => 'attachment; filename="' . $filename . '"',
-        ], (string) file_get_contents($path));
+        ]);
     }
 
     public function slaveManifest(Request $request, array $params): Response
@@ -346,7 +344,8 @@ final class ArtifactController extends BaseController
         ]);
     }
 
-    private function serveRepoFile(string $relativePath, string $contentType = 'text/plain; charset=utf-8'): Response
+    /** @param array<string, string> $extraHeaders */
+    private function serveRepoFile(string $relativePath, string $contentType, Request $request, array $extraHeaders = []): Response
     {
         $repoRoot = dirname(__DIR__, 3);
         $path = $repoRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
@@ -354,7 +353,62 @@ final class ArtifactController extends BaseController
             return Response::json(404, ['error' => 'artifact_not_found', 'path' => $relativePath]);
         }
 
-        return Response::text(200, (string) file_get_contents($path), $contentType);
+        $size = (int) filesize($path);
+        $mtime = (int) filemtime($path);
+        $etag = '"' . hash_file('sha256', $path) . '"';
+        $lastModified = gmdate('D, d M Y H:i:s', $mtime) . ' GMT';
+        $headers = [
+            'Content-Type' => $contentType,
+            'Content-Length' => (string) $size,
+            'Cache-Control' => 'public, max-age=31536000, immutable',
+            'ETag' => $etag,
+            'Last-Modified' => $lastModified,
+            'Accept-Ranges' => 'bytes',
+            'X-Leikwan-Artifact-Response' => 'artifact_response',
+        ];
+        $headers = array_merge($headers, $extraHeaders);
+
+        $ifNoneMatch = trim((string) ($request->header('If-None-Match', '') ?? ''));
+        $ifModifiedSince = trim((string) ($request->header('If-Modified-Since', '') ?? ''));
+        if ($ifNoneMatch === $etag || ($ifModifiedSince !== '' && strtotime($ifModifiedSince) !== false && (int) strtotime($ifModifiedSince) >= $mtime)) {
+            return new Response(304, $headers, '');
+        }
+
+        $range = trim((string) ($request->header('Range', '') ?? ''));
+        if ($range !== '' && preg_match('/^bytes=(\d*)-(\d*)$/', $range, $matches) === 1 && ($matches[1] !== '' || $matches[2] !== '')) {
+            $start = null;
+            $end = null;
+            if ($matches[1] === '') {
+                $suffixLength = min((int) $matches[2], $size);
+                if ($suffixLength > 0) {
+                    $start = $size - $suffixLength;
+                    $end = $size - 1;
+                }
+            } else {
+                $requestedStart = (int) $matches[1];
+                $requestedEnd = $matches[2] === '' ? $size - 1 : (int) $matches[2];
+                if ($requestedStart < $size && $requestedStart <= $requestedEnd) {
+                    $start = $requestedStart;
+                    $end = min($requestedEnd, $size - 1);
+                }
+            }
+            if ($start !== null && $end !== null && $start <= $end && $start >= 0 && $end < $size) {
+                $handle = fopen($path, 'rb');
+                if ($handle !== false) {
+                    fseek($handle, $start);
+                    $body = (string) fread($handle, $end - $start + 1);
+                    fclose($handle);
+                    $headers['Content-Range'] = 'bytes ' . $start . '-' . $end . '/' . $size;
+                    $headers['Content-Length'] = (string) strlen($body);
+                    return new Response(206, $headers, $body);
+                }
+            }
+            $headers['Content-Range'] = 'bytes */' . $size;
+            $headers['Content-Length'] = '0';
+            return new Response(416, $headers, '');
+        }
+
+        return new Response(200, $headers, (string) file_get_contents($path));
     }
 
     private function renderForwardSpecificWindowsInstallerWrapper(int $forwardId, string $token): string

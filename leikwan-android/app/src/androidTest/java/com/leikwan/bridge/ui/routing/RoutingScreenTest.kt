@@ -44,8 +44,11 @@ class RoutingScreenTest {
         composeRule.setContent {
             RoutingScreenContent(
                 state = seededState,
+                onSetSelectorEnabled = {},
                 onSetGlobalDefault = {},
                 onSetGlobalDefaultNode = {},
+                onUpdateCountryQuery = {},
+                onSelectCountrySuggestion = {},
                 onAddCountry = { _, _ -> },
                 onAddCategory = { _, _ -> },
                 onToggle = {},

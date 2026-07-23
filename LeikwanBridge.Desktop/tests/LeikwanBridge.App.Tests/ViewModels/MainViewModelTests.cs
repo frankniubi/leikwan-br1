@@ -199,7 +199,7 @@ public sealed class MainViewModelTests
 
         var quality = Assert.Single(vm.ConnectionQualityForwards);
         Assert.Equal(47, quality.ForwardId);
-        Assert.Equal("MPTCP", quality.ModeDisplay);
+        Assert.Equal("LeiGod", quality.ModeDisplay);
         Assert.Equal("Running", quality.StatusText);
         Assert.Contains("1 WG leg", quality.SummaryText);
         var leg = Assert.Single(quality.Legs);
@@ -242,7 +242,7 @@ public sealed class MainViewModelTests
 
             var quality = Assert.Single(vm.ConnectionQualityForwards);
             Assert.Equal(59, quality.ForwardId);
-            Assert.Equal("Bond", quality.ModeDisplay);
+            Assert.Equal("LeiGod", quality.ModeDisplay);
             Assert.Contains("2 legs", quality.SummaryText);
             Assert.Contains("best 12.4 ms", quality.SummaryText);
             Assert.Equal(2, quality.Legs.Count);
@@ -260,7 +260,7 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public void ApplyForwardSnapshot_AutoSelectsMptcpFilter_WhenMptcpForwardExists()
+    public void ApplyForwardSnapshot_ShowsAllForwardsWithLeiGodMethod_WhenMixedRuntimeModesExist()
     {
         var vm = new MainViewModel();
 
@@ -270,17 +270,17 @@ public sealed class MainViewModelTests
             CreateForward(26, "bond"),
         ], _ => false);
 
-        Assert.Equal("MPTCP", vm.ActiveModeFilter);
-        Assert.Single(vm.VisibleForwards);
-        Assert.Equal(24, vm.VisibleForwards[0].ForwardId);
-        Assert.Equal("MPTCP", vm.VisibleForwards[0].ModeDisplay);
+        Assert.Equal("LeiGod", vm.ActiveModeFilter);
+        Assert.Equal(["LeiGod"], vm.AvailableModeFilters.ToArray());
+        Assert.Equal(2, vm.VisibleForwards.Count);
+        Assert.All(vm.VisibleForwards, forward => Assert.Equal("LeiGod", forward.ModeDisplay));
         Assert.False(vm.VisibleForwards[0].IsMptcpFallback);
         Assert.NotNull(vm.SelectedForward);
         Assert.Equal(24, vm.SelectedForward!.ForwardId);
     }
 
     [Fact]
-    public void ApplyForwardSnapshot_FallsBackToAllFilter_WhenNoMptcpForwardExists()
+    public void ApplyForwardSnapshot_DoesNotExposeOldModeSelection_WhenNoMptcpForwardExists()
     {
         var vm = new MainViewModel();
 
@@ -290,7 +290,8 @@ public sealed class MainViewModelTests
             CreateForward(27, "single"),
         ], _ => false);
 
-        Assert.Equal("All", vm.ActiveModeFilter);
+        Assert.Equal("LeiGod", vm.ActiveModeFilter);
+        Assert.Equal(["LeiGod"], vm.AvailableModeFilters.ToArray());
         Assert.Equal(2, vm.VisibleForwards.Count);
         Assert.NotNull(vm.SelectedForward);
     }

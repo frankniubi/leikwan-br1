@@ -19,6 +19,16 @@ class PanelModelsContractParsingTest {
               "target": "193.227.109.82:5201",
               "listen_port": 11024,
               "mode": "bond",
+              "backend_mode": "leigod_mode",
+              "contract_version": 1,
+              "client_mode": "mptcp",
+              "runtime_preference": "mptcp_preferred_bond_fallback",
+              "bond_ingress_mode": "plain_tcp_mux",
+              "active_family": "sidecar_aggregation",
+              "aggregation_enabled": true,
+              "target_contract": "sidecar_aggregation",
+              "sidecar_required": true,
+              "bond_sidecar_point_id": 9,
               "transport": "tcp",
               "service_status": "active",
               "endpoint_mode": "manual",
@@ -26,7 +36,6 @@ class PanelModelsContractParsingTest {
               "path_prefix": "/route-key",
               "speed_limit_mbps": 500,
               "bonding": {
-                "ingress_mode": "plain_tcp_mux",
                 "route_key": "/route-key",
                 "remote_target": "138.252.162.120:9000",
                 "session_token": "tcp-token",
@@ -87,6 +96,16 @@ class PanelModelsContractParsingTest {
         parsed!!
         assertEquals(26L, parsed.forwardId)
         assertEquals(ForwardMode.BOND, parsed.mode)
+        assertEquals("leigod_mode", parsed.backendMode)
+        assertEquals(1, parsed.contractVersion)
+        assertEquals("mptcp", parsed.clientMode)
+        assertEquals("mptcp_preferred_bond_fallback", parsed.runtimePreference)
+        assertEquals("plain_tcp_mux", parsed.bondIngressMode)
+        assertEquals("sidecar_aggregation", parsed.activeFamily)
+        assertEquals(true, parsed.aggregationEnabled)
+        assertEquals("sidecar_aggregation", parsed.targetContract)
+        assertEquals(true, parsed.sidecarRequired)
+        assertEquals(9L, parsed.bondSidecarPointId)
         assertEquals("plain_tcp_mux", parsed.bonding?.ingressMode)
         assertEquals("/route-key", parsed.bonding?.routeKey)
         assertEquals("138.252.162.120:9000", parsed.bonding?.remoteTarget)
@@ -108,5 +127,56 @@ class PanelModelsContractParsingTest {
         assertEquals("auth-1", parsed.endpoints.single().ingressAuthToken)
         assertEquals("198.51.100.10", parsed.mptcp?.sidecarHost)
         assertEquals(14969, parsed.mptcp?.sidecarPort)
+    }
+
+    @Test
+    fun `route rule helper forwards are parsed but hidden from visible catalog`() {
+        val helper = JsonParser.parseString(
+            """
+            {
+              "forward_id": 77,
+              "service_name": "helper-dir-sh-jp-1",
+              "target": "93.184.216.34:443",
+              "listen_port": 12001,
+              "mode": "single",
+              "backend_mode": "leigod_mode",
+              "contract_version": 1,
+              "transport": "tcp_udp",
+              "service_status": "active",
+              "endpoint_mode": "manual",
+              "route_rule_helper_only": true,
+              "endpoints": [
+                {"endpoint_id":1,"node":"n1","host":"198.51.100.10","port":7001,"priority":1,"weight":1,"health_status":"healthy"}
+              ]
+            }
+            """.trimIndent()
+        )
+        val visible = JsonParser.parseString(
+            """
+            {
+              "forward_id": 78,
+              "service_name": "selectable-service",
+              "target": "203.0.113.10:443",
+              "listen_port": 12002,
+              "mode": "single",
+              "contract_version": 1,
+              "transport": "tcp_udp",
+              "service_status": "active",
+              "endpoint_mode": "manual",
+              "route_rule_helper_only": false,
+              "endpoints": [
+                {"endpoint_id":2,"node":"n2","host":"198.51.100.11","port":7001,"priority":1,"weight":1,"health_status":"healthy"}
+              ]
+            }
+            """.trimIndent()
+        )
+
+        val helperContract = ForwardContractParser.parse(helper)!!
+        val visibleContract = ForwardContractParser.parse(visible)!!
+        assertEquals(true, helperContract.routeRuleHelperOnly)
+        assertEquals(false, visibleContract.routeRuleHelperOnly)
+
+        val catalog = com.leikwan.bridge.runtime.ForwardFilter.buildCatalog(listOf(helperContract, visibleContract), selectedForwardId = null)
+        assertEquals(listOf(78L), catalog.visibleForwards.map { it.forwardId })
     }
 }

@@ -51,10 +51,11 @@ class SidecarDualRuntimeRegressionTests(unittest.TestCase):
                 return True
 
             with mock.patch.object(agent, "ensure_relay_binary"):
-                with mock.patch.object(agent, "systemd_is_active", return_value=True):
-                    with mock.patch.object(sidecar_agent_module, "write_text_if_changed", side_effect=fake_write):
-                        with mock.patch.object(sidecar_agent_module.subprocess, "run") as run_mock:
-                            agent.apply_management(
+                with mock.patch.object(agent, "systemd_available", return_value=True):
+                    with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                        with mock.patch.object(sidecar_agent_module, "write_text_if_changed", side_effect=fake_write):
+                            with mock.patch.object(sidecar_agent_module.subprocess, "run") as run_mock:
+                                agent.apply_management(
                                 {
                                     "bond_runtime": {
                                         "bind_host": "0.0.0.0",
@@ -157,10 +158,11 @@ class SidecarDualRuntimeRegressionTests(unittest.TestCase):
                 return True
 
             with mock.patch.object(agent, "ensure_relay_binary") as relay_mock:
-                with mock.patch.object(agent, "systemd_is_active", return_value=True):
-                    with mock.patch.object(sidecar_agent_module, "write_text_if_changed", side_effect=fake_write):
-                        with mock.patch.object(sidecar_agent_module.subprocess, "run") as run_mock:
-                            agent.apply_management_config(management, {})
+                with mock.patch.object(agent, "systemd_available", return_value=True):
+                    with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                        with mock.patch.object(sidecar_agent_module, "write_text_if_changed", side_effect=fake_write):
+                            with mock.patch.object(sidecar_agent_module.subprocess, "run") as run_mock:
+                                agent.apply_management_config(management, {})
 
             relay_mock.assert_not_called()
             runtime_path = str(state_dir / "udp-uot-runtime.json").replace("\\", "/")

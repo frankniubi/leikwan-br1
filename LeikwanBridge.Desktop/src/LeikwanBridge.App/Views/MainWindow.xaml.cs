@@ -477,6 +477,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         DisposeTrayIcon();
+        _updateService.Dispose();
         base.OnClosed(e);
     }
 

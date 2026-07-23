@@ -10,7 +10,7 @@ import org.junit.Test
 class AndroidEffectiveForwardBuilderTest {
 
     @Test
-    fun `builder keeps single and bond but rejects unsupported runtime modes`() {
+    fun `builder keeps single and bond but rejects unsupported legacy runtime modes`() {
         val single = sampleContract(forwardId = 11L, mode = ForwardMode.SINGLE)
         val bond = sampleContract(forwardId = 22L, mode = ForwardMode.BOND)
         val race = sampleContract(forwardId = 33L, mode = ForwardMode.RACE)
@@ -26,6 +26,100 @@ class AndroidEffectiveForwardBuilderTest {
         assertEquals(listOf(11L, 22L), visible.map { it.forwardId })
         assertFalse(visible.any { it.mode == ForwardMode.RACE })
         assertFalse(visible.any { it.mode == ForwardMode.MPTCP })
+    }
+
+    @Test
+    fun `canonical dedicated leigod resolves to sidecarless single`() {
+        val dedicated = sampleContract(
+            forwardId = 65L,
+            mode = ForwardMode.MPTCP,
+            backendMode = "leigod_mode",
+            contractVersion = 1,
+            clientMode = "single",
+            runtimePreference = "single",
+            activeFamily = "leigod_only",
+            aggregationEnabled = false,
+            targetContract = "dedicated_forward_node",
+            sidecarRequired = false,
+            bondSidecarPointId = null,
+        )
+
+        val effective = AndroidEffectiveForwardBuilder.build(dedicated)
+
+        assertNotNull(effective)
+        effective!!
+        assertEquals(ForwardMode.SINGLE, effective.mode)
+        assertEquals(ForwardMode.SINGLE, effective.runtimeContract.mode)
+        assertTrue(effective.isDedicatedLeiGod)
+        assertEquals("LeiGod", effective.toListItem().methodDisplay)
+        assertEquals("dedicated_forward_node", effective.runtimeContract.targetContract)
+    }
+
+    @Test
+    fun `canonical mptcp preferred aggregation uses android bond fallback`() {
+        val aggregation = sampleContract(
+            forwardId = 66L,
+            mode = ForwardMode.MPTCP,
+            backendMode = "leigod_mode",
+            contractVersion = 1,
+            clientMode = "mptcp",
+            runtimePreference = "mptcp_preferred_bond_fallback",
+            activeFamily = "sidecar_aggregation",
+            aggregationEnabled = true,
+            targetContract = "sidecar_aggregation",
+            sidecarRequired = true,
+            bondSidecarPointId = 4L,
+            bonding = sampleBonding(remoteTarget = "overseas-sidecar.example:9000"),
+        )
+
+        val effective = AndroidEffectiveForwardBuilder.build(aggregation)
+
+        assertNotNull(effective)
+        effective!!
+        assertEquals(ForwardMode.BOND, effective.mode)
+        assertEquals(ForwardMode.BOND, effective.runtimeContract.mode)
+        assertFalse(effective.isDedicatedLeiGod)
+        assertEquals("sidecar_aggregation", effective.runtimeContract.targetContract)
+        assertEquals(ForwardMode.BOND, effective.toListItem().mode)
+    }
+
+    @Test
+    fun `canonical aggregation can be detected from boolean and sidecar id markers`() {
+        val aggregation = sampleContract(
+            forwardId = 67L,
+            mode = ForwardMode.MPTCP,
+            aggregationEnabled = true,
+            sidecarRequired = true,
+            bondSidecarPointId = 4L,
+            bonding = sampleBonding(remoteTarget = "overseas-sidecar.example:9000"),
+        )
+
+        val effective = AndroidEffectiveForwardBuilder.build(aggregation)
+
+        assertNotNull(effective)
+        effective!!
+        assertEquals(ForwardMode.BOND, effective.mode)
+        assertEquals(ForwardMode.BOND, effective.runtimeContract.mode)
+    }
+
+    @Test
+    fun `canonical aggregation requires usable sidecar metadata`() {
+        val missingSidecar = sampleContract(
+            forwardId = 67L,
+            mode = ForwardMode.MPTCP,
+            backendMode = "leigod_mode",
+            contractVersion = 1,
+            clientMode = "mptcp",
+            runtimePreference = "mptcp_preferred_bond_fallback",
+            activeFamily = "sidecar_aggregation",
+            aggregationEnabled = true,
+            targetContract = "sidecar_aggregation",
+            sidecarRequired = true,
+            bondSidecarPointId = null,
+            bonding = sampleBonding(remoteTarget = "overseas-sidecar.example:9000"),
+        )
+
+        assertNull(AndroidEffectiveForwardBuilder.build(missingSidecar))
     }
 
     @Test
@@ -110,7 +204,7 @@ class AndroidEffectiveForwardBuilderTest {
     }
 
     @Test
-    fun `catalog hides unsupported mptcp and clears stale selection`() {
+    fun `catalog hides unsupported runtime without exposing old mptcp copy`() {
         val single = sampleContract(forwardId = 11L, mode = ForwardMode.SINGLE)
         val hidden = sampleContract(forwardId = 22L, mode = ForwardMode.MPTCP)
 
@@ -121,7 +215,7 @@ class AndroidEffectiveForwardBuilderTest {
 
         assertNull(catalog.selectedForwardId)
         assertTrue(catalog.hiddenForwardIds.contains(22L))
-        assertEquals(1, catalog.hiddenUnsupportedMptcpCount)
+        assertEquals(0, catalog.hiddenUnsupportedMptcpCount)
     }
 
     private fun sampleContract(
@@ -131,6 +225,15 @@ class AndroidEffectiveForwardBuilderTest {
         dynamicPriority: Int? = null,
         nodeId: Int? = null,
         bonding: BondingContract? = null,
+        backendMode: String = "",
+        contractVersion: Int = 0,
+        clientMode: String = "",
+        runtimePreference: String = "",
+        activeFamily: String = "",
+        aggregationEnabled: Boolean = false,
+        targetContract: String = "",
+        sidecarRequired: Boolean = false,
+        bondSidecarPointId: Long? = null,
     ): ForwardContract {
         return ForwardContract(
             forwardId = forwardId,
@@ -138,6 +241,15 @@ class AndroidEffectiveForwardBuilderTest {
             target = "example.com:443",
             listenPort = 11000 + forwardId.toInt(),
             mode = mode,
+            backendMode = backendMode,
+            contractVersion = contractVersion,
+            clientMode = clientMode,
+            runtimePreference = runtimePreference,
+            activeFamily = activeFamily,
+            aggregationEnabled = aggregationEnabled,
+            targetContract = targetContract,
+            sidecarRequired = sidecarRequired,
+            bondSidecarPointId = bondSidecarPointId,
             transport = "tcp",
             serviceStatus = "active",
             endpointMode = "manual",
@@ -166,7 +278,10 @@ class AndroidEffectiveForwardBuilderTest {
         )
     }
 
-    private fun sampleBonding(quicServerName: String?): BondingContract {
+    private fun sampleBonding(
+        quicServerName: String? = null,
+        remoteTarget: String? = null,
+    ): BondingContract {
         return BondingContract(
             ingressMode = "wss_path_mux",
             routeKey = "/route-key",
@@ -185,6 +300,7 @@ class AndroidEffectiveForwardBuilderTest {
             warmupLegDelayMs = null,
             bulkPromoteBytes = null,
             legCooldownMs = null,
+            remoteTarget = remoteTarget,
             quicServerName = quicServerName,
         )
     }

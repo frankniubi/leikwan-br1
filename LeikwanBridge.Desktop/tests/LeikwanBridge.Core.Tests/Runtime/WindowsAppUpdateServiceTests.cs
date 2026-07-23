@@ -1,4 +1,6 @@
 using LeikwanBridge.Core.Models;
+using System.Net;
+using System.Text;
 using LeikwanBridge.Core.Services;
 using Xunit;
 
@@ -265,6 +267,60 @@ public sealed class WindowsAppUpdateServiceTests
 
 
     [Fact]
+    public async Task FetchWindowsClientArtifactAsync_UsesInjectedAntiPoisonClient_ForProtectedLeikwanManifestHost()
+    {
+        using var http = new HttpClient(new StubUpdateHandler()) { Timeout = TimeSpan.FromSeconds(5) };
+        var requestedUrls = new List<Uri>();
+        var service = new WindowsAppUpdateService(
+            httpClientFactory: _ => http,
+            ownsHttpClient: false,
+            onRequestForTest: request => requestedUrls.Add(request.RequestUri!));
+
+        var artifact = await service.FetchWindowsClientArtifactAsync("https://v3-mirror.leikwanhost.com");
+
+        Assert.Equal("0.1.15.0", artifact.Version);
+        Assert.Equal("https://v3-mirror.leikwanhost.com/artifacts/client-manifest.json", requestedUrls.Single().ToString());
+    }
+
+    [Fact]
+    public async Task DownloadInstallerAsync_UsesInjectedAntiPoisonClient_ForProtectedLeikwanArtifactHost()
+    {
+        using var tempDir = new TempUpdateDirectory();
+        using var http = new HttpClient(new StubUpdateHandler()) { Timeout = TimeSpan.FromSeconds(5) };
+        var requestedUrls = new List<Uri>();
+        var service = new WindowsAppUpdateService(
+            httpClientFactory: _ => http,
+            ownsHttpClient: false,
+            onRequestForTest: request => requestedUrls.Add(request.RequestUri!));
+        var destination = Path.Combine(tempDir.Path, "setup.exe");
+
+        await service.DownloadInstallerAsync("https://downloads.leikwanhost.com/artifacts/leikwan-bridge-setup.exe", destination);
+
+        Assert.Equal("stub installer", File.ReadAllText(destination));
+        Assert.Equal("https://downloads.leikwanhost.com/artifacts/leikwan-bridge-setup.exe", requestedUrls.Single().ToString());
+    }
+
+    [Fact]
+    public async Task DownloadInstallerAsync_CustomCdnUsesNormalClientSelector()
+    {
+        using var tempDir = new TempUpdateDirectory();
+        var selectedKinds = new List<LeikwanHttpClientKind>();
+        using var http = new HttpClient(new StubUpdateHandler()) { Timeout = TimeSpan.FromSeconds(5) };
+        var service = new WindowsAppUpdateService(
+            httpClientFactory: kind =>
+            {
+                selectedKinds.Add(kind);
+                return http;
+            },
+            ownsHttpClient: false);
+        var destination = Path.Combine(tempDir.Path, "setup.exe");
+
+        await service.DownloadInstallerAsync("https://cdn.example.com/leikwan-bridge-setup.exe", destination);
+
+        Assert.Equal([LeikwanHttpClientKind.Normal], selectedKinds);
+    }
+
+    [Fact]
     public void ShouldCheckForUpdatesOnStartup_ReturnsFalse_WhenAutomaticUpdatesDisabled()
     {
         var config = new AgentConfig
@@ -303,5 +359,57 @@ public sealed class WindowsAppUpdateServiceTests
     {
         Assert.False(WindowsAppUpdateService.HasPendingUpdate(new AgentConfig()));
         Assert.False(WindowsAppUpdateService.HasPendingUpdate(new AgentConfig { PendingUpdateVersion = "0.1.15.0" }));
+    }
+
+    private sealed class StubUpdateHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? "";
+            if (path.EndsWith("/client-manifest.json", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("""
+                        {
+                          "component": "windows-client-app",
+                          "manifest": {
+                            "windows_client_app": {
+                              "version": "0.1.15.0",
+                              "path": "artifacts/windows/leikwan-bridge-setup.exe",
+                              "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
+                              "sha256": "ABC123",
+                              "size_bytes": 14
+                            }
+                          }
+                        }
+                        """, Encoding.UTF8, "application/json"),
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent("stub installer", Encoding.UTF8, "application/octet-stream"),
+            });
+        }
+    }
+
+    private sealed class TempUpdateDirectory : IDisposable
+    {
+        public TempUpdateDirectory()
+        {
+            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "leikwan-update-tests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Path))
+                Directory.Delete(Path, recursive: true);
+        }
     }
 }

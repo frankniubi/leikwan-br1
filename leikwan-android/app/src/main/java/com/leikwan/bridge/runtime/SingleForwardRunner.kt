@@ -14,13 +14,14 @@ object SingleForwardRunner {
             wstunnel,
             "client",
         )
-        if (forward.transport == "tcp" || forward.transport == "tcp+udp") {
+        val transport = forward.transport.trim().lowercase()
+        if (transport == "tcp" || transport == "tcp+udp" || transport == "tcp_udp") {
             command += listOf(
                 "-L",
                 "tcp://127.0.0.1:${forward.listenPort}:${forward.target}",
             )
         }
-        if (forward.transport == "udp" || forward.transport == "tcp+udp") {
+        if (transport == "udp" || transport == "tcp+udp" || transport == "tcp_udp") {
             command += listOf(
                 "-L",
                 "udp://127.0.0.1:${forward.listenPort}:${forward.target}?timeout_sec=0",

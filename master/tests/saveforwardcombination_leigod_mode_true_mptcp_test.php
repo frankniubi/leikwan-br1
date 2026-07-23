@@ -1,10 +1,11 @@
 <?php
 declare(strict_types=1);
 
-// Phase 2 regression coverage:
-//   * leigod_mode means true MPTCP client->slave ingress unless the operator explicitly chooses bond.
-//   * combo-backed forwards read forwards.client_mode, so saveForwardCombination must keep the
-//     denormalized forwards row aligned with the normalized combination.
+// LeiGod-only app contract regression coverage:
+//   * leigod_mode + single is the dedicated forward-node path and must stay single/sidecar-less.
+//   * explicit leigod_mode + mptcp/bond is aggregation and must keep the sidecar contract.
+//   * combo-backed forwards read forwards.client_mode and forwards.bond_sidecar_point_id, so
+//     saveForwardCombination must keep the denormalized forwards row aligned with the combination.
 
 namespace Leikwan\Master\Database {
     final class Database
@@ -19,7 +20,27 @@ namespace Leikwan\Master\Database {
         public function seed(string $table, array $rows): void {}
 
         /** @param array<string, mixed> $params */
-        public function fetchOne(string $sql, array $params = []): ?array { return null; }
+        public function fetchOne(string $sql, array $params = []): ?array
+        {
+            $normalized = preg_replace('/\s+/', ' ', trim($sql)) ?? trim($sql);
+            if (str_contains($normalized, 'FROM sidecar_points sp')) {
+                $id = (int) ($params['id'] ?? 0);
+                if ($id === 4) {
+                    return [
+                        'id' => 4,
+                        'is_active' => 1,
+                        'sidecar_host' => '198.51.100.4',
+                        'listen_port' => 8899,
+                        'bond_listen_port' => 8899,
+                        'mptcp_listen_port' => 8898,
+                        'agent_config_json' => json_encode(['aggregation_region_scope' => 'overseas', 'country_code' => 'JP'], JSON_UNESCAPED_SLASHES),
+                        'owner_email' => null,
+                        'owner_name' => null,
+                    ];
+                }
+            }
+            return null;
+        }
 
         /** @param array<string, mixed> $params */
         public function fetchAll(string $sql, array $params = []): array { return []; }
@@ -73,6 +94,13 @@ namespace {
         }
     }
 
+    function call_private(object $instance, string $method, mixed ...$args): mixed
+    {
+        $ref = new ReflectionMethod($instance, $method);
+        $ref->setAccessible(true);
+        return $ref->invoke($instance, ...$args);
+    }
+
     /** @return array<string, mixed> */
     function lastCombo(): array
     {
@@ -94,16 +122,24 @@ namespace {
         fail('expected saveForwardCombination to execute UPDATE forwards');
     }
 
-    function assertForwardsClientModeSync(string $expectedClientMode): void
+    function assertForwardsIngressSync(string $expectedClientMode, ?int $expectedSidecarPointId): void
     {
         $execute = capturedForwardsUpdate();
         if (!str_contains($execute['sql'], 'client_mode = :client_mode')) {
             fail('UPDATE forwards must set client_mode = :client_mode; SQL was: ' . $execute['sql']);
         }
+        if (!str_contains($execute['sql'], 'bond_sidecar_point_id = :bond_sidecar_point_id')) {
+            fail('UPDATE forwards must set bond_sidecar_point_id = :bond_sidecar_point_id; SQL was: ' . $execute['sql']);
+        }
         assertSame(
             $expectedClientMode,
             $execute['params']['client_mode'] ?? null,
             'UPDATE forwards must carry normalized client_mode'
+        );
+        assertSame(
+            $expectedSidecarPointId,
+            array_key_exists('bond_sidecar_point_id', $execute['params']) ? $execute['params']['bond_sidecar_point_id'] : 'MISSING',
+            'UPDATE forwards must carry normalized sidecar point id'
         );
     }
 
@@ -125,7 +161,7 @@ namespace {
     $service = new ProvisioningService(new Config($envPath), new Database());
 
     $base = [
-        'name' => 'leigod-mode-true-mptcp',
+        'name' => 'leigod-mode-app-contract',
         'tenant_label' => 'Leigod',
         'node_group_key' => 'sha-tencent',
         'backend_mode' => 'leigod_mode',
@@ -135,32 +171,42 @@ namespace {
         'is_active' => 1,
     ];
 
-    // leigod_mode + legacy/single client mode is normalized to true MPTCP and receives the
-    // explicit default cap of 4 legs, not unlimited/zero.
+    // leigod_mode + single is dedicated forward-node mode. It must not be normalized to MPTCP and
+    // must not retain a stale sidecar because the app should target the selected slave directly.
     $row = saveCombo($service, $base + [
         'client_mode' => 'single',
+        'sidecar_point_id' => 0,
         'helper_group_cap' => 0,
     ]);
-    assertSame('mptcp', $row['client_mode'] ?? null, 'leigod_mode/single must persist client_mode=mptcp');
+    assertSame('single', $row['client_mode'] ?? null, 'leigod_mode/single must persist client_mode=single');
     assertSame('single', $row['runtime_preference'] ?? null, 'leigod_mode/single must persist runtime_preference=single');
-    assertSame(4, $row['helper_group_cap'] ?? null, 'leigod_mode/mptcp must default helper_group_cap to 4');
-    assertForwardsClientModeSync('mptcp');
+    assertSame(null, array_key_exists('sidecar_point_id', $row) ? $row['sidecar_point_id'] : 'MISSING', 'leigod_mode/single must persist sidecar_point_id=null');
+    assertSame(0, $row['helper_group_cap'] ?? null, 'dedicated leigod_mode/single must not default to aggregation helper legs');
+    assertForwardsIngressSync('single', null);
 
-    // Explicit MPTCP must not publish the hybrid bond fallback runtime under leigod_mode.
+    // Explicit MPTCP stays true MPTCP, clears hybrid fallback under leigod_mode, and keeps the sidecar.
     $row = saveCombo($service, $base + [
         'client_mode' => 'mptcp',
         'runtime_preference' => 'mptcp_preferred_bond_fallback',
     ]);
     assertSame('mptcp', $row['client_mode'] ?? null, 'explicit leigod_mode/mptcp must stay mptcp');
     assertSame('single', $row['runtime_preference'] ?? null, 'explicit leigod_mode/mptcp must coerce runtime_preference=single');
-    assertForwardsClientModeSync('mptcp');
+    assertSame(4, $row['sidecar_point_id'] ?? null, 'explicit leigod_mode/mptcp must keep sidecar_point_id');
+    assertSame(4, $row['helper_group_cap'] ?? null, 'leigod_mode/mptcp must default helper_group_cap to 4');
+    assertForwardsIngressSync('mptcp', 4);
+    assertSame(
+        'sidecar_aggregation',
+        call_private($service, 'activeFamilyForRuntime', 'leigod_mode', 'mptcp', 'single'),
+        'leigod_mode/mptcp app contract must be sidecar_aggregation'
+    );
 
-    // Explicit bond is the opt-in escape hatch and must stay bond all the way into dependent forwards.
+    // Explicit bond is the aggregation escape hatch and must stay bond all the way into dependent forwards.
     $row = saveCombo($service, $base + [
         'client_mode' => 'bond',
     ]);
     assertSame('bond', $row['client_mode'] ?? null, 'explicit leigod_mode/bond must persist client_mode=bond');
-    assertForwardsClientModeSync('bond');
+    assertSame(4, $row['sidecar_point_id'] ?? null, 'explicit leigod_mode/bond must keep sidecar_point_id');
+    assertForwardsIngressSync('bond', 4);
 
     echo "ok\n";
 }

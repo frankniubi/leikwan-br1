@@ -87,6 +87,9 @@ class WindowsClientSetupInstallerScriptTests(unittest.TestCase):
         self.assertIn("GetUpdateRequestedArgValue", self.inno_source)
         self.assertIn("-UpdateRequested", self.inno_source)
         self.assertIn("ValidateSilentUpdateParameters", self.inno_source)
+        self.assertIn("ValidateSilentUpdateExistingInstallState", self.inno_source)
+        self.assertIn("function InitializeSetup", self.inno_source)
+        self.assertIn("ValidateSilentUpdateExistingInstallState;", self.inno_source)
         self.assertIn("LEIKWANUPDATE", self.inno_source)
         self.assertIn("LEIKWANINSTALLDIR", self.inno_source)
         self.assertIn("LEIKWANINSTALLMODE", self.inno_source)
@@ -749,6 +752,7 @@ class WindowsClientSetupInstallerTests(unittest.TestCase):
                 "/VERYSILENT",
                 "/SUPPRESSMSGBOXES",
                 "/NORESTART",
+                "/CURRENTUSER",
                 "/LEIKWANUPDATE=1",
                 f"/LEIKWANINSTALLDIR={install_dir}",
                 "/LEIKWANINSTALLMODE=just-for-me",

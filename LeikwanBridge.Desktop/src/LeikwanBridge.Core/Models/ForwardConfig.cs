@@ -31,6 +31,33 @@ public sealed class ForwardConfig
     [JsonPropertyName("backend_mode")]
     public string BackendMode { get; set; } = "current_mode";
 
+    [JsonPropertyName("contract_version")]
+    public int ContractVersion { get; set; }
+
+    [JsonPropertyName("client_mode")]
+    public string ClientMode { get; set; } = "";
+
+    [JsonPropertyName("runtime_preference")]
+    public string RuntimePreference { get; set; } = "single";
+
+    [JsonPropertyName("bond_ingress_mode")]
+    public string BondIngressMode { get; set; } = "";
+
+    [JsonPropertyName("active_family")]
+    public string ActiveFamily { get; set; } = "";
+
+    [JsonPropertyName("aggregation_enabled")]
+    public bool AggregationEnabled { get; set; }
+
+    [JsonPropertyName("target_contract")]
+    public string TargetContract { get; set; } = "";
+
+    [JsonPropertyName("sidecar_required")]
+    public bool SidecarRequired { get; set; }
+
+    [JsonPropertyName("bond_sidecar_point_id")]
+    public int? BondSidecarPointId { get; set; }
+
     [JsonPropertyName("speed_limit_mbps")]
     public double? SpeedLimitMbps { get; set; }
 

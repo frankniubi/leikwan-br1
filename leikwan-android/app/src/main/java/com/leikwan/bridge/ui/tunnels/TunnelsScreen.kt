@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leikwan.bridge.R
 import com.leikwan.bridge.runtime.ForwardListItem
-import com.leikwan.bridge.service.ProxyConnectionMode
 import com.leikwan.bridge.ui.MainActivity
 import com.leikwan.bridge.ui.shared.RoutingDiagnosticsCard
 
@@ -96,24 +95,6 @@ internal fun TunnelsScreenContent(
             IconButton(onClick = onRefresh) {
                 Icon(Icons.Default.Refresh, stringResource(R.string.tunnels_refresh))
             }
-        }
-
-        if (state.hiddenUnsupportedMptcpCount > 0) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(R.string.tunnels_hidden_unsupported_mptcp_format, state.hiddenUnsupportedMptcpCount),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        if (state.connectionMode == ProxyConnectionMode.DIRECT) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(R.string.tunnels_direct_mode_proxies),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
 
         state.error?.let { err ->
@@ -250,7 +231,7 @@ private fun ForwardCard(
                 Spacer(Modifier.height(4.dp))
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AssistChip(onClick = {}, label = { Text(forward.mode.wireValue.uppercase()) })
+                    AssistChip(onClick = {}, label = { Text(forward.methodDisplay) })
                     AssistChip(onClick = {}, label = { Text(forward.transport.uppercase()) })
                     forward.speedLimitMbps?.let {
                         AssistChip(onClick = {}, label = { Text(stringResource(R.string.tunnels_speed_mbps_format, it)) })
