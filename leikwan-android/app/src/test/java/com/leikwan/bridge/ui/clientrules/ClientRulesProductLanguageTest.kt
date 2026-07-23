@@ -39,4 +39,27 @@ class ClientRulesProductLanguageTest {
         val offenders = scannedLines.filter { forbidden.containsMatchIn(it) }
         assertFalse("Forbidden internal terms found:\n${offenders.joinToString("\n")}", offenders.isNotEmpty())
     }
+
+    @Test
+    fun `navigation keeps Routing destination while adding Client Rules`() {
+        val routes = com.leikwan.bridge.ui.nav.Screen.entries.map { it.route }
+
+        assertTrue("Existing Routing destination must remain available", "routing" in routes)
+        assertTrue("Client Rules destination must be available", "client-rules" in routes)
+    }
+
+    @Test
+    fun `Client Rules UI never falls back to raw Route Direction identifiers`() {
+        val root = File(requireNotNull(System.getProperty("user.dir")))
+        val screenSource = File(
+            root,
+            "src/main/java/com/leikwan/bridge/ui/clientrules/ClientRulesScreen.kt",
+        ).readText()
+        val rawDirectionFallback = Regex("\\?:\\s*rule\\.directionId\\b|else\\s*->\\s*rule\\.directionId\\b")
+
+        assertFalse(
+            "Client Rules UI must use a product-safe Route Direction fallback instead of raw identifiers",
+            rawDirectionFallback.containsMatchIn(screenSource),
+        )
+    }
 }

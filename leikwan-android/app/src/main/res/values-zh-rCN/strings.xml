@@ -153,6 +153,7 @@
     <string name="client_rules_no_service_scope">未选择服务。</string>
     <string name="client_rules_new_title">新建客户端规则</string>
     <string name="route_direction_label">路线方向</string>
+    <string name="route_direction_unavailable">不可用路线方向</string>
     <string name="client_rule_destination_ip">精确 IPv4 地址</string>
     <string name="client_rule_destination_port">目标端口</string>
     <string name="client_rule_enabled">启用</string>

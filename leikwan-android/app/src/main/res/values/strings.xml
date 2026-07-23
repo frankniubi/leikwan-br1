@@ -153,6 +153,7 @@
     <string name="client_rules_no_service_scope">No service selected.</string>
     <string name="client_rules_new_title">New Client Rule</string>
     <string name="route_direction_label">Route Direction</string>
+    <string name="route_direction_unavailable">Unavailable Route Direction</string>
     <string name="client_rule_destination_ip">Exact IPv4 address</string>
     <string name="client_rule_destination_port">Destination port</string>
     <string name="client_rule_enabled">Enabled</string>

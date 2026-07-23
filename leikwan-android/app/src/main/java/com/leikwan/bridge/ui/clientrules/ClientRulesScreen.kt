@@ -127,7 +127,8 @@ internal fun ClientRulesScreenContent(
                 state.rules.forEach { rule ->
                     RuleCard(
                         rule = rule,
-                        directionLabel = state.directions.firstOrNull { it.id == rule.directionId }?.label ?: rule.directionId,
+                        directionLabel = state.directions.firstOrNull { it.id == rule.directionId }?.label
+                            ?: stringResource(R.string.route_direction_unavailable),
                         saving = state.saving,
                         onToggleRule = onToggleRule,
                         onDeleteRule = onDeleteRule,
