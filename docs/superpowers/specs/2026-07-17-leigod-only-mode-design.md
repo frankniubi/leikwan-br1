@@ -1,27 +1,26 @@
-# LeiGod-Only Forward Mode, Bond Speed Plus, and Legacy Runtime Retirement — Design Spec
+# LeiGod-Only Forward Mode, Platform Aggregation, and Legacy Runtime Retirement — Design Spec
 
 **Date:** 2026-07-17
 
-**Status:** Revised written specification pending user review
+**Status:** Revised written specification pending implementation-plan review
 
 **Baseline:** `master`
 
-**Supersedes for active product behavior:** the `current_mode` (classic sidecar/CNIX) and `cf_mode` (163PP/Cloudflare) forward-mode paths, plus native-MPTCP-first LeiGod publication
+**Supersedes for active product behavior:** the `current_mode` (classic sidecar/CNIX) and `cf_mode` (163PP/Cloudflare) forward-mode paths, plus platform-agnostic LeiGod publication that ignored client aggregation capability and proof
 
 ---
 
 ## 1. Goal
 
-Simplify the product so every newly created, edited, published, and delivered Forward combination uses one backend and one TCP aggregation family:
+Simplify the product so every newly created, edited, published, and delivered Forward combination uses one backend while selecting TCP aggregation by client platform capability:
 
 ```text
 backend_mode = leigod_mode
-client_mode = bond
-runtime_preference = single
+aggregation_policy = platform_default
 bond_ingress_mode = plain_tcp_mux
 ```
 
-Here `runtime_preference = single` means “run the requested bond family directly”; it does **not** mean one bond leg. A healthy Forward may use multiple slave legs in one application-layer bond session.
+`platform_default` resolves to the standalone application-layer `leikwan-bond` family for Android and Windows. On Linux clients with verified kernel MPTCP support, it resolves first to native MPTCP and automatically falls back to standalone bond when fresh evidence fails to prove speed aggregation. Linux clients without verified MPTCP capability use standalone bond directly. The fallback is an explicit same-backend aggregation-family switch; it does **not** reactivate CF, WSS, classic sidecar, or direct self-leg delivery.
 
 The two legacy backend modes become permanently deprecated:
 
@@ -37,7 +36,7 @@ Deprecation is operational, not cosmetic. The system must:
 5. Remove runtime resources created by those Forwards from every affected client, slave, and sidecar host.
 6. Persist cleanup intent so an offline host cleans itself when it reconnects.
 7. Preserve every resource still required by an active `leigod_mode` Forward.
-8. Preserve and harden multi-slave TCP aggregation under LeiGod using the standalone `leikwan-bond` runtime rather than requiring native MPTCP.
+8. Preserve and harden multi-slave TCP aggregation under LeiGod using platform-appropriate aggregation: standalone `leikwan-bond` for Android and Windows, native MPTCP first on capable Linux, and standalone bond fallback when Linux MPTCP fails to aggregate speed.
 
 The design removes legacy **product modes and active publication paths**. It does not remove the sidecar subsystem: LeiGod still requires sidecar points, sidecar agents, a sidecar bond server, slave-to-sidecar static WireGuard uplinks, and LeiGod `lguot`/`gost` carriers.
 
@@ -55,22 +54,25 @@ The design removes legacy **product modes and active publication paths**. It doe
 - Cleanup is at-least-once, authenticated, idempotent, and durable for offline agents.
 - Normal operation does not wait for every offline host to acknowledge cleanup.
 - Shared LeiGod infrastructure survives whenever any active LeiGod desired state still references it.
-- LeiGod TCP delivery uses the standalone application-layer `leikwan-bond` implementation across distinct slave legs.
-- LeiGod publication normalizes to `client_mode = bond`, `runtime_preference = single`, and `bond_ingress_mode = plain_tcp_mux`.
-- Native MPTCP is not required, selected first, or used as a silent fallback for Speed Plus.
-- The separate bond module embedded in `leikwan-mptcp-relay` is not the implementation target because its non-direct legs still create native MPTCP sockets and may silently fall back between runtime families.
+- LeiGod TCP aggregation is platform-specific, not one-size-fits-all.
+- Android and Windows use the standalone application-layer `leikwan-bond` implementation across distinct slave legs for normal aggregation.
+- Linux clients with verified kernel MPTCP capability use native MPTCP first. If fresh evidence fails to prove MPTCP speed aggregation within the configured probation window, the same LeiGod Forward switches to standalone bond fallback and reports that family explicitly.
+- Linux clients without verified kernel MPTCP capability use standalone bond directly.
+- LeiGod publication normalizes backend and ingress to `backend_mode = leigod_mode` and `bond_ingress_mode = plain_tcp_mux`, while the client aggregation family is resolved from platform capability.
+- Native MPTCP is permitted only for verified Linux MPTCP clients. It is never selected for Android or Windows and is never used as an undocumented fallback.
+- The separate bond module embedded in `leikwan-mptcp-relay` is not the standalone bond implementation target because its non-direct legs still create native MPTCP sockets and may silently fall back between runtime families.
 - One logical TCP leg is keyed by `(forward_id, node_id, endpoint_id)`. Array position, local port, process ID, and current IP address are attributes, not identity.
-- Speed Plus state is derived from fresh bond-native connection and byte-delivery evidence. Configured endpoint count and process liveness alone never prove aggregation.
-- If multi-leg aggregation is unavailable or unproductive, each existing application TCP stream remains in the standalone bond session and falls back to the best eligible slave leg. This is single-leg degradation, not a runtime-family or backend fallback.
+- Speed Plus state is derived from fresh family-native connection and byte-delivery evidence. Configured endpoint count and process liveness alone never prove aggregation.
+- If standalone bond multi-leg aggregation is unavailable or unproductive, each existing application TCP stream remains in the standalone bond session and falls back to the best eligible slave leg. This is single-leg degradation, not a backend fallback.
 - TCP continues with one healthy leg when possible. Losing or recovering one leg does not rebuild unrelated leg processes or unrelated Forward runtime.
 - UDP may continue through the existing LeiGod compatibility path, but it is never described, displayed, or accepted as bandwidth aggregation.
-- The first formal Speed Plus support target is the Linux client agent. Other platforms must pass their own data-path, recovery, telemetry, and throughput gates before showing Speed Plus as supported.
+- Speed Plus support is gated per platform/family: Android and Windows standalone bond, Linux native MPTCP first, Linux MPTCP-to-bond fallback, and Linux standalone bond each require their own data-path, recovery, telemetry, and throughput gates before showing Speed Plus as supported.
 
 ### 2.2 Why legacy rows are not converted
 
 A valid LeiGod combination requires data old backend modes may not possess, including a positive `leigod_line_id`, a valid sidecar point, and usable LeiGod carrier credentials. Inventing those values would create apparently migrated but invalid routes. Operators must create a deliberate replacement LeiGod combination instead.
 
-This differs from normalizing an already-valid `leigod_mode` combination from `mptcp`, `single`, or another client family to `bond`: its backend identity and LeiGod fields already exist, so it may be normalized only after a successful bond-publication preflight.
+This differs from normalizing an already-valid `leigod_mode` combination to `platform_default`: its backend identity and LeiGod fields already exist, so it may be normalized only after a successful platform-aggregation preflight for the affected platform/family cohort.
 
 ### 2.3 Non-goals
 
@@ -85,7 +87,7 @@ This change does not:
 - Guarantee cleanup of unknown resources whose ownership cannot be proven.
 - Promise linear `N × single-leg` throughput.
 - Claim that multiple configured or connected legs necessarily carried useful bytes.
-- Treat native MPTCP as a Speed Plus prerequisite.
+- Treat native MPTCP as a Speed Plus prerequisite for Android, Windows, or Linux clients without verified MPTCP capability.
 - Treat UDP duplication, racing, or reordering as bandwidth aggregation.
 - Deploy to production as part of design approval. Deployment requires a separately approved implementation and rollout.
 
@@ -95,7 +97,7 @@ This change does not:
 
 ### 3.1 Forward combinations
 
-The create/edit form no longer exposes backend-mode, client-mode, runtime-preference, or bond-ingress selectors. It behaves as a LeiGod form and shows only fields relevant to LeiGod delivery. The server assigns the locked values when fields are absent. One distinct slave node is ordinary single-leg LeiGod; only two to eight scheduler-eligible distinct nodes may display or market Speed Plus.
+The create/edit form no longer exposes backend-mode, client-mode, runtime-preference, or bond-ingress selectors. It behaves as a LeiGod form and shows only fields relevant to LeiGod delivery. The server assigns the backend and ingress defaults when fields are absent, then resolves the client aggregation family from the authenticated client platform and capability report. One distinct slave node is ordinary single-leg LeiGod; only two to eight scheduler-eligible distinct nodes may display or market Speed Plus.
 
 An explicit request containing `current_mode` or `cf_mode` fails with a stable API error:
 
@@ -127,7 +129,7 @@ A Forward is legacy when either its own persisted `backend_mode` or the persiste
 
 A deprecated combination is not eligible when creating a route. Existing routes pointing to it remain historical and non-publishable.
 
-An active `leigod_mode` Forward is publishable only when its combination passes bond preflight: valid sidecar and LeiGod fields, one to eight usable selected endpoints on distinct slave `node_id` values, valid per-endpoint ingress authentication, a valid TCP bond session token, and a resolvable sidecar bond target. A one-node configuration runs as ordinary LeiGod TCP with `single_leg_only`; two to eight nodes are Speed Plus eligible. Zero, duplicate-node, or oversized sets fail with `invalid_speed_plus_leg_set`. A failure is explicit and does not fall back to MPTCP, CF, WSS, or classic sidecar behavior.
+An active `leigod_mode` Forward is publishable only when its combination passes platform aggregation preflight: valid sidecar and LeiGod fields, one to eight usable selected endpoints on distinct slave `node_id` values, valid per-endpoint ingress authentication, a resolvable aggregation target, and the required credentials/tokens for the selected family. Android and Windows require a valid TCP bond session token and sidecar bond target. Linux MPTCP-capable clients require valid native MPTCP underlay material plus the standalone bond fallback contract. A one-node configuration runs as ordinary single-leg LeiGod; two to eight nodes are Speed Plus eligible. Zero, duplicate-node, or oversized sets fail with `invalid_speed_plus_leg_set`. A failure is explicit and does not fall back to CF, WSS, classic sidecar, or direct self-leg behavior.
 
 ### 3.3 Defaults and migration compatibility
 
@@ -135,12 +137,11 @@ Database and application defaults become:
 
 ```text
 backend_mode = leigod_mode
-client_mode = bond
-runtime_preference = single
+aggregation_policy = platform_default
 bond_ingress_mode = plain_tcp_mux
 ```
 
-Defaults do not rewrite historical legacy backend rows. Migration code identifies them by persisted value rather than treating a missing value as `current_mode`.
+The resolved client runtime is not guessed from missing legacy values. Android and Windows resolve to standalone bond. Linux resolves to native MPTCP first only when the client reports verified MPTCP capability and the publication includes a verified bond fallback contract; otherwise Linux resolves directly to standalone bond. Defaults do not rewrite historical legacy backend rows. Migration code identifies them by persisted value rather than treating a missing value as `current_mode`.
 
 A small compatibility vocabulary remains in control-plane and agent code only to:
 
@@ -151,11 +152,13 @@ A small compatibility vocabulary remains in control-plane and agent code only to
 
 The goal is zero active legacy publication, not zero textual occurrences of old names.
 
-### 3.4 Speed Plus: application-layer multi-slave TCP bond
+### 3.4 Speed Plus: platform aggregation under LeiGod
 
-Speed Plus preserves the useful bandwidth-composition property formerly associated with classic multi-slave sidecar delivery, but it runs inside the only supported backend mode.
+Speed Plus preserves the useful bandwidth-composition property formerly associated with classic multi-slave sidecar delivery, but it runs inside the only supported backend mode. The aggregation family is platform-specific: Android and Windows use standalone bond for normal aggregation; Linux with verified kernel MPTCP uses native MPTCP first and falls back to standalone bond when MPTCP does not prove speed aggregation; Linux without verified MPTCP uses standalone bond directly.
 
-The authoritative TCP data path is:
+#### Standalone bond data path
+
+The authoritative standalone bond TCP data path is:
 
 ```text
 local TCP application
@@ -182,15 +185,26 @@ Each selected slave contributes one independent plain TCP ingress and one indepe
 
 The standalone `leikwan-bond` TCP transport uses ordinary TCP sockets. It does not create `IPPROTO_MPTCP` sockets and therefore does not require kernel MPTCP capability.
 
-#### Initial transport scope
+#### Linux native MPTCP first path
 
-The first LeiGod-only Speed Plus release has one active leg transport:
+A Linux client may select native MPTCP first only when all of the following are true:
+
+- the authenticated client capability report proves kernel MPTCP support, required sysctls, endpoint/subflow limits, and runtime artifact version/hash;
+- the selected slave endpoints have valid MPTCP underlay material, addresses, routes, and authentication;
+- the sidecar and slave desired state can realize the MPTCP underlays without colliding with active LeiGod static uplinks;
+- the same publication also contains a complete standalone bond fallback contract over `plain_tcp_mux` for the same Forward, target, sidecar point, selected slave set, and LeiGod carrier fields.
+
+Native MPTCP aggregation must produce fresh MPTCP-family connection, subflow, and byte-delivery evidence before it may be shown as `aggregating`. If the probation window expires without proving speed aggregation, or if native MPTCP falls back to one useful subflow under load, the client switches to the standalone bond fallback and reports the active family as `bond_fallback`. This fallback is expected behavior for Linux MPTCP, not a failure of the LeiGod backend and not a fallback to CF/WSS/classic sidecar.
+
+#### Initial standalone bond transport scope
+
+The first LeiGod-only standalone bond release has one active leg transport:
 
 ```text
 plain_tcp_mux over selected slaves
 ```
 
-For `leigod_mode` publication:
+For standalone bond publication:
 
 - QUIC, WSS, direct-sidecar, CF, and self-leg candidates are not emitted as active bond legs.
 - `plain_tcp_mux` ingress requires a non-empty per-endpoint HMAC token and a non-empty route key.
@@ -245,17 +259,17 @@ A one-leg session remains a valid TCP Forward but is not Speed Plus aggregation.
 
 #### Runtime states
 
-Runtime state is per authenticated client-device session and Forward. Evidence from different devices, runtime epochs, or transport sessions is never merged. The master derives the desired distinct-node set from the exact published generation and derives eligible nodes only from canonical per-leg admission phases. Classification uses this ordered decision tree; the first matching rule wins:
+Runtime state is per authenticated client-device session, Forward, and active aggregation family. Evidence from different devices, runtime epochs, transport sessions, or families is never merged. Every snapshot declares one active family: `bond`, `mptcp`, or `bond_fallback`. The master derives the desired distinct-node set from the exact published generation and derives eligible nodes only from canonical family-specific admission phases. Classification uses this ordered decision tree; the first matching rule wins:
 
-1. Missing, stale, malformed, unsupported-platform, out-of-order, desired-generation-mismatched, session-incoherent, or ambiguously mapped evidence is `unknown`.
-2. Fresh valid evidence with no live bond transport session or zero eligible slave nodes is `unavailable`.
-3. One authoritative desired slave node with one eligible node is `single_leg_only`.
-4. Multiple authoritative desired slave nodes with exactly one eligible node is `degraded_single_leg`.
-5. At least two eligible distinct slave nodes with no complete traffic window, or with a complete window below 1,048,576 total useful bytes, is `ready_multi_leg`.
-6. A complete window with at least 1,048,576 useful bytes but fewer than two nodes at the required share is `degraded_single_leg`; the nonproductive legs enter scheduler quarantine/probation according to section 10.2.
-7. At least two eligible distinct slave nodes with a qualifying traffic window is `aggregating`.
+1. Missing, stale, malformed, unsupported-platform, family-incoherent, out-of-order, desired-generation-mismatched, session-incoherent, or ambiguously mapped evidence is `unknown`.
+2. Fresh valid evidence with no live active-family transport session or zero eligible slave nodes/subflows is `unavailable`.
+3. One authoritative desired slave node with one eligible node/subflow is `single_leg_only`.
+4. Multiple authoritative desired slave nodes with exactly one eligible node/subflow is `degraded_single_leg`.
+5. At least two eligible distinct slave nodes/subflows with no complete traffic window, or with a complete window below 1,048,576 total useful bytes, is `ready_multi_leg`.
+6. A complete window with at least 1,048,576 useful bytes but fewer than two nodes/subflows at the required share is `degraded_single_leg`; standalone-bond nonproductive legs enter scheduler quarantine/probation according to section 10.2, while Linux MPTCP nonaggregation enters its bond-fallback path.
+7. At least two eligible distinct slave nodes/subflows with a qualifying traffic window is `aggregating`.
 
-A qualifying traffic window is one complete client-computed monotonic interval `[T-10s, T)` wholly within the current runtime epoch and transport-session epoch. It contains at least 1,048,576 total unique application-payload bytes accepted by the remote bond peer/reassembler, credited exactly once to the leg carrying the finally accepted copy; at least two eligible legs on distinct `node_id` values each contribute at least 5% of the declared direction's total. Upload and download are classified separately and are never added together. Retransmissions, framing, ACK/control, attempted wire bytes, duplicates, and cumulative counters do not count. Session change, counter decrease/wrap, sample gap, or an incomplete window can produce `ready_multi_leg` when connectivity is otherwise valid, never `aggregating`.
+A qualifying traffic window is one complete client-computed monotonic interval `[T-10s, T)` wholly within the current runtime epoch and transport-session epoch. It contains at least 1,048,576 total unique application-payload bytes accepted by the active-family remote peer, credited exactly once to the family leg or MPTCP subflow carrying the finally accepted copy; at least two eligible legs/subflows on distinct `node_id` values each contribute at least 5% of the declared direction's total. Upload and download are classified separately and are never added together. Retransmissions, framing, ACK/control, attempted wire bytes, duplicates, and cumulative counters do not count. Session change, family change, counter decrease/wrap, sample gap, or an incomplete window can produce `ready_multi_leg` when connectivity is otherwise valid, never `aggregating`.
 
 Evidence is fresh only when effective observation age is less than 15 seconds: master receipt age plus the accepted report's bounded monotonic sample age. Exactly 15 seconds is stale. A delayed upload cannot become fresh merely because it was newly received. These thresholds define honest state reporting, not release acceptance; release acceptance uses the stricter controlled gate in the testing section.
 
@@ -279,13 +293,14 @@ TCP is the only aggregation claim. The first-release publication matrix is expli
 
 | Platform | `tcp` | `tcp+udp` | `udp` | Speed Plus claim |
 |---|---|---|---|---|
-| Linux client agent | Publish TCP bond. | Publish TCP bond only when the LeiGod UDP compatibility sidepath passes preflight; otherwise reject the whole publication. | Publish only when that compatibility sidepath passes preflight. | TCP only, subject to fresh evidence. |
-| Windows Desktop | Existing bond contract may remain parse/run compatible, but product support is unverified. | Same, with no implicit UDP fallback. | Existing compatibility only. | Never claim until the platform gate passes. |
-| Android | Existing bond contract may remain parse/run compatible, but product support is unverified. | Same, with no implicit UDP fallback. | Existing compatibility only. | Never claim until the platform gate passes. |
+| Android | Publish standalone TCP bond over `plain_tcp_mux`. | Publish standalone TCP bond only when the LeiGod UDP compatibility sidepath passes preflight; otherwise reject the whole publication. | Publish only when that compatibility sidepath passes preflight. | Bond TCP only, subject to fresh bond evidence. |
+| Windows Desktop | Publish standalone TCP bond over `plain_tcp_mux`. | Publish standalone TCP bond only when the LeiGod UDP compatibility sidepath passes preflight; otherwise reject the whole publication. | Publish only when that compatibility sidepath passes preflight. | Bond TCP only, subject to fresh bond evidence. |
+| Linux with verified MPTCP capability | Publish native MPTCP first plus mandatory standalone bond fallback over `plain_tcp_mux`. | Publish native MPTCP first plus bond fallback only when the LeiGod UDP compatibility sidepath passes preflight; otherwise reject the whole publication. | Publish only when that compatibility sidepath passes preflight. | MPTCP TCP when proven; bond fallback TCP when MPTCP does not prove aggregation. |
+| Linux without verified MPTCP capability | Publish standalone TCP bond over `plain_tcp_mux`. | Publish standalone TCP bond only when the LeiGod UDP compatibility sidepath passes preflight; otherwise reject the whole publication. | Publish only when that compatibility sidepath passes preflight. | Bond TCP only, subject to fresh bond evidence. |
 
-The release does not publish `leikwan-bond --protocol udp` as Speed Plus and does not call UDP duplication, fanout, or reordering “aggregation.” An unsupported requested platform/protocol combination fails explicitly; it is never silently reduced to a different protocol or runtime family.
+The release does not publish `leikwan-bond --protocol udp` as Speed Plus and does not call UDP duplication, fanout, or reordering “aggregation.” An unsupported requested platform/protocol combination fails explicitly; it is never silently reduced to a different protocol or backend family. The only allowed runtime-family fallback is Linux verified-MPTCP to standalone bond when MPTCP fails to prove speed aggregation.
 
-Linux is the initial formal Speed Plus target. Windows Desktop and Android must independently pass collision-free allocation, per-leg bounded recovery, authenticated telemetry, one-leg degradation/recovery, and controlled byte-distribution/throughput gates before their capability changes from unverified. Unsupported or unverified platforms must not show an `aggregating` claim.
+Android and Windows are formal standalone-bond Speed Plus targets after their platform gates pass. Linux has two formal gates: native-MPTCP-first with bond fallback for verified MPTCP clients, and standalone bond for non-MPTCP clients. Each platform/family must independently pass collision-free allocation, per-leg or per-subflow bounded recovery, authenticated telemetry, one-leg degradation/recovery, and controlled byte-distribution/throughput gates before product surfaces show `aggregating` for that platform/family.
 
 ### 3.5 CF administration
 
@@ -322,11 +337,13 @@ master retirement transaction
 active LeiGod desired state
       │
       ▼
-locked bond contract + selected slave endpoints
+platform aggregation contract + selected slave endpoints
       │
-      ├─ client supervisor manifest + port leases
-      ├─ per-leg ingress workers
-      ├─ standalone leikwan-bond client
+      ├─ Android/Windows/Linux-non-MPTCP standalone bond contract
+      ├─ Linux verified-MPTCP native contract + mandatory bond fallback
+      ├─ client supervisor manifest + port leases where bond is active or fallback-ready
+      ├─ per-leg ingress workers for standalone bond
+      ├─ native MPTCP underlay material for Linux MPTCP
       ├─ slave plain_tcp_mux routes over existing static uplinks
       └─ point-shared sidecar bond server
 ```
@@ -405,14 +422,14 @@ Only delivery targets participate. Aggregate precedence is deterministic:
 
 `completed` means **currently known delivery targets reconciled**, not a proof that the open-ended historical device cohort is globally exhausted. A newly discovered eligible device creates a pending delivery target and atomically reopens the aggregate to `in_progress`. A partial or failed attempt remains retryable and takes precedence over `in_progress`. Global cleanup is never claimable while client eligibility remains open for late discovery; operations expose the last discovery time and unresolved concrete targets.
 
-### 5.5 Latest bond runtime snapshots
+### 5.5 Latest aggregation runtime snapshots
 
-A lightweight authenticated endpoint, independent of the 30-second configuration pull/apply cycle, accepts `bond_runtime_snapshots`. The server issues and authenticates a device-session credential bound to the client identity; caller-supplied `device_id` text is diagnostic only and never keys or authorizes storage.
+A lightweight authenticated endpoint, independent of the 30-second configuration pull/apply cycle, accepts `aggregation_runtime_snapshots`. The server issues and authenticates a device-session credential bound to the client identity; caller-supplied `device_id` text is diagnostic only and never keys or authorizes storage.
 
-The master stores only the latest accepted snapshot for each `(client_id, device_session_id, forward_id)` in `forward_bond_runtime_snapshots`; it is not an append-only traffic log. Required fields are:
+The master stores only the latest accepted snapshot for each `(client_id, device_session_id, forward_id, active_family)` in `forward_aggregation_runtime_snapshots`; it is not an append-only traffic log. Required fields are:
 
 - schema and runtime-contract version,
-- Forward ID, active desired-generation ID, and canonical desired-leg-set hash,
+- Forward ID, active desired-generation ID, active aggregation family, fallback reason when active family is `bond_fallback`, and canonical desired-leg-set hash,
 - always-present supervisor observer identity,
 - persistent monotonically increasing `runtime_epoch` for this device-session/Forward, incremented and durably fenced before each bond-process start,
 - nullable diagnostic bond-process UUID when no bond process is live,
@@ -424,9 +441,9 @@ The master stores only the latest accepted snapshot for each `(client_id, device
 - an optional complete traffic window with exact duration/end age, direction, counter epoch, total useful-byte delta, and per-leg useful-byte deltas,
 - bounded per-leg current state.
 
-The client-reported desired count is diagnostic only. The master joins the generation/hash to authoritative desired state and derives membership and distinct-node cardinality.
+The client-reported desired count and active family are diagnostic until checked against the authoritative platform contract. The master joins the generation/hash to authoritative desired state and derives membership, family eligibility, fallback eligibility, and distinct-node cardinality.
 
-Each leg contains its stable key, `node_id`, `endpoint_id`, diagnostics, and one canonical admission phase:
+Each standalone bond leg contains its stable key, `node_id`, `endpoint_id`, diagnostics, and one canonical admission phase:
 
 ```text
 stopped | lease_wait | retry_wait | connecting | handshaking |
@@ -445,12 +462,14 @@ The applicable deadline, phase-transition sequence, and separate recovery fields
 
 `connected`, scheduler eligibility, health, and summaries are derived from the canonical phase; if diagnostic compatibility booleans remain, the master rejects combinations inconsistent with that phase.
 
+Each native MPTCP observation contains the same stable `forward_id/node_id/endpoint_id` mapping, subflow endpoint identity, subflow state, MPTCP token/session identity, byte-delivery deltas credited by subflow, fallback-probation deadline, and reason when the family must switch to bond fallback. The master rejects Linux MPTCP evidence that lacks the mandatory bond fallback contract for the same generation.
+
 Cumulative, retransmitted, framing, duplicate, ACK/control, and attempted wire bytes never contribute to `aggregating`. Forward and reverse directions are reported separately; product state uses the direction in which the qualifying test/application traffic was observed and never adds the two directions together.
 
 Ordering and ingestion rules are:
 
-- The active desired generation and desired-leg-set hash must match the master's assignment.
-- Accept only a lexicographically newer `(runtime_epoch, sequence)` for the same assignment. A duplicate, lower sequence, retired epoch, old desired generation, old set hash, or transport-session regression does not replace state or refresh receipt time. A traffic window must lie wholly within the reported transport-session epoch.
+- The active desired generation, active family, fallback permission, and desired-leg-set hash must match the master's assignment.
+- Accept only a lexicographically newer `(runtime_epoch, sequence)` for the same assignment and family. A duplicate, lower sequence, retired epoch, old desired generation, old set hash, family regression, or transport-session regression does not replace state or refresh receipt time. A traffic window must lie wholly within the reported transport-session epoch.
 - `received_at` is generated only by the master database clock after acceptance.
 - Schema/authentication/request-size failure rejects the request. Assignment and leg validation are isolated per Forward; valid Forward items commit while rejected items return bounded item-level error codes.
 - A keepalive with unchanged state may update sequence and `received_at` without rewriting the large state blob; a state hash makes unchanged payload replacement a no-op.
@@ -507,21 +526,22 @@ Remote operations occur only after commit. Forward retirement is the convergence
 
 ### 6.2 Existing LeiGod normalization
 
-A separate idempotent command handles existing `leigod_mode` combinations and Forwards whose runtime contract differs from the locked bond contract.
+A separate idempotent command handles existing `leigod_mode` combinations and Forwards whose runtime contract differs from the platform aggregation contract.
 
 For each combination it first performs a read-only preflight for:
 
 - valid LeiGod line and sidecar point,
 - usable point-shared sidecar bond server settings,
 - one to eight usable selected endpoints on distinct slave `node_id` values; at least two for a Speed Plus claim,
-- a compatible Linux device capability cohort and the minimum runtime artifact version/hash,
-- valid plain TCP mux route and authentication material,
-- valid static sidecar uplink for every emitted slave leg,
-- valid TCP bond token and target.
+- platform capability cohorts and minimum runtime artifact version/hash for Android, Windows, Linux MPTCP, and Linux bond;
+- valid plain TCP mux route and authentication material for every standalone bond or bond-fallback leg,
+- valid static sidecar uplink and LeiGod carrier fields for every emitted slave leg,
+- valid TCP bond token and target for Android, Windows, Linux non-MPTCP, and Linux MPTCP fallback,
+- valid native MPTCP underlay, endpoint/subflow limits, and telemetry contract for Linux MPTCP-first publication.
 
-Only a successful preflight permits one transaction to update the combination and denormalized Forward columns to the locked values and queue republish. A preflight failure leaves the active row unchanged, records a blocking audit result, and prevents declaring rollout complete. It never disables a valid LeiGod Forward merely because normalization failed.
+Only a successful preflight permits one transaction to update the combination and denormalized Forward columns to the platform aggregation contract and queue republish. A preflight failure leaves the active row unchanged, records a blocking audit result, and prevents declaring rollout complete. It never disables a valid LeiGod Forward merely because normalization failed.
 
-Normalization does not publish MPTCP fallback. It does not touch legacy backend rows.
+Normalization may publish Linux native MPTCP first only with a complete standalone bond fallback contract. It does not touch legacy backend rows.
 
 ---
 
@@ -615,7 +635,7 @@ Client retirement covers every recognized family owned by the retired Forward:
 - Forward-level units, supervisor/start scripts, and manifests.
 - Per-leg ingress workers and exact local bond port leases.
 - Per-Forward bond health snapshots and bounded runtime state.
-- Forward-owned bond, MPTCP, UoT, rate-limit, watchdog, and helper units.
+- Forward-owned bond, MPTCP, UoT, rate-limit, watchdog, and helper units, timers, restart configuration, restart manifests, and watchdog state files.
 - `wg-quick@...` units and exact Forward-owned WireGuard interfaces/configuration.
 - Legacy `lw-mptcp-<forward>-*`, `lw-cfwg-<forward>`, `lw-cfsr-<forward>`, and `lw-self-<forward>` resources.
 - Forward-owned firewall rules, namespaces, veths, generated files, and applied-state manifests.
@@ -629,7 +649,7 @@ Active `leigod_mode` bond workers, snapshots, and port leases are in the keep-se
 The slave path adds Forward-level `retire_forward` alongside endpoint `destroy`. It removes exact Forward-owned:
 
 - endpoint ingress, backend, relay, and selector units,
-- classic/CF wstunnel, shadow backend, UoT, and MPTCP underlay units,
+- classic/CF wstunnel, shadow backend, UoT, and MPTCP underlay units, interfaces, addresses, routes, and generated configuration,
 - WireGuard interfaces and configuration,
 - generated route files and local state,
 - stale sidecar-uplink references attributable solely to the retired Forward.
@@ -640,7 +660,7 @@ A static sidecar uplink referenced by any active LeiGod endpoint remains. Endpoi
 
 The sidecar desired-state response gains explicit `runtime_retirements`. Sidecar cleanup covers exact Forward-owned:
 
-- legacy MPTCP transit interfaces and helper state,
+- legacy MPTCP transit interfaces, MPTCP endpoints, endpoint addresses/routes, and helper state,
 - slave-transit CF backends,
 - relay and selector units,
 - old per-Forward `gost`/`lguot` residue,
@@ -733,15 +753,15 @@ This probe lane runs even when another healthy leg exists. When all legs are coo
 
 ### 10.3 Atomic snapshots
 
-The existing bond snapshot is extended rather than replaced with kernel MPTCP telemetry. It carries the canonical admission phase, transition sequence, and exact useful-byte window defined in section 5.5 rather than treating health scores or cumulative counters as state authority. Writes use temporary file, file sync, and same-filesystem atomic rename; a reader rejects partial JSON, writer-epoch mismatch, and regressed sequence. Local diagnostics may keep at most 20 transitions per leg, but periodic master reports contain only current state and the last bounded reason.
+The existing bond snapshot contract becomes the aggregation snapshot contract rather than being replaced by unrelated kernel MPTCP telemetry. It carries the active family, canonical bond admission phase or MPTCP subflow state, transition sequence, fallback reason when applicable, and exact useful-byte window defined in section 5.5 rather than treating health scores or cumulative counters as state authority. Writes use temporary file, file sync, and same-filesystem atomic rename; a reader rejects partial JSON, writer-epoch mismatch, family mismatch, and regressed sequence. Local diagnostics may keep at most 20 transitions per leg/subflow, but periodic master reports contain only current state and the last bounded reason.
 
 ### 10.4 Collision-free ports
 
 Every local leg listener uses the lease registry in section 5.6. Allocation preflights bind availability before changing the active generation. If no port is available in the configured range, only the affected leg fails with `local_port_exhausted`; existing healthy generations remain active. The allocator never kills an unknown listener to reclaim a formula-derived port.
 
-### 10.5 No runtime-family fallback
+### 10.5 Runtime-family fallback boundary
 
-A failed bond start, missing binary, malformed token, or unsupported platform reports an explicit bond error. It does not invoke `leikwan-mptcp-relay`, switch to `mptcp_preferred_bond_fallback`, restore WSS/CF, or rewrite the backend mode.
+A failed standalone bond start, missing binary, malformed token, unsupported platform, or unsupported family reports an explicit error for that platform/family. It does not invoke `leikwan-mptcp-relay`, switch to `mptcp_preferred_bond_fallback`, restore WSS/CF, rewrite the backend mode, or invent another runtime. The only runtime-family fallback permitted by this design is a prepublished Linux verified-MPTCP contract switching to its authenticated standalone bond fallback after MPTCP fails to prove speed aggregation.
 
 ---
 
@@ -754,7 +774,7 @@ A failed bond start, missing binary, malformed token, or unsupported platform re
 - Legacy route selection, publication, republish, and reconciliation.
 - CF candidate and classic CNIX builders unreachable from LeiGod retirement.
 - CF location-group write UI and navigation.
-- Native-MPTCP-first or MPTCP-fallback selection for LeiGod Speed Plus.
+- Native-MPTCP-first selection outside verified Linux MPTCP clients, and any MPTCP fallback not paired with explicit standalone bond fallback telemetry.
 - Active LeiGod QUIC/WSS/self-leg bond-leg publication.
 - Formula-only local bond port allocation.
 - Whole-runtime `wait -n` supervision for LeiGod bond.
@@ -766,6 +786,7 @@ A failed bond start, missing binary, malformed token, or unsupported platform re
 - LeiGod static sidecar uplink realization.
 - Point-shared sidecar bond server and token validation.
 - Standalone `leikwan-bond` framing, retransmission, scheduling, and health foundation.
+- Verified Linux native MPTCP underlay realization, telemetry, and explicit bond fallback selection.
 - `leikwan-ingress` client/mux/backend plain TCP path.
 - Slave/client/sidecar desired-state reconciliation.
 - Existing UDP LeiGod compatibility sidepath without an aggregation claim.
@@ -779,31 +800,33 @@ Old active builders may be removed only after implementation proves retirement d
 
 ## 12. Rollout
 
-The rollout prevents old agents from losing cleanup information and prevents active LeiGod traffic from being normalized before the hardened bond runtime is available.
+The rollout prevents old agents from losing cleanup information and prevents active LeiGod traffic from being normalized before the platform aggregation runtimes and telemetry are available.
 
-### Phase 1: retirement and bond-capable artifacts
+### Phase 1: retirement and aggregation-capable artifacts
 
 1. Implement all three Forward-scoped cleanup entry points and acknowledgement contracts.
-2. Implement the client supervisor, port leases, bounded recovery, generation fencing, and bond snapshot v2.
+2. Implement the client supervisor, port leases, bounded recovery, generation fencing, aggregation snapshot v2, standalone bond telemetry, Linux MPTCP telemetry, and Linux MPTCP-to-bond fallback control.
 3. Update source agents and every served mirror, including `artifacts/` and `master/public/artifacts/` where applicable.
 4. Bump artifact versions and hashes consistently.
 5. Publish artifacts and request fleet updates without changing active Forward contracts.
-6. Require authenticated device/role capability reports containing platform, agent/runtime version, artifact content hash, retirement schema, and bond snapshot contract.
+6. Require authenticated device/role capability reports containing platform, OS MPTCP capability, agent/runtime version, artifact content hash, retirement schema, aggregation snapshot contract, and fallback capability.
 7. Confirm representative clients, slaves, and sidecars parse empty retirement lists without changing active runtime.
 
-### Phase 2: pre-enforcement canary and gate
+### Phase 2: pre-enforcement canaries and platform gates
 
-1. Apply retirement/snapshot storage and authenticated reporting code without enabling legacy retirement or global bond normalization.
-2. On an isolated Linux canary cohort whose every participating client, slave, and sidecar reports the minimum version/hash/capability, run the controlled gate in section 14.9.
-3. Gate failure leaves existing production contracts unchanged and disables the Speed Plus claim; fix artifacts and rerun the full gate rather than selecting favorable runs.
-4. Gate success is the entry condition for bond-only publication and normalization.
+1. Apply retirement/snapshot storage and authenticated reporting code without enabling legacy retirement or global platform aggregation normalization.
+2. On isolated Android and Windows canary cohorts whose every participating client, slave, and sidecar reports the minimum version/hash/capability, run the standalone bond controlled gate in section 14.9.
+3. On an isolated Linux MPTCP canary cohort, run the native-MPTCP-first gate and the forced MPTCP-failure bond-fallback gate in section 14.9.
+4. On Linux clients without verified MPTCP capability, run the standalone bond gate in section 14.9.
+5. Gate failure leaves existing production contracts unchanged and disables the affected platform/family Speed Plus claim; fix artifacts and rerun the full affected gate rather than selecting favorable runs.
+6. Gate success is the entry condition for platform aggregation publication and normalization for that platform/family only.
 
 ### Phase 3: LeiGod-only control plane and bounded cutover
 
-1. Deploy server-side LeiGod-only guards, hidden legacy UI, retirement delivery/acknowledgement, and plain TCP mux/bond publication.
-2. Before returning a new contract, require every affected online role/device to report the minimum platform/version/hash/capability. A reconnecting offline device updates first; unsupported or stale devices receive an explicit update-required response, not a broken or fallback contract.
+1. Deploy server-side LeiGod-only guards, hidden legacy UI, retirement delivery/acknowledgement, and platform aggregation publication.
+2. Before returning a new contract, require every affected online role/device to report the minimum platform/version/hash/capability. A reconnecting offline device updates first; unsupported or stale devices receive an explicit update-required response, not a broken or unauthorized fallback contract.
 3. Run LeiGod normalization preflight and resolve all blocked active combinations.
-4. Normalize and republish in bounded batches. Each batch has predeclared traffic/error/restart abort thresholds and rolls that batch back to its prior committed LeiGod contract if post-publish verification fails.
+4. Normalize and republish in bounded batches per platform/family. Each batch has predeclared traffic/error/restart abort thresholds. If post-publish verification fails, rollback returns only that batch to its prior committed LeiGod contract as an emergency pre-feature state, disables that platform/family Speed Plus claim, records a blocker, and prevents acceptance until the batch is successfully normalized again.
 5. Run legacy retirement activation only after its participating cleanup agents report retirement capability.
 
 ### Phase 4: verification and pruning
@@ -855,7 +878,7 @@ No partial artifact set is deployable: source agent, `artifacts/`, served public
 - The section 3.2 legacy predicate disables enabled and already-disabled cases and creates exactly one tombstone.
 - Fault injection before each transaction statement proves rollback leaves no half-created tombstone, disabled Forward without ledger, partial ownership snapshot, target, endpoint task, or audit event.
 - Rerunning activation creates no duplicate/reset work; endpoint destroy and Forward retirement converge in either order.
-- Client eligibility, known installations, every attributable historical slave/endpoint, and every attributable current/historical sidecar point are captured without broadcast or truncation.
+- Client eligibility, known installations, every attributable historical slave/endpoint, and every attributable current/historical sidecar point are captured without broadcast or truncation. A regression retires a Forward while a client is matched through a group, then changes group membership before a previously unseen eligible installation reconnects; that installation still receives and completes the snapshotted retirement.
 - Newly seen eligible installations atomically create a pending target after earlier known-target completion.
 - Concurrent final completion, late discovery, duplicate acknowledgement, expired attempt, and reappearance-generation tests leave parent/child state consistent and monotonic.
 - Active LeiGod Forwards receive no retirement tombstones.
@@ -863,12 +886,14 @@ No partial artifact set is deployable: source agent, `artifacts/`, served public
 
 ### 14.3 Publication and data path
 
-- Deprecated Forwards never enter active client configs, normal slave tasks, sidecar routes, or republish queues.
-- LeiGod emits `mode=bond`, `runtime_preference=single`, and `ingress_mode=plain_tcp_mux` and no active QUIC, WSS, CF, self-leg, or native-MPTCP Speed Plus leg.
+- Deprecated Forwards never enter active client configs, normal slave tasks, sidecar routes, republish queues, route-selection sets, route-racing sets, or candidate-builder sets.
+- LeiGod emits `backend_mode=leigod_mode`, platform-resolved aggregation family, and `ingress_mode=plain_tcp_mux` for standalone bond or bond fallback. Android and Windows emit standalone bond. Linux verified-MPTCP emits native MPTCP first plus a complete standalone bond fallback. Linux non-MPTCP emits standalone bond. No active QUIC, WSS, CF, self-leg, or unauthorized MPTCP leg is emitted.
 - Publication accepts one-to-eight distinct slave nodes, labels one node ordinary LeiGod, labels two-to-eight Speed Plus eligible, and rejects zero/duplicate/oversized sets with `invalid_speed_plus_leg_set`.
-- Every TCP leg has unique `(forward_id, node_id, endpoint_id)` identity and per-endpoint ingress auth.
+- Every TCP leg or MPTCP subflow has unique `(forward_id, node_id, endpoint_id)` identity and per-endpoint ingress/auth material.
+- Standalone bond publication includes sidecar point, LeiGod line/carrier configuration, static WireGuard-uplink identity, relay target, required `lguot`/`gost` material, sidecar bond target, route key, HMAC token, and signed bond token. Intentionally retired native-MPTCP fields are absent from Android/Windows bond payloads.
+- Linux MPTCP publication includes native MPTCP underlay, endpoint/subflow limits, telemetry fields, and the complete standalone bond fallback payload for the same target and selected slave set.
 - Slave plain mux authenticates route/token before backend connect; each backend uses its existing LeiGod static-uplink relay target; sidecar validation binds session to Forward, target, and protocol.
-- Missing bond fields fail explicitly without runtime-family fallback.
+- Missing required fields fail explicitly without unauthorized runtime-family or backend fallback.
 - TCP+UDP publication is atomic: a failed UDP compatibility preflight rejects the whole publication, and successful UDP sidepath has no aggregation state.
 
 ### 14.4 Bond framing and scheduling
@@ -879,7 +904,7 @@ No partial artifact set is deployable: source agent, `artifacts/`, served public
 - Best-leg selection orders eligible legs by scheduler penalty, measured smoothed RTT, and stable key; the exact 10% + 5 ms + three-window hysteresis prevents idle or noisy measurements from flapping selection.
 - Cooling/quarantined/probation legs receive no normal bulk data.
 - After Hello/ack, serialized probation sends exactly the bounded control probes, excludes them from target traffic/counters, passes within 5 seconds on three acknowledgements, or rotates the next due candidate after failure.
-- Multi-leg establishment failure, one-leg loss, and nonproductive multi-leg windows preserve the same application stream and sidecar target session while pinning payload to the best eligible slave; the state becomes `degraded_single_leg`, not a runtime-family fallback.
+- Standalone-bond multi-leg establishment failure, one-leg loss, and nonproductive multi-leg windows preserve the same application stream and sidecar target session while pinning payload to the best eligible slave; the state becomes `degraded_single_leg`, not a runtime-family fallback.
 - Removing one leg preserves streams when protocol conditions allow; recovery rejoins without restarting healthy workers or unrelated Forwards.
 - Standalone TCP legs use ordinary TCP and pass on a kernel without MPTCP support.
 
@@ -897,26 +922,26 @@ No partial artifact set is deployable: source agent, `artifacts/`, served public
 
 ### 14.6 Telemetry and state
 
-- Snapshots carry authenticated device session, desired generation/hash, supervisor identity, runtime epoch/sequence, nullable process/session epochs, canonical leg phase, selected single-leg key/reason during degradation, applicable recovery counters/deadlines, and exact directional 10-second useful-byte window.
+- Snapshots carry authenticated device session, active aggregation family, Linux MPTCP fallback reason when applicable, desired generation/hash, supervisor identity, runtime epoch/sequence, nullable process/session epochs, canonical bond leg phase or native MPTCP subflow state, selected single-leg key/reason during degradation, applicable recovery counters/deadlines, and exact directional 10-second useful-byte window.
 - Atomic writer crash tests never expose partial JSON or a stale writer epoch.
 - Save/preflight rejects more than eight or duplicate-node legs. Reporting enforces 8 legs, 16 KiB per Forward, 64 Forwards/512 KiB per request, with item-level rejection isolation and no truncation-derived state.
-- Authentication rejects unassigned Forward, endpoint, client, device session, desired generation, and set hash.
+- Authentication rejects unassigned Forward, endpoint, client, device session, desired generation, set hash, unauthorized active family, and Linux MPTCP evidence lacking the mandatory bond fallback contract.
 - Duplicate, old sequence/epoch/session, offline-queued, and observation-age-stale reports neither replace state nor refresh freshness.
 - Two devices remain independently summarized.
 - The ordered reducer tests every branch, including impossible phase/boolean combinations, no session, zero/one/multiple eligible nodes, insufficient bytes, imbalanced qualifying traffic, qualifying traffic, and exact 15-second staleness.
-- Upload and download counters are separate; retransmit/control/probe/duplicate/cumulative bytes cannot produce `aggregating`.
+- Upload and download counters are separate; bond retransmit/control/probe/duplicate/cumulative bytes and MPTCP retransmit/control/duplicate/cumulative counters cannot produce `aggregating`.
 - Reporter tests cover immediate events, 5-second active, 10-second idle, latest-only coalescing, bounded retry, retention, and revoked-device cleanup.
 
 ### 14.7 Retirement cleanup
 
 For each agent role:
 
-- Exact and look-alike fixtures cover units, content/environment, interfaces, files, leases, firewall/network resources, and local state. Only proven exact ownership is removed.
+- Exact and look-alike fixtures cover units, timers, content/environment, interfaces, MPTCP endpoints, MPTCP underlay addresses/routes, files, leases, watchdog restart state, firewall/network resources, and local state. Only proven exact ownership is removed.
 - A second leased generation with resources absent succeeds; duplicate/stale/forged tokens and acknowledgements perform no work or state mutation.
 - Partial/failed command results preserve per-resource evidence, use master-owned backoff/lease, obey per-cycle work/time bounds, and later complete.
 - Reconnect delivers the tombstone, executes serialized cleanup, and posts a result; partial/failed remains durable and retryable.
 - Completion means exclusive resources and retired references are absent while proven keep-set shared resources may remain. Ambiguous ownership remains partial.
-- Reappearance after completion opens exactly one new reconciliation generation before deletion.
+- Reappearance after completion opens exactly one new reconciliation generation before deletion. A post-completion watchdog/reconcile cycle proves no retired CF/MPTCP runtime is recreated from leftover timers, manifests, or restart state.
 - Malformed/missing retirement or desired-state sections never authorize cleanup; active/retired conflict fails closed.
 - Result and ownership-snapshot size/credential-redaction limits and retention/compaction rules are enforced.
 
@@ -924,15 +949,16 @@ Shared-resource regression includes one deprecated and one active LeiGod Forward
 
 ### 14.8 Platform and rollout gates
 
-- Linux passes all bond, supervisor, telemetry, and controlled throughput tests before bond-only enforcement.
+- Android and Windows each pass standalone bond, supervisor, telemetry, one-leg degradation/recovery, and controlled throughput tests before their Speed Plus claim is enabled.
+- Linux verified-MPTCP clients pass native-MPTCP-first telemetry and throughput tests, plus an injected MPTCP-nonaggregation case that switches to standalone bond fallback and then passes the bond gate.
+- Linux clients without verified MPTCP capability pass the standalone bond gate and never receive native MPTCP publication.
 - Authenticated capability/version/hash gates block stale online devices and require reconnecting offline devices to update before the new contract.
-- Windows and Android parse only supported compatibility contracts and cannot receive/show Speed Plus until their independent full gate passes.
-- Platform UI/API cannot emit `aggregating` from configured endpoints alone; UDP surfaces contain no aggregation claim.
-- Canary gate failure leaves production contracts unchanged; batch failure triggers its predeclared abort/rollback and stops later batches.
+- Platform UI/API cannot emit `aggregating` from configured endpoints alone; UDP surfaces contain no aggregation claim; Android and Windows cannot receive native MPTCP; Linux MPTCP cannot receive a native-first contract without a verified bond fallback payload.
+- Canary gate failure leaves production contracts unchanged for the affected platform/family; batch failure triggers its predeclared abort/rollback, records a blocker, disables the affected claim, and stops later batches.
 
 ### 14.9 Controlled Speed Plus acceptance
 
-The campaign is predeclared and auditable. Freeze one Linux client installation, Forward/configuration generation, two-to-eight distinct-node leg cohort, binaries/hashes, token/route, supervisor process, runtime epoch, transport-session epoch, sidecar, target, and generator settings. Exactly one application TCP stream is used; parallel and bidirectional streams are prohibited. An in-process scheduler allowlist selects `{leg_i}` for an individual condition and the exact union of those same legs for the multi-leg condition. Excluded legs carry zero measured application payload. Republish, process restart, session replacement, transport substitution, or cohort change fails the campaign.
+Each platform/family campaign is predeclared and auditable. Freeze one client installation, Forward/configuration generation, two-to-eight distinct-node leg cohort or MPTCP subflow cohort, binaries/hashes, token/route, supervisor process, runtime epoch, transport-session epoch, active aggregation family, sidecar, target, and generator settings. Exactly one application TCP stream is used; parallel and bidirectional streams are prohibited. An in-process scheduler or MPTCP endpoint allowlist selects `{leg_i}` for an individual condition and the exact union of those same legs for the multi-leg condition. Excluded legs carry zero measured application payload. Republish, process restart, session replacement, unauthorized family substitution, or cohort change fails the campaign.
 
 Run separate complete campaigns for upload and download; directions are never added. Reserve the client, participating slaves, sidecar, LeiGod carriers where controllable, and target against competing test/Forward load. Before each measurement, apply the same 10-second unmeasured warm-up and require selected legs `eligible`, outside cooldown/probation, and acknowledging productive traffic; then apply the same 5-second drain.
 
@@ -947,16 +973,18 @@ Each direction passes only when all are true:
 - define each round-level improvement as `multi_leg / max(single_leg_i) - 1`; the lower nearest-rank 2.5th percentile over all 27 ordered size-three resamples of the three paired improvements is greater than 0%; this exact finite bootstrap supplements rather than relaxes the 10% median rule,
 - every payload hash/count is exact, and runtime retransmit diagnostics remain below the predeclared ceiling of 5% of unique payload bytes.
 
-Failure/removal and recovery are separate required scenarios, not throughput samples. During a 60-second transfer that sends at least 256 MiB, forcibly remove one declared leg: failure must be detected within 5 seconds, the stream must remain correct with no healthy ingress/bond/supervisor/systemd restart, and the leg must return through handshake/probation to `eligible` within its published connector backoff + cooldown + 10 seconds after connectivity is restored. Restart counters must match the injected process faults exactly; a network-only fault produces zero process restarts.
+Failure/removal and recovery are separate required scenarios, not throughput samples. During a 60-second transfer that sends at least 256 MiB, forcibly remove one declared leg/subflow: failure must be detected within 5 seconds, the stream must remain correct with no healthy ingress/bond/supervisor/systemd restart for bond, and no unauthorized backend-family switch for MPTCP. Bond legs must return through handshake/probation to `eligible` within their published connector backoff + cooldown + 10 seconds after connectivity is restored. MPTCP subflows must either recover within the published MPTCP probation window or switch to the prepublished bond fallback and then pass the bond recovery gate. Restart counters must match the injected process faults exactly; a network-only fault produces zero process restarts.
 
-A direction-neutral Speed Plus claim requires both directional campaigns to pass. If CPU, LeiGod UoT, target, distribution, correctness, recovery, or uncertainty prevents the gate, Speed Plus is not accepted and product surfaces do not claim successful aggregation.
+Linux MPTCP-first acceptance also injects a nonaggregation case: native MPTCP establishes but fails the byte-distribution or 10% improvement rule while at least two bond fallback legs remain usable. The client must switch to `bond_fallback`, preserve the application stream when protocol conditions allow, emit the fallback reason in telemetry, and then satisfy the standalone bond controlled gate without CF/WSS/classic-sidecar/self-leg fallback.
+
+A direction-neutral Speed Plus claim requires both directional campaigns to pass for the advertised platform/family. If CPU, LeiGod UoT, target, distribution, correctness, recovery, fallback behavior, or uncertainty prevents the gate, Speed Plus is not accepted and product surfaces do not claim successful aggregation for that platform/family.
 
 ### 14.10 Repository verification
 
 - PHP syntax and full PHP tests pass.
 - Python agent tests pass.
 - Rust bond and ingress tests pass.
-- Desktop and Android contract/unit tests pass for any touched compatibility parsing.
+- Desktop and Android shared Forward publication contract/unit tests pass regardless of whether platform files were touched.
 - Artifact source and every served copy match in content, version, and hash.
 - Documentation diff checks pass.
 
@@ -973,15 +1001,15 @@ The feature is complete only when all conditions hold:
 5. Offline and undiscovered eligible client work remains durable; reconnect performs authenticated delivery, serialized cleanup, and result posting.
 6. On completed targets, exclusive Forward-owned WireGuard, systemd, network, lease, and generated-file resources and the retired Forward's shared references are absent. Proven keep-set shared resources may remain; ambiguous ownership is not complete.
 7. Active LeiGod resources, shared-service process identity, and traffic survive the same cleanup cycle unchanged.
-8. Every new, updated, or normalized LeiGod combination uses `bond + single + plain_tcp_mux` and never silently selects MPTCP, CF, WSS, classic sidecar, or direct self-leg fallback.
-9. Publication accepts one-to-eight distinct slave nodes; one is ordinary LeiGod, while only two-to-eight is Speed Plus eligible. Every leg has stable `(forward_id, node_id, endpoint_id)` identity and distinct authenticated ingress over that slave's LeiGod static uplink.
-10. The standalone bond runtime reassembles one target TCP stream correctly and works without kernel MPTCP support.
+8. Every new, updated, or normalized LeiGod combination uses `backend_mode=leigod_mode`, `aggregation_policy=platform_default`, and `plain_tcp_mux` for standalone bond or bond fallback. Android and Windows resolve to standalone bond. Linux verified-MPTCP resolves to native MPTCP first with mandatory bond fallback. Linux without verified MPTCP resolves to standalone bond. No path silently selects CF, WSS, classic sidecar, direct self-leg, or unauthorized MPTCP fallback.
+9. Publication accepts one-to-eight distinct slave nodes; one is ordinary LeiGod, while only two-to-eight is Speed Plus eligible. Every bond leg or MPTCP subflow has stable `(forward_id, node_id, endpoint_id)` identity and distinct authenticated ingress or underlay over that slave's LeiGod static uplink/carrier.
+10. The standalone bond runtime reassembles one target TCP stream correctly and works without kernel MPTCP support; Linux native MPTCP aggregation proves useful multi-subflow byte delivery before claiming aggregation and switches to bond fallback when it does not.
 11. Port allocation is host-locked, collision-free against leases/listeners, atomically handed off, and generation-fenced with no formula-only ownership assumption.
 12. Supervisor process restart, bond connector retry, and scheduler quarantine/probation have disjoint counters, deadlines, reset rules, persistent budgets, and bounded recovery; one fault cannot cause whole-Forward churn.
-13. Multi-leg establishment failure, unproductive aggregation, or network-leg loss degrades the same application TCP stream to the deterministically selected best eligible slave when one remains, with zero application reconnect, target-session replacement, runtime-family fallback, or process restart; recovery does not rebuild unrelated runtime.
-14. `aggregating` requires fresh authenticated same-device, desired-generation, runtime-epoch, transport-session, direction, and exact useful-byte-window evidence from at least two distinct slave nodes; invalid/ambiguous evidence is `unknown` and idle valid multi-leg runtime is `ready_multi_leg`.
-15. The pre-enforcement controlled Linux canary passes both directional paired campaigns, exact payload integrity, per-node distribution, 10% median improvement, uncertainty, and bounded fault/recovery gates without post-hoc run selection.
-16. Windows, Android, unsupported platform/protocol, and UDP surfaces receive no unverified aggregation claim or silent fallback.
+13. Standalone-bond multi-leg establishment failure, unproductive aggregation, or network-leg loss degrades the same application TCP stream to the deterministically selected best eligible slave when one remains, with zero application reconnect, target-session replacement, unauthorized runtime-family fallback, or process restart; recovery does not rebuild unrelated runtime. Linux native MPTCP nonaggregation switches only to the prepublished authenticated bond fallback and reports `bond_fallback`.
+14. `aggregating` requires fresh authenticated same-device, desired-generation, active aggregation family, runtime-epoch, transport-session, direction, and exact useful-byte-window evidence from at least two distinct slave nodes/subflows in the same family; invalid/ambiguous/family-incoherent evidence is `unknown` and idle valid multi-leg runtime is `ready_multi_leg`.
+15. Pre-enforcement controlled gates pass for Android standalone bond, Windows standalone bond, Linux verified-MPTCP native-first, Linux forced MPTCP-nonaggregation bond fallback, and Linux non-MPTCP standalone bond. Each gate proves both directional paired campaigns, exact payload integrity, per-node/subflow distribution, 10% median improvement where aggregation is claimed, uncertainty, and bounded fault/recovery behavior without post-hoc run selection.
+16. Android and Windows receive standalone bond aggregation only and never native MPTCP; Linux without verified MPTCP receives standalone bond only; Linux verified-MPTCP receives native-first only with a complete bond fallback payload; unsupported platform/protocol and UDP surfaces receive no unverified aggregation claim or silent backend fallback.
 17. Source and every served agent artifact, manifest, version, hash, and authenticated device capability agree before enforcement; stale/reconnecting agents update before receiving the contract.
 18. Activation/normalization fault-injection, cleanup authentication/race/shared-resource tests, bond/runtime tests, and repository verification all pass.
 19. No unresolved normalization blocker or failed cutover batch is hidden; rollout stops or rolls back according to section 12.
