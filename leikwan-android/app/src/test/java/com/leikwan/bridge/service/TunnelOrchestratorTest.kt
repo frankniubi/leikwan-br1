@@ -516,6 +516,8 @@ class TunnelOrchestratorTest {
             binaryInstallerFactory = { binaryInstaller },
             processRunnerFactory = { processRunner },
             routeRuleStore = routeRuleStore,
+            vpnServiceStarter = { _ -> },
+            vpnStartupAwaiter = { VpnStartupAwaitResult.Running },
         )
 
         orchestrator.startForForward(65L)

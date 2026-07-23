@@ -56,6 +56,16 @@ class TunnelOrchestrator internal constructor(
     panelRepoFactory: () -> PanelRepository = { PanelRepository(context) },
     binaryInstallerFactory: () -> RuntimeBinaryInstaller = { RuntimeBinaryInstaller(context) },
     processRunnerFactory: () -> ProcessRunner = { ProcessRunner() },
+    private val vpnServiceStarter: (Context) -> Unit = { appContext ->
+        val intent = Intent(appContext, LeikwanVpnService::class.java)
+        appContext.startForegroundService(intent)
+    },
+    private val vpnStartupAwaiter: suspend () -> VpnStartupAwaitResult = {
+        VpnStartupMonitor.await(
+            timeoutMs = 10_000,
+            readState = { LeikwanVpnService.startupSnapshot() },
+        )
+    },
 ) {
     constructor(context: Context) : this(
         context = context,
@@ -259,13 +269,9 @@ class TunnelOrchestrator internal constructor(
         Log.d(TAG, "Generated sing-box config for LeiGod forward ${runtimeContext.forwardId}")
 
         LeikwanVpnService.configJson = configJson
-        val intent = Intent(context, LeikwanVpnService::class.java)
-        context.startForegroundService(intent)
+        vpnServiceStarter(context)
 
-        when (val vpnResult = VpnStartupMonitor.await(
-            timeoutMs = 10_000,
-            readState = { LeikwanVpnService.startupSnapshot() },
-        )) {
+        when (val vpnResult = vpnStartupAwaiter()) {
             VpnStartupAwaitResult.Running -> {
                 activeRuntime = runtimeContext
             }

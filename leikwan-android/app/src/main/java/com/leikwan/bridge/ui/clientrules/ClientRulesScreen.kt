@@ -301,7 +301,14 @@ private fun RuleCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("${rule.destinationIp}:${rule.destinationPort}", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        stringResource(
+                            R.string.client_rule_destination_format,
+                            rule.destinationIp,
+                            rule.destinationPort,
+                        ),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
                     Spacer(Modifier.height(4.dp))
                     Text(directionLabel, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
