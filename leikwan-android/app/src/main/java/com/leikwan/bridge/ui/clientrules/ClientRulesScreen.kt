@@ -89,7 +89,7 @@ internal fun ClientRulesScreenContent(
         Spacer(Modifier.height(16.dp))
 
         state.unavailableReason?.let { reason ->
-            Text(reason, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+            Text(clientRulesText(reason), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(12.dp))
         }
         state.errorCode?.takeUnless { it == "client_rules_unavailable" }?.let { error ->
@@ -155,7 +155,7 @@ private fun ServiceScopeSection(
             onExpandedChange = { expanded = it },
         ) {
             OutlinedTextField(
-                value = state.serviceScopes.firstOrNull { it.serviceScopeId == state.selectedServiceScopeId }?.label.orEmpty(),
+                value = state.serviceScopes.firstOrNull { it.serviceScopeId == state.selectedServiceScopeId }?.label?.let { clientRulesText(it) }.orEmpty(),
                 onValueChange = {},
                 readOnly = true,
                 label = { Text(stringResource(R.string.client_rules_service_scope)) },
@@ -169,7 +169,7 @@ private fun ServiceScopeSection(
             ) {
                 state.serviceScopes.forEach { option ->
                     DropdownMenuItem(
-                        text = { Text(option.label) },
+                        text = { Text(clientRulesText(option.label)) },
                         onClick = {
                             expanded = false
                             onSelectServiceScope(option.serviceScopeId)
@@ -180,13 +180,22 @@ private fun ServiceScopeSection(
         }
     } else {
         Text(
-            state.serviceScopes.firstOrNull()?.label ?: stringResource(R.string.client_rules_no_service_scope),
+            state.serviceScopes.firstOrNull()?.label?.let { clientRulesText(it) }
+                ?: stringResource(R.string.client_rules_no_service_scope),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
-    if (state.quotaLabel.isNotBlank()) {
+    state.quota?.let { quota ->
         Spacer(Modifier.height(4.dp))
-        Text(state.quotaLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            stringResource(
+                R.string.client_rules_quota_remaining,
+                quota.remainingRules,
+                quota.maxRules,
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -304,7 +313,7 @@ private fun RuleCard(
             }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(onClick = {}, label = { Text(rule.effectiveState.displayLabel()) })
+                AssistChip(onClick = {}, label = { Text(stringResource(rule.effectiveState.displayLabelRes())) })
                 if (rule.pendingOperation != PendingClientRuleOperation.NONE) {
                     AssistChip(onClick = {}, label = { Text(stringResource(R.string.client_rule_syncing)) })
                 }
@@ -324,15 +333,19 @@ private fun RuleCard(
     }
 }
 
-private fun ClientRuleEffectiveState.displayLabel(): String = when (this) {
-    ClientRuleEffectiveState.ACTIVE -> "Active"
-    ClientRuleEffectiveState.DISABLED -> "Disabled"
-    ClientRuleEffectiveState.UNAVAILABLE -> "Unavailable"
-    ClientRuleEffectiveState.NOT_ALLOWED_BY_PLAN -> "Not allowed by plan"
-    ClientRuleEffectiveState.OVER_QUOTA -> "Quota reached"
-    ClientRuleEffectiveState.RUNTIME_MISSING -> "Not ready"
-    ClientRuleEffectiveState.SYNCING -> "Saving"
-    ClientRuleEffectiveState.ERROR -> "Error"
+@Composable
+private fun clientRulesText(text: ClientRulesText): String = stringResource(text.resId, *text.args.toTypedArray())
+
+@StringRes
+private fun ClientRuleEffectiveState.displayLabelRes(): Int = when (this) {
+    ClientRuleEffectiveState.ACTIVE -> R.string.client_rule_status_active
+    ClientRuleEffectiveState.DISABLED -> R.string.client_rule_status_disabled
+    ClientRuleEffectiveState.UNAVAILABLE -> R.string.client_rule_status_unavailable
+    ClientRuleEffectiveState.NOT_ALLOWED_BY_PLAN -> R.string.client_rule_status_not_allowed_by_plan
+    ClientRuleEffectiveState.OVER_QUOTA -> R.string.client_rule_status_over_quota
+    ClientRuleEffectiveState.RUNTIME_MISSING -> R.string.client_rule_status_not_ready
+    ClientRuleEffectiveState.SYNCING -> R.string.client_rule_status_saving
+    ClientRuleEffectiveState.ERROR -> R.string.client_rule_status_error
 }
 
 @StringRes

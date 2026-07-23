@@ -1,5 +1,6 @@
 package com.leikwan.bridge.ui.clientrules
 
+import com.leikwan.bridge.R
 import com.leikwan.bridge.clientrules.ClientRouteRule
 import com.leikwan.bridge.clientrules.ClientRouteRuleSnapshot
 import com.leikwan.bridge.clientrules.ClientRuleEffectiveState
@@ -57,7 +58,11 @@ class ClientRulesViewModelTest {
         val state = vm.state.value
         assertTrue(state.enabled)
         assertEquals("scope-a", state.selectedServiceScopeId)
-        assertEquals("1 of 2 Client Rules remaining", state.quotaLabel)
+        assertEquals(ClientRuleQuotaLabel(remainingRules = 1, maxRules = 2), state.quota)
+        assertEquals(
+            ClientRulesText(R.string.client_rules_service_plan_label, listOf(10L, 100L)),
+            state.serviceScopes.first { it.serviceScopeId == "scope-a" }.label,
+        )
         assertEquals(listOf("japan", "singapore"), state.directions.map { it.id })
         assertEquals(listOf("rule-a"), state.rules.map { it.id })
         assertEquals("", state.draftDestinationIp)
@@ -77,7 +82,7 @@ class ClientRulesViewModelTest {
 
         val state = vm.state.value
         assertEquals("scope-b", state.selectedServiceScopeId)
-        assertEquals("0 of 1 Client Rules remaining", state.quotaLabel)
+        assertEquals(ClientRuleQuotaLabel(remainingRules = 0, maxRules = 1), state.quota)
         assertEquals(listOf("singapore"), state.directions.map { it.id })
         assertEquals(listOf("rule-b"), state.rules.map { it.id })
         assertEquals("singapore", state.draftDirectionId)
@@ -112,7 +117,7 @@ class ClientRulesViewModelTest {
 
         assertFalse(vm.state.value.enabled)
         assertTrue(vm.state.value.serviceScopeSelectionEnabled)
-        assertEquals("No Route Directions are available for this service.", vm.state.value.unavailableReason)
+        assertEquals(ClientRulesText(R.string.client_rules_unavailable_no_directions), vm.state.value.unavailableReason)
 
         vm.selectServiceScope("scope-a")
         advanceUntilIdle()
@@ -204,7 +209,7 @@ class ClientRulesViewModelTest {
 
         assertTrue(vm.state.value.rules.isEmpty())
         assertEquals("scope-a", vm.state.value.selectedServiceScopeId)
-        assertEquals("1 of 2 Client Rules remaining", vm.state.value.quotaLabel)
+        assertEquals(ClientRuleQuotaLabel(remainingRules = 1, maxRules = 2), vm.state.value.quota)
     }
 
     @Test
@@ -215,7 +220,7 @@ class ClientRulesViewModelTest {
 
         assertFalse(vm.state.value.enabled)
         assertEquals("client_rules_unavailable", vm.state.value.errorCode)
-        assertEquals("Client Rules are not available for this client.", vm.state.value.unavailableReason)
+        assertEquals(ClientRulesText(R.string.client_rules_unavailable_client), vm.state.value.unavailableReason)
         assertTrue(vm.state.value.directions.isEmpty())
         assertTrue(vm.state.value.rules.isEmpty())
     }

@@ -151,6 +151,11 @@
     <string name="client_rules_description">Create exact destination rules for available Route Directions.</string>
     <string name="client_rules_service_scope">Service</string>
     <string name="client_rules_no_service_scope">No service selected.</string>
+    <string name="client_rules_quota_remaining">%1$d of %2$d Client Rules remaining</string>
+    <string name="client_rules_service_label">Service %1$d</string>
+    <string name="client_rules_service_plan_label">Service %1$d / Plan %2$d</string>
+    <string name="client_rules_unavailable_client">Client Rules are not available for this client.</string>
+    <string name="client_rules_unavailable_no_directions">No Route Directions are available for this service.</string>
     <string name="client_rules_new_title">New Client Rule</string>
     <string name="route_direction_label">Route Direction</string>
     <string name="route_direction_unavailable">Unavailable Route Direction</string>
@@ -162,6 +167,14 @@
     <string name="client_rules_empty">No Client Rules yet.</string>
     <string name="client_rule_syncing">Saving</string>
     <string name="client_rule_delete">Delete</string>
+    <string name="client_rule_status_active">Active</string>
+    <string name="client_rule_status_disabled">Disabled</string>
+    <string name="client_rule_status_unavailable">Unavailable</string>
+    <string name="client_rule_status_not_allowed_by_plan">Not allowed by plan</string>
+    <string name="client_rule_status_over_quota">Quota reached</string>
+    <string name="client_rule_status_not_ready">Not ready</string>
+    <string name="client_rule_status_saving">Saving</string>
+    <string name="client_rule_status_error">Error</string>
     <string name="client_rule_error_invalid_destination_ip">Enter an exact IPv4 address.</string>
     <string name="client_rule_error_invalid_destination_port">Enter a destination port from 1 to 65535.</string>
     <string name="client_rule_error_destination_unavailable">This destination is not available for Client Rules.</string>

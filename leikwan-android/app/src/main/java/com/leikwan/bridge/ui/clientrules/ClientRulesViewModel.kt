@@ -1,9 +1,11 @@
 package com.leikwan.bridge.ui.clientrules
 
 import android.content.Context
+import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.leikwan.bridge.R
 import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.clientrules.ClientRouteRule
 import com.leikwan.bridge.clientrules.ClientRouteRuleSnapshot
@@ -35,7 +37,7 @@ data class ClientRulesUiState(
     val serviceScopes: List<ClientRuleServiceScopeOption> = emptyList(),
     val selectedServiceScopeId: String? = null,
     val serviceScopeSelectionEnabled: Boolean = false,
-    val quotaLabel: String = "",
+    val quota: ClientRuleQuotaLabel? = null,
     val directions: List<RouteDirection> = emptyList(),
     val rules: List<ClientRouteRule> = emptyList(),
     val draftDestinationIp: String = "",
@@ -43,13 +45,23 @@ data class ClientRulesUiState(
     val draftDirectionId: String? = null,
     val draftEnabled: Boolean = true,
     val errorCode: String? = null,
-    val unavailableReason: String? = null,
+    val unavailableReason: ClientRulesText? = null,
     val saving: Boolean = false,
+)
+
+data class ClientRulesText(
+    @StringRes val resId: Int,
+    val args: List<Any> = emptyList(),
+)
+
+data class ClientRuleQuotaLabel(
+    val remainingRules: Int,
+    val maxRules: Int,
 )
 
 data class ClientRuleServiceScopeOption(
     val serviceScopeId: String,
-    val label: String,
+    val label: ClientRulesText,
 )
 
 class ClientRulesViewModel(
@@ -169,12 +181,12 @@ class ClientRulesViewModel(
                 serviceScopes = emptyList(),
                 selectedServiceScopeId = null,
                 serviceScopeSelectionEnabled = false,
-                quotaLabel = "",
+                quota = null,
                 directions = emptyList(),
                 rules = emptyList(),
                 draftDirectionId = null,
                 errorCode = "client_rules_unavailable",
-                unavailableReason = "Client Rules are not available for this client.",
+                unavailableReason = ClientRulesText(R.string.client_rules_unavailable_client),
             )
         }
 
@@ -194,13 +206,16 @@ class ClientRulesViewModel(
             serviceScopes = snapshot.entitlements.map { it.toOption() },
             selectedServiceScopeId = selectedEntitlement.serviceScopeId,
             serviceScopeSelectionEnabled = snapshot.entitlements.size > 1,
-            quotaLabel = "${selectedEntitlement.remainingRules} of ${selectedEntitlement.maxRules} Client Rules remaining",
+            quota = ClientRuleQuotaLabel(
+                remainingRules = selectedEntitlement.remainingRules,
+                maxRules = selectedEntitlement.maxRules,
+            ),
             directions = allowedDirections,
             rules = scopeRules,
             draftDirectionId = selectedDraftDirection,
             errorCode = previous.errorCode?.takeUnless { it == "client_rules_unavailable" },
             unavailableReason = if (allowedDirections.isEmpty()) {
-                "No Route Directions are available for this service."
+                ClientRulesText(R.string.client_rules_unavailable_no_directions)
             } else {
                 null
             },
@@ -214,9 +229,15 @@ class ClientRulesViewModel(
     private fun RouteRuleEntitlement.toOption(): ClientRuleServiceScopeOption = ClientRuleServiceScopeOption(
         serviceScopeId = serviceScopeId,
         label = if (subscriptionId != null) {
-            "Service $serviceId / Plan $subscriptionId"
+            ClientRulesText(
+                resId = R.string.client_rules_service_plan_label,
+                args = listOf(serviceId, subscriptionId),
+            )
         } else {
-            "Service $serviceId"
+            ClientRulesText(
+                resId = R.string.client_rules_service_label,
+                args = listOf(serviceId),
+            )
         },
     )
 
