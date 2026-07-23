@@ -180,8 +180,8 @@
     "version": "0.1.0",
     "path": "artifacts/android/leikwan-android-client.apk",
     "artifact_url": "/artifacts/leikwan-android-client.apk",
-    "sha256": "286321c01d35623ff9ab5bf1f62ed35e1ad8df591c8e84c0afe23b6ac1ac2342",
-    "size_bytes": 55574824
+    "sha256": "41c06cb7534ee119cf86c728be8025fa390bba34bd4eb840939d311d9fcf85e7",
+    "size_bytes": 55652648
   },
   "install_forward_runtime": {
     "version": "2026.05.28.4",
