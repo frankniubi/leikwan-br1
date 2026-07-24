@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     leigod_socks_pass VARCHAR(128) NULL,
     leigod_uot_impl ENUM('gost','lguot') NOT NULL DEFAULT 'gost',
     desired_latency_ms INT NOT NULL DEFAULT 0,
+    slave_wg_ideal_latency_ms INT NULL,
     allow_public_self_leg_donation TINYINT(1) NOT NULL DEFAULT 0,
     donation_qualify_window_seconds INT NOT NULL DEFAULT 60,
     donation_revoke_window_seconds INT NOT NULL DEFAULT 30,

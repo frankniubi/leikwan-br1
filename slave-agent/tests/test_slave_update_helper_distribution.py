@@ -13,6 +13,13 @@ PEER = "abcdefghijklmnopqrstuvwxyz012345678901234567="
 
 
 def _bash() -> str | None:
+    if os.name == "nt":
+        for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramW6432")):
+            if not root:
+                continue
+            candidate = pathlib.Path(root) / "Git" / "bin" / "bash.exe"
+            if candidate.is_file():
+                return str(candidate)
     return shutil.which("bash")
 
 
@@ -179,20 +186,28 @@ class WireGuardWatchdogBehaviorTests(unittest.TestCase):
             env.update(extra_env)
         # We may be driving an msys/cygwin bash from a Windows-native Python, so
         # the parent PATH separator (';') is not what bash expects (':'). Build
-        # PATH inside bash itself: convert the stub bin dir to a POSIX path with
-        # cygpath when available (msys), otherwise use it verbatim (real Linux).
+        # PATH inside bash itself: convert Windows paths with cygpath under
+        # MSYS/Git Bash or wslpath under WSL. WSL command interop can make
+        # `command -v cygpath` succeed even though cygpath cannot execute, so
+        # probe the command itself before selecting it.
         preamble = (
             'stub="$WG_STUB_BIN"\n'
-            'if command -v cygpath >/dev/null 2>&1; then\n'
-            '  stub="$(cygpath -u "$WG_STUB_BIN")"\n'
-            '  export WG_FIXTURE_DIR="$(cygpath -u "$WG_FIXTURE_DIR")"\n'
-            '  export SYSTEMCTL_RESTART_LOG="$(cygpath -u "$SYSTEMCTL_RESTART_LOG")"\n'
-            '  export LEIKWAN_WG_WATCHDOG_STATE_DIR="$(cygpath -u "$LEIKWAN_WG_WATCHDOG_STATE_DIR")"\n'
-            '  export LEIKWAN_RESTART_LEDGER_DIR="$(cygpath -u "$LEIKWAN_RESTART_LEDGER_DIR")"\n'
+            'path_converter=""\n'
+            'if command -v cygpath >/dev/null 2>&1 && cygpath --version >/dev/null 2>&1; then\n'
+            '  path_converter="cygpath -u"\n'
+            'elif command -v wslpath >/dev/null 2>&1; then\n'
+            '  path_converter="wslpath -u"\n'
+            'fi\n'
+            'if [[ -n "$path_converter" ]]; then\n'
+            '  stub="$($path_converter "$WG_STUB_BIN")"\n'
+            '  export WG_FIXTURE_DIR="$($path_converter "$WG_FIXTURE_DIR")"\n'
+            '  export SYSTEMCTL_RESTART_LOG="$($path_converter "$SYSTEMCTL_RESTART_LOG")"\n'
+            '  export LEIKWAN_WG_WATCHDOG_STATE_DIR="$($path_converter "$LEIKWAN_WG_WATCHDOG_STATE_DIR")"\n'
+            '  export LEIKWAN_RESTART_LEDGER_DIR="$($path_converter "$LEIKWAN_RESTART_LEDGER_DIR")"\n'
             'fi\n'
             'export PATH="$stub:$PATH"\n'
             'script="$WG_WATCHDOG_SCRIPT"\n'
-            'if command -v cygpath >/dev/null 2>&1; then script="$(cygpath -u "$WG_WATCHDOG_SCRIPT")"; fi\n'
+            'if [[ -n "$path_converter" ]]; then script="$($path_converter "$WG_WATCHDOG_SCRIPT")"; fi\n'
             'exec bash "$script"\n'
         )
         return subprocess.run(

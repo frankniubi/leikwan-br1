@@ -3880,8 +3880,9 @@ final class ProvisioningService
         $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
         $activeFamily = $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
         $targetContract = $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
-        $publishesBondRuntime = $aggregationEnabled && ($clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback');
-        $pointConfig = $sidecarRequired ? $this->decodeJsonAssoc($forward['bond_sidecar_point_agent_config_json'] ?? null) : [];
+        $publishesBondRuntime = $clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback';
+        $publishesBondRuntime = $aggregationEnabled && $publishesBondRuntime;
+        $pointConfig = $this->decodeJsonAssoc($forward['bond_sidecar_point_agent_config_json'] ?? null);
         $pointPortSource = $sidecarRequired ? [
             'listen_port' => (int) ($forward['bond_sidecar_legacy_port'] ?? 0),
             'bond_listen_port' => (int) ($forward['bond_sidecar_port'] ?? 0),
@@ -3982,7 +3983,7 @@ final class ProvisioningService
             'sni' => $resolvedSniHost,
             'path_prefix' => (string) $forward['path_prefix'],
             'mode' => $clientMode,
-            'transport' => (string) $forward['transport_mode'],
+            'transport' => $this->effectiveMptcpTransport($forward),
             'service_status' => (string) $forward['service_status'],
             'speed_limit_mbps' => $effectiveSpeedLimitMbps,
             'bonding' => $bondConfig,
@@ -5480,6 +5481,59 @@ final class ProvisioningService
         }
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function activeEndpointPublishPayload(int $nodeId, int $forwardId, int $endpointId): ?array
+    {
+        $row = $this->db->fetchOne(
+            'SELECT f.*, s.client_token,
+                    combo.runtime_preference AS forward_combination_runtime_preference,
+                    combo.allow_private_self_leg AS forward_combination_allow_private_self_leg,
+                    combo.self_leg_cf_transport AS forward_combination_self_leg_cf_transport,
+                    sp.mptcp_listen_port AS mptcp_sidecar_port,
+                    sp.bond_listen_port AS sidecar_bond_listen_port,
+                    sp.listen_port AS sidecar_listen_port,
+                    sp.token_secret AS bond_sidecar_point_token_secret,
+                    sp.agent_config_json AS bond_sidecar_point_agent_config_json,
+                    e.id AS endpoint_id, e.node_id,
+                    e.public_host AS endpoint_public_host,
+                    e.public_port AS endpoint_public_port,
+                    n.agent_config_json AS node_agent_config_json,
+                    n.public_ip AS node_public_ip,
+                    n.name AS node_name
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             INNER JOIN service_endpoints e ON e.forward_id = f.id
+             INNER JOIN nodes n ON n.id = e.node_id
+             LEFT JOIN forward_combinations combo ON combo.id = f.forward_combination_id
+             LEFT JOIN sidecar_points sp ON sp.id = f.bond_sidecar_point_id
+             WHERE n.id = :node_id AND f.id = :forward_id AND e.id = :endpoint_id
+               AND f.enabled = 1
+               AND e.health_status NOT IN (:deleted, :deleting)
+             LIMIT 1',
+            [
+                'node_id' => $nodeId,
+                'forward_id' => $forwardId,
+                'endpoint_id' => $endpointId,
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+            ]
+        );
+        if ($row === null) {
+            return null;
+        }
+
+        $node = [
+            'id' => (int) ($row['node_id'] ?? 0),
+            'name' => (string) ($row['node_name'] ?? ''),
+            'public_ip' => (string) ($row['node_public_ip'] ?? ''),
+            'agent_config_json' => $row['node_agent_config_json'] ?? null,
+        ];
+
+        return $this->publishTaskPayloadForForward($row, $node, $endpointId);
+    }
+
 
     public function republishActiveEndpoint(int $nodeId, int $forwardId, int $endpointId): bool
     {
@@ -6904,7 +6958,8 @@ final class ProvisioningService
         $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
         $activeFamily = $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
         $targetContract = $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
-        $publishesBondRuntime = $aggregationEnabled && ($clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback');
+        $publishesBondRuntime = $clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback';
+        $publishesBondRuntime = $aggregationEnabled && $publishesBondRuntime;
         $plainTcpIngress = $publishesBondRuntime && $bondIngressMode === 'plain_tcp_mux';
         $routeKey = (string) ($forward['path_prefix'] ?? '');
         $directTargetMode = $publishesBondRuntime ? 'bond' : $clientMode;
@@ -8358,6 +8413,29 @@ final class ProvisioningService
             'bond-ingress:' . $endpointId . ':' . $routeKey,
             $serviceToken
         );
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     */
+    private function effectiveMptcpTransport(array $forward): string
+    {
+        $transport = strtolower(trim((string) ($forward['transport_mode'] ?? 'tcp')));
+        if (!in_array($transport, ['tcp', 'udp', 'tcp+udp'], true)) {
+            $transport = 'tcp';
+        }
+
+        $combinationCfTransport = strtolower(trim((string) ($forward['forward_combination_self_leg_cf_transport'] ?? '')));
+        $forwardCfTransport = strtolower(trim((string) ($forward['self_leg_cf_transport'] ?? '')));
+        $selfLegCfTransport = $combinationCfTransport !== '' && $combinationCfTransport !== 'cf_direct'
+            ? $combinationCfTransport
+            : $forwardCfTransport;
+        $allowPrivateSelfLeg = (int) ($forward['forward_combination_allow_private_self_leg'] ?? $forward['allow_private_self_leg'] ?? 0) === 1;
+        if ($selfLegCfTransport === 'cf_wg' && $allowPrivateSelfLeg) {
+            return 'tcp+udp';
+        }
+
+        return $transport;
     }
 
     /**

@@ -618,7 +618,7 @@ final class TenantController extends BaseController
                     <div class="muted">Included Traffic: ' . (int) ($plan['default_traffic_limit_gb'] ?? 0) . ' GB</div>
                     <div class="muted">Included Clients: ' . $includedClients . '</div>
                     <div class="muted">Client Profiles: ' . $maxClientProfiles . '</div>
-                    <div class="muted">Devices per Client: ' . $deviceLimit . '</div>
+                    <div class="muted">Client Device Limit: ' . $deviceLimit . ' (Devices per Client: ' . $deviceLimit . ')</div>
                   </div>
                 </div>
                 ' . $inlineForm . '
@@ -831,6 +831,17 @@ final class TenantController extends BaseController
 
         $latestClientAgentVersion = $this->artifactVersion('client_agent');
         $onlineSessionService = new ClientOnlineSessionService($this->db);
+        $bondLegReputationService = new BondLegReputationService($this->db);
+        $tenantBondLegRows = $bondLegReputationService->scopedRowsForTenant((int) $user['id']);
+        $tenantBondLegEvents = $bondLegReputationService->recentEvents(['user_id' => (int) $user['id']], 50);
+        $bondLegRowsByForward = [];
+        foreach ($tenantBondLegRows as $row) {
+            $bondLegRowsByForward[(int) ($row['forward_id'] ?? 0)][] = $row;
+        }
+        $bondLegEventsByForward = [];
+        foreach ($tenantBondLegEvents as $event) {
+            $bondLegEventsByForward[(int) ($event['forward_id'] ?? 0)][] = $event;
+        }
         $clientCards = '';
         foreach ($clients as $client) {
             $diagStatus = strtolower(trim((string) ($client['last_diag_status'] ?? '')));
@@ -846,6 +857,15 @@ final class TenantController extends BaseController
                 'bond_leg_reputation_rows' => [],
                 'bond_leg_reputation_events' => [],
             ];
+            foreach ($this->provisioning->assignedForwardConfigsForClient((int) ($client['id'] ?? 0)) as $config) {
+                $forwardId = (int) ($config['forward_id'] ?? 0);
+                foreach ($bondLegRowsByForward[$forwardId] ?? [] as $row) {
+                    $clientWithReputation['bond_leg_reputation_rows'][] = $row;
+                }
+                foreach ($bondLegEventsByForward[$forwardId] ?? [] as $event) {
+                    $clientWithReputation['bond_leg_reputation_events'][] = $event;
+                }
+            }
             $diagDialog = $this->renderTenantClientDiagnosticsDialog($clientWithReputation, $diagDialogId);
 
             $agentVersion = trim((string) ($client['agent_version'] ?? ''));
