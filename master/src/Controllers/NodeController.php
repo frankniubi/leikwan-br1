@@ -348,6 +348,8 @@ final class NodeController extends BaseController
             'heartbeat_interval_seconds',
             'usage_interval_seconds',
             'log_level',
+            'accept_panel_republish',
+            'disable_auto_update',
             'udp_uot_sidepath',
             'forward_chain_remediation',
         ], null);
@@ -366,6 +368,20 @@ final class NodeController extends BaseController
         $snapshot['private_ip'] = (string) ($node['private_ip'] ?? '');
         $snapshot['cloudflare_email'] = array_key_exists('cloudflare_email', $agentConfig) ? $agentConfig['cloudflare_email'] : null;
         $snapshot['cloudflare_global_key'] = array_key_exists('cloudflare_global_key', $agentConfig) ? $agentConfig['cloudflare_global_key'] : null;
+        $rawAcceptPanelRepublish = $agentConfig['accept_panel_republish'] ?? true;
+        $snapshot['accept_panel_republish'] = true;
+        if (is_bool($rawAcceptPanelRepublish)) {
+            $snapshot['accept_panel_republish'] = $rawAcceptPanelRepublish;
+        } elseif (in_array(strtolower(trim((string) $rawAcceptPanelRepublish)), ['false', 'no', 'off', '0'], true)) {
+            $snapshot['accept_panel_republish'] = false;
+        }
+        $rawDisableAutoUpdate = $agentConfig['disable_auto_update'] ?? false;
+        $snapshot['disable_auto_update'] = false;
+        if (is_bool($rawDisableAutoUpdate)) {
+            $snapshot['disable_auto_update'] = $rawDisableAutoUpdate;
+        } elseif (!in_array(strtolower(trim((string) $rawDisableAutoUpdate)), ['', 'false', 'no', 'off', '0'], true)) {
+            $snapshot['disable_auto_update'] = true;
+        }
 
         return $snapshot;
     }
