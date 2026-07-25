@@ -690,3 +690,45 @@ dialog{max-width:min(720px,calc(100vw - 32px));max-height:calc(100vh - 32px);bor
   th,td{min-width:110px}
 }
 @media(max-width:520px){.pg-metric-strip{grid-template-columns:repeat(3,minmax(0,1fr))}.toolbar,.site-actions{width:100%}.content-card{padding-inline:10px!important}}
+
+/* C2 Signal Chamber homepage. */
+.signal-hero{position:relative;isolation:isolate;display:grid;align-content:end;width:100vw;height:min(760px,calc(100svh - 104px));min-height:560px;margin:0 0 0 calc(50% - 50vw);padding:clamp(36px,7vw,92px) max(24px,calc((100vw - 1120px)/2));overflow:hidden;background:#0a0c0b;color:#f5f5f1}
+.signal-canvas{position:absolute;inset:0;z-index:-1;width:100%;height:100%}
+.signal-hero-copy{display:grid;align-content:end;gap:14px;width:min(720px,65%);padding-bottom:clamp(32px,8vh,84px)}
+.signal-eyebrow,.signal-detail-index{color:#ef4938;font-size:12px;font-weight:800;text-transform:uppercase}
+.signal-hero h1{max-width:900px;margin:0;color:#fff!important;font-size:clamp(38px,6vw,78px)!important;line-height:1.02!important;letter-spacing:0!important}
+.signal-offer{max-width:620px;margin:0;color:#bdc6c1;font-size:clamp(18px,2.2vw,28px);line-height:1.35}
+.signal-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:8px}
+.signal-actions .button{min-height:44px;padding:10px 16px!important;text-decoration:none}
+.signal-actions .signal-primary{background:#ef4938!important;border-color:#ef4938!important;color:#fff!important}
+.signal-actions .signal-secondary{background:transparent!important;border-color:#77817c!important;color:#fff!important}
+.signal-summary{position:absolute;right:max(24px,calc((100vw - 1120px)/2));bottom:clamp(36px,8vh,84px);display:grid;grid-template-columns:repeat(3,minmax(92px,1fr));width:min(380px,32vw);margin:0;border-top:1px solid #46504b}
+.signal-summary div{padding:12px 10px;border-right:1px solid #46504b}
+.signal-summary dt{color:#9da7a2;font-size:11px;text-transform:uppercase}
+.signal-summary dd{margin:5px 0 0;color:#fff;font-size:27px;font-weight:800;font-variant-numeric:tabular-nums}
+.signal-light-detail{display:grid;grid-template-columns:minmax(240px,.8fr) minmax(420px,1.4fr) auto;gap:clamp(24px,5vw,64px);align-items:start;padding:64px 0 72px;background:#fff;color:#17201c}
+.signal-light-detail>header h2{max-width:430px;margin:8px 0 12px;font-size:32px!important;line-height:1.15!important}
+.signal-light-detail>header p{max-width:460px;margin:0;color:#5f6964;font-size:14px;line-height:1.6}
+.signal-architecture{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:2px solid #17201c;border-bottom:1px solid #b9c0bb}
+.signal-architecture strong{grid-column:1/-1;padding:15px 0;font-size:18px;overflow-wrap:anywhere}
+.signal-architecture span{min-height:56px;padding:12px 8px 12px 0;border-top:1px solid #d4d9d5;color:#5f6964;font-size:12px}
+.signal-detail-actions{display:grid;gap:8px;min-width:140px}
+.signal-detail-actions .button{text-decoration:none}
+.signal-setup-note{grid-column:1/-1;margin:0;padding:12px 0;border-top:1px solid #b87308;color:#6f4b12;font-size:13px}
+@media(prefers-reduced-motion:reduce){.signal-canvas{opacity:.82}}
+@media(max-width:900px){
+  .signal-hero{height:calc(100svh - 96px);min-height:430px;padding-inline:20px}
+  .signal-hero-copy{width:min(680px,100%);padding-bottom:150px}
+  .signal-summary{right:20px;bottom:24px;left:20px;width:auto}
+  .signal-light-detail{grid-template-columns:1fr;padding:46px 0 54px}
+  .signal-detail-actions{display:flex;flex-wrap:wrap}
+}
+@media(max-width:520px){
+  .signal-hero{min-height:450px}
+  .signal-hero h1{font-size:40px!important}
+  .signal-offer{font-size:18px}
+  .signal-summary dd{font-size:22px}
+  .signal-summary dt{font-size:10px}
+  .signal-architecture strong{font-size:15px}
+  .signal-architecture span{font-size:10px}
+}

@@ -1228,6 +1228,7 @@ HTML;
     </footer>
   </div>
 {$this->i18nBootstrapHtml()}
+  <script src="/assets/signal-chamber.js?v=20260725" defer></script>
 </body>
 </html>
 HTML;

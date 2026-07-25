@@ -17,109 +17,58 @@ final class AuthController extends BaseController
     {
         $user = SessionAuth::currentUser($this->db);
         $adminCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'admin'])['total'] ?? 0);
+        $onlineSlaves = (int) ($this->db->fetchOne(
+            'SELECT COUNT(*) AS total FROM nodes WHERE status = :status',
+            ['status' => 'active']
+        )['total'] ?? 0);
+        $sidecarEndpoints = (int) ($this->db->fetchOne(
+            'SELECT COUNT(*) AS total FROM sidecar_points'
+        )['total'] ?? 0);
+        $regions = (int) ($this->db->fetchOne(
+            'SELECT COUNT(DISTINCT region) AS total FROM nodes WHERE status = :status',
+            ['status' => 'active']
+        )['total'] ?? 0);
 
-        $heroPrimary = '<a class="button" href="/login">Sign In</a>';
-        $heroSecondary = '<a class="button secondary" href="/register">Create Account</a>';
-        $consoleTitle = 'Tenant console';
-        $consoleBody = 'Open the panel that controls services, forwards, client profiles, transport endpoints, and route policy.';
-        $consoleAction = '<a class="button secondary" href="/login">Open Panel</a>';
-
-        if ($user !== null) {
-            $dashboardPath = $this->escape($this->dashboardPathForUser($user));
-            $dashboardLabel = $this->escape($this->dashboardLabelForUser($user));
-            $heroPrimary = '<a class="button" href="' . $dashboardPath . '">Open ' . $dashboardLabel . '</a>';
-            $heroSecondary = (string) ($user['role'] ?? '') === 'admin'
-                ? '<a class="button secondary" href="/admin/tenants">Manage Tenants</a>'
-                : '<a class="button secondary" href="/tenant/forwards">Forward Config</a>';
-            $consoleTitle = 'Current session';
-            $consoleBody = 'Return to the workspace that owns this traffic policy.';
-            $consoleAction = $heroPrimary;
-        }
-
-        $proofs = [
-            [
-                'number' => '01',
-                'title' => 'Single-thread bond speed',
-                'body' => 'Split one busy TCP or UDP session over multiple healthy legs so a single stream can use more than one route.',
-            ],
-            [
-                'number' => '02',
-                'title' => 'IXP + IPLC routing',
-                'body' => 'Blend exchange fabric and private-line paths by tenant plan, node group, region, and target transport policy.',
-            ],
-            [
-                'number' => '03',
-                'title' => 'Lower regulatory exposure',
-                'body' => 'Prefer auditable private or partner routes with explicit policy instead of opaque public-network bypass.',
-            ],
-        ];
-
-        $proofCards = '';
-        foreach ($proofs as $proof) {
-            $proofCards .= '<article class="pg-home-proof">'
-                . '<span class="pg-home-sequence">' . $this->escape($proof['number']) . '</span>'
-                . '<h3>' . $this->escape($proof['title']) . '</h3>'
-                . '<p>' . $this->escape($proof['body']) . '</p>'
-                . '</article>';
-        }
-
-        $opsCard = $adminCount === 0
-            ? '<section class="pg-home-entry">
-                <div><span class="pg-eyebrow">Operator setup</span><h3>Create the first admin</h3>
-                <p>Finish bootstrap once, then run tenants, services, forwards, credentials, and rollout tasks from the console.</p></div>
-                <pre>php master/scripts/create_user.php --email admin@example.com --password ChangeMe123! --role admin --name "Platform Admin"</pre>
-              </section>'
-            : '<section class="pg-home-entry">
-                <div><span class="pg-eyebrow">Operator setup</span><h3>Plans, tenants, nodes</h3>
-                <p>Operate plans, node groups, credentials, forward combinations, and rollout tasks.</p></div>
-                <div class="actions"><a class="button secondary" href="/login">Operator Sign In</a></div>
-              </section>';
+        $consoleHref = $user === null
+            ? '/login'
+            : $this->escape($this->dashboardPathForUser($user));
+        $setupNote = $adminCount === 0
+            ? '<p class="signal-setup-note"><strong>Operator setup required.</strong> Create the first admin before opening the control plane.</p>'
+            : '';
 
         $body = '
-            <section class="pg-home-header">
-              <div class="pg-home-copy">
-                <span class="pg-eyebrow">Operator setup</span>
+            <section class="signal-hero">
+              <canvas class="signal-canvas" aria-hidden="true"></canvas>
+              <div class="signal-hero-copy">
+                <span class="signal-eyebrow">Multi-Slave Transport</span>
                 <h1>&#21033;&#32676;&#26371;&#32858; LeiKwan Bridge</h1>
-                <h2>Bond speed. Private paths. Clean control.</h2>
-                <p>One busy session should not crawl because one route is full. LeiKwan Bridge bonds IXP, IPLC, slave nodes, client profiles, and transport endpoints into one policy-visible delivery plane.</p>
-                <div class="pg-header-actions">' . $heroPrimary . $heroSecondary . '</div>
-              </div>
-              <div class="pg-home-flow" aria-label="LeiKwan Bridge bonded path diagram">
-                <div class="pg-home-flow-summary">
-                  <span>1 flow</span>
-                  <strong>many legs</strong>
-                </div>
-                <div class="pg-home-leg-band" aria-hidden="true">
-                  <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-                </div>
-                <div class="pg-home-flow-nodes">
-                  <span>Client</span>
-                  <span>Slave</span>
-                  <span>Transport</span>
-                  <span>Target</span>
-                </div>
-                <div class="pg-home-flow-pills">
-                  <span>IXP fabric</span>
-                  <span>IPLC paths</span>
-                  <span>Policy proof</span>
+                <p class="signal-offer">Speed has more than one way through.</p>
+                <div class="signal-actions">
+                  <a class="button signal-primary" href="' . $consoleHref . '">Open Console</a>
+                  <a class="button signal-secondary" href="#network">View Network</a>
                 </div>
               </div>
+              <dl class="signal-summary">
+                <div><dt>Active Slaves</dt><dd>' . $onlineSlaves . '</dd></div>
+                <div><dt>Regions</dt><dd>' . $regions . '</dd></div>
+                <div><dt>Sidecar Endpoints</dt><dd>' . $sidecarEndpoints . '</dd></div>
+              </dl>
             </section>
-            <section class="pg-home-proof-list">' . $proofCards . '</section>
-            <section class="pg-home-entry-list">
-              <section class="pg-home-entry">
-                <div><span class="pg-eyebrow">' . $this->escape($consoleTitle) . '</span>
-                <h3>' . $this->escape($consoleTitle) . '</h3>
-                <p>' . $this->escape($consoleBody) . '</p></div>
-                <div class="actions">' . $consoleAction . '</div>
-              </section>
-              ' . $opsCard . '
-              <section class="pg-home-entry">
-                <div><span class="pg-eyebrow">Knowledgebase</span>
-                <h3>Routing playbooks</h3>
-                <p>Install flow, route modes, diagnostics, transport endpoint rollout, and recovery notes live in the panel docs.</p></div>
-                <div class="actions"><a class="button secondary" href="/knowledgebase">Open Docs</a></div>
-              </section>
+            <section id="network" class="signal-light-detail">
+              <header>
+                <span class="signal-detail-index">01 / Network</span>
+                <h2>One service, distributed transport.</h2>
+                <p>Every slave runs the same service. The client selects a path locally, while the panel keeps transport topology and provisioning visible.</p>
+              </header>
+              <div class="signal-architecture" aria-label="Client to target architecture">
+                <strong>Client &rarr; Slave &rarr; Sidecar &rarr; Target</strong>
+                <span>Ingress</span><span>Distributed nodes</span><span>Aggregation</span><span>Destination</span>
+              </div>
+              <div class="signal-detail-actions">
+                <a class="button" href="' . $consoleHref . '">Open Console</a>
+                <a class="button secondary" href="/knowledgebase">Open Docs</a>
+              </div>
+              ' . $setupNote . '
             </section>';
 
         return $this->publicPage('利群會聚 LeiKwan Bridge', $body, $user);
