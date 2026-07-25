@@ -642,3 +642,45 @@ dialog{max-width:min(720px,calc(100vw - 32px));max-height:calc(100vh - 32px);bor
   th,td{min-width:110px}
 }
 @media(max-width:520px){.pg-metric-strip{grid-template-columns:repeat(3,minmax(0,1fr))}.toolbar,.site-actions{width:100%}.content-card{padding-inline:10px!important}}
+
+/* Readable Sheet and focused-view primitives. */
+.pg-view-tabs{display:flex;align-items:center;gap:0;margin:0 0 20px;border-bottom:1px solid var(--line)}
+.pg-view-tab{min-height:42px;padding:10px 14px;color:var(--muted);border-bottom:3px solid transparent;text-decoration:none;font-size:13px;font-weight:700}
+.pg-view-tab:hover{color:var(--ink);background:var(--surface-soft)}
+.pg-view-tab.active,.pg-view-tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--signal)}
+.pg-sheet{min-width:0;background:var(--surface);border-top:2px solid var(--ink);border-bottom:1px solid var(--line)}
+.pg-sheet-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:52px;padding:8px 12px;border-bottom:1px solid var(--line)}
+.pg-sheet-scroll{max-width:100%;overflow:auto}
+.pg-sheet table,.pg-sheet-table{width:100%;border-collapse:collapse;font-size:14px!important;font-variant-numeric:tabular-nums}
+.pg-sheet th,.pg-sheet td,.pg-sheet-table th,.pg-sheet-table td{padding:12px 14px!important;border-bottom:1px solid var(--line-soft)!important;vertical-align:middle}
+.pg-sheet tbody tr,.pg-sheet-table tbody tr{min-height:52px}
+.pg-sheet th,.pg-sheet-table th{height:38px;background:var(--surface-soft)!important;color:var(--muted)!important;font-size:11px!important;font-weight:750;text-transform:uppercase}
+.pg-sheet tbody tr:hover td,.pg-sheet-table tbody tr:hover td{background:#f7f9f7}
+.pg-resource-cell{display:grid;gap:2px;min-width:0}
+.pg-resource-primary{overflow-wrap:anywhere;color:var(--ink);font-size:14px;line-height:1.35}
+.pg-resource-secondary{overflow-wrap:anywhere;color:var(--muted);font-size:12px;line-height:1.35;font-weight:500}
+.pg-status{display:inline-flex;align-items:center;gap:7px;min-height:24px;color:var(--muted);font-size:13px;font-weight:700;white-space:nowrap}
+.pg-status-dot{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:currentColor}
+.pg-status[data-state="ok"],.pg-status[data-state="healthy"]{color:var(--healthy)}
+.pg-status[data-state="warning"]{color:var(--warning)}
+.pg-status[data-state="error"],.pg-status[data-state="danger"]{color:var(--danger)}
+.pg-row-menu{position:relative;display:inline-block;border:0!important;background:transparent!important}
+.pg-row-menu>summary{display:grid;place-items:center;width:38px;height:38px;padding:0!important;border:1px solid transparent;border-radius:var(--radius);cursor:pointer;font-size:0;list-style:none}
+.pg-row-menu>summary::-webkit-details-marker{display:none}
+.pg-row-menu>summary::after{content:"...";font-size:16px;font-weight:800;line-height:1}
+.pg-row-menu>summary:hover{border-color:var(--line);background:var(--surface-soft)}
+.pg-row-menu-panel{position:absolute;right:0;z-index:8;display:grid;min-width:160px;padding:5px;background:var(--surface);border:1px solid var(--line);box-shadow:0 8px 24px rgba(23,32,28,.14)}
+.pg-row-menu-panel a,.pg-row-menu-panel button{justify-content:flex-start;min-height:36px;width:100%;padding:7px 9px!important;background:transparent!important;color:var(--ink)!important;border:0!important;text-decoration:none;font-size:13px}
+.pg-row-menu-panel a:hover,.pg-row-menu-panel button:hover{background:var(--surface-soft)!important}
+.pg-detail-section{display:grid;grid-template-columns:minmax(180px,260px) minmax(0,1fr);gap:28px;padding:22px 0;border-top:1px solid var(--line)}
+.pg-detail-section>header h2{margin:0 0 5px;font-size:15px!important}
+.pg-detail-section>header p{margin:0;color:var(--muted);font-size:13px}
+.pg-detail-body{min-width:0}
+.pg-mobile-resource-row{display:none;min-height:52px;padding:12px 0;border-bottom:1px solid var(--line-soft)}
+@media(max-width:720px){
+  .pg-sheet[data-mobile-resources="true"] .pg-sheet-scroll{display:none}
+  .pg-sheet[data-mobile-resources="true"] .pg-mobile-resource-row{display:grid;gap:9px}
+  .pg-detail-section{grid-template-columns:1fr;gap:12px}
+  .pg-view-tabs{overflow-x:auto}
+  .pg-view-tab{flex:0 0 auto}
+}

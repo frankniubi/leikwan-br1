@@ -62,6 +62,52 @@ final class PrecisionGridUi
             . ($meta !== '' ? '<span>' . self::escape($meta) . '</span>' : '') . '</header>';
     }
 
+    /** @param array<int, string> $allowed */
+    public static function normalizeView(?string $value, array $allowed, string $fallback): string
+    {
+        $value = strtolower(trim((string) $value));
+        return in_array($value, $allowed, true) ? $value : $fallback;
+    }
+
+    /** @param array<int, array{key:string,label:string,href:string}> $tabs */
+    public static function viewTabs(array $tabs, string $active): string
+    {
+        $html = '<nav class="pg-view-tabs" role="tablist" aria-label="Page views">';
+        foreach ($tabs as $tab) {
+            $selected = $tab['key'] === $active;
+            $html .= '<a role="tab" data-view="' . self::escape($tab['key']) . '" aria-selected="'
+                . ($selected ? 'true' : 'false') . '" class="pg-view-tab' . ($selected ? ' active' : '')
+                . '" href="' . self::escape($tab['href']) . '">' . self::escape($tab['label']) . '</a>';
+        }
+        return $html . '</nav>';
+    }
+
+    public static function status(string $label, string $state): string
+    {
+        return '<span class="pg-status" data-state="' . self::escape($state)
+            . '"><i class="pg-status-dot" aria-hidden="true"></i>' . self::escape($label) . '</span>';
+    }
+
+    public static function resourceCell(string $primary, string $secondary = ''): string
+    {
+        return '<span class="pg-resource-cell"><strong class="pg-resource-primary">' . self::escape($primary) . '</strong>'
+            . ($secondary !== '' ? '<small class="pg-resource-secondary">' . self::escape($secondary) . '</small>' : '')
+            . '</span>';
+    }
+
+    public static function rowMenu(string $label, string $commandsHtml): string
+    {
+        return '<details class="pg-row-menu"><summary aria-label="' . self::escape($label)
+            . '">&#8226;&#8226;&#8226;</summary><div class="pg-row-menu-panel">' . $commandsHtml . '</div></details>';
+    }
+
+    public static function detailSection(string $title, string $bodyHtml, string $description = ''): string
+    {
+        return '<section class="pg-detail-section"><header><h2>' . self::escape($title) . '</h2>'
+            . ($description !== '' ? '<p>' . self::escape($description) . '</p>' : '')
+            . '</header><div class="pg-detail-body">' . $bodyHtml . '</div></section>';
+    }
+
     private static function groupForLabel(string $label): string
     {
         return match ($label) {
