@@ -111,7 +111,7 @@ final class BondLegReputationService
             }
 
             $forwardId = max(0, (int) ($snapshot['forward_id'] ?? 0));
-            if ($forwardId <= 0) {
+            if ($forwardId <= 0 || !$this->forwardExists($forwardId)) {
                 continue;
             }
             $updatedAt = $this->normalizeTimestamp($snapshot['updated_at'] ?? null);
@@ -181,6 +181,18 @@ final class BondLegReputationService
                 }
             }
         }
+    }
+
+    private function forwardExists(int $forwardId): bool
+    {
+        if ($this->usesFakeTables()) {
+            return true;
+        }
+
+        return $this->db->fetchOne(
+            'SELECT id FROM forwards WHERE id = :id LIMIT 1',
+            ['id' => $forwardId]
+        ) !== null;
     }
 
     /**
