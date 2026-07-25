@@ -89,7 +89,7 @@ foreach ([
     '.pg-home-entry',
 ] as $styleSnippet) {
     if (!str_contains($base, $styleSnippet)) {
-        if (!str_contains((string) file_get_contents(__DIR__ . '/../public/assets/precision-grid.css'), $styleSnippet)) {
+        if (!str_contains((string) file_get_contents(__DIR__ . '/../public/assets/signal-chamber.css'), $styleSnippet)) {
             fail('missing homepage style snippet: ' . $styleSnippet);
         }
     }

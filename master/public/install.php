@@ -363,44 +363,8 @@ function renderShell(string $title, string $body): string
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>' . h($title) . '</title>
-  <style>
-    body { margin: 0; font-family: "Segoe UI", sans-serif; background: linear-gradient(180deg, #edf5ff 0%, #f6f8fc 220px); color: #172033; }
-    .shell { max-width: 1240px; margin: 0 auto; padding: 28px; }
-    .hero { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:18px; }
-    .hero h1 { margin:0 0 8px; font-size:32px; }
-    .toolbar { display:flex; align-items:center; gap:12px; }
-    .locale-switch { display:flex; align-items:center; gap:8px; }
-    .locale-label { color:#6b7280; font-size:13px; }
-    .locale-select { border:1px solid #e5e7eb; border-radius:10px; padding:8px 10px; font-size:13px; background:#fff; }
-    .muted { color: #6b7280; }
-    .grid { display:grid; gap:18px; }
-    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .card {
-      background:#fff; border-radius:24px; padding:22px;
-      box-shadow: 0 16px 42px rgba(15,23,42,.08); border:1px solid rgba(15,23,42,.05);
-      margin-bottom:18px;
-    }
-    .form-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:14px; }
-    .field { display:flex; flex-direction:column; gap:8px; }
-    .field label { font-size:13px; color:#6b7280; }
-    .field input, .field select {
-      border:1px solid #e5e7eb; border-radius:12px; padding:12px 14px; font-size:14px;
-    }
-    .button {
-      display:inline-flex; align-items:center; justify-content:center; gap:8px;
-      border:0; border-radius:12px; padding:10px 16px; background:#2563eb; color:#fff; font-weight:600; cursor:pointer;
-    }
-    .button.secondary { background:#eff6ff; color:#1e40af; }
-    .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
-    .callout { border-radius:18px; padding:16px 18px; margin-bottom:18px; }
-    .callout.success { background:#dcfce7; color:#166534; }
-    .callout.danger { background:#fee2e2; color:#991b1b; }
-    code, pre { font-family: Consolas, monospace; }
-    pre { background:#0f172a; color:#e2e8f0; padding:16px; border-radius:16px; overflow-x:auto; }
-    .list { margin: 0; padding-left: 18px; }
-    @media (max-width: 960px) { .grid.two, .form-grid { grid-template-columns: 1fr; } }
-  </style>
-  <link rel="stylesheet" href="/assets/precision-grid.css?v=20260725.3">
+  <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
+  <link rel="stylesheet" href="/assets/operator-console.css?v=20260725">
 </head>
 <body class="pg-public">
   <div class="shell">

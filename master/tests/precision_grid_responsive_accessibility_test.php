@@ -14,7 +14,8 @@ function requireSource(string $source, string $needle, string $message): void
     }
 }
 
-$css = file_get_contents(__DIR__ . '/../public/assets/precision-grid.css') ?: '';
+$css = (file_get_contents(__DIR__ . '/../public/assets/leikwan-ui.css') ?: '')
+    . (file_get_contents(__DIR__ . '/../public/assets/operator-console.css') ?: '');
 $base = file_get_contents(__DIR__ . '/../src/Controllers/BaseController.php') ?: '';
 $install = file_get_contents(__DIR__ . '/../public/install.php') ?: '';
 $bootstrap = file_get_contents(__DIR__ . '/../public/index.php') ?: '';
