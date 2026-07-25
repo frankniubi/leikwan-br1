@@ -27,12 +27,8 @@ final class HealthController extends BaseController
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{$appName}</title>
-  <style>
-    body { font-family: "Segoe UI", sans-serif; max-width: 960px; margin: 40px auto; padding: 0 20px; color: #1f2937; background: #f8fafc; }
-    .card { background: white; border-radius: 16px; padding: 24px; box-shadow: 0 10px 30px rgba(15,23,42,.08); margin-bottom: 20px; }
-    code { background: #eef2ff; padding: 2px 6px; border-radius: 6px; }
-  </style>
-  <link rel="stylesheet" href="/assets/precision-grid.css?v=20260725.3">
+  <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
+  <link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725">
 </head>
 <body class="pg-public">
   <main class="landing-stack"><div class="card pg-form-section">

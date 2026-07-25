@@ -2,15 +2,18 @@
 declare(strict_types=1);
 
 $root = dirname(__DIR__);
-$cssPath = $root . '/public/assets/precision-grid.css';
 $base = (string) file_get_contents($root . '/src/Controllers/BaseController.php');
 
-if (!is_file($cssPath)) {
-    throw new RuntimeException('precision grid stylesheet is missing');
+foreach (['leikwan-ui.css', 'operator-console.css', 'signal-chamber.css'] as $asset) {
+    if (!is_file($root . '/public/assets/' . $asset)) {
+        throw new RuntimeException('replacement stylesheet is missing: ' . $asset);
+    }
 }
-$css = (string) file_get_contents($cssPath);
+$css = (string) file_get_contents($root . '/public/assets/leikwan-ui.css')
+    . (string) file_get_contents($root . '/public/assets/operator-console.css')
+    . (string) file_get_contents($root . '/public/assets/signal-chamber.css');
 $compact = preg_replace('/\s+/', '', $css) ?: '';
-foreach (['--page-bg:#f3f3f0', '--surface:#ffffff', '--ink:#111111', '--success:#087f5b', '--danger:#c73f32'] as $token) {
+foreach (['--page:#eef0ed', '--surface:#fff', '--ink:#17201c', '--healthy:#139b68', '--danger:#c84538'] as $token) {
     if (!str_contains($compact, $token)) {
         throw new RuntimeException('missing token ' . $token);
     }
@@ -20,13 +23,12 @@ foreach ([':focus-visible', '.table-scroll', '.mobile-nav-toggle', '.status[data
         throw new RuntimeException('missing responsive/accessibility rule ' . $required);
     }
 }
-if (substr_count($base, '/assets/precision-grid.css?v=20260725.3') < 2) {
-    throw new RuntimeException('both shells must load precision-grid.css');
-}
-foreach (['radial-gradient', 'linear-gradient'] as $forbidden) {
-    if (str_contains($css, $forbidden)) {
-        throw new RuntimeException('forbidden decoration in shared stylesheet: ' . $forbidden);
+foreach (['/assets/leikwan-ui.css?v=20260725', '/assets/operator-console.css?v=20260725', '/assets/signal-chamber.css?v=20260725'] as $asset) {
+    if (!str_contains($base, $asset)) {
+        throw new RuntimeException('shell missing replacement stylesheet ' . $asset);
     }
 }
-
+if (str_contains($base, 'precision-grid.css') || is_file($root . '/public/assets/precision-grid.css')) {
+    throw new RuntimeException('retired precision-grid stylesheet remains');
+}
 echo "ok\n";
