@@ -95,6 +95,7 @@ class BondForwardRunnerTest {
                 ingressBinary = "/runtime/leikwan-ingress",
                 bondBinary = "/runtime/leikwan-bond",
             ),
+            strategyFilePath = "/data/user/0/com.leikwan.bridge/files/forward-strategies/26.strategy",
         )
 
         assertEquals(ForwardMode.BOND, context.mode)
@@ -119,6 +120,10 @@ class BondForwardRunnerTest {
         assertTrue(bondCommand.contains("127.0.0.1:11024"))
         assertTrue(bondCommand.contains("--session-token"))
         assertTrue(bondCommand.contains("tcp-token"))
+        assertTrue(bondCommand.contains("--strategy-file"))
+        assertTrue(bondCommand.contains("/data/user/0/com.leikwan.bridge/files/forward-strategies/26.strategy"))
+        assertTrue(bondCommand.contains("--default-strategy"))
+        assertTrue(bondCommand.contains("latency_best"))
         assertTrue(bondCommand.contains("--retransmit-ms"))
         assertTrue(bondCommand.contains("333"))
         assertTrue(bondCommand.contains("--connect-timeout-ms"))

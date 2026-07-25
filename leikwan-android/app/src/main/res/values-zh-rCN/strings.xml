@@ -245,4 +245,11 @@
     <string name="vpn_notification_channel_name">VPN 服务</string>
     <string name="vpn_notification_channel_description">雷宽桥 VPN 状态</string>
     <string name="vpn_notification_disconnect">断开连接</string>
+    <string name="tunnels_strategy_heading">连接策略</string>
+    <string name="tunnels_strategy_speed_max">Speed max</string>
+    <string name="tunnels_strategy_speed_max_description">聚合健康 Slave 路径，优先获得最大吞吐。</string>
+    <string name="tunnels_strategy_latency_best">Latency Best</string>
+    <string name="tunnels_strategy_latency_best_description">每个新连接固定使用本机测得延迟最低的健康 Slave。</string>
+    <string name="tunnels_strategy_random">Random</string>
+    <string name="tunnels_strategy_random_description">每个新连接随机固定到一个健康 Slave。</string>
 </resources>
