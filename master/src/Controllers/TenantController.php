@@ -2850,31 +2850,15 @@ final class TenantController extends BaseController
     private function tenantNav(string $active, ?int $serviceId = null): array
     {
         $nav = [
-            ['href' => '/tenant', 'label' => '介绍', 'active' => $active === 'intro'],
-            ['href' => '/tenant/account', 'label' => '账户', 'active' => $active === 'account'],
-            ['href' => '/tenant/plans', 'label' => '套餐', 'active' => $active === 'plans'],
-            ['href' => '/tenant/forwards', 'label' => '转发配置', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
-            ['href' => '/tenant/clients', 'label' => '接入点 (Client)', 'active' => $active === 'clients'],
-            ['href' => '/tenant-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
-            ['href' => '/tenant/slave-groups', 'label' => 'Slave 群组', 'active' => $active === 'slave-groups'],
-            ['href' => '/knowledgebase', 'label' => '知识库', 'active' => $active === 'knowledgebase'],
+            ['group' => 'Overview', 'href' => '/tenant', 'label' => 'Overview', 'active' => $active === 'intro'],
+            ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'Services and Forwards', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
+            ['group' => 'Clients', 'href' => '/tenant/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
+            ['group' => 'Plans and Billing', 'href' => '/tenant/plans', 'label' => 'Plans and Billing', 'active' => $active === 'plans'],
+            ['group' => 'Infrastructure', 'href' => '/tenant-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
+            ['group' => 'Infrastructure', 'href' => '/tenant/slave-groups', 'label' => 'Slave Groups', 'active' => $active === 'slave-groups'],
+            ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Account', 'active' => $active === 'account'],
+            ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
         ];
-
-        if ($serviceId !== null) {
-            $nav[] = [
-                'href' => '/tenant/services/' . $serviceId,
-                'label' => '服务详情',
-                'active' => $active === 'service',
-            ];
-
-            if ($active === 'wizard') {
-                $nav[] = [
-                    'href' => '/tenant/services/' . $serviceId . '/create-forward',
-                    'label' => '创建 Forward',
-                    'active' => true,
-                ];
-            }
-        }
 
         return $nav;
     }
