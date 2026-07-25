@@ -32,9 +32,11 @@ foreach ([
     ':focus-visible',
     '.table-scroll{max-width:100%;overflow:auto',
     '@media(max-width:900px)',
+    '@media(max-width:720px)',
     '.sidebar[data-open="true"]{display:block}',
     '.content-card{min-width:0',
     'overflow-wrap:anywhere',
+    '.pg-row-menu>summary{display:grid;place-items:center;width:38px;height:38px',
 ] as $needle) {
     requireSource($css, $needle, 'responsive or keyboard guard missing');
 }

@@ -11,7 +11,7 @@ foreach ([$root . '/src/Controllers', $root . '/public'] as $directory) {
         }
     }
 }
-foreach (['Speed max', 'Latency Best', 'client_strategy', 'strategy_mode', 'latency_ms_by_node'] as $forbidden) {
+foreach (['Speed max', 'Latency Best', '>Random<', 'client_strategy', 'strategy_mode', 'latency_ms_by_node'] as $forbidden) {
     if (str_contains($sources, $forbidden)) {
         throw new RuntimeException('client-local state leaked into Web source: ' . $forbidden);
     }
