@@ -1,5 +1,5 @@
 use crate::frame::{HelloFrame, WireFrame, read_frame, write_frame};
-use crate::strategy::ClientStrategy;
+use crate::strategy::{ClientStrategy, load_strategy};
 use crate::token::{SessionClaims, TransportProtocol, verify_session_token};
 use crate::transport::{
     LegIo, LegRole, LegSpec, LegTransport, accept_quic_leg, build_server_quic_endpoint, connect_leg, default_quic_listen,
@@ -563,14 +563,25 @@ async fn run_client_tcp_listener(
     loop {
         let (accepted_stream, peer) = listener.accept().await?;
         let mut pending_stream = Some(accepted_stream);
+        let strategy = config
+            .strategy_file
+            .as_deref()
+            .map(|path| load_strategy(path, config.default_strategy))
+            .unwrap_or(config.default_strategy);
 
         while let Some(local_stream) = pending_stream.take() {
-            match transport_tx.send(ClientTransportCommand::AttachLocalStream(local_stream)) {
+            match transport_tx.send(ClientTransportCommand::AttachLocalStream {
+                local_stream,
+                strategy,
+            }) {
                 Ok(()) => {
-                    debug!("attached local TCP connection {} to persistent bond transport", peer);
+                    debug!(
+                        "attached local TCP connection {} to persistent bond transport with {:?}",
+                        peer, strategy
+                    );
                 }
                 Err(err) => {
-                    let ClientTransportCommand::AttachLocalStream(local_stream) = err.0;
+                    let ClientTransportCommand::AttachLocalStream { local_stream, .. } = err.0;
                     warn!(
                         "bond tcp transport closed before accepting {}; reconnecting persistent session",
                         peer
@@ -947,7 +958,10 @@ struct ClientTransportBootstrap {
 }
 
 enum ClientTransportCommand {
-    AttachLocalStream(TcpStream),
+    AttachLocalStream {
+        local_stream: TcpStream,
+        strategy: ClientStrategy,
+    },
 }
 
 enum TcpTransportEvent {
@@ -964,6 +978,7 @@ enum TcpTransportEvent {
 }
 
 struct TcpStreamState {
+    strategy: ClientStrategy,
     local_backlog: VecDeque<Bytes>,
     pending_chunks: BTreeMap<u64, PendingChunk>,
     inbound: InboundState,
@@ -989,7 +1004,17 @@ struct TcpStreamState {
 
 impl TcpStreamState {
     fn new(local_write_tx: mpsc::Sender<LocalWriteCommand>, close_tx: watch::Sender<bool>, opened: bool) -> Self {
+        Self::new_with_strategy(local_write_tx, close_tx, opened, ClientStrategy::SpeedMax)
+    }
+
+    fn new_with_strategy(
+        local_write_tx: mpsc::Sender<LocalWriteCommand>,
+        close_tx: watch::Sender<bool>,
+        opened: bool,
+        strategy: ClientStrategy,
+    ) -> Self {
         Self {
+            strategy,
             local_backlog: VecDeque::new(),
             pending_chunks: BTreeMap::new(),
             inbound: InboundState::new(),
@@ -1609,6 +1634,7 @@ async fn run_tcp_transport_session(
     let mut reset_reasons = HashMap::<u32, String>::new();
     let mut next_stream_id = 1u32;
     let mut round_robin_cursor = 0usize;
+    let mut random_state = session_id.as_u128() as u64 ^ ((session_id.as_u128() >> 64) as u64);
     let mut retransmit_tick = interval(Duration::from_millis(100));
     let mut last_activity = Instant::now();
     let mut no_leg_deadline = None::<Instant>;
@@ -1662,13 +1688,23 @@ async fn run_tcp_transport_session(
                 }
             }, if role == SessionRole::Client => {
                 match command {
-                    Some(ClientTransportCommand::AttachLocalStream(local_stream)) => {
+                    Some(ClientTransportCommand::AttachLocalStream { local_stream, strategy }) => {
                         let stream_id = next_transport_stream_id(&streams, &connecting_streams, &closed_streams, &mut next_stream_id);
                         let (local_read, local_write) = local_stream.into_split();
                         let (local_write_tx, local_write_rx) = mpsc::channel(64);
                         let (close_tx, close_rx) = watch::channel(false);
-                        let mut state = TcpStreamState::new(local_write_tx.clone(), close_tx.clone(), false);
-                        state.preferred_leg_id = select_stream_affinity_leg(&legs, &mut round_robin_cursor);
+                        let mut state = TcpStreamState::new_with_strategy(
+                            local_write_tx.clone(),
+                            close_tx.clone(),
+                            false,
+                            strategy,
+                        );
+                        state.preferred_leg_id = select_strategy_affinity_leg(
+                            strategy,
+                            &legs,
+                            &mut round_robin_cursor,
+                            &mut random_state,
+                        );
                         streams.insert(stream_id, state);
                         debug!("transport {} attached local stream {}", session_id, stream_id);
                         spawn_transport_stream_reader(stream_id, local_read, config.chunk_size, close_rx, event_tx.clone());
@@ -2612,12 +2648,15 @@ fn flush_tcp_stream_backlogs(
                 .map(|chunk| chunk.len())
                 .sum::<usize>()
                 .saturating_add(payload.len());
-            let next_stage = decide_striping_stage(
-                state.outbound_next_offset as usize,
-                backlog_bytes,
-                state.warmup_leg_count,
-                legs.iter().filter(|leg| leg.active).count(),
-                config,
+            let next_stage = strategy_striping_stage(
+                state.strategy,
+                decide_striping_stage(
+                    state.outbound_next_offset as usize,
+                    backlog_bytes,
+                    state.warmup_leg_count,
+                    legs.iter().filter(|leg| leg.active).count(),
+                    config,
+                ),
             );
             if next_stage != state.striping_stage {
                 info!(
@@ -2637,7 +2676,8 @@ fn flush_tcp_stream_backlogs(
 
             let now = Instant::now();
             let Some(leg_index) = (match state.striping_stage {
-                TcpStripingStage::Sticky => select_stream_leg(
+                TcpStripingStage::Sticky => select_pinned_strategy_leg(
+                    state.strategy,
                     legs,
                     round_robin_cursor,
                     state.preferred_leg_id,
@@ -4279,6 +4319,47 @@ fn select_stream_leg(
     )
 }
 
+fn select_pinned_strategy_leg(
+    strategy: ClientStrategy,
+    legs: &[LegState],
+    round_robin_cursor: &mut usize,
+    preferred_leg_id: Option<usize>,
+    payload_len: usize,
+    outstanding_bytes: usize,
+    config: &SessionConfig,
+) -> Option<usize> {
+    match strategy {
+        ClientStrategy::LatencyBest | ClientStrategy::Random => {
+            if let Some(leg_id) = preferred_leg_id {
+                if preferred_leg_allowed_for_interactive_tcp(legs, leg_id, Instant::now()) {
+                    return Some(leg_id);
+                }
+            }
+            if strategy == ClientStrategy::LatencyBest {
+                return select_latency_best_leg(legs);
+            }
+            let mut candidates = eligible_strategy_legs(legs);
+            candidates.sort_by_key(|leg| leg.id);
+            if candidates.is_empty() {
+                return None;
+            }
+            let selected = candidates[*round_robin_cursor % candidates.len()].id;
+            *round_robin_cursor = round_robin_cursor.wrapping_add(1);
+            return Some(selected);
+        }
+        ClientStrategy::SpeedMax => {}
+    }
+
+    select_stream_leg(
+        legs,
+        round_robin_cursor,
+        preferred_leg_id,
+        payload_len,
+        outstanding_bytes,
+        config,
+    )
+}
+
 fn select_alternate_leg(
     legs: &[LegState],
     round_robin_cursor: &mut usize,
@@ -4447,6 +4528,64 @@ fn select_stream_affinity_leg(legs: &[LegState], round_robin_cursor: &mut usize)
     });
     *round_robin_cursor = round_robin_cursor.wrapping_add(1);
     candidates.first().map(|leg| leg.id)
+}
+
+fn select_strategy_affinity_leg(
+    strategy: ClientStrategy,
+    legs: &[LegState],
+    round_robin_cursor: &mut usize,
+    random_state: &mut u64,
+) -> Option<usize> {
+    match strategy {
+        ClientStrategy::SpeedMax => select_stream_affinity_leg(legs, round_robin_cursor),
+        ClientStrategy::LatencyBest => select_latency_best_leg(legs),
+        ClientStrategy::Random => select_random_healthy_leg(legs, random_state),
+    }
+}
+
+fn eligible_strategy_legs(legs: &[LegState]) -> Vec<&LegState> {
+    let now = Instant::now();
+    let healthy = legs
+        .iter()
+        .filter(|leg| {
+            leg_available_for_new_data(leg, now) && leg.tcp_health.state == LegHealthState::Healthy
+        })
+        .collect::<Vec<_>>();
+    if healthy.is_empty() {
+        legs.iter()
+            .filter(|leg| leg_available_for_new_data(leg, now))
+            .collect()
+    } else {
+        healthy
+    }
+}
+
+fn select_latency_best_leg(legs: &[LegState]) -> Option<usize> {
+    let mut candidates = eligible_strategy_legs(legs);
+    candidates.sort_by_key(|leg| {
+        (
+            leg_health_state_rank(leg.tcp_health.state),
+            leg.smoothed_rtt,
+            leg.priority,
+            leg.inflight_bytes,
+            leg.id,
+        )
+    });
+    candidates.first().map(|leg| leg.id)
+}
+
+fn select_random_healthy_leg(legs: &[LegState], random_state: &mut u64) -> Option<usize> {
+    let candidates = eligible_strategy_legs(legs);
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let mut value = (*random_state).max(1);
+    value ^= value << 13;
+    value ^= value >> 7;
+    value ^= value << 17;
+    *random_state = value;
+    Some(candidates[(value as usize) % candidates.len()].id)
 }
 
 fn select_udp_leg(
@@ -4621,6 +4760,13 @@ fn decide_striping_stage(
         return TcpStripingStage::Warmup;
     }
     TcpStripingStage::Sticky
+}
+
+fn strategy_striping_stage(strategy: ClientStrategy, calculated: TcpStripingStage) -> TcpStripingStage {
+    match strategy {
+        ClientStrategy::SpeedMax => calculated,
+        ClientStrategy::LatencyBest | ClientStrategy::Random => TcpStripingStage::Sticky,
+    }
 }
 
 fn allowed_leg_count(stage: TcpStripingStage, healthy_leg_count: usize) -> usize {
@@ -4876,6 +5022,60 @@ mod tests {
     #[test]
     fn bulk_stage_allows_all_healthy_legs_for_large_streams() {
         assert_eq!(allowed_leg_count(TcpStripingStage::Bulk, 5), 5);
+    }
+
+    #[test]
+    fn latency_best_never_promotes_a_stream_to_bulk_striping() {
+        assert_eq!(
+            strategy_striping_stage(ClientStrategy::LatencyBest, TcpStripingStage::Bulk),
+            TcpStripingStage::Sticky
+        );
+    }
+
+    #[test]
+    fn latency_best_selects_the_lowest_latency_healthy_leg() {
+        let mut legs = vec![fake_leg(0, 10, 0, 45), fake_leg(1, 10, 0, 12)];
+        legs[0].role = LegRole::Primary;
+        let mut cursor = 0usize;
+        let mut random_state = 7u64;
+
+        let selected = select_strategy_affinity_leg(
+            ClientStrategy::LatencyBest,
+            &legs,
+            &mut cursor,
+            &mut random_state,
+        );
+
+        assert_eq!(selected, Some(1));
+    }
+
+    #[test]
+    fn random_is_pinned_per_stream_until_its_leg_fails() {
+        let legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        let mut cursor = 0usize;
+        let selected = select_pinned_strategy_leg(
+            ClientStrategy::Random,
+            &legs,
+            &mut cursor,
+            Some(1),
+            128 * 1024,
+            512 * 1024,
+            &test_config(),
+        );
+        assert_eq!(selected, Some(1));
+
+        let mut failed = legs;
+        failed[1].active = false;
+        let selected_after_failure = select_pinned_strategy_leg(
+            ClientStrategy::Random,
+            &failed,
+            &mut cursor,
+            Some(1),
+            128 * 1024,
+            512 * 1024,
+            &test_config(),
+        );
+        assert_eq!(selected_after_failure, Some(0));
     }
 
     #[test]
