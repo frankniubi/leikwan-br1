@@ -8,6 +8,7 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
+use Leikwan\Master\Support\PrecisionGridUi;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\WhmcsIdentityService;
@@ -139,12 +140,27 @@ final class TenantController extends BaseController
             return Response::redirect('/login');
         }
 
+        $view = PrecisionGridUi::normalizeView(
+            (string) $request->input('view', 'list'),
+            ['list'],
+            'list'
+        );
+
         $services = $this->db->fetchAll(
             'SELECT s.id, s.name, s.status, s.expire_at, s.bandwidth_limit_mbps, s.traffic_limit_gb, s.traffic_used_bytes, s.whmcs_service_id, p.name AS plan_name
              FROM services s
              LEFT JOIN service_plans p ON p.id = s.plan_id
              WHERE s.user_id = :user_id
              ORDER BY s.id DESC',
+            ['user_id' => $user['id']]
+        );
+        $forwards = $this->db->fetchAll(
+            'SELECT s.id AS service_id, s.name AS service_name, s.status AS service_status,
+                    f.id AS forward_id, f.listen_port, f.target_host, f.target_port, f.enabled
+             FROM services s
+             LEFT JOIN forwards f ON f.service_id = s.id
+             WHERE s.user_id = :user_id
+             ORDER BY s.id DESC, f.id DESC',
             ['user_id' => $user['id']]
         );
 
@@ -192,6 +208,36 @@ final class TenantController extends BaseController
             </tr>';
         }
 
+        $forwardRows = '';
+        $forwardMobileRows = '';
+        foreach ($forwards as $forward) {
+            $serviceId = (int) $forward['service_id'];
+            $forwardId = (int) ($forward['forward_id'] ?? 0);
+            $serviceName = (string) $forward['service_name'];
+            $forwardLabel = $forwardId > 0 ? 'Forward #' . $forwardId : 'No forward yet';
+            $target = $forwardId > 0
+                ? (string) $forward['target_host'] . ':' . (int) $forward['target_port']
+                : 'Not configured';
+            $statusLabel = $forwardId > 0
+                ? ((int) $forward['enabled'] === 1 ? 'Active' : 'Disabled')
+                : ucfirst((string) $forward['service_status']);
+            $statusState = ($forwardId > 0 ? (int) $forward['enabled'] === 1 : (string) $forward['service_status'] === 'active') ? 'ok' : 'warning';
+            $commands = '<a href="/tenant/services/' . $serviceId . '/create-forward">Add Forward</a>'
+                . ($forwardId > 0 ? '<a href="/tenant/forwards/' . $forwardId . '/edit">Edit Forward</a>' : '')
+                . '<a href="/tenant/services/' . $serviceId . '">Service Details</a>';
+            $forwardRows .= '<tr><td>' . PrecisionGridUi::resourceCell($serviceName, $forwardLabel) . '</td>'
+                . '<td>' . ($forwardId > 0 ? (int) $forward['listen_port'] : '-') . '</td>'
+                . '<td>' . $this->escape($target) . '</td><td>' . PrecisionGridUi::status($statusLabel, $statusState) . '</td>'
+                . '<td>' . PrecisionGridUi::rowMenu($serviceName . ' forward actions', $commands) . '</td></tr>';
+            $forwardMobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($serviceName, $forwardLabel)
+                . PrecisionGridUi::status($statusLabel, $statusState) . '</header><dl><div><dt>Local Port</dt><dd>'
+                . ($forwardId > 0 ? (int) $forward['listen_port'] : '-') . '</dd></div><div><dt>Target</dt><dd>' . $this->escape($target)
+                . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($serviceName . ' forward actions', $commands) . '</footer></article>';
+        }
+        if ($forwardRows === '') {
+            $forwardRows = '<tr><td colspan="5" class="muted">No service or Forward is available yet.</td></tr>';
+        }
+
         $emptyState = $services === []
             ? '<section class="card">
                 <h3>No Service Yet</h3>
@@ -215,16 +261,17 @@ final class TenantController extends BaseController
               <section class="card"><div class="muted">Estimated This Cycle</div><div class="stats">CNY ' . $this->escape(number_format($totalEstimatedBilling, 2)) . '</div></section>
             </div>
             ' . $emptyState . '
-            <section class="card" style="margin-top:20px;">
+            <section class="pg-sheet" data-mobile-resources="true" style="margin-top:20px;">
               <h3>服务与 Forward 入口</h3>
-              <div class="table-wrap">
-                <table>
+              <div class="pg-sheet-scroll">
+                <table class="pg-sheet-table">
                   <thead>
-                    <tr><th>ID</th><th>Name</th><th>Status</th><th>WHMCS</th><th>Plan</th><th>Billing Mode</th><th>Current Bill</th><th>Expire At</th><th>Bandwidth</th><th>Traffic Limit</th><th>Used Traffic</th><th>Remaining</th><th>Usage</th><th>Actions</th></tr>
+                    <tr><th>Service / Forward</th><th>Local Port</th><th>Target</th><th>Status</th><th><span class="pg-visually-hidden">Actions</span></th></tr>
                   </thead>
-                  <tbody>' . $rows . '</tbody>
+                  <tbody>' . $forwardRows . '</tbody>
                 </table>
               </div>
+              <div class="pg-mobile-resource-list">' . $forwardMobileRows . '</div>
             </section>';
 
         return $this->page('转发配置', $body, $user, $this->tenantNav('forwards'));
@@ -808,6 +855,12 @@ final class TenantController extends BaseController
             return Response::redirect('/login');
         }
 
+        $view = PrecisionGridUi::normalizeView(
+            (string) $request->input('view', 'list'),
+            ['list', 'install', 'detail', 'advanced'],
+            'list'
+        );
+
         $services = $this->db->fetchAll('SELECT id FROM services WHERE user_id = :user_id', ['user_id' => $user['id']]);
         $featureBase = $services !== [] ? $this->provisioning->serviceSummary((int) $services[0]['id']) : null;
         $features = $featureBase['effective_features'] ?? $this->provisioning->defaultFeatureFlags();
@@ -819,6 +872,9 @@ final class TenantController extends BaseController
         $allowedGroups = $this->provisioning->availableClientGroupsForUser((int) $user['id']);
         $chains = $this->provisioning->availableForwardChainsForService((int) ($services[0]['id'] ?? 0));
         $editId = (int) $request->input('edit', 0);
+        if ($editId > 0) {
+            $view = 'detail';
+        }
         $editing = null;
         foreach ($clients as $client) {
             if ((int) $client['id'] === $editId) {
@@ -843,6 +899,8 @@ final class TenantController extends BaseController
             $bondLegEventsByForward[(int) ($event['forward_id'] ?? 0)][] = $event;
         }
         $clientCards = '';
+        $clientRows = '';
+        $clientMobileRows = '';
         foreach ($clients as $client) {
             $diagStatus = strtolower(trim((string) ($client['last_diag_status'] ?? '')));
             $diagBadgeClass = match ($diagStatus) {
@@ -912,6 +970,28 @@ final class TenantController extends BaseController
             if ($onlineRows === '') {
                 $onlineRows = '<li class="muted">No active device right now.</li>';
             }
+
+            $clientId = (int) $client['id'];
+            $clientName = (string) $client['name'];
+            $displayHost = (string) $client['display_host'];
+            $clientStatus = (string) ($client['status'] ?? 'active');
+            $groupName = (string) ($client['group_name'] ?? 'No group');
+            $lastSyncLabel = $lastSyncAt !== '' ? $lastSyncAt : 'Never';
+            $commands = ($canManageClients ? '<a href="/tenant/clients?view=detail&amp;edit=' . $clientId . '">Edit</a>' : '')
+                . '<a href="/tenant/clients?view=install&amp;edit=' . $clientId . '">Install</a>'
+                . '<form class="inline" method="post" action="/tenant/clients/' . $clientId . '/diagnose"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit">Run Diagnostics</button></form>'
+                . '<form class="inline" method="post" action="/tenant/clients/' . $clientId . '/request-update"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit">Request Update</button></form>'
+                . '<button type="button" data-diag-dialog="' . $this->escape($diagDialogId) . '">View Diagnostics</button>'
+                . '<form class="inline" method="post" action="/tenant/clients/' . $clientId . '/delete"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit" class="danger"' . (empty($features['allow_delete_clients']) ? ' disabled' : '') . '>Delete</button></form>';
+            $clientRows .= '<tr><td>' . PrecisionGridUi::resourceCell($clientName, $displayHost) . '</td><td>'
+                . $this->escape($groupName) . '</td><td>' . PrecisionGridUi::status(ucfirst($clientStatus), $clientStatus === 'active' ? 'ok' : 'error')
+                . '</td><td>' . PrecisionGridUi::resourceCell($updateLabel, $agentVersion !== '' ? $agentVersion : 'Not installed')
+                . '</td><td>' . $this->escape($onlineSummary) . '</td><td>' . $this->escape($lastSyncLabel) . '</td><td>'
+                . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . $diagDialog . '</td></tr>';
+            $clientMobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($clientName, $displayHost)
+                . PrecisionGridUi::status(ucfirst($clientStatus), $clientStatus === 'active' ? 'ok' : 'error')
+                . '</header><dl><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>App</dt><dd>' . $this->escape($updateLabel) . '</dd></div><div><dt>Online</dt><dd>' . $this->escape($onlineSummary) . '</dd></div><div><dt>Last Sync</dt><dd>' . $this->escape($lastSyncLabel) . '</dd></div></dl><footer>'
+                . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</footer></article>';
 
             $clientCards .= '<section class="card">
                 <div class="hero" style="margin-bottom:14px;">
@@ -1036,7 +1116,18 @@ final class TenantController extends BaseController
               </section>';
         }
 
-        $body = '
+        $tabs = PrecisionGridUi::viewTabs([
+            ['key' => 'list', 'label' => 'Clients', 'href' => '/tenant/clients?view=list'],
+            ['key' => 'install', 'label' => 'Install', 'href' => '/tenant/clients?view=install'],
+            ['key' => 'advanced', 'label' => 'Advanced', 'href' => '/tenant/clients?view=advanced'],
+        ], $view);
+        $listView = '<section class="pg-sheet" data-mobile-resources="true">
+            <div class="pg-sheet-toolbar"><strong>Client Profiles</strong><span class="muted">' . $currentClientProfiles . ' / ' . $maxClientProfiles . '</span></div>
+            <div class="pg-sheet-scroll"><table class="pg-sheet-table"><thead><tr><th>Client / Host</th><th>Group</th><th>Status</th><th>App</th><th>Online</th><th>Last Sync</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead><tbody>'
+            . ($clientRows !== '' ? $clientRows : '<tr><td colspan="7" class="muted">No client yet.</td></tr>')
+            . '</tbody></table></div><div class="pg-mobile-resource-list">' . $clientMobileRows . '</div></section>';
+
+        $body = $tabs . ($view === 'list' ? $listView : '') . ($view !== 'list' ? '
             <div class="hero">
               <div>
                 <h2>Client Profiles</h2>
@@ -1060,7 +1151,7 @@ final class TenantController extends BaseController
                 <p class="muted">Each client card shows only what a tenant needs first: install state, online count, and a few actions. Open details only when needed.</p>
                 <div class="stack">' . ($clientCards !== '' ? $clientCards : '<div class="muted">No client yet.</div>') . '</div>
               </section>
-            </div>
+            </div>' : '') . '
             <script>
               (function () {
                 document.addEventListener("click", function (event) {
@@ -1355,6 +1446,12 @@ final class TenantController extends BaseController
             return Response::redirect('/login');
         }
 
+        $view = PrecisionGridUi::normalizeView(
+            (string) $request->input('view', 'overview'),
+            ['overview', 'forwards'],
+            'overview'
+        );
+
         $serviceId = $this->idParam($params);
         $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id AND user_id = :user_id LIMIT 1', [
             'id' => $serviceId,
@@ -1577,7 +1674,11 @@ final class TenantController extends BaseController
             </section>';
         }
 
-        $body = '
+        $tabs = PrecisionGridUi::viewTabs([
+            ['key' => 'overview', 'label' => 'Overview', 'href' => '/tenant/services/' . $serviceId . '?view=overview'],
+            ['key' => 'forwards', 'label' => 'Forwards', 'href' => '/tenant/services/' . $serviceId . '?view=forwards'],
+        ], $view);
+        $body = $tabs . '
             <div class="hero">
               <div>
                 <h2>' . $this->escape((string) $service['name']) . '</h2>
@@ -1804,6 +1905,12 @@ final class TenantController extends BaseController
         if ($user === null || (string) $user['role'] !== 'tenant') {
             return Response::redirect('/login');
         }
+
+        $view = PrecisionGridUi::normalizeView(
+            (string) $request->input('view', 'detail'),
+            ['detail'],
+            'detail'
+        );
 
         $serviceId = $this->idParam($params);
         $forwardId = (int) ($params['fid'] ?? 0);
