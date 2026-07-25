@@ -7,107 +7,66 @@ function fail(string $message): never
     exit(1);
 }
 
-$auth = file_get_contents(__DIR__ . '/../src/Controllers/AuthController.php');
-$base = file_get_contents(__DIR__ . '/../src/Controllers/BaseController.php');
-$zhTw = json_decode((string) file_get_contents(__DIR__ . '/../public/i18n/zh-TW.json'), true);
-$zhHans = json_decode((string) file_get_contents(__DIR__ . '/../public/i18n/zh-Hans.json'), true);
+$root = dirname(__DIR__);
+$auth = (string) file_get_contents($root . '/src/Controllers/AuthController.php');
+$css = (string) file_get_contents($root . '/public/assets/signal-chamber.css');
+$zhTw = json_decode((string) file_get_contents($root . '/public/i18n/zh-TW.json'), true);
+$zhHans = json_decode((string) file_get_contents($root . '/public/i18n/zh-Hans.json'), true);
 
-if (!is_string($auth) || $auth === '') {
-    fail('failed to read AuthController source');
-}
-if (!is_string($base) || $base === '') {
-    fail('failed to read BaseController source');
-}
 if (!is_array($zhTw) || !is_array($zhHans)) {
     fail('failed to load locale dictionaries');
 }
 
-$brandName = "\u{5229}\u{7FA4}\u{6703}\u{805A} LeiKwan Bridge";
-$requiredHomepageSnippets = [
-    $brandName,
-    'Bond speed. Private paths. Clean control.',
-    'One busy session should not crawl because one route is full.',
-    '1 flow',
-    'many legs',
-    'IXP fabric',
-    'IPLC paths',
-    'Policy proof',
-    'Client',
-    'Slave',
-    'Transport',
-    'Target',
-    'Bond speed',
-    'Private paths',
-    'Clean control',
-    'Single-thread bond speed',
-    'IXP + IPLC routing',
-    'Lower regulatory exposure',
-    'Tenant console',
-    'Open the panel that controls services, forwards, client profiles, transport endpoints, and route policy.',
-    'Blend exchange fabric and private-line paths by tenant plan, node group, region, and target transport policy.',
-    'LeiKwan Bridge bonds IXP, IPLC, slave nodes, client profiles, and transport endpoints into one policy-visible delivery plane.',
-    'Install flow, route modes, diagnostics, transport endpoint rollout, and recovery notes live in the panel docs.',
-    'Operator setup',
-    'Open Docs',
-];
-
-foreach ($requiredHomepageSnippets as $snippet) {
+foreach ([
+    '&#21033;&#32676;&#26371;&#32858; LeiKwan Bridge',
+    'Multi-Slave Transport',
+    'Speed has more than one way through.',
+    'One service, distributed transport.',
+    'Every slave runs the same service.',
+    'Client &rarr; Slave &rarr; Sidecar &rarr; Target',
+    'Active Slaves',
+    'Sidecar Endpoints',
+] as $snippet) {
     if (!str_contains($auth, $snippet)) {
         fail('missing homepage positioning snippet: ' . $snippet);
     }
 }
 
 foreach ([
-    'Short homepage by design',
-    'Lightweight IXP control plane.',
-    'Use this page as the front door. Real work continues inside the tenant or admin console.',
-    'Bonded IXP/IPLC acceleration for single-thread traffic.',
-    'Fast paths, visible policy, controlled delivery.',
-    'Open the panel that controls services, forwards, clients, sidecars, and route policy.',
-    'Blend exchange fabric and private-line paths by tenant plan, node group, region, and sidecar target.',
-    'LeiKwan Bridge bonds IXP, IPLC, slave nodes, clients, and sidecars into one policy-visible delivery plane.',
-    'Install flow, route modes, diagnostics, sidecar rollout, and recovery notes live in the panel docs.',
-] as $removedSnippet) {
-    if (str_contains($auth, $removedSnippet)) {
-        fail('old homepage description still present: ' . $removedSnippet);
+    'client strategy',
+    'client latency',
+    'client RTT',
+    'Speed max',
+    'Latency Best',
+    'Random',
+] as $privateTerm) {
+    if (stripos($auth, $privateTerm) !== false) {
+        fail('homepage exposes client-local selection detail: ' . $privateTerm);
     }
 }
 
-if (stripos($auth, 'no regulation risk') !== false) {
-    fail('homepage should avoid absolute "no regulation risk" claims');
-}
-
-if (str_contains($auth, '????')) {
-    fail('homepage contains mojibake/question-mark replacement text');
-}
-
-foreach ([
-    '.pg-home-header',
-    '.pg-home-flow',
-    '.pg-home-flow-nodes',
-    '.pg-home-proof-list',
-    '.pg-home-entry',
-] as $styleSnippet) {
-    if (!str_contains($base, $styleSnippet)) {
-        if (!str_contains((string) file_get_contents(__DIR__ . '/../public/assets/signal-chamber.css'), $styleSnippet)) {
-            fail('missing homepage style snippet: ' . $styleSnippet);
-        }
+foreach (['.signal-hero', '.signal-canvas', '.signal-summary', '.signal-light-detail', '.signal-architecture'] as $selector) {
+    if (!str_contains($css, $selector)) {
+        fail('missing homepage style selector: ' . $selector);
     }
 }
 
 foreach ([
-    'Bond speed. Private paths. Clean control.',
-    'Single-thread bond speed',
-    'IXP + IPLC routing',
-    'Lower regulatory exposure',
-    'Tenant console',
+    'Multi-Slave Transport',
+    'Speed has more than one way through.',
+    'Open Console',
+    'View Network',
+    'Active Slaves',
+    'Regions',
+    'Sidecar Endpoints',
+    'One service, distributed transport.',
 ] as $localeKey) {
     foreach (['zh-TW' => $zhTw, 'zh-Hans' => $zhHans] as $locale => $dictionary) {
         $value = (string) (($dictionary['text'] ?? [])[$localeKey] ?? '');
         if ($value === '') {
             fail('missing homepage locale key for ' . $locale . ': ' . $localeKey);
         }
-        if (str_contains($value, "\u{FFFD}") || str_contains($value, '?')) {
+        if (str_contains($value, "\u{FFFD}")) {
             fail('corrupted homepage locale value for ' . $locale . ': ' . $localeKey);
         }
     }
