@@ -7,6 +7,7 @@ import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.clientrules.ClientRouteRuleSnapshot
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.data.ForwardStrategyStore
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.data.routing.RoutingExplainabilitySnapshot
 import com.leikwan.bridge.data.routing.RoutingExplainabilityStore
@@ -306,7 +307,20 @@ class TunnelOrchestrator internal constructor(
         portSalt: Int = 0,
     ): RuntimeContext = when (forward.mode) {
         ForwardMode.SINGLE -> SingleForwardRunner.buildPlan(forward, binaries)
-        ForwardMode.BOND -> BondForwardRunner.buildPlan(forward, binaries, portSalt)
+        ForwardMode.BOND -> {
+            val strategyFile = ForwardStrategyStore.ensureRuntimeFile(
+                context,
+                prefs.panelUrl,
+                prefs.clientId,
+                forward.forwardId,
+            )
+            BondForwardRunner.buildPlan(
+                forward,
+                binaries,
+                portSalt,
+                strategyFilePath = strategyFile.absolutePath,
+            )
+        }
         else -> throw Exception("Forward ${forward.forwardId} mode ${forward.mode.wireValue} is not supported on Android")
     }
 

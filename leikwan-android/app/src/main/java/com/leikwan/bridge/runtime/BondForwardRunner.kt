@@ -10,6 +10,7 @@ object BondForwardRunner {
         forward: ForwardContract,
         binaries: RuntimeBinaryPaths,
         portSalt: Int = 0,
+        strategyFilePath: String? = null,
     ): RuntimeContext {
         val bonding = forward.bonding
             ?: throw IllegalArgumentException("bond mode missing bonding config")
@@ -89,6 +90,7 @@ object BondForwardRunner {
                     sessionToken = protocolPlan.sessionToken,
                     bonding = bonding,
                     joinTimeoutMs = joinTimeoutMs,
+                    strategyFilePath = strategyFilePath,
                 ),
             )
         }
@@ -205,6 +207,7 @@ object BondForwardRunner {
         sessionToken: String,
         bonding: BondingContract,
         joinTimeoutMs: Int,
+        strategyFilePath: String?,
     ): List<String> {
         return mutableListOf(
             bondBinary,
@@ -217,6 +220,15 @@ object BondForwardRunner {
             legTargets.joinToString(","),
             "--session-token",
             sessionToken,
+        ).apply {
+            if (!strategyFilePath.isNullOrBlank()) {
+                add("--strategy-file")
+                add(strategyFilePath)
+                add("--default-strategy")
+                add(ForwardStrategy.LATENCY_BEST.wireValue)
+            }
+        }.apply {
+            addAll(listOf(
             "--chunk-size",
             (bonding.chunkSize ?: 65536).toString(),
             "--max-window-bytes",
@@ -243,7 +255,8 @@ object BondForwardRunner {
             (bonding.bulkPromoteBytes ?: 262144).toString(),
             "--leg-cooldown-ms",
             (bonding.legCooldownMs ?: 3000).toString(),
-        )
+            ))
+        }
     }
 
     private fun adaptiveJoinTimeoutMs(

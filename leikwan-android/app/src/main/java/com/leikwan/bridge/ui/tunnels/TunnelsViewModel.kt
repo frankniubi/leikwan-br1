@@ -8,8 +8,10 @@ import androidx.lifecycle.viewModelScope
 import com.leikwan.bridge.R
 import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.data.ForwardStrategyStore
 import com.leikwan.bridge.routing.RoutingDiagnosticsSource
 import com.leikwan.bridge.runtime.ForwardListItem
+import com.leikwan.bridge.runtime.ForwardStrategy
 import com.leikwan.bridge.service.ProxyConnectionMode
 import com.leikwan.bridge.service.LeikwanVpnService
 import com.leikwan.bridge.service.TunnelOrchestrator
@@ -24,6 +26,7 @@ data class TunnelsUiState(
     val vpnStatus: VpnStatus = VpnStatus.DISCONNECTED,
     val forwards: List<ForwardListItem> = emptyList(),
     val selectedForwardId: Long = 0L,
+    val selectedStrategy: ForwardStrategy = ForwardStrategy.LATENCY_BEST,
     val hiddenUnsupportedMptcpCount: Int = 0,
     val connectionMode: ProxyConnectionMode = ProxyConnectionMode.SERVICES,
     val isLoading: Boolean = false,
@@ -31,15 +34,23 @@ data class TunnelsUiState(
     val routingDiagnostics: RoutingDiagnosticsUiModel? = null,
 )
 
-class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
+class TunnelsViewModel @JvmOverloads internal constructor(
+    app: Application,
+    prefsOverride: Prefs? = null,
+    strategyStoreOverride: ForwardStrategyStore? = null,
+) : AndroidViewModel(app) {
     private val appContext = app.applicationContext
-    private val repo = PanelRepository(app)
-    private val prefs = Prefs.get(app)
-    private val orchestrator = TunnelOrchestrator(app)
+    private val repo by lazy { PanelRepository(app) }
+    private val prefs = prefsOverride ?: Prefs.get(app)
+    private val strategyStore = strategyStoreOverride
+        ?: ForwardStrategyStore.from(app, prefs.panelUrl, prefs.clientId)
+    private val orchestrator by lazy { TunnelOrchestrator(app) }
 
     private val _state = MutableStateFlow(
         TunnelsUiState(
             selectedForwardId = prefs.selectedForwardId,
+            selectedStrategy = prefs.selectedForwardId.takeIf { it > 0 }
+                ?.let(strategyStore::get) ?: ForwardStrategy.LATENCY_BEST,
             connectionMode = ProxyConnectionMode.SERVICES,
             vpnStatus = if (LeikwanVpnService.isRunning) VpnStatus.CONNECTED else VpnStatus.DISCONNECTED,
             routingDiagnostics = runCatching {
@@ -64,6 +75,8 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
                     forwards = catalog.visibleForwards,
                     isLoading = false,
                     selectedForwardId = selectedId,
+                    selectedStrategy = selectedId.takeIf { it > 0 }
+                        ?.let(strategyStore::get) ?: ForwardStrategy.LATENCY_BEST,
                     hiddenUnsupportedMptcpCount = catalog.hiddenUnsupportedMptcpCount,
                     connectionMode = ProxyConnectionMode.SERVICES,
                 )
@@ -77,7 +90,18 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
         val current = _state.value.selectedForwardId
         val newId = if (current == forwardId) 0L else forwardId
         prefs.selectedForwardId = newId
-        _state.value = _state.value.copy(selectedForwardId = newId)
+        _state.value = _state.value.copy(
+            selectedForwardId = newId,
+            selectedStrategy = newId.takeIf { it > 0 }
+                ?.let(strategyStore::get) ?: ForwardStrategy.LATENCY_BEST,
+        )
+    }
+
+    fun selectStrategy(strategy: ForwardStrategy) {
+        val forwardId = _state.value.selectedForwardId
+        if (forwardId <= 0) return
+        strategyStore.set(forwardId, strategy)
+        _state.value = _state.value.copy(selectedStrategy = strategy)
     }
 
     fun toggleVpn() {

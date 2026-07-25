@@ -245,4 +245,11 @@
     <string name="vpn_notification_channel_name">VPN Service</string>
     <string name="vpn_notification_channel_description">LeiKwan Bridge VPN status</string>
     <string name="vpn_notification_disconnect">Disconnect</string>
+    <string name="tunnels_strategy_heading">Connection strategy</string>
+    <string name="tunnels_strategy_speed_max">Speed max</string>
+    <string name="tunnels_strategy_speed_max_description">Combine healthy Slave paths for maximum throughput.</string>
+    <string name="tunnels_strategy_latency_best">Latency Best</string>
+    <string name="tunnels_strategy_latency_best_description">Keep each new connection on the lowest-latency healthy Slave.</string>
+    <string name="tunnels_strategy_random">Random</string>
+    <string name="tunnels_strategy_random_description">Assign each new connection to one healthy Slave at random.</string>
 </resources>

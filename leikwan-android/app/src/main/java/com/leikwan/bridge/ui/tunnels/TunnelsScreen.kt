@@ -26,6 +26,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leikwan.bridge.R
 import com.leikwan.bridge.runtime.ForwardListItem
+import com.leikwan.bridge.runtime.ForwardStrategy
 import com.leikwan.bridge.ui.MainActivity
 import com.leikwan.bridge.ui.shared.RoutingDiagnosticsCard
 
@@ -61,6 +63,7 @@ fun TunnelsScreen(viewModel: TunnelsViewModel = viewModel()) {
         },
         onRefresh = viewModel::refreshForwards,
         onSelectForward = viewModel::selectForward,
+        onSelectStrategy = viewModel::selectStrategy,
     )
 }
 
@@ -70,6 +73,7 @@ internal fun TunnelsScreenContent(
     onToggleVpn: () -> Unit,
     onRefresh: () -> Unit,
     onSelectForward: (Long) -> Unit,
+    onSelectStrategy: (ForwardStrategy) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         VpnToggleCard(
@@ -102,6 +106,14 @@ internal fun TunnelsScreenContent(
             Spacer(Modifier.height(8.dp))
         }
 
+        if (state.selectedForwardId > 0) {
+            ForwardStrategySelector(
+                selected = state.selectedStrategy,
+                onSelect = onSelectStrategy,
+            )
+            Spacer(Modifier.height(16.dp))
+        }
+
         if (state.isLoading) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -121,6 +133,61 @@ internal fun TunnelsScreenContent(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ForwardStrategySelector(
+    selected: ForwardStrategy,
+    onSelect: (ForwardStrategy) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            stringResource(R.string.tunnels_strategy_heading),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(Modifier.height(6.dp))
+        StrategyRadioRow(
+            selected = selected == ForwardStrategy.SPEED_MAX,
+            title = stringResource(R.string.tunnels_strategy_speed_max),
+            description = stringResource(R.string.tunnels_strategy_speed_max_description),
+            onClick = { onSelect(ForwardStrategy.SPEED_MAX) },
+        )
+        StrategyRadioRow(
+            selected = selected == ForwardStrategy.LATENCY_BEST,
+            title = stringResource(R.string.tunnels_strategy_latency_best),
+            description = stringResource(R.string.tunnels_strategy_latency_best_description),
+            onClick = { onSelect(ForwardStrategy.LATENCY_BEST) },
+        )
+        StrategyRadioRow(
+            selected = selected == ForwardStrategy.RANDOM,
+            title = stringResource(R.string.tunnels_strategy_random),
+            description = stringResource(R.string.tunnels_strategy_random_description),
+            onClick = { onSelect(ForwardStrategy.RANDOM) },
+        )
+    }
+}
+
+@Composable
+private fun StrategyRadioRow(
+    selected: Boolean,
+    title: String,
+    description: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column(modifier = Modifier.weight(1f).padding(top = 8.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
