@@ -28,6 +28,7 @@ final class LeigodOnlyArtifactSourceBuildMap
             'client_agent_update' => ['paths' => ['install/client-agent-update.sh'], 'route_path' => '/artifacts/client-agent-update.sh'],
             'sidecar_agent_update' => ['paths' => ['install/sidecar-agent-update.sh'], 'route_path' => '/artifacts/sidecar-agent-update.sh'],
             'slave_agent_update' => ['paths' => ['install/leikwan-slave-update'], 'route_path' => '/artifacts/slave-agent-update.sh'],
+            'forward_strategy' => ['paths' => ['client-agent/forward_strategy.py', 'artifacts/forward-strategy.py'], 'route_path' => '/artifacts/forward-strategy.py'],
         ];
     }
 

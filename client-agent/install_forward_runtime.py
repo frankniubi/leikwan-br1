@@ -837,6 +837,13 @@ WantedBy=multi-user.target
         base = 20000 + ((forward_id * 37) % 15000)
         rate_base = rate_limit_base_port(forward_id)
         lines = ["#!/usr/bin/env bash", "set -euo pipefail", "trap 'kill $(jobs -p) 2>/dev/null || true' EXIT"]
+        strategy_path = f"/var/lib/leikwan-client-agent/forward-strategies/{forward_id}.strategy"
+        lines.extend(
+            [
+                "mkdir -p /var/lib/leikwan-client-agent/forward-strategies",
+                f"if [[ ! -s {strategy_path} ]]; then printf 'latency_best\\n' > {strategy_path}; fi",
+            ]
+        )
         client_id = int_or_default(agent_config.get("client_id"), 0)
         snapshot_path = f"/run/leikwan/bond-leg-health-forward-{forward_id}.json"
         lines.extend(
@@ -916,6 +923,7 @@ WantedBy=multi-user.target
                 f"{tcp_latency_flags}"
                 f"{single_leg_fast_path_flag}"
                 f"--legs '{','.join(tcp_leg_targets)}' --session-token '{bond_session_token}' "
+                f"--strategy-file {strategy_path} --default-strategy latency_best "
                 f"--chunk-size {int(bond.get('chunk_size', 65536) or 65536)} "
                 f"--max-window-bytes {int(bond.get('max_window_bytes', 8388608) or 8388608)} "
                 f"--retransmit-ms {int(bond.get('retransmit_ms', 700) or 700)} "
@@ -982,6 +990,7 @@ WantedBy=multi-user.target
                 f"{bond_bin} client --protocol udp --listen {udp_listen_host}:{udp_listen_port} "
                 f"{udp_latency_flags}"
                 f"--legs '{','.join(udp_leg_targets)}' --session-token '{udp_token}' "
+                f"--strategy-file {strategy_path} --default-strategy latency_best "
                 f"--chunk-size {int(bond.get('chunk_size', 65536) or 65536)} "
                 f"--max-window-bytes {int(bond.get('max_window_bytes', 8388608) or 8388608)} "
                 f"--retransmit-ms {int(bond.get('retransmit_ms', 700) or 700)} "

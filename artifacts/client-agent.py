@@ -28,7 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.07.23.3"
+AGENT_VERSION = "2026.07.25.1"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -4957,6 +4957,7 @@ class ClientAgent:
             "update_state": self.load_update_state(),
             "pull_state": self.load_pull_state(),
             "applied": self.load_applied(),
+            "forward_strategies": self.local_forward_strategies(),
             "runtime": {
                 "bond_bin": str(bond_bin),
                 "bond_bin_present": bond_available,
@@ -5031,6 +5032,23 @@ class ClientAgent:
                 }
 
         return summary
+
+    def local_forward_strategies(self) -> dict[str, str]:
+        strategy_dir = pathlib.Path(
+            getattr(self, "state_dir", "/var/lib/leikwan-client-agent")
+        ) / "forward-strategies"
+        if not strategy_dir.is_dir():
+            return {}
+        strategies: dict[str, str] = {}
+        for path in sorted(strategy_dir.glob("*.strategy")):
+            if not path.stem.isdigit() or int(path.stem) <= 0:
+                continue
+            try:
+                value = path.read_text(encoding="utf-8").strip().lower()
+            except OSError:
+                value = "latency_best"
+            strategies[path.stem] = value if value in {"speed_max", "latency_best", "random"} else "latency_best"
+        return strategies
 
 
 def main() -> int:
