@@ -459,6 +459,8 @@ impl UdpDeliveryBuffer {
 struct ClientPeerState {
     addr: SocketAddr,
     last_seen: Instant,
+    strategy: ClientStrategy,
+    preferred_leg_id: Option<usize>,
 }
 
 impl InboundState {
@@ -3004,11 +3006,35 @@ async fn run_bonded_udp_client(
                 };
                 match event {
                     SessionEvent::UdpLocalDatagram { peer, payload } => {
+                        let is_new_flow = !peer_id_by_addr.contains_key(&peer);
+                        let flow_strategy = if is_new_flow {
+                            config
+                                .strategy_file
+                                .as_deref()
+                                .map(|path| load_strategy(path, config.default_strategy))
+                                .unwrap_or(config.default_strategy)
+                        } else {
+                            config.default_strategy
+                        };
                         let peer_id = assign_client_peer_id(
                             peer,
                             &mut peer_id_by_addr,
                             &mut peer_state_by_id,
                             &mut next_peer_id,
+                            flow_strategy,
+                        );
+                        let peer_state = peer_state_by_id
+                            .get_mut(&peer_id)
+                            .expect("assigned UDP peer must have state");
+                        let mut flow_random_state = ((peer_id as u64) << 32) ^ next_datagram_id;
+                        let selected_leg = select_udp_leg_for_strategy(
+                            peer_state.strategy,
+                            &legs,
+                            &mut round_robin_cursor,
+                            &mut flow_random_state,
+                            peer_state.preferred_leg_id,
+                            payload.len(),
+                            &config,
                         );
                         let datagram_id = next_datagram_id;
                         next_datagram_id = next_datagram_id.wrapping_add(1).max(1);
@@ -3020,9 +3046,11 @@ async fn run_bonded_udp_client(
                             &mut round_robin_cursor,
                             SessionRole::Client,
                             &config,
+                            selected_leg,
                         ) {
                             return Err(anyhow!("failed to dispatch UDP datagram because all bond legs are unavailable"));
                         }
+                        peer_state.preferred_leg_id = pending.last_leg_id;
                         pending_outbound.insert(datagram_id, pending);
                     }
                     SessionEvent::UdpLocalFailed(err) => {
@@ -3254,6 +3282,7 @@ async fn run_bonded_udp_server(
                             &mut round_robin_cursor,
                             SessionRole::Aggregator,
                             &config,
+                            None,
                         ) {
                             return Err(anyhow!("failed to dispatch UDP response because all bond legs are unavailable"));
                         }
@@ -3985,11 +4014,22 @@ fn send_udp_datagram(
     round_robin_cursor: &mut usize,
     role: SessionRole,
     config: &SessionConfig,
+    preferred_leg_id: Option<usize>,
 ) -> bool {
     let frag_total = pending.fragments.len() as u16;
     let attempts = legs.len().max(1);
-    for _ in 0..attempts {
-        let Some(leg_index) = select_udp_leg(legs, round_robin_cursor, pending.total_bytes(), config) else {
+    for attempt in 0..attempts {
+        let selected_preferred = if attempt == 0 {
+            preferred_leg_id.filter(|leg_id| {
+                legs.get(*leg_id)
+                    .is_some_and(|leg| leg_available_for_new_data(leg, Instant::now()))
+            })
+        } else {
+            None
+        };
+        let Some(leg_index) = selected_preferred
+            .or_else(|| select_udp_leg(legs, round_robin_cursor, pending.total_bytes(), config))
+        else {
             return false;
         };
 
@@ -4058,7 +4098,16 @@ fn retransmit_udp_datagrams(
         if let Some(last_leg_id) = pending_datagram.last_leg_id {
             penalize_udp_leg(legs, last_leg_id, UdpPenalty::RetransmitBurst);
         }
-        let _ = send_udp_datagram(pending_datagram, datagram_id, legs, round_robin_cursor, role, config);
+        let preferred_leg_id = pending_datagram.last_leg_id;
+        let _ = send_udp_datagram(
+            pending_datagram,
+            datagram_id,
+            legs,
+            round_robin_cursor,
+            role,
+            config,
+            preferred_leg_id,
+        );
     }
 }
 
@@ -4159,6 +4208,7 @@ fn assign_client_peer_id(
     peer_id_by_addr: &mut HashMap<SocketAddr, u32>,
     peer_state_by_id: &mut HashMap<u32, ClientPeerState>,
     next_peer_id: &mut u32,
+    strategy: ClientStrategy,
 ) -> u32 {
     if let Some(peer_id) = peer_id_by_addr.get(&addr).copied() {
         if let Some(state) = peer_state_by_id.get_mut(&peer_id) {
@@ -4178,6 +4228,8 @@ fn assign_client_peer_id(
         ClientPeerState {
             addr,
             last_seen: Instant::now(),
+            strategy,
+            preferred_leg_id: None,
         },
     );
     debug!("assigned udp peer_id={} to local peer {}", peer_id, addr);
@@ -4607,6 +4659,79 @@ fn select_udp_leg(
         prefer_low_latency,
         config.interactive_rtt_slack,
     )
+}
+
+fn select_udp_leg_for_strategy(
+    strategy: ClientStrategy,
+    legs: &[LegState],
+    round_robin_cursor: &mut usize,
+    random_state: &mut u64,
+    preferred_leg_id: Option<usize>,
+    payload_len: usize,
+    config: &SessionConfig,
+) -> Option<usize> {
+    if strategy != ClientStrategy::SpeedMax {
+        if let Some(leg_id) = preferred_leg_id {
+            if legs.get(leg_id).is_some_and(|leg| {
+                leg_available_for_new_data(leg, Instant::now())
+                    && leg.udp_health.state == LegHealthState::Healthy
+            }) {
+                return Some(leg_id);
+            }
+        }
+    }
+
+    match strategy {
+        ClientStrategy::SpeedMax => {
+            select_udp_leg(legs, round_robin_cursor, payload_len, config)
+        }
+        ClientStrategy::LatencyBest => select_latency_best_udp_leg(legs),
+        ClientStrategy::Random => select_random_healthy_udp_leg(legs, random_state),
+    }
+}
+
+fn eligible_udp_strategy_legs(legs: &[LegState]) -> Vec<&LegState> {
+    let now = Instant::now();
+    let healthy = legs
+        .iter()
+        .filter(|leg| {
+            leg_available_for_new_data(leg, now) && leg.udp_health.state == LegHealthState::Healthy
+        })
+        .collect::<Vec<_>>();
+    if healthy.is_empty() {
+        legs.iter()
+            .filter(|leg| leg_available_for_new_data(leg, now))
+            .collect()
+    } else {
+        healthy
+    }
+}
+
+fn select_latency_best_udp_leg(legs: &[LegState]) -> Option<usize> {
+    let mut candidates = eligible_udp_strategy_legs(legs);
+    candidates.sort_by_key(|leg| {
+        (
+            leg_health_state_rank(leg.udp_health.state),
+            leg.smoothed_rtt,
+            leg.priority,
+            leg.inflight_bytes,
+            leg.id,
+        )
+    });
+    candidates.first().map(|leg| leg.id)
+}
+
+fn select_random_healthy_udp_leg(legs: &[LegState], random_state: &mut u64) -> Option<usize> {
+    let candidates = eligible_udp_strategy_legs(legs);
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut value = (*random_state).max(1);
+    value ^= value << 13;
+    value ^= value >> 7;
+    value ^= value << 17;
+    *random_state = value;
+    Some(candidates[(value as usize) % candidates.len()].id)
 }
 
 
@@ -5321,6 +5446,51 @@ mod tests {
 
         legs[0].active = false;
         assert_eq!(select_udp_leg(&legs, &mut cursor, 1200, &config), Some(1));
+    }
+
+    #[test]
+    fn udp_random_keeps_one_leg_per_flow() {
+        let legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        let mut cursor = 0usize;
+        let mut random_state = 11u64;
+        let first = select_udp_leg_for_strategy(
+            ClientStrategy::Random,
+            &legs,
+            &mut cursor,
+            &mut random_state,
+            None,
+            1200,
+            &test_config(),
+        );
+        let second = select_udp_leg_for_strategy(
+            ClientStrategy::Random,
+            &legs,
+            &mut cursor,
+            &mut random_state,
+            first,
+            1200,
+            &test_config(),
+        );
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn udp_latency_best_selects_lowest_rtt_leg() {
+        let legs = vec![fake_leg(0, 10, 0, 35), fake_leg(1, 10, 0, 9)];
+        let mut cursor = 0usize;
+        let mut random_state = 13u64;
+        assert_eq!(
+            select_udp_leg_for_strategy(
+                ClientStrategy::LatencyBest,
+                &legs,
+                &mut cursor,
+                &mut random_state,
+                None,
+                1200,
+                &test_config(),
+            ),
+            Some(1)
+        );
     }
 
     #[test]
