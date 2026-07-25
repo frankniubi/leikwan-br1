@@ -1272,11 +1272,20 @@ final class AdminController extends BaseController
             return Response::redirect('/login');
         }
 
+        $view = PrecisionGridUi::normalizeView(
+            (string) $request->input('view', 'list'),
+            ['list', 'create', 'edit'],
+            'list'
+        );
+
         $registration = $this->registrationService();
         $registrationSettings = $registration->registrationSettings();
         $inviteCodes = $registration->listInviteCodes();
         $defaults = $this->provisioning?->defaultFeatureFlags() ?? [];
         $editId = (int) $request->input('edit', 0);
+        if ($editId > 0) {
+            $view = 'edit';
+        }
         $editing = $editId > 0 ? $this->db->fetchOne('SELECT * FROM users WHERE id = :id AND role = :role LIMIT 1', ['id' => $editId, 'role' => 'tenant']) : null;
         $editingFlags = $editing !== null ? $this->provisioning?->decodeFeatureFlags((string) ($editing['feature_flags_json'] ?? '')) ?? $defaults : $defaults;
         $tenants = $this->db->fetchAll(
@@ -1290,27 +1299,30 @@ final class AdminController extends BaseController
         );
 
         $rows = '';
+        $mobileRows = '';
         foreach ($tenants as $tenant) {
-            $verifiedHtml = !empty($tenant['email_verified_at'])
-                ? '<span class="badge success">verified</span>'
-                : '<span class="badge info">not verified</span>';
+            $tenantId = (int) $tenant['id'];
+            $tenantName = (string) $tenant['name'];
+            $tenantEmail = (string) $tenant['email'];
+            $tenantStatus = (string) $tenant['status'];
+            $verified = !empty($tenant['email_verified_at']);
+            $commands = '<a href="/admin/tenants?view=edit&amp;edit=' . $tenantId . '">Edit</a>
+                <form class="inline" method="post" action="/admin/tenants/' . $tenantId . '/delete">
+                    <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
+                    <button type="submit" class="danger">Delete</button>
+                </form>';
             $rows .= '<tr>
-                <td>' . (int) $tenant['id'] . '</td>
-                <td>' . $this->escape((string) $tenant['name']) . '</td>
-                <td>' . $this->escape((string) $tenant['email']) . '</td>
-                <td><span class="badge ' . (((string) $tenant['status'] === 'active') ? 'success' : 'danger') . '">' . $this->escape((string) $tenant['status']) . '</span></td>
-                <td>' . $verifiedHtml . '</td>
+                <td>' . PrecisionGridUi::resourceCell($tenantName, $tenantEmail) . '</td>
+                <td>' . PrecisionGridUi::status(ucfirst($tenantStatus), $tenantStatus === 'active' ? 'ok' : 'error') . '</td>
+                <td>' . PrecisionGridUi::status($verified ? 'Verified' : 'Not verified', $verified ? 'ok' : 'warning') . '</td>
                 <td>' . (int) $tenant['service_count'] . '</td>
-                <td>
-                    <div class="actions">
-                        <a class="button ghost" href="/admin/tenants?edit=' . (int) $tenant['id'] . '">Edit</a>
-                        <form class="inline" method="post" action="/admin/tenants/' . (int) $tenant['id'] . '/delete">
-                            <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
-                            <button type="submit" class="button danger">Delete</button>
-                        </form>
-                    </div>
-                </td>
+                <td>' . PrecisionGridUi::rowMenu($tenantName . ' actions', $commands) . '</td>
             </tr>';
+            $mobileRows .= '<article class="pg-mobile-resource-row"><header>'
+                . PrecisionGridUi::resourceCell($tenantName, $tenantEmail)
+                . PrecisionGridUi::status(ucfirst($tenantStatus), $tenantStatus === 'active' ? 'ok' : 'error')
+                . '</header><dl><div><dt>Verification</dt><dd>' . ($verified ? 'Verified' : 'Not verified') . '</dd></div><div><dt>Services</dt><dd>' . (int) $tenant['service_count'] . '</dd></div></dl><footer>'
+                . PrecisionGridUi::rowMenu($tenantName . ' actions', $commands) . '</footer></article>';
         }
 
         $inviteRows = '';
@@ -1336,14 +1348,11 @@ final class AdminController extends BaseController
 
         $csrf = $this->escape(SessionAuth::csrfToken());
         $requireCodeChecked = $registrationSettings['require_invite_code'] ? ' checked' : '';
-        $body = '
-            <div class="hero">
-              <div>
-                <h2>Tenants</h2>
-                <p class="muted">Create tenant accounts manually, or let users self-register as tenants with email verification and optional invite codes.</p>
-              </div>
-            </div>
-            <div class="grid two">
+        $tabs = PrecisionGridUi::viewTabs([
+            ['key' => 'list', 'label' => 'Tenants', 'href' => '/admin/tenants?view=list'],
+            ['key' => 'create', 'label' => 'Create Tenant', 'href' => '/admin/tenants?view=create'],
+        ], $view);
+        $formView = '
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Tenant' : 'Create Tenant') . '</h3>
                 <form method="post" action="/admin/tenants">
@@ -1365,17 +1374,19 @@ final class AdminController extends BaseController
                       ($editing !== null ? '<a class="button secondary" href="/admin/tenants">Cancel</a>' : '') .
                   '</div>
                 </form>
-              </section>
-              <section class="card">
-                <h3>Tenant List</h3>
-                <div class="table-wrap">
-                  <table>
-                    <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Status</th><th>Verified</th><th>Services</th><th>Actions</th></tr></thead>
+              </section>';
+        $listView = '
+              <section class="pg-sheet" data-mobile-resources="true">
+                <div class="pg-sheet-toolbar"><strong>Tenant Directory</strong><span class="muted">' . count($tenants) . ' accounts</span></div>
+                <div class="pg-sheet-scroll">
+                  <table class="pg-sheet-table">
+                    <thead><tr><th>Tenant / Email</th><th>Status</th><th>Verification</th><th>Services</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
-              </section>
-            </div>
+                <div class="pg-mobile-resource-list">' . $mobileRows . '</div>
+              </section>';
+        $registrationView = '
             <div class="grid two" style="margin-top:20px;">
               <section class="card">
                 <h3>Tenant Registration Settings</h3>
@@ -1410,6 +1421,13 @@ final class AdminController extends BaseController
                 </div>
               </section>
             </div>';
+
+        $viewBody = match ($view) {
+            'create' => $formView . $registrationView,
+            'edit' => $formView,
+            default => $listView,
+        };
+        $body = $tabs . $viewBody;
 
         return $this->adminPage('Tenants', $body, $viewer, 'tenants');
     }
@@ -2159,12 +2177,21 @@ final class AdminController extends BaseController
             return Response::redirect('/login');
         }
 
+        $view = PrecisionGridUi::normalizeView(
+            (string) $request->input('view', 'list'),
+            ['list', 'create', 'detail', 'updates'],
+            'list'
+        );
+
         $clients = $this->provisioning?->listClients() ?? [];
         $clientGroups = $this->provisioning?->listClientGroups() ?? [];
         $nodeGroups = $this->provisioning?->listNodeGroups() ?? [];
         $chains = $this->provisioning?->listForwardChains() ?? [];
         $tenants = $this->db->fetchAll('SELECT id, name, email FROM users WHERE role = :role ORDER BY name ASC, email ASC', ['role' => 'tenant']);
         $editId = (int) $request->input('edit', 0);
+        if ($editId > 0) {
+            $view = 'detail';
+        }
         $editing = null;
         foreach ($clients as $client) {
             if ((int) $client['id'] === $editId) {
@@ -2224,7 +2251,16 @@ final class AdminController extends BaseController
             $clientForwardInstallMap[$clientId] = array_values($entries);
         }
         $rows = '';
+        $mobileRows = '';
         foreach ($clients as $client) {
+            $clientId = (int) $client['id'];
+            $clientName = (string) $client['name'];
+            $displayHost = (string) $client['display_host'];
+            $owner = (string) ($client['owner_email'] ?? 'Shared');
+            $groupName = (string) ($client['group_name'] ?? 'No group');
+            $status = (string) $client['status'];
+            $agentVersion = (string) ($client['agent_version'] ?? 'Not reported');
+            $lastSync = (string) ($client['last_sync_at'] ?? 'Never');
             $assignedForwards = $clientForwardInstallMap[(int) ($client['id'] ?? 0)] ?? [];
             $assignedForwardSummary = $this->renderAssignedForwardSummary($assignedForwards);
             $installDetails = $this->renderClientAgentInstallDetails(
@@ -2233,66 +2269,33 @@ final class AdminController extends BaseController
             );
             $diagItems = $this->renderClientDiagnosticsHtml($client);
             $usagePanel = $this->renderUsageOverviewPanel($clientUsageMap[(int) ($client['id'] ?? 0)] ?? [], 'Client Traffic');
+            $commands = '<a href="/admin/clients?view=detail&amp;edit=' . $clientId . '">Edit &amp; inspect</a>
+                <form class="inline" method="post" action="/admin/republish/client/' . (int) $client['id'] . '"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit">Republish</button></form>
+                <form class="inline" method="post" action="/admin/clients/' . (int) $client['id'] . '/diagnose"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit">Run Diagnostics</button></form>
+                <form class="inline" method="post" action="/admin/clients/' . $clientId . '/request-update"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit">Request Update</button></form>
+                ' . $assignedForwardSummary . $installDetails . '
+                <details><summary>Diagnostics</summary><div class="muted">Status: ' . $this->escape((string) ($client['last_diag_status'] ?? '')) . '</div><div class="muted">Last Run: ' . $this->escape((string) ($client['last_diag_run_at'] ?? '')) . '</div><div class="muted">Error: ' . $this->escape((string) ($client['last_diag_error'] ?? '')) . '</div><div>' . $diagItems . '</div></details>
+                <details><summary>Usage Calendar</summary>' . $usagePanel . '</details>
+                <form class="inline" method="post" action="/admin/clients/' . $clientId . '/delete" onsubmit="return confirm(\'Delete this client from the database? Active forwards must be removed first.\')"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit" class="danger">Delete</button></form>';
             $rows .= '<tr>
-                <td>' . (int) $client['id'] . '</td>
-                <td>' . $this->escape((string) $client['name']) . '</td>
-                <td>' . $this->escape((string) $client['display_host']) . '</td>
-                <td>' . $this->escape((string) ($client['owner_email'] ?? 'shared')) . '</td>
-                <td>' . $this->escape((string) ($client['group_name'] ?? '')) . '</td>
-                <td>' . $this->escape($this->endpointModeLabel((string) ($client['default_endpoint_mode'] ?? 'slave_group'))) . '</td>
-                <td>' . $this->escape((string) ($client['default_node_group_key'] ?? '')) . '</td>
-                <td>' . $this->escape((string) ($client['default_forward_chain_name'] ?? '')) . '</td>
-                <td>' . $this->escape((string) ($client['port_range_start'] ?? '')) . ' - ' . $this->escape((string) ($client['port_range_end'] ?? '')) . '</td>
-                <td>' . $this->escape((string) ($client['speed_limit_mbps'] ?? '')) . '</td>
-                <td>' . $this->escape((string) $client['status']) . '</td>
-                <td>' . $this->escape((string) ($client['agent_version'] ?? '')) . '</td>
-                <td>' . $this->escape((string) ($client['last_sync_at'] ?? '')) . '</td>
-                <td>
-                    <div class="actions">
-                        <a class="button ghost" href="/admin/clients?edit=' . (int) $client['id'] . '">Edit</a>
-                        <form class="inline" method="post" action="/admin/clients/' . (int) $client['id'] . '/delete" onsubmit="return confirm(\'Delete this client from the database? Active forwards must be removed first.\')">
-                            <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                            <button type="submit" class="button danger">Delete</button>
-                        </form>
-                        <form class="inline" method="post" action="/admin/republish/client/' . (int) $client['id'] . '">
-                            <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                            <button type="submit" class="button secondary">Republish</button>
-                        </form>
-                        <form class="inline" method="post" action="/admin/clients/' . (int) $client['id'] . '/diagnose">
-                            <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                            <button type="submit" class="button secondary">Run Diagnostics</button>
-                        </form>
-                        <form class="inline" method="post" action="/admin/clients/' . (int) $client['id'] . '/request-update">
-                            <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                            <button type="submit" class="button secondary">Request Update</button>
-                        </form>
-                    </div>
-                    ' . $assignedForwardSummary . '
-                    ' . $installDetails . '
-                    <details style="margin-top:12px;">
-                        <summary>Diagnostics</summary>
-                        <div class="muted">Status: ' . $this->escape((string) ($client['last_diag_status'] ?? '')) . '</div>
-                        <div class="muted">Last Run: ' . $this->escape((string) ($client['last_diag_run_at'] ?? '')) . '</div>
-                        <div class="muted">Error: ' . $this->escape((string) ($client['last_diag_error'] ?? '')) . '</div>
-                        <div style="margin-top:12px;">' . $diagItems . '</div>
-                    </details>
-                    <details style="margin-top:12px;">
-                        <summary>Usage Calendar</summary>
-                        ' . $usagePanel . '
-                    </details>
-                </td>
+                <td>' . PrecisionGridUi::resourceCell($clientName, $displayHost) . '</td>
+                <td>' . PrecisionGridUi::resourceCell($owner, $groupName) . '</td>
+                <td>' . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error') . '</td>
+                <td>' . PrecisionGridUi::resourceCell($agentVersion, $lastSync) . '</td>
+                <td>' . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</td>
             </tr>';
+            $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($clientName, $displayHost)
+                . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error')
+                . '</header><dl><div><dt>Owner</dt><dd>' . $this->escape($owner) . '</dd></div><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>Agent</dt><dd>' . $this->escape($agentVersion) . '</dd></div><div><dt>Last Sync</dt><dd>' . $this->escape($lastSync) . '</dd></div></dl><footer>'
+                . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</footer></article>';
         }
 
-        $body = '
-            <div class="hero">
-              <div>
-                <h2>Clients</h2>
-                <p class="muted">Clients are the tenant-side line definitions. Lead with app download and <code>Client ID + Token</code>; keep routing defaults tucked away until an operator actually needs them.</p>
-              </div>
-            </div>
-            ' . $this->renderClientAppDownloadOverview($overviewClient) . '
-            <div class="grid two">
+        $tabs = PrecisionGridUi::viewTabs([
+            ['key' => 'list', 'label' => 'Clients', 'href' => '/admin/clients?view=list'],
+            ['key' => 'create', 'label' => 'Create Client', 'href' => '/admin/clients?view=create'],
+            ['key' => 'updates', 'label' => 'Updates', 'href' => '/admin/clients?view=updates'],
+        ], $view);
+        $formView = $this->renderClientAppDownloadOverview($overviewClient) . '
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Client' : 'Create Client') . '</h3>
                 <div class="flash success">
@@ -2340,18 +2343,24 @@ final class AdminController extends BaseController
                   </details>
                   <div class="actions"><button class="button" type="submit">Save Client</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/clients">Cancel</a>' : '') . '</div>
                 </form>
-              </section>
-              <section class="card">
-                <h3>Client List</h3>
-                <p class="muted">Admin can install any client-agent from this page. Tenant-owned and shared/admin-provided clients both work here.</p>
-                <div class="table-wrap">
-                  <table>
-                    <thead><tr><th>ID</th><th>Name</th><th>Display Host</th><th>Owner</th><th>Group</th><th>Default Route Mode</th><th>Default Slave Group</th><th>Default Chain</th><th>Port Range</th><th>Speed Limit</th><th>Status</th><th>Agent</th><th>Last Sync</th><th>Actions</th></tr></thead>
+              </section>';
+        $listView = '
+              <section class="pg-sheet" data-mobile-resources="true">
+                <div class="pg-sheet-toolbar"><strong>Client Directory</strong><span class="muted">' . count($clients) . ' clients</span></div>
+                <div class="pg-sheet-scroll">
+                  <table class="pg-sheet-table">
+                    <thead><tr><th>Client / Host</th><th>Owner / Group</th><th>Status</th><th>Agent / Last Sync</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
-              </section>
-            </div>';
+                <div class="pg-mobile-resource-list">' . $mobileRows . '</div>
+              </section>';
+        $viewBody = match ($view) {
+            'create', 'detail' => $formView,
+            'updates' => '<div class="flash success">Use each client menu to request updates, republish, or run diagnostics.</div>' . $listView,
+            default => $listView,
+        };
+        $body = $tabs . $viewBody;
 
         return $this->adminPage('Clients', $body, $viewer, 'clients');
     }
@@ -3484,6 +3493,12 @@ final class AdminController extends BaseController
             return Response::redirect('/login');
         }
 
+        $view = PrecisionGridUi::normalizeView(
+            (string) $request->input('view', 'list'),
+            ['list', 'create'],
+            'list'
+        );
+
         $services = $this->db->fetchAll(
             'SELECT s.id, s.name, s.status, s.whmcs_service_id, s.expire_at, s.bandwidth_limit_mbps, s.traffic_limit_gb, u.email AS user_email, p.name AS plan_name
              FROM services s
@@ -3503,22 +3518,31 @@ final class AdminController extends BaseController
         }
 
         $rows = '';
+        $mobileRows = '';
         foreach ($services as $service) {
-            $statusClass = ((string) $service['status'] === 'active') ? 'success' : 'danger';
+            $serviceName = (string) $service['name'];
+            $owner = (string) $service['user_email'];
+            $status = (string) $service['status'];
+            $planName = (string) ($service['plan_name'] ?? 'No plan');
             $billing = $this->provisioning?->serviceBillingOverview((int) $service['id']) ?? null;
             $billingHtml = $billing !== null
                 ? $this->escape((string) ($billing['mode_label'] ?? '')) . '<br><span class="muted">' . $this->escape((string) ($billing['estimated_total_formatted'] ?? '')) . '</span>'
                 : '<span class="muted">n/a</span>';
+            $limits = (string) ($service['bandwidth_limit_mbps'] ?? '') . ' Mbps / ' . (string) ($service['traffic_limit_gb'] ?? '') . ' GB';
+            $commands = '<a href="/admin/tenants?view=list">Open tenant directory</a>';
             $rows .= '<tr>
-                <td>' . (int) $service['id'] . '</td>
-                <td>' . $this->escape((string) $service['name']) . '</td>
-                <td>' . $this->escape((string) $service['user_email']) . '</td>
-                <td>' . $this->escape((string) ($service['plan_name'] ?? '')) . '</td>
-                <td><span class="badge ' . $statusClass . '">' . $this->escape((string) $service['status']) . '</span></td>
+                <td>' . PrecisionGridUi::resourceCell($serviceName, $owner) . '</td>
+                <td>' . $this->escape($planName) . '</td>
+                <td>' . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error') . '</td>
                 <td>' . $billingHtml . '</td>
-                <td>' . $this->escape((string) $service['whmcs_service_id']) . '</td>
-                <td>' . $this->escape((string) $service['expire_at']) . '</td>
+                <td>' . PrecisionGridUi::resourceCell((string) $service['expire_at'], $limits) . '</td>
+                <td>' . PrecisionGridUi::rowMenu($serviceName . ' actions', $commands) . '</td>
             </tr>';
+            $mobileRows .= '<article class="pg-mobile-resource-row"><header>'
+                . PrecisionGridUi::resourceCell($serviceName, $owner)
+                . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error')
+                . '</header><dl><div><dt>Plan</dt><dd>' . $this->escape($planName) . '</dd></div><div><dt>Expires</dt><dd>' . $this->escape((string) $service['expire_at']) . '</dd></div><div><dt>Limits</dt><dd>' . $this->escape($limits) . '</dd></div></dl><footer>'
+                . PrecisionGridUi::rowMenu($serviceName . ' actions', $commands) . '</footer></article>';
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
@@ -3530,14 +3554,11 @@ final class AdminController extends BaseController
             'email' => (string) $tenant['email'],
             'name' => (string) $tenant['name'],
         ], $tenants), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $body = '
-            <div class="hero">
-              <div>
-                <h2>Services</h2>
-                <p class="muted">Use this page to activate services, assign plans and inspect the current billing model attached to each service.</p>
-              </div>
-            </div>
-            <div class="grid two">
+        $tabs = PrecisionGridUi::viewTabs([
+            ['key' => 'list', 'label' => 'Services', 'href' => '/admin/services?view=list'],
+            ['key' => 'create', 'label' => 'Activate Service', 'href' => '/admin/services?view=create'],
+        ], $view);
+        $createView = '
               <section class="card">
                 <h3>Activate Service</h3>
                 <form method="post" action="/admin/services">
@@ -3574,17 +3595,19 @@ final class AdminController extends BaseController
                     });
                   })();
                 </script>
-              </section>
-              <section class="card">
-                <h3>Service List</h3>
-                <div class="table-wrap">
-                  <table>
-                    <thead><tr><th>ID</th><th>Name</th><th>Tenant</th><th>Plan</th><th>Status</th><th>Billing</th><th>WHMCS</th><th>Expire At</th></tr></thead>
+              </section>';
+        $listView = '
+              <section class="pg-sheet" data-mobile-resources="true">
+                <div class="pg-sheet-toolbar"><strong>Active Services</strong><span class="muted">' . count($services) . ' total</span></div>
+                <div class="pg-sheet-scroll">
+                  <table class="pg-sheet-table">
+                    <thead><tr><th>Service / Owner</th><th>Plan</th><th>Status</th><th>Billing</th><th>Expiry / Limits</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
-              </section>
-            </div>';
+                <div class="pg-mobile-resource-list">' . $mobileRows . '</div>
+              </section>';
+        $body = $tabs . ($view === 'create' ? $createView : $listView);
 
         return $this->adminPage('Services', $body, $viewer, 'services');
     }
