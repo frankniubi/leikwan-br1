@@ -18,19 +18,19 @@ final class AuthController extends BaseController
         $user = SessionAuth::currentUser($this->db);
         $adminCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'admin'])['total'] ?? 0);
 
-        $heroPrimary = '<a class="button launch-primary" href="/login">Sign In</a>';
-        $heroSecondary = '<a class="button launch-secondary" href="/register">Create Account</a>';
+        $heroPrimary = '<a class="button" href="/login">Sign In</a>';
+        $heroSecondary = '<a class="button secondary" href="/register">Create Account</a>';
         $consoleTitle = 'Tenant console';
         $consoleBody = 'Open the panel that controls services, forwards, client profiles, transport endpoints, and route policy.';
-        $consoleAction = '<a class="button launch-secondary" href="/login">Open Panel</a>';
+        $consoleAction = '<a class="button secondary" href="/login">Open Panel</a>';
 
         if ($user !== null) {
             $dashboardPath = $this->escape($this->dashboardPathForUser($user));
             $dashboardLabel = $this->escape($this->dashboardLabelForUser($user));
-            $heroPrimary = '<a class="button launch-primary" href="' . $dashboardPath . '">Open ' . $dashboardLabel . '</a>';
+            $heroPrimary = '<a class="button" href="' . $dashboardPath . '">Open ' . $dashboardLabel . '</a>';
             $heroSecondary = (string) ($user['role'] ?? '') === 'admin'
-                ? '<a class="button launch-secondary" href="/admin/tenants">Manage Tenants</a>'
-                : '<a class="button launch-secondary" href="/tenant/forwards">Forward Config</a>';
+                ? '<a class="button secondary" href="/admin/tenants">Manage Tenants</a>'
+                : '<a class="button secondary" href="/tenant/forwards">Forward Config</a>';
             $consoleTitle = 'Current session';
             $consoleBody = 'Return to the workspace that owns this traffic policy.';
             $consoleAction = $heroPrimary;
@@ -56,70 +56,69 @@ final class AuthController extends BaseController
 
         $proofCards = '';
         foreach ($proofs as $proof) {
-            $proofCards .= '<section class="launch-proof">'
-                . '<span>' . $this->escape($proof['number']) . '</span>'
+            $proofCards .= '<article class="pg-home-proof">'
+                . '<span class="pg-home-sequence">' . $this->escape($proof['number']) . '</span>'
                 . '<h3>' . $this->escape($proof['title']) . '</h3>'
                 . '<p>' . $this->escape($proof['body']) . '</p>'
-                . '</section>';
+                . '</article>';
         }
 
         $opsCard = $adminCount === 0
-            ? '<section class="launch-entry accent">
-                <span>Operator setup</span>
-                <h3>Create the first admin</h3>
-                <p>Finish bootstrap once, then run tenants, services, forwards, credentials, and rollout tasks from the console.</p>
+            ? '<section class="pg-home-entry">
+                <div><span class="pg-eyebrow">Operator setup</span><h3>Create the first admin</h3>
+                <p>Finish bootstrap once, then run tenants, services, forwards, credentials, and rollout tasks from the console.</p></div>
                 <pre>php master/scripts/create_user.php --email admin@example.com --password ChangeMe123! --role admin --name "Platform Admin"</pre>
               </section>'
-            : '<section class="launch-entry accent">
-                <span>Operator setup</span>
-                <h3>Plans, tenants, nodes</h3>
-                <p>Operate plans, node groups, credentials, forward combinations, and rollout tasks.</p>
-                <div class="actions"><a class="button launch-secondary" href="/login">Operator Sign In</a></div>
+            : '<section class="pg-home-entry">
+                <div><span class="pg-eyebrow">Operator setup</span><h3>Plans, tenants, nodes</h3>
+                <p>Operate plans, node groups, credentials, forward combinations, and rollout tasks.</p></div>
+                <div class="actions"><a class="button secondary" href="/login">Operator Sign In</a></div>
               </section>';
 
         $body = '
-            <section class="launch-hero">
-              <div class="launch-copy">
-                <span class="launch-kicker">利群會聚 LeiKwan Bridge</span>
-                <h1>Bond speed. Private paths. Clean control.</h1>
+            <section class="pg-home-header">
+              <div class="pg-home-copy">
+                <span class="pg-eyebrow">Operator setup</span>
+                <h1>&#21033;&#32676;&#26371;&#32858; LeiKwan Bridge</h1>
+                <h2>Bond speed. Private paths. Clean control.</h2>
                 <p>One busy session should not crawl because one route is full. LeiKwan Bridge bonds IXP, IPLC, slave nodes, client profiles, and transport endpoints into one policy-visible delivery plane.</p>
-                <div class="hero-actions">' . $heroPrimary . $heroSecondary . '</div>
+                <div class="pg-header-actions">' . $heroPrimary . $heroSecondary . '</div>
               </div>
-              <div class="flow-visual" aria-label="LeiKwan Bridge bonded path diagram">
-                <div class="flow-topline">
+              <div class="pg-home-flow" aria-label="LeiKwan Bridge bonded path diagram">
+                <div class="pg-home-flow-summary">
                   <span>1 flow</span>
                   <strong>many legs</strong>
                 </div>
-                <div class="flow-band">
+                <div class="pg-home-leg-band" aria-hidden="true">
                   <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
                 </div>
-                <div class="flow-nodes">
+                <div class="pg-home-flow-nodes">
                   <span>Client</span>
                   <span>Slave</span>
                   <span>Transport</span>
                   <span>Target</span>
                 </div>
-                <div class="flow-pills">
+                <div class="pg-home-flow-pills">
                   <span>IXP fabric</span>
                   <span>IPLC paths</span>
                   <span>Policy proof</span>
                 </div>
               </div>
             </section>
-            <section class="proof-grid">' . $proofCards . '</section>
-            <section class="launch-entry-grid">
-              <section class="launch-entry">
+            <section class="pg-home-proof-list">' . $proofCards . '</section>
+            <section class="pg-home-entry-list">
+              <section class="pg-home-entry">
                 <span>' . $this->escape($consoleTitle) . '</span>
                 <h3>' . $this->escape($consoleTitle) . '</h3>
                 <p>' . $this->escape($consoleBody) . '</p>
                 <div class="actions">' . $consoleAction . '</div>
               </section>
               ' . $opsCard . '
-              <section class="launch-entry">
+              <section class="pg-home-entry">
                 <span>Knowledgebase</span>
                 <h3>Routing playbooks</h3>
                 <p>Install flow, route modes, diagnostics, transport endpoint rollout, and recovery notes live in the panel docs.</p>
-                <div class="actions"><a class="button launch-secondary" href="/knowledgebase">Open Docs</a></div>
+                <div class="actions"><a class="button secondary" href="/knowledgebase">Open Docs</a></div>
               </section>
             </section>';
 
