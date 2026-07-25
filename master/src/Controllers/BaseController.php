@@ -1203,7 +1203,7 @@ HTML;
   <style>
 {$this->publicPageStyles()}
   </style>
-  <link rel="stylesheet" href="/assets/precision-grid.css?v=20260725">
+  <link rel="stylesheet" href="/assets/precision-grid.css?v=20260725.2">
 </head>
 <body class="pg-public">
   <div class="public-shell">
@@ -2350,7 +2350,7 @@ CSS;
       .topbar { align-items: flex-start; flex-direction: column; }
     }
   </style>
-  <link rel="stylesheet" href="/assets/precision-grid.css?v=20260725">
+  <link rel="stylesheet" href="/assets/precision-grid.css?v=20260725.2">
 </head>
 <body class="pg-app">
   <div class="shell">

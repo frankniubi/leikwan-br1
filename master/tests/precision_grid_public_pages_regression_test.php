@@ -9,7 +9,7 @@ $health = (string) file_get_contents($root . '/src/Controllers/HealthController.
 $index = (string) file_get_contents($root . '/public/index.php');
 $install = (string) file_get_contents($root . '/public/install.php');
 foreach ([$base, $health, $index, $install] as $source) {
-    if (!str_contains($source, '/assets/precision-grid.css?v=20260725')) {
+    if (!str_contains($source, '/assets/precision-grid.css?v=20260725.2')) {
         throw new RuntimeException('public surface does not load precision grid asset');
     }
 }

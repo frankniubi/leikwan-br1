@@ -400,7 +400,7 @@ function renderShell(string $title, string $body): string
     .list { margin: 0; padding-left: 18px; }
     @media (max-width: 960px) { .grid.two, .form-grid { grid-template-columns: 1fr; } }
   </style>
-  <link rel="stylesheet" href="/assets/precision-grid.css?v=20260725">
+  <link rel="stylesheet" href="/assets/precision-grid.css?v=20260725.2">
 </head>
 <body class="pg-public">
   <div class="shell">

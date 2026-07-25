@@ -39,7 +39,7 @@ try {
         'details' => $exception->details(),
     ]);
 } catch (Throwable $exception) {
-    $html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Application Error</title><link rel="stylesheet" href="/assets/precision-grid.css?v=20260725"></head><body class="pg-public"><main class="landing-stack"><div class="pg-form-section"><h1>Application Error</h1><p>The app failed during bootstrap. If this is a fresh install or a new deployment, open <a href="/install.php">/install.php</a> and run the installer/update flow.</p><pre>'
+    $html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Application Error</title><link rel="stylesheet" href="/assets/precision-grid.css?v=20260725.2"></head><body class="pg-public"><main class="landing-stack"><div class="pg-form-section"><h1>Application Error</h1><p>The app failed during bootstrap. If this is a fresh install or a new deployment, open <a href="/install.php">/install.php</a> and run the installer/update flow.</p><pre>'
         . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8')
         . '</pre></div></main></body></html>';
     $response = Response::html(500, $html);
