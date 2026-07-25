@@ -20,7 +20,7 @@ foreach ([':focus-visible', '.table-scroll', '.mobile-nav-toggle', '.status[data
         throw new RuntimeException('missing responsive/accessibility rule ' . $required);
     }
 }
-if (substr_count($base, '/assets/precision-grid.css?v=20260725.2') < 2) {
+if (substr_count($base, '/assets/precision-grid.css?v=20260725.3') < 2) {
     throw new RuntimeException('both shells must load precision-grid.css');
 }
 foreach (['radial-gradient', 'linear-gradient'] as $forbidden) {
