@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.07.23.1"
+INSTALLER_VERSION="2026.07.25.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -443,6 +443,11 @@ download_atomic() {
   local path="$2"
   local tmp_path="${path}.new"
   leikwan_protected_download "$url" "$tmp_path"
+  if [[ ! -s "$tmp_path" ]]; then
+    echo "downloaded artifact is empty: $url" >&2
+    rm -f "$tmp_path"
+    return 1
+  fi
   chmod 0755 "$tmp_path"
   mv "$tmp_path" "$path"
 }
@@ -453,6 +458,12 @@ if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
   download_atomic "$ARTIFACT_BASE/artifacts/client-agent-update.sh" "$BIN_DIR/leikwan-client-agent-update"
 fi
 download_atomic "$ARTIFACT_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
+download_atomic "$ARTIFACT_BASE/artifacts/forward-strategy.py" "$BIN_DIR/forward_strategy.py"
+cat > "$BIN_DIR/leikwan-client-strategy" <<WRAPPER
+#!/usr/bin/env bash
+exec /usr/bin/python3 "$BIN_DIR/forward_strategy.py" "\$@"
+WRAPPER
+chmod 0755 "$BIN_DIR/leikwan-client-strategy"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-rate-limit.py" "$BIN_DIR/leikwan-rate-limit.py"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-mptcp-client.py" "$BIN_DIR/leikwan-mptcp-client.py"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"

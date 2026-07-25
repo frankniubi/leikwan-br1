@@ -175,6 +175,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('client-agent/install_forward_runtime.py', 'text/x-python; charset=utf-8', $request);
     }
 
+    public function forwardStrategyHelper(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/forward-strategy.py', 'text/x-python; charset=utf-8', $request);
+    }
+
     public function mptcpClientRuntime(Request $request, array $params): Response
     {
         return $this->serveRepoFile('client-agent/leikwan_mptcp_client.py', 'text/x-python; charset=utf-8', $request);
