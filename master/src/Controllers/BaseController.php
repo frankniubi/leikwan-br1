@@ -1263,8 +1263,8 @@ HTML;
             : (preg_match('/edit|create|account|settings|detail/i', $title) === 1
                 ? 'pg-template-detail'
                 : 'pg-template-operations');
-        $body = PrecisionGridUi::pageHeader($activeGroup, $title)
-            . '<div class="pg-page-body ' . $templateClass . '">' . $body . '</div>';
+        $body = '<div class="pg-console">' . PrecisionGridUi::pageHeader($activeGroup, $title)
+            . '<div class="pg-page-body ' . $templateClass . '">' . $body . '</div></div>';
 
         $flash = SessionAuth::consumeFlash();
         $flashHtml = '';

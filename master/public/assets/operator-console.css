@@ -686,6 +686,13 @@ dialog{max-width:min(720px,calc(100vw - 32px));max-height:calc(100vh - 32px);bor
 .pg-mobile-resource-row dd{margin:2px 0 0;overflow-wrap:anywhere;font-size:13px;font-variant-numeric:tabular-nums}
 .pg-mobile-resource-row footer{display:flex;justify-content:flex-end}
 .pg-node-detail{margin-top:0}
+.pg-console{min-width:0}
+.pg-console .table-wrap,.pg-console .table-scroll{max-width:100%;overflow:auto;border-top:2px solid var(--ink)}
+.pg-console .table-wrap table,.pg-console .table-scroll table,.pg-console>table{width:100%;border-collapse:collapse;font-size:14px!important;font-variant-numeric:tabular-nums}
+.pg-console .table-wrap th,.pg-console .table-wrap td,.pg-console .table-scroll th,.pg-console .table-scroll td{padding:12px 14px!important;border-bottom:1px solid var(--line-soft)!important;vertical-align:middle}
+.pg-console .table-wrap tr,.pg-console .table-scroll tr{min-height:52px}
+.pg-console .table-wrap th,.pg-console .table-scroll th{height:38px;background:var(--surface-soft)!important;color:var(--muted)!important;font-size:11px!important;font-weight:750;text-transform:uppercase}
+.pg-console .table-wrap tbody tr:hover td,.pg-console .table-scroll tbody tr:hover td{background:#f7f9f7}
 @media(max-width:720px){
   .pg-sheet[data-mobile-resources="true"] .pg-sheet-scroll{display:none}
   .pg-sheet[data-mobile-resources="true"] .pg-mobile-resource-row{display:grid;gap:9px}
