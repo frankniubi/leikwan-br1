@@ -361,6 +361,42 @@
                                             <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding SelectedForward.Target}" FontSize="14" TextWrapping="Wrap"/>
                                         </Grid>
 
+                                        <StackPanel Margin="0,0,0,16">
+                                            <TextBlock Text="{DynamicResource StrategyHeading}"
+                                                       FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource MutedTextBrush}"
+                                                       Margin="0,0,0,8"/>
+                                            <RadioButton GroupName="ForwardStrategy"
+                                                         IsChecked="{Binding SelectedForward.IsSpeedMax, Mode=TwoWay}"
+                                                         Margin="0,0,0,8">
+                                                <StackPanel Margin="6,0,0,0">
+                                                    <TextBlock Text="{DynamicResource StrategySpeedMax}" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{DynamicResource StrategySpeedMaxDescription}"
+                                                               Foreground="{StaticResource MutedTextBrush}"
+                                                               TextWrapping="Wrap"/>
+                                                </StackPanel>
+                                            </RadioButton>
+                                            <RadioButton GroupName="ForwardStrategy"
+                                                         IsChecked="{Binding SelectedForward.IsLatencyBest, Mode=TwoWay}"
+                                                         Margin="0,0,0,8">
+                                                <StackPanel Margin="6,0,0,0">
+                                                    <TextBlock Text="{DynamicResource StrategyLatencyBest}" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{DynamicResource StrategyLatencyBestDescription}"
+                                                               Foreground="{StaticResource MutedTextBrush}"
+                                                               TextWrapping="Wrap"/>
+                                                </StackPanel>
+                                            </RadioButton>
+                                            <RadioButton GroupName="ForwardStrategy"
+                                                         IsChecked="{Binding SelectedForward.IsRandom, Mode=TwoWay}">
+                                                <StackPanel Margin="6,0,0,0">
+                                                    <TextBlock Text="{DynamicResource StrategyRandom}" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{DynamicResource StrategyRandomDescription}"
+                                                               Foreground="{StaticResource MutedTextBrush}"
+                                                               TextWrapping="Wrap"/>
+                                                </StackPanel>
+                                            </RadioButton>
+                                        </StackPanel>
+
                                         <WrapPanel HorizontalAlignment="Right">
                                             <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionStart}" Margin="0,0,6,6"
                                                     Command="{Binding StartForwardCommand}"
@@ -469,4 +505,3 @@
         </Grid>
     </Grid>
 </Window>
-

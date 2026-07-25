@@ -9,6 +9,36 @@ namespace LeikwanBridge.App.Tests.ViewModels;
 public sealed class MainViewModelTests
 {
     [Fact]
+    public void StrategySelectionPersistsLocallyWithoutRuntimeRestart()
+    {
+        var stateDir = Path.Combine(Path.GetTempPath(), $"leikwan-ui-strategy-{Guid.NewGuid():N}");
+        try
+        {
+            var config = new AgentConfig
+            {
+                MasterUrl = "https://panel-a.example.test",
+                ClientId = 9,
+                ActiveClientId = 9,
+                StateDir = stateDir,
+            };
+            var vm = new MainViewModel();
+            vm.Initialize(config);
+            vm.ApplyForwardSnapshot([CreateBondForwardWithEndpoints()], _ => true);
+
+            vm.Forwards[0].SelectedStrategy = ForwardStrategy.Random;
+
+            var store = new ForwardStrategyStore(stateDir, config.MasterUrl, config.ClientId);
+            Assert.Equal(ForwardStrategy.Random, store.Get(59));
+            Assert.True(vm.Forwards[0].IsRunning);
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir))
+                Directory.Delete(stateDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Initialize_WithValidConfig_HidesSetupWizard()
     {
         var vm = new MainViewModel();

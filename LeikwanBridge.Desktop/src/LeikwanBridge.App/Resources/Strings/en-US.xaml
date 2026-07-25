@@ -92,6 +92,13 @@
     <system:String x:Key="ModeMptcpFallback">LeiGod</system:String>
     <system:String x:Key="ModeMptcp">LeiGod</system:String>
     <system:String x:Key="ModeBond">LeiGod</system:String>
+    <system:String x:Key="StrategyHeading">Connection strategy</system:String>
+    <system:String x:Key="StrategySpeedMax">Speed max</system:String>
+    <system:String x:Key="StrategySpeedMaxDescription">Combine healthy Slave paths for maximum throughput.</system:String>
+    <system:String x:Key="StrategyLatencyBest">Latency Best</system:String>
+    <system:String x:Key="StrategyLatencyBestDescription">Keep each new connection on the lowest-latency healthy Slave.</system:String>
+    <system:String x:Key="StrategyRandom">Random</system:String>
+    <system:String x:Key="StrategyRandomDescription">Assign each new connection to one healthy Slave at random.</system:String>
     <system:String x:Key="ModeRace">LeiGod</system:String>
     <system:String x:Key="ModeSingle">LeiGod</system:String>
     <system:String x:Key="ModeFilterAll">LeiGod</system:String>
