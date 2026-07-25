@@ -25,15 +25,38 @@ if (!is_string($base) || $base === '') {
 
 foreach ([
     'protected function adminNavigationItems',
-    '/admin/cf-location-groups',
-    '/admin/forward-combinations',
+    '/admin/tenants',
+    '/admin/registration',
+    '/admin/services',
+    '/admin/plans',
+    '/admin/client-groups',
+    '/admin/credentials',
+    '/admin/clients',
+    '/admin-transport-endpoints',
+    '/knowledgebase',
+    '/admin/node-groups',
+    '/admin/nodes',
     '/admin/user-groups',
-    'Forward Combinations',
-    'CF Location Groups',
+    'Transport Endpoints',
+    'Slave Groups',
+    'Slave Nodes',
     'User Groups',
 ] as $required) {
     if (!str_contains($base, $required)) {
         fail('shared admin nav missing required snippet: ' . $required);
+    }
+}
+
+foreach ([
+    '/admin/cf-location-groups',
+    '/admin/forward-combinations',
+    '/admin/chains',
+    'CF Location Groups',
+    'Forward Combinations',
+    "'label' => 'Chains'",
+] as $retiredNavigationSnippet) {
+    if (str_contains($base, $retiredNavigationSnippet)) {
+        fail('retired routing tab remains in shared admin nav: ' . $retiredNavigationSnippet);
     }
 }
 
@@ -46,8 +69,6 @@ if (!str_contains($admin, '$this->adminNavigationItems($active)')) {
 }
 
 foreach ([
-    '/admin/cf-location-groups',
-    '/admin/forward-combinations',
     '/admin/user-groups',
 ] as $forbiddenDirectSnippet) {
     if (str_contains($auth, $forbiddenDirectSnippet) && !str_contains($auth, '$this->adminNavigationItems(\'knowledgebase\')')) {
