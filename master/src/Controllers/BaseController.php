@@ -10,6 +10,7 @@ use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\SessionAuth;
+use Leikwan\Master\Support\PrecisionGridUi;
 
 abstract class BaseController
 {
@@ -1093,20 +1094,20 @@ abstract class BaseController
     protected function adminNavigationItems(string $active = ''): array
     {
         return [
-            ['href' => '/admin', 'label' => 'Overview', 'active' => $active === 'overview'],
-            ['href' => '/admin/tenants', 'label' => 'Tenants', 'active' => $active === 'tenants'],
-            ['href' => '/admin/registration', 'label' => 'Registration Codes', 'active' => $active === 'registration'],
-            ['href' => '/admin/services', 'label' => 'Services', 'active' => $active === 'services'],
-            ['href' => '/admin/plans', 'label' => 'Plans', 'active' => $active === 'plans'],
-            ['href' => '/admin/client-groups', 'label' => 'Client Groups', 'active' => $active === 'client-groups'],
-            ['href' => '/admin/credentials', 'label' => 'Credentials', 'active' => $active === 'credentials'],
-            ['href' => '/admin/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
-            ['href' => '/admin-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
-            ['href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
-            ['href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],
-            ['href' => '/admin/nodes', 'label' => 'Slave Nodes', 'active' => $active === 'nodes'],
-            ['href' => '/admin/user-groups', 'label' => 'User Groups', 'active' => $active === 'user-groups'],
-            ['href' => '/tenant', 'label' => 'Tenant Area'],
+            ['group' => 'Operations', 'href' => '/admin', 'label' => 'Overview', 'active' => $active === 'overview'],
+            ['group' => 'Operations', 'href' => '/admin/services', 'label' => 'Services', 'active' => $active === 'services'],
+            ['group' => 'Operations', 'href' => '/admin/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
+            ['group' => 'Customers', 'href' => '/admin/tenants', 'label' => 'Tenants', 'active' => $active === 'tenants'],
+            ['group' => 'Customers', 'href' => '/admin/registration', 'label' => 'Registration Codes', 'active' => $active === 'registration'],
+            ['group' => 'Customers', 'href' => '/admin/user-groups', 'label' => 'User Groups', 'active' => $active === 'user-groups'],
+            ['group' => 'Products', 'href' => '/admin/plans', 'label' => 'Plans', 'active' => $active === 'plans'],
+            ['group' => 'Infrastructure', 'href' => '/admin-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
+            ['group' => 'Infrastructure', 'href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],
+            ['group' => 'Infrastructure', 'href' => '/admin/nodes', 'label' => 'Slave Nodes', 'active' => $active === 'nodes'],
+            ['group' => 'Infrastructure', 'href' => '/admin/client-groups', 'label' => 'Client Groups', 'active' => $active === 'client-groups'],
+            ['group' => 'Infrastructure', 'href' => '/admin/credentials', 'label' => 'Credentials', 'active' => $active === 'credentials'],
+            ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
+            ['group' => 'Context', 'href' => '/tenant', 'label' => 'Tenant Area'],
         ];
     }
 
@@ -1201,8 +1202,9 @@ HTML;
   <style>
 {$this->publicPageStyles()}
   </style>
+  <link rel="stylesheet" href="/assets/precision-grid.css?v=20260725">
 </head>
-<body>
+<body class="pg-public">
   <div class="public-shell">
     <header class="site-topbar">
       <a class="site-brand" href="/">
@@ -1810,11 +1812,7 @@ CSS;
             $lowBalanceHtml = '<div class="flash danger" style="margin-bottom:18px;">Your balance is low (' . $this->escape($curr) . ' ' . $this->escape($balance) . '). <a href="/tenant/account" style="text-decoration:underline;">Top up</a> to avoid service interruption.</div>';
         }
 
-        $navHtml = '';
-        foreach ($nav as $item) {
-            $class = !empty($item['active']) ? 'nav-link active' : 'nav-link';
-            $navHtml .= '<a class="' . $class . '" href="' . $this->escape($item['href']) . '">' . $this->escape($item['label']) . '</a>';
-        }
+        $navHtml = PrecisionGridUi::groupNavigation($nav);
 
         $viewerHtml = '';
         if ($viewer !== null) {
@@ -2336,8 +2334,9 @@ CSS;
       .topbar { align-items: flex-start; flex-direction: column; }
     }
   </style>
+  <link rel="stylesheet" href="/assets/precision-grid.css?v=20260725">
 </head>
-<body>
+<body class="pg-app">
   <div class="shell">
     <div class="topbar">
       <div class="brand">
@@ -2348,23 +2347,17 @@ CSS;
         </div>
       </div>
       <div class="toolbar">
+        <button class="mobile-nav-toggle" type="button" aria-controls="workspace-navigation" aria-expanded="false">&#9776;<span class="pg-visually-hidden">Navigation</span></button>
         {$viewerHtml}
       </div>
     </div>
     <div class="layout">
-      <aside class="sidebar">
+      <aside class="sidebar" id="workspace-navigation" data-open="false">
         <div class="sidebar-panel">
           <strong>Workspace Shell</strong>
           <p>Use the public homepage as the front door, then jump back into the console you need.</p>
         </div>
-        <div class="sidebar-title">Home</div>
-        <div class="nav-group" style="margin-bottom:18px;">
-          <a class="nav-link portal-link" href="/">Homepage</a>
-        </div>
-        <div class="sidebar-title">Navigation</div>
-        <div class="nav-group">
-          {$navHtml}
-        </div>
+        {$navHtml}
       </aside>
       <main class="content-card">
         {$flashHtml}
@@ -2381,6 +2374,15 @@ CSS;
 {$this->i18nBootstrapHtml()}
 <script>
   (function () {
+    var navToggle = document.querySelector('.mobile-nav-toggle');
+    var nav = document.getElementById('workspace-navigation');
+    if (navToggle && nav) {
+      navToggle.addEventListener('click', function () {
+        var open = nav.getAttribute('data-open') !== 'true';
+        nav.setAttribute('data-open', open ? 'true' : 'false');
+        navToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+    }
     function fallbackCopy(text) {
       var textarea = document.createElement('textarea');
       textarea.value = text;
