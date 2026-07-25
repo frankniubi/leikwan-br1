@@ -2,11 +2,14 @@ mod client;
 mod frame;
 mod server;
 mod session;
+mod strategy;
 mod token;
 mod transport;
 
 use clap::{Parser, Subcommand};
 use session::SessionConfig;
+use strategy::ClientStrategy;
+use std::path::PathBuf;
 use token::TransportProtocol;
 use std::time::Duration;
 
@@ -61,6 +64,10 @@ enum Command {
         latency_first: bool,
         #[arg(long, default_value_t = false)]
         udp_primary_only: bool,
+        #[arg(long)]
+        strategy_file: Option<PathBuf>,
+        #[arg(long, default_value = "latency_best")]
+        default_strategy: String,
     },
     /// Run as server: accept leg connections, reassemble and forward to target
     Server {
@@ -97,14 +104,19 @@ fn main() {
             leg_cooldown_ms,
             latency_first,
             udp_primary_only,
+            strategy_file,
+            default_strategy,
         } => {
             let transport = match protocol.trim().to_ascii_lowercase().as_str() {
                 "tcp" => Ok(TransportProtocol::Tcp),
                 "udp" => Ok(TransportProtocol::Udp),
                 other => Err(anyhow::anyhow!("unsupported protocol {other}, expected tcp or udp")),
             };
-            match transport {
-                Ok(protocol_mode) => {
+            let runtime = transport.and_then(|protocol_mode| {
+                ClientStrategy::parse(&default_strategy).map(|strategy| (protocol_mode, strategy))
+            });
+            match runtime {
+                Ok((protocol_mode, default_strategy)) => {
                     let config = SessionConfig {
                         chunk_size,
                         max_window_bytes,
@@ -121,6 +133,8 @@ fn main() {
                         leg_cooldown: Duration::from_millis(leg_cooldown_ms),
                         latency_first,
                         udp_primary_only,
+                        strategy_file,
+                        default_strategy,
                     };
                     let rt = tokio::runtime::Builder::new_multi_thread()
                         .enable_all()
@@ -159,6 +173,8 @@ fn main() {
                 leg_cooldown: Duration::from_millis(1800000),
                 latency_first: false,
                 udp_primary_only: false,
+                strategy_file: None,
+                default_strategy: ClientStrategy::LatencyBest,
             };
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -213,6 +229,44 @@ mod tests {
 
         match cli.command {
             Command::Client { join_timeout_ms, .. } => assert_eq!(join_timeout_ms, 400),
+            _ => panic!("expected client command"),
+        }
+    }
+
+    #[test]
+    fn client_cli_accepts_strategy_file() {
+        let cli = Cli::try_parse_from([
+            "leikwan-bond",
+            "client",
+            "--protocol",
+            "tcp",
+            "--listen",
+            "0.0.0.0:11024",
+            "--legs",
+            "tcp://127.0.0.1:20962?priority=10",
+            "--session-token",
+            "token",
+            "--strategy-file",
+            "/var/lib/leikwan-client-agent/forward-strategies/77.strategy",
+            "--default-strategy",
+            "latency_best",
+        ])
+        .expect("client cli should parse strategy settings");
+
+        match cli.command {
+            Command::Client {
+                strategy_file,
+                default_strategy,
+                ..
+            } => {
+                assert_eq!(
+                    strategy_file,
+                    Some(std::path::PathBuf::from(
+                        "/var/lib/leikwan-client-agent/forward-strategies/77.strategy"
+                    ))
+                );
+                assert_eq!(default_strategy, "latency_best");
+            }
             _ => panic!("expected client command"),
         }
     }

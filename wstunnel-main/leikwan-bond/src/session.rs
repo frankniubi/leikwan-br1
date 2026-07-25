@@ -1,4 +1,5 @@
 use crate::frame::{HelloFrame, WireFrame, read_frame, write_frame};
+use crate::strategy::ClientStrategy;
 use crate::token::{SessionClaims, TransportProtocol, verify_session_token};
 use crate::transport::{
     LegIo, LegRole, LegSpec, LegTransport, accept_quic_leg, build_server_quic_endpoint, connect_leg, default_quic_listen,
@@ -57,6 +58,8 @@ pub struct SessionConfig {
     pub leg_cooldown: Duration,
     pub latency_first: bool,
     pub udp_primary_only: bool,
+    pub strategy_file: Option<PathBuf>,
+    pub default_strategy: ClientStrategy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4839,6 +4842,8 @@ mod tests {
             leg_cooldown: Duration::from_millis(1800000),
             latency_first: false,
             udp_primary_only: false,
+            strategy_file: None,
+            default_strategy: ClientStrategy::LatencyBest,
         }
     }
 
