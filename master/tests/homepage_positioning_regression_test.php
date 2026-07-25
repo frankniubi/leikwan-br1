@@ -82,14 +82,16 @@ if (str_contains($auth, '????')) {
 }
 
 foreach ([
-    '.launch-hero',
-    '.flow-visual',
-    '.flow-band',
-    '.proof-grid',
-    '.launch-entry',
+    '.pg-home-header',
+    '.pg-home-flow',
+    '.pg-home-flow-nodes',
+    '.pg-home-proof-list',
+    '.pg-home-entry',
 ] as $styleSnippet) {
     if (!str_contains($base, $styleSnippet)) {
-        fail('missing homepage style snippet: ' . $styleSnippet);
+        if (!str_contains((string) file_get_contents(__DIR__ . '/../public/assets/precision-grid.css'), $styleSnippet)) {
+            fail('missing homepage style snippet: ' . $styleSnippet);
+        }
     }
 }
 
