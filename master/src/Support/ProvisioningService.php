@@ -6381,6 +6381,43 @@ final class ProvisioningService
         return $lanes;
     }
 
+    /**
+     * @param array<string, mixed> $forward
+     * @param array<string, mixed> $combination
+     */
+    private function reconcileCombinationSelectorCap(array $forward, array $combination): int
+    {
+        $backendMode = strtolower(trim((string) ($forward['backend_mode'] ?? '')));
+        $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
+        if ($backendMode === 'leigod_mode' && $clientMode === 'bond') {
+            return 8;
+        }
+
+        return max(0, (int) ($combination['helper_group_cap'] ?? 0));
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $selectedSlaves
+     * @return array<int, array<string, mixed>>
+     */
+    private function reconcileRentedNodes(array $selectedSlaves, int $cap): array
+    {
+        $nodesById = [];
+        foreach ($selectedSlaves as $candidate) {
+            if (($candidate['candidate_source'] ?? '') !== 'rented_node') {
+                continue;
+            }
+            $node = is_array($candidate['row'] ?? null) ? $candidate['row'] : [];
+            $nodeId = (int) ($node['id'] ?? 0);
+            if ($nodeId > 0 && !isset($nodesById[$nodeId])) {
+                $nodesById[$nodeId] = $node;
+            }
+        }
+
+        $nodes = array_values($nodesById);
+        return $cap > 0 ? array_slice($nodes, 0, $cap) : $nodes;
+    }
+
     private function reconcileForwardEndpoints(int $forwardId): void
     {
         if ($forwardId <= 0) {
@@ -6403,12 +6440,9 @@ final class ProvisioningService
         $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
         if ($combinationId > 0) {
             $combination = $this->forwardCombinationById($combinationId) ?? [];
-            $selectorCap = max(0, (int) ($combination['helper_group_cap'] ?? 0));
+            $selectorCap = $this->reconcileCombinationSelectorCap($forward, $combination);
             $selectedSlaves = $this->pickFastestSlavesForCombination($combinationId, $selectorCap);
-            $desiredNodes = array_values(array_map(
-                static fn(array $candidate): array => is_array($candidate['row'] ?? null) ? $candidate['row'] : [],
-                array_filter($selectedSlaves, static fn(array $candidate): bool => ($candidate['candidate_source'] ?? '') === 'rented_node')
-            ));
+            $desiredNodes = $this->reconcileRentedNodes($selectedSlaves, $selectorCap);
         } else {
             $specificNodeId = $this->specificNodeIdFromCustomEndpointIds($forward['custom_endpoint_ids_json'] ?? null);
             if ($specificNodeId !== null) {
