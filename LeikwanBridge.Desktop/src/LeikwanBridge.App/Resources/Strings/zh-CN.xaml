@@ -92,6 +92,13 @@
     <system:String x:Key="ModeMptcpFallback">雷神</system:String>
     <system:String x:Key="ModeMptcp">雷神</system:String>
     <system:String x:Key="ModeBond">雷神</system:String>
+    <system:String x:Key="StrategyHeading">连接策略</system:String>
+    <system:String x:Key="StrategySpeedMax">Speed max</system:String>
+    <system:String x:Key="StrategySpeedMaxDescription">聚合健康 Slave 路径，优先获得最大吞吐。</system:String>
+    <system:String x:Key="StrategyLatencyBest">Latency Best</system:String>
+    <system:String x:Key="StrategyLatencyBestDescription">每个新连接固定使用本机测得延迟最低的健康 Slave。</system:String>
+    <system:String x:Key="StrategyRandom">Random</system:String>
+    <system:String x:Key="StrategyRandomDescription">每个新连接随机固定到一个健康 Slave。</system:String>
     <system:String x:Key="ModeRace">雷神</system:String>
     <system:String x:Key="ModeSingle">雷神</system:String>
 </ResourceDictionary>

@@ -68,6 +68,38 @@ public sealed class BondRuntimeBuilderTests
     }
 
     [Fact]
+    public void BuildBond_ReferencesLocalStrategyFileWithoutOverwritingChoice()
+    {
+        var stateDir = Path.Combine(Path.GetTempPath(), $"leikwan-builder-strategy-{Guid.NewGuid():N}");
+        try
+        {
+            var config = new AgentConfig
+            {
+                MasterUrl = "https://panel-a.example.test",
+                ClientId = 9,
+                StateDir = stateDir,
+                BondBin = @"C:\leikwan\bin\leikwan-bond.exe",
+                BondIngressBin = @"C:\leikwan\bin\leikwan-ingress.exe",
+                WstunnelBin = @"C:\leikwan\bin\wstunnel.exe",
+            };
+            var store = new ForwardStrategyStore(stateDir, config.MasterUrl, config.ClientId);
+            store.Set(26, ForwardStrategy.Random);
+
+            var spec = CreateBuilder(config).Build(CreatePlainTcpMuxBondForward());
+            var runtime = Assert.Single(spec.Processes, process => process.Role == "bond-runtime");
+
+            Assert.Contains($"--strategy-file \"{store.RuntimePath(26)}\"", runtime.Arguments);
+            Assert.Contains("--default-strategy latency_best", runtime.Arguments);
+            Assert.Equal("random\n", File.ReadAllText(store.RuntimePath(26)));
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir))
+                Directory.Delete(stateDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void BuildBond_PlainTcpMux_UsesLinuxParityJoinTimeoutForWssOnlyLegs()
     {
         var builder = CreateBuilder();

@@ -330,10 +330,14 @@ public partial class MainViewModel : ObservableObject
 
         Forwards.Clear();
         ConnectionQualityForwards.Clear();
+        var strategyStore = new ForwardStrategyStore(
+            _config.GetEffectiveStateDir(),
+            _config.MasterUrl,
+            _config.ClientId > 0 ? _config.ClientId : _config.ActiveClientId);
         foreach (var forward in snapshot)
         {
             var running = isRunning(forward.ForwardId);
-            var vm = new ForwardViewModel(forward)
+            var vm = new ForwardViewModel(forward, strategyStore)
             {
                 IsRunning = running,
             };

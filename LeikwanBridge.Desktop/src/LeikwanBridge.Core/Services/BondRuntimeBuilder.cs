@@ -51,6 +51,11 @@ public sealed class BondRuntimeBuilder
         var generatedFiles = new List<GeneratedFile>();
         var legPorts = new List<int>();
         int forwardId = forward.ForwardId;
+        var strategyPath = new ForwardStrategyStore(
+            _config.GetEffectiveStateDir(),
+            _config.MasterUrl,
+            _config.ClientId > 0 ? _config.ClientId : _config.ActiveClientId
+        ).EnsureRuntimeFile(forwardId);
         int listenPort = forward.ListenPort;
         string transport = (forward.Transport ?? "tcp+udp").Trim().ToLowerInvariant();
         string sni = forward.Sni;
@@ -120,6 +125,7 @@ public sealed class BondRuntimeBuilder
 
             var bondArgs = $"client --protocol tcp --listen 0.0.0.0:{listenPort} " +
                 $"--legs \"{string.Join(",", tcpLegTargets)}\" --session-token \"{tcpToken}\" " +
+                $"--strategy-file \"{strategyPath}\" --default-strategy latency_best " +
                 $"--chunk-size {bond.ChunkSize} " +
                 $"--max-window-bytes {bond.MaxWindowBytes} " +
                 $"--retransmit-ms {bond.RetransmitMs} " +
@@ -206,6 +212,7 @@ public sealed class BondRuntimeBuilder
 
             var bondArgs = $"client --protocol udp --listen 0.0.0.0:{listenPort} " +
                 $"--legs \"{string.Join(",", udpLegTargets)}\" --session-token \"{udpToken}\" " +
+                $"--strategy-file \"{strategyPath}\" --default-strategy latency_best " +
                 $"--chunk-size {bond.ChunkSize} " +
                 $"--max-window-bytes {bond.MaxWindowBytes} " +
                 $"--retransmit-ms {bond.RetransmitMs} " +
