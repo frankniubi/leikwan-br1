@@ -13,6 +13,7 @@ use Leikwan\Master\Support\LeigodOnlyActivationPlan;
 use Leikwan\Master\Support\LeigodOnlyPlatformFamilyGate;
 use Leikwan\Master\Support\LeigodRetirementActivationContext;
 use Leikwan\Master\Support\ProvisioningService;
+use Leikwan\Master\Support\PrecisionGridUi;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\KnowledgebaseService;
 use Leikwan\Master\Support\SslCertificateService;
@@ -3182,6 +3183,16 @@ final class AdminController extends BaseController
             return Response::redirect('/login');
         }
 
+        $view = PrecisionGridUi::normalizeView(
+            (string) $request->input('view', 'nodes'),
+            ['nodes', 'install', 'defaults', 'updates', 'detail'],
+            'nodes'
+        );
+        $editId = (int) $request->input('edit', 0);
+        if ($editId > 0) {
+            $view = 'detail';
+        }
+
         $nodes = $this->db->fetchAll(
             'SELECT n.id, n.name, n.public_ip, n.private_ip, n.region, n.status, n.agent_version, n.current_load, n.last_heartbeat_at, n.agent_config_json, n.credential_profile_id, n.ssl_certificate_id, g.group_key, g.name AS group_name, cp.name AS credential_profile_name, sc.name AS ssl_certificate_name, sc.expires_at AS ssl_certificate_expires_at
              FROM nodes n
@@ -3193,7 +3204,6 @@ final class AdminController extends BaseController
         $groups = $this->provisioning?->listNodeGroups() ?? [];
         $credentialProfiles = $this->db->fetchAll('SELECT * FROM credential_profiles ORDER BY updated_at DESC, id DESC');
         $sslCertificates = $this->db->fetchAll('SELECT * FROM ssl_certificates ORDER BY expires_at ASC, updated_at DESC, id DESC');
-        $editId = (int) $request->input('edit', 0);
         $editing = null;
         foreach ($nodes as $node) {
             if ((int) $node['id'] === $editId) {
@@ -3220,40 +3230,42 @@ final class AdminController extends BaseController
             $nodes
         ));
         $rows = '';
+        $mobileRows = '';
         foreach ($nodes as $node) {
-            $statusClass = ((string) $node['status'] === 'active') ? 'success' : 'danger';
+            $nodeId = (int) $node['id'];
+            $nodeName = (string) $node['name'];
+            $publicIp = (string) $node['public_ip'];
+            $region = (string) $node['region'];
+            $groupName = (string) ($node['group_name'] ?? $node['group_key'] ?? 'Unassigned');
+            $status = (string) $node['status'];
+            $statusState = $status === 'active' ? 'ok' : 'error';
+            $load = (int) $node['current_load'];
+            $heartbeat = (string) $node['last_heartbeat_at'];
             $usagePanel = $this->renderUsageOverviewPanel($nodeUsageMap[(int) ($node['id'] ?? 0)] ?? [], 'Slave Traffic');
+            $commands = '<a href="/admin/nodes?view=detail&amp;edit=' . $nodeId . '">Edit</a>
+                <form class="inline" method="post" action="/admin/nodes/' . $nodeId . '/request-update">
+                    <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
+                    <button type="submit">Request Update</button>
+                </form>
+                <details><summary>Usage Calendar</summary>' . $usagePanel . '</details>
+                <form class="inline" method="post" action="/admin/nodes/' . $nodeId . '/delete" onsubmit="return confirm(\'Delete this slave node and remove its database references? Clients will stop using it on their next config sync.\')">
+                    <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
+                    <button type="submit" class="danger">Delete</button>
+                </form>';
+            $selection = '<input type="checkbox" class="node-update-select" name="node_ids[]" value="' . $nodeId . '" form="selected-node-update-form" aria-label="Select ' . $this->escape($nodeName) . ' for update">';
             $rows .= '<tr>
-                <td><input type="checkbox" class="node-update-select" name="node_ids[]" value="' . (int) $node['id'] . '" form="selected-node-update-form"></td>
-                <td>' . (int) $node['id'] . '</td>
-                <td>' . $this->escape((string) $node['name']) . '</td>
-                <td>' . $this->escape((string) ($node['group_name'] ?? $node['group_key'] ?? '')) . '</td>
-                <td>' . $this->escape((string) $node['public_ip']) . '</td>
-                <td>' . $this->escape((string) $node['region']) . '</td>
-                <td>' . $this->escape((string) ($node['agent_version'] ?? '')) . '</td>
-                <td>' . (int) $node['current_load'] . '</td>
-                <td><span class="badge ' . $statusClass . '">' . $this->escape((string) $node['status']) . '</span></td>
-                <td>' . $this->escape((string) $node['last_heartbeat_at']) . '</td>
-                <td>' . $this->escape((string) ($node['credential_profile_name'] ?? '')) . '</td>
-                <td>' . $this->escape((string) ($node['ssl_certificate_name'] ?? '')) . '</td>
-                <td>
-                    <div class="actions">
-                        <a class="button ghost" href="/admin/nodes?edit=' . (int) $node['id'] . '">Edit</a>
-                        <form class="inline" method="post" action="/admin/nodes/' . (int) $node['id'] . '/request-update">
-                            <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
-                            <button type="submit" class="button secondary">Request Update</button>
-                        </form>
-                        <form class="inline" method="post" action="/admin/nodes/' . (int) $node['id'] . '/delete" onsubmit="return confirm(\'Delete this slave node and remove its database references? Clients will stop using it on their next config sync.\')">
-                            <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
-                            <button type="submit" class="button danger">Delete</button>
-                        </form>
-                    </div>
-                    <details style="margin-top:12px;">
-                        <summary>Usage Calendar</summary>
-                        ' . $usagePanel . '
-                    </details>
-                </td>
+                <td><span class="pg-node-select">' . $selection . PrecisionGridUi::resourceCell($nodeName, $publicIp) . '</span></td>
+                <td>' . PrecisionGridUi::resourceCell($region, $groupName) . '</td>
+                <td>' . PrecisionGridUi::status(ucfirst($status), $statusState) . '</td>
+                <td>' . $load . '%</td>
+                <td>' . PrecisionGridUi::resourceCell($heartbeat !== '' ? $heartbeat : 'Never', (string) ($node['agent_version'] ?? '')) . '</td>
+                <td>' . PrecisionGridUi::rowMenu($nodeName . ' actions', $commands) . '</td>
             </tr>';
+            $mobileRows .= '<article class="pg-mobile-resource-row">
+                <header>' . $selection . PrecisionGridUi::resourceCell($nodeName, $publicIp) . PrecisionGridUi::status(ucfirst($status), $statusState) . '</header>
+                <dl><div><dt>Region</dt><dd>' . $this->escape($region) . '</dd></div><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>Load</dt><dd>' . $load . '%</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape($heartbeat !== '' ? $heartbeat : 'Never') . '</dd></div></dl>
+                <footer>' . PrecisionGridUi::rowMenu($nodeName . ' actions', $commands) . '</footer>
+            </article>';
         }
 
         $groupOptions = '<option value="">Select a slave group</option>';
@@ -3298,13 +3310,14 @@ final class AdminController extends BaseController
         $manualNewInstallCommand = $manualInstallCommand . ' \
   --force-register';
 
-        $body = '
-            <div class="hero">
-              <div>
-                <h2>Slave Nodes</h2>
-                <p class="muted">Install a slave manually with a local command. For the first forward, you only need one online slave in one slave group.</p>
-              </div>
-            </div>
+        $tabs = PrecisionGridUi::viewTabs([
+            ['key' => 'nodes', 'label' => 'Nodes', 'href' => '/admin/nodes?view=nodes'],
+            ['key' => 'install', 'label' => 'Install', 'href' => '/admin/nodes?view=install'],
+            ['key' => 'defaults', 'label' => 'Edge Defaults', 'href' => '/admin/nodes?view=defaults'],
+            ['key' => 'updates', 'label' => 'Updates', 'href' => '/admin/nodes?view=updates'],
+        ], $view);
+
+        $installView = '
             <section class="card">
               <h3>Manual Install Command</h3>
               <div class="flash success">Quick start: create one slave group first, then install one slave into that group. You can build your first tenant forward without chains or multiple endpoints.</div>
@@ -3331,8 +3344,10 @@ final class AdminController extends BaseController
               </div>
               <p class="muted">The panel no longer triggers Linux slave install over remote SSH. Install locally on the target host using the command above.</p>
               <p class="muted">If the host was reused or cloned from an image and already has <code>/etc/leikwan-slave/config.json</code>, the installer will reuse that node identity unless you append <code>--force-register</code>.</p>
-            </section>
-            <section class="card" style="margin-top:20px;">
+            </section>';
+
+        $defaultsView = '
+            <section class="card">
               <h3>Edge Defaults</h3>
               <p class="muted">These defaults are used when a forward is published to slaves. Recommended now: one shared public port, usually <code>443</code>, and unique WebSocket paths per service.</p>
               <form method="post" action="/admin/edge-defaults">
@@ -3368,10 +3383,13 @@ final class AdminController extends BaseController
                 </div>
                 <div class="actions"><button class="button" type="submit">Save Edge Defaults</button></div>
              </form>
-            </section>
-            <section class="card" style="margin-top:20px;">
-              <h3>' . ($editing !== null ? 'Edit Slave Node' : 'Manage Slave Node') . '</h3>
-              <p class="muted">Select one registered slave to push modification-level config. TLS, polling and listener settings are exposed here, but reusable certificates now live in <code>Credentials -> SSL Certificate Library</code> so nodes only reference library items.</p>
+            </section>';
+
+        $detailView = '
+            <section class="pg-detail-section pg-node-detail">
+              <header><h2>' . ($editing !== null ? 'Edit Slave Node' : 'Select a Slave Node') . '</h2>
+              <p>Identity, TLS, runtime, pricing, and advanced settings stay together here instead of crowding the node list.</p></header>
+              <div class="pg-detail-body">
               <form method="post" action="/admin/nodes/' . (int) ($editing['id'] ?? 0) . '/manage">
                 <input type="hidden" name="csrf_token" value="' . $csrf . '">
                 <div class="form-grid">
@@ -3402,10 +3420,13 @@ final class AdminController extends BaseController
                   <div class="field"><label>Traffic Price Override / GB</label><input type="number" step="0.0001" min="0" name="traffic_price_per_gb" value="' . $this->escape((string) ($editingNodePrice['price_per_gb'] ?? '')) . '" placeholder="use group default"' . ($editing === null ? ' disabled' : '') . '><p class="muted">Leave empty to use the group default price. Set a value to override.</p></div>
                 </div>
                 <div class="field" style="margin-top:14px;"><label>Additional Agent Config JSON</label><textarea name="agent_config_json" placeholder="{&quot;backend_host&quot;:&quot;127.0.0.1&quot;}"' . ($editing === null ? ' disabled' : '') . '>' . $this->escape((string) ($editing['agent_config_json'] ?? '')) . '</textarea></div>
-                <div class="actions"><button class="button" type="submit"' . ($editing === null ? ' disabled' : '') . '>Save Node Config</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/nodes">Cancel</a>' : '') . '</div>
+                <div class="actions"><button class="button" type="submit"' . ($editing === null ? ' disabled' : '') . '>Save Node Config</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/nodes?view=nodes">Cancel</a>' : '') . '</div>
               </form>
-            </section>
-            <section class="card" style="margin-top:20px;">
+              </div>
+            </section>';
+
+        $updatesView = '
+            <section class="card">
               <h3>Update Slaves</h3>
               <p class="muted">You can update one slave, multiple selected slaves, or every slave in one group. The panel only writes an update request token; each slave then pulls the latest panel-hosted installer on its next poll.</p>
               <div class="grid two">
@@ -3421,23 +3442,37 @@ final class AdminController extends BaseController
                   <p class="muted">Group update is useful for rolling out a new slave-agent or landing page to one edge region at a time. Selected-node update is better when you only want to touch a few machines first.</p>
                 </div>
               </div>
-            </section>
-            <section class="card" style="margin-top:20px;">
-              <h3>Registered Nodes</h3>
-              <form id="selected-node-update-form" method="post" action="/admin/nodes/request-update-selected">
-                <input type="hidden" name="csrf_token" value="' . $csrf . '">
-              </form>
-              <div class="table-wrap">
-                <div class="actions" style="margin-bottom:12px;">
+            </section>';
+
+        $nodesView = '
+            <section class="pg-sheet" data-mobile-resources="true">
+              <div class="pg-sheet-toolbar">
+                <div><strong>Registered Nodes</strong><span class="muted"> ' . count($nodes) . ' total</span></div>
+                <div class="actions">
                   <button class="button secondary" type="submit" form="selected-node-update-form">Request Update For Selected</button>
                   <button class="button ghost" type="button" onclick="(function(){const boxes=document.querySelectorAll(&quot;.node-update-select&quot;);const all=[...boxes].length>0&&[...boxes].every((b)=>b.checked);boxes.forEach((b)=>b.checked=!all);})()">Toggle All</button>
                 </div>
-                <table>
-                  <thead><tr><th>Select</th><th>ID</th><th>Name</th><th>Group</th><th>Public IP</th><th>Region</th><th>Agent</th><th>Load</th><th>Status</th><th>Heartbeat</th><th>Credential</th><th>SSL Certificate</th><th>Actions</th></tr></thead>
+              </div>
+              <form id="selected-node-update-form" method="post" action="/admin/nodes/request-update-selected">
+                <input type="hidden" name="csrf_token" value="' . $csrf . '">
+              </form>
+              <div class="pg-sheet-scroll">
+                <table class="pg-sheet-table">
+                  <thead><tr><th>Node / IP</th><th>Region / Group</th><th>Status</th><th>Load</th><th>Heartbeat</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
                   <tbody>' . $rows . '</tbody>
                 </table>
               </div>
+              <div class="pg-mobile-resource-list">' . $mobileRows . '</div>
             </section>';
+
+        $viewBody = match ($view) {
+            'install' => $installView,
+            'defaults' => $defaultsView,
+            'updates' => $updatesView,
+            'detail' => $detailView,
+            default => $nodesView,
+        };
+        $body = '<div class="pg-view-tabs-shell">' . $tabs . '</div>' . $viewBody;
 
         return $this->adminPage('Slave Nodes', $body, $viewer, 'nodes');
     }
