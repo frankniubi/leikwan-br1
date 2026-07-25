@@ -2854,9 +2854,12 @@ final class AdminController extends BaseController
             return Response::redirect('/login');
         }
 
+        $view = PrecisionGridUi::normalizeView((string) $request->input('view', 'list'), ['list', 'create', 'edit', 'updates'], 'list');
+
         $points = $this->provisioning?->listSidecarPoints() ?? [];
         $tenants = $this->db->fetchAll('SELECT id, name, email FROM users WHERE role = :role ORDER BY name ASC, email ASC', ['role' => 'tenant']);
         $editId = (int) $request->input('edit', 0);
+        if ($editId > 0) $view = 'edit';
         $editing = null;
         foreach ($points as $point) {
             if ((int) $point['id'] === $editId) {
@@ -2879,53 +2882,39 @@ final class AdminController extends BaseController
             $points
         ));
         $rows = '';
+        $mobileRows = '';
         foreach ($points as $point) {
+            $pointId = (int) $point['id'];
+            $pointName = (string) $point['name'];
+            $host = (string) $point['sidecar_host'];
+            $owner = (string) ($point['owner_email'] ?? 'Shared');
             $status = $this->sidecarPointStatusInfo($point);
             $installCommand = $this->bondSidecarInstallCommand($point);
             $uninstallCommand = $this->bondSidecarUninstallCommand($point);
             $usagePanel = $this->renderUsageOverviewPanel($sidecarUsageMap[(int) ($point['id'] ?? 0)] ?? [], 'Transport Traffic');
+            $commands = '<a href="/admin-transport-endpoints?view=edit&amp;edit=' . $pointId . '">Edit</a>
+                <form class="inline" method="post" action="/admin-transport-endpoints/' . $pointId . '/request-update"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit">Request Update</button></form>
+                <details><summary>Install command</summary><pre>' . $this->escape($installCommand) . '</pre></details>
+                <details><summary>Uninstall command</summary><pre>' . $this->escape($uninstallCommand) . '</pre></details>
+                <details><summary>Usage Calendar</summary>' . $usagePanel . '</details>
+                <form class="inline" method="post" action="/admin-transport-endpoints/' . $pointId . '/delete"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit" class="danger">Delete</button></form>';
             $rows .= '<tr>
-                <td>' . (int) $point['id'] . '</td>
-                <td>' . $this->escape((string) $point['name']) . '</td>
-                <td>' . $this->escape((string) ($point['owner_email'] ?? 'shared')) . '</td>
-                <td>' . $this->escape((string) $point['sidecar_host']) . '</td>
-                <td>' . $this->escape($this->sidecarPortSummary($point)) . '</td>
-                <td>' . $this->escape((string) ($point['bind_host'] ?? '0.0.0.0')) . '</td>
-                <td>' . $this->escape((string) ($point['total_speed_limit_mbps'] ?? '')) . '</td>
-                <td><span class="badge ' . $status['class'] . '">' . $this->escape($status['label']) . '</span></td>
-                <td>' . $this->escape((string) ($point['agent_version'] ?? '')) . '</td>
-                <td>' . $this->escape((string) ($point['last_heartbeat_at'] ?? '')) . '</td>
-                <td>' . (int) ($point['forward_count'] ?? 0) . '</td>
-                <td>
-                    <div class="actions">
-                        <a class="button ghost" href="/admin-transport-endpoints?edit=' . (int) $point['id'] . '">Edit</a>
-                        <form class="inline" method="post" action="/admin-transport-endpoints/' . (int) $point['id'] . '/request-update">
-                            <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
-                            <button type="submit" class="button secondary">Request Update</button>
-                        </form>
-                        <form class="inline" method="post" action="/admin-transport-endpoints/' . (int) $point['id'] . '/delete">
-                            <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
-                            <button type="submit" class="button danger">Delete</button>
-                        </form>
-                    </div>
-                    <details style="margin-top:12px;">
-                        <summary>Install command</summary>
-                        <pre>' . $this->escape($installCommand) . '</pre>
-                    </details>
-                    <details style="margin-top:12px;">
-                        <summary>Uninstall command</summary>
-                        <pre>' . $this->escape($uninstallCommand) . '</pre>
-                    </details>
-                    <details style="margin-top:12px;">
-                        <summary>Usage Calendar</summary>
-                        ' . $usagePanel . '
-                    </details>
-                </td>
+                <td>' . PrecisionGridUi::resourceCell($pointName, $owner) . '</td><td>' . PrecisionGridUi::resourceCell($host, $this->sidecarPortSummary($point)) . '</td>
+                <td>' . PrecisionGridUi::status($status['label'], $status['class'] === 'success' ? 'ok' : 'warning') . '</td>
+                <td>' . PrecisionGridUi::resourceCell((string) ($point['last_heartbeat_at'] ?? 'Never'), (string) ($point['agent_version'] ?? '')) . '</td>
+                <td>' . (int) ($point['forward_count'] ?? 0) . '</td><td>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</td>
             </tr>';
+            $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $owner) . PrecisionGridUi::status($status['label'], $status['class'] === 'success' ? 'ok' : 'warning') . '</header><dl><div><dt>Address</dt><dd>' . $this->escape($host) . '</dd></div><div><dt>Ports</dt><dd>' . $this->escape($this->sidecarPortSummary($point)) . '</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape((string) ($point['last_heartbeat_at'] ?? 'Never')) . '</dd></div><div><dt>Forwards</dt><dd>' . (int) ($point['forward_count'] ?? 0) . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</footer></article>';
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
-        $body = '
+        $tabs = PrecisionGridUi::viewTabs([
+            ['key' => 'list', 'label' => 'Endpoints', 'href' => '/admin-transport-endpoints?view=list'],
+            ['key' => 'create', 'label' => 'Create', 'href' => '/admin-transport-endpoints?view=create'],
+            ['key' => 'updates', 'label' => 'Updates', 'href' => '/admin-transport-endpoints?view=updates'],
+        ], $view);
+        $listView = '<section class="pg-sheet" data-mobile-resources="true"><div class="pg-sheet-toolbar"><strong>Transport Endpoints</strong><span class="muted">' . count($points) . ' endpoints</span></div><div class="pg-sheet-scroll"><table class="pg-sheet-table"><thead><tr><th>Endpoint / Owner</th><th>Address / Ports</th><th>Status</th><th>Heartbeat / Version</th><th>Forwards</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead><tbody>' . $rows . '</tbody></table></div><div class="pg-mobile-resource-list">' . $mobileRows . '</div></section>';
+        $body = $tabs . ($view === 'list' || $view === 'updates' ? $listView : '') . ($view === 'create' || $view === 'edit' ? '
             <div class="hero">
               <div>
                 <h2>Target Transport Endpoints</h2>
@@ -2964,7 +2953,7 @@ final class AdminController extends BaseController
                   </table>
                 </div>
               </section>
-            </div>';
+            </div>' : '');
 
         return $this->adminPage('Target Transport Endpoints', $body, $viewer, 'transport-endpoints');
     }

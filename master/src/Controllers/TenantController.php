@@ -1217,8 +1217,11 @@ final class TenantController extends BaseController
             return Response::redirect('/login');
         }
 
+        $view = PrecisionGridUi::normalizeView((string) $request->input('view', 'list'), ['list', 'create', 'edit'], 'list');
+
         $points = $this->provisioning->listSidecarPointsForUser((int) $user['id']);
         $editId = (int) $request->input('edit', 0);
+        if ($editId > 0) $view = 'edit';
         $editing = null;
         foreach ($points as $point) {
             if ((int) $point['id'] === $editId && (int) ($point['owner_user_id'] ?? 0) === (int) $user['id']) {
@@ -1232,6 +1235,8 @@ final class TenantController extends BaseController
             $points
         ));
         $cards = '';
+        $rows = '';
+        $mobileRows = '';
         foreach ($points as $point) {
             $status = $this->sidecarPointStatusInfo($point);
             $isShared = (int) ($point['owner_user_id'] ?? 0) === 0;
@@ -1260,6 +1265,15 @@ final class TenantController extends BaseController
                 . ' | Month '
                 . $this->escape($this->formatUsageBytes((int) ($usage['month_bytes'] ?? 0)))
                 . '</div>';
+            $pointId = (int) $point['id'];
+            $pointName = (string) $point['name'];
+            $host = (string) $point['sidecar_host'];
+            $commands = $canManage
+                ? '<a href="/tenant-transport-endpoints?view=edit&amp;edit=' . $pointId . '">Edit</a><form class="inline" method="post" action="/tenant-transport-endpoints/' . $pointId . '/request-update"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit">Request Update</button></form><form class="inline" method="post" action="/tenant-transport-endpoints/' . $pointId . '/delete"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit" class="danger">Delete</button></form>'
+                : '<span class="muted">Shared endpoint is read-only</span>';
+            $ownerLabel = $isShared ? 'Shared by admin' : 'Owned by you';
+            $rows .= '<tr><td>' . PrecisionGridUi::resourceCell($pointName, $ownerLabel) . '</td><td>' . PrecisionGridUi::resourceCell($host, $this->sidecarPortSummary($point)) . '</td><td>' . PrecisionGridUi::status($status['label'], $status['class'] === 'success' ? 'ok' : 'warning') . '</td><td>' . PrecisionGridUi::resourceCell((string) ($point['last_heartbeat_at'] ?? 'Never'), (string) ($point['agent_version'] ?? '')) . '</td><td>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</td></tr>';
+            $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $ownerLabel) . PrecisionGridUi::status($status['label'], $status['class'] === 'success' ? 'ok' : 'warning') . '</header><dl><div><dt>Address</dt><dd>' . $this->escape($host) . '</dd></div><div><dt>Ports</dt><dd>' . $this->escape($this->sidecarPortSummary($point)) . '</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape((string) ($point['last_heartbeat_at'] ?? 'Never')) . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</footer></article>';
             $cards .= '<section class="card">
                 <div class="hero" style="margin-bottom:14px;">
                   <div>
@@ -1311,7 +1325,12 @@ final class TenantController extends BaseController
             $cards = '<div class="muted">No target transport endpoint yet. Create one, install it on your C-side machine, then select it when you create a bond or MPTCP forward.</div>';
         }
 
-        $body = '
+        $tabs = PrecisionGridUi::viewTabs([
+            ['key' => 'list', 'label' => 'Endpoints', 'href' => '/tenant-transport-endpoints?view=list'],
+            ['key' => 'create', 'label' => 'Create', 'href' => '/tenant-transport-endpoints?view=create'],
+        ], $view);
+        $listView = '<section class="pg-sheet" data-mobile-resources="true"><div class="pg-sheet-toolbar"><strong>Transport Endpoints</strong><span class="muted">' . count($points) . ' endpoints</span></div><div class="pg-sheet-scroll"><table class="pg-sheet-table"><thead><tr><th>Endpoint / Owner</th><th>Address / Ports</th><th>Status</th><th>Heartbeat / Version</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead><tbody>' . $rows . '</tbody></table></div><div class="pg-mobile-resource-list">' . $mobileRows . '</div></section>';
+        $body = $tabs . ($view === 'list' ? $listView : '') . ($view !== 'list' ? '
             <div class="hero">
               <div>
                 <h2>Transport Endpoints</h2>
@@ -1347,7 +1366,7 @@ final class TenantController extends BaseController
                 <h3>Transport Endpoint List</h3>
                 <div class="stack">' . $cards . '</div>
               </section>
-            </div>';
+            </div>' : '');
 
         return $this->page('Transport Endpoints', $body, $user, $this->tenantNav('transport-endpoints'));
     }
