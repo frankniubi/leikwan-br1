@@ -108,16 +108,16 @@ final class AuthController extends BaseController
             <section class="pg-home-proof-list">' . $proofCards . '</section>
             <section class="pg-home-entry-list">
               <section class="pg-home-entry">
-                <span>' . $this->escape($consoleTitle) . '</span>
+                <div><span class="pg-eyebrow">' . $this->escape($consoleTitle) . '</span>
                 <h3>' . $this->escape($consoleTitle) . '</h3>
-                <p>' . $this->escape($consoleBody) . '</p>
+                <p>' . $this->escape($consoleBody) . '</p></div>
                 <div class="actions">' . $consoleAction . '</div>
               </section>
               ' . $opsCard . '
               <section class="pg-home-entry">
-                <span>Knowledgebase</span>
+                <div><span class="pg-eyebrow">Knowledgebase</span>
                 <h3>Routing playbooks</h3>
-                <p>Install flow, route modes, diagnostics, transport endpoint rollout, and recovery notes live in the panel docs.</p>
+                <p>Install flow, route modes, diagnostics, transport endpoint rollout, and recovery notes live in the panel docs.</p></div>
                 <div class="actions"><a class="button secondary" href="/knowledgebase">Open Docs</a></div>
               </section>
             </section>';
