@@ -39,9 +39,9 @@ try {
         'details' => $exception->details(),
     ]);
 } catch (Throwable $exception) {
-    $html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Application Error</title><style>body{font-family:Segoe UI,sans-serif;background:#f8fafc;color:#172033;padding:40px;max-width:920px;margin:0 auto} .card{background:#fff;border-radius:20px;padding:24px;box-shadow:0 16px 42px rgba(15,23,42,.08)} code,pre{font-family:Consolas,monospace} pre{background:#0f172a;color:#e2e8f0;padding:16px;border-radius:16px;overflow:auto} a{color:#2563eb}</style></head><body><div class="card"><h1>Application Error</h1><p>The app failed during bootstrap. If this is a fresh install or a new deployment, open <a href="/install.php">/install.php</a> and run the installer/update flow.</p><pre>'
+    $html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Application Error</title><link rel="stylesheet" href="/assets/precision-grid.css?v=20260725"></head><body class="pg-public"><main class="landing-stack"><div class="pg-form-section"><h1>Application Error</h1><p>The app failed during bootstrap. If this is a fresh install or a new deployment, open <a href="/install.php">/install.php</a> and run the installer/update flow.</p><pre>'
         . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8')
-        . '</pre></div></body></html>';
+        . '</pre></div></main></body></html>';
     $response = Response::html(500, $html);
 }
 

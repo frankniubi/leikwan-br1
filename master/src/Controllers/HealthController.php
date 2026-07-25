@@ -32,15 +32,16 @@ final class HealthController extends BaseController
     .card { background: white; border-radius: 16px; padding: 24px; box-shadow: 0 10px 30px rgba(15,23,42,.08); margin-bottom: 20px; }
     code { background: #eef2ff; padding: 2px 6px; border-radius: 6px; }
   </style>
+  <link rel="stylesheet" href="/assets/precision-grid.css?v=20260725">
 </head>
-<body>
-  <div class="card">
+<body class="pg-public">
+  <main class="landing-stack"><div class="card pg-form-section">
     <h1>{$appName}</h1>
     <p>利群會聚 LeiKwan Bridge 的 Master 控制面已经就绪。当前仓库提供了 WHMCS、节点编排、流量上报、client 配置和安装脚本接口。</p>
     <p>健康检查：<code>/api/health</code></p>
     <p>管理员登录：<code>/login</code></p>
     <p>节点安装脚本：<code>/artifacts/install-slave.sh</code></p>
-  </div>
+  </div></main>
 </body>
 </html>
 HTML;

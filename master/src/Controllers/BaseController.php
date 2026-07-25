@@ -1173,6 +1173,7 @@ HTML;
         $flashHtml = $this->flashHtml();
         $languageSwitcher = $this->localeSwitcherHtml();
         $csrfToken = $this->escape(SessionAuth::csrfToken());
+        $body = '<div class="pg-public-body pg-auth-layout">' . $body . '</div>';
 
         $actionsHtml = '<a class="button ghost" href="/register">Create Account</a><a class="button" href="/login">Sign In</a>';
         if ($viewer !== null) {
@@ -1797,6 +1798,21 @@ CSS;
         $brandLogoUrl = $this->escape($this->brandLogoUrl());
         $csrfToken = $this->escape(SessionAuth::csrfToken());
         $languageSwitcher = $this->localeSwitcherHtml();
+
+        $activeGroup = 'Workspace';
+        foreach ($nav as $item) {
+            if (!empty($item['active'])) {
+                $activeGroup = (string) ($item['group'] ?? 'Workspace');
+                break;
+            }
+        }
+        $templateClass = str_contains(strtolower($title), 'overview')
+            ? 'pg-template-overview'
+            : (preg_match('/edit|create|account|settings|detail/i', $title) === 1
+                ? 'pg-template-detail'
+                : 'pg-template-operations');
+        $body = PrecisionGridUi::pageHeader($activeGroup, $title)
+            . '<div class="pg-page-body ' . $templateClass . '">' . $body . '</div>';
 
         $flash = SessionAuth::consumeFlash();
         $flashHtml = '';
