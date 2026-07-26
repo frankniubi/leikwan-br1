@@ -10,7 +10,18 @@
 /client-agent/leikwan_mptcp_client.py text eol=lf
 /artifacts/leikwan-mptcp-client.py text eol=lf
 
-# Same reasoning for stylesheets: the legacy skin is frozen by sha256 in
-# skin_v2_legacy_freeze_test.php. A checkout with core.autocrlf=true would hash
-# CRLF bytes and fail the freeze with a mismatch that is not evidence of an edit.
-*.css text eol=lf
+# Same reasoning for the browser assets of the web skin: skin_v2_legacy_freeze_test.php
+# freezes the legacy skin's stylesheets and signal-chamber.js by sha256, and a
+# checkout with core.autocrlf=true would hash CRLF bytes and fail the freeze with
+# a mismatch that is not evidence of an edit.
+#
+# Scoped to that one directory rather than a repo-wide *.css / *.js, which would
+# also normalise the Tauri client sources and the vendored trees this migration
+# has no business touching. Scoped to the directory rather than the four frozen
+# filenames so that adding a file to the freeze list does not silently need a
+# second edit here -- the freeze test asserts every path it hashes is covered by
+# a pin below, so the two cannot drift apart.
+#
+# Deleted with the legacy skin in the teardown commit (Task 16).
+/master/public/assets/*.css text eol=lf
+/master/public/assets/*.js text eol=lf
