@@ -11,6 +11,7 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\PrecisionGridUi;
+use Leikwan\Master\Support\UptimeTrace;
 
 abstract class BaseController
 {
@@ -1170,88 +1171,6 @@ abstract class BaseController
         return $configured !== '' ? $configured : '/assets/brand/leikwan-mark.png';
     }
 
-    /**
-     * Resolve the active skin.
-     *
-     * Resolved at the top of a render and passed down. Helpers that need it
-     * take it as an argument -- nothing re-reads the flag mid-page, which is
-     * how three stylesheets accumulated the last time.
-     *
-     * Administrators may preview the new skin with ?skin=v2, which persists for
-     * the session. The parameter is ignored for everyone else, so the flag stays
-     * the only thing that exposes v2 to users.
-     *
-     * The stored preview is stamped with the flag value it was chosen against
-     * and discarded when that changes. Without the stamp, flipping LEIKWAN_SKIN
-     * back would not be enough to pull everyone off a bad skin -- the people
-     * still pinned to it would be exactly the admins trying to fix it.
-     *
-     * Reads $_GET rather than Request because page() and publicPage() are not
-     * given one, and threading a Request through their call sites is a larger
-     * change than this rollout warrants.
-     *
-     * Not a pure query: it writes and clears $_SESSION['skin_override'] as a
-     * side effect. Splitting the write out would mean every render site
-     * remembering to call it, and forgetting would look like a preview that
-     * silently does not stick. Both superglobals are treated as untrusted --
-     * a session store is shared with other code and survives deploys, so a
-     * non-string there is no less likely than in a query string.
-     *
-     * @param array<string, mixed>|null $viewer
-     */
-    protected function activeSkin(?array $viewer = null): string
-    {
-        $configured = self::normalizeSkin(
-            (string) ($this->config->get('LEIKWAN_SKIN', 'legacy') ?? 'legacy'),
-            'legacy'
-        );
-
-        $isAdmin = $viewer !== null && (string) ($viewer['role'] ?? '') === 'admin';
-        if (!$isAdmin) {
-            return $configured;
-        }
-
-        $raw = $_GET['skin'] ?? null;
-        $requested = is_string($raw) ? self::normalizeSkin($raw, '') : '';
-        if ($requested !== '') {
-            $_SESSION['skin_override'] = $requested . '@' . $configured;
-            return $requested;
-        }
-
-        // "choice@flag-it-was-chosen-against". `@` is safe as the delimiter
-        // because normalizeSkin() only ever yields `v2` or `legacy`, so neither
-        // half can contain one. The limit of 2 is what makes a malformed value
-        // fail closed: `v2@legacy@junk` leaves $against as `legacy@junk`, which
-        // matches no flag and is discarded. Without it, destructuring would
-        // take the first two segments and accept the value.
-        $stored = $_SESSION['skin_override'] ?? null;
-        [$choice, $against] = array_pad(
-            explode('@', is_string($stored) ? $stored : '', 2),
-            2,
-            ''
-        );
-        $choice = self::normalizeSkin($choice, '');
-        if ($choice !== '' && $against === $configured) {
-            return $choice;
-        }
-
-        unset($_SESSION['skin_override']);
-
-        return $configured;
-    }
-
-    /**
-     * The only place a skin name is validated. Anything unrecognised -- a typo
-     * in the flag, a hand-edited query string -- falls back rather than
-     * rendering an undefined skin.
-     */
-    private static function normalizeSkin(string $value, string $fallback): string
-    {
-        $value = strtolower(trim($value));
-
-        return ($value === 'v2' || $value === 'legacy') ? $value : $fallback;
-    }
-
     protected function displayBrandName(): string
     {
         return (string) ($this->config->get('DISPLAY_BRAND_NAME', '利群會聚 LeiKwan Bridge') ?? '利群會聚 LeiKwan Bridge');
@@ -1385,17 +1304,15 @@ HTML;
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{$escapedTitle}</title>
-  <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
-  <link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725">
+  <link rel="stylesheet" href="/assets/leikwan-v2.css?v=20260725">
 </head>
-<body class="pg-public">
+<body class="pg-v2 pg-public">
   <div class="public-shell">
     <header class="site-topbar">
       <a class="site-brand" href="/">
         <span class="site-mark"><img src="{$brandLogoUrl}" alt="{$escapedBrandName} logo"></span>
         <span class="site-copy">
           <strong>{$escapedBrandName}</strong>
-          <span>{$escapedAppName} control plane</span>
         </span>
       </a>
       <div class="site-actions">
@@ -1413,7 +1330,6 @@ HTML;
     </footer>
   </div>
 {$this->i18nBootstrapHtml()}
-  <script src="/assets/signal-chamber.js?v=20260725" defer></script>
 </body>
 </html>
 HTML;
@@ -1491,18 +1407,13 @@ HTML;
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{$escapedTitle}</title>
-  <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
-  <link rel="stylesheet" href="/assets/operator-console.css?v=20260725">
+  <link rel="stylesheet" href="/assets/leikwan-v2.css?v=20260725">
 </head>
-<body class="pg-app">
+<body class="pg-v2 pg-app">
   <div class="shell">
     <div class="topbar">
       <div class="brand">
-        <div class="brand-mark"><img src="{$brandLogoUrl}" alt="{$escapedBrandName} logo"></div>
-        <div class="brand-copy">
-          <h1>{$escapedBrandName}</h1>
-          <p>{$escapedAppName} control plane for IXP ingress, compliant routing and tenant delivery</p>
-        </div>
+        <div class="brand-plate"><img src="{$brandLogoUrl}" alt="{$escapedBrandName} logo"><strong>{$escapedBrandName}</strong></div>
       </div>
       <div class="toolbar">
         <button class="mobile-nav-toggle" type="button" aria-controls="workspace-navigation" aria-expanded="false">&#9776;<span class="pg-visually-hidden">Navigation</span></button>
@@ -1511,10 +1422,6 @@ HTML;
     </div>
     <div class="layout">
       <aside class="sidebar" id="workspace-navigation" data-open="false">
-        <div class="sidebar-panel">
-          <strong>Workspace Shell</strong>
-          <p>Use the public homepage as the front door, then jump back into the console you need.</p>
-        </div>
         {$navHtml}
       </aside>
       <main class="content-card">
@@ -1530,6 +1437,21 @@ HTML;
     </footer>
   </div>
 {$this->i18nBootstrapHtml()}
+{$this->inlineNavScriptHtml()}
+</body>
+</html>
+HTML;
+
+        return Response::html(200, $html);
+    }
+
+    /**
+     * Inline JS shared by every console page: mobile nav toggle + copy-to-clipboard.
+     * Returned as a <script> block ready to embed before </body>.
+     */
+    private function inlineNavScriptHtml(): string
+    {
+        return <<<'SCRIPT'
 <script>
   (function () {
     var navToggle = document.querySelector('.mobile-nav-toggle');
@@ -1558,7 +1480,6 @@ HTML;
         throw new Error('copy failed');
       }
     }
-
     document.addEventListener('click', function (event) {
       var button = event.target.closest('[data-copy-text]');
       if (!button) {
@@ -1569,14 +1490,12 @@ HTML;
       var defaultLabel = button.getAttribute('data-copy-default') || button.textContent || 'Copy';
       var successLabel = button.getAttribute('data-copy-success') || 'Copied';
       var errorLabel = button.getAttribute('data-copy-error') || 'Copy failed';
-
       var done = function (label) {
         button.textContent = label;
         window.setTimeout(function () {
           button.textContent = defaultLabel;
         }, 1600);
       };
-
       var copyPromise;
       if (navigator.clipboard && window.isSecureContext) {
         copyPromise = navigator.clipboard.writeText(text);
@@ -1585,7 +1504,6 @@ HTML;
           fallbackCopy(text);
         });
       }
-
       copyPromise.then(function () {
         done(successLabel);
       }).catch(function () {
@@ -1594,10 +1512,75 @@ HTML;
     });
   })();
 </script>
-</body>
-</html>
-HTML;
+SCRIPT;
+    }
 
-        return Response::html(200, $html);
+    // -------------------------------------------------------------------------
+    // 4p. Uptime trace helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Column header for the uptime trace.
+     */
+    protected function traceHeader(string $label = 'Uptime'): string
+    {
+        return '<th class="pg-col-trace">' . $this->escape($label) . '</th>';
+    }
+
+    /**
+     * Single heartbeat trace cell for $nodeId.
+     *
+     * Pass $nowTs from a single time() call before the row loop so all rows
+     * share the same reference point rather than each calling time() independently.
+     *
+     * $statusState follows the PrecisionGridUi vocabulary: 'ok', 'warning', 'error',
+     * 'unknown'. It is mapped to the closed UptimeTrace vocabulary: 'ok', 'warn', 'down'.
+     *
+     * @param array<int, list<int>> $heartbeatMap  keyed by node_id → unix timestamps ASC
+     */
+    protected function traceCell(
+        int $nodeId,
+        array $heartbeatMap,
+        string $statusState = 'ok',
+        int $nowTs = 0
+    ): string {
+        $ts = $nowTs > 0 ? $nowTs : time();
+        $state = match ($statusState) {
+            'ok'               => 'ok',
+            'warning'          => 'warn',
+            'error', 'unknown' => 'down',
+            default            => 'down',
+        };
+        return '<td class="pg-col-trace">'
+            . UptimeTrace::html($heartbeatMap[$nodeId] ?? [], $ts, $state, 'Node uptime')
+            . '</td>';
+    }
+
+    /**
+     * Fetch heartbeat timestamps for the last hour for a set of node IDs in one
+     * round-trip. Returns [$nodeId => [unix_ts, ...], ...] sorted ASC.
+     *
+     * @param  list<int>            $nodeIds
+     * @return array<int, list<int>>
+     */
+    protected function fetchNodeHeartbeatMap(array $nodeIds): array
+    {
+        if ($nodeIds === []) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($nodeIds), '?'));
+        $rows = $this->db->fetchAll(
+            'SELECT node_id, UNIX_TIMESTAMP(created_at) AS ts'
+            . ' FROM node_heartbeats'
+            . ' WHERE node_id IN (' . $placeholders . ')'
+            . '   AND created_at >= NOW() - INTERVAL 1 HOUR'
+            . ' ORDER BY node_id ASC, created_at ASC',
+            $nodeIds
+        );
+        $map = [];
+        foreach ($rows as $row) {
+            $map[(int) $row['node_id']][] = (int) $row['ts'];
+        }
+        return $map;
     }
 }

@@ -30,8 +30,8 @@ if (!str_contains($menu, '<details') || !str_contains($menu, 'aria-label="shangh
     throw new RuntimeException('row menu accessibility missing');
 }
 
-$css = (string) file_get_contents(__DIR__ . '/../public/assets/operator-console.css');
-foreach (['font-size:14px', 'min-height:52px', '.pg-sheet', '.pg-mobile-resource-row', 'font-variant-numeric:tabular-nums'] as $needle) {
+$css = (string) file_get_contents(__DIR__ . '/../public/assets/leikwan-v2.css');
+foreach (['.pg-sheet', '.pg-sheet-table', '.pg-mobile-resource-row', 'font-variant-numeric:tabular-nums', 'height:var(--row-h)'] as $needle) {
     if (!str_contains(str_replace(' ', '', $css), str_replace(' ', '', $needle))) {
         throw new RuntimeException('Sheet CSS contract missing ' . $needle);
     }
