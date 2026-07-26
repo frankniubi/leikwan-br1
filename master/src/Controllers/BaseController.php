@@ -1067,6 +1067,38 @@ abstract class BaseController
         return (string) ($this->config->get('BRAND_LOGO_URL', 'https://buy.leikwanhost.com/assets/img/logo.png') ?? 'https://buy.leikwanhost.com/assets/img/logo.png');
     }
 
+    /**
+     * Resolve the active skin.
+     *
+     * Read in exactly two places -- publicPage() and page(). Controllers never
+     * branch on the skin; helpers that need it take it as an argument.
+     *
+     * Administrators may preview the new skin with ?skin=v2, which persists for
+     * the session. The parameter is ignored for everyone else, so the flag stays
+     * the only thing that exposes v2 to users.
+     *
+     * @param array<string, mixed>|null $viewer
+     */
+    protected function activeSkin(?array $viewer = null): string
+    {
+        $configured = (string) ($this->config->get('LEIKWAN_SKIN', 'legacy') ?? 'legacy');
+        $skin = strtolower(trim($configured)) === 'v2' ? 'v2' : 'legacy';
+
+        $isAdmin = $viewer !== null && (string) ($viewer['role'] ?? '') === 'admin';
+        if (!$isAdmin) {
+            return $skin;
+        }
+
+        $requested = strtolower(trim((string) ($_GET['skin'] ?? '')));
+        if ($requested === 'v2' || $requested === 'legacy') {
+            $_SESSION['skin_override'] = $requested;
+            return $requested;
+        }
+
+        $stored = strtolower(trim((string) ($_SESSION['skin_override'] ?? '')));
+        return $stored === 'v2' ? 'v2' : ($stored === 'legacy' ? 'legacy' : $skin);
+    }
+
     protected function displayBrandName(): string
     {
         return (string) ($this->config->get('DISPLAY_BRAND_NAME', '利群會聚 LeiKwan Bridge') ?? '利群會聚 LeiKwan Bridge');
