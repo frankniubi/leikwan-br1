@@ -82,10 +82,26 @@ final class PrecisionGridUi
         return $html . '</nav>';
     }
 
+    /**
+     * Status is encoded three ways at once -- shape, colour and text.
+     *
+     * The v2 palette is achromatic, so colour carries less signal than it did.
+     * None of the three encodings is optional: shape survives colourblindness
+     * and grayscale, text survives everything.
+     */
     public static function status(string $label, string $state): string
     {
+        $shape = match (strtolower(trim($state))) {
+            'ok', 'healthy', 'active', 'online' => 'circle',
+            'warn', 'warning', 'degraded', 'pending' => 'triangle',
+            'down', 'error', 'danger', 'failed', 'offline' => 'square',
+            default => 'unknown',
+        };
+
         return '<span class="pg-status" data-state="' . self::escape($state)
-            . '"><i class="pg-status-dot" aria-hidden="true"></i>' . self::escape($label) . '</span>';
+            . '" data-shape="' . $shape . '">'
+            . '<i class="pg-status-dot" data-shape="' . $shape . '" aria-hidden="true"></i>'
+            . self::escape($label) . '</span>';
     }
 
     public static function resourceCell(string $primary, string $secondary = ''): string
