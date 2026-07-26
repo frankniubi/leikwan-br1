@@ -1,0 +1,50 @@
+/* ==========================================================================
+   Unified web skin v2
+   ==========================================================================
+
+   Structure
+   --------------------------------------------------------------------------
+   1. Font layer     — @font-face declarations (self-hosted; no CDN)
+   2. Token layer    — design tokens on :root
+   3. Reset          — minimal box-model normalization
+   4. Components     — shell, sheet, typography, data grid, status, trace
+   ========================================================================== */
+
+
+/* ==========================================================================
+   1. Font layer
+   Latin is self-hosted (Google Fonts is unreliable behind the GFW).
+   CJK uses the system stack — a full CJK face is 3-8 MB and cannot ship.
+   ========================================================================== */
+
+@font-face {
+  font-family: 'Archivo';
+  src: url('fonts/archivo-variable.woff2') format('woff2-variations');
+  font-weight: 400 800;
+  font-stretch: 62% 125%;
+  font-display: swap;
+  /* Latin only — browser falls through to the system CJK stack for Chinese. */
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Spline Sans Mono';
+  src: url('fonts/spline-sans-mono-400.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Spline Sans Mono';
+  src: url('fonts/spline-sans-mono-600.woff2') format('woff2');
+  font-weight: 600;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
