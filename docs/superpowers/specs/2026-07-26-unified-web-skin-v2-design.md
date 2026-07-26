@@ -182,7 +182,7 @@ Forwards that do not run the bond binary emit nothing into this chain. `install_
 
 The honest cost: granularity is node-level, not leg-level, and the window ceiling is 24 hours. Both are stated in the UI rather than papered over.
 
-As an enhancement, forward **detail** pages that do run bond additionally show per-leg state events from `bond_leg_reputation_events`, where the data density justifies it.
+Per-leg state events from `bond_leg_reputation_events` would be a natural addition on a forward **detail** page, where the data density justifies it — and the query already exists as `BondLegReputationService::recentEvents(['forward_id' => …])`. But no such page does: forwards are managed entirely from list views plus an edit form (`/tenant/services/{id}/forward/{fid}/edit`), and there is no per-forward GET route. Creating one is a feature, not a re-skin, so it moves to the follow-ups rather than into this plan.
 
 Two adjacent series are noted but not used here: `service_endpoints.last_chain_latency_ms` / `best_latency_ms` are snapshots with no history (migration `20260526_add_mptcp_underlay_health_columns.sql`), and `traffic_usage_hourly` (`schema.sql:709`) is a real hourly series that could back a throughput trace on detail pages in a later pass.
 
@@ -255,6 +255,7 @@ New tests:
 - Emit health snapshots from the `leigod_mode` and true-MPTCP data paths, so per-leg state traces regain full coverage.
 - A latency sampling table with a retention policy, enabling true RTT sparklines.
 - Throughput traces on detail pages backed by `traffic_usage_hourly`.
+- A forward detail page, carrying per-leg state events from `bond_leg_reputation_events` and a wider trace window. The data and the query exist; the page does not.
 - Redraw the brand mark as SVG with a dark-ground variant. Repairing the raster removed the weight and the halo, but not the two structural limits: it cannot sit directly on a dark ground, and it has a ~32px legibility floor. Both are properties of the artwork, so only a redraw fixes them — and a redraw is a brand decision, not a re-skin.
 
 ## Brand mark
