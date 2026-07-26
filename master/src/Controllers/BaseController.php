@@ -1070,33 +1070,69 @@ abstract class BaseController
     /**
      * Resolve the active skin.
      *
-     * Read in exactly two places -- publicPage() and page(). Controllers never
-     * branch on the skin; helpers that need it take it as an argument.
+     * Resolved at the top of a render and passed down. Helpers that need it
+     * take it as an argument -- nothing re-reads the flag mid-page, which is
+     * how three stylesheets accumulated the last time.
      *
      * Administrators may preview the new skin with ?skin=v2, which persists for
      * the session. The parameter is ignored for everyone else, so the flag stays
      * the only thing that exposes v2 to users.
      *
+     * The stored preview is stamped with the flag value it was chosen against
+     * and discarded when that changes. Without the stamp, flipping LEIKWAN_SKIN
+     * back would not be enough to pull everyone off a bad skin -- the people
+     * still pinned to it would be exactly the admins trying to fix it.
+     *
+     * Reads $_GET rather than Request because page() and publicPage() are not
+     * given one, and threading a Request through their call sites is a larger
+     * change than this rollout warrants.
+     *
      * @param array<string, mixed>|null $viewer
      */
     protected function activeSkin(?array $viewer = null): string
     {
-        $configured = (string) ($this->config->get('LEIKWAN_SKIN', 'legacy') ?? 'legacy');
-        $skin = strtolower(trim($configured)) === 'v2' ? 'v2' : 'legacy';
+        $configured = self::normalizeSkin(
+            (string) ($this->config->get('LEIKWAN_SKIN', 'legacy') ?? 'legacy'),
+            'legacy'
+        );
 
         $isAdmin = $viewer !== null && (string) ($viewer['role'] ?? '') === 'admin';
         if (!$isAdmin) {
-            return $skin;
+            return $configured;
         }
 
-        $requested = strtolower(trim((string) ($_GET['skin'] ?? '')));
-        if ($requested === 'v2' || $requested === 'legacy') {
-            $_SESSION['skin_override'] = $requested;
+        $raw = $_GET['skin'] ?? null;
+        $requested = is_string($raw) ? self::normalizeSkin($raw, '') : '';
+        if ($requested !== '') {
+            $_SESSION['skin_override'] = $requested . '@' . $configured;
             return $requested;
         }
 
-        $stored = strtolower(trim((string) ($_SESSION['skin_override'] ?? '')));
-        return $stored === 'v2' ? 'v2' : ($stored === 'legacy' ? 'legacy' : $skin);
+        [$choice, $against] = array_pad(
+            explode('@', (string) ($_SESSION['skin_override'] ?? ''), 2),
+            2,
+            ''
+        );
+        $choice = self::normalizeSkin($choice, '');
+        if ($choice !== '' && $against === $configured) {
+            return $choice;
+        }
+
+        unset($_SESSION['skin_override']);
+
+        return $configured;
+    }
+
+    /**
+     * The only place a skin name is validated. Anything unrecognised -- a typo
+     * in the flag, a hand-edited query string -- falls back rather than
+     * rendering an undefined skin.
+     */
+    private static function normalizeSkin(string $value, string $fallback): string
+    {
+        $value = strtolower(trim($value));
+
+        return ($value === 'v2' || $value === 'legacy') ? $value : $fallback;
     }
 
     protected function displayBrandName(): string
