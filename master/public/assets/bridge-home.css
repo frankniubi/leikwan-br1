@@ -20,6 +20,10 @@
   background: var(--bridge-paper);
 }
 
+.bridge-home-page .button {
+  text-decoration: none;
+}
+
 .bridge-home-page .site-topbar {
   display: flex;
   align-items: center;
