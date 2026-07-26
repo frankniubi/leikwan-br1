@@ -1087,6 +1087,13 @@ abstract class BaseController
      * given one, and threading a Request through their call sites is a larger
      * change than this rollout warrants.
      *
+     * Not a pure query: it writes and clears $_SESSION['skin_override'] as a
+     * side effect. Splitting the write out would mean every render site
+     * remembering to call it, and forgetting would look like a preview that
+     * silently does not stick. Both superglobals are treated as untrusted --
+     * a session store is shared with other code and survives deploys, so a
+     * non-string there is no less likely than in a query string.
+     *
      * @param array<string, mixed>|null $viewer
      */
     protected function activeSkin(?array $viewer = null): string
@@ -1108,8 +1115,15 @@ abstract class BaseController
             return $requested;
         }
 
+        // "choice@flag-it-was-chosen-against". `@` is safe as the delimiter
+        // because normalizeSkin() only ever yields `v2` or `legacy`, so neither
+        // half can contain one. The limit of 2 is what makes a malformed value
+        // fail closed: `v2@legacy@junk` leaves $against as `legacy@junk`, which
+        // matches no flag and is discarded. Without it, destructuring would
+        // take the first two segments and accept the value.
+        $stored = $_SESSION['skin_override'] ?? null;
         [$choice, $against] = array_pad(
-            explode('@', (string) ($_SESSION['skin_override'] ?? ''), 2),
+            explode('@', is_string($stored) ? $stored : '', 2),
             2,
             ''
         );

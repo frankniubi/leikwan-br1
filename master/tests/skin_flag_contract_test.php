@@ -41,8 +41,8 @@ function fail(string $message): never
 
 // A stray warning would be written into the response buffer ahead of the page,
 // so treat one as a failure rather than letting it scroll past.
-set_error_handler(static function (int $no, string $message): bool {
-    fail('activeSkin() emitted a diagnostic: ' . $message);
+set_error_handler(static function (int $no, string $message, string $file, int $line): bool {
+    fail('activeSkin() emitted a diagnostic: ' . $message . ' at ' . $file . ':' . $line);
 });
 
 final class SkinFlagProbe extends BaseController
@@ -123,6 +123,14 @@ is('v2', probe('legacy', [], ['skin_override' => $stamped])->skin($admin), 'the 
 is('legacy', probe('legacy', [], ['skin_override' => $stamped])->skin($tenant), 'a stored preview must not leak to a tenant sharing the session store');
 is('legacy', probe('v2', ['skin' => 'legacy'])->skin($admin), 'an admin may preview the legacy skin while the flag is on');
 is('v2', probe('v2', ['skin' => 'banana'])->skin($admin), 'an unrecognised ?skin value must fall through to the flag');
+is('v2', probe('legacy', ['skin' => ' V2 '])->skin($admin), 'the query parameter must tolerate the same case and whitespace as the flag');
+
+// Precedence. ?skin= must outrank a stored preview: it is the only way out of
+// a preview, so if the stored value wins, an admin who pins a broken skin can
+// never unpin it. Swapping these two blocks leaves every other assertion in
+// this file green -- no other case supplies both at once.
+is('legacy', probe('legacy', ['skin' => 'legacy'], ['skin_override' => 'v2@legacy'])->skin($admin), '?skin= must outrank a stored preview -- it is the only way back');
+is('v2', probe('legacy', ['skin' => 'v2'], ['skin_override' => 'legacy@legacy'])->skin($admin), '?skin= must outrank a stored preview in both directions');
 
 // --- The kill switch -----------------------------------------------------
 // Rolling the flag back must be enough on its own. Otherwise the people left
@@ -134,10 +142,12 @@ if (isset($_SESSION['skin_override'])) {
 }
 is('legacy', probe('legacy', [], ['skin_override' => 'v2'])->skin($admin), 'an unstamped preview from an older release must be discarded');
 is('legacy', probe('legacy', [], ['skin_override' => 'banana@legacy'])->skin($admin), 'a corrupt preview must be discarded');
+is('legacy', probe('legacy', [], ['skin_override' => 'v2@legacy@junk'])->skin($admin), 'an over-segmented stamp must fail closed, not have its tail truncated away');
 
 // --- Hostile input -------------------------------------------------------
 
 is('legacy', probe('legacy', ['skin' => ['v2']])->skin($admin), 'an array ?skin must not be coerced');
+is('legacy', probe('legacy', [], ['skin_override' => ['v2@legacy']])->skin($admin), 'an array in the session must not be coerced either');
 is('legacy', probe('legacy', ['skin' => '<script>'])->skin($admin), 'the return value is spliced into markup and must stay a known literal');
 
 foreach ([null, '', 'v2', 'legacy', 'banana'] as $flag) {
