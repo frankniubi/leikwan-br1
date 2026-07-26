@@ -236,6 +236,19 @@ git commit -m "feat: add LEIKWAN_SKIN flag resolution with admin preview overrid
 
 This runs **before** any CSS is written, because it is what defines "the stylesheet is complete". Writing it afterwards would make it a rubber stamp.
 
+> **Amended during execution — the extractor below is superseded. `master/tests/skin_v2_class_vocabulary_test.php` in the repo is the source of truth.**
+>
+> The version below deletes `$vars` from a class attribute and harvests whatever text survives. That works for heredoc interpolation (`class="badge {$tone}"`) and produces garbage for concatenation (`class="nav-link' . ($active ? ' active' : '') . '"`), whose residue tokenises into `===`, `implode(`, `((string)` and thirteen other fragments of PHP. Seventeen of the 175 "classes" it reported were unsatisfiable by any stylesheet, so **the test could never have gone green** — the only exits were editing the test or hiding the tokens in a CSS comment, since the coverage check is a raw text match. A test that must be defeated to finish the work is worse than no test.
+>
+> Four changes, all in the repo file:
+>
+> 1. **Stop at the first PHP boundary** (`strcspn($attr, '$\'{')`) instead of reading past it, and reject any surviving token that is not identifier-shaped — so a misparse fails loudly rather than becoming a fake requirement.
+> 2. **Two fixture directives replace `allow-class`.** `allow-dynamic <prefix>` attributes a runtime-composed attribute, matched with `str_starts_with` (anchored, unlike the original `str_contains`, which a short entry could have used to attribute everything and silently disable the check) and required to be ≥3 characters. `require-class <name>` declares a class that only ever exists at runtime — `active`, `has-usage`, `is-today` and friends — which the narrower extractor cannot see but which still must be styled.
+> 3. **`(?![\w-])` replaces `\b`** in the coverage regex. `-` is a non-word character, so `/\.card\b/` was satisfied by a rule for `.card-kicker` while `.card` itself went unstyled — 19 of the emitted classes could have been marked covered without a rule of their own.
+> 4. **Four more sources**, all of which render real pages: `HealthController.php`, `UptimeTrace.php`, `public/index.php`, `public/install.php`. Between them they emit `callout`, `pg-form-section`, `pg-trace` and `pg-trace-block`, none of which the original five-file source set could see.
+>
+> The plan's guessed allowlist (`nav-link`, `flash`, `pg-view-tab`, `pg-status`, `button`) was about 40% right and is not worth copying: `pg-status` has no dynamic composition at all, `button` matches nothing (that attribute is `' . $this->escape($class) . '`, which does not contain the string "button"), and the largest real entry — `badge`, carrying 10 of 17 fragments — was missed entirely. Populate from real output.
+
 **Files:**
 - Create: `master/tests/skin_v2_class_vocabulary_test.php`
 - Create: `master/tests/fixtures/skin-v2-coverage.txt` (allowlist section only; the route section arrives in Task 13)
@@ -1597,6 +1610,14 @@ Bucketing and rendering are pure functions with no DB access, so they are unit-t
 
 **Why `node_heartbeats` and not `bond_leg_reputation_events`:** the reputation table is populated by the bond binary (`session.rs` → `bond-leg-health-forward-*.json` → `client_agent.py:1143` → heartbeat → `BondLegReputationService::ingestSnapshots()`). Forwards on `leigod_mode` or true-MPTCP never run that binary, so the column would be blank precisely on the mode the fleet is migrating toward. `node_heartbeats` is `backend_mode`-independent.
 
+> **Amended during execution — two defects in the code below. `master/src/Support/UptimeTrace.php` in the repo is the source of truth.**
+>
+> **The bucketing anchored on the wrong end of the window.** `intdiv($ts - $start, $span)` counts forward from `now - 3600`, which puts the boundary error at the old end and needs an `if ($index >= self::BLOCKS)` clamp to stay in range. That clamp was the tell: a correct partition of a fixed window into 12 equal blocks cannot overflow. Run against this task's own test data it marks block 4 `present` — the heartbeat at exactly 40 minutes old lands on block 4's left edge — so only block 5 comes out a gap and `block 4 should be a gap` fails. The shipped version anchors on `now` and counts backwards, `$buckets[self::BLOCKS - 1 - intdiv($age, $span)]`, with a single `$age < 0 || $age >= self::WINDOW_SECONDS` exclusion and no clamp.
+>
+> **The test asserted the wrong interruption count.** Blocks 4 and 5 are one contiguous ten-minute outage, so the correct count is 1, not 2 — `str_contains($html, '2')` was checking for a digit that a correct implementation never emits. It was also vacuous in the other direction: any `2` anywhere in the markup would have satisfied it, including the block count. Replaced with named numbers — `1 interruption in the last 60 minutes` and `2 blocks of 5 minutes without heartbeats` — plus a two-separate-outages case asserting `2 interruptions` (the distinction that justifies counting runs rather than blocks) and a clean-hour case asserting `no interruptions`.
+>
+> The interruption count is therefore a count of *runs* of gap blocks, and the label states both the run count and the total silent extent, because those are different facts and one long outage should not read like several short ones.
+
 **Files:**
 - Create: `master/src/Support/UptimeTrace.php`
 - Test: `master/tests/skin_v2_uptime_trace_test.php`
@@ -2468,19 +2489,35 @@ php -d date.timezone=UTC master/tests/skin_v2_coverage_manifest_test.php
 ```
 Expected: `RuntimeException: every route is verified, so LEIKWAN_SKIN must now default to v2.`
 
-That failure is the mechanism working. Change the default in `activeSkin()`:
+That failure is the mechanism working. Change the default in `activeSkin()` — note it now runs through `normalizeSkin()`, so both the argument and the null-coalesce fallback move together:
 
 ```php
-        $configured = (string) ($this->config->get('LEIKWAN_SKIN', 'v2') ?? 'v2');
+        $configured = self::normalizeSkin(
+            (string) ($this->config->get('LEIKWAN_SKIN', 'v2') ?? 'v2'),
+            'v2'
+        );
 ```
 
-Then update `skin_flag_contract_test.php` — it asserts the `legacy` default, which was correct only during migration:
+Then update `skin_flag_contract_test.php`. Task 1 was reworked after a mutation check showed the original source-text version stayed green with the admin gate deleted, so this test now calls the method rather than reading it. Two assertions encode the migration-era default and must flip:
 
 ```php
-if (!str_contains($base, "config->get('LEIKWAN_SKIN', 'v2')")) {
-    throw new RuntimeException('LEIKWAN_SKIN must default to v2 after cutover');
-}
+is('legacy', probe(null)->skin($admin), 'an unset flag must render the legacy skin');
 ```
+becomes
+```php
+is('v2', probe(null)->skin($admin), 'an unset flag must render v2 now that cutover is done');
+```
+
+and
+```php
+is('legacy', probe('banana')->skin($admin), 'an unrecognised flag must fall back, not render an undefined skin');
+is('legacy', probe('')->skin($admin), 'an empty flag must fall back');
+```
+become `is('v2', ...)` with the same messages — the fallback target changed, the fallback behaviour did not.
+
+Leave everything else alone. The admin gate, the stamped-override kill switch and the hostile-input cases are all independent of which skin is the default, and the `substr_count($source, "config->get('LEIKWAN_SKIN'") !== 1` guard still holds because the flag is still read in exactly one place.
+
+Re-run it and confirm the total-function sweep at the bottom still passes — it asserts only that the return is one of the two known literals, so it should be untouched by the flip. If it fails, the default change leaked somewhere it shouldn't have.
 
 - [ ] **Step 3: Commit the cutover separately from the teardown**
 
@@ -2512,15 +2549,51 @@ And in `master/src/Support/PrecisionGridUi.php`, drop the `$skin` parameter from
 
 Delete `skin_v2_class_vocabulary_test.php`'s allowlist dependency only if the fixture is gone — otherwise keep both.
 
+**The three `git rm`s break 13 other files that still point at those paths. Fix them in the same commit or the suite goes red.**
+
+Nine tests read the deleted stylesheets by path. Task 15 Step 3 *added* `leikwan-v2.css` to each of these concatenations but deliberately left the legacy reads in place, because at that point the files still existed. Now strip the legacy reads and leave only the v2 one — after which each `$css` is a single `file_get_contents`, not a concatenation:
+
+```
+master/tests/core_mobile_resource_rows_regression_test.php
+master/tests/homepage_positioning_regression_test.php
+master/tests/leikwan_ui_asset_regression_test.php
+master/tests/precision_grid_design_system_regression_test.php
+master/tests/precision_grid_page_templates_regression_test.php
+master/tests/precision_grid_public_pages_regression_test.php
+master/tests/precision_grid_responsive_accessibility_test.php
+master/tests/readable_sheet_design_system_regression_test.php
+master/tests/signal_chamber_homepage_regression_test.php
+```
+
+Do not skip a file because it currently passes. `file_get_contents` on a missing path emits a warning and returns `false`, which concatenates to `''` — so a test reading three deleted sheets does not fail, it silently asserts against less and less CSS until it is asserting against nothing. That is precisely the rot this project exists to end, and it would arrive disguised as a green suite.
+
+Four sources `<link>` them. Each needs its `<link>` tags reduced to the single v2 stylesheet:
+
+```
+master/public/index.php:42
+master/public/install.php:366-367
+master/src/Controllers/BaseController.php:1235-1236,1341-1342
+master/src/Controllers/HealthController.php:30-31
+```
+
+`install.php` and `HealthController.php` are the two easy ones to miss: neither goes through `page()` or `publicPage()`, so neither is reachable from the shell rewrite in Tasks 6 and 7, and the installer is not a route in `Bootstrap.php` so it will not appear in the coverage manifest either. Both render real pages. Check them by eye after the teardown — the installer especially, since it is the first thing a new deployment sees and nothing in the suite renders it.
+
 - [ ] **Step 5: Verify the exit criteria**
 
 ```bash
 grep -rn "!important" master/public/assets/*.css | wc -l   # expect 0
 ls master/public/assets/*.css                              # expect only leikwan-v2.css
 grep -rn "LEIKWAN_SKIN" master/src/ | wc -l                # expect 0
+
+# No dangling reference to a deleted stylesheet anywhere -- tests, sources,
+# deploy templates. This is the check that catches the silent-'' failure above.
+grep -rn "leikwan-ui\.css\|operator-console\.css\|signal-chamber\.css" \
+    master/ deploy/ | wc -l                                # expect 0
 ```
 
 Run the full suite. Expected: `FAIL=7` — the pre-existing baseline, unchanged from start to finish.
+
+Then confirm the count did not merely stay flat by luck: `PASS` must be within one or two of what Task 15 Step 6 reported, allowing for the freeze and manifest tests deleted in Step 4. A `PASS` that dropped by nine is nine tests that stopped running, not nine tests that passed.
 
 - [ ] **Step 6: Commit**
 
@@ -2544,3 +2617,9 @@ git commit -m "refactor: delete the legacy skin, its flag and its migration cont
 **The trace query must stay out of the row loop.** One query per page grouped in PHP, not one per row — the list views it lands on are the busiest pages in the console.
 
 **One spec item has no task, deliberately.** The spec's per-leg `bond_leg_reputation_events` enhancement targets a forward detail page. There is no per-forward `GET` route in `Bootstrap.php` — forwards live in list views plus an edit form — so the enhancement has nothing to attach to. Building the page is a feature, not a re-skin. It has been moved to the spec's follow-ups; do not add it here.
+
+**A finding from Task 8, left deliberately unfixed.** `master/src/Controllers/AdminController.php:3239` collapses every non-`active` node state into `'error'` before calling `PrecisionGridUi::status()`, so a node that is mid-`provisioning` or mid-`deleting` renders identically to one that has genuinely failed. Task 8 makes status *more* legible — shape, colour and text instead of colour alone — and this call site throws the distinction away before any of that can help.
+
+It is not fixed here because it is a data question, not a design one: deciding what `provisioning` and `deleting` should look like means deciding whether they are a fourth status tone or a separate in-flight affordance, and that is a spec change. Fixing it inside a re-skin task would also mean a task touching `AdminController.php` for reasons unrelated to its own contract.
+
+Recorded as a follow-up. Whoever picks it up: the three-way encoding added in Task 8 already has an `unknown` shape and an `unknown` arm in the `match`, so the rendering side needs no further work — only the call site and a vocabulary decision.
