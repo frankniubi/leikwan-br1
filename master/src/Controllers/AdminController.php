@@ -3227,6 +3227,9 @@ final class AdminController extends BaseController
             static fn(array $node): int => (int) ($node['id'] ?? 0),
             $nodes
         ));
+        $nodeIds = array_map(static fn(array $n): int => (int) ($n['id'] ?? 0), $nodes);
+        $heartbeatMap = $this->fetchNodeHeartbeatMap($nodeIds);
+        $nowTs = time();
         $rows = '';
         $mobileRows = '';
         foreach ($nodes as $node) {
@@ -3257,6 +3260,7 @@ final class AdminController extends BaseController
                 <td>' . PrecisionGridUi::status(ucfirst($status), $statusState) . '</td>
                 <td>' . $load . '%</td>
                 <td>' . PrecisionGridUi::resourceCell($heartbeat !== '' ? $heartbeat : 'Never', (string) ($node['agent_version'] ?? '')) . '</td>
+                ' . $this->traceCell($nodeId, $heartbeatMap, $statusState, $nowTs) . '
                 <td>' . PrecisionGridUi::rowMenu($nodeName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row">
@@ -3456,7 +3460,7 @@ final class AdminController extends BaseController
               </form>
               <div class="pg-sheet-scroll">
                 <table class="pg-sheet-table">
-                  <thead><tr><th>Node / IP</th><th>Region / Group</th><th>Status</th><th>Load</th><th>Heartbeat</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
+                  <thead><tr><th>Node / IP</th><th>Region / Group</th><th>Status</th><th>Load</th><th>Heartbeat</th>' . $this->traceHeader() . '<th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
                   <tbody>' . $rows . '</tbody>
                 </table>
               </div>
