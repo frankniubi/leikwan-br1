@@ -104,7 +104,7 @@ final class PrecisionGridUi
      * emitting a new state, add it here together with the decision about what
      * that state should look like -- that decision is the work, not the arm.
      */
-    public static function status(string $label, string $state): string
+    public static function status(string $label, string $state, string $description = ''): string
     {
         $shape = match (strtolower(trim($state))) {
             'ok' => 'circle',
@@ -112,11 +112,14 @@ final class PrecisionGridUi
             'error' => 'square',
             default => 'unknown',
         };
+        $accessibleLabel = $description === '' ? $label : $label . ': ' . $description;
 
         return '<span class="pg-status" data-state="' . self::escape($state)
-            . '" data-shape="' . self::escape($shape) . '">'
+            . '" data-shape="' . self::escape($shape) . '" aria-label="' . self::escape($accessibleLabel) . '">'
             . '<i class="pg-status-dot" data-shape="' . self::escape($shape) . '" aria-hidden="true"></i>'
-            . self::escape($label) . '</span>';
+            . self::escape($label)
+            . ($description !== '' ? '<small class="pg-status-description">' . self::escape($description) . '</small>' : '')
+            . '</span>';
     }
 
     public static function resourceCell(string $primary, string $secondary = ''): string

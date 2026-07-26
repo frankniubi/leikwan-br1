@@ -363,8 +363,7 @@ function renderShell(string $title, string $body): string
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>' . h($title) . '</title>
-  <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
-  <link rel="stylesheet" href="/assets/operator-console.css?v=20260725">
+  <link rel="stylesheet" href="/assets/leikwan-v2.css?v=20260726">
 </head>
 <body class="pg-public">
   <div class="shell">

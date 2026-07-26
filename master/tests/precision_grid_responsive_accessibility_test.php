@@ -38,7 +38,7 @@ foreach ([
     '.sidebar[data-open="true"]{display:block;}',
     '.content-card,.pg-console{flex:1',
     'overflow-wrap:anywhere',
-    '.pg-row-menu>summary{display:grid;place-items:center;width:38px;height:38px',
+    '.pg-row-menu>summary{display:grid;place-items:center;width:36px;height:36px',
 ] as $needle) {
     requireSource($cssCmp, $needle, 'responsive or keyboard guard missing');
 }
@@ -85,4 +85,3 @@ if (preg_match('/letter-spacing\s*:\s*-/i', $proseRules) === 1) {
 }
 
 echo "ok\n";
-
