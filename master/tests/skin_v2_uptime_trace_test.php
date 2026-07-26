@@ -37,8 +37,16 @@ for ($i = 0; $i < 60; $i++) {
     $holed[] = $now - ($i * 60);
 }
 $hb = UptimeTrace::buckets($holed, $now);
-// Blocks are oldest-first: block k covers [now-60min+5k, now-60min+5(k+1)).
-// 30-40 minutes ago == blocks 4 and 5.
+// Blocks are oldest-first but anchored on now, not on the start of the window:
+// block k holds heartbeats aged [5(11-k), 5(12-k)) minutes, so block 11 is the
+// most recent five minutes and block 0 the oldest. The newest edge is inclusive
+// and the oldest exclusive, which is why the heartbeat at exactly 40 minutes old
+// lands in block 3 and leaves 30-40 minutes ago as blocks 4 and 5.
+//
+// Anchoring the other way -- counting forward from now-60min -- puts that same
+// heartbeat on block 4's left edge and marks it present, so only block 5 comes
+// out a gap. That was the original bug here; the comment is this long because
+// the inclusivity is the whole of the difference.
 foreach ([4, 5] as $gapIndex) {
     if ($hb[$gapIndex] !== 'gap') {
         throw new RuntimeException('block ' . $gapIndex . ' should be a gap');
