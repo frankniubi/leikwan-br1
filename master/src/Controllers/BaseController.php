@@ -1064,7 +1064,7 @@ abstract class BaseController
 
     protected function brandLogoUrl(): string
     {
-        return (string) ($this->config->get('BRAND_LOGO_URL', 'https://buy.leikwanhost.com/assets/img/logo.png') ?? 'https://buy.leikwanhost.com/assets/img/logo.png');
+        return (string) ($this->config->get('BRAND_LOGO_URL', '/assets/brand/leikwan-mark.png') ?? '/assets/brand/leikwan-mark.png');
     }
 
     /**
