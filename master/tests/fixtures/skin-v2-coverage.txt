@@ -1,0 +1,59 @@
+# Unified web skin v2 -- coverage manifest.
+#
+# Three directives:
+#   allow-dynamic <prefix>   runtime-composed class attribute, attributed by
+#                            str_starts_with against the source fragment; min 3
+#                            chars (see skin_v2_class_vocabulary_test.php)
+#   require-class <name>     a class only ever emitted at runtime, so the
+#                            extractor cannot see it -- but it still must be
+#                            styled by leikwan-v2.css
+#   route <verdict> <path>   page coverage during cutover (see
+#                            skin_v2_coverage_manifest_test.php, a later task)
+#
+# Verdicts: verified | pending | not-a-page
+
+# --- allow-dynamic: runtime-composed class attributes -----------------------
+#
+# Every one of the 17 runtime-composed attributes in the nine sources is a
+# concatenation whose static prefix comes first, e.g.
+#   class="badge ' . $statusClass . '"   ->  badge
+# Matching is anchored, so an entry can only attribute an attribute that starts
+# with it -- it cannot reach across to an unrelated one.
+allow-dynamic badge
+allow-dynamic flash
+allow-dynamic nav-link
+allow-dynamic pg-view-tab
+allow-dynamic pg-page-body
+allow-dynamic kb-thread-card
+#
+# These two attributes have no static class text at all -- the whole value is a
+# PHP expression -- so the anchored prefix is the expression itself. Anything
+# they emit that appears nowhere statically is listed under require-class below.
+allow-dynamic ' . $this->escape($class)
+allow-dynamic ' . implode(' ', $classes)
+
+# --- require-class: emitted only at runtime ---------------------------------
+#
+# Read off the PHP behind each allow-dynamic attribute above. Every other value
+# those attributes can produce (success / danger / info from the badge and flash
+# ternaries and matches; button / ghost / secondary from renderCommandLink and
+# renderCopyButton, which no caller ever overrides; usage-day from the calendar)
+# already appears in a static class attribute, so the extractor sees it. These
+# six do not appear anywhere statically and would otherwise go unstyled.
+#
+# The state modifier shared by the three tab/nav/card conditionals:
+#   PrecisionGridUi.php:24  class="nav-link' . ($active ? ' active' : '') . '"
+#   PrecisionGridUi.php:79  class="pg-view-tab' . ($selected ? ' active' : '')"
+#   AuthController.php:225  class="kb-thread-card' . ($isActive ? ' active' : '')"
+require-class active
+#
+# BaseController.php:873-880 -- usage calendar day cells build their class list
+# in a PHP array, so only the "usage-day is-empty" branch is visible statically.
+require-class has-usage
+require-class is-today
+#
+# BaseController.php:1329-1335 -- the page-body template modifier, chosen from
+# the page title. Never written literally in a class attribute.
+require-class pg-template-overview
+require-class pg-template-detail
+require-class pg-template-operations
