@@ -88,19 +88,34 @@ final class PrecisionGridUi
      * The v2 palette is achromatic, so colour carries less signal than it did.
      * None of the three encodings is optional: shape survives colourblindness
      * and grayscale, text survives everything.
+     *
+     * `data-shape` is emitted on both elements on purpose. The wrapper's copy
+     * drives the colour, which the label inherits through `currentColor`; the
+     * dot's copy drives the geometry. Dropping either one looks like harmless
+     * de-duplication and silently disables half the encoding.
+     *
+     * The vocabulary is deliberately only what the call sites emit today. An
+     * earlier version carried ten further aliases -- `healthy`, `online`, `warn`,
+     * `down`, `offline` and friends -- which was neither minimal nor complete:
+     * every one of them was unreachable, while `deleting`, `disabled`, `suspended`
+     * and `inactive`, which are real values of `nodes.status`, were missing. A
+     * half-complete alias list hides exactly the states most likely to arrive
+     * next. `unknown` makes them visible instead. When a call site starts
+     * emitting a new state, add it here together with the decision about what
+     * that state should look like -- that decision is the work, not the arm.
      */
     public static function status(string $label, string $state): string
     {
         $shape = match (strtolower(trim($state))) {
-            'ok', 'healthy', 'active', 'online' => 'circle',
-            'warn', 'warning', 'degraded', 'pending' => 'triangle',
-            'down', 'error', 'danger', 'failed', 'offline' => 'square',
+            'ok' => 'circle',
+            'warning' => 'triangle',
+            'error' => 'square',
             default => 'unknown',
         };
 
         return '<span class="pg-status" data-state="' . self::escape($state)
-            . '" data-shape="' . $shape . '">'
-            . '<i class="pg-status-dot" data-shape="' . $shape . '" aria-hidden="true"></i>'
+            . '" data-shape="' . self::escape($shape) . '">'
+            . '<i class="pg-status-dot" data-shape="' . self::escape($shape) . '" aria-hidden="true"></i>'
             . self::escape($label) . '</span>';
     }
 
