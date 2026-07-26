@@ -1,6 +1,13 @@
 {
   "locale": "zh-Hans",
   "text": {
+    "BRIDGE CONTROL": "桥接控制",
+    "Bridge Control": "桥接控制",
+    "CLIENT": "客户端",
+    "CONTROL PLANE": "控制平面",
+    "LIVE": "实时",
+    "SIDECAR": "边缘代理",
+    "TARGET": "目标服务",
     "Multi-Slave Transport": "\u591a Slave \u4f20\u8f93",
     "Speed has more than one way through.": "\u901f\u5ea6\u4e0d\u53ea\u4e00\u6761\u8def\u3002",
     "Open Console": "\u6253\u5f00\u63a7\u5236\u53f0",
