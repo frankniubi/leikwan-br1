@@ -45,6 +45,19 @@ $sources = [
     '/public/install.php',
 ];
 
+/**
+ * Strip an inline trailing comment from a directive value.
+ *
+ * "allow-dynamic badge # handles status badges" -> "badge"
+ * The separator is " # " (space-hash-space) so a bare "#" inside a class
+ * name or a PHP fragment is left untouched.
+ */
+function strip_inline_comment(string $value): string
+{
+    $pos = strpos($value, ' # ');
+    return $pos !== false ? rtrim(substr($value, 0, $pos)) : $value;
+}
+
 $allowDynamic = [];
 $required = [];
 foreach (file($fixture, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
@@ -53,7 +66,7 @@ foreach (file($fixture, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as 
         continue;
     }
     if (str_starts_with($line, 'allow-dynamic ')) {
-        $entry = trim(substr($line, strlen('allow-dynamic ')));
+        $entry = strip_inline_comment(trim(substr($line, strlen('allow-dynamic '))));
         if (strlen($entry) < 3) {
             throw new RuntimeException(
                 "allow-dynamic '" . $entry . "' is too short to identify anything: it "
@@ -64,14 +77,29 @@ foreach (file($fixture, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as 
         continue;
     }
     if (str_starts_with($line, 'require-class ')) {
-        $required[] = trim(substr($line, strlen('require-class ')));
+        $required[] = strip_inline_comment(trim(substr($line, strlen('require-class '))));
+        continue;
     }
+    if (str_starts_with($line, 'route ')) {
+        // Handled by skin_v2_coverage_manifest_test.php; ignored here.
+        continue;
+    }
+    throw new RuntimeException(
+        "unknown fixture directive: '" . $line . "'\n"
+        . "Valid directives: allow-dynamic, require-class, route, # (comment)"
+    );
 }
 
 $classes = [];
 $dynamic = [];
 $strange = [];
 foreach ($sources as $rel) {
+    if (!is_file($root . $rel)) {
+        throw new RuntimeException(
+            'source file missing: ' . $rel . "\n"
+            . 'Remove it from the $sources list or restore the file.'
+        );
+    }
     $src = (string) file_get_contents($root . $rel);
     preg_match_all('/class="([^"]*)"/', $src, $m);
     foreach ($m[1] as $attr) {
