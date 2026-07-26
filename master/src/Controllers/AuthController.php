@@ -32,46 +32,67 @@ final class AuthController extends BaseController
         $consoleHref = $user === null
             ? '/login'
             : $this->escape($this->dashboardPathForUser($user));
+        $setupState = $adminCount === 0 ? '待完成初始化' : '运行正常';
+        $setupDetail = $adminCount === 0 ? '尚未配置管理员账户' : '控制平面已准备就绪';
         $setupNote = $adminCount === 0
-            ? '<p class="signal-setup-note"><strong>Operator setup required.</strong> Create the first admin before opening the control plane.</p>'
+            ? '<div class="bridge-home-notice"><strong>初始化提醒</strong><span>创建第一个管理员后即可打开完整控制台。</span></div>'
             : '';
 
         $body = '
-            <section class="signal-hero">
-              <canvas class="signal-canvas" aria-hidden="true"></canvas>
-              <div class="signal-hero-copy">
-                <span class="signal-eyebrow">Multi-Slave Transport</span>
-                <h1>&#21033;&#32676;&#26371;&#32858; LeiKwan Bridge</h1>
-                <p class="signal-offer">Speed has more than one way through.</p>
-                <div class="signal-actions">
-                  <a class="button signal-primary" href="' . $consoleHref . '">Open Console</a>
-                  <a class="button signal-secondary" href="#network">View Network</a>
+            <section class="bridge-home-hero" aria-labelledby="bridge-home-title">
+              <div class="bridge-home-hero-copy">
+                <div class="bridge-home-kicker"><span>BRIDGE CONTROL</span><span>控制平面 / 01</span></div>
+                <h1 id="bridge-home-title">利群會聚 <span>Bridge Control</span></h1>
+                <p class="bridge-home-lede">分布式传输，清晰可控。<span>让每一条可用路径，都能被看见、管理和验证。</span></p>
+                <div class="bridge-home-actions">
+                  <a class="button bridge-home-primary" href="' . $consoleHref . '">进入控制台 <span aria-hidden="true">&rarr;</span></a>
+                  <a class="bridge-home-link" href="#network">查看网络路径 <span aria-hidden="true">&darr;</span></a>
+                </div>
+                <div class="bridge-home-path-note" aria-label="服务路径">
+                  <span>CLIENT</span><i aria-hidden="true">/</i><span>SLAVE</span><i aria-hidden="true">/</i><span>SIDECAR</span><i aria-hidden="true">/</i><span>TARGET</span>
                 </div>
               </div>
-              <dl class="signal-summary">
-                <div><dt>Active Slaves</dt><dd>' . $onlineSlaves . '</dd></div>
-                <div><dt>Regions</dt><dd>' . $regions . '</dd></div>
-                <div><dt>Sidecar Endpoints</dt><dd>' . $sidecarEndpoints . '</dd></div>
-              </dl>
+              <aside class="bridge-home-status" aria-label="控制平面状态">
+                <div class="bridge-home-status-head"><span>CONTROL PLANE</span><span class="bridge-home-status-mark" aria-hidden="true"></span></div>
+                <strong>' . $this->escape($setupState) . '</strong>
+                <p>' . $this->escape($setupDetail) . '</p>
+                <div class="bridge-home-status-rule"></div>
+                <div class="bridge-home-status-meta"><span>数据快照</span><span>LIVE</span></div>
+              </aside>
             </section>
-            <section id="network" class="signal-light-detail">
-              <header>
-                <span class="signal-detail-index">01 / Network</span>
-                <h2>One service, distributed transport.</h2>
-                <p>Every slave runs the same service. The client selects a path locally, while the panel keeps transport topology and provisioning visible.</p>
+            <section class="bridge-home-metrics" aria-label="服务摘要">
+              <div class="bridge-home-metric"><span>活跃节点</span><strong>' . $onlineSlaves . '</strong><small>当前可用</small></div>
+              <div class="bridge-home-metric"><span>覆盖区域</span><strong>' . $regions . '</strong><small>活动区域</small></div>
+              <div class="bridge-home-metric"><span>边缘端点</span><strong>' . $sidecarEndpoints . '</strong><small>已登记端点</small></div>
+              <div class="bridge-home-metric"><span>管理员账户</span><strong>' . $adminCount . '</strong><small>控制平面权限</small></div>
+            </section>
+            <section id="network" class="bridge-home-network" aria-labelledby="network-title">
+              <header class="bridge-home-section-heading">
+                <span>01 / 传输路径</span>
+                <h2 id="network-title">一条服务，多条可用路径。</h2>
+                <p>客户端在本地选择路径，控制平面负责节点、聚合端点和目标服务的可见性。</p>
               </header>
-              <div class="signal-architecture" aria-label="Client to target architecture">
-                <strong>Client &rarr; Slave &rarr; Sidecar &rarr; Target</strong>
-                <span>Ingress</span><span>Distributed nodes</span><span>Aggregation</span><span>Destination</span>
+              <div class="bridge-home-route" role="img" aria-label="客户端、Slave 节点、Sidecar、目标服务的传输路径">
+                <div class="bridge-home-route-node"><span class="bridge-home-route-index">01</span><span><strong>客户端</strong><small>本地选择路径</small></span></div>
+                <div class="bridge-home-route-node"><span class="bridge-home-route-index">02</span><span><strong>Slave 节点</strong><small>分布式接入</small></span></div>
+                <div class="bridge-home-route-node"><span class="bridge-home-route-index">03</span><span><strong>Sidecar</strong><small>聚合与转发</small></span></div>
+                <div class="bridge-home-route-node"><span class="bridge-home-route-index">04</span><span><strong>目标服务</strong><small>最终目的地</small></span></div>
               </div>
-              <div class="signal-detail-actions">
-                <a class="button" href="' . $consoleHref . '">Open Console</a>
-                <a class="button secondary" href="/knowledgebase">Open Docs</a>
+            </section>
+            <section class="bridge-home-footer-grid">
+              <div class="bridge-home-footer-copy">
+                <span>02 / 运行原则</span>
+                <h2>每条路径都应该能被解释。</h2>
+                <p>节点状态、端点配置和服务拓扑集中在一个控制平面内，方便排查、调整和复核。</p>
               </div>
-              ' . $setupNote . '
-            </section>';
+              <div class="bridge-home-footer-links">
+                <a href="' . $consoleHref . '"><span>进入控制台</span><span aria-hidden="true">&rarr;</span></a>
+                <a href="/knowledgebase"><span>打开知识库</span><span aria-hidden="true">&rarr;</span></a>
+              </div>
+            </section>
+            ' . $setupNote;
 
-        return $this->publicPage('利群會聚 LeiKwan Bridge', $body, $user);
+        return $this->publicPage($this->displayBrandName(), $body, $user, 'bridge-home');
     }
 
     public function loginPage(Request $request, array $params): Response
