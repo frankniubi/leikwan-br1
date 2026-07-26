@@ -255,9 +255,36 @@ New tests:
 - Emit health snapshots from the `leigod_mode` and true-MPTCP data paths, so per-leg state traces regain full coverage.
 - A latency sampling table with a retention policy, enabling true RTT sparklines.
 - Throughput traces on detail pages backed by `traffic_usage_hourly`.
+- Redraw the brand mark as SVG with a dark-ground variant. Repairing the raster removed the weight and the halo, but not the two structural limits: it cannot sit directly on a dark ground, and it has a ~32px legibility floor. Both are properties of the artwork, so only a redraw fixes them — and a redraw is a brand decision, not a re-skin.
 
-## Open question
+## Brand mark
 
-`GFRClogo.png` at the repository root (a monochrome extruded monogram over a receding striped runway, on black) is stylistically consistent with this direction, but `BaseController::brandLogoUrl()` (L1067) defaults to `https://buy.leikwanhost.com/assets/img/logo.png`. It is unconfirmed which is the current mark.
+The mark's **design is kept unchanged** — no redraw, no recolor, no new logo. `GFRClogo.png` at the repository root is not adopted. But the delivered file is repaired and self-hosted, because the original cannot be rendered correctly as-is.
 
-This does not block implementation. The wordmark is specified as **text — Archivo 800, `wdth` 118, letterspaced `LEIKWAN`** — which is self-sufficient on a dark ground and depends on no image asset. A graphic mark can be dropped in later without touching the layout.
+### What the original actually is
+
+`https://buy.leikwanhost.com/assets/img/logo.png` was retrieved and measured:
+
+- 2221 × 1172 transparent PNG, **1.2 MB**, for a mark that renders ~40px tall.
+- **26% of its opaque pixels are pure white** (175,721 of 667,242) — it was keyed off a white background and kept its matting fringes, so every edge carries a white halo.
+- The wordmark `LEIKWAN` is dark navy `rgb(24,48,120)`. Against the `--ink-0` shell that is **1.68:1** — invisible.
+
+### What was tried and rejected
+
+Recoloring for the dark ground was attempted and abandoned, and the reason is worth recording so it is not retried:
+
+1. De-matting (recover true alpha from the white key, then unpremultiply) cleanly removes the halo — this part works and is kept.
+2. Lifting HSV value leaves the wordmark at **2.2:1**. A saturated blue cannot be bright; value alone cannot fix it.
+3. Forcing WCAG 4.5:1 by blending toward white requires an average **38%** white mix. The mark washes out and the navy arrow degrades to pale lavender. The identity is lost to satisfy a contrast number.
+
+The conclusion is structural: this artwork was drawn for a light ground, and there is no color transform that makes it a dark-ground mark while remaining the same mark.
+
+### Delivered treatment
+
+**The mark is presented on a brand plate** — a `--paper-0` lozenge, 3px radius, 10px horizontal padding, logo 40px tall inside it. On white the original colors are correct by construction, contrast is a non-issue, and the white fringing is invisible.
+
+The plate is not a patch. It is the same material as the data sheet floating on the console shell, so the mark reads as one more light surface held up by the dark chrome — the design's central metaphor. It also keeps the logo's two hues from violating the achromatic rule, because they sit on their own surface rather than on the skeleton.
+
+**The asset is repaired and self-hosted** at `master/public/assets/brand/leikwan-mark.png` — de-matted, trimmed, resampled to 160px tall (4× the 40px display size, ample for 2× DPR), palette-quantized to 128 colors. **1.2 MB → 26 KB, a 98% reduction**, verified visually identical at 24px and 40px. `BaseController::brandLogoUrl()` (L1067) is repointed to the local path; serving the mark from a separate host on every page view was a needless dependency for users behind the GFW. The external URL is retained here as provenance only.
+
+Below ~32px the mark's internal lettering stops resolving — the artwork overlays text on graphics, so it has a floor. 40px on the plate is above it. Nothing else in the layout depends on the image: the footer and text-only contexts use a text wordmark — **Archivo 800, `wdth` 118, letterspaced `LEIKWAN`** — so a failed image load degrades to a correct-looking page rather than a hole.
