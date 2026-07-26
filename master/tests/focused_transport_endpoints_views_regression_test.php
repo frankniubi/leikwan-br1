@@ -15,7 +15,7 @@ foreach ([
     foreach ($views as $view) {
         if (!str_contains($method, "'{$view}'")) throw new RuntimeException($label . ' endpoint view missing ' . $view);
     }
-    foreach (['normalizeView', 'pg-sheet', 'pg-mobile-resource-row', 'resourceCell', 'resourceStatusHtml', 'rowMenu'] as $marker) {
+    foreach (['normalizeView', 'pg-sheet', 'pg-mobile-resource-row', 'resourceCell', 'status(', 'rowMenu'] as $marker) {
         if (!str_contains($method, $marker)) throw new RuntimeException($label . ' endpoint marker missing ' . $marker);
     }
     foreach ($actions as $action) {

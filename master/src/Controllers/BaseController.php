@@ -11,7 +11,6 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\PrecisionGridUi;
-use Leikwan\Master\Support\UptimeTrace;
 
 abstract class BaseController
 {
@@ -84,6 +83,11 @@ abstract class BaseController
         }
         return 'Single';
 
+        return match ($this->canonicalClientMode($mode)) {
+            'race' => 'Race / Failover',
+            'bond' => '本地汇聚',
+            default => 'Single',
+        };
     }
 
     protected function transportModeLabel(string $mode): string
@@ -115,6 +119,10 @@ abstract class BaseController
             $options .= '<option value="mptcp"' . ($selected === 'mptcp' ? ' selected' : '') . '>MPTCP</option>';
         }
 
+        if (false && $allowBond) {
+            $options .= '<option value="bond"' . ($selected === 'bond' ? ' selected' : '') . '>本地汇聚 - true single-stream multi-slave aggregation via aggregator</option>';
+        }
+
         return $options;
     }
 
@@ -129,47 +137,10 @@ abstract class BaseController
     }
 
     /**
-     * Classify a sidecar endpoint, and carry the severity of that
-     * classification alongside it.
-     *
-     * `class` drives the legacy badge; `state` is the severity for the status
-     * component's shape encoding. The two are separate because the badge
-     * vocabulary is a colour name and the shape vocabulary is a severity, and
-     * conflating them is what went wrong: four call sites used to write
-     * `$status['class'] === 'success' ? 'ok' : 'warning'`, which maps both
-     * `info` and `danger` to `warning` -- so a disabled or erroring endpoint
-     * drew the same warning triangle as one that had simply never been
-     * installed. This method already knows which of the three it is, so it
-     * says so rather than leaving each caller to re-derive it and get it wrong.
-     *
-     * @param array<string, mixed> $point
-     * @return array{class:string,label:string,state:string}
-     */
-    protected function sidecarPointStatusInfo(array $point): array
-    {
-        $info = $this->classifySidecarPoint($point);
-        $info['state'] = match ($info['class']) {
-            'success' => 'ok',
-            'info' => 'warning',
-            'danger' => 'error',
-            // Unreachable today -- classifySidecarPoint() returns only those
-            // three. Kept because match without a default throws, and a fourth
-            // class added below should degrade to the unknown glyph rather than
-            // 500 the endpoints page. Not an oversight, and not a live arm.
-            default => 'unknown',
-        };
-
-        return $info;
-    }
-
-    /**
-     * The classification itself. Split out only so the severity mapping above
-     * lives in one place instead of being repeated at each of the five returns.
-     *
      * @param array<string, mixed> $point
      * @return array{class:string,label:string}
      */
-    private function classifySidecarPoint(array $point): array
+    protected function sidecarPointStatusInfo(array $point): array
     {
         if ((int) ($point['is_active'] ?? 1) !== 1) {
             return ['class' => 'danger', 'label' => 'disabled'];
@@ -193,112 +164,6 @@ abstract class BaseController
         }
 
         return ['class' => 'danger', 'label' => $status];
-    }
-
-    /**
-     * Map a raw resource status onto the status component's severity vocabulary.
-     *
-     * One mapping for `users`, `services`, `clients` and `nodes`. Their status
-     * columns are separate free-form VARCHAR(32)s with no enum behind them, but
-     * the vocabularies overlap almost completely and the question each one
-     * answers is the same: is this resource healthy, in flight, or not serving?
-     *
-     * Every value below is one the code demonstrably writes or reads. In two
-     * cases the admin UI enumerates it for us -- the `<select>` in the tenant
-     * editor is the `users.status` vocabulary, and the one in the client editor
-     * is `clients.status`. `degraded` is settled by ProvisioningService, which
-     * selects on `status = 'active' OR status = 'degraded'` in a dozen places: a
-     * degraded node is still carrying traffic, so it cannot be an error.
-     *
-     * There are deliberately no speculative arms. `provisioning`, for instance,
-     * looks like a real value and is named in a docblock, but nothing ever
-     * writes it -- so it belongs in `unknown`, not in an arm that would sit
-     * unreachable and make the list look more complete than it is.
-     *
-     * An unrecognised status returns `unknown` rather than being forced into a
-     * level. Guessing `ok` hides a real problem; guessing `error` cries wolf and
-     * teaches operators to ignore the colour. When a new status starts being
-     * written, add it here together with the decision about how bad it is --
-     * that decision is the work, not the arm.
-     *
-     * This exists because thirteen call sites used to do it inline, each
-     * collapsing four or five states into two with a ternary. The most common
-     * wrong signal was `services.status = 'pending'` -- the column default --
-     * rendering as a red error square on every newly created service.
-     */
-    protected function resourceStatusState(string $status): string
-    {
-        return match (strtolower(trim($status))) {
-            'active', 'ok', 'online' => 'ok',
-
-            // In flight, or waiting on someone. Nothing is broken, and these are
-            // the common cases -- painting them red is what makes red useless.
-            'pending', 'pending_verification', 'deleting', 'degraded', 'stale', 'not installed' => 'warning',
-
-            // Not serving. These are the ones that should draw the eye.
-            'error', 'failed' => 'error',
-            'offline' => 'error',
-            'suspended', 'traffic_suspended', 'terminated', 'inactive', 'disabled' => 'error',
-
-            default => 'unknown',
-        };
-    }
-
-    protected function resourceStatusLabel(string $status): string
-    {
-        return match (strtolower(trim($status))) {
-            'active' => 'Active',
-            'ok' => 'Healthy',
-            'online' => 'Online',
-            'pending' => 'Pending',
-            'pending_verification' => 'Pending verification',
-            'degraded' => 'Degraded',
-            'stale' => 'Stale',
-            'not installed' => 'Not installed',
-            'deleting' => 'Deleting',
-            'error', 'failed' => 'Error',
-            'offline' => 'Offline',
-            'suspended', 'traffic_suspended' => 'Suspended',
-            'terminated' => 'Terminated',
-            'inactive' => 'Inactive',
-            'disabled' => 'Disabled',
-            default => $this->titleCaseStatus($status),
-        };
-    }
-
-    protected function resourceStatusDescription(string $status): string
-    {
-        return match (strtolower(trim($status))) {
-            'active', 'ok' => 'Serving traffic normally.',
-            'online' => 'Recent heartbeat received.',
-            'pending', 'pending_verification', 'deleting' => 'A change is in progress.',
-            'degraded' => 'Serving traffic with reduced health.',
-            'stale' => 'The last heartbeat is older than ten minutes.',
-            'not installed' => 'No heartbeat has been recorded yet.',
-            'offline' => 'No recent heartbeat; it is not serving traffic.',
-            'error', 'failed' => 'The last operation failed and needs attention.',
-            'suspended', 'traffic_suspended', 'terminated', 'inactive', 'disabled' => 'Traffic is not being served.',
-            default => 'The current state is not recognized yet.',
-        };
-    }
-
-    protected function resourceStatusHtml(string $status): string
-    {
-        return PrecisionGridUi::status(
-            $this->resourceStatusLabel($status),
-            $this->resourceStatusState($status),
-            $this->resourceStatusDescription($status),
-        );
-    }
-
-    private function titleCaseStatus(string $status): string
-    {
-        $normalized = strtolower(trim($status));
-        if ($normalized === '') {
-            return 'Unknown';
-        }
-
-        return ucwords(str_replace(['_', '-'], ' ', $normalized));
     }
 
     protected function sidecarServiceName(int $pointId): string
@@ -1197,28 +1062,9 @@ abstract class BaseController
         return (string) ($this->config->get('BRAND_NAME', '利群會聚 LeiKwan Bridge') ?? '利群會聚 LeiKwan Bridge');
     }
 
-    /**
-     * The brand mark's URL.
-     *
-     * Defaults to a local asset. The logo used to be fetched from
-     * buy.leikwanhost.com, which is a needless third-party dependency for the
-     * users this product exists for: behind the GFW a cross-host image is a
-     * blank mark at best and a stalled page at worst.
-     *
-     * An empty configured value falls back to that default rather than being
-     * honoured, because Config::get() returns `$this->values[$key] ?? $default`
-     * -- a key that is present but empty beats the default, it does not miss
-     * it. install.php writes `$values[$key] ?? ''` for every key it finds in
-     * .env.example, so one bare `BRAND_LOGO_URL=` line in that template would
-     * ship <img src=""> on every page of every new install, with nothing
-     * logged anywhere to say so. Whitespace is trimmed for the same reason: a
-     * hand-edited .env produces it and it renders just as broken.
-     */
     protected function brandLogoUrl(): string
     {
-        $configured = trim((string) ($this->config->get('BRAND_LOGO_URL', '') ?? ''));
-
-        return $configured !== '' ? $configured : '/assets/brand/leikwan-mark.png';
+        return (string) ($this->config->get('BRAND_LOGO_URL', 'https://buy.leikwanhost.com/assets/img/logo.png') ?? 'https://buy.leikwanhost.com/assets/img/logo.png');
     }
 
     protected function displayBrandName(): string
@@ -1354,15 +1200,17 @@ HTML;
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{$escapedTitle}</title>
-  <link rel="stylesheet" href="/assets/leikwan-v2.css?v=20260725">
+  <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
+  <link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725">
 </head>
-<body class="pg-v2 pg-public">
+<body class="pg-public">
   <div class="public-shell">
     <header class="site-topbar">
       <a class="site-brand" href="/">
         <span class="site-mark"><img src="{$brandLogoUrl}" alt="{$escapedBrandName} logo"></span>
         <span class="site-copy">
           <strong>{$escapedBrandName}</strong>
+          <span>{$escapedAppName} control plane</span>
         </span>
       </a>
       <div class="site-actions">
@@ -1380,6 +1228,7 @@ HTML;
     </footer>
   </div>
 {$this->i18nBootstrapHtml()}
+  <script src="/assets/signal-chamber.js?v=20260725" defer></script>
 </body>
 </html>
 HTML;
@@ -1457,13 +1306,18 @@ HTML;
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{$escapedTitle}</title>
-  <link rel="stylesheet" href="/assets/leikwan-v2.css?v=20260725">
+  <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
+  <link rel="stylesheet" href="/assets/operator-console.css?v=20260725">
 </head>
-<body class="pg-v2 pg-app">
+<body class="pg-app">
   <div class="shell">
     <div class="topbar">
       <div class="brand">
-        <div class="brand-plate"><img src="{$brandLogoUrl}" alt="{$escapedBrandName} logo"><strong>{$escapedBrandName}</strong></div>
+        <div class="brand-mark"><img src="{$brandLogoUrl}" alt="{$escapedBrandName} logo"></div>
+        <div class="brand-copy">
+          <h1>{$escapedBrandName}</h1>
+          <p>{$escapedAppName} control plane for IXP ingress, compliant routing and tenant delivery</p>
+        </div>
       </div>
       <div class="toolbar">
         <button class="mobile-nav-toggle" type="button" aria-controls="workspace-navigation" aria-expanded="false">&#9776;<span class="pg-visually-hidden">Navigation</span></button>
@@ -1472,6 +1326,10 @@ HTML;
     </div>
     <div class="layout">
       <aside class="sidebar" id="workspace-navigation" data-open="false">
+        <div class="sidebar-panel">
+          <strong>Workspace Shell</strong>
+          <p>Use the public homepage as the front door, then jump back into the console you need.</p>
+        </div>
         {$navHtml}
       </aside>
       <main class="content-card">
@@ -1487,21 +1345,6 @@ HTML;
     </footer>
   </div>
 {$this->i18nBootstrapHtml()}
-{$this->inlineNavScriptHtml()}
-</body>
-</html>
-HTML;
-
-        return Response::html(200, $html);
-    }
-
-    /**
-     * Inline JS shared by every console page: mobile nav toggle + copy-to-clipboard.
-     * Returned as a <script> block ready to embed before </body>.
-     */
-    private function inlineNavScriptHtml(): string
-    {
-        return <<<'SCRIPT'
 <script>
   (function () {
     var navToggle = document.querySelector('.mobile-nav-toggle');
@@ -1530,6 +1373,7 @@ HTML;
         throw new Error('copy failed');
       }
     }
+
     document.addEventListener('click', function (event) {
       var button = event.target.closest('[data-copy-text]');
       if (!button) {
@@ -1540,12 +1384,14 @@ HTML;
       var defaultLabel = button.getAttribute('data-copy-default') || button.textContent || 'Copy';
       var successLabel = button.getAttribute('data-copy-success') || 'Copied';
       var errorLabel = button.getAttribute('data-copy-error') || 'Copy failed';
+
       var done = function (label) {
         button.textContent = label;
         window.setTimeout(function () {
           button.textContent = defaultLabel;
         }, 1600);
       };
+
       var copyPromise;
       if (navigator.clipboard && window.isSecureContext) {
         copyPromise = navigator.clipboard.writeText(text);
@@ -1554,6 +1400,7 @@ HTML;
           fallbackCopy(text);
         });
       }
+
       copyPromise.then(function () {
         done(successLabel);
       }).catch(function () {
@@ -1562,75 +1409,10 @@ HTML;
     });
   })();
 </script>
-SCRIPT;
-    }
+</body>
+</html>
+HTML;
 
-    // -------------------------------------------------------------------------
-    // 4p. Uptime trace helpers
-    // -------------------------------------------------------------------------
-
-    /**
-     * Column header for the uptime trace.
-     */
-    protected function traceHeader(string $label = 'Uptime'): string
-    {
-        return '<th class="pg-col-trace">' . $this->escape($label) . '</th>';
-    }
-
-    /**
-     * Single heartbeat trace cell for $nodeId.
-     *
-     * Pass $nowTs from a single time() call before the row loop so all rows
-     * share the same reference point rather than each calling time() independently.
-     *
-     * $statusState follows the PrecisionGridUi vocabulary: 'ok', 'warning', 'error',
-     * 'unknown'. It is mapped to the closed UptimeTrace vocabulary: 'ok', 'warn', 'down'.
-     *
-     * @param array<int, list<int>> $heartbeatMap  keyed by node_id → unix timestamps ASC
-     */
-    protected function traceCell(
-        int $nodeId,
-        array $heartbeatMap,
-        string $statusState = 'ok',
-        int $nowTs = 0
-    ): string {
-        $ts = $nowTs > 0 ? $nowTs : time();
-        $state = match ($statusState) {
-            'ok'               => 'ok',
-            'warning'          => 'warn',
-            'error', 'unknown' => 'down',
-            default            => 'down',
-        };
-        return '<td class="pg-col-trace">'
-            . UptimeTrace::html($heartbeatMap[$nodeId] ?? [], $ts, $state, 'Node uptime')
-            . '</td>';
-    }
-
-    /**
-     * Fetch heartbeat timestamps for the last hour for a set of node IDs in one
-     * round-trip. Returns [$nodeId => [unix_ts, ...], ...] sorted ASC.
-     *
-     * @param  list<int>            $nodeIds
-     * @return array<int, list<int>>
-     */
-    protected function fetchNodeHeartbeatMap(array $nodeIds): array
-    {
-        if ($nodeIds === []) {
-            return [];
-        }
-        $placeholders = implode(',', array_fill(0, count($nodeIds), '?'));
-        $rows = $this->db->fetchAll(
-            'SELECT node_id, UNIX_TIMESTAMP(created_at) AS ts'
-            . ' FROM node_heartbeats'
-            . ' WHERE node_id IN (' . $placeholders . ')'
-            . '   AND created_at >= NOW() - INTERVAL 1 HOUR'
-            . ' ORDER BY node_id ASC, created_at ASC',
-            $nodeIds
-        );
-        $map = [];
-        foreach ($rows as $row) {
-            $map[(int) $row['node_id']][] = (int) $row['ts'];
-        }
-        return $map;
+        return Response::html(200, $html);
     }
 }
