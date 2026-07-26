@@ -80,6 +80,16 @@
   /* Micro labels (column headers, nav group labels, unit suffixes) */
   --micro: #9aa09a;
 
+  /* Readability floor for operational UI. Keep dense metadata secondary,
+     never smaller than a person can scan comfortably. */
+  --body-size: 14px;
+  --meta-size: 12px;
+  --micro-size: 11px;
+
+  /* Console work surface. */
+  --page-bg: #e9ece9;
+  --surface-line: #c8ceca;
+
   /* Status — the only hues in the system.
      Always paired with a shape and a text label so they survive
      colour-blindness, low-contrast displays, and grayscale printing. */
@@ -97,13 +107,12 @@
   --font-cjk:     'PingFang SC', 'PingFang TC', 'Microsoft YaHei',
                   'Microsoft JhengHei', 'Noto Sans CJK SC', sans-serif;
 
-  /* CJK glyphs carry more weight per em than wide Latin display type.
-     Headings render at 75% of the Latin size for the same level. */
-  --cjk-heading-scale: 0.75;
+  /* Keep CJK headings at the same readable level as Latin headings. */
+  --cjk-heading-scale: 1;
 
   /* Geometry — one radius, 4px rhythm, one row height sized for the trace. */
   --radius: 3px;
-  --row-h:  34px;
+  --row-h: 54px;
   --step:   4px;
 
   /* Depth — two sources only; no backdrop-filter. */
@@ -123,11 +132,11 @@ html { height: 100%; }
 body {
   margin: 0;
   min-height: 100%;
-  background: var(--ink-0);
-  color: var(--text-hi);
+  background: var(--page-bg);
+  color: var(--paper-hi);
   font-family: var(--font-body);
-  font-size: 13.5px;
-  line-height: 1.6;
+  font-size: var(--body-size);
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   font-variant-numeric: tabular-nums;
 }
@@ -136,14 +145,14 @@ h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-display);
   font-variation-settings: 'wdth' 118;
   font-weight: 800;
-  letter-spacing: -0.03em;
-  line-height: 1.05;
+  letter-spacing: 0;
+  line-height: 1.15;
   margin: 0 0 calc(var(--step) * 2);
 }
-h2, h3 { font-weight: 700; letter-spacing: -0.02em; }
-h4, h5, h6 { font-weight: 600; letter-spacing: -0.01em; }
+h2, h3 { font-weight: 700; letter-spacing: 0; }
+h4, h5, h6 { font-weight: 600; letter-spacing: 0; }
 
-/* CJK headings: 75% size, regular weight, no tracking. */
+/* CJK headings use the same readable scale as Latin headings. */
 :lang(zh) h1, :lang(zh) h2, :lang(zh) h3 {
   font-size: calc(1em * var(--cjk-heading-scale));
   font-weight: 600;
@@ -181,12 +190,48 @@ table { border-collapse: collapse; width: 100%; }
 
 /* Body flag for the v2 skin — set on both pg-app and pg-public pages. */
 .pg-v2 { background: var(--ink-0); color: var(--text-hi); }
+.pg-v2.pg-app { background: var(--page-bg); color: var(--paper-hi); }
 
 .shell {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  min-width: 0;
   background: var(--ink-1);
+}
+
+/* Standalone installer/error surfaces use the shell directly, without the
+   normal topbar/page-header wrappers. Keep their title at a controlled level. */
+.shell > .hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: calc(var(--step) * 6);
+  padding: calc(var(--step) * 8) calc(var(--step) * 10) calc(var(--step) * 6);
+  background: var(--ink-0);
+  color: var(--text-hi);
+  font-size: var(--body-size);
+}
+.shell > .hero h1 {
+  max-width: 760px;
+  font-size: clamp(28px, 4vw, 52px);
+  line-height: 1.1;
+}
+.shell > .hero .muted { color: var(--text-lo); }
+
+@media (max-width: 780px) {
+  .shell > .hero {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: calc(var(--step) * 6) calc(var(--step) * 5) calc(var(--step) * 5);
+  }
+  .shell > .hero h1 { font-size: clamp(30px, 12vw, 44px); }
+  .shell > .hero .toolbar,
+  .shell > .hero .locale-switch {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .two, .three { grid-template-columns: 1fr; }
 }
 
 .topbar {
@@ -270,7 +315,7 @@ table { border-collapse: collapse; width: 100%; }
   background: var(--paper-0);
   color: var(--paper-hi);
   border-radius: var(--radius);
-  box-shadow: var(--lift-sheet);
+  box-shadow: 0 10px 28px rgba(22, 32, 28, .07);
   margin: calc(var(--step) * 4);
   min-width: 0;
   overflow-wrap: anywhere;
@@ -362,8 +407,8 @@ table { border-collapse: collapse; width: 100%; }
 
 .pg-nav-heading {
   font-family: var(--font-mono);
-  font-size: 7.5px;
-  letter-spacing: 0.18em;
+  font-size: var(--micro-size);
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--micro);
   padding: 0 calc(var(--step) * 4) calc(var(--step) * 2);
@@ -382,7 +427,7 @@ table { border-collapse: collapse; width: 100%; }
   padding: calc(var(--step) * 2) calc(var(--step) * 4);
   color: var(--text-lo);
   text-decoration: none;
-  font-size: 12.5px;
+  font-size: var(--body-size);
   border-left: 2px solid transparent;
   transition: color .15s, border-color .15s, background .15s;
 }
@@ -408,7 +453,7 @@ table { border-collapse: collapse; width: 100%; }
 
 .pg-view-tab {
   padding: calc(var(--step) * 2) calc(var(--step) * 4);
-  font-size: 12.5px;
+  font-size: var(--body-size);
   font-weight: 500;
   color: var(--paper-lo);
   text-decoration: none;
@@ -444,17 +489,17 @@ table { border-collapse: collapse; width: 100%; }
 
 .pg-eyebrow, .eyebrow {
   font-family: var(--font-mono);
-  font-size: 7.5px;
-  letter-spacing: 0.18em;
+  font-size: var(--micro-size);
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--micro);
   margin-bottom: calc(var(--step) * 2);
 }
 
-.muted { color: var(--paper-lo); font-size: 12px; }
-.small { font-size: 11px; }
+.muted { color: var(--paper-lo); font-size: var(--meta-size); }
+.small { font-size: var(--meta-size); }
 .inline { display: inline; }
-.hero { font-size: clamp(28px, 5vw, 52px); font-weight: 800; letter-spacing: -0.03em; line-height: 1.05; }
+.hero { font-size: clamp(28px, 5vw, 52px); font-weight: 800; letter-spacing: 0; line-height: 1.1; }
 
 .pg-visually-hidden {
   position: absolute;
@@ -471,6 +516,7 @@ table { border-collapse: collapse; width: 100%; }
 
 .stack { display: flex; flex-direction: column; gap: calc(var(--step) * 3); }
 .grid  { display: grid; gap: calc(var(--step) * 3); }
+.grid > * { min-width: 0; }
 .list  { list-style: none; margin: 0; padding: 0; }
 
 .one   { grid-template-columns: 1fr; }
@@ -495,7 +541,7 @@ table { border-collapse: collapse; width: 100%; }
 .pg-page-header {
   padding: calc(var(--step) * 6) calc(var(--step) * 5) calc(var(--step) * 4);
   background: transparent;
-  color: var(--text-hi);
+  color: var(--paper-hi);
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
@@ -536,7 +582,7 @@ table { border-collapse: collapse; width: 100%; }
 }
 
 .field label {
-  font-size: 11.5px;
+  font-size: var(--meta-size);
   font-weight: 600;
   color: var(--paper-lo);
   font-family: var(--font-mono);
@@ -550,7 +596,8 @@ table { border-collapse: collapse; width: 100%; }
   border-radius: var(--radius);
   color: var(--paper-hi);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--body-size);
+  min-height: 40px;
   padding: calc(var(--step) * 2) calc(var(--step) * 3);
   transition: border-color .15s;
 }
@@ -559,7 +606,7 @@ table { border-collapse: collapse; width: 100%; }
   border-color: var(--paper-hi);
 }
 
-.field-note { font-size: 11px; color: var(--paper-lo); margin-top: 2px; }
+.field-note { font-size: var(--meta-size); color: var(--paper-lo); margin-top: 2px; }
 
 .node-update-select, .pg-node-select {
   background: var(--paper-0);
@@ -579,8 +626,8 @@ table { border-collapse: collapse; width: 100%; }
 
 /* Locale switcher */
 .locale-switch  { display: flex; align-items: center; gap: calc(var(--step) * 2); }
-.locale-select  { background: transparent; border: 1px solid var(--ink-line); color: var(--text-lo); border-radius: var(--radius); padding: calc(var(--step)) calc(var(--step) * 2); font: inherit; font-size: 11px; }
-.locale-label   { font-size: 11px; color: var(--text-lo); }
+.locale-select  { background: transparent; border: 1px solid var(--ink-line); color: var(--text-lo); border-radius: var(--radius); padding: calc(var(--step) * 2) calc(var(--step) * 3); font: inherit; font-size: var(--meta-size); min-height: 38px; }
+.locale-label   { font-size: var(--meta-size); color: var(--text-lo); }
 
 /* --------------------------------------------------------------------------
    4g. Buttons
@@ -596,8 +643,9 @@ table { border-collapse: collapse; width: 100%; }
   border: 1px solid transparent;
   border-radius: var(--radius);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--body-size);
   font-weight: 600;
+  min-height: 40px;
   text-decoration: none;
   cursor: pointer;
   transition: opacity .15s;
@@ -637,6 +685,7 @@ table { border-collapse: collapse; width: 100%; }
 
 .card {
   background: var(--paper-1);
+  color: var(--paper-hi);
   border: 1px solid var(--paper-line);
   border-radius: var(--radius);
   padding: calc(var(--step) * 5);
@@ -644,8 +693,8 @@ table { border-collapse: collapse; width: 100%; }
 
 .card-kicker {
   font-family: var(--font-mono);
-  font-size: 7.5px;
-  letter-spacing: 0.18em;
+  font-size: var(--micro-size);
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--micro);
   margin-bottom: calc(var(--step) * 2);
@@ -671,7 +720,7 @@ table { border-collapse: collapse; width: 100%; }
   padding: 2px calc(var(--step) * 2);
   border-radius: var(--radius);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--meta-size);
   font-weight: 600;
   background: var(--paper-1);
   color: var(--paper-hi);
@@ -724,6 +773,7 @@ table { border-collapse: collapse; width: 100%; }
   padding: calc(var(--step) * 3) calc(var(--step) * 5);
   border-bottom: 1px solid var(--paper-line);
   gap: calc(var(--step) * 3);
+  min-height: 56px;
 }
 
 .pg-sheet-scroll { overflow-x: auto; }
@@ -731,18 +781,18 @@ table { border-collapse: collapse; width: 100%; }
 .pg-sheet-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: var(--body-size);
 }
 
 .pg-sheet-table th {
   font-family: var(--font-mono);
-  font-size: 7.5px;
-  letter-spacing: 0.18em;
+  font-size: var(--micro-size);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--micro);
-  font-weight: 400;
+  font-weight: 700;
   text-align: left;
-  padding: calc(var(--step) * 2) calc(var(--step) * 4);
+  padding: calc(var(--step) * 3) calc(var(--step) * 4);
   border-bottom: 1px solid var(--paper-rule);
   white-space: nowrap;
 }
@@ -751,7 +801,7 @@ table { border-collapse: collapse; width: 100%; }
   padding: 0 calc(var(--step) * 4);
   height: var(--row-h);
   vertical-align: middle;
-  border-bottom: 1px solid transparent; /* no row rules — see spec */
+  border-bottom: 1px solid var(--paper-line);
   font-variant-numeric: tabular-nums;
 }
 
@@ -774,13 +824,13 @@ table { border-collapse: collapse; width: 100%; }
 
 .pg-resource-primary {
   font-weight: 600;
-  font-size: 12.5px;
+  font-size: var(--body-size);
   color: var(--paper-hi);
 }
 
 .pg-resource-secondary {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--meta-size);
   color: var(--paper-lo);
 }
 
@@ -795,8 +845,8 @@ table { border-collapse: collapse; width: 100%; }
 .pg-row-menu > summary {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   cursor: pointer;
   list-style: none;
   color: var(--paper-lo);
@@ -824,7 +874,7 @@ table { border-collapse: collapse; width: 100%; }
   width: 100%;
   padding: calc(var(--step) * 2) calc(var(--step) * 4);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--body-size);
   color: var(--paper-hi);
   text-decoration: none;
   background: none;
@@ -842,9 +892,10 @@ table { border-collapse: collapse; width: 100%; }
 
 .pg-status {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: calc(var(--step) * 2);
-  font-size: 12px;
+  font-size: var(--body-size);
 }
 
 .pg-status-dot {
@@ -858,6 +909,15 @@ table { border-collapse: collapse; width: 100%; }
 .pg-status-dot[data-shape="square"]   { border-radius: 1px;         }
 .pg-status-dot[data-shape="unknown"]  { border-radius: 50%;         opacity: .35; }
 
+.pg-status-label { line-height: 1.25; }
+.pg-status-description {
+  flex-basis: 100%;
+  margin-left: 20px;
+  color: var(--paper-lo);
+  font-size: var(--meta-size);
+  line-height: 1.4;
+}
+
 /* Colour encoding (on-sheet context). */
 .pg-status[data-state="ok"]      .pg-status-dot { background: var(--state-ok);   }
 .pg-status[data-state="warning"] .pg-status-dot { background: var(--state-warn); }
@@ -870,7 +930,7 @@ table { border-collapse: collapse; width: 100%; }
 .shell .pg-status[data-state="error"]   .pg-status-dot { background: var(--state-down-shell); }
 
 /* Legacy .status class (still emitted by a few older sites). */
-.status { display: inline-flex; align-items: center; gap: calc(var(--step) * 2); font-size: 12px; }
+.status { display: inline-flex; align-items: center; gap: calc(var(--step) * 2); font-size: var(--body-size); }
 
 /* --------------------------------------------------------------------------
    4p. Uptime trace column
@@ -923,8 +983,8 @@ table { border-collapse: collapse; width: 100%; }
 
 .pg-metric dt {
   font-family: var(--font-mono);
-  font-size: 7.5px;
-  letter-spacing: 0.18em;
+  font-size: var(--micro-size);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--micro);
 }
@@ -959,14 +1019,49 @@ table { border-collapse: collapse; width: 100%; }
 .pg-mobile-resource-list {
   display: none;
   flex-direction: column;
-  gap: 1px;
-  padding: calc(var(--step) * 2);
+  gap: calc(var(--step) * 2);
+  padding: calc(var(--step) * 3);
 }
 
 .pg-mobile-resource-row {
-  background: var(--paper-1);
+  background: var(--paper-0);
+  border: 1px solid var(--surface-line);
   border-radius: var(--radius);
-  padding: calc(var(--step) * 3) calc(var(--step) * 4);
+  padding: calc(var(--step) * 4);
+  font-size: var(--body-size);
+}
+
+.pg-mobile-resource-row header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: calc(var(--step) * 3);
+}
+
+.pg-mobile-resource-row dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: calc(var(--step) * 3);
+  margin: calc(var(--step) * 4) 0 0;
+}
+
+.pg-mobile-resource-row dt {
+  color: var(--paper-lo);
+  font-size: var(--micro-size);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pg-mobile-resource-row dd {
+  margin: calc(var(--step)) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.pg-mobile-resource-row footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: calc(var(--step) * 3);
 }
 
 @media (max-width: 600px) {
@@ -1105,7 +1200,7 @@ table { border-collapse: collapse; width: 100%; }
   font-family: var(--font-display);
   font-size: clamp(32px, 6vw, 64px);
   font-weight: 700;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
   line-height: 1.05;
   color: var(--text-hi);
   margin-bottom: calc(var(--step) * 4);
@@ -1223,7 +1318,7 @@ table { border-collapse: collapse; width: 100%; }
   font-family: var(--font-display);
   font-size: clamp(22px, 4vw, 36px);
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   line-height: 1.15;
   color: var(--text-hi);
   margin-bottom: calc(var(--step) * 3);
@@ -1256,7 +1351,7 @@ table { border-collapse: collapse; width: 100%; }
   font-family: var(--font-display);
   font-size: 20px;
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
   margin: calc(var(--step) * 8) 0 calc(var(--step) * 3);
   color: var(--text-hi);
 }
@@ -1621,7 +1716,7 @@ table { border-collapse: collapse; width: 100%; }
   font-family: var(--font-display);
   font-size: 20px;
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
   margin-top: calc(var(--step) * 9);
 }
 
@@ -1654,4 +1749,15 @@ table { border-collapse: collapse; width: 100%; }
   padding: 0;
   font-size: 13px;
   line-height: 1.65;
+}
+
+/* Narrow screens must collapse every generic two/three-column work surface,
+   including standalone installer pages that do not use the console shell. */
+@media (max-width: 780px) {
+  .grid.two, .grid.three { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; min-width: 0; }
+  .shell > .hero { min-width: 0; }
+  .shell > .hero > div { width: 100%; min-width: 0; max-width: 100%; }
+  .shell > .hero h1 { width: 100%; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+  .shell > .hero p { width: 100%; max-width: 100%; overflow-wrap: anywhere; }
 }

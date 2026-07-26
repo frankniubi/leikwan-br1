@@ -84,11 +84,6 @@ abstract class BaseController
         }
         return 'Single';
 
-        return match ($this->canonicalClientMode($mode)) {
-            'race' => 'Race / Failover',
-            'bond' => '本地汇聚',
-            default => 'Single',
-        };
     }
 
     protected function transportModeLabel(string $mode): string
@@ -118,10 +113,6 @@ abstract class BaseController
         if ($allowBond) {
             $options .= '<option value="bond"' . ($selected === 'bond' ? ' selected' : '') . '>Bond</option>';
             $options .= '<option value="mptcp"' . ($selected === 'mptcp' ? ' selected' : '') . '>MPTCP</option>';
-        }
-
-        if (false && $allowBond) {
-            $options .= '<option value="bond"' . ($selected === 'bond' ? ' selected' : '') . '>本地汇聚 - true single-stream multi-slave aggregation via aggregator</option>';
         }
 
         return $options;
@@ -238,17 +229,76 @@ abstract class BaseController
     protected function resourceStatusState(string $status): string
     {
         return match (strtolower(trim($status))) {
-            'active' => 'ok',
+            'active', 'ok', 'online' => 'ok',
 
             // In flight, or waiting on someone. Nothing is broken, and these are
             // the common cases -- painting them red is what makes red useless.
-            'pending', 'pending_verification', 'deleting', 'degraded' => 'warning',
+            'pending', 'pending_verification', 'deleting', 'degraded', 'stale', 'not installed' => 'warning',
 
             // Not serving. These are the ones that should draw the eye.
+            'error', 'failed' => 'error',
+            'offline' => 'error',
             'suspended', 'traffic_suspended', 'terminated', 'inactive', 'disabled' => 'error',
 
             default => 'unknown',
         };
+    }
+
+    protected function resourceStatusLabel(string $status): string
+    {
+        return match (strtolower(trim($status))) {
+            'active' => 'Active',
+            'ok' => 'Healthy',
+            'online' => 'Online',
+            'pending' => 'Pending',
+            'pending_verification' => 'Pending verification',
+            'degraded' => 'Degraded',
+            'stale' => 'Stale',
+            'not installed' => 'Not installed',
+            'deleting' => 'Deleting',
+            'error', 'failed' => 'Error',
+            'offline' => 'Offline',
+            'suspended', 'traffic_suspended' => 'Suspended',
+            'terminated' => 'Terminated',
+            'inactive' => 'Inactive',
+            'disabled' => 'Disabled',
+            default => $this->titleCaseStatus($status),
+        };
+    }
+
+    protected function resourceStatusDescription(string $status): string
+    {
+        return match (strtolower(trim($status))) {
+            'active', 'ok' => 'Serving traffic normally.',
+            'online' => 'Recent heartbeat received.',
+            'pending', 'pending_verification', 'deleting' => 'A change is in progress.',
+            'degraded' => 'Serving traffic with reduced health.',
+            'stale' => 'The last heartbeat is older than ten minutes.',
+            'not installed' => 'No heartbeat has been recorded yet.',
+            'offline' => 'No recent heartbeat; it is not serving traffic.',
+            'error', 'failed' => 'The last operation failed and needs attention.',
+            'suspended', 'traffic_suspended', 'terminated', 'inactive', 'disabled' => 'Traffic is not being served.',
+            default => 'The current state is not recognized yet.',
+        };
+    }
+
+    protected function resourceStatusHtml(string $status): string
+    {
+        return PrecisionGridUi::status(
+            $this->resourceStatusLabel($status),
+            $this->resourceStatusState($status),
+            $this->resourceStatusDescription($status),
+        );
+    }
+
+    private function titleCaseStatus(string $status): string
+    {
+        $normalized = strtolower(trim($status));
+        if ($normalized === '') {
+            return 'Unknown';
+        }
+
+        return ucwords(str_replace(['_', '-'], ' ', $normalized));
     }
 
     protected function sidecarServiceName(int $pointId): string

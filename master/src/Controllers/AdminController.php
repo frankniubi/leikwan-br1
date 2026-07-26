@@ -1313,14 +1313,14 @@ final class AdminController extends BaseController
                 </form>';
             $rows .= '<tr>
                 <td>' . PrecisionGridUi::resourceCell($tenantName, $tenantEmail) . '</td>
-                <td>' . PrecisionGridUi::status(ucfirst($tenantStatus), $this->resourceStatusState($tenantStatus)) . '</td>
+                <td>' . $this->resourceStatusHtml($tenantStatus) . '</td>
                 <td>' . PrecisionGridUi::status($verified ? 'Verified' : 'Not verified', $verified ? 'ok' : 'warning') . '</td>
                 <td>' . (int) $tenant['service_count'] . '</td>
                 <td>' . PrecisionGridUi::rowMenu($tenantName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>'
                 . PrecisionGridUi::resourceCell($tenantName, $tenantEmail)
-                . PrecisionGridUi::status(ucfirst($tenantStatus), $this->resourceStatusState($tenantStatus))
+                . $this->resourceStatusHtml($tenantStatus)
                 . '</header><dl><div><dt>Verification</dt><dd>' . ($verified ? 'Verified' : 'Not verified') . '</dd></div><div><dt>Services</dt><dd>' . (int) $tenant['service_count'] . '</dd></div></dl><footer>'
                 . PrecisionGridUi::rowMenu($tenantName . ' actions', $commands) . '</footer></article>';
         }
@@ -2280,12 +2280,12 @@ final class AdminController extends BaseController
             $rows .= '<tr>
                 <td>' . PrecisionGridUi::resourceCell($clientName, $displayHost) . '</td>
                 <td>' . PrecisionGridUi::resourceCell($owner, $groupName) . '</td>
-                <td>' . PrecisionGridUi::status(ucfirst($status), $this->resourceStatusState($status)) . '</td>
+                <td>' . $this->resourceStatusHtml($status) . '</td>
                 <td>' . PrecisionGridUi::resourceCell($agentVersion, $lastSync) . '</td>
                 <td>' . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($clientName, $displayHost)
-                . PrecisionGridUi::status(ucfirst($status), $this->resourceStatusState($status))
+                . $this->resourceStatusHtml($status)
                 . '</header><dl><div><dt>Owner</dt><dd>' . $this->escape($owner) . '</dd></div><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>Agent</dt><dd>' . $this->escape($agentVersion) . '</dd></div><div><dt>Last Sync</dt><dd>' . $this->escape($lastSync) . '</dd></div></dl><footer>'
                 . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</footer></article>';
         }
@@ -2900,11 +2900,11 @@ final class AdminController extends BaseController
                 <form class="inline" method="post" action="/admin-transport-endpoints/' . $pointId . '/delete"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit" class="danger">Delete</button></form>';
             $rows .= '<tr>
                 <td>' . PrecisionGridUi::resourceCell($pointName, $owner) . '</td><td>' . PrecisionGridUi::resourceCell($host, $this->sidecarPortSummary($point)) . '</td>
-                <td>' . PrecisionGridUi::status($status['label'], $status['state']) . '</td>
+                <td>' . $this->resourceStatusHtml($status['label']) . '</td>
                 <td>' . PrecisionGridUi::resourceCell((string) ($point['last_heartbeat_at'] ?? 'Never'), (string) ($point['agent_version'] ?? '')) . '</td>
                 <td>' . (int) ($point['forward_count'] ?? 0) . '</td><td>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</td>
             </tr>';
-            $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $owner) . PrecisionGridUi::status($status['label'], $status['state']) . '</header><dl><div><dt>Address</dt><dd>' . $this->escape($host) . '</dd></div><div><dt>Ports</dt><dd>' . $this->escape($this->sidecarPortSummary($point)) . '</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape((string) ($point['last_heartbeat_at'] ?? 'Never')) . '</dd></div><div><dt>Forwards</dt><dd>' . (int) ($point['forward_count'] ?? 0) . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</footer></article>';
+            $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $owner) . $this->resourceStatusHtml($status['label']) . '</header><dl><div><dt>Address</dt><dd>' . $this->escape($host) . '</dd></div><div><dt>Ports</dt><dd>' . $this->escape($this->sidecarPortSummary($point)) . '</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape((string) ($point['last_heartbeat_at'] ?? 'Never')) . '</dd></div><div><dt>Forwards</dt><dd>' . (int) ($point['forward_count'] ?? 0) . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</footer></article>';
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
@@ -3257,14 +3257,14 @@ final class AdminController extends BaseController
             $rows .= '<tr>
                 <td><span class="pg-node-select">' . $selection . PrecisionGridUi::resourceCell($nodeName, $publicIp) . '</span></td>
                 <td>' . PrecisionGridUi::resourceCell($region, $groupName) . '</td>
-                <td>' . PrecisionGridUi::status(ucfirst($status), $statusState) . '</td>
+                <td>' . $this->resourceStatusHtml($status) . '</td>
                 <td>' . $load . '%</td>
                 <td>' . PrecisionGridUi::resourceCell($heartbeat !== '' ? $heartbeat : 'Never', (string) ($node['agent_version'] ?? '')) . '</td>
                 ' . $this->traceCell($nodeId, $heartbeatMap, $statusState, $nowTs) . '
                 <td>' . PrecisionGridUi::rowMenu($nodeName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row">
-                <header>' . $selection . PrecisionGridUi::resourceCell($nodeName, $publicIp) . PrecisionGridUi::status(ucfirst($status), $statusState) . '</header>
+                <header>' . $selection . PrecisionGridUi::resourceCell($nodeName, $publicIp) . $this->resourceStatusHtml($status) . '</header>
                 <dl><div><dt>Region</dt><dd>' . $this->escape($region) . '</dd></div><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>Load</dt><dd>' . $load . '%</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape($heartbeat !== '' ? $heartbeat : 'Never') . '</dd></div></dl>
                 <footer>' . PrecisionGridUi::rowMenu($nodeName . ' actions', $commands) . '</footer>
             </article>';
@@ -3526,14 +3526,14 @@ final class AdminController extends BaseController
             $rows .= '<tr>
                 <td>' . PrecisionGridUi::resourceCell($serviceName, $owner) . '</td>
                 <td>' . $this->escape($planName) . '</td>
-                <td>' . PrecisionGridUi::status(ucfirst($status), $this->resourceStatusState($status)) . '</td>
+                <td>' . $this->resourceStatusHtml($status) . '</td>
                 <td>' . $billingHtml . '</td>
                 <td>' . PrecisionGridUi::resourceCell((string) $service['expire_at'], $limits) . '</td>
                 <td>' . PrecisionGridUi::rowMenu($serviceName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>'
                 . PrecisionGridUi::resourceCell($serviceName, $owner)
-                . PrecisionGridUi::status(ucfirst($status), $this->resourceStatusState($status))
+                . $this->resourceStatusHtml($status)
                 . '</header><dl><div><dt>Plan</dt><dd>' . $this->escape($planName) . '</dd></div><div><dt>Expires</dt><dd>' . $this->escape((string) $service['expire_at']) . '</dd></div><div><dt>Limits</dt><dd>' . $this->escape($limits) . '</dd></div></dl><footer>'
                 . PrecisionGridUi::rowMenu($serviceName . ' actions', $commands) . '</footer></article>';
         }
