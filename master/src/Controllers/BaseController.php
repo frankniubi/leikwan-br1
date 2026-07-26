@@ -137,10 +137,47 @@ abstract class BaseController
     }
 
     /**
+     * Classify a sidecar endpoint, and carry the severity of that
+     * classification alongside it.
+     *
+     * `class` drives the legacy badge; `state` is the severity for the status
+     * component's shape encoding. The two are separate because the badge
+     * vocabulary is a colour name and the shape vocabulary is a severity, and
+     * conflating them is what went wrong: four call sites used to write
+     * `$status['class'] === 'success' ? 'ok' : 'warning'`, which maps both
+     * `info` and `danger` to `warning` -- so a disabled or erroring endpoint
+     * drew the same warning triangle as one that had simply never been
+     * installed. This method already knows which of the three it is, so it
+     * says so rather than leaving each caller to re-derive it and get it wrong.
+     *
+     * @param array<string, mixed> $point
+     * @return array{class:string,label:string,state:string}
+     */
+    protected function sidecarPointStatusInfo(array $point): array
+    {
+        $info = $this->classifySidecarPoint($point);
+        $info['state'] = match ($info['class']) {
+            'success' => 'ok',
+            'info' => 'warning',
+            'danger' => 'error',
+            // Unreachable today -- classifySidecarPoint() returns only those
+            // three. Kept because match without a default throws, and a fourth
+            // class added below should degrade to the unknown glyph rather than
+            // 500 the endpoints page. Not an oversight, and not a live arm.
+            default => 'unknown',
+        };
+
+        return $info;
+    }
+
+    /**
+     * The classification itself. Split out only so the severity mapping above
+     * lives in one place instead of being repeated at each of the five returns.
+     *
      * @param array<string, mixed> $point
      * @return array{class:string,label:string}
      */
-    protected function sidecarPointStatusInfo(array $point): array
+    private function classifySidecarPoint(array $point): array
     {
         if ((int) ($point['is_active'] ?? 1) !== 1) {
             return ['class' => 'danger', 'label' => 'disabled'];
@@ -164,6 +201,53 @@ abstract class BaseController
         }
 
         return ['class' => 'danger', 'label' => $status];
+    }
+
+    /**
+     * Map a raw resource status onto the status component's severity vocabulary.
+     *
+     * One mapping for `users`, `services`, `clients` and `nodes`. Their status
+     * columns are separate free-form VARCHAR(32)s with no enum behind them, but
+     * the vocabularies overlap almost completely and the question each one
+     * answers is the same: is this resource healthy, in flight, or not serving?
+     *
+     * Every value below is one the code demonstrably writes or reads. In two
+     * cases the admin UI enumerates it for us -- the `<select>` in the tenant
+     * editor is the `users.status` vocabulary, and the one in the client editor
+     * is `clients.status`. `degraded` is settled by ProvisioningService, which
+     * selects on `status = 'active' OR status = 'degraded'` in a dozen places: a
+     * degraded node is still carrying traffic, so it cannot be an error.
+     *
+     * There are deliberately no speculative arms. `provisioning`, for instance,
+     * looks like a real value and is named in a docblock, but nothing ever
+     * writes it -- so it belongs in `unknown`, not in an arm that would sit
+     * unreachable and make the list look more complete than it is.
+     *
+     * An unrecognised status returns `unknown` rather than being forced into a
+     * level. Guessing `ok` hides a real problem; guessing `error` cries wolf and
+     * teaches operators to ignore the colour. When a new status starts being
+     * written, add it here together with the decision about how bad it is --
+     * that decision is the work, not the arm.
+     *
+     * This exists because thirteen call sites used to do it inline, each
+     * collapsing four or five states into two with a ternary. The most common
+     * wrong signal was `services.status = 'pending'` -- the column default --
+     * rendering as a red error square on every newly created service.
+     */
+    protected function resourceStatusState(string $status): string
+    {
+        return match (strtolower(trim($status))) {
+            'active' => 'ok',
+
+            // In flight, or waiting on someone. Nothing is broken, and these are
+            // the common cases -- painting them red is what makes red useless.
+            'pending', 'pending_verification', 'deleting', 'degraded' => 'warning',
+
+            // Not serving. These are the ones that should draw the eye.
+            'suspended', 'traffic_suspended', 'terminated', 'inactive', 'disabled' => 'error',
+
+            default => 'unknown',
+        };
     }
 
     protected function sidecarServiceName(int $pointId): string
@@ -1062,9 +1146,28 @@ abstract class BaseController
         return (string) ($this->config->get('BRAND_NAME', '利群會聚 LeiKwan Bridge') ?? '利群會聚 LeiKwan Bridge');
     }
 
+    /**
+     * The brand mark's URL.
+     *
+     * Defaults to a local asset. The logo used to be fetched from
+     * buy.leikwanhost.com, which is a needless third-party dependency for the
+     * users this product exists for: behind the GFW a cross-host image is a
+     * blank mark at best and a stalled page at worst.
+     *
+     * An empty configured value falls back to that default rather than being
+     * honoured, because Config::get() returns `$this->values[$key] ?? $default`
+     * -- a key that is present but empty beats the default, it does not miss
+     * it. install.php writes `$values[$key] ?? ''` for every key it finds in
+     * .env.example, so one bare `BRAND_LOGO_URL=` line in that template would
+     * ship <img src=""> on every page of every new install, with nothing
+     * logged anywhere to say so. Whitespace is trimmed for the same reason: a
+     * hand-edited .env produces it and it renders just as broken.
+     */
     protected function brandLogoUrl(): string
     {
-        return (string) ($this->config->get('BRAND_LOGO_URL', '/assets/brand/leikwan-mark.png') ?? '/assets/brand/leikwan-mark.png');
+        $configured = trim((string) ($this->config->get('BRAND_LOGO_URL', '') ?? ''));
+
+        return $configured !== '' ? $configured : '/assets/brand/leikwan-mark.png';
     }
 
     /**
