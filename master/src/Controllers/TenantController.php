@@ -218,18 +218,19 @@ final class TenantController extends BaseController
             $target = $forwardId > 0
                 ? (string) $forward['target_host'] . ':' . (int) $forward['target_port']
                 : 'Not configured';
-            $statusValue = $forwardId > 0
-                ? ((int) $forward['enabled'] === 1 ? 'active' : 'disabled')
-                : (string) $forward['service_status'];
+            $statusLabel = $forwardId > 0
+                ? ((int) $forward['enabled'] === 1 ? 'Active' : 'Disabled')
+                : ucfirst((string) $forward['service_status']);
+            $statusState = ($forwardId > 0 ? (int) $forward['enabled'] === 1 : (string) $forward['service_status'] === 'active') ? 'ok' : 'warning';
             $commands = '<a href="/tenant/services/' . $serviceId . '/create-forward">Add Forward</a>'
                 . ($forwardId > 0 ? '<a href="/tenant/forwards/' . $forwardId . '/edit">Edit Forward</a>' : '')
                 . '<a href="/tenant/services/' . $serviceId . '">Service Details</a>';
             $forwardRows .= '<tr><td>' . PrecisionGridUi::resourceCell($serviceName, $forwardLabel) . '</td>'
                 . '<td>' . ($forwardId > 0 ? (int) $forward['listen_port'] : '-') . '</td>'
-                . '<td>' . $this->escape($target) . '</td><td>' . $this->resourceStatusHtml($statusValue) . '</td>'
+                . '<td>' . $this->escape($target) . '</td><td>' . PrecisionGridUi::status($statusLabel, $statusState) . '</td>'
                 . '<td>' . PrecisionGridUi::rowMenu($serviceName . ' forward actions', $commands) . '</td></tr>';
             $forwardMobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($serviceName, $forwardLabel)
-                . $this->resourceStatusHtml($statusValue) . '</header><dl><div><dt>Local Port</dt><dd>'
+                . PrecisionGridUi::status($statusLabel, $statusState) . '</header><dl><div><dt>Local Port</dt><dd>'
                 . ($forwardId > 0 ? (int) $forward['listen_port'] : '-') . '</dd></div><div><dt>Target</dt><dd>' . $this->escape($target)
                 . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($serviceName . ' forward actions', $commands) . '</footer></article>';
         }
@@ -705,7 +706,7 @@ final class TenantController extends BaseController
               </div>
             </section>';
 
-        return $this->page('Plans', $body, $user, $this->tenantNav('plans'));
+        return $this->page('濂楅', $body, $user, $this->tenantNav('plans'));
     }
 
     /**
@@ -983,12 +984,12 @@ final class TenantController extends BaseController
                 . '<button type="button" data-diag-dialog="' . $this->escape($diagDialogId) . '">View Diagnostics</button>'
                 . '<form class="inline" method="post" action="/tenant/clients/' . $clientId . '/delete"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit" class="danger"' . (empty($features['allow_delete_clients']) ? ' disabled' : '') . '>Delete</button></form>';
             $clientRows .= '<tr><td>' . PrecisionGridUi::resourceCell($clientName, $displayHost) . '</td><td>'
-                . $this->escape($groupName) . '</td><td>' . $this->resourceStatusHtml($clientStatus)
+                . $this->escape($groupName) . '</td><td>' . PrecisionGridUi::status(ucfirst($clientStatus), $clientStatus === 'active' ? 'ok' : 'error')
                 . '</td><td>' . PrecisionGridUi::resourceCell($updateLabel, $agentVersion !== '' ? $agentVersion : 'Not installed')
                 . '</td><td>' . $this->escape($onlineSummary) . '</td><td>' . $this->escape($lastSyncLabel) . '</td><td>'
                 . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . $diagDialog . '</td></tr>';
             $clientMobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($clientName, $displayHost)
-                . $this->resourceStatusHtml($clientStatus)
+                . PrecisionGridUi::status(ucfirst($clientStatus), $clientStatus === 'active' ? 'ok' : 'error')
                 . '</header><dl><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>App</dt><dd>' . $this->escape($updateLabel) . '</dd></div><div><dt>Online</dt><dd>' . $this->escape($onlineSummary) . '</dd></div><div><dt>Last Sync</dt><dd>' . $this->escape($lastSyncLabel) . '</dd></div></dl><footer>'
                 . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</footer></article>';
 
@@ -1271,8 +1272,8 @@ final class TenantController extends BaseController
                 ? '<a href="/tenant-transport-endpoints?view=edit&amp;edit=' . $pointId . '">Edit</a><form class="inline" method="post" action="/tenant-transport-endpoints/' . $pointId . '/request-update"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit">Request Update</button></form><form class="inline" method="post" action="/tenant-transport-endpoints/' . $pointId . '/delete"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit" class="danger">Delete</button></form>'
                 : '<span class="muted">Shared endpoint is read-only</span>';
             $ownerLabel = $isShared ? 'Shared by admin' : 'Owned by you';
-            $rows .= '<tr><td>' . PrecisionGridUi::resourceCell($pointName, $ownerLabel) . '</td><td>' . PrecisionGridUi::resourceCell($host, $this->sidecarPortSummary($point)) . '</td><td>' . $this->resourceStatusHtml($status['label']) . '</td><td>' . PrecisionGridUi::resourceCell((string) ($point['last_heartbeat_at'] ?? 'Never'), (string) ($point['agent_version'] ?? '')) . '</td><td>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</td></tr>';
-            $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $ownerLabel) . $this->resourceStatusHtml($status['label']) . '</header><dl><div><dt>Address</dt><dd>' . $this->escape($host) . '</dd></div><div><dt>Ports</dt><dd>' . $this->escape($this->sidecarPortSummary($point)) . '</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape((string) ($point['last_heartbeat_at'] ?? 'Never')) . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</footer></article>';
+            $rows .= '<tr><td>' . PrecisionGridUi::resourceCell($pointName, $ownerLabel) . '</td><td>' . PrecisionGridUi::resourceCell($host, $this->sidecarPortSummary($point)) . '</td><td>' . PrecisionGridUi::status($status['label'], $status['class'] === 'success' ? 'ok' : 'warning') . '</td><td>' . PrecisionGridUi::resourceCell((string) ($point['last_heartbeat_at'] ?? 'Never'), (string) ($point['agent_version'] ?? '')) . '</td><td>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</td></tr>';
+            $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $ownerLabel) . PrecisionGridUi::status($status['label'], $status['class'] === 'success' ? 'ok' : 'warning') . '</header><dl><div><dt>Address</dt><dd>' . $this->escape($host) . '</dd></div><div><dt>Ports</dt><dd>' . $this->escape($this->sidecarPortSummary($point)) . '</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape((string) ($point['last_heartbeat_at'] ?? 'Never')) . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</footer></article>';
             $cards .= '<section class="card">
                 <div class="hero" style="margin-bottom:14px;">
                   <div>
@@ -1525,11 +1526,11 @@ final class TenantController extends BaseController
             $endpointHtml = '';
             $activeEndpointCount = 0;
             foreach ($forward['endpoints'] as $endpoint) {
-                $healthStatus = (string) ($endpoint['health_status'] ?? 'unknown');
-                if ($healthStatus === 'active') {
+                $healthClass = ((string) $endpoint['health_status'] === 'active') ? 'success' : 'info';
+                if ((string) $endpoint['health_status'] === 'active') {
                     $activeEndpointCount++;
                 }
-                $endpointHtml .= '<div>' . $this->resourceStatusHtml($healthStatus) . ' '
+                $endpointHtml .= '<div><span class="badge ' . $healthClass . '">' . $this->escape((string) $endpoint['health_status']) . '</span> '
                     . $this->escape((string) ($endpoint['node_name'] ?? $endpoint['node'] ?? 'Slave endpoint')) . '</div>';
             }
             if ($endpointHtml === '') {

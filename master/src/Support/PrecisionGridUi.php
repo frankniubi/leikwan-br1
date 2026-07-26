@@ -82,44 +82,10 @@ final class PrecisionGridUi
         return $html . '</nav>';
     }
 
-    /**
-     * Status is encoded three ways at once -- shape, colour and text.
-     *
-     * The v2 palette is achromatic, so colour carries less signal than it did.
-     * None of the three encodings is optional: shape survives colourblindness
-     * and grayscale, text survives everything.
-     *
-     * `data-shape` is emitted on both elements on purpose. The wrapper's copy
-     * drives the colour, which the label inherits through `currentColor`; the
-     * dot's copy drives the geometry. Dropping either one looks like harmless
-     * de-duplication and silently disables half the encoding.
-     *
-     * The vocabulary is deliberately only what the call sites emit today. An
-     * earlier version carried ten further aliases -- `healthy`, `online`, `warn`,
-     * `down`, `offline` and friends -- which was neither minimal nor complete:
-     * every one of them was unreachable, while `deleting`, `disabled`, `suspended`
-     * and `inactive`, which are real values of `nodes.status`, were missing. A
-     * half-complete alias list hides exactly the states most likely to arrive
-     * next. `unknown` makes them visible instead. When a call site starts
-     * emitting a new state, add it here together with the decision about what
-     * that state should look like -- that decision is the work, not the arm.
-     */
-    public static function status(string $label, string $state, string $description = ''): string
+    public static function status(string $label, string $state): string
     {
-        $shape = match (strtolower(trim($state))) {
-            'ok' => 'circle',
-            'warning' => 'triangle',
-            'error' => 'square',
-            default => 'unknown',
-        };
-        $accessibleLabel = $description === '' ? $label : $label . ': ' . $description;
-
         return '<span class="pg-status" data-state="' . self::escape($state)
-            . '" data-shape="' . self::escape($shape) . '" aria-label="' . self::escape($accessibleLabel) . '">'
-            . '<i class="pg-status-dot" data-shape="' . self::escape($shape) . '" aria-hidden="true"></i>'
-            . self::escape($label)
-            . ($description !== '' ? '<small class="pg-status-description">' . self::escape($description) . '</small>' : '')
-            . '</span>';
+            . '"><i class="pg-status-dot" aria-hidden="true"></i>' . self::escape($label) . '</span>';
     }
 
     public static function resourceCell(string $primary, string $secondary = ''): string

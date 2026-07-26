@@ -32,7 +32,7 @@ foreach ($contracts as $methodName => $contract) {
             throw new RuntimeException($methodName . ' missing view ' . $view);
         }
     }
-    foreach (['normalizeView', 'pg-sheet', 'resourceCell', 'resourceStatusHtml', 'rowMenu', 'pg-mobile-resource-row'] as $marker) {
+    foreach (['normalizeView', 'pg-sheet', 'resourceCell', 'status(', 'rowMenu', 'pg-mobile-resource-row'] as $marker) {
         if (!str_contains($method, $marker)) {
             throw new RuntimeException($methodName . ' missing resource marker ' . $marker);
         }

@@ -31,7 +31,7 @@ foreach ($contracts as $methodName => $contract) {
 $dashboardStart = strpos($source, 'public function dashboard(');
 $dashboardEnd = strpos($source, 'public function billingPage(', $dashboardStart ?: 0);
 $dashboard = substr($source, $dashboardStart ?: 0, ($dashboardEnd ?: 0) - ($dashboardStart ?: 0));
-foreach (['pg-sheet', 'pg-mobile-resource-row', 'resourceCell', 'resourceStatusHtml', 'rowMenu'] as $marker) {
+foreach (['pg-sheet', 'pg-mobile-resource-row', 'resourceCell', 'status(', 'rowMenu'] as $marker) {
     if (!str_contains($dashboard, $marker)) {
         throw new RuntimeException('tenant forward workspace missing ' . $marker);
     }

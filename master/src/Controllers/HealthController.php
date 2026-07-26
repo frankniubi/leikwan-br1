@@ -22,14 +22,15 @@ final class HealthController extends BaseController
         $appName = (string) $this->config->get('APP_NAME', '利群會聚 LeiKwan Bridge');
         $html = <<<HTML
 <!doctype html>
-<html lang="zh-Hans">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{$appName}</title>
-  <link rel="stylesheet" href="/assets/leikwan-v2.css?v=20260726">
+  <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
+  <link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725">
 </head>
-<body class="pg-v2 pg-public">
+<body class="pg-public">
   <main class="landing-stack"><div class="card pg-form-section">
     <h1>{$appName}</h1>
     <p>利群會聚 LeiKwan Bridge 的 Master 控制面已经就绪。当前仓库提供了 WHMCS、节点编排、流量上报、client 配置和安装脚本接口。</p>
