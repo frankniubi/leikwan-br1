@@ -1313,14 +1313,14 @@ final class AdminController extends BaseController
                 </form>';
             $rows .= '<tr>
                 <td>' . PrecisionGridUi::resourceCell($tenantName, $tenantEmail) . '</td>
-                <td>' . PrecisionGridUi::status(ucfirst($tenantStatus), $tenantStatus === 'active' ? 'ok' : 'error') . '</td>
+                <td>' . PrecisionGridUi::status(ucfirst($tenantStatus), $this->resourceStatusState($tenantStatus)) . '</td>
                 <td>' . PrecisionGridUi::status($verified ? 'Verified' : 'Not verified', $verified ? 'ok' : 'warning') . '</td>
                 <td>' . (int) $tenant['service_count'] . '</td>
                 <td>' . PrecisionGridUi::rowMenu($tenantName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>'
                 . PrecisionGridUi::resourceCell($tenantName, $tenantEmail)
-                . PrecisionGridUi::status(ucfirst($tenantStatus), $tenantStatus === 'active' ? 'ok' : 'error')
+                . PrecisionGridUi::status(ucfirst($tenantStatus), $this->resourceStatusState($tenantStatus))
                 . '</header><dl><div><dt>Verification</dt><dd>' . ($verified ? 'Verified' : 'Not verified') . '</dd></div><div><dt>Services</dt><dd>' . (int) $tenant['service_count'] . '</dd></div></dl><footer>'
                 . PrecisionGridUi::rowMenu($tenantName . ' actions', $commands) . '</footer></article>';
         }
@@ -2280,12 +2280,12 @@ final class AdminController extends BaseController
             $rows .= '<tr>
                 <td>' . PrecisionGridUi::resourceCell($clientName, $displayHost) . '</td>
                 <td>' . PrecisionGridUi::resourceCell($owner, $groupName) . '</td>
-                <td>' . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error') . '</td>
+                <td>' . PrecisionGridUi::status(ucfirst($status), $this->resourceStatusState($status)) . '</td>
                 <td>' . PrecisionGridUi::resourceCell($agentVersion, $lastSync) . '</td>
                 <td>' . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($clientName, $displayHost)
-                . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error')
+                . PrecisionGridUi::status(ucfirst($status), $this->resourceStatusState($status))
                 . '</header><dl><div><dt>Owner</dt><dd>' . $this->escape($owner) . '</dd></div><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>Agent</dt><dd>' . $this->escape($agentVersion) . '</dd></div><div><dt>Last Sync</dt><dd>' . $this->escape($lastSync) . '</dd></div></dl><footer>'
                 . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</footer></article>';
         }
@@ -2900,11 +2900,11 @@ final class AdminController extends BaseController
                 <form class="inline" method="post" action="/admin-transport-endpoints/' . $pointId . '/delete"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit" class="danger">Delete</button></form>';
             $rows .= '<tr>
                 <td>' . PrecisionGridUi::resourceCell($pointName, $owner) . '</td><td>' . PrecisionGridUi::resourceCell($host, $this->sidecarPortSummary($point)) . '</td>
-                <td>' . PrecisionGridUi::status($status['label'], $status['class'] === 'success' ? 'ok' : 'warning') . '</td>
+                <td>' . PrecisionGridUi::status($status['label'], $status['state']) . '</td>
                 <td>' . PrecisionGridUi::resourceCell((string) ($point['last_heartbeat_at'] ?? 'Never'), (string) ($point['agent_version'] ?? '')) . '</td>
                 <td>' . (int) ($point['forward_count'] ?? 0) . '</td><td>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</td>
             </tr>';
-            $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $owner) . PrecisionGridUi::status($status['label'], $status['class'] === 'success' ? 'ok' : 'warning') . '</header><dl><div><dt>Address</dt><dd>' . $this->escape($host) . '</dd></div><div><dt>Ports</dt><dd>' . $this->escape($this->sidecarPortSummary($point)) . '</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape((string) ($point['last_heartbeat_at'] ?? 'Never')) . '</dd></div><div><dt>Forwards</dt><dd>' . (int) ($point['forward_count'] ?? 0) . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</footer></article>';
+            $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $owner) . PrecisionGridUi::status($status['label'], $status['state']) . '</header><dl><div><dt>Address</dt><dd>' . $this->escape($host) . '</dd></div><div><dt>Ports</dt><dd>' . $this->escape($this->sidecarPortSummary($point)) . '</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape((string) ($point['last_heartbeat_at'] ?? 'Never')) . '</dd></div><div><dt>Forwards</dt><dd>' . (int) ($point['forward_count'] ?? 0) . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</footer></article>';
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
@@ -3236,7 +3236,7 @@ final class AdminController extends BaseController
             $region = (string) $node['region'];
             $groupName = (string) ($node['group_name'] ?? $node['group_key'] ?? 'Unassigned');
             $status = (string) $node['status'];
-            $statusState = $status === 'active' ? 'ok' : 'error';
+            $statusState = $this->resourceStatusState($status);
             $load = (int) $node['current_load'];
             $heartbeat = (string) $node['last_heartbeat_at'];
             $usagePanel = $this->renderUsageOverviewPanel($nodeUsageMap[(int) ($node['id'] ?? 0)] ?? [], 'Slave Traffic');
@@ -3522,14 +3522,14 @@ final class AdminController extends BaseController
             $rows .= '<tr>
                 <td>' . PrecisionGridUi::resourceCell($serviceName, $owner) . '</td>
                 <td>' . $this->escape($planName) . '</td>
-                <td>' . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error') . '</td>
+                <td>' . PrecisionGridUi::status(ucfirst($status), $this->resourceStatusState($status)) . '</td>
                 <td>' . $billingHtml . '</td>
                 <td>' . PrecisionGridUi::resourceCell((string) $service['expire_at'], $limits) . '</td>
                 <td>' . PrecisionGridUi::rowMenu($serviceName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>'
                 . PrecisionGridUi::resourceCell($serviceName, $owner)
-                . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error')
+                . PrecisionGridUi::status(ucfirst($status), $this->resourceStatusState($status))
                 . '</header><dl><div><dt>Plan</dt><dd>' . $this->escape($planName) . '</dd></div><div><dt>Expires</dt><dd>' . $this->escape((string) $service['expire_at']) . '</dd></div><div><dt>Limits</dt><dd>' . $this->escape($limits) . '</dd></div></dl><footer>'
                 . PrecisionGridUi::rowMenu($serviceName . ' actions', $commands) . '</footer></article>';
         }
