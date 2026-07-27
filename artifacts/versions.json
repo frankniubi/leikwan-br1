@@ -69,20 +69,20 @@
     "install_url": "/artifacts/uninstall-bond-sidecar.sh"
   },
   "client_agent": {
-    "version": "2026.07.25.1",
+    "version": "2026.07.28.1",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "fcdcb6e7a8d3de1e83cf3940058b1ba02280e54279dfe51a3178ae5048819149",
-    "size_bytes": 241325,
-    "size": 241325
+    "sha256": "c503df5be04a08cfd8b1fffee644fc57f54016dd1b2ca64cdb64a08944f6e4ee",
+    "size_bytes": 241594,
+    "size": 241594
   },
   "client_agent_installer": {
-    "version": "2026.07.27.1",
+    "version": "2026.07.28.1",
     "path": "install/install-client-agent.sh",
     "install_url": "/artifacts/install-client-agent.sh",
     "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "96b8d708a1d5a7ef85e277644c5019c9043f16c09e2e916373dcf463e3db4a80",
-    "size_bytes": 18563,
+    "sha256": "2ab33ff89ee6a3fe010444bdb840352d83a6aafafa4ac6b3ea056ef42e28bb84",
+    "size_bytes": 19312,
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {

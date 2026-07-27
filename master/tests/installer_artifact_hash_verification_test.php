@@ -30,6 +30,15 @@ foreach ([
         fail('install-client-agent missing proxied one-click support: ' . $snippet);
     }
 }
+foreach ([
+    'PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"',
+    'EnvironmentFile=-$PROXY_ENV_FILE',
+    'chmod 0600 "$PROXY_ENV_FILE"',
+] as $snippet) {
+    if (!str_contains($clientInstaller, $snippet)) {
+        fail('install-client-agent missing persistent runtime proxy support: ' . $snippet);
+    }
+}
 
 $clientUninstaller = file_get_contents($root . '/install/uninstall-client-agent.sh');
 if (!is_string($clientUninstaller)) fail('failed to read uninstall-client-agent');

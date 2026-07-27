@@ -28,7 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.07.25.1"
+AGENT_VERSION = "2026.07.28.1"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -362,6 +362,12 @@ def urlopen_with_leikwan_doh(req: urllib.request.Request, timeout: float = 30, r
 
 
 def _urlopen_for_request(req: urllib.request.Request, timeout: float = 30):
+    proxy_url = next(
+        (os.environ.get(name, "").strip() for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy") if os.environ.get(name, "").strip()),
+        "",
+    )
+    if proxy_url:
+        return urllib.request.urlopen(req, timeout=timeout)
     if is_protected_leikwan_url(req.full_url):
         return urlopen_with_leikwan_doh(req, timeout=timeout)
     return urllib.request.urlopen(req, timeout=timeout)

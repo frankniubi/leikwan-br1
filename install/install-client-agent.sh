@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.07.27.1"
+INSTALLER_VERSION="2026.07.28.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -175,6 +175,19 @@ install_wireguard_tools
 STATE_DIR="/var/lib/leikwan-client-agent"
 INSTALLER_SHA256="$(current_installer_sha256)"
 mkdir -p "$CONFIG_DIR" "$BIN_DIR" "$STATE_DIR"
+PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"
+: > "$PROXY_ENV_FILE"
+for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy; do
+  proxy_value="${!proxy_name:-}"
+  if [[ -n "$proxy_value" ]]; then
+    if [[ "$proxy_value" == *$'\n'* || "$proxy_value" == *$'\r'* ]]; then
+      echo "invalid newline in $proxy_name" >&2
+      exit 1
+    fi
+    printf '%s=%s\n' "$proxy_name" "$proxy_value" >> "$PROXY_ENV_FILE"
+  fi
+done
+chmod 0600 "$PROXY_ENV_FILE"
 
 leikwan_protected_download() {
   local url="$1"
@@ -545,6 +558,7 @@ After=network.target
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-$PROXY_ENV_FILE
 ExecStart=/usr/bin/python3 $BIN_DIR/leikwan-client-agent.py --config $CONFIG_DIR/config.json run
 Restart=always
 RestartSec=5
