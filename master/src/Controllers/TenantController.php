@@ -329,14 +329,8 @@ final class TenantController extends BaseController
         $stats = $remote !== null && is_array($remote['stats'] ?? null) ? $remote['stats'] : [];
         $products = $remote !== null && is_array($remote['products'] ?? null) ? $remote['products'] : [];
         $purchasePlans = $this->provisioning->listPurchasablePlans();
-        if ($rows === '') {
-            $rows = '<tr><td colspan="7" class="muted">No forward rules yet. Create your first forward from the button above.</td></tr>';
-        }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
-        $createForwardNotice = $availableForwardCombinations === []
-            ? '<div class="flash danger">No route package is available for this service yet. Ask admin to publish a forward combination first.</div>'
-            : '<div class="flash success">Choose one route package, then fill your backend target.</div>';
 
         $syncNotice = $syncError !== ''
             ? '<div class="flash danger">' . $this->escape($syncError) . '</div>'
