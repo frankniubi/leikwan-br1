@@ -114,6 +114,15 @@ namespace {
     assertAvailabilitySame(true, $catalog->nodeSupportsRoute(12, 8, 'tcp'), 'single TCP gate');
 
     foreach ($db->availabilityRows as &$row) {
+        if ((int) ($row['route_id'] ?? 0) === 8 && (int) ($row['node_id'] ?? 0) === 12) {
+            $row['udp_status'] = 'unknown';
+            $row['udp_probe_method'] = null;
+        }
+    }
+    unset($row);
+    assertAvailabilitySame(true, $catalog->nodeSupportsRoute(12, 8, 'both'), 'optional UDP probe permits unknown status');
+
+    foreach ($db->availabilityRows as &$row) {
         if ((int) ($row['route_id'] ?? 0) === 9 && (int) ($row['node_id'] ?? 0) === 12 && (int) ($row['line_id'] ?? 0) === 453) {
             $row['checked_at'] = gmdate('Y-m-d H:i:s', time() - 181);
         }
