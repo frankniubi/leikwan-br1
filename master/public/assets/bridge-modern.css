@@ -972,8 +972,8 @@ body.pg-public:not(.bridge-home-page) .shell .hero {
   body.pg-public:not(.bridge-home-page) .site-topbar,
   body.pg-app .topbar {
     position: static !important;
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: flex-start !important;
+    flex-direction: column !important;
     gap: 12px;
     min-height: 0;
     padding: 4px 0 14px !important;
