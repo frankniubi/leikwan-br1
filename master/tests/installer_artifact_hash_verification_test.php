@@ -31,4 +31,15 @@ foreach ([
     }
 }
 
+$clientUninstaller = file_get_contents($root . '/install/uninstall-client-agent.sh');
+if (!is_string($clientUninstaller)) fail('failed to read uninstall-client-agent');
+foreach ([
+    'STATE_DIR="/var/lib/leikwan-client-agent"',
+    'rm -rf "$CONFIG_DIR" "$STATE_DIR"',
+] as $snippet) {
+    if (!str_contains($clientUninstaller, $snippet)) {
+        fail('uninstall-client-agent missing clean purge support: ' . $snippet);
+    }
+}
+
 echo "ok\n";
