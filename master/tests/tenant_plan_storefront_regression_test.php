@@ -11,7 +11,7 @@ $tenant = file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php'
 if (!is_string($tenant) || $tenant === '') {
     fail('failed to read TenantController source');
 }
-$css = file_get_contents(__DIR__ . '/../public/assets/leikwan-ui.css');
+$css = file_get_contents(__DIR__ . '/../public/assets/storefront.css');
 if (!is_string($css) || $css === '') {
     fail('failed to read panel stylesheet');
 }
@@ -23,6 +23,7 @@ if ($plansStart === false || $plansEnd === false) {
 $storefront = substr($tenant, $plansStart, $plansEnd - $plansStart);
 
 foreach ([
+    '/assets/storefront.css?v=20260727a',
     'storefront-shell',
     'storefront-categories',
     'storefront-products',

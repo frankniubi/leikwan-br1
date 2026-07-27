@@ -677,6 +677,7 @@ final class TenantController extends BaseController
         }
 
         $body = '
+            <link rel="stylesheet" href="/assets/storefront.css?v=20260727a">
             <div class="hero">
               <div>
                 <h2>Packages</h2>
