@@ -2508,7 +2508,7 @@ final class AdminController extends BaseController
 
         $udpMethod = strtolower((string) ($editing['udp_probe_method'] ?? ''));
         $body = '<div class="grid two">'
-            . '<section class="card"><h3>' . ($editing !== null ? 'Edit LeiGod Line' : 'New LeiGod Line') . '</h3>'
+            . '<section class="card"><h3>' . ($editing !== null ? 'Edit Managed TYO Line' : 'New Managed TYO Line') . '</h3>'
             . '<form method="post" action="/admin/leigod-lines">'
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
             . '<input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">'
@@ -2531,11 +2531,11 @@ final class AdminController extends BaseController
             . '<div class="actions"><button class="button" type="submit">Save Line</button>'
             . ($editing !== null ? '<a class="button secondary" href="/admin/leigod-lines">Cancel</a>' : '')
             . '</div></form></section>'
-            . '<section class="card"><h3>LeiGod Line Catalog</h3><div class="table-wrap"><table>'
+            . '<section class="card"><h3>Managed TYO Line Catalog</h3><div class="table-wrap"><table>'
             . '<thead><tr><th>Line</th><th>Label</th><th>Config</th><th>TCP Nodes</th><th>UDP Nodes</th><th>Checked</th><th>Last Error</th><th>Status</th><th>Actions</th></tr></thead>'
             . '<tbody>' . $rows . '</tbody></table></div></section></div>';
 
-        return $this->adminPage('LeiGod Lines', $body, $viewer, 'leigod-lines');
+        return $this->adminPage('Managed TYO Lines', $body, $viewer, 'leigod-lines');
     }
 
     public function saveLeigodLine(Request $request, array $params): Response
@@ -2547,9 +2547,9 @@ final class AdminController extends BaseController
         try {
             SessionAuth::validateCsrf($request);
             $this->provisioning?->saveLeigodLine($request->body());
-            SessionAuth::flash('success', 'LeiGod line saved.');
+            SessionAuth::flash('success', 'Managed TYO line saved.');
         } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to save LeiGod line: ' . $this->displayThrowableMessage($throwable));
+            SessionAuth::flash('error', 'Failed to save Managed TYO line: ' . $this->displayThrowableMessage($throwable));
         }
         return Response::redirect('/admin/leigod-lines');
     }
@@ -2563,9 +2563,9 @@ final class AdminController extends BaseController
         try {
             SessionAuth::validateCsrf($request);
             $this->provisioning?->deleteLeigodLine($this->idParam($params));
-            SessionAuth::flash('success', 'LeiGod line deleted.');
+            SessionAuth::flash('success', 'Managed TYO line deleted.');
         } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to delete LeiGod line: ' . $this->displayThrowableMessage($throwable));
+            SessionAuth::flash('error', 'Failed to delete Managed TYO line: ' . $this->displayThrowableMessage($throwable));
         }
         return Response::redirect('/admin/leigod-lines');
     }
@@ -2667,7 +2667,7 @@ final class AdminController extends BaseController
             $leigodMembershipRows = '<tr><td colspan="4" class="muted">No catalog lines available.</td></tr>';
         }
         $leigodField = '<input type="hidden" name="leigod_line_id" value="' . $leigodLineId . '">'
-            . '<fieldset class="field" data-mode-field="leigod_mode" data-leigod-memberships><legend>LeiGod line pool</legend>'
+            . '<fieldset class="field" data-mode-field="leigod_mode" data-leigod-memberships><legend>Managed TYO line pool</legend>'
             . '<div class="table-wrap"><table><thead><tr><th>Enabled</th><th>Line ID</th><th>Config</th><th>Priority</th></tr></thead><tbody>'
             . $leigodMembershipRows . '</tbody></table></div></fieldset>'
             . '<div class="field" data-mode-field="leigod_mode"><label>Managed TYO carrier</label>'
@@ -2905,7 +2905,14 @@ final class AdminController extends BaseController
         $routeRows = '';
         foreach ($routes as $r) {
             $rid = (int) ($r['id'] ?? 0);
-            $routeRows .= '<tr><td>' . $rid . '</td><td>' . $this->escape((string) ($r['tenant_label'] ?? $r['name'] ?? '')) . '</td><td>' . ((int) ($r['race_enabled'] ?? 1) === 1 ? 'on' : 'off') . '</td><td>' . ((int) ($r['is_active'] ?? 1) === 1 ? 'active' : 'inactive') . '</td><td><a class="button secondary" href="/admin/forward-routes?edit=' . $rid . '">Edit</a></td></tr>';
+            $availability = $this->provisioning?->leigodRouteAvailability($rid, 'tcp') ?? [];
+            $healthGated = (bool) ($availability['health_gated'] ?? false);
+            $health = !$healthGated
+                ? '<span class="muted">not gated</span>'
+                : ((bool) ($availability['available'] ?? false)
+                    ? '<span class="badge success">' . (int) ($availability['healthy_node_count'] ?? 0) . ' healthy</span>'
+                    : '<span class="badge danger">' . $this->escape((string) ($availability['unavailable_reason'] ?? 'unavailable')) . '</span>');
+            $routeRows .= '<tr><td>' . $rid . '</td><td>' . $this->escape((string) ($r['tenant_label'] ?? $r['name'] ?? '')) . '</td><td>' . ((int) ($r['race_enabled'] ?? 1) === 1 ? 'on' : 'off') . '</td><td>' . ((int) ($r['is_active'] ?? 1) === 1 ? 'active' : 'inactive') . '</td><td>' . $health . '</td><td><a class="button secondary" href="/admin/forward-routes?edit=' . $rid . '">Edit</a></td></tr>';
         }
         $raceChecked = ($editing === null || (int) ($editing['race_enabled'] ?? 1) === 1) ? ' checked' : '';
         $activeChecked = ($editing === null || (int) ($editing['is_active'] ?? 1) === 1) ? ' checked' : '';
@@ -2923,14 +2930,14 @@ final class AdminController extends BaseController
                   <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . (int) ($editing['sort_order'] ?? 100) . '"></div>
                   <div class="field"><label><input type="checkbox" name="is_active" value="1"' . $activeChecked . '> Active</label></div>
                   <h4 style="margin-top:12px;">Combinations in this route</h4>
-                  <div class="flash" data-route-health-warning>Health eligibility is evaluated per protocol before activation.</div>
+                  <div class="flash" data-route-health-warning>Protocol Health</div>
                   <div class="table-wrap"><table><thead><tr><th>Include / Combination</th><th>backend / self-leg / group</th><th>Priority</th></tr></thead><tbody>' . $comboRows . '</tbody></table></div>
                   <div class="actions"><button class="button" type="submit">Save Route</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/forward-routes">Cancel</a>' : '') . '</div>
                 </form>
               </section>
               <section class="card">
                 <h3>Forward Routes</h3>
-                <div class="table-wrap"><table><thead><tr><th>ID</th><th>Tenant Label</th><th>Race</th><th>Status</th><th>Actions</th></tr></thead><tbody>' . $routeRows . '</tbody></table></div>
+                <div class="table-wrap"><table><thead><tr><th>ID</th><th>Tenant Label</th><th>Race</th><th>Status</th><th>Health</th><th>Actions</th></tr></thead><tbody>' . $routeRows . '</tbody></table></div>
               </section>
             </div>';
         return $this->adminPage('Forward Routes', $body, $viewer, 'forward-routes');

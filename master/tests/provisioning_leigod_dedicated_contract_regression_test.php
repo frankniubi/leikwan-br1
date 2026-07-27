@@ -10,6 +10,8 @@ namespace Leikwan\Master\Database {
     {
         /** @var array<string, array<int, array<string, mixed>>> */
         private array $tables = [];
+        /** @var array<int, array<string, mixed>> */
+        public array $availabilityRows = [];
 
         /** @param array<int, array<string, mixed>> $rows */
         public function seed(string $table, array $rows): void
@@ -110,6 +112,9 @@ namespace Leikwan\Master\Database {
             if (str_contains($n, 'FROM forward_combination_helper_groups')) {
                 return [];
             }
+            if (str_contains($n, 'FROM forward_combinations fc') && str_contains($n, 'node_leigod_line_health')) {
+                return $this->availabilityRows;
+            }
             return [];
         }
 
@@ -176,7 +181,9 @@ namespace {
     if ($envPath === false) {
         fail('failed to create temp env file');
     }
-    file_put_contents($envPath, "DEFAULT_TLS_CERT_REF=default-edge-cert\nBOND_AGGREGATOR_HOST=legacy-sidecar.invalid\nBOND_AGGREGATOR_PORT=9999\n");
+    $toml451 = "line = 451\n";
+    $hash451 = hash('sha256', $toml451);
+    file_put_contents($envPath, "DEFAULT_TLS_CERT_REF=default-edge-cert\nBOND_AGGREGATOR_HOST=legacy-sidecar.invalid\nBOND_AGGREGATOR_PORT=9999\nLEIGOD_LINE_TOML_451=" . base64_encode($toml451) . "\n");
 
     $db = new Database();
     $db->seed('services', [[
@@ -246,6 +253,25 @@ namespace {
         'weight' => 100,
         'health_status' => 'healthy',
     ]]);
+    $db->availabilityRows = [[
+        'route_id' => 0,
+        'node_id' => 12,
+        'node_name' => 'sha-node-12',
+        'node_public_ip' => '203.0.113.12',
+        'node_status' => 'active',
+        'combination_id' => 9,
+        'combination_sort_order' => 10,
+        'membership_sort_order' => 10,
+        'line_id' => 451,
+        'line_is_active' => 1,
+        'config_sha256' => $hash451,
+        'health_config_sha256' => $hash451,
+        'service_state' => 'active',
+        'tcp_status' => 'healthy',
+        'tcp_connect_ms' => 12,
+        'udp_status' => 'healthy',
+        'checked_at' => gmdate('Y-m-d H:i:s'),
+    ]];
 
     $service = new ProvisioningService(new Config($envPath), $db);
     $config = $service->buildClientConfig(47);
@@ -257,6 +283,7 @@ namespace {
     assertSame('dedicated_forward_node', $config['target_contract'] ?? null, 'dedicated config target_contract');
     assertSame(false, $config['sidecar_required'] ?? null, 'dedicated config sidecar_required');
     assertSame('162.245.221.78:80', $config['target'] ?? null, 'dedicated config target');
+    assertSame('127.0.0.1:48316', $config['endpoints'][0]['runtime_target'] ?? null, 'dedicated endpoint runtime target');
     assertSame(null, array_key_exists('bond_sidecar_point_id', $config) ? $config['bond_sidecar_point_id'] : 'MISSING', 'dedicated config sidecar id');
     assertSame('', $config['bond_sidecar_point_name'] ?? null, 'dedicated config must blank sidecar name');
     assertSame('', $config['bond_sidecar_host'] ?? null, 'dedicated config must blank sidecar host');
@@ -293,7 +320,9 @@ namespace {
     $node = ['id' => 12, 'node_group_key' => 'sha-tencent', 'agent_config_json' => null];
     $payload = call_private($service, 'publishTaskPayloadForForward', $forward, $node, 316);
 
-    assertSame('162.245.221.78:80', $payload['target'] ?? null, 'dedicated publish target must be forward target');
+    assertSame('127.0.0.1:48316', $payload['target'] ?? null, 'dedicated publish target must be relay loopback');
+    assertSame('162.245.221.78:80', $payload['leigod_forward']['target'] ?? null, 'dedicated relay preserves real target');
+    assertSame([451], array_column($payload['leigod_forward']['candidates'] ?? [], 'line_id'), 'dedicated relay candidate');
     assertSame('leigod_mode', $payload['backend_mode'] ?? null, 'publish backend_mode');
     assertSame('single', $payload['client_mode'] ?? null, 'publish client_mode');
     assertSame('single', $payload['runtime_preference'] ?? null, 'publish runtime_preference');

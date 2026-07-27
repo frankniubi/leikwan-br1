@@ -321,6 +321,104 @@ final class LeigodLineCatalogService
         return ['accepted' => $accepted, 'rejected' => $rejected];
     }
 
+    /** @return array<string, mixed> */
+    public function routeAvailability(int $routeId, string $transport): array
+    {
+        $route = $routeId > 0
+            ? $this->db->fetchOne('SELECT * FROM forward_routes WHERE id = :id LIMIT 1', ['id' => $routeId])
+            : null;
+        if (!is_array($route)) {
+            return [
+                'route_id' => $routeId,
+                'available' => false,
+                'healthy_node_count' => 0,
+                'unavailable_reason' => 'forward_route_not_found',
+                'nodes' => [],
+            ];
+        }
+        if ((int) ($route['is_active'] ?? 0) !== 1) {
+            return [
+                'route_id' => $routeId,
+                'race_enabled' => (int) ($route['race_enabled'] ?? 0),
+                'available' => false,
+                'healthy_node_count' => 0,
+                'unavailable_reason' => 'forward_route_inactive',
+                'nodes' => [],
+            ];
+        }
+        $raceEnabled = (int) ($route['race_enabled'] ?? 0) === 1;
+        $nodes = $this->eligibleNodesFromCandidateRows(
+            $this->routeCandidateRows($routeId),
+            $transport,
+            $raceEnabled ? 2 : 1
+        );
+        return [
+            'route_id' => $routeId,
+            'race_enabled' => $raceEnabled ? 1 : 0,
+            'required_combination_count' => $raceEnabled ? 2 : 1,
+            'available' => $nodes !== [],
+            'healthy_node_count' => count($nodes),
+            'unavailable_reason' => $nodes === [] ? 'leigod_route_no_healthy_candidate' : null,
+            'nodes' => $nodes,
+        ];
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function eligibleNodesForRoute(int $routeId, string $transport): array
+    {
+        $availability = $this->routeAvailability($routeId, $transport);
+        return is_array($availability['nodes'] ?? null) ? $availability['nodes'] : [];
+    }
+
+    public function nodeSupportsRoute(int $nodeId, int $routeId, string $transport): bool
+    {
+        if ($nodeId <= 0) {
+            return false;
+        }
+        foreach ($this->eligibleNodesForRoute($routeId, $transport) as $node) {
+            if ((int) ($node['id'] ?? 0) === $nodeId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function eligibleNodesForCombination(int $combinationId, string $transport): array
+    {
+        if ($combinationId <= 0) {
+            return [];
+        }
+        return $this->eligibleNodesFromCandidateRows(
+            $this->combinationCandidateRows($combinationId),
+            $transport,
+            1
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @return array<int, array<string, mixed>>
+     */
+    public function candidatesForForwardOnNode(array $forward, int $nodeId): array
+    {
+        if ($nodeId <= 0) {
+            return [];
+        }
+        $transport = $this->eligibilityTransport((string) ($forward['transport_mode'] ?? 'tcp'));
+        $routeId = (int) ($forward['forward_route_id'] ?? 0);
+        $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
+        $nodes = $routeId > 0
+            ? $this->eligibleNodesForRoute($routeId, $transport)
+            : $this->eligibleNodesForCombination($combinationId, $transport);
+        foreach ($nodes as $node) {
+            if ((int) ($node['id'] ?? 0) === $nodeId) {
+                return is_array($node['candidates'] ?? null) ? $node['candidates'] : [];
+            }
+        }
+        return [];
+    }
+
     /** @return array<int, array<string, mixed>> */
     public function membershipsForCombination(int $combinationId): array
     {
@@ -503,6 +601,277 @@ final class LeigodLineCatalogService
             $seen[$lineId] = true;
         }
         return $ready;
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function routeCandidateRows(int $routeId): array
+    {
+        if ($routeId <= 0) {
+            return [];
+        }
+        return $this->db->fetchAll(
+            'SELECT fr.id AS route_id,
+                    frc.sort_order AS combination_sort_order,
+                    fc.id AS combination_id,
+                    fcll.sort_order AS membership_sort_order,
+                    ll.id AS catalog_id,
+                    ll.line_id,
+                    ll.label,
+                    ll.config_sha256,
+                    ll.is_active AS line_is_active,
+                    n.id AS node_id,
+                    n.name AS node_name,
+                    n.public_ip AS node_public_ip,
+                    n.private_ip AS node_private_ip,
+                    n.status AS node_status,
+                    n.agent_config_json AS node_agent_config_json,
+                    ng.group_key AS node_group_key,
+                    nllh.config_sha256 AS health_config_sha256,
+                    nllh.service_state,
+                    nllh.tcp_status,
+                    nllh.tcp_connect_ms,
+                    nllh.udp_status,
+                    nllh.consecutive_successes,
+                    nllh.consecutive_failures,
+                    nllh.last_error,
+                    nllh.checked_at
+             FROM forward_routes fr
+             INNER JOIN forward_route_combinations frc ON frc.forward_route_id = fr.id AND frc.enabled = 1
+             INNER JOIN forward_combinations fc ON fc.id = frc.forward_combination_id AND fc.is_active = 1
+             INNER JOIN node_groups ng ON ng.group_key = fc.node_group_key
+             INNER JOIN nodes n ON n.group_id = ng.id AND (n.status = :node_active OR n.status = :node_degraded)
+             INNER JOIN forward_combination_leigod_lines fcll ON fcll.forward_combination_id = fc.id AND fcll.enabled = 1
+             INNER JOIN leigod_lines ll ON ll.id = fcll.leigod_line_id AND ll.is_active = 1
+             INNER JOIN node_leigod_line_health nllh ON nllh.node_id = n.id AND nllh.leigod_line_id = ll.id
+             WHERE fr.id = :route_id
+               AND fr.is_active = 1
+               AND fc.backend_mode = :backend_mode
+               AND fc.client_mode = :client_mode
+               AND fc.sidecar_point_id IS NULL
+             ORDER BY n.id ASC, frc.sort_order ASC, fcll.sort_order ASC, ll.line_id ASC',
+            [
+                'route_id' => $routeId,
+                'node_active' => 'active',
+                'node_degraded' => 'degraded',
+                'backend_mode' => 'leigod_mode',
+                'client_mode' => 'single',
+            ]
+        );
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function combinationCandidateRows(int $combinationId): array
+    {
+        if ($combinationId <= 0) {
+            return [];
+        }
+        return $this->db->fetchAll(
+            'SELECT 0 AS route_id,
+                    fc.sort_order AS combination_sort_order,
+                    fc.id AS combination_id,
+                    fcll.sort_order AS membership_sort_order,
+                    ll.id AS catalog_id,
+                    ll.line_id,
+                    ll.label,
+                    ll.config_sha256,
+                    ll.is_active AS line_is_active,
+                    n.id AS node_id,
+                    n.name AS node_name,
+                    n.public_ip AS node_public_ip,
+                    n.private_ip AS node_private_ip,
+                    n.status AS node_status,
+                    n.agent_config_json AS node_agent_config_json,
+                    ng.group_key AS node_group_key,
+                    nllh.config_sha256 AS health_config_sha256,
+                    nllh.service_state,
+                    nllh.tcp_status,
+                    nllh.tcp_connect_ms,
+                    nllh.udp_status,
+                    nllh.consecutive_successes,
+                    nllh.consecutive_failures,
+                    nllh.last_error,
+                    nllh.checked_at
+             FROM forward_combinations fc
+             INNER JOIN node_groups ng ON ng.group_key = fc.node_group_key
+             INNER JOIN nodes n ON n.group_id = ng.id AND (n.status = :node_active OR n.status = :node_degraded)
+             INNER JOIN forward_combination_leigod_lines fcll ON fcll.forward_combination_id = fc.id AND fcll.enabled = 1
+             INNER JOIN leigod_lines ll ON ll.id = fcll.leigod_line_id AND ll.is_active = 1
+             INNER JOIN node_leigod_line_health nllh ON nllh.node_id = n.id AND nllh.leigod_line_id = ll.id
+             WHERE fc.id = :combination_id
+               AND fc.is_active = 1
+               AND fc.backend_mode = :backend_mode
+               AND fc.client_mode = :client_mode
+               AND fc.sidecar_point_id IS NULL
+             ORDER BY n.id ASC, fcll.sort_order ASC, ll.line_id ASC',
+            [
+                'combination_id' => $combinationId,
+                'node_active' => 'active',
+                'node_degraded' => 'degraded',
+                'backend_mode' => 'leigod_mode',
+                'client_mode' => 'single',
+            ]
+        );
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function eligibleNodesFromCandidateRows(array $rows, string $transport, int $requiredCombinationCount): array
+    {
+        $transport = $this->eligibilityTransport($transport);
+        $maxAge = max(15, min(3600, $this->config->getInt('LEIGOD_LINE_HEALTH_MAX_AGE_SECONDS', 180)));
+        $now = time();
+        $nodes = [];
+        foreach ($rows as $row) {
+            $nodeId = (int) ($row['node_id'] ?? 0);
+            $combinationId = (int) ($row['combination_id'] ?? 0);
+            $lineId = (int) ($row['line_id'] ?? 0);
+            if ($nodeId <= 0 || $combinationId <= 0 || $lineId < 1 || $lineId > self::MAX_LINE_ID) {
+                continue;
+            }
+            if (array_key_exists('line_is_active', $row) && (int) $row['line_is_active'] !== 1) {
+                continue;
+            }
+            $nodeStatus = strtolower(trim((string) ($row['node_status'] ?? 'active')));
+            if (!in_array($nodeStatus, ['active', 'degraded'], true)) {
+                continue;
+            }
+            $configuration = $this->configurationForLine($row);
+            $expectedHash = strtolower(trim((string) ($row['config_sha256'] ?? '')));
+            $healthHash = strtolower(trim((string) ($row['health_config_sha256'] ?? '')));
+            $checkedAt = strtotime((string) ($row['checked_at'] ?? ''));
+            if ($configuration['state'] !== 'ready'
+                || preg_match('/^[a-f0-9]{64}$/', $healthHash) !== 1
+                || !hash_equals($expectedHash, $healthHash)
+                || strtolower(trim((string) ($row['service_state'] ?? ''))) !== 'active'
+                || $checkedAt === false
+                || $checkedAt < ($now - $maxAge)
+                || $checkedAt > ($now + 300)
+                || !$this->rowSupportsTransport($row, $transport)) {
+                continue;
+            }
+
+            if (!isset($nodes[$nodeId])) {
+                $nodes[$nodeId] = [
+                    'id' => $nodeId,
+                    'node_id' => $nodeId,
+                    'name' => (string) ($row['node_name'] ?? ''),
+                    'public_ip' => (string) ($row['node_public_ip'] ?? ''),
+                    'private_ip' => (string) ($row['node_private_ip'] ?? ''),
+                    'status' => $nodeStatus,
+                    'agent_config_json' => $row['node_agent_config_json'] ?? null,
+                    'node_group_key' => (string) ($row['node_group_key'] ?? ''),
+                    '_by_combination' => [],
+                ];
+            }
+            $candidateKey = $combinationId . ':' . $lineId;
+            $nodes[$nodeId]['_by_combination'][$combinationId][$candidateKey] = [
+                'combination_id' => $combinationId,
+                'line_id' => $lineId,
+                'config_sha256' => $expectedHash,
+                'socks_host' => '127.0.0.1',
+                'socks_port' => 20000 + $lineId,
+                'combination_sort_order' => (int) ($row['combination_sort_order'] ?? 100),
+                'sort_order' => (int) ($row['membership_sort_order'] ?? 100),
+                'service_state' => 'active',
+                'tcp_status' => strtolower(trim((string) ($row['tcp_status'] ?? 'unknown'))),
+                'tcp_connect_ms' => ($row['tcp_connect_ms'] ?? null) !== null ? (int) $row['tcp_connect_ms'] : null,
+                'udp_status' => strtolower(trim((string) ($row['udp_status'] ?? 'unknown'))),
+                'checked_at' => gmdate('c', $checkedAt),
+            ];
+        }
+
+        $eligible = [];
+        foreach ($nodes as $node) {
+            $byCombination = $node['_by_combination'];
+            if (count($byCombination) < $requiredCombinationCount) {
+                continue;
+            }
+            $combinationGroups = [];
+            foreach ($byCombination as $combinationId => $candidates) {
+                $candidates = array_values($candidates);
+                usort($candidates, [$this, 'compareCandidates']);
+                $combinationGroups[(int) $combinationId] = $candidates;
+            }
+            uasort($combinationGroups, static function (array $left, array $right): int {
+                return [
+                    (int) ($left[0]['combination_sort_order'] ?? 100),
+                    (int) ($left[0]['combination_id'] ?? 0),
+                ] <=> [
+                    (int) ($right[0]['combination_sort_order'] ?? 100),
+                    (int) ($right[0]['combination_id'] ?? 0),
+                ];
+            });
+            $candidates = [];
+            $selectedKeys = [];
+            foreach ($combinationGroups as $group) {
+                $candidate = $group[0];
+                $key = (int) $candidate['combination_id'] . ':' . (int) $candidate['line_id'];
+                $candidates[] = $candidate;
+                $selectedKeys[$key] = true;
+            }
+            $remaining = [];
+            foreach ($combinationGroups as $group) {
+                foreach ($group as $candidate) {
+                    $key = (int) $candidate['combination_id'] . ':' . (int) $candidate['line_id'];
+                    if (!isset($selectedKeys[$key])) {
+                        $remaining[] = $candidate;
+                    }
+                }
+            }
+            usort($remaining, [$this, 'compareCandidates']);
+            $candidateCap = max(
+                $requiredCombinationCount,
+                min(8, max(1, $this->config->getInt('FORWARD_ROUTE_RACE_CANDIDATE_CAP', 8)))
+            );
+            $candidates = array_slice(
+                array_merge($candidates, $remaining),
+                0,
+                $candidateCap
+            );
+            unset($node['_by_combination']);
+            $node['healthy_combination_count'] = count($byCombination);
+            $node['candidates'] = $candidates;
+            $eligible[] = $node;
+        }
+        usort($eligible, static fn(array $left, array $right): int => (int) $left['id'] <=> (int) $right['id']);
+        return $eligible;
+    }
+
+    /** @param array<string, mixed> $row */
+    private function rowSupportsTransport(array $row, string $transport): bool
+    {
+        $tcpHealthy = strtolower(trim((string) ($row['tcp_status'] ?? 'unknown'))) === 'healthy';
+        $udpHealthy = strtolower(trim((string) ($row['udp_status'] ?? 'unknown'))) === 'healthy';
+        return match ($transport) {
+            'udp' => $udpHealthy,
+            'both' => $tcpHealthy && $udpHealthy,
+            default => $tcpHealthy,
+        };
+    }
+
+    private function eligibilityTransport(string $transport): string
+    {
+        $transport = strtolower(trim($transport));
+        if ($transport === 'both' || str_contains($transport, '+')) {
+            return 'both';
+        }
+        return $transport === 'udp' ? 'udp' : 'tcp';
+    }
+
+    /** @param array<string, mixed> $left @param array<string, mixed> $right */
+    private function compareCandidates(array $left, array $right): int
+    {
+        return [
+            (int) ($left['combination_sort_order'] ?? 100),
+            (int) ($left['sort_order'] ?? 100),
+            (int) ($left['line_id'] ?? 0),
+        ] <=> [
+            (int) ($right['combination_sort_order'] ?? 100),
+            (int) ($right['sort_order'] ?? 100),
+            (int) ($right['line_id'] ?? 0),
+        ];
     }
 
     private function truthy(mixed $value): bool
