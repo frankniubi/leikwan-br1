@@ -1198,3 +1198,52 @@ CREATE TABLE IF NOT EXISTS forward_retirement_cleanup_leases (
     INDEX idx_forward_retirement_cleanup_pending (state, updated_at),
     INDEX idx_forward_retirement_cleanup_fence (scope, forward_id, owner_token, fencing_token, artifact_snapshot_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS leigod_lines (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    line_id INT UNSIGNED NOT NULL,
+    label VARCHAR(191) NOT NULL,
+    notes TEXT NULL,
+    tcp_probe_host VARCHAR(255) NOT NULL,
+    tcp_probe_port INT UNSIGNED NOT NULL,
+    udp_probe_host VARCHAR(255) NULL,
+    udp_probe_port INT UNSIGNED NULL,
+    udp_probe_method VARCHAR(32) NULL,
+    config_sha256 CHAR(64) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 0,
+    sort_order INT NOT NULL DEFAULT 100,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_leigod_external_line (line_id)
+);
+
+CREATE TABLE IF NOT EXISTS forward_combination_leigod_lines (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    forward_combination_id BIGINT UNSIGNED NOT NULL,
+    leigod_line_id BIGINT UNSIGNED NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 100,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_fcll_combination FOREIGN KEY (forward_combination_id) REFERENCES forward_combinations(id),
+    CONSTRAINT fk_fcll_line FOREIGN KEY (leigod_line_id) REFERENCES leigod_lines(id),
+    UNIQUE KEY uniq_combination_leigod_line (forward_combination_id, leigod_line_id)
+);
+
+CREATE TABLE IF NOT EXISTS node_leigod_line_health (
+    node_id BIGINT UNSIGNED NOT NULL,
+    leigod_line_id BIGINT UNSIGNED NOT NULL,
+    config_sha256 CHAR(64) NOT NULL,
+    service_state VARCHAR(32) NOT NULL,
+    tcp_status VARCHAR(32) NOT NULL,
+    tcp_connect_ms INT UNSIGNED NULL,
+    udp_status VARCHAR(32) NOT NULL,
+    consecutive_successes INT UNSIGNED NOT NULL DEFAULT 0,
+    consecutive_failures INT UNSIGNED NOT NULL DEFAULT 0,
+    last_error VARCHAR(500) NULL,
+    checked_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (node_id, leigod_line_id),
+    CONSTRAINT fk_nllh_node FOREIGN KEY (node_id) REFERENCES nodes(id),
+    CONSTRAINT fk_nllh_line FOREIGN KEY (leigod_line_id) REFERENCES leigod_lines(id)
+);
