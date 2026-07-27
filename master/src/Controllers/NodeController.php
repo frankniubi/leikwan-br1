@@ -115,7 +115,7 @@ final class NodeController extends BaseController
 
     public function heartbeat(Request $request, array $params): Response
     {
-        $node = Auth::requireNode($request, $this->db);
+        $node = Auth::requireNodeForHeartbeat($request, $this->db);
         $body = is_array($request->body()) ? $request->body() : [];
         $currentLoad = (int) $request->input('current_load', 0);
         $status = (string) $request->input('status', 'active');
