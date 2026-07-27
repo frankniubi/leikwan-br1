@@ -53,6 +53,9 @@ foreach ([
     '.bridge-home-metrics',
     '.bridge-home-route',
     '.bridge-home-footer-grid',
+    '.bridge-home-page .site-mark',
+    '--bridge-paper: #ffffff',
+    'border-radius: 999px',
     '@media (max-width: 820px)',
 ] as $selector) {
     if (!str_contains($css, $selector)) {
@@ -64,6 +67,10 @@ foreach (['linear-gradient(', 'radial-gradient(', 'clamp('] as $forbiddenCss) {
     if (str_contains($css, $forbiddenCss)) {
         fail('bridge home uses forbidden visual primitive: ' . $forbiddenCss);
     }
+}
+
+if (str_contains($css, 'border: 1px solid var(--bridge-ink)')) {
+    fail('bridge home still frames the logo with a dark square border');
 }
 
 echo "ok\n";
