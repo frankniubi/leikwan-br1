@@ -64,18 +64,41 @@ final class Auth
      */
     public static function requireNode(Request $request, Database $db): array
     {
+        return self::requireNodeWithOfflinePolicy($request, $db, false);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function requireNodeForHeartbeat(Request $request, Database $db): array
+    {
+        return self::requireNodeWithOfflinePolicy($request, $db, true);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function requireNodeWithOfflinePolicy(Request $request, Database $db, bool $allowOffline): array
+    {
         $token = $request->bearerToken();
         if ($token === null || $token === '') {
             throw new ApiException('node_auth_failed', 401);
         }
 
+        $statusSql = $allowOffline
+            ? '(status = :active OR status = :degraded OR status = :offline)'
+            : '(status = :active OR status = :degraded)';
+        $params = [
+            'token' => $token,
+            'active' => 'active',
+            'degraded' => 'degraded',
+        ];
+        if ($allowOffline) {
+            $params['offline'] = 'offline';
+        }
         $node = $db->fetchOne(
-            'SELECT * FROM nodes WHERE api_token = :token AND (status = :active OR status = :degraded) LIMIT 1',
-            [
-                'token' => $token,
-                'active' => 'active',
-                'degraded' => 'degraded',
-            ]
+            'SELECT * FROM nodes WHERE api_token = :token AND ' . $statusSql . ' LIMIT 1',
+            $params
         );
 
         if ($node === null) {
