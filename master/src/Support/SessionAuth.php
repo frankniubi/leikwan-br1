@@ -21,6 +21,7 @@ final class SessionAuth
     public static function login(array $user): void
     {
         self::boot();
+        session_regenerate_id(true);
         $_SESSION['auth'] = [
             'user_id' => (int) $user['id'],
             'role' => (string) $user['role'],
