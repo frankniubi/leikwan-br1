@@ -143,6 +143,11 @@ final class NodeController extends BaseController
             $existingAgentConfig = [];
         }
         $mergedCapabilities = $this->mergeCapabilityConfig($existingAgentConfig, $body);
+        if (array_key_exists('leigod_forward_selections', $body)) {
+            $mergedCapabilities['leigod_forward_selections'] = $this->normalizeLeigodForwardSelections(
+                $body['leigod_forward_selections']
+            );
+        }
         $supportsUdp = $this->boolInput($body, 'supports_udp', (bool) ($node['supports_udp'] ?? true));
         $supportsFiltering = $this->boolInput($body, 'supports_filtering', (bool) ($node['supports_filtering'] ?? false));
         // Regression sentinel: node_heartbeat_republish_gate
@@ -151,7 +156,12 @@ final class NodeController extends BaseController
         // that goes through republishActiveEndpointsForNode and therefore bypasses
         // reconcileForwardEndpoints' active-endpoint skip.
         $republishCapabilityState = $mergedCapabilities;
-        unset($republishCapabilityState['last_endpoint_republish_fingerprint'], $republishCapabilityState['last_endpoint_republish_at']);
+        unset(
+            $republishCapabilityState['last_endpoint_republish_fingerprint'],
+            $republishCapabilityState['last_endpoint_republish_at'],
+            $republishCapabilityState['leigod_line_health'],
+            $republishCapabilityState['leigod_forward_selections']
+        );
         $existingRepublishFingerprint = trim((string) ($existingAgentConfig['last_endpoint_republish_fingerprint'] ?? ''));
         $existingRepublishAt = (int) ($existingAgentConfig['last_endpoint_republish_at'] ?? 0);
         $republishFingerprint = sha1(json_encode([
@@ -203,21 +213,44 @@ final class NodeController extends BaseController
                 'current_load' => $currentLoad,
                 'supports_udp' => (int) $supportsUdp,
                 'supports_filtering' => (int) $supportsFiltering,
-                'agent_config_json' => $mergedCapabilities !== [] ? json_encode($mergedCapabilities, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
+                'agent_config_json' => $mergedCapabilities !== [] ? json_encode($mergedCapabilities, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) : null,
                 'last_heartbeat_at' => gmdate('Y-m-d H:i:s'),
                 'updated_at' => gmdate('Y-m-d H:i:s'),
             ]
         );
 
+        $heartbeatPayload = $body;
+        if (is_array($heartbeatPayload['leigod_line_health'] ?? null)) {
+            $heartbeatCap = max(1, min(256, $this->config->getInt('LEIGOD_LINE_HEARTBEAT_CAP', 64)));
+            $heartbeatPayload['leigod_line_health'] = array_slice(
+                array_values($heartbeatPayload['leigod_line_health']),
+                0,
+                $heartbeatCap
+            );
+        }
+        if (is_array($heartbeatPayload['leigod_forward_selections'] ?? null)) {
+            $heartbeatPayload['leigod_forward_selections'] = array_slice(
+                array_values($heartbeatPayload['leigod_forward_selections']),
+                0,
+                128
+            );
+        }
         $this->db->insert('node_heartbeats', [
             'node_id' => $node['id'],
             'status' => $status,
             'cpu_usage' => $cpu,
             'memory_usage' => $memory,
             'disk_usage' => $disk,
-            'payload_json' => json_encode($request->body(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'payload_json' => json_encode($heartbeatPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
             'created_at' => gmdate('Y-m-d H:i:s'),
         ]);
+
+        $nodeId = (int) $node['id'];
+        if (array_key_exists('leigod_line_health', $body) && is_array($body['leigod_line_health'])) {
+            $this->guardProvisioning($nodeId, 'ingestNodeLeigodLineHealth', function () use ($nodeId, $body): void {
+                $this->provisioning->ingestNodeLeigodLineHealth($nodeId, $body['leigod_line_health']);
+            });
+        }
 
         // Heartbeat resilience: the reconcile/republish provisioning calls below run
         // inline on every heartbeat. They issue UPDATEs against provision_tasks that can
@@ -225,7 +258,6 @@ final class NodeController extends BaseController
         // throw here bubbled out as an HTTP 500, the agent skipped its task pull/ack
         // cycle, and the fleet froze. Each call is now isolated: a failure is logged and
         // the heartbeat still returns the node's normal management response.
-        $nodeId = (int) $node['id'];
         if ($groupKey !== '') {
             $this->guardProvisioning($nodeId, 'reconcileActiveForwardsForGroup', function () use ($groupKey): void {
                 $this->provisioning->reconcileActiveForwardsForGroup($groupKey);
@@ -438,6 +470,50 @@ final class NodeController extends BaseController
         return $config;
     }
 
+    /** @return array<int, array<string, mixed>> */
+    private function normalizeLeigodForwardSelections(mixed $payload): array
+    {
+        if (!is_array($payload)) {
+            return [];
+        }
+        $normalized = [];
+        foreach (array_slice(array_values($payload), 0, 128) as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $serviceId = max(0, (int) ($row['service_id'] ?? 0));
+            $serviceName = substr(trim((string) ($row['service_name'] ?? '')), 0, 191);
+            $mode = strtolower(trim((string) ($row['mode'] ?? '')));
+            $lineId = (int) ($row['selected_line_id'] ?? $row['line_id'] ?? 0);
+            $combinationId = max(0, (int) ($row['selected_combination_id'] ?? $row['combination_id'] ?? 0));
+            if (($serviceId <= 0 && $serviceName === '')
+                || !in_array($mode, ['single', 'race'], true)
+                || $lineId < 1
+                || $lineId > 45535
+                || $combinationId <= 0) {
+                continue;
+            }
+            $selectedAtRaw = trim((string) ($row['selected_at'] ?? ''));
+            $selectedAt = $selectedAtRaw !== '' ? strtotime($selectedAtRaw) : time();
+            if ($selectedAt === false || $selectedAt > (time() + 300)) {
+                continue;
+            }
+            $normalized[] = [
+                'service_id' => $serviceId,
+                'service_name' => $serviceName,
+                'forward_id' => max(0, (int) ($row['forward_id'] ?? 0)),
+                'forward_route_id' => max(0, (int) ($row['forward_route_id'] ?? $row['route_id'] ?? 0)),
+                'selected_combination_id' => $combinationId,
+                'selected_line_id' => $lineId,
+                'mode' => $mode,
+                'candidate_count' => max(0, min(64, (int) ($row['candidate_count'] ?? 0))),
+                'reason' => substr(trim((string) ($row['reason'] ?? '')), 0, 191),
+                'selected_at' => gmdate('c', $selectedAt),
+            ];
+        }
+        return $normalized;
+    }
+
     public function reportUsage(Request $request, array $params): Response
     {
         $node = Auth::requireNode($request, $this->db);
@@ -512,6 +588,8 @@ final class NodeController extends BaseController
         );
 
         $uplinks = $this->provisioning->slaveSidecarUplinkManagementForNode((int) $node['id'])['uplinks'] ?? [];
+        $leigodLineManagement = $this->provisioning->desiredLeigodLineManagementForNode((int) $node['id']);
+        $leigodLines = is_array($leigodLineManagement['lines'] ?? null) ? $leigodLineManagement['lines'] : [];
         $management = [
             'agent_config_json' => $agentConfig,
             'agent_update_request_token' => $updateRequestToken,
@@ -521,9 +599,10 @@ final class NodeController extends BaseController
             'desired_installer_version' => (string) ($slaveInstaller['version'] ?? ''),
             'desired_installer_sha256' => (string) ($slaveInstaller['sha256'] ?? ''),
             'sidecar_static_uplinks' => $uplinks,
+            'leigod_lines' => $leigodLines,
         ];
         // Deliver the shared LeiGod account session only to nodes that actually run a leigod line.
-        $usesLeigod = false;
+        $usesLeigod = $leigodLines !== [];
         foreach ((array) $uplinks as $uplink) {
             if (!is_array($uplink)) {
                 continue;

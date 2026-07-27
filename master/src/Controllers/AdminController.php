@@ -4261,6 +4261,8 @@ final class AdminController extends BaseController
                 'accept_panel_republish',
                 'bond_protocols',
                 'hybrid_modes',
+                'leigod_line_health',
+                'leigod_forward_selections',
             ] as $runtimeKey) {
                 if (array_key_exists($runtimeKey, $existingAgentConfig)) {
                     $preservedRuntimeConfig[$runtimeKey] = $existingAgentConfig[$runtimeKey];

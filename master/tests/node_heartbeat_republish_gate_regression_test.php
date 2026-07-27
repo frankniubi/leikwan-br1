@@ -277,6 +277,29 @@ namespace {
         fail("REGRESSION: identical heartbeat re-published despite unchanged fingerprint (publish tasks {$afterFirst} -> {$afterSecond})");
     }
 
+    // Dynamic selector telemetry is persisted but excluded from the endpoint capability fingerprint.
+    $telemetry = $body;
+    $telemetry['leigod_forward_selections'] = [];
+    for ($index = 0; $index < 140; $index++) {
+        $telemetry['leigod_forward_selections'][] = [
+            'service_name' => 'service-' . $index,
+            'mode' => 'race',
+            'selected_combination_id' => 100 + $index,
+            'selected_line_id' => 451,
+            'selected_at' => gmdate('c'),
+        ];
+    }
+    $controller->heartbeat(heartbeat_request('node-tok', $telemetry), []);
+    $afterTelemetry = $db->publishTaskCount();
+    if ($afterTelemetry !== $afterSecond) {
+        fail('dynamic LeiGod selection telemetry changed the endpoint republish fingerprint');
+    }
+    $storedNode = $db->rows('nodes')[0] ?? [];
+    $storedConfig = json_decode((string) ($storedNode['agent_config_json'] ?? ''), true);
+    if (!is_array($storedConfig) || count((array) ($storedConfig['leigod_forward_selections'] ?? [])) !== 128) {
+        fail('LeiGod selection telemetry was not normalized to the 128-row cap');
+    }
+
     // (3) Changed capability -> fingerprint differs -> must republish again.
     $changed = $body;
     $changed['agent_version'] = '2026.05.31.9';

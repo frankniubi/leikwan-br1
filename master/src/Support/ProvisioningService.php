@@ -71,6 +71,21 @@ final class ProvisioningService
         $this->leigodLineCatalog()->deleteLine($id);
     }
 
+    /** @return array{lines:array<int, array<string, mixed>>} */
+    public function desiredLeigodLineManagementForNode(int $nodeId): array
+    {
+        return ['lines' => $this->leigodLineCatalog()->desiredLinesForNode($nodeId)];
+    }
+
+    /**
+     * @param array<int|string, mixed> $payload
+     * @return array{accepted:int,rejected:int}
+     */
+    public function ingestNodeLeigodLineHealth(int $nodeId, array $payload): array
+    {
+        return $this->leigodLineCatalog()->ingestNodeHealth($nodeId, $payload);
+    }
+
     /** @return array<int, array{leigod_line_id:int,enabled:int,sort_order:int}> */
     private function legacyLeigodMembershipPayload(int $lineId): array
     {
