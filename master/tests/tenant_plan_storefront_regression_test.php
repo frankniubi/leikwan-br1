@@ -32,6 +32,7 @@ foreach ([
     'action="/tenant/plans/purchase"',
     'Order Now',
     'Starting from',
+    'default_bandwidth_limit_mbps',
     'default_client_online_device_limit',
     'Included Clients',
     'Client Device Limit',
