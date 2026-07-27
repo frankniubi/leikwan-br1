@@ -94,7 +94,8 @@ final class OidcController extends BaseController
             }
 
             return Response::redirect($this->localReturnPath((string) ($flow['return_to'] ?? '/')));
-        } catch (Throwable) {
+        } catch (Throwable $throwable) {
+            error_log(sprintf('OIDC callback failed: %s (%s)', $throwable->getMessage(), $throwable::class));
             SessionAuth::flash('error', 'Unable to sign in with the identity provider. Please try again.');
             return Response::redirect('/login');
         }

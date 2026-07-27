@@ -38,11 +38,13 @@ final class OidcClient
     public function isConfigured(): bool
     {
         $tokenAuthMethod = strtolower((string) $this->config->get('OIDC_TOKEN_AUTH_METHOD', 'client_secret_basic'));
+        $userinfoUrl = trim((string) $this->config->get('OIDC_USERINFO_URL', ''));
         return $this->config->getBool('OIDC_ENABLED')
             && $this->httpsUrl($this->issuer())
             && $this->httpsUrl((string) $this->config->get('OIDC_REDIRECT_URI', ''))
             && $this->clientId() !== ''
             && trim((string) $this->config->get('OIDC_CLIENT_SECRET', '')) !== ''
+            && ($userinfoUrl === '' || $this->httpsUrl($userinfoUrl))
             && in_array($tokenAuthMethod, ['client_secret_basic', 'client_secret_post'], true);
     }
 
@@ -215,6 +217,13 @@ final class OidcClient
             if (!isset($metadata[$field]) || !is_string($metadata[$field]) || !$this->httpsUrl($metadata[$field])) {
                 throw new RuntimeException('oidc_configuration_invalid');
             }
+        }
+        $userinfoUrl = trim((string) $this->config->get('OIDC_USERINFO_URL', ''));
+        if ($userinfoUrl !== '') {
+            if (!$this->httpsUrl($userinfoUrl)) {
+                throw new RuntimeException('oidc_configuration_invalid');
+            }
+            $metadata['userinfo_endpoint'] = $userinfoUrl;
         }
         return $this->metadata = $metadata;
     }
