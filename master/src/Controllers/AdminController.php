@@ -2463,6 +2463,113 @@ final class AdminController extends BaseController
         return Response::redirect('/admin/cf-location-groups');
     }
 
+    public function leigodLinesPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $lines = $this->provisioning?->listLeigodLines() ?? [];
+        $editId = (int) $request->input('edit', 0);
+        $editing = null;
+        foreach ($lines as $line) {
+            if ((int) ($line['id'] ?? 0) === $editId) {
+                $editing = $line;
+                break;
+            }
+        }
+
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $rows = '';
+        foreach ($lines as $line) {
+            $id = (int) ($line['id'] ?? 0);
+            $configurationState = (string) ($line['configuration_state'] ?? 'missing');
+            $stateClass = $configurationState === 'ready' ? 'success' : 'danger';
+            $lastError = trim((string) ($line['last_error'] ?? ''));
+            $rows .= '<tr>'
+                . '<td>' . (int) ($line['line_id'] ?? 0) . '</td>'
+                . '<td>' . $this->escape((string) ($line['label'] ?? '')) . '</td>'
+                . '<td><span class="badge ' . $stateClass . '">' . $this->escape($configurationState) . '</span></td>'
+                . '<td>' . (int) ($line['tcp_healthy_nodes'] ?? 0) . '</td>'
+                . '<td>' . (int) ($line['udp_healthy_nodes'] ?? 0) . '</td>'
+                . '<td>' . $this->escape((string) ($line['last_checked_at'] ?? '')) . '</td>'
+                . '<td>' . ($lastError !== '' ? $this->escape($lastError) : '<span class="muted">-</span>') . '</td>'
+                . '<td>' . ((int) ($line['is_active'] ?? 0) === 1 ? '<span class="badge success">active</span>' : '<span class="badge danger">inactive</span>') . '</td>'
+                . '<td><a class="button ghost" href="/admin/leigod-lines?edit=' . $id . '">Edit</a> '
+                . '<form class="inline" method="post" action="/admin/leigod-lines/' . $id . '/delete" onsubmit="return confirm(\'Delete this line?\')">'
+                . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                . '<button class="button danger" type="submit">Delete</button></form></td>'
+                . '</tr>';
+        }
+        if ($rows === '') {
+            $rows = '<tr><td colspan="9" class="muted">No lines configured.</td></tr>';
+        }
+
+        $udpMethod = strtolower((string) ($editing['udp_probe_method'] ?? ''));
+        $body = '<div class="grid two">'
+            . '<section class="card"><h3>' . ($editing !== null ? 'Edit LeiGod Line' : 'New LeiGod Line') . '</h3>'
+            . '<form method="post" action="/admin/leigod-lines">'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">'
+            . '<div class="form-grid">'
+            . '<div class="field"><label>Line ID</label><input type="number" name="line_id" min="1" max="45535" value="' . $this->escape((string) ($editing['line_id'] ?? '')) . '" required></div>'
+            . '<div class="field"><label>Label</label><input type="text" name="label" maxlength="191" value="' . $this->escape((string) ($editing['label'] ?? '')) . '" required></div>'
+            . '<div class="field"><label>TCP Probe Host</label><input type="text" name="tcp_probe_host" value="' . $this->escape((string) ($editing['tcp_probe_host'] ?? '')) . '" required></div>'
+            . '<div class="field"><label>TCP Probe Port</label><input type="number" name="tcp_probe_port" min="1" max="65535" value="' . $this->escape((string) ($editing['tcp_probe_port'] ?? '')) . '" required></div>'
+            . '<div class="field"><label>UDP Probe Host</label><input type="text" name="udp_probe_host" value="' . $this->escape((string) ($editing['udp_probe_host'] ?? '')) . '"></div>'
+            . '<div class="field"><label>UDP Probe Port</label><input type="number" name="udp_probe_port" min="1" max="65535" value="' . $this->escape((string) ($editing['udp_probe_port'] ?? '')) . '"></div>'
+            . '<div class="field"><label>UDP Probe Method</label><select name="udp_probe_method">'
+            . '<option value=""' . ($udpMethod === '' ? ' selected' : '') . '>disabled</option>'
+            . '<option value="dns"' . ($udpMethod === 'dns' ? ' selected' : '') . '>dns</option>'
+            . '<option value="echo"' . ($udpMethod === 'echo' ? ' selected' : '') . '>echo</option></select></div>'
+            . '<div class="field"><label>Config SHA-256</label><input type="text" name="config_sha256" maxlength="64" pattern="[A-Fa-f0-9]{64}" value="' . $this->escape((string) ($editing['config_sha256'] ?? '')) . '" required></div>'
+            . '<div class="field"><label>Status</label><select name="is_active"><option value="1"' . ((int) ($editing['is_active'] ?? 0) === 1 ? ' selected' : '') . '>active</option><option value="0"' . ((int) ($editing['is_active'] ?? 0) !== 1 ? ' selected' : '') . '>inactive</option></select></div>'
+            . '<div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . $this->escape((string) ($editing['sort_order'] ?? 100)) . '"></div>'
+            . '</div>'
+            . '<div class="field"><label>Notes</label><textarea name="notes">' . $this->escape((string) ($editing['notes'] ?? '')) . '</textarea></div>'
+            . '<div class="actions"><button class="button" type="submit">Save Line</button>'
+            . ($editing !== null ? '<a class="button secondary" href="/admin/leigod-lines">Cancel</a>' : '')
+            . '</div></form></section>'
+            . '<section class="card"><h3>LeiGod Line Catalog</h3><div class="table-wrap"><table>'
+            . '<thead><tr><th>Line</th><th>Label</th><th>Config</th><th>TCP Nodes</th><th>UDP Nodes</th><th>Checked</th><th>Last Error</th><th>Status</th><th>Actions</th></tr></thead>'
+            . '<tbody>' . $rows . '</tbody></table></div></section></div>';
+
+        return $this->adminPage('LeiGod Lines', $body, $viewer, 'leigod-lines');
+    }
+
+    public function saveLeigodLine(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->provisioning?->saveLeigodLine($request->body());
+            SessionAuth::flash('success', 'LeiGod line saved.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to save LeiGod line: ' . $this->displayThrowableMessage($throwable));
+        }
+        return Response::redirect('/admin/leigod-lines');
+    }
+
+    public function deleteLeigodLine(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->provisioning?->deleteLeigodLine($this->idParam($params));
+            SessionAuth::flash('success', 'LeiGod line deleted.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to delete LeiGod line: ' . $this->displayThrowableMessage($throwable));
+        }
+        return Response::redirect('/admin/leigod-lines');
+    }
+
     public function forwardCombinationsPage(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
@@ -2474,6 +2581,7 @@ final class AdminController extends BaseController
         $groups = $this->provisioning?->listNodeGroups() ?? [];
         $sidecars = $this->provisioning?->listSidecarPoints() ?? [];
         $cfGroups = $this->provisioning?->listCfLocationGroups() ?? [];
+        $leigodLines = $this->provisioning?->listLeigodLines() ?? [];
         $editId = (int) $request->input('edit', 0);
         $editing = null;
         foreach ($combinations as $combination) {
@@ -2519,15 +2627,49 @@ final class AdminController extends BaseController
             $cfOptions .= '<option value="' . (int) ($group['id'] ?? 0) . '"' . $selected . '>' . $this->escape((string) ($group['name'] ?? '')) . ' [' . $this->escape((string) ($group['region_code'] ?? '')) . ']</option>';
         }
 
-        // LeiGod is a first-class Forward Mode now (backend_mode = leigod_mode); the standalone self-leg
-        // basis picker is retired -- the Forward Mode derives the self-leg in saveForwardCombination. The
-        // line-id + UoT-carrier fields below render for every combo but a small script shows them only
-        // when leigod_mode is selected (and the Cloudflare Location Group only when cf_mode).
+        // LeiGod is a first-class Forward Mode; the ordered catalog memberships replace the legacy scalar.
         $leigodLineId = (int) ($editing['leigod_line_id'] ?? 0);
         $leigodUot = strtolower((string) ($editing['leigod_uot_impl'] ?? 'lguot'));
-        $leigodField = '<div class="field" data-mode-field="leigod_mode"><label>Managed TYO route id</label>'
-            . '<input type="number" name="leigod_line_id" min="0" value="' . $leigodLineId . '">'
-            . '<p class="muted">Required when Forward Mode = Managed TYO transport. Slave SOCKS = 127.0.0.1:(20000 + route id).</p></div>'
+        $selectedLeigodLines = [];
+        foreach ((array) ($editing['leigod_lines'] ?? []) as $membership) {
+            if (!is_array($membership)) {
+                continue;
+            }
+            $catalogId = (int) ($membership['leigod_line_id'] ?? 0);
+            if ($catalogId > 0) {
+                $selectedLeigodLines[$catalogId] = $membership;
+            }
+        }
+        $leigodMembershipRows = '';
+        foreach ($leigodLines as $lineIndex => $line) {
+            $catalogId = (int) ($line['id'] ?? 0);
+            if ($catalogId <= 0) {
+                continue;
+            }
+            $membership = $selectedLeigodLines[$catalogId] ?? null;
+            $checked = is_array($membership) && (int) ($membership['enabled'] ?? 1) === 1;
+            $sortOrder = (int) ($membership['sort_order'] ?? $line['sort_order'] ?? (($lineIndex + 1) * 10));
+            $configurationState = (string) ($line['configuration_state'] ?? 'missing');
+            $lineActive = (int) ($line['is_active'] ?? 0) === 1;
+            $selectable = $lineActive && $configurationState === 'ready';
+            $disabled = !$selectable && !$checked ? ' disabled' : '';
+            $leigodMembershipRows .= '<tr>'
+                . '<td><input type="hidden" name="leigod_lines[' . $lineIndex . '][leigod_line_id]" value="' . $catalogId . '">'
+                . '<input type="hidden" name="leigod_lines[' . $lineIndex . '][enabled]" value="0">'
+                . '<label><input type="checkbox" name="leigod_lines[' . $lineIndex . '][enabled]" value="1"' . ($checked ? ' checked' : '') . $disabled . '> '
+                . $this->escape((string) ($line['label'] ?? '')) . '</label></td>'
+                . '<td>' . (int) ($line['line_id'] ?? 0) . '</td>'
+                . '<td><span class="badge ' . ($configurationState === 'ready' ? 'success' : 'danger') . '">' . $this->escape($configurationState) . '</span></td>'
+                . '<td><input type="number" name="leigod_lines[' . $lineIndex . '][sort_order]" value="' . $sortOrder . '" style="width:90px"></td>'
+                . '</tr>';
+        }
+        if ($leigodMembershipRows === '') {
+            $leigodMembershipRows = '<tr><td colspan="4" class="muted">No catalog lines available.</td></tr>';
+        }
+        $leigodField = '<input type="hidden" name="leigod_line_id" value="' . $leigodLineId . '">'
+            . '<fieldset class="field" data-mode-field="leigod_mode" data-leigod-memberships><legend>LeiGod line pool</legend>'
+            . '<div class="table-wrap"><table><thead><tr><th>Enabled</th><th>Line ID</th><th>Config</th><th>Priority</th></tr></thead><tbody>'
+            . $leigodMembershipRows . '</tbody></table></div></fieldset>'
             . '<div class="field" data-mode-field="leigod_mode"><label>Managed TYO carrier</label>'
             . '<select name="leigod_uot_impl"><option value="lguot"' . ($leigodUot !== 'gost' ? ' selected' : '') . '>lguot (recommended)</option>'
             . '<option value="gost"' . ($leigodUot === 'gost' ? ' selected' : '') . '>gost</option></select>'
@@ -2777,10 +2919,11 @@ final class AdminController extends BaseController
                   <div class="field"><label>Name (internal)</label><input name="name" required value="' . $this->escape((string) ($editing['name'] ?? '')) . '"></div>
                   <div class="field"><label>Tenant Label</label><input name="tenant_label" value="' . $this->escape((string) ($editing['tenant_label'] ?? '')) . '"></div>
                   <div class="field"><label>Tenant Description</label><input name="tenant_description" value="' . $this->escape((string) ($editing['tenant_description'] ?? '')) . '"></div>
-                  <div class="field"><label><input type="checkbox" name="race_enabled" value="1"' . $raceChecked . '> Race enabled (off = pin lowest sort_order)</label></div>
+                  <div class="field"><input type="hidden" name="race_enabled" value="0"><label><input type="checkbox" name="race_enabled" value="1"' . $raceChecked . '> Race enabled (off = pin lowest sort_order)</label></div>
                   <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . (int) ($editing['sort_order'] ?? 100) . '"></div>
                   <div class="field"><label><input type="checkbox" name="is_active" value="1"' . $activeChecked . '> Active</label></div>
                   <h4 style="margin-top:12px;">Combinations in this route</h4>
+                  <div class="flash" data-route-health-warning>Health eligibility is evaluated per protocol before activation.</div>
                   <div class="table-wrap"><table><thead><tr><th>Include / Combination</th><th>backend / self-leg / group</th><th>Priority</th></tr></thead><tbody>' . $comboRows . '</tbody></table></div>
                   <div class="actions"><button class="button" type="submit">Save Route</button>' . ($editing !== null ? '<a class="button secondary" href="/admin/forward-routes">Cancel</a>' : '') . '</div>
                 </form>
@@ -2817,9 +2960,17 @@ final class AdminController extends BaseController
         }
         try {
             SessionAuth::validateCsrf($request);
-            $saved = $this->provisioning?->saveForwardCombination($request->body());
-            $savedId = is_array($saved) ? (int) ($saved['id'] ?? 0) : 0;
             $body = is_array($request->body()) ? $request->body() : [];
+            if (is_array($body['leigod_lines'] ?? null)) {
+                $body['leigod_lines'] = array_values(array_filter(
+                    $body['leigod_lines'],
+                    static fn(mixed $row): bool => is_array($row)
+                        && (int) ($row['leigod_line_id'] ?? 0) > 0
+                        && !in_array(strtolower(trim((string) ($row['enabled'] ?? '0'))), ['', '0', 'false', 'no', 'off'], true)
+                ));
+            }
+            $saved = $this->provisioning?->saveForwardCombination($body);
+            $savedId = is_array($saved) ? (int) ($saved['id'] ?? 0) : 0;
             $this->provisioning?->saveCombinationAdminPinnedSlaves(
                 $savedId,
                 is_array($body['combination_slaves'] ?? null) ? $body['combination_slaves'] : []

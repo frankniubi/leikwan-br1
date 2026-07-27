@@ -54,6 +54,23 @@ final class ProvisioningService
         return $this->leigodLineCatalogService ??= new LeigodLineCatalogService($this->config, $this->db);
     }
 
+    /** @return array<int, array<string, mixed>> */
+    public function listLeigodLines(): array
+    {
+        return $this->leigodLineCatalog()->listLines();
+    }
+
+    /** @return array<string, mixed> */
+    public function saveLeigodLine(array $payload): array
+    {
+        return $this->leigodLineCatalog()->saveLine($payload);
+    }
+
+    public function deleteLeigodLine(int $id): void
+    {
+        $this->leigodLineCatalog()->deleteLine($id);
+    }
+
     /** @return array<int, array{leigod_line_id:int,enabled:int,sort_order:int}> */
     private function legacyLeigodMembershipPayload(int $lineId): array
     {
@@ -5831,6 +5848,21 @@ final class ProvisioningService
                 'enabled' => $enabled,
                 'sort_order' => (int) (is_array($row) ? ($row['sort_order'] ?? 100) : 100),
             ];
+        }
+
+        $enabledCombinationCount = count(array_filter(
+            $combos,
+            static fn(array $row): bool => (int) ($row['enabled'] ?? 0) === 1
+        ));
+        if ($raceEnabled === 0 && $enabledCombinationCount !== 1) {
+            throw new ApiException('forward_route_single_requires_one_combination', 422, [
+                'enabled_count' => $enabledCombinationCount,
+            ]);
+        }
+        if ($raceEnabled === 1 && $enabledCombinationCount < 2) {
+            throw new ApiException('forward_route_race_requires_two_combinations', 422, [
+                'enabled_count' => $enabledCombinationCount,
+            ]);
         }
 
         $ingressKeys = [];

@@ -129,7 +129,7 @@ namespace {
     }
 
     // Disabling the cf combo removes it from the check -> OK.
-    $r3 = $svc->saveForwardRoute(['name' => 'r3', 'combinations' => [
+    $r3 = $svc->saveForwardRoute(['name' => 'r3', 'race_enabled' => '0', 'combinations' => [
         ['forward_combination_id' => 10, 'enabled' => 1],
         ['forward_combination_id' => 12, 'enabled' => 0],
     ]]);
