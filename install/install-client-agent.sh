@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.07.28.1"
+INSTALLER_VERSION="2026.07.28.2"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -511,6 +511,13 @@ _VERSIONS_PATH="$STATE_DIR/versions.json.new"
 leikwan_protected_download "$ARTIFACT_BASE/artifacts/versions.json" "$_VERSIONS_PATH"
 _VERSIONS_JSON="$(cat "$_VERSIONS_PATH")"
 rm -f "$_VERSIONS_PATH"
+if [[ -z "$INSTALLER_SHA256" ]]; then
+  INSTALLER_SHA256="$(_vers_sha256 client_agent_installer)"
+fi
+if [[ -z "$INSTALLER_SHA256" ]]; then
+  echo "missing client_agent_installer sha256 in versions manifest" >&2
+  exit 1
+fi
 
 download_atomic "$ARTIFACT_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
 download_atomic "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"

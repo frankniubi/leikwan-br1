@@ -77,12 +77,12 @@
     "size": 241594
   },
   "client_agent_installer": {
-    "version": "2026.07.28.1",
+    "version": "2026.07.28.2",
     "path": "install/install-client-agent.sh",
     "install_url": "/artifacts/install-client-agent.sh",
     "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "2ab33ff89ee6a3fe010444bdb840352d83a6aafafa4ac6b3ea056ef42e28bb84",
-    "size_bytes": 19312,
+    "sha256": "3e2a9a676b553d302bb8ea6454091b879d14c5bcd32a9a718aaf4afb07c62be8",
+    "size_bytes": 19535,
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
