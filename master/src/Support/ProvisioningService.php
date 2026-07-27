@@ -18,6 +18,7 @@ final class ProvisioningService
 
     private ?bool $nodeGroupIngressColumnsAvailable = null;
     private ?bool $nodeGroupDescriptionColumnAvailable = null;
+    private ?LeigodLineCatalogService $leigodLineCatalogService = null;
 
     /**
      * Per-(sidecar point) uniqueness-checked allocation registries. Keyed by point id,
@@ -46,6 +47,53 @@ final class ProvisioningService
         private Config $config,
         private Database $db,
     ) {
+    }
+
+    private function leigodLineCatalog(): LeigodLineCatalogService
+    {
+        return $this->leigodLineCatalogService ??= new LeigodLineCatalogService($this->config, $this->db);
+    }
+
+    /** @return array<int, array{leigod_line_id:int,enabled:int,sort_order:int}> */
+    private function legacyLeigodMembershipPayload(int $lineId): array
+    {
+        $line = $this->db->fetchOne(
+            'SELECT * FROM leigod_lines WHERE line_id = :line_id LIMIT 1',
+            ['line_id' => $lineId]
+        );
+        $catalogId = (int) ($line['id'] ?? 0);
+        if ($catalogId <= 0) {
+            $now = $this->now();
+            $catalogId = $this->db->insert('leigod_lines', [
+                'line_id' => $lineId,
+                'label' => 'Legacy line ' . $lineId,
+                'notes' => null,
+                'tcp_probe_host' => '',
+                'tcp_probe_port' => 0,
+                'udp_probe_host' => null,
+                'udp_probe_port' => null,
+                'udp_probe_method' => null,
+                'config_sha256' => str_repeat('0', 64),
+                'is_active' => 0,
+                'sort_order' => 100,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+
+        return [[
+            'leigod_line_id' => $catalogId,
+            'enabled' => 1,
+            'sort_order' => 100,
+        ]];
+    }
+
+    private function transactionIfSupported(callable $callback): mixed
+    {
+        if (method_exists($this->db, 'transaction')) {
+            return $this->db->transaction($callback);
+        }
+        return $callback($this->db);
     }
 
     /**
@@ -566,9 +614,38 @@ final class ProvisioningService
         if (!in_array($selfLegOuterTransport, ['cnix', 'cf', 'leigod'], true)) {
             throw new ApiException('invalid_self_leg_outer_transport', 422, ['self_leg_outer_transport' => $selfLegOuterTransport]);
         }
-        $leigodLineId = max(0, (int) ($payload['leigod_line_id'] ?? 0));
         $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+        $leigodLineId = max(0, (int) ($payload['leigod_line_id'] ?? 0));
+        $membershipPayloadProvided = array_key_exists('leigod_lines', $payload);
+        if ($membershipPayloadProvided && !is_array($payload['leigod_lines'])) {
+            throw new ApiException('invalid_leigod_line_memberships', 422);
+        }
+        $catalogMembershipsSupported = method_exists($this->db, 'transaction');
+        $normalizedLeigodMemberships = null;
+        $legacyScalarMembership = false;
+        $membershipRequireReady = false;
+
         if ($selfLegOuterTransport === 'leigod') {
+            if ($catalogMembershipsSupported && $membershipPayloadProvided) {
+                $membershipRequireReady = $isActive === 1 && !$sidecarRequired;
+                $normalizedLeigodMemberships = $this->leigodLineCatalog()->normalizeMemberships(
+                    $payload['leigod_lines'],
+                    $membershipRequireReady
+                );
+                $firstEnabledMembership = null;
+                foreach ($normalizedLeigodMemberships as $membership) {
+                    if ((int) ($membership['enabled'] ?? 0) === 1) {
+                        $firstEnabledMembership = $membership;
+                        break;
+                    }
+                }
+                $leigodLineId = (int) ($firstEnabledMembership['line_id'] ?? 0);
+            } elseif ($catalogMembershipsSupported && $leigodLineId > 0) {
+                if ($leigodLineId > 45535) {
+                    throw new ApiException('invalid_leigod_line_id', 422, ['line_id' => $leigodLineId]);
+                }
+                $legacyScalarMembership = true;
+            }
             if ($leigodLineId <= 0) {
                 throw new ApiException('leigod_line_required', 422, []);
             }
@@ -577,6 +654,9 @@ final class ProvisioningService
             }
         } else {
             $leigodLineId = 0;
+            if ($catalogMembershipsSupported) {
+                $normalizedLeigodMemberships = [];
+            }
         }
         if ($sidecarRequired && $sidecarPointId <= 0) {
             throw new ApiException('sidecar_required_for_forward_aggregation', 422, ['client_mode' => $clientMode]);
@@ -678,89 +758,112 @@ final class ProvisioningService
             'updated_at' => $this->now(),
         ];
 
-        if ($id > 0) {
+        $id = (int) $this->transactionIfSupported(function (mixed $_db = null) use (
+            $id,
+            $normalized,
+            $helperNodeGroupKeys,
+            $catalogMembershipsSupported,
+            $legacyScalarMembership,
+            $leigodLineId,
+            $normalizedLeigodMemberships,
+            $membershipRequireReady,
+            $backendMode,
+            $clientMode,
+            $sidecarPointId,
+            $cfLocationGroupId
+        ): int {
+            $savedId = $id;
+            $membershipPayload = is_array($normalizedLeigodMemberships) ? $normalizedLeigodMemberships : [];
+            if ($catalogMembershipsSupported && $legacyScalarMembership) {
+                $membershipPayload = $this->legacyLeigodMembershipPayload($leigodLineId);
+            }
+
+            if ($savedId > 0) {
+                $this->db->execute(
+                    'UPDATE forward_combinations
+                     SET name = :name,
+                         tenant_label = :tenant_label,
+                         tenant_description = :tenant_description,
+                         tenant_badge = :tenant_badge,
+                         node_group_key = :node_group_key,
+                         backend_mode = :backend_mode,
+                         sidecar_point_id = :sidecar_point_id,
+                         cf_location_group_id = :cf_location_group_id,
+                         client_mode = :client_mode,
+                         runtime_preference = :runtime_preference,
+                         allow_private_self_leg = :allow_private_self_leg,
+                         self_leg_scope = :self_leg_scope,
+                         self_leg_role = :self_leg_role,
+                         helper_group_cap = :helper_group_cap,
+                         helper_escalation_policy = :helper_escalation_policy,
+                         self_leg_cf_transport = :self_leg_cf_transport,
+                         self_leg_outer_transport = :self_leg_outer_transport,
+                         leigod_line_id = :leigod_line_id,
+                         leigod_uot_impl = :leigod_uot_impl,
+                         leigod_socks_user = :leigod_socks_user,
+                         leigod_socks_pass = :leigod_socks_pass,
+                         desired_latency_ms = :desired_latency_ms,
+                         allow_public_self_leg_donation = :allow_public_self_leg_donation,
+                         donation_qualify_window_seconds = :donation_qualify_window_seconds,
+                         donation_revoke_window_seconds = :donation_revoke_window_seconds,
+                         donation_min_open_ports = :donation_min_open_ports,
+                         bond_ingress_mode = :bond_ingress_mode,
+                         is_active = :is_active,
+                         sort_order = :sort_order,
+                         notes = :notes,
+                         updated_at = :updated_at
+                     WHERE id = :id',
+                    $normalized + ['id' => $savedId]
+                );
+            } else {
+                $savedId = $this->db->insert('forward_combinations', $normalized + [
+                    'created_at' => $this->now(),
+                ]);
+            }
+
+            $this->db->execute('DELETE FROM forward_combination_helper_groups WHERE forward_combination_id = :forward_combination_id', [
+                'forward_combination_id' => $savedId,
+            ]);
+            foreach ($helperNodeGroupKeys as $helperSortOrder => $helperNodeGroupKey) {
+                $this->db->insert('forward_combination_helper_groups', [
+                    'forward_combination_id' => $savedId,
+                    'node_group_key' => $helperNodeGroupKey,
+                    'sort_order' => $helperSortOrder,
+                    'is_active' => 1,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+            }
+
+            if ($catalogMembershipsSupported) {
+                $this->leigodLineCatalog()->saveCombinationMemberships(
+                    $savedId,
+                    $membershipPayload,
+                    $membershipRequireReady
+                );
+            }
+
+            // Keep denormalized per-forward ingress state coherent with the combination before publish.
             $this->db->execute(
-                'UPDATE forward_combinations
-                 SET name = :name,
-                     tenant_label = :tenant_label,
-                     tenant_description = :tenant_description,
-                     tenant_badge = :tenant_badge,
-                     node_group_key = :node_group_key,
-                     backend_mode = :backend_mode,
-                     sidecar_point_id = :sidecar_point_id,
-                     cf_location_group_id = :cf_location_group_id,
+                'UPDATE forwards
+                 SET backend_mode = :backend_mode,
                      client_mode = :client_mode,
-                     runtime_preference = :runtime_preference,
-                     allow_private_self_leg = :allow_private_self_leg,
-                     self_leg_scope = :self_leg_scope,
-                     self_leg_role = :self_leg_role,
-                     helper_group_cap = :helper_group_cap,
-                     helper_escalation_policy = :helper_escalation_policy,
-                     self_leg_cf_transport = :self_leg_cf_transport,
-                     self_leg_outer_transport = :self_leg_outer_transport,
-                     leigod_line_id = :leigod_line_id,
-                     leigod_uot_impl = :leigod_uot_impl,
-                     leigod_socks_user = :leigod_socks_user,
-                     leigod_socks_pass = :leigod_socks_pass,
-                     desired_latency_ms = :desired_latency_ms,
-                     allow_public_self_leg_donation = :allow_public_self_leg_donation,
-                     donation_qualify_window_seconds = :donation_qualify_window_seconds,
-                     donation_revoke_window_seconds = :donation_revoke_window_seconds,
-                     donation_min_open_ports = :donation_min_open_ports,
-                     bond_ingress_mode = :bond_ingress_mode,
-                     is_active = :is_active,
-                     sort_order = :sort_order,
-                     notes = :notes,
+                     bond_sidecar_point_id = :bond_sidecar_point_id,
+                     cf_location_group_id = :cf_location_group_id,
                      updated_at = :updated_at
-                 WHERE id = :id',
-                $normalized + ['id' => $id]
+                 WHERE forward_combination_id = :forward_combination_id',
+                [
+                    'backend_mode' => $backendMode,
+                    'client_mode' => $clientMode,
+                    'bond_sidecar_point_id' => $sidecarPointId > 0 ? $sidecarPointId : null,
+                    'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
+                    'updated_at' => $this->now(),
+                    'forward_combination_id' => $savedId,
+                ]
             );
-        } else {
-            $id = $this->db->insert('forward_combinations', $normalized + [
-                'created_at' => $this->now(),
-            ]);
-        }
 
-        $this->db->execute('DELETE FROM forward_combination_helper_groups WHERE forward_combination_id = :forward_combination_id', [
-            'forward_combination_id' => $id,
-        ]);
-        foreach ($helperNodeGroupKeys as $sortOrder => $helperNodeGroupKey) {
-            $this->db->insert('forward_combination_helper_groups', [
-                'forward_combination_id' => $id,
-                'node_group_key' => $helperNodeGroupKey,
-                'sort_order' => $sortOrder,
-                'is_active' => 1,
-                'created_at' => $this->now(),
-                'updated_at' => $this->now(),
-            ]);
-        }
-
-        // Keep the denormalized per-forward INGRESS columns in sync with the combination BEFORE
-        // republishing. publishTaskPayloadForForward reads client_mode + backend_mode +
-        // cf_location_group_id from the forwards row (and forwardUsesCfMode keys CF off
-        // forwards.cf_location_group_id > 0), so without this a live Forward-Mode/client-mode flip
-        // (e.g. cf_mode -> leigod_mode or leigod_mode/single -> leigod_mode/mptcp) ships an
-        // incoherent task. saveForward derives these columns from the combination at forward-save
-        // time; mirror that here so a combination save converges the ingress axis too
-        // (the 20260603_promote_leigod_mode migration does the same UPDATE one-time, comment: "CRITICAL:
-        // without this the cutover is incomplete").
-        $this->db->execute(
-            'UPDATE forwards
-             SET backend_mode = :backend_mode,
-                 client_mode = :client_mode,
-                 bond_sidecar_point_id = :bond_sidecar_point_id,
-                 cf_location_group_id = :cf_location_group_id,
-                 updated_at = :updated_at
-             WHERE forward_combination_id = :forward_combination_id',
-            [
-                'backend_mode' => $backendMode,
-                'client_mode' => $clientMode,
-                'bond_sidecar_point_id' => $sidecarPointId > 0 ? $sidecarPointId : null,
-                'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
-                'updated_at' => $this->now(),
-                'forward_combination_id' => $id,
-            ]
-        );
+            return $savedId;
+        });
 
         $this->republishActiveForwardsForCombination($id);
 
@@ -819,7 +922,8 @@ final class ProvisioningService
              ORDER BY fc.sort_order ASC, fc.id ASC',
             ['plan_id' => $planId]
         );
-        return $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
+        $rows = $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
+        return $this->attachLeigodLinesToForwardCombinations($rows);
     }
 
     /**
@@ -924,6 +1028,7 @@ final class ProvisioningService
              ORDER BY fc.sort_order ASC, fc.id ASC'
         );
         $rows = $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
+        $rows = $this->attachLeigodLinesToForwardCombinations($rows);
 
         return array_values(array_filter($rows, static function (array $row) use ($allowedGroupKeys, $allowedSidecarIds): bool {
             $groupOk = $allowedGroupKeys === [] || in_array((string) ($row['node_group_key'] ?? ''), $allowedGroupKeys, true);
@@ -946,7 +1051,8 @@ final class ProvisioningService
              LEFT JOIN cf_location_groups cg ON cg.id = fc.cf_location_group_id
              ORDER BY fc.sort_order ASC, fc.id ASC'
         );
-        return $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
+        $rows = $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
+        return $this->attachLeigodLinesToForwardCombinations($rows);
     }
 
     /**
@@ -971,7 +1077,24 @@ final class ProvisioningService
             return null;
         }
         $rows = $this->attachHelperNodeGroupKeysToForwardCombinations([$row]);
+        $rows = $this->attachLeigodLinesToForwardCombinations($rows);
         return $rows[0] ?? null;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function attachLeigodLinesToForwardCombinations(array $rows): array
+    {
+        foreach ($rows as &$row) {
+            $combinationId = (int) ($row['id'] ?? 0);
+            $row['leigod_lines'] = $combinationId > 0 && method_exists($this->db, 'transaction')
+                ? $this->leigodLineCatalog()->membershipsForCombination($combinationId)
+                : [];
+        }
+        unset($row);
+        return $rows;
     }
 
     /**
