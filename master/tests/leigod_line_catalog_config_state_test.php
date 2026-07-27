@@ -8,11 +8,21 @@ namespace Leikwan\Master\Database {
         public array $lines = [];
         /** @var array<int, int> */
         public array $membershipCounts = [];
+        /** @var array<int, array<string, mixed>> */
+        public array $healthRows = [];
         private int $nextId = 1;
 
         /** @return array<int, array<string, mixed>> */
         public function fetchAll(string $sql, array $params = []): array
         {
+            if (str_contains($sql, 'FROM node_leigod_line_health')) {
+                foreach (['nllh.config_sha256 = ll.config_sha256', 'nllh.checked_at >= :health_cutoff', 'nllh.checked_at <= :health_future_limit'] as $guard) {
+                    if (!str_contains($sql, $guard)) {
+                        throw new \RuntimeException('line health aggregate missing guard: ' . $guard);
+                    }
+                }
+                return $this->healthRows;
+            }
             if (str_contains($sql, 'FROM leigod_lines')) {
                 $rows = array_values($this->lines);
                 usort($rows, static fn(array $a, array $b): int => [(int) $a['sort_order'], (int) $a['id']] <=> [(int) $b['sort_order'], (int) $b['id']]);
@@ -233,9 +243,18 @@ namespace {
     $service->deleteLine((int) $savedMissing['id']);
     assertCatalogSame(null, $service->lineById((int) $savedMissing['id']), 'unreferenced line deleted');
 
+    $db->healthRows = [[
+        'leigod_line_id' => (int) $savedReady['id'],
+        'tcp_healthy_nodes' => 2,
+        'udp_healthy_nodes' => 1,
+        'last_checked_at' => gmdate('Y-m-d H:i:s'),
+        'last_error' => null,
+    ]];
     $listed = $service->listLines();
     assertCatalogSame(1, count($listed), 'list line count');
     assertCatalogSame('ready', $listed[0]['configuration_state'] ?? null, 'list includes readiness');
+    assertCatalogSame(2, $listed[0]['tcp_healthy_nodes'] ?? null, 'list includes fresh hash-matched TCP health');
+    assertCatalogSame(1, $listed[0]['udp_healthy_nodes'] ?? null, 'list includes fresh hash-matched UDP health');
     if (array_key_exists('toml', $listed[0])) {
         failCatalog('listLines must not expose TOML bytes');
     }
