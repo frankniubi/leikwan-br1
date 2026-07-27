@@ -1,7 +1,7 @@
 # Flexible LeiGod Single/Race Forward Combinations Design
 
 Date: 2026-07-27
-Status: approved in conversation; written specification for review
+Status: approved for implementation
 Baseline: `master` at `39d1887`
 
 ## 1. Objective
@@ -18,7 +18,7 @@ The initial production catalog contains these five proven directions:
 | 455 | Beijing to Germany |
 | 447 | Guangzhou to Hong Kong |
 
-These IDs and labels are initial data, not application constants. An administrator can add, disable, remove, reorder, or reassign lines without a code release.
+These IDs and labels are initial data, not application constants. An administrator can add, disable, remove, reorder, or reassign any provider line whose ID is in the runtime-valid range `1..45535` without a code release. The upper bound follows the existing local SOCKS convention `20000 + line_id <= 65535`.
 
 ## 2. Existing Constraints
 
@@ -100,7 +100,7 @@ New catalog table:
 
 ```text
 id                       BIGINT primary key
-line_id                  INT unique, positive
+line_id                  INT unique, 1..45535
 label                    VARCHAR(191)
 notes                    TEXT nullable
 tcp_probe_host           VARCHAR(255)
