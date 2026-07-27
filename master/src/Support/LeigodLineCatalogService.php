@@ -626,6 +626,7 @@ final class LeigodLineCatalogService
                     ll.line_id,
                     ll.label,
                     ll.config_sha256,
+                    ll.udp_probe_method,
                     ll.is_active AS line_is_active,
                     n.id AS node_id,
                     n.name AS node_name,
@@ -682,6 +683,7 @@ final class LeigodLineCatalogService
                     ll.line_id,
                     ll.label,
                     ll.config_sha256,
+                    ll.udp_probe_method,
                     ll.is_active AS line_is_active,
                     n.id AS node_id,
                     n.name AS node_name,
@@ -857,7 +859,9 @@ final class LeigodLineCatalogService
     private function rowSupportsTransport(array $row, string $transport): bool
     {
         $tcpHealthy = strtolower(trim((string) ($row['tcp_status'] ?? 'unknown'))) === 'healthy';
-        $udpHealthy = strtolower(trim((string) ($row['udp_status'] ?? 'unknown'))) === 'healthy';
+        $udpStatus = strtolower(trim((string) ($row['udp_status'] ?? 'unknown')));
+        $udpProbeConfigured = trim((string) ($row['udp_probe_method'] ?? '')) !== '';
+        $udpHealthy = $udpStatus === 'healthy' || (!$udpProbeConfigured && $udpStatus === 'unknown');
         return match ($transport) {
             'udp' => $udpHealthy,
             'both' => $tcpHealthy && $udpHealthy,
