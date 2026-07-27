@@ -39,6 +39,14 @@ foreach ([
         fail('install-client-agent missing persistent runtime proxy support: ' . $snippet);
     }
 }
+foreach ([
+    'INSTALLER_SHA256="$(_vers_sha256 client_agent_installer)"',
+    'missing client_agent_installer sha256 in versions manifest',
+] as $snippet) {
+    if (!str_contains($clientInstaller, $snippet)) {
+        fail('install-client-agent missing piped installer hash fallback: ' . $snippet);
+    }
+}
 
 $clientUninstaller = file_get_contents($root . '/install/uninstall-client-agent.sh');
 if (!is_string($clientUninstaller)) fail('failed to read uninstall-client-agent');
