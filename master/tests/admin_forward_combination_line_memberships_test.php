@@ -18,7 +18,7 @@ foreach ([
     '][leigod_line_id]',
     '][enabled]',
     '][sort_order]',
-    'LeiGod line pool',
+    'Managed TYO line pool',
     'configuration_state',
     'data-leigod-memberships',
     'data-route-health-warning',
