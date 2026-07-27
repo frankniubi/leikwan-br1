@@ -1180,7 +1180,7 @@ HTML;
         $mainClass = $isBridgeHome ? ' bridge-home-main' : '';
         $styleLinks = '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
             . ($isBridgeHome
-                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260727c">'
+                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260727d">'
                 : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
