@@ -661,7 +661,7 @@ final class TenantController extends BaseController
                     <div class="muted">Starting from</div>
                     <div class="stats">' . $this->escape($planCurrency) . ' ' . $this->escape($planPrice) . '</div>
                     <div>Monthly</div>
-                    <div class="storefront-product-meta">Base Bandwidth: ' . (int) ($plan['base_bandwidth_mbps'] ?? 0) . ' Mbps</div>
+                    <div class="storefront-product-meta">Base Bandwidth: ' . (int) ($plan['default_bandwidth_limit_mbps'] ?? 0) . ' Mbps</div>
                     <div class="muted">Traffic Reset ' . $this->escape($planCurrency) . ' ' . $this->escape($resetPrice) . '</div>
                     <div class="muted">Included Traffic: ' . (int) ($plan['default_traffic_limit_gb'] ?? 0) . ' GB</div>
                     <div class="muted">Included Clients: ' . $includedClients . '</div>
