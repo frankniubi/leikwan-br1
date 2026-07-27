@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.07.27.1"
+AGENT_VERSION = "2026.07.28.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -3747,6 +3747,9 @@ WantedBy=multi-user.target
             desired_line = desired.get(line_id)
             local_health = health.get(line_id)
             checked_at = self._parse_utc_timestamp((local_health or {}).get("checked_at"))
+            udp_status = str((local_health or {}).get("udp_status", "") or "")
+            udp_probe_configured = bool(str((desired_line or {}).get("udp_probe_method", "") or "").strip())
+            udp_healthy = udp_status == "healthy" or (not udp_probe_configured and udp_status == "unknown")
             required_statuses_healthy = (
                 isinstance(desired_line, dict)
                 and isinstance(local_health, dict)
@@ -3755,7 +3758,7 @@ WantedBy=multi-user.target
                 and hmac.compare_digest(str(local_health.get("config_sha256", "") or ""), expected_hash)
                 and str(local_health.get("service_state", "") or "") == "active"
                 and ("tcp" not in transport or str(local_health.get("tcp_status", "") or "") == "healthy")
-                and ("udp" not in transport or str(local_health.get("udp_status", "") or "") == "healthy")
+                and ("udp" not in transport or udp_healthy)
                 and checked_at is not None
                 and checked_at >= now - health_max_age
                 and checked_at <= now + 300

@@ -199,6 +199,23 @@ class SlaveLeigodForwardPublishTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not healthy"):
             self.publish(agent, self.payload(candidates, mode="single"))
 
+    def test_tcp_udp_allows_unknown_only_when_udp_probe_is_optional(self):
+        agent, _root = self.make_agent()
+        candidates = [self.candidate(451, 10, 10)]
+        self.seed_health(agent, candidates)
+        payload = self.payload(candidates, mode="single")
+        payload["transport_mode"] = "tcp+udp"
+
+        self.publish(agent, payload)
+
+        desired = agent.load_leigod_desired_lines()
+        desired[0]["udp_probe_method"] = "dns"
+        desired[0]["udp_probe_host"] = "223.5.5.5"
+        desired[0]["udp_probe_port"] = 53
+        agent.save_leigod_desired_lines(desired)
+        with self.assertRaisesRegex(RuntimeError, "not healthy"):
+            self.publish(agent, payload)
+
     def test_suspend_and_destroy_remove_relay_runtime_files(self):
         agent, _root = self.make_agent()
         candidates = [self.candidate(451, 10, 10)]
