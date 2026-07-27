@@ -17,20 +17,28 @@ final class LeigodLineCatalogService
     /** @return array<int, array<string, mixed>> */
     public function listLines(): array
     {
+        $maxAge = max(15, min(3600, $this->config->getInt('LEIGOD_LINE_HEALTH_MAX_AGE_SECONDS', 180)));
+        $now = time();
         $healthByLine = [];
         foreach ($this->db->fetchAll(
-            'SELECT leigod_line_id,
+            'SELECT nllh.leigod_line_id,
                     SUM(CASE WHEN service_state = :tcp_active AND tcp_status = :tcp_healthy THEN 1 ELSE 0 END) AS tcp_healthy_nodes,
                     SUM(CASE WHEN service_state = :udp_active AND udp_status = :udp_healthy THEN 1 ELSE 0 END) AS udp_healthy_nodes,
                     MAX(checked_at) AS last_checked_at,
                     MAX(last_error) AS last_error
-             FROM node_leigod_line_health
-             GROUP BY leigod_line_id',
+             FROM node_leigod_line_health nllh
+             INNER JOIN leigod_lines ll ON ll.id = nllh.leigod_line_id
+             WHERE nllh.config_sha256 = ll.config_sha256
+               AND nllh.checked_at >= :health_cutoff
+               AND nllh.checked_at <= :health_future_limit
+             GROUP BY nllh.leigod_line_id',
             [
                 'tcp_active' => 'active',
                 'tcp_healthy' => 'healthy',
                 'udp_active' => 'active',
                 'udp_healthy' => 'healthy',
+                'health_cutoff' => gmdate('Y-m-d H:i:s', $now - $maxAge),
+                'health_future_limit' => gmdate('Y-m-d H:i:s', $now + 300),
             ]
         ) as $health) {
             $healthByLine[(int) ($health['leigod_line_id'] ?? 0)] = $health;
