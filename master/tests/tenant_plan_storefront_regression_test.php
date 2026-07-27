@@ -64,6 +64,10 @@ foreach ([
     }
 }
 
+if (preg_match('/\.storefront-products\s*\{[^}]*\balign-items:\s*start\s*;/s', $css) !== 1) {
+    fail('storefront product grid must top-align cards independently');
+}
+
 foreach ([
     '<section class="card" style="margin-top:20px;">',
     'style="display:flex;flex-direction:column;justify-content:space-between;min-height:340px;"',
