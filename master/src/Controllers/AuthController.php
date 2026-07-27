@@ -3,16 +3,27 @@ declare(strict_types=1);
 
 namespace Leikwan\Master\Controllers;
 
+use Leikwan\Master\Config;
+use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\PasswordResetService;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\KnowledgebaseService;
+use Leikwan\Master\Support\OidcClient;
 use Leikwan\Master\Support\TenantRegistrationService;
 use Leikwan\Master\Support\WhmcsIdentityService;
 
 final class AuthController extends BaseController
 {
+    private ?OidcClient $oidcClient;
+
+    public function __construct(Config $config, Database $db, ?OidcClient $oidcClient = null)
+    {
+        parent::__construct($config, $db);
+        $this->oidcClient = $oidcClient;
+    }
+
     public function home(Request $request, array $params): Response
     {
         $user = SessionAuth::currentUser($this->db);
@@ -83,6 +94,11 @@ final class AuthController extends BaseController
 
         $adminCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'admin'])['total'] ?? 0);
         $csrf = $this->escape(SessionAuth::csrfToken());
+        $oidcAction = '';
+        if ($this->oidcClient !== null && $this->oidcClient->isConfigured()) {
+            $providerName = $this->escape($this->oidcClient->providerName());
+            $oidcAction = '<a class="button secondary" href="/auth/oidc/start">Sign in with ' . $providerName . '</a>';
+        }
         $sideCard = $adminCount === 0
             ? '<section class="surface-card auth-side">
                 <span class="card-kicker">Setup</span>
@@ -119,9 +135,10 @@ final class AuthController extends BaseController
                       <input type="password" name="password" placeholder="Your password" required>
                     </div>
                   </div>
-                  <div class="actions">
-                    <button class="button" type="submit">Sign In</button>
-                    <a class="button ghost" href="/register">Create Account</a>
+                   <div class="actions">
+                     <button class="button" type="submit">Sign In</button>
+                     ' . $oidcAction . '
+                     <a class="button ghost" href="/register">Create Account</a>
                     <a class="button secondary" href="/">Back Home</a>
                   </div>
                 </form>

@@ -9,6 +9,7 @@ use Leikwan\Master\Controllers\AuthController;
 use Leikwan\Master\Controllers\ClientAgentController;
 use Leikwan\Master\Controllers\HealthController;
 use Leikwan\Master\Controllers\NodeController;
+use Leikwan\Master\Controllers\OidcController;
 use Leikwan\Master\Controllers\ServiceController;
 use Leikwan\Master\Controllers\SidecarAgentController;
 use Leikwan\Master\Controllers\TenantController;
@@ -24,8 +25,12 @@ use Leikwan\Master\Support\LeigodOnlyArtifactSourceBuildMap;
 use Leikwan\Master\Support\LeigodOnlyRolloutLockService;
 use Leikwan\Master\Support\LeigodOnlyRuntimeContractService;
 use Leikwan\Master\Support\MigrationRunner;
+use Leikwan\Master\Support\OidcClient;
+use Leikwan\Master\Support\OidcIdentityService;
+use Leikwan\Master\Support\OidcSessionStore;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\WhmcsClient;
+use Leikwan\Master\Support\WhmcsIdentityService;
 
 final class Bootstrap
 {
@@ -109,7 +114,19 @@ final class Bootstrap
     private function registerRoutes(): void
     {
         $health = new HealthController($this->config, $this->db);
-        $auth = new AuthController($this->config, $this->db);
+        $oidcClient = new OidcClient($this->config);
+        $oidcSessionStore = new OidcSessionStore();
+        $oidcIdentityService = new OidcIdentityService($this->db);
+        $whmcsIdentityService = new WhmcsIdentityService($this->config, $this->db);
+        $auth = new AuthController($this->config, $this->db, $oidcClient);
+        $oidc = new OidcController(
+            $this->config,
+            $this->db,
+            $oidcClient,
+            $oidcSessionStore,
+            $oidcIdentityService,
+            $whmcsIdentityService,
+        );
         $admin = new AdminController($this->config, $this->db, $this->provisioning, $this->leigodOnlyAdminServices());
         $whmcs = new WhmcsController($this->config, $this->db, $this->provisioning);
         $services = new ServiceController($this->config, $this->db, $this->provisioning);
@@ -122,6 +139,8 @@ final class Bootstrap
         $this->router->add('GET', '/', [$auth, 'home']);
         $this->router->add('GET', '/knowledgebase', [$auth, 'knowledgebasePage']);
         $this->router->add('GET', '/login', [$auth, 'loginPage']);
+        $this->router->add('GET', '/auth/oidc/start', [$oidc, 'start']);
+        $this->router->add('GET', '/auth/oidc/callback', [$oidc, 'callback']);
         $this->router->add('GET', '/register', [$auth, 'registerPage']);
         $this->router->add('GET', '/forgot-password', [$auth, 'forgotPasswordPage']);
         $this->router->add('POST', '/forgot-password', [$auth, 'requestPasswordReset']);
