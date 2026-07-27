@@ -67,6 +67,8 @@ assertOrdered("\$request->input('state', '')", "\$request->input('error', '')", 
 assertOrdered('$this->sessionStore->consume($state)', '$this->oidcClient->authenticateCallback($code, $flow)', $oidc, 'state must be consumed before code exchange');
 assertOrdered('$this->oidcClient->authenticateCallback($code, $flow)', '$this->identityService->login($claims)', $oidc, 'identity must be resolved after authentication');
 assertContains('$this->whmcsIdentityService->tryDirectBindForUser(', $oidc, 'OIDC login must attempt WHMCS direct binding');
+assertContains('$this->whmcsIdentityService->isConfigured()', $oidc, 'WHMCS direct binding must be conditional on configuration');
+assertOrdered('$this->whmcsIdentityService->isConfigured()', '$this->whmcsIdentityService->tryDirectBindForUser(', $oidc, 'WHMCS configuration must be checked before direct binding');
 assertOrdered('$this->whmcsIdentityService->tryDirectBindForUser(', 'SessionAuth::login($user)', $oidc, 'WHMCS binding attempt must complete before panel session login');
 assertOrdered('$this->identityService->login($claims)', 'SessionAuth::login($user)', $oidc, 'session login must use resolved identity');
 assertContains('catch (Throwable)', $oidc, 'callback must contain a safe failure path');
