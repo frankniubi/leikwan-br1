@@ -365,6 +365,7 @@ function renderShell(string $title, string $body): string
   <title>' . h($title) . '</title>
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260725">
+  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260727e">
 </head>
 <body class="pg-public">
   <div class="shell">
