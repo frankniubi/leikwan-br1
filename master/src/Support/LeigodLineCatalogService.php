@@ -748,7 +748,13 @@ final class LeigodLineCatalogService
             $configuration = $this->configurationForLine($row);
             $expectedHash = strtolower(trim((string) ($row['config_sha256'] ?? '')));
             $healthHash = strtolower(trim((string) ($row['health_config_sha256'] ?? '')));
-            $checkedAt = strtotime((string) ($row['checked_at'] ?? ''));
+            // Health DATETIME values are persisted in UTC regardless of the PHP host timezone.
+            $checkedDate = \DateTimeImmutable::createFromFormat(
+                '!Y-m-d H:i:s',
+                (string) ($row['checked_at'] ?? ''),
+                new \DateTimeZone('UTC')
+            );
+            $checkedAt = $checkedDate !== false ? $checkedDate->getTimestamp() : false;
             if ($configuration['state'] !== 'ready'
                 || preg_match('/^[a-f0-9]{64}$/', $healthHash) !== 1
                 || !hash_equals($expectedHash, $healthHash)

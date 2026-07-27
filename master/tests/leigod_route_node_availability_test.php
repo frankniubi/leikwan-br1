@@ -103,6 +103,8 @@ namespace {
         array_replace($base, ['route_id' => 8, 'node_id' => 12, 'combination_id' => 10, 'line_id' => 451, 'config_sha256' => $hash451, 'health_config_sha256' => $hash451, 'tcp_connect_ms' => 12]),
     ];
 
+    $originalTimezone = date_default_timezone_get();
+    date_default_timezone_set('Asia/Taipei');
     $catalog = new LeigodLineCatalogService(new Config($envPath), $db);
     $nodeIds = static fn(array $nodes): array => array_map(static fn(array $node): int => (int) ($node['id'] ?? 0), $nodes);
     assertAvailabilitySame([12], $nodeIds($catalog->eligibleNodesForRoute(9, 'tcp')), 'race eligible nodes');
@@ -139,6 +141,7 @@ namespace {
         }
     }
 
+    date_default_timezone_set($originalTimezone);
     @unlink($envPath);
     echo "ok\n";
 }
