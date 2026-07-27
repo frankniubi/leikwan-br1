@@ -12,7 +12,7 @@ $js = is_file($jsPath) ? (string) file_get_contents($jsPath) : '';
 foreach ([
     'class="bridge-home-hero"',
     'class="bridge-home-status"',
-    'class="bridge-home-metrics"',
+    'class="bridge-home-route-catalog"',
     'class="bridge-home-route"',
     'return $this->publicPage($this->displayBrandName(), $body, $user, \'bridge-home\');',
 ] as $required) {
@@ -27,16 +27,16 @@ foreach (['pg-home-proof-list', 'pg-home-entry-list', 'client_strategy', 'Latenc
     }
 }
 
-foreach (['SELECT COUNT(*) AS total FROM nodes WHERE status = :status', 'SELECT COUNT(*) AS total FROM sidecar_points', 'COUNT(DISTINCT region)'] as $query) {
-    if (!str_contains($auth, $query)) {
-        throw new RuntimeException('truthful homepage summary query missing ' . $query);
+foreach (['SELECT COUNT(*) AS total FROM nodes WHERE status = :status', 'SELECT COUNT(*) AS total FROM sidecar_points', 'COUNT(DISTINCT region)', 'bridge-home-metrics'] as $forbidden) {
+    if (str_contains($auth, $forbidden)) {
+        throw new RuntimeException('homepage still exposes live business data ' . $forbidden);
     }
 }
 
 foreach ([
     'publicPage(string $title, string $body, ?array $viewer = null, string $variant = \'default\')',
     "'bridge-home'",
-    '/assets/bridge-home.css?v=20260727d',
+    '/assets/bridge-home.css?v=20260727f',
     '/assets/signal-chamber.css?v=20260725',
     '/assets/signal-chamber.js?v=20260725',
     '$script = $isBridgeHome ? \'\' :',
