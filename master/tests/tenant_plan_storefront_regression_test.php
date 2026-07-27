@@ -13,6 +13,13 @@ if (!is_string($tenant) || $tenant === '') {
 }
 
 foreach ([
+    'storefront-shell',
+    'storefront-categories',
+    'storefront-products',
+    'storefront-product',
+    'storefront-product-price',
+    'storefront-order',
+    'action="/tenant/plans/purchase"',
     'Order Now',
     'Starting from',
     'default_client_online_device_limit',
@@ -29,9 +36,13 @@ foreach ([
 }
 
 foreach ([
+    '<section class="card" style="margin-top:20px;">',
+    'style="display:flex;flex-direction:column;justify-content:space-between;min-height:340px;"',
+    'style="align-items:flex-start;gap:22px;"',
+    'style="text-align:right;min-width:220px;"',
     '<label>Package</label>',
     '<select name="plan_id" required>',
-    '<h3>ø…”√Ã◊≤Õ</h3>',
+    '<h3>ÂèØÁî®Â•óÈ§ê</h3>',
     '<thead><tr><th>Name</th><th>Description</th><th>Base Bandwidth</th><th>Included Traffic</th><th>Monthly Base Fee</th><th>Bandwidth Add-on</th><th>Client Pricing</th><th>Traffic Reset Price</th></tr></thead>',
 ] as $forbidden) {
     if (str_contains($tenant, $forbidden)) {
