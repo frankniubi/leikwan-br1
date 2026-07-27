@@ -264,6 +264,39 @@ class SlaveLeigodForwardPublishTests(unittest.TestCase):
         self.assertEqual(10, selections[0]["selected_combination_id"])
         self.assertEqual(47, selections[0]["forward_id"])
 
+    def test_transport_change_restarts_instead_of_rejected_hup(self):
+        agent, _root = self.make_agent()
+        candidates = [self.candidate(451, 10, 10)]
+        self.seed_health(agent, candidates)
+        runtime = agent.validate_leigod_forward_payload(
+            "wstunnel-svc-2-316",
+            self.task(),
+            self.payload(candidates, mode="single"),
+            "127.0.0.1:48316",
+        )
+        assert runtime is not None
+        with mock.patch.object(agent, "ensure_backend_service"):
+            with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                with mock.patch.object(slave_agent_module.shutil, "which", return_value=None):
+                    agent.ensure_leigod_forward_runtime("wstunnel-svc-2-316", runtime)
+
+        changed = dict(runtime)
+        changed["runtime_config"] = dict(runtime["runtime_config"], transport="udp")
+        commands: list[str] = []
+        with mock.patch.object(agent, "ensure_backend_service"):
+            with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                with mock.patch.object(slave_agent_module.shutil, "which", return_value="/usr/bin/systemctl"):
+                    with mock.patch.object(
+                        slave_agent_module,
+                        "run_command",
+                        side_effect=lambda command, check=False: commands.append(command)
+                        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+                    ):
+                        agent.ensure_leigod_forward_runtime("wstunnel-svc-2-316", changed)
+
+        self.assertIn("systemctl restart wstunnel-svc-2-316-leigod-forward.service", commands)
+        self.assertNotIn("systemctl kill -s HUP wstunnel-svc-2-316-leigod-forward.service", commands)
+
 
 if __name__ == "__main__":
     unittest.main()

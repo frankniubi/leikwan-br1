@@ -16,6 +16,7 @@ final class LeigodOnlyArtifactSourceBuildMap
         $this->activationCritical = [
             'client_agent' => ['paths' => ['client-agent/client_agent.py'], 'route_path' => '/artifacts/client-agent.py', 'platform_family' => 'linux-bond'],
             'slave_agent' => ['paths' => ['slave-agent/slave_agent.py'], 'route_path' => '/artifacts/slave-agent.py', 'platform_family' => 'linux-bond'],
+            'leigod_forward_relay' => ['paths' => ['slave-agent/leigod_forward_relay.py'], 'route_path' => '/artifacts/leikwan-leigod-forward-relay.py', 'platform_family' => 'linux-bond'],
             'sidecar_agent' => ['paths' => ['sidecar-agent/sidecar_agent.py'], 'route_path' => '/artifacts/sidecar-agent.py', 'platform_family' => 'linux-bond'],
             'gost_linux_amd64' => ['paths' => ['artifacts/gost/gost_linux_amd64'], 'route_path' => '/artifacts/gost/gost_linux_amd64', 'platform_family' => 'linux-bond', 'immutable_provenance' => true],
             'leigod_linux_amd64' => ['paths' => ['artifacts/leigod/leigod-linux-amd64'], 'route_path' => '/artifacts/leigod/leigod-linux-amd64', 'platform_family' => 'linux-bond', 'immutable_provenance' => true],

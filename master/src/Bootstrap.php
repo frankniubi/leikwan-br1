@@ -273,6 +273,7 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/versions.json', [$artifacts, 'versionsManifest']);
         $this->router->add('GET', '/artifacts/slave-agent.py', [$artifacts, 'slaveAgent']);
         $this->router->add('GET', '/artifacts/leikwan-preconnect-relay.py', [$artifacts, 'slavePreconnectRelay']);
+        $this->router->add('GET', '/artifacts/leikwan-leigod-forward-relay.py', [$artifacts, 'leigodForwardRelay']);
         $this->router->add('GET', '/artifacts/slave-manifest.json', [$artifacts, 'slaveManifest']);
         $this->router->add('GET', '/artifacts/sidecar-manifest.json', [$artifacts, 'sidecarManifest']);
         $this->router->add('GET', '/artifacts/client-manifest.json', [$artifacts, 'clientManifest']);
@@ -284,6 +285,8 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/lguot/lguot_linux_amd64', [$artifacts, 'lguotBinary']);
         $this->router->add('GET', '/artifacts/install-forward-runtime.py', [$artifacts, 'installForwardRuntime']);
         $this->router->add('GET', '/artifacts/forward-strategy.py', [$artifacts, 'forwardStrategyHelper']);
+        $this->router->add('GET', '/artifacts/leikwan-tcp-race.py', [$artifacts, 'tcpRaceRuntime']);
+        $this->router->add('GET', '/artifacts/leikwan-udp-fanout.py', [$artifacts, 'udpFanoutRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-mptcp-client.py', [$artifacts, 'mptcpClientRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-uot.py', [$artifacts, 'uotRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-uot-bond.py', [$artifacts, 'uotBondRuntime']);
