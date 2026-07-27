@@ -43,8 +43,9 @@ CREATE TABLE node_leigod_line_health (
     checked_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     PRIMARY KEY (node_id, leigod_line_id),
-    CONSTRAINT fk_nllh_node FOREIGN KEY (node_id) REFERENCES nodes(id),
-    CONSTRAINT fk_nllh_line FOREIGN KEY (leigod_line_id) REFERENCES leigod_lines(id)
+    CONSTRAINT fk_nllh_node FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    CONSTRAINT fk_nllh_line FOREIGN KEY (leigod_line_id) REFERENCES leigod_lines(id),
+    INDEX idx_nllh_line_freshness (leigod_line_id, checked_at)
 );
 
 INSERT INTO leigod_lines (
