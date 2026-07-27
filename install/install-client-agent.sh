@@ -121,6 +121,10 @@ ensure_time_sync() {
 }
 
 current_installer_sha256() {
+  if [[ ! -f "$0" ]]; then
+    printf '\n'
+    return 0
+  fi
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$0" | awk '{print $1}'
     return 0
@@ -175,6 +179,11 @@ mkdir -p "$CONFIG_DIR" "$BIN_DIR" "$STATE_DIR"
 leikwan_protected_download() {
   local url="$1"
   local path="$2"
+  local proxy_url="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
+  if [[ -n "$proxy_url" ]]; then
+    curl -fsSL --proxy "$proxy_url" "$url" -o "$path"
+    return 0
+  fi
   python3 - "$url" "$path" <<'PY'
 import http.client
 import ipaddress

@@ -20,4 +20,15 @@ foreach (['/artifacts/versions.json', 'check_binary_current', '_vers_sha256', 'g
 }
 if (!str_contains($slave, 'skipping download')) fail('installer must short-circuit matching sha downloads');
 
+$clientInstaller = $sources['install-client-agent'];
+foreach ([
+    'proxy_url="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"',
+    'curl -fsSL --proxy "$proxy_url" "$url" -o "$path"',
+    'if [[ ! -f "$0" ]]; then',
+] as $snippet) {
+    if (!str_contains($clientInstaller, $snippet)) {
+        fail('install-client-agent missing proxied one-click support: ' . $snippet);
+    }
+}
+
 echo "ok\n";
