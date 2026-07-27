@@ -772,12 +772,13 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
         for index, endpoint in enumerate(endpoints):
             host = endpoint["host"]
             port = endpoint["port"]
+            endpoint_target = str(endpoint.get("runtime_target", target) or target)
             tcp_back = base + index
             udp_back = base + 200 + index
-            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
+            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
             tcp_targets.append(f"127.0.0.1:{tcp_back}")
             if transport in ("udp", "tcp+udp"):
-                lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{udp_back}:{target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
+                lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{udp_back}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
                 udp_targets.append(f"127.0.0.1:{udp_back}")
         if transport in ("tcp", "tcp+udp"):
             tcp_race_listen_port = rate_tcp_port if speed_limit_mbps else listen_port
@@ -1400,16 +1401,17 @@ WantedBy=multi-user.target
         raise RuntimeError(f"forward {forward_id} has no usable endpoints")
 
     endpoint = endpoints[0]
+    endpoint_target = str(endpoint.get("runtime_target", target) or target)
     rate_base = rate_limit_base_port(forward_id)
     internal_tcp_port = rate_base
     internal_udp_port = rate_base + 1
     if speed_limit_mbps:
         lines = ["#!/usr/bin/env bash", "set -euo pipefail", "trap 'kill $(jobs -p) 2>/dev/null || true' EXIT"]
         if transport in ("tcp", "tcp+udp"):
-            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{internal_tcp_port}:{target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
+            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{internal_tcp_port}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
             lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py tcp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{internal_tcp_port} --mbps {speed_limit_mbps} &")
         if transport in ("udp", "tcp+udp"):
-            lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{internal_udp_port}:{target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
+            lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{internal_udp_port}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
             lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py udp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{internal_udp_port} --mbps {speed_limit_mbps} &")
         lines.append("wait -n")
         start_script_path = f"/usr/local/bin/leikwan-client-start-{forward_id}.sh"
@@ -1436,9 +1438,9 @@ WantedBy=multi-user.target
 
     listen_flags: list[str] = []
     if transport in ("tcp", "tcp+udp"):
-        listen_flags.append(f"-L tcp://[::]:{listen_port}:{target}")
+        listen_flags.append(f"-L tcp://[::]:{listen_port}:{endpoint_target}")
     if transport in ("udp", "tcp+udp"):
-        listen_flags.append(f"-L udp://[::]:{listen_port}:{target}?timeout_sec=0")
+        listen_flags.append(f"-L udp://[::]:{listen_port}:{endpoint_target}?timeout_sec=0")
     exec_start = f"/usr/local/bin/wstunnel client {' '.join(listen_flags)} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']}"
     service_unit = f"""[Unit]
 Description=Leikwan Client {forward_id}
