@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.05.20.1"
+INSTALLER_VERSION="2026.07.27.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 TOKEN=""
@@ -32,6 +32,14 @@ CLOUDFLARE_EMAIL_SET=0
 CLOUDFLARE_GLOBAL_KEY=""
 CLOUDFLARE_GLOBAL_KEY_SET=0
 FORCE_REGISTER=0
+
+current_installer_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$0" | awk '{print $1}'
+    return 0
+  fi
+  shasum -a 256 "$0" | awk '{print $1}'
+}
 
 running_kernel_has_mptcp() {
   [[ -e /proc/sys/net/mptcp/enabled ]]
@@ -141,6 +149,21 @@ download_atomic() {
   curl -fsSL "$url" -o "$tmp_path"
   chmod 0755 "$tmp_path"
   mv "$tmp_path" "$path"
+}
+
+download_manifest_artifact() {
+  local key="$1" url="$2" path="$3" expected_sha256
+  expected_sha256="$(_vers_sha256 "$key")"
+  if check_binary_current "$path" "$expected_sha256"; then
+    echo "  $key up to date, skipping download"
+    return 0
+  fi
+  download_atomic "$url" "$path"
+  if [[ -n "$expected_sha256" ]] && ! check_binary_current "$path" "$expected_sha256"; then
+    rm -f "$path"
+    echo "downloaded artifact sha256 mismatch: $key" >&2
+    return 1
+  fi
 }
 
 # Returns 0 if local file exists and sha256 matches expected; 1 otherwise.
@@ -279,10 +302,12 @@ if [[ "$MODE" != "install" ]]; then
   fi
   if [[ "$MODE" == "check" ]]; then
     CURRENT_INSTALLER_VERSION="$(json_config_value installer_version)"
-    if [[ "$CURRENT_INSTALLER_VERSION" == "$INSTALLER_VERSION" ]]; then
-      echo "up-to-date: installer_version=$CURRENT_INSTALLER_VERSION"
+    CURRENT_INSTALLER_SHA256="$(json_config_value installer_sha256)"
+    TARGET_INSTALLER_SHA256="$(current_installer_sha256)"
+    if [[ "$CURRENT_INSTALLER_VERSION" == "$INSTALLER_VERSION" && "$CURRENT_INSTALLER_SHA256" == "$TARGET_INSTALLER_SHA256" ]]; then
+      echo "up-to-date: installer_version=$CURRENT_INSTALLER_VERSION installer_sha256=$CURRENT_INSTALLER_SHA256"
     else
-      echo "update-available: installer_version=${CURRENT_INSTALLER_VERSION:-unknown} target=$INSTALLER_VERSION"
+      echo "update-available: installer_version=${CURRENT_INSTALLER_VERSION:-unknown} target=$INSTALLER_VERSION installer_sha256=${CURRENT_INSTALLER_SHA256:-unknown} target_sha256=$TARGET_INSTALLER_SHA256"
     fi
     exit 0
   fi
@@ -344,6 +369,7 @@ else
   download_atomic "$ARTIFACT_BASE/artifacts/slave-agent.py" "$BIN_DIR/leikwan-slave-agent.py"
 fi
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-preconnect-relay.py" "$BIN_DIR/leikwan-preconnect-relay.py"
+download_manifest_artifact leigod_forward_relay "$ARTIFACT_BASE/artifacts/leikwan-leigod-forward-relay.py" "$BIN_DIR/leikwan-leigod-forward-relay.py"
 download_atomic "$ARTIFACT_BASE/artifacts/slave-agent-update.sh" "$BIN_DIR/leikwan-slave-update"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
 
@@ -419,7 +445,8 @@ if running_kernel_has_mptcp; then
   SUPPORTS_MPTCP=true
 fi
 
-python3 - <<'PY' "$CONFIG_PATH" "$MASTER_URL" "$ARTIFACT_BASE" "$TOKEN" "$GROUP_KEY" "$REGION" "$PUBLIC_IP" "$SUPPORTS_MPTCP" "$TLS_MODE" "$TLS_DOMAIN" "$TLS_EMAIL" "$TLS_WILDCARD" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "$CLOUDFLARE_EMAIL" "$CLOUDFLARE_GLOBAL_KEY" "$INSTALLER_VERSION"
+INSTALLER_SHA256="$(current_installer_sha256)"
+python3 - <<'PY' "$CONFIG_PATH" "$MASTER_URL" "$ARTIFACT_BASE" "$TOKEN" "$GROUP_KEY" "$REGION" "$PUBLIC_IP" "$SUPPORTS_MPTCP" "$TLS_MODE" "$TLS_DOMAIN" "$TLS_EMAIL" "$TLS_WILDCARD" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "$CLOUDFLARE_EMAIL" "$CLOUDFLARE_GLOBAL_KEY" "$INSTALLER_VERSION" "$INSTALLER_SHA256"
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 master_url = sys.argv[2]
@@ -438,6 +465,7 @@ tls_key_path = sys.argv[14]
 cloudflare_email = sys.argv[15]
 cloudflare_global_key = sys.argv[16]
 installer_version = sys.argv[17]
+installer_sha256 = sys.argv[18]
 payload = {}
 if path.exists():
     try:
@@ -468,6 +496,7 @@ payload.update({
     "leigod_bin": payload.get("leigod_bin", "/usr/local/bin/leigod-linux-amd64"),
     "log_level": payload.get("log_level", "INFO"),
     "installer_version": installer_version,
+    "installer_sha256": installer_sha256,
 })
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

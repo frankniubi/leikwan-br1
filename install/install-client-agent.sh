@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.07.25.1"
+INSTALLER_VERSION="2026.07.27.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -452,6 +452,44 @@ download_atomic() {
   mv "$tmp_path" "$path"
 }
 
+check_binary_current() {
+  local local_path="$1" expected_sha256="$2" actual
+  [[ -f "$local_path" && -n "$expected_sha256" ]] || return 1
+  actual=$(sha256sum "$local_path" 2>/dev/null | awk '{print $1}')
+  [[ "$actual" == "$expected_sha256" ]]
+}
+
+_vers_sha256() {
+  python3 -c "
+import json, sys
+try:
+    entry = json.loads(sys.argv[1]).get(sys.argv[2])
+    print(entry.get('sha256', '') if isinstance(entry, dict) else '')
+except Exception:
+    print('')
+" "$_VERSIONS_JSON" "$1" 2>/dev/null || echo ''
+}
+
+download_manifest_artifact() {
+  local key="$1" url="$2" path="$3" expected_sha256
+  expected_sha256="$(_vers_sha256 "$key")"
+  if check_binary_current "$path" "$expected_sha256"; then
+    echo "  $key up to date, skipping download"
+    return 0
+  fi
+  download_atomic "$url" "$path"
+  if [[ -n "$expected_sha256" ]] && ! check_binary_current "$path" "$expected_sha256"; then
+    rm -f "$path"
+    echo "downloaded artifact sha256 mismatch: $key" >&2
+    return 1
+  fi
+}
+
+_VERSIONS_PATH="$STATE_DIR/versions.json.new"
+leikwan_protected_download "$ARTIFACT_BASE/artifacts/versions.json" "$_VERSIONS_PATH"
+_VERSIONS_JSON="$(cat "$_VERSIONS_PATH")"
+rm -f "$_VERSIONS_PATH"
+
 download_atomic "$ARTIFACT_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
 download_atomic "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
 if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
@@ -459,6 +497,8 @@ if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
 fi
 download_atomic "$ARTIFACT_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
 download_atomic "$ARTIFACT_BASE/artifacts/forward-strategy.py" "$BIN_DIR/forward_strategy.py"
+download_manifest_artifact tcp_race_runtime "$ARTIFACT_BASE/artifacts/leikwan-tcp-race.py" "$BIN_DIR/leikwan-tcp-race.py"
+download_manifest_artifact udp_fanout_runtime "$ARTIFACT_BASE/artifacts/leikwan-udp-fanout.py" "$BIN_DIR/leikwan-udp-fanout.py"
 cat > "$BIN_DIR/leikwan-client-strategy" <<WRAPPER
 #!/usr/bin/env bash
 exec /usr/bin/python3 "$BIN_DIR/forward_strategy.py" "\$@"

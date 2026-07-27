@@ -203,6 +203,27 @@ class SlaveLeigodLineManagementTests(unittest.TestCase):
         self.assertEqual("failed", health["service_state"])
         self.assertEqual("config_hash_mismatch", health["last_error"])
 
+    def test_line_template_uses_configured_systemd_directory(self):
+        agent, root = self.make_agent()
+        commands: list[str] = []
+        with mock.patch.object(slave_agent_module.shutil, "which", return_value="/usr/bin/systemctl"):
+            with mock.patch.object(agent, "systemd_is_active", return_value=False):
+                with mock.patch.object(
+                    slave_agent_module,
+                    "run_command",
+                    side_effect=lambda command, check=False: commands.append(command)
+                    or SimpleNamespace(returncode=0, stdout="", stderr=""),
+                ):
+                    agent.apply_management_state(
+                        {"leigod_session_json": "{}", "leigod_lines": [self.line()]},
+                        schedule_updates=False,
+                    )
+
+        unit_path = root / "systemd" / "leigod@.service"
+        self.assertTrue(unit_path.exists())
+        self.assertIn(str(pathlib.Path(agent.config["leigod_bin"])), unit_path.read_text(encoding="utf-8"))
+        self.assertIn("systemctl daemon-reload", commands)
+
     def test_complete_tcp_and_udp_probes_produce_truthful_health(self):
         agent, _root = self.make_agent()
         line = self.line()

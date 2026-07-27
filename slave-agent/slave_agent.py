@@ -2276,7 +2276,7 @@ class SlaveAgent:
             except OSError:
                 pass
             if changed:
-                logging.info("leigod session.json updated (%d bytes)", len(session_json))
+                logging.info("leigod session.json updated")
         except OSError as exc:  # noqa: BLE001
             logging.warning("failed to write leigod session.json: %s", exc)
 
@@ -3364,6 +3364,7 @@ WantedBy=multi-user.target
         desired_agent_version = str(management.get("desired_agent_version", "") or "").strip()
         desired_agent_sha256 = str(management.get("desired_agent_sha256", "") or "").strip().lower()
         desired_installer_version = str(management.get("desired_installer_version", "") or "").strip()
+        desired_installer_sha256 = str(management.get("desired_installer_sha256", "") or "").strip().lower()
         mismatches: list[str] = []
 
         if desired_agent_version and desired_agent_version != AGENT_VERSION:
@@ -3377,6 +3378,10 @@ WantedBy=multi-user.target
         local_installer_version = str(self.config.get("installer_version", "") or "").strip()
         if desired_installer_version and local_installer_version != desired_installer_version:
             mismatches.append(f"installer={desired_installer_version}")
+
+        local_installer_sha256 = str(self.config.get("installer_sha256", "") or "").strip().lower()
+        if desired_installer_sha256 and local_installer_sha256 != desired_installer_sha256:
+            mismatches.append(f"installer_sha256={desired_installer_sha256}")
 
         if mismatches == []:
             return ""
@@ -3875,12 +3880,19 @@ WantedBy=multi-user.target
         runtime["config_path"] = str(config_path)
         runtime["state_path"] = str(state_path)
         config_changed = not config_path.exists()
+        listener_restart_required = False
         if not config_changed:
             try:
                 current = json.loads(config_path.read_text(encoding="utf-8"))
                 config_changed = current != runtime.get("runtime_config")
+                if isinstance(current, dict) and isinstance(runtime.get("runtime_config"), dict):
+                    listener_restart_required = any(
+                        current.get(key) != runtime["runtime_config"].get(key)
+                        for key in ("listen_host", "listen_port", "transport")
+                    )
             except (OSError, json.JSONDecodeError):
                 config_changed = True
+                listener_restart_required = True
         self.write_json(config_path, dict(runtime["runtime_config"]))
         with contextlib.suppress(OSError):
             os.chmod(config_path, 0o600)
@@ -3893,7 +3905,10 @@ WantedBy=multi-user.target
             expected_exec_substring="leikwan-leigod-forward-relay.py",
         )
         if config_changed and was_active and not unit_changed and shutil.which("systemctl"):
-            run_command(f"systemctl kill -s HUP {relay_service}.service", check=False)
+            if listener_restart_required:
+                run_command(f"systemctl restart {relay_service}.service", check=False)
+            else:
+                run_command(f"systemctl kill -s HUP {relay_service}.service", check=False)
 
     def remove_leigod_forward_runtime(
         self,
@@ -5475,7 +5490,7 @@ WantedBy=multi-user.target
             "[Install]\n"
             "WantedBy=multi-user.target\n"
         )
-        unit_path = Path("/etc/systemd/system/leigod@.service")
+        unit_path = self.service_unit_path("leigod@")
         unit_changed = self.write_text_if_changed(unit_path, unit_body)
         if unit_changed:
             run_command("systemctl daemon-reload", check=False)
