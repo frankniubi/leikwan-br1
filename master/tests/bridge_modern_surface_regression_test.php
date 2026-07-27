@@ -29,6 +29,7 @@ foreach ([
     '.kb-shell',
     '.pg-sheet',
     '@media (max-width: 900px)',
+    'flex-direction: column !important',
     '--bridge-modern-page: #ffffff',
     'border-radius: 999px',
 ] as $required) {
