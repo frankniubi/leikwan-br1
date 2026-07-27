@@ -16,27 +16,26 @@ final class AuthController extends BaseController
     public function home(Request $request, array $params): Response
     {
         $user = SessionAuth::currentUser($this->db);
-        $adminCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'admin'])['total'] ?? 0);
-        $onlineSlaves = (int) ($this->db->fetchOne(
-            'SELECT COUNT(*) AS total FROM nodes WHERE status = :status',
-            ['status' => 'active']
-        )['total'] ?? 0);
-        $sidecarEndpoints = (int) ($this->db->fetchOne(
-            'SELECT COUNT(*) AS total FROM sidecar_points'
-        )['total'] ?? 0);
-        $regions = (int) ($this->db->fetchOne(
-            'SELECT COUNT(DISTINCT region) AS total FROM nodes WHERE status = :status',
-            ['status' => 'active']
-        )['total'] ?? 0);
+        $routeCatalog = [
+            ['index' => '01', 'label' => '沪日', 'destination' => 'TOKYO', 'note' => '东亚 · 东京'],
+            ['index' => '02', 'label' => '沪韩', 'destination' => 'SEOUL', 'note' => '东亚 · 首尔'],
+            ['index' => '03', 'label' => '沪德', 'destination' => 'FRANKFURT', 'note' => '欧洲 · 法兰克福'],
+            ['index' => '04', 'label' => '沪俄', 'destination' => 'MOSCOW', 'note' => '欧亚 · 莫斯科'],
+            ['index' => '05', 'label' => '沪港', 'destination' => 'HONG KONG', 'note' => '大湾区 · 香港'],
+        ];
+        $routeCards = '';
+        foreach ($routeCatalog as $route) {
+            $routeCards .= '<div class="bridge-home-route-card">'
+                . '<span class="bridge-home-route-index">' . $this->escape($route['index']) . '</span>'
+                . '<strong>' . $this->escape($route['label']) . '</strong>'
+                . '<span class="bridge-home-route-destination">SHANGHAI &rarr; ' . $this->escape($route['destination']) . '</span>'
+                . '<small>' . $this->escape($route['note']) . '</small>'
+                . '</div>';
+        }
 
         $consoleHref = $user === null
             ? '/login'
             : $this->escape($this->dashboardPathForUser($user));
-        $setupState = $adminCount === 0 ? '待完成初始化' : '运行正常';
-        $setupDetail = $adminCount === 0 ? '尚未配置管理员账户' : '控制平面已准备就绪';
-        $setupNote = $adminCount === 0
-            ? '<div class="bridge-home-notice"><strong>初始化提醒</strong><span>创建第一个管理员后即可打开完整控制台。</span></div>'
-            : '';
 
         $body = '
             <section class="bridge-home-hero" aria-labelledby="bridge-home-title">
@@ -52,25 +51,27 @@ final class AuthController extends BaseController
                   <span>CLIENT</span><i aria-hidden="true">/</i><span>SLAVE</span><i aria-hidden="true">/</i><span>SIDECAR</span><i aria-hidden="true">/</i><span>TARGET</span>
                 </div>
               </div>
-              <aside class="bridge-home-status" aria-label="控制平面状态">
-                <div class="bridge-home-status-head"><span>CONTROL PLANE</span><span class="bridge-home-status-mark" aria-hidden="true"></span></div>
-                <strong>' . $this->escape($setupState) . '</strong>
-                <p>' . $this->escape($setupDetail) . '</p>
+              <aside class="bridge-home-status" aria-label="固定路线目录">
+                <div class="bridge-home-status-head"><span>ROUTE CATALOG</span><span class="bridge-home-status-mark" aria-hidden="true"></span></div>
+                <strong>上海出发</strong>
+                <p>沪日、沪韩、沪德、沪俄、沪港</p>
                 <div class="bridge-home-status-rule"></div>
-                <div class="bridge-home-status-meta"><span>数据快照</span><span>LIVE</span></div>
+                <div class="bridge-home-status-meta"><span>ROUTE SET</span><span>CURATED</span></div>
               </aside>
             </section>
-            <section class="bridge-home-metrics" aria-label="服务摘要">
-              <div class="bridge-home-metric"><span>活跃节点</span><strong>' . $onlineSlaves . '</strong><small>当前可用</small></div>
-              <div class="bridge-home-metric"><span>覆盖区域</span><strong>' . $regions . '</strong><small>活动区域</small></div>
-              <div class="bridge-home-metric"><span>边缘端点</span><strong>' . $sidecarEndpoints . '</strong><small>已登记端点</small></div>
-              <div class="bridge-home-metric"><span>管理员账户</span><strong>' . $adminCount . '</strong><small>控制平面权限</small></div>
+            <section class="bridge-home-route-catalog" aria-labelledby="route-catalog-title">
+              <header class="bridge-home-catalog-heading">
+                <span>01 / ROUTE CATALOG</span>
+                <h2 id="route-catalog-title">从上海出发，连接五个方向。</h2>
+                <p>按目的地整理基础线路，让每个方向都清晰、易读、可进入控制台继续配置。</p>
+              </header>
+              <div class="bridge-home-route-grid" aria-label="沪日、沪韩、沪德、沪俄、沪港固定线路目录">' . $routeCards . '</div>
             </section>
             <section id="network" class="bridge-home-network" aria-labelledby="network-title">
               <header class="bridge-home-section-heading">
-                <span>01 / 传输路径</span>
-                <h2 id="network-title">一条服务，多条可用路径。</h2>
-                <p>客户端在本地选择路径，控制平面负责节点、聚合端点和目标服务的可见性。</p>
+                <span>02 / 传输路径</span>
+                <h2 id="network-title">一条服务，多条路径。</h2>
+                <p>客户端在本地选择方向，控制平面负责路径编排、聚合端点和目标服务的可见性。</p>
               </header>
               <div class="bridge-home-route" role="img" aria-label="客户端、Slave 节点、Sidecar、目标服务的传输路径">
                 <div class="bridge-home-route-node"><span class="bridge-home-route-index">01</span><span><strong>客户端</strong><small>本地选择路径</small></span></div>
@@ -81,7 +82,7 @@ final class AuthController extends BaseController
             </section>
             <section class="bridge-home-footer-grid">
               <div class="bridge-home-footer-copy">
-                <span>02 / 运行原则</span>
+                <span>03 / 运行原则</span>
                 <h2>每条路径都应该能被解释。</h2>
                 <p>节点状态、端点配置和服务拓扑集中在一个控制平面内，方便排查、调整和复核。</p>
               </div>
@@ -89,8 +90,7 @@ final class AuthController extends BaseController
                 <a href="' . $consoleHref . '"><span>进入控制台</span><span aria-hidden="true">&rarr;</span></a>
                 <a href="/knowledgebase"><span>打开知识库</span><span aria-hidden="true">&rarr;</span></a>
               </div>
-            </section>
-            ' . $setupNote;
+            </section>';
 
         return $this->publicPage($this->displayBrandName(), $body, $user, 'bridge-home');
     }
