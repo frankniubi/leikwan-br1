@@ -167,6 +167,9 @@ final class Bootstrap
         $this->router->add('POST', '/admin/republish/client/{id}', [$admin, 'republishForClient']);
         $this->router->add('GET', '/admin/cf-location-groups', [$admin, 'cfLocationGroupsPage']);
         $this->router->add('POST', '/admin/cf-location-groups', [$admin, 'saveCfLocationGroup']);
+        $this->router->add('GET', '/admin/leigod-lines', [$admin, 'leigodLinesPage']);
+        $this->router->add('POST', '/admin/leigod-lines', [$admin, 'saveLeigodLine']);
+        $this->router->add('POST', '/admin/leigod-lines/{id}/delete', [$admin, 'deleteLeigodLine']);
         $this->router->add('GET', '/admin/forward-combinations', [$admin, 'forwardCombinationsPage']);
         $this->router->add('POST', '/admin/forward-combinations', [$admin, 'saveForwardCombination']);
         $this->router->add('GET', '/admin/forward-routes', [$admin, 'forwardRoutesPage']);
