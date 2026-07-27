@@ -71,6 +71,7 @@ file_put_contents($envPath, implode("\n", [
     'OIDC_PROVIDER_NAME=Example Identity',
     'OIDC_ISSUER_URL=https://issuer.example',
     'OIDC_DISCOVERY_URL=https://issuer.example/.well-known/openid-configuration',
+    'OIDC_USERINFO_URL=https://issuer.example/userinfo-adapter',
     'OIDC_CLIENT_ID=client-123',
     'OIDC_CLIENT_SECRET=super-secret',
     'OIDC_REDIRECT_URI=https://panel.example/auth/oidc/callback',
@@ -143,7 +144,7 @@ $httpClient = static function (string $method, string $url, array $options) use 
             'e' => base64UrlEncode($details['rsa']['e']),
         ]]], JSON_THROW_ON_ERROR)];
     }
-    if ($url === 'https://issuer.example/userinfo') {
+    if ($url === 'https://issuer.example/userinfo-adapter') {
         assertSame('Bearer access-token', $options['headers']['Authorization'] ?? null, 'userinfo bearer token');
         return ['status' => 200, 'body' => json_encode($userinfoPayload, JSON_THROW_ON_ERROR)];
     }
@@ -235,6 +236,17 @@ $scopeQuery = [];
 parse_str((string) parse_url($scopeClient->authorizationUrl($flow + ['code_challenge' => 'challenge-value']), PHP_URL_QUERY), $scopeQuery);
 assertTrue(in_array('openid', preg_split('/\s+/', (string) ($scopeQuery['scope'] ?? '')) ?: [], true), 'authorization scope must always include openid');
 
+$invalidUserinfoPath = tempnam(sys_get_temp_dir(), 'lw-oidc-userinfo-');
+if ($invalidUserinfoPath === false) {
+    fail('failed to create userinfo override config');
+}
+file_put_contents(
+    $invalidUserinfoPath,
+    str_replace('OIDC_USERINFO_URL=https://issuer.example/userinfo-adapter', 'OIDC_USERINFO_URL=http://issuer.example/userinfo', (string) file_get_contents($envPath))
+);
+$invalidUserinfoClient = new OidcClient(new Config($invalidUserinfoPath));
+assertTrue(!$invalidUserinfoClient->isConfigured(), 'userinfo override must use HTTPS');
+
 $clientSource = (string) file_get_contents(__DIR__ . '/../src/Support/OidcClient.php');
 assertTrue(str_contains($clientSource, "'follow_location' => 0"), 'stream HTTP fallback must reject redirects');
 
@@ -242,4 +254,5 @@ assertTrue(str_contains($clientSource, "'follow_location' => 0"), 'stream HTTP f
 @unlink($badConfigPath);
 @unlink($missingSecretPath);
 @unlink($scopeConfigPath);
+@unlink($invalidUserinfoPath);
 echo "ok\n";

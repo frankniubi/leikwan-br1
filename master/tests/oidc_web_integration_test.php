@@ -72,6 +72,8 @@ assertOrdered('$this->whmcsIdentityService->isConfigured()', '$this->whmcsIdenti
 assertOrdered('$this->whmcsIdentityService->tryDirectBindForUser(', 'SessionAuth::login($user)', $oidc, 'WHMCS binding attempt must complete before panel session login');
 assertOrdered('$this->identityService->login($claims)', 'SessionAuth::login($user)', $oidc, 'session login must use resolved identity');
 assertContains('catch (Throwable)', $oidc, 'callback must contain a safe failure path');
+assertContains('catch (Throwable $throwable)', $oidc, 'callback failures must retain the exception for server-side diagnostics');
+assertContains("error_log(sprintf('OIDC callback failed: %s (%s)'", $oidc, 'callback failures must write a redacted server-side diagnostic');
 assertContains("SessionAuth::flash('error', 'Unable to sign in with the identity provider. Please try again.')", $oidc, 'failure must use a safe friendly message');
 assertContains("Response::redirect('/login')", $oidc, 'failure must return to login');
 if (str_contains($oidc, 'super-secret') || preg_match('/(?:token|code|body)\\s*=>\\s*\\$?(?:token|code|body)/i', $oidc) === 1) {
@@ -107,6 +109,7 @@ foreach ([
     'OIDC_PROVIDER_NAME=',
     'OIDC_ISSUER_URL=',
     'OIDC_DISCOVERY_URL=',
+    'OIDC_USERINFO_URL=',
     'OIDC_CLIENT_ID=',
     'OIDC_CLIENT_SECRET=',
     'OIDC_REDIRECT_URI=',
