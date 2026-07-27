@@ -640,39 +640,40 @@ final class TenantController extends BaseController
             $maxClientProfiles = max(1, (int) ($plan['max_client_profiles'] ?? 1));
             $deviceLimit = max(1, (int) ($plan['default_client_online_device_limit'] ?? 1));
             $inlineForm = $isExpanded
-                ? '<form method="post" action="/tenant/plans/purchase" style="margin-top:16px;">
+                ? '<form class="storefront-order-form" method="post" action="/tenant/plans/purchase">
                     <input type="hidden" name="csrf_token" value="' . $csrf . '">
                     <input type="hidden" name="plan_id" value="' . $planId . '">
                     <div class="form-grid">
                       <div class="field"><label>Service Name</label><input type="text" name="service_name" placeholder="Optional. Leave empty to auto-generate a name."></div>
                       <div class="field"><label>Bandwidth Mbps</label><input type="number" min="1" name="bandwidth_limit_mbps" placeholder="Optional. Leave empty to use the package base bandwidth."></div>
                     </div>
-                    <div class="actions"><button class="button" type="submit">Purchase Package</button><a class="button secondary" href="/tenant/plans">Cancel</a></div>
+                    <div class="actions"><button class="button storefront-order" type="submit">Purchase Package</button><a class="button secondary" href="/tenant/plans">Cancel</a></div>
                   </form>'
-                : '<div class="actions" style="margin-top:18px;"><a class="button" href="/tenant/plans?buy=' . $planId . '#plan-' . $planId . '">Order Now</a></div>';
+                : '<div class="storefront-order-actions"><a class="button storefront-order" href="/tenant/plans?buy=' . $planId . '#plan-' . $planId . '">Order Now</a></div>';
 
-            $planCards .= '<section class="card" id="plan-' . $planId . '" style="display:flex;flex-direction:column;justify-content:space-between;min-height:340px;">
-                <div class="grid two storefront-card-head" style="align-items:flex-start;gap:22px;">
-                  <div>
-                    <h3 style="font-size:2rem;margin-bottom:14px;">' . $this->escape((string) ($plan['name'] ?? 'Plan')) . '</h3>
+            $planCards .= '<article class="storefront-product" id="plan-' . $planId . '">
+                <header class="storefront-product-header"><h3>' . $this->escape((string) ($plan['name'] ?? 'Plan')) . '</h3></header>
+                <div class="storefront-product-body">
+                  <div class="storefront-product-features">
                     ' . $this->tenantPlanFeatureListHtml($plan) . '
                   </div>
-                  <div class="storefront-price-block" style="text-align:right;min-width:220px;">
+                  <div class="storefront-product-price">
                     <div class="muted">Starting from</div>
                     <div class="stats">' . $this->escape($planCurrency) . ' ' . $this->escape($planPrice) . '</div>
                     <div>Monthly</div>
-                    <div class="muted" style="margin-top:8px;">Traffic Reset ' . $this->escape($planCurrency) . ' ' . $this->escape($resetPrice) . '</div>
+                    <div class="storefront-product-meta">Base Bandwidth: ' . (int) ($plan['base_bandwidth_mbps'] ?? 0) . ' Mbps</div>
+                    <div class="muted">Traffic Reset ' . $this->escape($planCurrency) . ' ' . $this->escape($resetPrice) . '</div>
                     <div class="muted">Included Traffic: ' . (int) ($plan['default_traffic_limit_gb'] ?? 0) . ' GB</div>
                     <div class="muted">Included Clients: ' . $includedClients . '</div>
                     <div class="muted">Client Profiles: ' . $maxClientProfiles . '</div>
                     <div class="muted">Client Device Limit: ' . $deviceLimit . ' (Devices per Client: ' . $deviceLimit . ')</div>
+                    ' . $inlineForm . '
                   </div>
                 </div>
-                ' . $inlineForm . '
-              </section>';
+              </article>';
         }
         if ($planCards === '') {
-            $planCards = '<section class="card"><h3>No package available</h3><p class="muted">No visible package is available right now. Contact the administrator if you expected to self-purchase.</p></section>';
+            $planCards = '<section class="storefront-empty"><h3>No package available</h3><p class="muted">No visible package is available right now. Contact the administrator if you expected to self-purchase.</p></section>';
         }
 
         $body = '
@@ -691,12 +692,20 @@ final class TenantController extends BaseController
               <section class="card"><div class="muted">Total Bandwidth</div><div class="stats">' . $totalBandwidth . ' Mbps</div></section>
               <section class="card"><div class="muted">Current Cycle Estimate</div><div class="stats">CNY ' . $this->escape(number_format($totalEstimatedBilling, 2)) . '</div></section>
             </div>
-            <section class="card" style="margin-top:20px;">
-              <h3>Purchase Package</h3>
-              <p class="muted">Choose the package that fits your usage, then open its inline order form to set service name and bandwidth before purchase.</p>
-              <div class="grid two">' . $planCards . '</div>
+            <section class="storefront-section">
+              <div class="storefront-heading">
+                <h3>Purchase Package</h3>
+                <p class="muted">Choose the package that fits your usage, then open its inline order form to set service name and bandwidth before purchase.</p>
+              </div>
+              <div class="storefront-shell">
+                <nav class="storefront-categories" aria-label="Package categories">
+                  <div class="storefront-category-title">Categories</div>
+                  <a class="storefront-category active" href="/tenant/plans" aria-current="page">All Packages</a>
+                </nav>
+                <div class="storefront-products">' . $planCards . '</div>
+              </div>
             </section>
-            <section class="card" style="margin-top:20px;">
+            <section class="card storefront-services">
               <h3>Current Services</h3>
               <div class="table-wrap">
                 <table>

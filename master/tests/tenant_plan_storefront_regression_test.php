@@ -11,6 +11,12 @@ $tenant = file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php'
 if (!is_string($tenant) || $tenant === '') {
     fail('failed to read TenantController source');
 }
+$plansStart = strpos($tenant, 'public function plansPage');
+$plansEnd = strpos($tenant, 'public function transferBalance', $plansStart === false ? 0 : $plansStart);
+if ($plansStart === false || $plansEnd === false) {
+    fail('failed to isolate tenant plans page source');
+}
+$storefront = substr($tenant, $plansStart, $plansEnd - $plansStart);
 
 foreach ([
     'storefront-shell',
@@ -28,11 +34,15 @@ foreach ([
     "?buy=",
     "name=\"plan_id\"",
     'No visible package is available right now.',
-    "return Response::redirect('/tenant/plans?buy=' . (int) \$request->input('plan_id', 0) . '#plan-' . (int) \$request->input('plan_id', 0));",
 ] as $needle) {
-    if (!str_contains($tenant, $needle)) {
+    if (!str_contains($storefront, $needle)) {
         fail('missing tenant storefront snippet: ' . $needle);
     }
+}
+
+$failureRedirect = "return Response::redirect('/tenant/plans?buy=' . (int) \$request->input('plan_id', 0) . '#plan-' . (int) \$request->input('plan_id', 0));";
+if (!str_contains($tenant, $failureRedirect)) {
+    fail('missing tenant purchase failure redirect');
 }
 
 foreach ([
@@ -45,7 +55,7 @@ foreach ([
     '<h3>可用套餐</h3>',
     '<thead><tr><th>Name</th><th>Description</th><th>Base Bandwidth</th><th>Included Traffic</th><th>Monthly Base Fee</th><th>Bandwidth Add-on</th><th>Client Pricing</th><th>Traffic Reset Price</th></tr></thead>',
 ] as $forbidden) {
-    if (str_contains($tenant, $forbidden)) {
+    if (str_contains($storefront, $forbidden)) {
         fail('stale tenant package-table snippet still present: ' . $forbidden);
     }
 }
