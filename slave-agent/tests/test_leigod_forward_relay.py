@@ -370,6 +370,20 @@ class LeigodForwardRelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(runtime.candidate_state(451)["quarantined"])
             await runtime.probe_once()
             self.assertFalse(runtime.candidate_state(451)["quarantined"])
+            self.assertEqual(451, runtime.selected_line_id())
+
+    async def test_udp_failures_do_not_quarantine_tcp(self) -> None:
+        async with TcpEchoServer() as target, FakeSocksServer(451, udp_reply=False) as candidate:
+            runtime = await self.start_runtime(
+                self.config("single", target.address, [candidate.candidate(1, 10)], transport="tcp+udp")
+            )
+            for _ in range(2):
+                with self.assertRaises(RuntimeError):
+                    await runtime.selector.udp_round_trip(b"no-reply")
+            state = runtime.candidate_state(451)
+            self.assertTrue(state["udp_quarantined"])
+            self.assertFalse(state["tcp_quarantined"])
+            self.assertEqual(b"tcp-still-works", await self.tcp_round_trip(runtime, b"tcp-still-works"))
 
     async def test_existing_tcp_connection_drains_on_config_reload(self) -> None:
         async with TcpEchoServer() as target, FakeSocksServer(451) as first, FakeSocksServer(453) as second:

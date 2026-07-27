@@ -134,9 +134,12 @@ class CandidateState:
         self.tcp_healthy = False
         self.udp_healthy = False
         self.latency_ms: float | None = None
-        self.consecutive_failures = 0
-        self.recovery_successes = 0
-        self.quarantined = False
+        self.tcp_consecutive_failures = 0
+        self.udp_consecutive_failures = 0
+        self.tcp_recovery_successes = 0
+        self.udp_recovery_successes = 0
+        self.tcp_quarantined = False
+        self.udp_quarantined = False
         self.last_error = ""
 
     def snapshot(self) -> dict[str, Any]:
@@ -146,9 +149,15 @@ class CandidateState:
             "tcp_healthy": self.tcp_healthy,
             "udp_healthy": self.udp_healthy,
             "latency_ms": self.latency_ms,
-            "consecutive_failures": self.consecutive_failures,
-            "recovery_successes": self.recovery_successes,
-            "quarantined": self.quarantined,
+            "consecutive_failures": self.tcp_consecutive_failures,
+            "recovery_successes": self.tcp_recovery_successes,
+            "quarantined": self.tcp_quarantined,
+            "tcp_consecutive_failures": self.tcp_consecutive_failures,
+            "udp_consecutive_failures": self.udp_consecutive_failures,
+            "tcp_recovery_successes": self.tcp_recovery_successes,
+            "udp_recovery_successes": self.udp_recovery_successes,
+            "tcp_quarantined": self.tcp_quarantined,
+            "udp_quarantined": self.udp_quarantined,
             "last_error": self.last_error,
         }
 
@@ -328,29 +337,41 @@ class CandidateSelector:
     def _record_success(self, state: CandidateState, latency_ms: float, protocol: str) -> None:
         if protocol == "udp":
             state.udp_healthy = True
+            state.udp_consecutive_failures = 0
+            if state.udp_quarantined:
+                state.udp_recovery_successes += 1
+                if state.udp_recovery_successes >= self.config.policy.recovery_success_threshold:
+                    state.udp_quarantined = False
+                    state.udp_recovery_successes = 0
+            else:
+                state.udp_recovery_successes = 0
         else:
             state.tcp_healthy = True
             state.latency_ms = latency_ms
-        state.consecutive_failures = 0
+            state.tcp_consecutive_failures = 0
+            if state.tcp_quarantined:
+                state.tcp_recovery_successes += 1
+                if state.tcp_recovery_successes >= self.config.policy.recovery_success_threshold:
+                    state.tcp_quarantined = False
+                    state.tcp_recovery_successes = 0
+            else:
+                state.tcp_recovery_successes = 0
         state.last_error = ""
-        if state.quarantined:
-            state.recovery_successes += 1
-            if state.recovery_successes >= self.config.policy.recovery_success_threshold:
-                state.quarantined = False
-                state.recovery_successes = 0
-        else:
-            state.recovery_successes = 0
 
     def _record_failure(self, state: CandidateState, error: Exception, protocol: str) -> None:
         if protocol == "udp":
             state.udp_healthy = False
+            state.udp_consecutive_failures += 1
+            state.udp_recovery_successes = 0
+            if state.udp_consecutive_failures >= self.config.policy.failure_threshold:
+                state.udp_quarantined = True
         else:
             state.tcp_healthy = False
-        state.consecutive_failures += 1
-        state.recovery_successes = 0
+            state.tcp_consecutive_failures += 1
+            state.tcp_recovery_successes = 0
+            if state.tcp_consecutive_failures >= self.config.policy.failure_threshold:
+                state.tcp_quarantined = True
         state.last_error = str(error)[:500]
-        if state.consecutive_failures >= self.config.policy.failure_threshold:
-            state.quarantined = True
 
     async def probe_once(self) -> None:
         async with self._probe_lock:
@@ -376,13 +397,21 @@ class CandidateSelector:
             self._reselect_tcp()
 
     def _reselect_tcp(self) -> None:
-        available = [state for state in self.states.values() if state.tcp_healthy and not state.quarantined]
+        available = [state for state in self.states.values() if state.tcp_healthy and not state.tcp_quarantined]
         if not available:
             return
         current = self.states.get(self.selected_tcp_line_id or -1)
         if self.config.mode == "single":
-            if current is None or current.quarantined:
-                self._switch_tcp(min(available, key=lambda state: (state.candidate.sort_order, state.candidate.line_id)))
+            best = min(available, key=lambda state: (state.candidate.sort_order, state.candidate.line_id))
+            if current is None or current.tcp_quarantined:
+                self._switch_tcp(best)
+                return
+            if best.candidate.line_id == current.candidate.line_id:
+                return
+            current_order = (current.candidate.sort_order, current.candidate.line_id)
+            best_order = (best.candidate.sort_order, best.candidate.line_id)
+            if best_order < current_order and time.monotonic() - self.last_switch_at >= self.config.policy.minimum_hold_seconds:
+                self._switch_tcp(best)
             return
         best = min(
             available,
@@ -392,7 +421,7 @@ class CandidateSelector:
                 state.candidate.line_id,
             ),
         )
-        if current is None or current.quarantined or not current.tcp_healthy:
+        if current is None or current.tcp_quarantined or not current.tcp_healthy:
             self._switch_tcp(best)
             return
         if best.candidate.line_id == current.candidate.line_id:
@@ -439,12 +468,12 @@ class CandidateSelector:
         ordered: list[CandidateState] = []
         for line_id in [preferred_line_id, self.selected_udp_line_id]:
             state = self.states.get(line_id or -1)
-            if state is not None and state not in ordered and not state.quarantined:
+            if state is not None and state not in ordered and not state.udp_quarantined:
                 ordered.append(state)
         ordered.extend(
             state
             for state in sorted(self.states.values(), key=lambda item: (item.candidate.sort_order, item.candidate.line_id))
-            if state not in ordered and not state.quarantined
+            if state not in ordered and not state.udp_quarantined
         )
         last_error: Exception | None = None
         for state in ordered:
@@ -458,13 +487,13 @@ class CandidateSelector:
                     self.config.policy.connect_timeout_seconds,
                 )
                 self._record_success(state, (time.monotonic() - started) * 1000.0, "udp")
-                if self.selected_udp_line_id is None or self.states[self.selected_udp_line_id].quarantined:
+                if self.selected_udp_line_id is None or self.states[self.selected_udp_line_id].udp_quarantined:
                     self.selected_udp_line_id = state.candidate.line_id
                 return state.candidate.line_id, response
             except Exception as exc:
                 last_error = exc
                 self._record_failure(state, exc, "udp")
-                if self.selected_udp_line_id == state.candidate.line_id and state.quarantined:
+                if self.selected_udp_line_id == state.candidate.line_id and state.udp_quarantined:
                     self.selected_udp_line_id = None
         raise RuntimeError(f"no UDP candidate returned a target reply: {last_error}")
 
