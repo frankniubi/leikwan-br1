@@ -78,10 +78,12 @@ final class OidcController extends BaseController
             $user = $this->identityService->login($claims);
 
             $whmcsBindingWarning = false;
-            try {
-                $this->whmcsIdentityService->tryDirectBindForUser((int) $user['id']);
-            } catch (Throwable) {
-                $whmcsBindingWarning = true;
+            if ($this->whmcsIdentityService->isConfigured()) {
+                try {
+                    $this->whmcsIdentityService->tryDirectBindForUser((int) $user['id']);
+                } catch (Throwable) {
+                    $whmcsBindingWarning = true;
+                }
             }
 
             SessionAuth::login($user);
