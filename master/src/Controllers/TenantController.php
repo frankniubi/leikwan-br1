@@ -1904,15 +1904,10 @@ final class TenantController extends BaseController
               ' . $emptyState . '
               <form method="post" action="/tenant/services/' . $serviceId . '/create-forward">
                 <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                <input type="hidden" name="target_source" value="service_ip">
-                <input type="hidden" name="target_service_id" value="' . $serviceId . '">
+                <input type="hidden" name="target_source" value="manual">
                 <div class="form-grid">
                   <div class="field"><label>Forward Route</label><select name="forward_route_id" required>' . $routeOptions . '</select></div>
-                  <div class="field">
-                    <label>Target IP</label>
-                    <input type="text" value="' . $this->escape((string) ($service['server_public_ip'] ?? 'pending sync')) . '" readonly>
-                    <p class="muted">This forward uses the purchased server IP automatically. Update the service sync if the IP is stale.</p>
-                  </div>
+                  <div class="field"><label>Target Host</label><input type="text" name="target_host" placeholder="10.0.0.5 or example.com" required></div>
                   <div class="field"><label>Target Port</label><input type="number" name="target_port" placeholder="443" required></div>
                   <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" placeholder="auto from line range"></div>
                   <div class="field"><label>Transport</label><select name="transport_mode"><option value="tcp">TCP</option><option value="tcp+udp">TCP + UDP</option><option value="udp">UDP</option></select></div>
