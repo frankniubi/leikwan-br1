@@ -11,6 +11,10 @@ $tenant = file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php'
 if (!is_string($tenant) || $tenant === '') {
     fail('failed to read TenantController source');
 }
+$css = file_get_contents(__DIR__ . '/../public/assets/leikwan-ui.css');
+if (!is_string($css) || $css === '') {
+    fail('failed to read panel stylesheet');
+}
 $plansStart = strpos($tenant, 'public function plansPage');
 $plansEnd = strpos($tenant, 'public function transferBalance', $plansStart === false ? 0 : $plansStart);
 if ($plansStart === false || $plansEnd === false) {
@@ -43,6 +47,20 @@ foreach ([
 $failureRedirect = "return Response::redirect('/tenant/plans?buy=' . (int) \$request->input('plan_id', 0) . '#plan-' . (int) \$request->input('plan_id', 0));";
 if (!str_contains($tenant, $failureRedirect)) {
     fail('missing tenant purchase failure redirect');
+}
+
+foreach ([
+    '.storefront-shell',
+    '.storefront-categories',
+    '.storefront-products',
+    '.storefront-product-price',
+    '.storefront-order',
+    '@media(max-width:1100px)',
+    '@media(max-width:720px)',
+] as $needle) {
+    if (!str_contains($css, $needle)) {
+        fail('missing scoped storefront style: ' . $needle);
+    }
 }
 
 foreach ([
