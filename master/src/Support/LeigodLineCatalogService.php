@@ -17,8 +17,33 @@ final class LeigodLineCatalogService
     /** @return array<int, array<string, mixed>> */
     public function listLines(): array
     {
+        $healthByLine = [];
+        foreach ($this->db->fetchAll(
+            'SELECT leigod_line_id,
+                    SUM(CASE WHEN service_state = :tcp_active AND tcp_status = :tcp_healthy THEN 1 ELSE 0 END) AS tcp_healthy_nodes,
+                    SUM(CASE WHEN service_state = :udp_active AND udp_status = :udp_healthy THEN 1 ELSE 0 END) AS udp_healthy_nodes,
+                    MAX(checked_at) AS last_checked_at,
+                    MAX(last_error) AS last_error
+             FROM node_leigod_line_health
+             GROUP BY leigod_line_id',
+            [
+                'tcp_active' => 'active',
+                'tcp_healthy' => 'healthy',
+                'udp_active' => 'active',
+                'udp_healthy' => 'healthy',
+            ]
+        ) as $health) {
+            $healthByLine[(int) ($health['leigod_line_id'] ?? 0)] = $health;
+        }
         return array_map(
-            fn(array $row): array => $this->withConfigurationState($row),
+            function (array $row) use ($healthByLine): array {
+                $health = $healthByLine[(int) ($row['id'] ?? 0)] ?? [];
+                $row['tcp_healthy_nodes'] = (int) ($health['tcp_healthy_nodes'] ?? 0);
+                $row['udp_healthy_nodes'] = (int) ($health['udp_healthy_nodes'] ?? 0);
+                $row['last_checked_at'] = $health['last_checked_at'] ?? null;
+                $row['last_error'] = $health['last_error'] ?? null;
+                return $this->withConfigurationState($row);
+            },
             $this->db->fetchAll('SELECT * FROM leigod_lines ORDER BY sort_order ASC, id ASC')
         );
     }
@@ -152,6 +177,148 @@ final class LeigodLineCatalogService
             throw new ApiException('leigod_line_in_use', 409, ['id' => $id]);
         }
         $this->db->execute('DELETE FROM leigod_lines WHERE id = :id', ['id' => $id]);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function desiredLinesForNode(int $nodeId): array
+    {
+        if ($nodeId <= 0) {
+            return [];
+        }
+        $cap = max(1, min(256, $this->config->getInt('LEIGOD_LINE_MANAGEMENT_CAP', 64)));
+        $desired = [];
+        foreach ($this->readyDesiredRowsForNode($nodeId) as $row) {
+            $configuration = $row['_configuration'];
+            $desired[] = [
+                'line_id' => (int) ($row['line_id'] ?? 0),
+                'label' => (string) ($row['label'] ?? ''),
+                'config_sha256' => (string) ($row['config_sha256'] ?? ''),
+                'toml' => (string) ($configuration['toml'] ?? ''),
+                'socks_host' => '127.0.0.1',
+                'socks_port' => 20000 + (int) ($row['line_id'] ?? 0),
+                'tcp_probe_host' => (string) ($row['tcp_probe_host'] ?? ''),
+                'tcp_probe_port' => (int) ($row['tcp_probe_port'] ?? 0),
+                'udp_probe_host' => ($host = trim((string) ($row['udp_probe_host'] ?? ''))) !== '' ? $host : null,
+                'udp_probe_port' => (int) ($row['udp_probe_port'] ?? 0) > 0 ? (int) $row['udp_probe_port'] : null,
+                'udp_probe_method' => ($method = trim((string) ($row['udp_probe_method'] ?? ''))) !== '' ? $method : null,
+            ];
+            if (count($desired) >= $cap) {
+                break;
+            }
+        }
+        return $desired;
+    }
+
+    /**
+     * @param array<int|string, mixed> $payload
+     * @return array{accepted:int,rejected:int}
+     */
+    public function ingestNodeHealth(int $nodeId, array $payload): array
+    {
+        $rows = is_array($payload['leigod_line_health'] ?? null)
+            ? $payload['leigod_line_health']
+            : $payload;
+        if (array_key_exists('line_id', $rows)) {
+            $rows = [$rows];
+        }
+        $rows = array_values($rows);
+        $cap = max(1, min(256, $this->config->getInt('LEIGOD_LINE_HEARTBEAT_CAP', 64)));
+        $rejected = max(0, count($rows) - $cap);
+        $rows = array_slice($rows, 0, $cap);
+
+        $desiredByLineId = [];
+        foreach ($this->readyDesiredRowsForNode($nodeId) as $desired) {
+            $lineId = (int) ($desired['line_id'] ?? 0);
+            if ($lineId > 0) {
+                $desiredByLineId[$lineId] = $desired;
+            }
+        }
+
+        $accepted = 0;
+        $seen = [];
+        $now = time();
+        $maxFutureSeconds = max(0, min(3600, $this->config->getInt('LEIGOD_LINE_HEALTH_MAX_FUTURE_SECONDS', 300)));
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                $rejected++;
+                continue;
+            }
+            $lineId = (int) ($row['line_id'] ?? 0);
+            $desired = $desiredByLineId[$lineId] ?? null;
+            if ($lineId <= 0 || !is_array($desired) || isset($seen[$lineId])) {
+                $rejected++;
+                continue;
+            }
+
+            $expectedHash = strtolower(trim((string) ($desired['config_sha256'] ?? '')));
+            $reportedHash = strtolower(trim((string) ($row['config_sha256'] ?? '')));
+            $serviceState = strtolower(trim((string) ($row['service_state'] ?? 'unknown')));
+            $tcpStatus = strtolower(trim((string) ($row['tcp_status'] ?? 'unknown')));
+            $udpStatus = strtolower(trim((string) ($row['udp_status'] ?? 'unknown')));
+            if (preg_match('/^[a-f0-9]{64}$/', $reportedHash) !== 1
+                || !hash_equals($expectedHash, $reportedHash)
+                || !in_array($serviceState, ['starting', 'active', 'failed'], true)
+                || !in_array($tcpStatus, ['unknown', 'healthy', 'unhealthy'], true)
+                || !in_array($udpStatus, ['unknown', 'healthy', 'unhealthy'], true)) {
+                $rejected++;
+                continue;
+            }
+
+            $checkedAtRaw = trim((string) ($row['checked_at'] ?? ''));
+            $checkedTimestamp = $checkedAtRaw !== '' ? strtotime($checkedAtRaw) : $now;
+            if ($checkedTimestamp === false || $checkedTimestamp > ($now + $maxFutureSeconds)) {
+                $rejected++;
+                continue;
+            }
+
+            $catalogId = (int) ($desired['catalog_id'] ?? $desired['id'] ?? 0);
+            if ($catalogId <= 0) {
+                $rejected++;
+                continue;
+            }
+            $seen[$lineId] = true;
+            $tcpConnectMs = ($row['tcp_connect_ms'] ?? null) === null || $row['tcp_connect_ms'] === ''
+                ? null
+                : max(0, min(600000, (int) $row['tcp_connect_ms']));
+            $lastError = substr(trim((string) ($row['last_error'] ?? '')), 0, 500);
+            $params = [
+                'node_id' => $nodeId,
+                'leigod_line_id' => $catalogId,
+                'config_sha256' => $expectedHash,
+                'service_state' => $serviceState,
+                'tcp_status' => $tcpStatus,
+                'tcp_connect_ms' => $tcpConnectMs,
+                'udp_status' => $udpStatus,
+                'consecutive_successes' => max(0, min(1000000, (int) ($row['consecutive_successes'] ?? 0))),
+                'consecutive_failures' => max(0, min(1000000, (int) ($row['consecutive_failures'] ?? 0))),
+                'last_error' => $lastError !== '' ? $lastError : null,
+                'checked_at' => gmdate('Y-m-d H:i:s', $checkedTimestamp),
+                'updated_at' => gmdate('Y-m-d H:i:s'),
+            ];
+            $this->db->execute(
+                'INSERT INTO node_leigod_line_health
+                    (node_id, leigod_line_id, config_sha256, service_state, tcp_status, tcp_connect_ms,
+                     udp_status, consecutive_successes, consecutive_failures, last_error, checked_at, updated_at)
+                 VALUES
+                    (:node_id, :leigod_line_id, :config_sha256, :service_state, :tcp_status, :tcp_connect_ms,
+                     :udp_status, :consecutive_successes, :consecutive_failures, :last_error, :checked_at, :updated_at)
+                 ON DUPLICATE KEY UPDATE
+                    config_sha256 = VALUES(config_sha256),
+                    service_state = VALUES(service_state),
+                    tcp_status = VALUES(tcp_status),
+                    tcp_connect_ms = VALUES(tcp_connect_ms),
+                    udp_status = VALUES(udp_status),
+                    consecutive_successes = VALUES(consecutive_successes),
+                    consecutive_failures = VALUES(consecutive_failures),
+                    last_error = VALUES(last_error),
+                    checked_at = VALUES(checked_at),
+                    updated_at = VALUES(updated_at)',
+                $params
+            );
+            $accepted++;
+        }
+
+        return ['accepted' => $accepted, 'rejected' => $rejected];
     }
 
     /** @return array<int, array<string, mixed>> */
@@ -291,6 +458,51 @@ final class LeigodLineCatalogService
             ? $configuration['actual_sha256']
             : null;
         return $row;
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function readyDesiredRowsForNode(int $nodeId): array
+    {
+        if ($nodeId <= 0) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT DISTINCT ll.*, ll.id AS catalog_id, fcll.sort_order AS membership_sort_order
+             FROM nodes n
+             INNER JOIN node_groups ng ON ng.id = n.group_id
+             INNER JOIN forward_combinations fc ON fc.node_group_key = ng.group_key
+             INNER JOIN forward_combination_leigod_lines fcll ON fcll.forward_combination_id = fc.id
+             INNER JOIN leigod_lines ll ON ll.id = fcll.leigod_line_id
+             WHERE n.id = :node_id
+               AND fc.is_active = 1
+               AND fc.backend_mode = :backend_mode
+               AND fc.client_mode = :client_mode
+               AND fc.sidecar_point_id IS NULL
+               AND fcll.enabled = 1
+               AND ll.is_active = 1
+             ORDER BY fcll.sort_order ASC, ll.sort_order ASC, ll.id ASC',
+            [
+                'node_id' => $nodeId,
+                'backend_mode' => 'leigod_mode',
+                'client_mode' => 'single',
+            ]
+        );
+        $ready = [];
+        $seen = [];
+        foreach ($rows as $row) {
+            $lineId = (int) ($row['line_id'] ?? 0);
+            if ($lineId <= 0 || isset($seen[$lineId])) {
+                continue;
+            }
+            $configuration = $this->configurationForLine($row);
+            if ($configuration['state'] !== 'ready') {
+                continue;
+            }
+            $row['_configuration'] = $configuration;
+            $ready[] = $row;
+            $seen[$lineId] = true;
+        }
+        return $ready;
     }
 
     private function truthy(mixed $value): bool
