@@ -104,6 +104,32 @@
   justify-content: flex-end;
   gap: 8px;
   min-width: 0;
+  flex-wrap: wrap;
+}
+
+.bridge-home-page .site-actions .locale-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--bridge-line);
+  border-radius: 999px;
+  background: transparent;
+}
+
+.bridge-home-page .site-actions .locale-label {
+  color: var(--bridge-muted);
+  font-size: 12px;
+}
+
+.bridge-home-page .site-actions .locale-select {
+  min-height: 28px;
+  width: auto;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--bridge-ink);
+  font-size: 12px;
 }
 
 .bridge-home-page .site-actions .button {

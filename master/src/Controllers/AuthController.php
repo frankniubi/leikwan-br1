@@ -782,14 +782,14 @@ final class AuthController extends BaseController
         }
 
         return [
-            ['href' => '/tenant', 'label' => 'Intro'],
-            ['href' => '/tenant/account', 'label' => 'Account'],
-            ['href' => '/tenant/plans', 'label' => 'Plans'],
-            ['href' => '/tenant/forwards', 'label' => 'Forwards'],
-            ['href' => '/tenant/clients', 'label' => 'Clients'],
-            ['href' => '/tenant-transport-endpoints', 'label' => 'Transport Endpoints'],
-            ['href' => '/tenant/slave-groups', 'label' => 'Slave Groups'],
-            ['href' => '/knowledgebase', 'label' => 'Knowledgebase / Docs', 'active' => true],
+            ['group' => 'Overview', 'href' => '/tenant', 'label' => 'Overview'],
+            ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'Forwards'],
+            ['group' => 'Services', 'href' => '/tenant/plans', 'label' => 'Packages'],
+            ['group' => 'Clients', 'href' => '/tenant/clients', 'label' => 'Clients'],
+            ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Account'],
+            ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase / Docs', 'active' => true],
+            ['group' => 'Advanced', 'href' => '/tenant-transport-endpoints', 'label' => 'Target Endpoints'],
+            ['group' => 'Advanced', 'href' => '/tenant/slave-groups', 'label' => 'Node Groups'],
         ];
     }
 

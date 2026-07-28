@@ -1180,8 +1180,8 @@ HTML;
         $mainClass = $isBridgeHome ? ' bridge-home-main' : '';
         $styleLinks = '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
             . ($isBridgeHome
-                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260727f">'
-                : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260727f">');
+                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260728a">'
+                : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260728a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
 
@@ -1223,6 +1223,7 @@ HTML;
         </span>
       </a>
       <div class="site-actions">
+        {$languageSwitcher}
         {$actionsHtml}
       </div>
     </header>
@@ -1232,7 +1233,7 @@ HTML;
     </main>
     <footer class="page-footer">
       <div class="footer-tools">
-        {$languageSwitcher}
+        <span class="muted">Language can also be changed from the top bar.</span>
       </div>
     </footer>
   </div>
@@ -1317,7 +1318,7 @@ HTML;
   <title>{$escapedTitle}</title>
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260725">
-  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260727f">
+  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260728a">
 </head>
 <body class="pg-app">
   <div class="shell">
@@ -1331,6 +1332,7 @@ HTML;
       </div>
       <div class="toolbar">
         <button class="mobile-nav-toggle" type="button" aria-controls="workspace-navigation" aria-expanded="false">&#9776;<span class="pg-visually-hidden">Navigation</span></button>
+        {$languageSwitcher}
         {$viewerHtml}
       </div>
     </div>
@@ -1350,7 +1352,7 @@ HTML;
     </div>
     <footer class="page-footer">
       <div class="footer-tools">
-        {$languageSwitcher}
+        <span class="muted">Language can also be changed from the top bar.</span>
       </div>
     </footer>
   </div>
