@@ -60,9 +60,26 @@
     <system:String x:Key="SetupMasterUrl">Master URL</system:String>
     <system:String x:Key="SetupClientId">Client ID</system:String>
     <system:String x:Key="SetupAgentToken">Agent Token</system:String>
+    <system:String x:Key="SetupEmail">Email</system:String>
+    <system:String x:Key="SetupPassword">Password</system:String>
+    <system:String x:Key="SetupFieldsRequired">All fields are required.</system:String>
     <system:String x:Key="SetupConnecting">Connecting...</system:String>
     <system:String x:Key="SetupSuccess">Connection successful!</system:String>
     <system:String x:Key="SetupFailed">Connection failed. Please check your settings.</system:String>
+
+    <!-- Client picker / updates -->
+    <system:String x:Key="ClientPickerTitle">Select Client</system:String>
+    <system:String x:Key="ClientPickerSubtitle">Choose which client profile to use on this device.</system:String>
+    <system:String x:Key="ActionContinue">Continue</system:String>
+    <system:String x:Key="UpdateAvailableTitle">Update Available</system:String>
+    <system:String x:Key="UpdateVersionReady">Version {0} is ready to install.</system:String>
+    <system:String x:Key="ActionInstallNow">Install now</system:String>
+    <system:String x:Key="ActionDeferUpdate">Wait until next restart</system:String>
+    <system:String x:Key="ActionCheckUpdates">Check for Updates</system:String>
+    <system:String x:Key="ActionSwitchClient">Switch Client</system:String>
+    <system:String x:Key="ActionSignOut">Sign Out</system:String>
+    <system:String x:Key="SettingsSignedInEmail">Signed In Email</system:String>
+    <system:String x:Key="SettingsActiveClient">Active Client</system:String>
 
     <!-- Settings -->
     <system:String x:Key="SettingsConnection">Connection</system:String>

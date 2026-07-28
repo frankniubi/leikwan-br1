@@ -197,6 +197,7 @@ final class Bootstrap
         $this->router->add('GET', '/admin/user-groups', [$admin, 'userSlaveGroupsPage']);
         $this->router->add('POST', '/admin/user-groups/{id}/delete', [$admin, 'deleteUserSlaveGroup']);
         $this->router->add('GET', '/tenant', [$tenant, 'introPage']);
+        $this->router->add('GET', '/tenant/getting-started', [$tenant, 'gettingStartedPage']);
         $this->router->add('GET', '/tenant/account', [$tenant, 'billingPage']);
         $this->router->add('GET', '/tenant/billing', [$tenant, 'billingPage']);
         $this->router->add('POST', '/tenant/account/transfer', [$tenant, 'transferBalance']);

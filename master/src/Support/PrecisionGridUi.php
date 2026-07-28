@@ -111,13 +111,14 @@ final class PrecisionGridUi
     private static function groupForLabel(string $label): string
     {
         return match ($label) {
-            'Overview', 'Services', 'Clients' => 'Operations',
+            'Overview', 'Services', 'Clients', 'Forwards', 'Packages' => 'Operations',
             'Tenants', 'Registration Codes', 'User Groups' => 'Customers',
             'Plans' => 'Products',
-            'Transport Endpoints', 'Slave Groups', 'Slave Nodes', 'Client Groups', 'Credentials' => 'Infrastructure',
+            'Transport Endpoints', 'Slave Groups', 'Slave Nodes', 'Client Groups', 'Credentials', 'Target Endpoints', 'Node Groups' => 'Infrastructure',
             'Knowledgebase' => 'Support',
             'Tenant Area', 'Admin Console', 'Homepage' => 'Context',
             'Account', 'Plans and Billing' => 'Account',
+            'Advanced' => 'Advanced',
             default => 'Workspace',
         };
     }

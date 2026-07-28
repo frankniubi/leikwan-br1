@@ -60,9 +60,26 @@
     <system:String x:Key="SetupMasterUrl">主控面板地址</system:String>
     <system:String x:Key="SetupClientId">客户端 ID</system:String>
     <system:String x:Key="SetupAgentToken">认证令牌</system:String>
+    <system:String x:Key="SetupEmail">邮箱</system:String>
+    <system:String x:Key="SetupPassword">密码</system:String>
+    <system:String x:Key="SetupFieldsRequired">请填写全部字段。</system:String>
     <system:String x:Key="SetupConnecting">连接中...</system:String>
     <system:String x:Key="SetupSuccess">连接成功！</system:String>
     <system:String x:Key="SetupFailed">连接失败，请检查设置。</system:String>
+
+    <!-- Client picker / updates -->
+    <system:String x:Key="ClientPickerTitle">选择客户端</system:String>
+    <system:String x:Key="ClientPickerSubtitle">请选择此设备要使用的客户端配置。</system:String>
+    <system:String x:Key="ActionContinue">继续</system:String>
+    <system:String x:Key="UpdateAvailableTitle">有可用更新</system:String>
+    <system:String x:Key="UpdateVersionReady">版本 {0} 已准备好安装。</system:String>
+    <system:String x:Key="ActionInstallNow">立即安装</system:String>
+    <system:String x:Key="ActionDeferUpdate">下次启动时再安装</system:String>
+    <system:String x:Key="ActionCheckUpdates">检查更新</system:String>
+    <system:String x:Key="ActionSwitchClient">切换客户端</system:String>
+    <system:String x:Key="ActionSignOut">退出登录</system:String>
+    <system:String x:Key="SettingsSignedInEmail">已登录邮箱</system:String>
+    <system:String x:Key="SettingsActiveClient">当前客户端</system:String>
 
     <!-- Settings -->
     <system:String x:Key="SettingsConnection">连接设置</system:String>
