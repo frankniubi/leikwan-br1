@@ -35,6 +35,14 @@ assertMermaidSame(hash('sha256', $safeSource), MermaidSourcePolicy::digest($safe
 MermaidSourcePolicy::assertPreviewable($safe);
 MermaidSourcePolicy::assertPublishable($safe, MermaidSourcePolicy::digest($safe));
 
+$clickTextSources = [
+    "flowchart TD\naccTitle: Save node\naccDescr: Click is benign node text.\nA[Click Save]",
+    "flowchart TD\naccTitle: Save comment\naccDescr: Click is benign comment text.\n%% Click Save to continue\nA[Save]",
+];
+foreach ($clickTextSources as $source) {
+    MermaidSourcePolicy::assertPreviewable('<pre class="mermaid">' . $source . '</pre>');
+}
+
 $encoded = '<pre class="mermaid">flowchart TD' . "\r\n"
     . 'accTitle: Comparison flow' . "\r"
     . 'accDescr: Entity decoding stays identical in PHP and the browser.' . "\n"
