@@ -366,6 +366,14 @@ function assertCookieWrite(write, name, encodedLocale) {
   same(query.replaceCalls.length, 0, 'query locale must not replace location');
   same(query.assignCalls.length, 0, 'query locale must not assign location');
 
+  const duplicateQuery = await execute({
+    href: 'https://example.test/account?lang=en&lang=zh-Hans'
+  });
+  same(duplicateQuery.document.documentElement.lang, 'zh-Hans', 'last duplicate query locale must win');
+  same(duplicateQuery.storage.get('leikwan_locale'), 'zh-Hans', 'last duplicate query locale must persist to localStorage');
+  same(duplicateQuery.cookieWrites.length, 1, 'last duplicate query locale must persist one cookie');
+  assertCookieWrite(duplicateQuery.cookieWrites[0], 'leikwan_locale', 'zh-Hans');
+
   const invalidQuery = await execute({
     href: 'https://example.test/account?lang=unsupported',
     cookie: 'leikwan_locale=zh-TW',
