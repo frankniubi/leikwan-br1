@@ -60,7 +60,7 @@ final class MermaidSourcePolicy
             if (preg_match('/^accDescr:\s*\S.*$/m', $source) !== 1) {
                 throw new InvalidArgumentException('Each Mermaid diagram needs accDescr.');
             }
-            if (preg_match('/%%\{|^\s*click\s+|javascript:|<script\b|<iframe\b/mi', $source) === 1) {
+            if (preg_match('/%%\{|(?:^|;)\s*click\s+|javascript:|<script\b|<iframe\b/mi', $source) === 1) {
                 throw new InvalidArgumentException('Mermaid directives and active content are not allowed.');
             }
             if (strlen($source) > 10_000) {
