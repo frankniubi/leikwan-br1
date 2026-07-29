@@ -1186,7 +1186,7 @@ HTML;
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
 
-        $actionsHtml = '<a class="button ghost" href="/register">Create Account</a><a class="button" href="/login">Sign In</a>';
+        $actionsHtml = '<a class="button" href="/login">Sign In</a>';
         if ($viewer !== null) {
             $consoleHref = $this->escape($this->dashboardPathForUser($viewer));
             $consoleLabel = $this->escape($this->dashboardLabelForUser($viewer));
