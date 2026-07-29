@@ -62,7 +62,7 @@ public partial class MainWindow : Window
 
         if (string.IsNullOrWhiteSpace(masterUrl) || string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
         {
-            SetupStatus.Text = "All fields are required.";
+            SetupStatus.Text = FindResource("SetupFieldsRequired") as string ?? "All fields are required.";
             return;
         }
 
@@ -146,6 +146,18 @@ public partial class MainWindow : Window
             if (!_vm.ShowSetupWizard)
                 PopulateSettings();
         }
+        if (e.PropertyName == nameof(MainViewModel.ShowUpdatePrompt)
+            || e.PropertyName == nameof(MainViewModel.AvailableUpdateVersion))
+        {
+            UpdateUpdatePromptText();
+        }
+    }
+
+    private void UpdateUpdatePromptText()
+    {
+        var template = FindResource("UpdateVersionReady") as string ?? "Version {0} is ready to install.";
+        var version = string.IsNullOrWhiteSpace(_vm.AvailableUpdateVersion) ? "—" : _vm.AvailableUpdateVersion;
+        UpdateVersionText.Text = string.Format(template, version);
     }
 
     private void UpdateVisiblePanel()

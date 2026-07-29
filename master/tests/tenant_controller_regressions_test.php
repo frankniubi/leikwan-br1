@@ -32,4 +32,21 @@ foreach ([
     }
 }
 
+$billingStart = strpos($source, 'public function billingPage(Request $request, array $params): Response');
+$plansStart = strpos($source, 'public function plansPage(Request $request, array $params): Response', $billingStart ?: 0);
+if ($billingStart === false || $plansStart === false || $plansStart <= $billingStart) {
+    fail('failed to isolate tenant account method');
+}
+
+$billing = substr($source, $billingStart, $plansStart - $billingStart);
+foreach ([
+    'if ($rows === \'\')',
+    '$availableForwardCombinations',
+    '$createForwardNotice',
+] as $forbidden) {
+    if (str_contains($billing, $forbidden)) {
+        fail('tenant account contains forward-page residue: ' . $forbidden);
+    }
+}
+
 echo "ok\n";

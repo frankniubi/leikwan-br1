@@ -39,10 +39,10 @@
                     <TextBox Style="{StaticResource InputTextBox}" x:Name="TxtMasterUrl"
                              Margin="0,0,0,12"/>
 
-                    <TextBlock Style="{StaticResource FieldLabel}" Text="Email"/>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupEmail}"/>
                     <TextBox Style="{StaticResource InputTextBox}" x:Name="TxtEmail" Margin="0,0,0,12"/>
 
-                    <TextBlock Style="{StaticResource FieldLabel}" Text="Password"/>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupPassword}"/>
                     <PasswordBox x:Name="TxtPassword" Padding="10,8" FontSize="13" Margin="0,0,0,20"/>
 
                     <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionConnect}"
@@ -61,11 +61,11 @@
             <Border Style="{StaticResource CardBorder}" MaxWidth="520" MaxHeight="520"
                     HorizontalAlignment="Center" VerticalAlignment="Center">
                 <StackPanel Margin="8">
-                    <TextBlock Text="Select Client" FontSize="22" FontWeight="Bold" Margin="0,0,0,8"/>
-                    <TextBlock Text="Choose which client profile to use on this device."
+                    <TextBlock Text="{DynamicResource ClientPickerTitle}" FontSize="22" FontWeight="Bold" Margin="0,0,0,8"/>
+                    <TextBlock Text="{DynamicResource ClientPickerSubtitle}"
                                Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,16"/>
                     <ListBox x:Name="ClientPickerList" DisplayMemberPath="Name" Height="240"/>
-                    <Button Style="{StaticResource PrimaryButton}" Content="Continue"
+                    <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionContinue}"
                             Click="OnSelectClient_Click" Margin="0,16,0,0"/>
                 </StackPanel>
             </Border>
@@ -78,12 +78,12 @@
             <Border Style="{StaticResource CardBorder}" MaxWidth="520" MaxHeight="360"
                     HorizontalAlignment="Center" VerticalAlignment="Center">
                 <StackPanel Margin="8">
-                    <TextBlock Text="Update Available" FontSize="22" FontWeight="Bold" Margin="0,0,0,8"/>
-                    <TextBlock Text="{Binding AvailableUpdateVersion, StringFormat=Version {0} is ready to install.}"
+                    <TextBlock Text="{DynamicResource UpdateAvailableTitle}" FontSize="22" FontWeight="Bold" Margin="0,0,0,8"/>
+                    <TextBlock x:Name="UpdateVersionText"
                                Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,16"/>
-                    <Button Style="{StaticResource PrimaryButton}" Content="Install now"
+                    <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionInstallNow}"
                             Click="OnInstallUpdateNow_Click" Margin="0,0,0,8"/>
-                    <Button Style="{StaticResource GhostButton}" Content="Wait until next restart"
+                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionDeferUpdate}"
                             Click="OnDeferUpdateUntilRestart_Click"/>
                 </StackPanel>
             </Border>
@@ -129,11 +129,11 @@
 
                     <!-- Bottom Actions -->
                     <StackPanel DockPanel.Dock="Bottom" Margin="8,0,8,16" VerticalAlignment="Bottom">
-                        <Button Style="{StaticResource NavButton}" Content="Check for Updates"
+                        <Button Style="{StaticResource NavButton}" Content="{DynamicResource ActionCheckUpdates}"
                                 Click="OnCheckForUpdates_Click"/>
-                        <Button Style="{StaticResource NavButton}" Content="Switch Client"
+                        <Button Style="{StaticResource NavButton}" Content="{DynamicResource ActionSwitchClient}"
                                 Click="OnShowClientPicker_Click"/>
-                        <Button Style="{StaticResource NavButton}" Content="Sign Out"
+                        <Button Style="{StaticResource NavButton}" Content="{DynamicResource ActionSignOut}"
                                 Click="OnSignOut_Click"/>
                         <Button Style="{StaticResource NavButton}" Content="{DynamicResource ActionStartAll}"
                                 Command="{Binding StartAllCommand}"/>
@@ -471,9 +471,9 @@
                                            FontWeight="SemiBold" Margin="0,0,0,12"/>
                                 <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupMasterUrl}"/>
                                 <TextBox Style="{StaticResource InputTextBox}" x:Name="SettMasterUrl" Margin="0,0,0,8"/>
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Signed In Email"/>
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SettingsSignedInEmail}"/>
                                 <TextBox Style="{StaticResource InputTextBox}" x:Name="SettSignedInEmail" Margin="0,0,0,8" IsReadOnly="True"/>
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Active Client"/>
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SettingsActiveClient}"/>
                                 <TextBox Style="{StaticResource InputTextBox}" x:Name="SettActiveClientName" Margin="0,0,0,8" IsReadOnly="True"/>
 
                                 <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SettingsPollInterval}"/>
@@ -489,7 +489,7 @@
                                            FontWeight="SemiBold" Margin="0,0,0,12"/>
                                 <ComboBox x:Name="SettLanguage" SelectedIndex="0" Margin="0,0,0,8">
                                     <ComboBoxItem Content="English" Tag="en-US"/>
-                                    <ComboBoxItem Content="涓枃" Tag="zh-CN"/>
+                                    <ComboBoxItem Content="中文" Tag="zh-CN"/>
                                 </ComboBox>
                                 <CheckBox x:Name="SettAutoStart" Content="{DynamicResource SettingsAutoStart}" Margin="0,0,0,4"/>
                                 <CheckBox x:Name="SettMinimizeTray" Content="{DynamicResource SettingsMinimizeToTray}" IsChecked="True"/>

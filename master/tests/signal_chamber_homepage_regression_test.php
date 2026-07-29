@@ -4,43 +4,56 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 $auth = (string) file_get_contents($root . '/src/Controllers/AuthController.php');
 $base = (string) file_get_contents($root . '/src/Controllers/BaseController.php');
-$css = (string) file_get_contents($root . '/public/assets/signal-chamber.css');
+$bridgeCss = (string) file_get_contents($root . '/public/assets/bridge-home.css');
+$signalCss = (string) file_get_contents($root . '/public/assets/signal-chamber.css');
 $jsPath = $root . '/public/assets/signal-chamber.js';
 $js = is_file($jsPath) ? (string) file_get_contents($jsPath) : '';
 
 foreach ([
-    'class="signal-hero"',
-    '<h1>&#21033;&#32676;&#26371;&#32858; LeiKwan Bridge</h1>',
-    'class="signal-canvas"',
-    'Open Console',
-    'View Network',
-    'class="signal-light-detail"',
-    'Sidecar Endpoints',
-    'Client &rarr; Slave &rarr; Sidecar &rarr; Target',
+    'class="bridge-home-hero"',
+    'class="bridge-home-status"',
+    'class="bridge-home-route-catalog"',
+    'class="bridge-home-route"',
+    'return $this->publicPage($this->displayBrandName(), $body, $user, \'bridge-home\');',
 ] as $required) {
     if (!str_contains($auth, $required)) {
-        throw new RuntimeException('signal homepage markup missing ' . $required);
+        throw new RuntimeException('bridge homepage markup missing ' . $required);
     }
 }
 
 foreach (['pg-home-proof-list', 'pg-home-entry-list', 'client_strategy', 'Latency Best', 'Speed max', 'Random'] as $forbidden) {
     if (str_contains($auth, $forbidden)) {
-        throw new RuntimeException('signal homepage exposes forbidden content ' . $forbidden);
+        throw new RuntimeException('bridge homepage exposes forbidden content ' . $forbidden);
     }
 }
 
-foreach (['SELECT COUNT(*) AS total FROM nodes WHERE status = :status', 'SELECT COUNT(*) AS total FROM sidecar_points', 'COUNT(DISTINCT region)'] as $query) {
-    if (!str_contains($auth, $query)) {
-        throw new RuntimeException('truthful homepage summary query missing ' . $query);
+foreach (['SELECT COUNT(*) AS total FROM nodes WHERE status = :status', 'SELECT COUNT(*) AS total FROM sidecar_points', 'COUNT(DISTINCT region)', 'bridge-home-metrics'] as $forbidden) {
+    if (str_contains($auth, $forbidden)) {
+        throw new RuntimeException('homepage still exposes live business data ' . $forbidden);
     }
 }
 
-if (!str_contains($base, '/assets/signal-chamber.js?v=20260725')) {
-    throw new RuntimeException('public shell does not load signal chamber script');
+foreach ([
+    'publicPage(string $title, string $body, ?array $viewer = null, string $variant = \'default\')',
+    "'bridge-home'",
+    '/assets/bridge-home.css?v=20260728a',
+    '/assets/signal-chamber.css?v=20260725',
+    '/assets/signal-chamber.js?v=20260725',
+    '$script = $isBridgeHome ? \'\' :',
+] as $required) {
+    if (!str_contains($base, $required)) {
+        throw new RuntimeException('public shell variant contract missing ' . $required);
+    }
+}
+
+foreach (['.bridge-home-page', '.bridge-home-hero', '.bridge-home-status', '.bridge-home-route', '@media (max-width: 820px)'] as $selector) {
+    if (!str_contains($bridgeCss, $selector)) {
+        throw new RuntimeException('bridge home selector missing ' . $selector);
+    }
 }
 
 foreach (['prefers-reduced-motion', 'IntersectionObserver', 'document.visibilityState', 'Math.min(window.devicePixelRatio || 1, 2)'] as $guard) {
-    if (!str_contains($css . $js, $guard)) {
+    if (!str_contains($signalCss . $js, $guard)) {
         throw new RuntimeException('signal chamber motion guard missing ' . $guard);
     }
 }

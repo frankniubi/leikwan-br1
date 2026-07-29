@@ -42,9 +42,93 @@ final class TenantController extends BaseController
             ]
         ) ?? [];
         $clientCount = count($this->provisioning->listClientsForUser((int) $user['id']));
-        $sidecarCount = count($this->provisioning->listSidecarPointsForUser((int) $user['id']));
         $purchasePlans = $this->provisioning->listPurchasablePlans();
         $linked = !empty($user['whmcs_client_id']);
+        $activeServiceCount = (int) ($serviceSummary['active_total'] ?? 0);
+        $totalServiceCount = (int) ($serviceSummary['total'] ?? 0);
+
+        $activeServices = $this->db->fetchAll(
+            'SELECT id FROM services WHERE user_id = :user_id AND status = :status ORDER BY id ASC',
+            ['user_id' => $user['id'], 'status' => 'active']
+        );
+        $forwardCount = 0;
+        if ($activeServices !== []) {
+            $serviceIds = array_map(static fn(array $service): int => (int) ($service['id'] ?? 0), $activeServices);
+            $serviceIds = array_values(array_filter($serviceIds, static fn(int $id): bool => $id > 0));
+            if ($serviceIds !== []) {
+                $forwardRow = $this->db->fetchOne(
+                    'SELECT COUNT(*) AS total FROM forwards WHERE service_id IN (' . implode(',', $serviceIds) . ')'
+                );
+                $forwardCount = (int) ($forwardRow['total'] ?? 0);
+            }
+        }
+
+        $hasPackage = $activeServiceCount > 0;
+        $hasForward = $forwardCount > 0;
+        $hasClient = $clientCount > 0;
+        $setupComplete = $hasPackage && $hasForward && $hasClient;
+        $currentStep = !$hasPackage ? 1 : (!$hasForward ? 2 : (!$hasClient ? 3 : 0));
+
+        $stepState = static function (int $step, int $currentStep, bool $done): string {
+            if ($done) {
+                return 'done';
+            }
+            if ($currentStep === $step) {
+                return 'current';
+            }
+            return 'todo';
+        };
+
+        $stepBadge = static function (string $state): string {
+            return match ($state) {
+                'done' => '<span class="badge success">Done</span>',
+                'current' => '<span class="badge info">Current</span>',
+                default => '<span class="badge">Next</span>',
+            };
+        };
+
+        $step1State = $stepState(1, $currentStep, $hasPackage);
+        $step2State = $stepState(2, $currentStep, $hasForward);
+        $step3State = $stepState(3, $currentStep, $hasClient);
+
+        $continueHref = match ($currentStep) {
+            1 => '/tenant/plans',
+            2 => $activeServices !== []
+                ? '/tenant/services/' . (int) ($activeServices[0]['id'] ?? 0) . '/forward-wizard'
+                : '/tenant/forwards',
+            3 => '/tenant/clients',
+            default => '/tenant/forwards',
+        };
+        $continueLabel = match ($currentStep) {
+            1 => 'Buy a package',
+            2 => 'Create a forward',
+            3 => 'Install client',
+            default => 'Manage forwards',
+        };
+
+        $onboardingCard = $setupComplete
+            ? '<section class="card">
+                <h3>Setup complete</h3>
+                <p class="muted">Your package, forward, and client path are ready. Open forwards to manage day-to-day traffic.</p>
+                <div class="actions">
+                  <a class="button" href="/tenant/forwards">Open Forwards</a>
+                  <a class="button ghost" href="/tenant/getting-started">Review setup guide</a>
+                </div>
+              </section>'
+            : '<section class="card">
+                <h3>Get connected in 3 steps</h3>
+                <p class="muted">Buy a package, create one recommended forward, then install the client for this device.</p>
+                <div class="stack" style="margin-top:14px;">
+                  <div><strong>1. Buy a package</strong> ' . $stepBadge($step1State) . '<div class="muted">Activate a service plan before routing traffic.</div></div>
+                  <div><strong>2. Create a forward</strong> ' . $stepBadge($step2State) . '<div class="muted">One forward with defaults is enough to get online.</div></div>
+                  <div><strong>3. Install client</strong> ' . $stepBadge($step3State) . '<div class="muted">Download the desktop or mobile client and sign in.</div></div>
+                </div>
+                <div class="actions" style="margin-top:16px;">
+                  <a class="button" href="' . $this->escape($continueHref) . '">' . $this->escape($continueLabel) . '</a>
+                  <a class="button ghost" href="/tenant/getting-started">Open setup guide</a>
+                </div>
+              </section>';
+
         $latestService = $this->db->fetchOne(
             'SELECT id, name, status, expire_at
              FROM services
@@ -56,82 +140,155 @@ final class TenantController extends BaseController
 
         $latestServiceCard = $latestService !== null
             ? '<section class="card">
-                <h3>最近套餐</h3>
+                <h3>Latest package</h3>
                 <div><strong>' . $this->escape((string) ($latestService['name'] ?? 'Service')) . '</strong></div>
-                <div class="muted">状态: ' . $this->escape((string) ($latestService['status'] ?? 'unknown')) . '</div>
-                <div class="muted">到期: ' . $this->escape((string) ($latestService['expire_at'] ?? '-')) . '</div>
+                <div class="muted"><span>Status</span>: ' . $this->escape((string) ($latestService['status'] ?? 'unknown')) . '</div>
+                <div class="muted"><span>Expires</span>: ' . $this->escape((string) ($latestService['expire_at'] ?? '-')) . '</div>
                 <div class="actions">
-                  <a class="button" href="/tenant/services/' . (int) ($latestService['id'] ?? 0) . '">打开详情</a>
-                  <a class="button ghost" href="/tenant/forwards">查看全部转发</a>
+                  <a class="button" href="/tenant/services/' . (int) ($latestService['id'] ?? 0) . '">Open details</a>
+                  <a class="button ghost" href="/tenant/forwards">View all forwards</a>
                 </div>
               </section>'
             : '<section class="card">
-                <h3>最近套餐</h3>
-                <p class="muted">还没有已开通套餐。先去 <strong>套餐</strong> 页面购买，再进入 <strong>转发配置</strong> 建立规则。</p>
+                <h3>Latest package</h3>
+                <p class="muted">No active package yet. Buy a package first, then create a forward rule.</p>
                 <div class="actions">
-                  <a class="button" href="/tenant/plans">查看套餐</a>
-                  <a class="button ghost" href="/tenant/account">先处理账户</a>
+                  <a class="button" href="/tenant/plans">View packages</a>
+                  <a class="button ghost" href="/tenant/account">Open account</a>
                 </div>
               </section>';
 
         $body = '
             <div class="hero">
               <div>
-                <h2>介绍</h2>
-                <p class="muted">这里是新的 tenant panel 入口。先检查账户与套餐，再进入转发、接入点和边车配置。</p>
+                <h2>Overview</h2>
+                <p class="muted">Check account and package status, then create a forward and install a client.</p>
               </div>
             </div>
             <div class="grid three">
-              <section class="card"><div class="muted">账户状态</div><div class="stats">' . ($linked ? '已绑定' : '未绑定') . '</div></section>
-              <section class="card"><div class="muted">已开通套餐</div><div class="stats">' . (int) ($serviceSummary['total'] ?? 0) . '</div></section>
-              <section class="card"><div class="muted">可用套餐</div><div class="stats">' . count($purchasePlans) . '</div></section>
-              <section class="card"><div class="muted">活跃服务</div><div class="stats">' . (int) ($serviceSummary['active_total'] ?? 0) . '</div></section>
-              <section class="card"><div class="muted">接入点</div><div class="stats">' . $clientCount . '</div></section>
-              <section class="card"><div class="muted">传输端点</div><div class="stats">' . $sidecarCount . '</div></section>
+              <section class="card"><div class="muted">Account</div><div class="stats">' . ($linked ? 'Linked' : 'Not linked') . '</div></section>
+              <section class="card"><div class="muted">Active packages</div><div class="stats">' . $activeServiceCount . '</div></section>
+              <section class="card"><div class="muted">Available packages</div><div class="stats">' . count($purchasePlans) . '</div></section>
+              <section class="card"><div class="muted">Total services</div><div class="stats">' . $totalServiceCount . '</div></section>
+              <section class="card"><div class="muted">Clients</div><div class="stats">' . $clientCount . '</div></section>
+              <section class="card"><div class="muted">Forwards</div><div class="stats">' . $forwardCount . '</div></section>
             </div>
             <div class="grid two" style="margin-top:20px;">
+              ' . $onboardingCard . '
               <section class="card">
-                <h3>建议顺序</h3>
-                <ol class="list">
-                  <li>到账户页面确认余额、绑定 Buy 账户。</li>
-                  <li>到套餐页面购买或查看当前服务。</li>
-                  <li>到转发配置为服务新增 Forward。</li>
-                  <li>需要自带线路时，再配置 Client 与传输端点。</li>
-                </ol>
-                <div class="actions">
-                  <a class="button" href="/tenant/account">打开账户</a>
-                  <a class="button ghost" href="/tenant/plans">打开套餐</a>
-                  <a class="button ghost" href="/tenant/forwards">打开转发配置</a>
-                </div>
-              </section>
-              <section class="card">
-                <h3>面板结构</h3>
+                <h3>Panel map</h3>
                 <div class="stack">
-                  <div><strong>介绍</strong><div class="muted">总览入口与操作顺序。</div></div>
-                  <div><strong>账户</strong><div class="muted">绑定、余额、转账记录。</div></div>
-                  <div><strong>套餐</strong><div class="muted">购买套餐、查看当前服务。</div></div>
-                  <div><strong>转发配置</strong><div class="muted">为服务添加或管理 Forward。</div></div>
-                  <div><strong>接入点 (Client)</strong><div class="muted">自有线路、安装命令、诊断。</div></div>
-                  <div><strong>Transport Endpoints</strong><div class="muted">Advanced target transport setup and backend reachability details.</div></div>
-                  <div><strong>知识库</strong><div class="muted">使用说明与排障入口。</div></div>
+                  <div><strong>Overview</strong><div class="muted">Status and the three-step setup path.</div></div>
+                  <div><strong>Packages</strong><div class="muted">Buy a plan and review current services.</div></div>
+                  <div><strong>Forwards</strong><div class="muted">Add or manage traffic rules for each service.</div></div>
+                  <div><strong>Clients</strong><div class="muted">Install commands, profiles, and device diagnostics.</div></div>
+                  <div><strong>Account</strong><div class="muted">Binding, balance, and transfer history.</div></div>
+                  <div><strong>Advanced</strong><div class="muted">Target endpoints and node groups for power users.</div></div>
                 </div>
               </section>
             </div>
             <div class="grid two" style="margin-top:20px;">
               ' . $latestServiceCard . '
               <section class="card">
-                <h3>下一步</h3>
-                <p class="muted">如果你刚完成登录，最常见的路径是：账户绑定 -> 购买套餐 -> 创建 Forward -> 按需安装 Client 或传输端点。</p>
+                <h3>Need help?</h3>
+                <p class="muted">Typical path: link account, buy a package, create one forward, then install the client.</p>
                 <div class="actions">
-                  <a class="button" href="/knowledgebase">打开知识库</a>
-                  <a class="button ghost" href="/tenant/clients">管理 Client</a>
-                  <a class="button ghost" href="/tenant-transport-endpoints">Manage Transport Endpoints</a>
+                  <a class="button" href="/knowledgebase">Open knowledgebase</a>
+                  <a class="button ghost" href="/tenant/clients">Manage clients</a>
+                  <a class="button ghost" href="/tenant/account">Open account</a>
                 </div>
               </section>
             </div>';
 
-        return $this->page('介绍', $body, $user, $this->tenantNav('intro'));
+        return $this->page('Overview', $body, $user, $this->tenantNav('intro'));
     }
+
+    public function gettingStartedPage(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+
+        $activeServices = $this->db->fetchAll(
+            'SELECT * FROM services WHERE user_id = :user_id AND status = :status ORDER BY id ASC',
+            ['user_id' => $user['id'], 'status' => 'active']
+        );
+
+        $body = '';
+
+        if ($activeServices === []) {
+            $body = '
+                <div class="hero">
+                  <div>
+                    <h2>Getting Started - Step 1: Get a Service</h2>
+                    <p class="muted">You do not have any active services yet. Please purchase a plan to get started.</p>
+                  </div>
+                </div>
+                <section class="card">
+                  <h3>Purchase a Plan</h3>
+                  <p>To use the service, you first need to purchase a plan. This will give you an active service that you can configure.</p>
+                  <div class="actions">
+                    <a class="button" href="/tenant/plans">Go to Plans</a>
+                  </div>
+                </section>
+            ';
+        } else {
+            $serviceIds = array_map(static fn(array $service): int => (int) ($service['id'] ?? 0), $activeServices);
+            $serviceIds = array_values(array_filter($serviceIds, static fn(int $id): bool => $id > 0));
+            $forwards = $serviceIds === []
+                ? []
+                : $this->db->fetchAll(
+                    'SELECT * FROM forwards WHERE service_id IN (' . implode(',', $serviceIds) . ')'
+                );
+
+            if ($forwards === []) {
+                $firstServiceId = (int) ($activeServices[0]['id'] ?? 0);
+                $body = '
+                    <div class="hero">
+                      <div>
+                        <h2>Getting Started - Step 2: Add a Forward</h2>
+                        <p class="muted">Great, you have an active service. Now create your first forward rule.</p>
+                      </div>
+                    </div>
+                    <section class="card">
+                      <h3>Create a Forward</h3>
+                      <p>A forward rule tells our service where to send your traffic. You can create a forward from your service detail page.</p>
+                      <div class="actions">
+                        <a class="button" href="/tenant/services/' . $firstServiceId . '/forward-wizard">Create Forward</a>
+                        <a class="button ghost" href="/tenant/services/' . $firstServiceId . '">Go to your Service</a>
+                      </div>
+                    </section>
+                ';
+            } else {
+                $body = '
+                    <div class="hero">
+                      <div>
+                        <h2>Getting Started - Step 3: Install Client</h2>
+                        <p class="muted">You are almost there. The last step is to install the client on your device.</p>
+                      </div>
+                    </div>
+                    <section class="card">
+                      <h3>Install the Client</h3>
+                      <p>Download and install the client for your operating system. After installation, your forwards will be active.</p>
+                      <div class="actions">
+                        <a class="button" href="/tenant/clients">Go to Client Downloads</a>
+                      </div>
+                    </section>
+                    <section class="card" style="margin-top: 20px;">
+                      <h3>All Set!</h3>
+                      <p>Once the client is installed and running, your service is ready to use. You can manage your forwards and services from the dashboard.</p>
+                      <div class="actions">
+                        <a class="button ghost" href="/tenant/forwards">View my Forwards</a>
+                      </div>
+                    </section>
+                ';
+            }
+        }
+
+        return $this->page('Getting Started', $body, $user, $this->tenantNav('intro'));
+    }
+
 
     public function dashboard(Request $request, array $params): Response
     {
@@ -329,14 +486,8 @@ final class TenantController extends BaseController
         $stats = $remote !== null && is_array($remote['stats'] ?? null) ? $remote['stats'] : [];
         $products = $remote !== null && is_array($remote['products'] ?? null) ? $remote['products'] : [];
         $purchasePlans = $this->provisioning->listPurchasablePlans();
-        if ($rows === '') {
-            $rows = '<tr><td colspan="7" class="muted">No forward rules yet. Create your first forward from the button above.</td></tr>';
-        }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
-        $createForwardNotice = $availableForwardCombinations === []
-            ? '<div class="flash danger">No route package is available for this service yet. Ask admin to publish a forward combination first.</div>'
-            : '<div class="flash success">Choose one route package, then fill your backend target.</div>';
 
         $syncNotice = $syncError !== ''
             ? '<div class="flash danger">' . $this->escape($syncError) . '</div>'
@@ -716,7 +867,7 @@ final class TenantController extends BaseController
               </div>
             </section>';
 
-        return $this->page('濂楅', $body, $user, $this->tenantNav('plans'));
+        return $this->page('Packages', $body, $user, $this->tenantNav('plans'));
     }
 
     /**
@@ -1343,8 +1494,8 @@ final class TenantController extends BaseController
         $body = $tabs . ($view === 'list' ? $listView : '') . ($view !== 'list' ? '
             <div class="hero">
               <div>
-                <h2>Transport Endpoints</h2>
-                <p class="muted">这里管理高级目标传输设置与后端可达性细节。每个传输端点代表一台 C 侧机器及其监听端口。</p>
+                <h2>Target Endpoints</h2>
+                <p class="muted">Advanced target transport setup and backend reachability details. Each endpoint represents a C-side machine and its listen ports.</p>
               </div>
             </div>
             <div class="grid two">
@@ -1378,7 +1529,7 @@ final class TenantController extends BaseController
               </section>
             </div>' : '');
 
-        return $this->page('Transport Endpoints', $body, $user, $this->tenantNav('transport-endpoints'));
+        return $this->page('Target Endpoints', $body, $user, $this->tenantNav('transport-endpoints'));
     }
 
     public function saveSidecarPoint(Request $request, array $params): Response
@@ -2506,8 +2657,8 @@ final class TenantController extends BaseController
         $body = '
             <div class="hero">
               <div>
-                <h2>Slave Groups</h2>
-                <p class="muted">Create sharing groups, invite others, and share your slaves with group members.</p>
+                <h2>Node Groups</h2>
+                <p class="muted">Create sharing groups, invite others, and share your nodes with group members.</p>
               </div>
             </div>
             <div class="grid two">
@@ -2532,7 +2683,7 @@ final class TenantController extends BaseController
             <div style="margin-top:18px;">' . $groupCards . '</div>
             ' . $ownedNodesSection;
 
-        return $this->page('Slave Groups', $body, $user, $this->tenantNav('slave-groups'));
+        return $this->page('Node Groups', $body, $user, $this->tenantNav('slave-groups'));
     }
 
     public function saveSlaveGroup(Request $request, array $params): Response
@@ -2980,18 +3131,16 @@ final class TenantController extends BaseController
      */
     private function tenantNav(string $active, ?int $serviceId = null): array
     {
-        $nav = [
+        return [
             ['group' => 'Overview', 'href' => '/tenant', 'label' => 'Overview', 'active' => $active === 'intro'],
-            ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'Services and Forwards', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
+            ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'Forwards', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
+            ['group' => 'Services', 'href' => '/tenant/plans', 'label' => 'Packages', 'active' => $active === 'plans'],
             ['group' => 'Clients', 'href' => '/tenant/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
-            ['group' => 'Plans and Billing', 'href' => '/tenant/plans', 'label' => 'Plans and Billing', 'active' => $active === 'plans'],
-            ['group' => 'Infrastructure', 'href' => '/tenant-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
-            ['group' => 'Infrastructure', 'href' => '/tenant/slave-groups', 'label' => 'Slave Groups', 'active' => $active === 'slave-groups'],
             ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Account', 'active' => $active === 'account'],
             ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
+            ['group' => 'Advanced', 'href' => '/tenant-transport-endpoints', 'label' => 'Target Endpoints', 'active' => $active === 'transport-endpoints'],
+            ['group' => 'Advanced', 'href' => '/tenant/slave-groups', 'label' => 'Node Groups', 'active' => $active === 'slave-groups'],
         ];
-
-        return $nav;
     }
 
     private function whmcsIdentityService(): WhmcsIdentityService
