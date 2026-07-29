@@ -295,6 +295,83 @@ body.pg-public:not(.bridge-home-page) .auth-grid {
   border: 0 !important;
 }
 
+body.pg-public:not(.bridge-home-page) .login-method-grid {
+  grid-template-columns: minmax(0, 720px) !important;
+}
+
+body.pg-public:not(.bridge-home-page) .login-method-card {
+  width: 100%;
+}
+
+body.pg-public:not(.bridge-home-page) .login-methods {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+}
+
+body.pg-public:not(.bridge-home-page) .login-method-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  min-height: 68px;
+  padding: 13px 22px;
+  border-width: 1px !important;
+  border-style: solid !important;
+  border-color: var(--bridge-modern-ink) !important;
+  border-radius: 999px !important;
+  background: var(--bridge-modern-panel) !important;
+  color: var(--bridge-modern-ink) !important;
+  text-decoration: none !important;
+  transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+body.pg-public:not(.bridge-home-page) .login-method-pill--buy {
+  background: var(--bridge-modern-ink) !important;
+  color: #ffffff !important;
+}
+
+body.pg-public:not(.bridge-home-page) .login-method-pill:hover {
+  background: var(--bridge-modern-coral) !important;
+  color: #ffffff !important;
+  transform: translateY(-1px);
+}
+
+body.pg-public:not(.bridge-home-page) .login-method-pill--disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+body.pg-public:not(.bridge-home-page) .login-method-pill--disabled:hover {
+  background: var(--bridge-modern-panel) !important;
+  color: var(--bridge-modern-ink) !important;
+  transform: none;
+}
+
+body.pg-public:not(.bridge-home-page) .login-method-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+body.pg-public:not(.bridge-home-page) .login-method-copy strong {
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+body.pg-public:not(.bridge-home-page) .login-method-arrow {
+  flex: 0 0 auto;
+  margin-left: 18px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+body.pg-public:not(.bridge-home-page) .login-method-actions {
+  margin-top: 22px;
+}
+
 body.pg-public:not(.bridge-home-page) .auth-grid > .surface-card,
 body.pg-public:not(.bridge-home-page) .auth-grid .surface-card,
 body.pg-public:not(.bridge-home-page) .pg-form-section,
@@ -1065,6 +1142,15 @@ body.pg-public:not(.bridge-home-page) .shell .hero {
   body.pg-app .kb-sidebar,
   body.pg-app .kb-article {
     padding: 20px !important;
+  }
+
+  body.pg-public:not(.bridge-home-page) .login-method-pill {
+    min-height: 64px;
+    padding: 12px 18px;
+  }
+
+  body.pg-public:not(.bridge-home-page) .login-method-copy strong {
+    font-size: 15px;
   }
 
   body.pg-app .pg-metric-strip {

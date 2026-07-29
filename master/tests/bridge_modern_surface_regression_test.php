@@ -12,7 +12,7 @@ $base = (string) file_get_contents($root . '/src/Controllers/BaseController.php'
 $install = (string) file_get_contents($root . '/public/install.php');
 $index = (string) file_get_contents($root . '/public/index.php');
 $css = (string) file_get_contents($root . '/public/assets/bridge-modern.css');
-$link = '/assets/bridge-modern.css?v=20260728a';
+$link = '/assets/bridge-modern.css?v=20260729a';
 
 foreach ([$base, $install, $index] as $source) {
     if (!str_contains($source, $link)) {

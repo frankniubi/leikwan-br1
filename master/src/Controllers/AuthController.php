@@ -115,11 +115,33 @@ final class AuthController extends BaseController
 
         $adminCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'admin'])['total'] ?? 0);
         $csrf = $this->escape(SessionAuth::csrfToken());
-        $oidcAction = '';
+        $showLegacyLogin = (string) $request->input('legacy', '') === '1';
+        $buyLoginMethod = '
+            <span class="login-method-pill login-method-pill--disabled" aria-disabled="true">
+              <span class="login-method-copy">
+                <strong>使用LeiKwan Buy登录 (Via LeiKwan Buy)</strong>
+              </span>
+            </span>';
         if ($this->oidcClient !== null && $this->oidcClient->isConfigured()) {
             $providerName = $this->escape($this->oidcClient->providerName());
-            $oidcAction = '<a class="button secondary" href="/auth/oidc/start">Sign in with ' . $providerName . '</a>';
+            $buyLoginMethod = '
+                <a class="login-method-pill login-method-pill--buy" href="/auth/oidc/start" title="Via ' . $providerName . '">
+                  <span class="login-method-copy">
+                    <strong>使用LeiKwan Buy登录 (Via LeiKwan Buy)</strong>
+                  </span>
+                  <span class="login-method-arrow" aria-hidden="true">&rarr;</span>
+                </a>';
         }
+        $loginMethods = '
+            <div class="login-methods">
+              ' . $buyLoginMethod . '
+              <a class="login-method-pill login-method-pill--legacy" href="/login?legacy=1">
+                <span class="login-method-copy">
+                  <strong>使用会聚账户(旧) (Via LeiKwan Bridge (Legacy))</strong>
+                </span>
+                <span class="login-method-arrow" aria-hidden="true">&rarr;</span>
+              </a>
+            </div>';
         $sideCard = $adminCount === 0
             ? '<section class="surface-card auth-side">
                 <span class="card-kicker">Setup</span>
@@ -138,34 +160,47 @@ final class AuthController extends BaseController
                 <div class="actions"><a class="button ghost" href="/forgot-password">Forgot Password</a></div>
               </section>';
 
-        $body = '
-            <section class="auth-grid">
-              <section class="surface-card auth-card">
-                <span class="card-kicker">Sign In</span>
-                <h2>Welcome back</h2>
-                <p class="muted">Use your panel account to continue.</p>
-                <form method="post" action="/login">
-                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                  <div class="form-grid single">
-                    <div class="field">
-                      <label>Email</label>
-                      <input type="email" name="email" placeholder="you@example.com" required>
+        if ($showLegacyLogin) {
+            $body = '
+                <section class="auth-grid">
+                  <section class="surface-card auth-card">
+                    <span class="card-kicker">旧账户登录</span>
+                    <h2>使用会聚账户(旧)</h2>
+                    <form method="post" action="/login">
+                      <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                      <div class="form-grid single">
+                        <div class="field">
+                          <label>Email</label>
+                          <input type="email" name="email" placeholder="you@example.com" required>
+                        </div>
+                        <div class="field">
+                          <label>Password</label>
+                          <input type="password" name="password" placeholder="Your password" required>
+                        </div>
+                      </div>
+                      <div class="actions">
+                        <button class="button" type="submit">Sign In</button>
+                        <a class="button ghost" href="/login">返回登录方式</a>
+                        <a class="button secondary" href="/">Back Home</a>
+                      </div>
+                    </form>
+                  </section>
+                  ' . $sideCard . '
+                </section>';
+        } else {
+            $body = '
+                <section class="auth-grid login-method-grid">
+                  <section class="surface-card auth-card login-method-card">
+                    <span class="card-kicker">Sign In</span>
+                    <h2>选择登录方式</h2>
+                    ' . $loginMethods . '
+                    <div class="actions login-method-actions">
+                      <a class="button ghost" href="/register">Create Account</a>
+                      <a class="button secondary" href="/">Back Home</a>
                     </div>
-                    <div class="field">
-                      <label>Password</label>
-                      <input type="password" name="password" placeholder="Your password" required>
-                    </div>
-                  </div>
-                   <div class="actions">
-                     <button class="button" type="submit">Sign In</button>
-                     ' . $oidcAction . '
-                     <a class="button ghost" href="/register">Create Account</a>
-                    <a class="button secondary" href="/">Back Home</a>
-                  </div>
-                </form>
-              </section>
-              ' . $sideCard . '
-            </section>';
+                  </section>
+                </section>';
+        }
 
         return $this->publicPage($this->displayBrandName() . ' Sign In', $body);
 
@@ -644,7 +679,7 @@ final class AuthController extends BaseController
 
         if ($user !== null && (string) ($user['status'] ?? '') === 'pending_verification') {
             SessionAuth::flash('error', 'This account is waiting for email verification. Please open the verification email first.');
-            return Response::redirect('/login');
+            return Response::redirect('/login?legacy=1');
         }
 
         if (
@@ -655,7 +690,7 @@ final class AuthController extends BaseController
             !password_verify($password, (string) $user['password_hash'])
         ) {
             SessionAuth::flash('error', 'Email or password is incorrect, or this account has not set a local password yet.');
-            return Response::redirect('/login');
+            return Response::redirect('/login?legacy=1');
         }
 
         SessionAuth::login($user);
