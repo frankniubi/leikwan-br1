@@ -29,7 +29,7 @@
       const fromQuery = params.get("lang");
       const resolved = fromQuery && config.supported.includes(fromQuery)
         ? fromQuery
-        : (config.defaultLocale || "en");
+        : "en";
       localStorage.setItem(storageKey, resolved);
       writeLocaleCookie(resolved);
       return resolved;
@@ -44,15 +44,28 @@
     const fromStorage = localStorage.getItem(storageKey);
     if (fromStorage && config.supported.includes(fromStorage)) {
       writeLocaleCookie(fromStorage);
-      if (window.location.pathname === "/knowledgebase") {
-        const synchronizedUrl = new URL(window.location.href);
-        synchronizedUrl.searchParams.set("lang", fromStorage);
-        window.location.replace(synchronizedUrl.toString());
-      }
       return fromStorage;
     }
 
-    return config.defaultLocale || "en";
+    return "en";
+  }
+
+  function migrateLegacyKnowledgebaseLocale() {
+    const currentUrl = new URL(window.location.href);
+    const fromCookie = readLocaleCookie();
+    if (currentUrl.searchParams.has("lang") || (fromCookie && config.supported.includes(fromCookie)) || currentUrl.pathname !== "/knowledgebase") {
+      return false;
+    }
+
+    const fromStorage = localStorage.getItem(storageKey);
+    if (!fromStorage || !config.supported.includes(fromStorage)) {
+      return false;
+    }
+
+    writeLocaleCookie(fromStorage);
+    currentUrl.searchParams.set("lang", fromStorage);
+    window.location.replace(currentUrl.toString());
+    return true;
   }
 
   function setLocale(locale) {
@@ -138,9 +151,15 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
+  function bootstrap() {
+    if (!migrateLegacyKnowledgebaseLocale()) {
+      applyPatch();
+    }
+  }
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", applyPatch);
+    document.addEventListener("DOMContentLoaded", bootstrap);
   } else {
-    applyPatch();
+    bootstrap();
   }
 })();
