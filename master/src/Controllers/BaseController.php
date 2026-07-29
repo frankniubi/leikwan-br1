@@ -1157,6 +1157,7 @@ abstract class BaseController
     window.LEIKWAN_I18N = {
       defaultLocale: 'en',
       supported: ['en', 'zh-TW', 'zh-Hans'],
+      cookieName: 'leikwan_locale',
       basePath: '/i18n'
     };
   </script>

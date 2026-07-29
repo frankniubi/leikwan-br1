@@ -215,17 +215,41 @@ function assertCoverageFromFiles(array $dictionary, array $files, array $allowli
 
 $base = file_get_contents(__DIR__ . '/../src/Controllers/BaseController.php');
 $install = file_get_contents(__DIR__ . '/../public/install.php');
+$patch = file_get_contents(__DIR__ . '/../public/i18n/patch.js');
 $zhTwPath = __DIR__ . '/../public/i18n/zh-TW.json';
 $zhHansPath = __DIR__ . '/../public/i18n/zh-Hans.json';
 
 foreach ([
     "supported: ['en', 'zh-TW', 'zh-Hans']",
+    "cookieName: 'leikwan_locale'",
     '<option value="zh-Hans">Simplified Chinese</option>',
     '<option value="zh-TW">Traditional Chinese</option>',
 ] as $snippet) {
     if (!str_contains((string) $base . (string) $install, $snippet)) {
         fail('missing locale snippet: ' . $snippet);
     }
+}
+
+foreach ([
+    'config.cookieName || "leikwan_locale"',
+    'params.has("lang")',
+    'SameSite=Lax',
+    'Max-Age=31536000',
+    'writeLocaleCookie(resolved)',
+    'writeLocaleCookie(fromStorage)',
+    'window.location.replace(synchronizedUrl.toString())',
+    'nextUrl.searchParams.set("lang", locale)',
+    'window.location.assign(nextUrl.toString())',
+] as $snippet) {
+    if (!str_contains((string) $patch, $snippet)) {
+        fail('missing patch locale snippet: ' . $snippet);
+    }
+}
+
+$cookiePosition = strpos((string) $patch, 'const fromCookie = readLocaleCookie();');
+$storagePosition = strpos((string) $patch, 'const fromStorage = localStorage.getItem(storageKey);');
+if ($cookiePosition === false || $storagePosition === false || $cookiePosition >= $storagePosition) {
+    fail('cookie locale must be checked before localStorage');
 }
 
 if (!file_exists($zhTwPath)) {
