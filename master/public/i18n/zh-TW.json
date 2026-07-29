@@ -1255,7 +1255,7 @@
     "Open Reader": "Open Reader",
     "Order": "Order",
     "Paste images directly into the editor. The panel will upload them and replace the pasted blob with a real URL.": "Paste images directly into the editor. The panel will upload them and replace the pasted blob with a real URL.",
-    "Pinned": "Pinned",
+    "Pinned": "置頂",
     "Plans define usable resources, billing, and allowed forward combinations for each tenant service.": "Plans define usable resources, billing, and allowed forward combinations for each tenant service.",
     "Plans now authorize tenant route packages through grouped forward combinations.": "Plans now authorize tenant route packages through grouped forward combinations.",
     "Published": "Published",
@@ -1458,7 +1458,18 @@
     "Open the panel that controls services, forwards, client profiles, transport endpoints, and route policy.": "開啟面板以管理服務、轉發、Client 設定檔、傳輸端點與路由策略。",
     "Blend exchange fabric and private-line paths by tenant plan, node group, region, and target transport policy.": "依租戶套餐、節點群組、地區與目標傳輸策略混合交換網路與專線路徑。",
     "One busy session should not crawl because one route is full. LeiKwan Bridge bonds IXP, IPLC, slave nodes, client profiles, and transport endpoints into one policy-visible delivery plane.": "單一高負載工作階段不該因為某條路由滿載就變慢。LeiKwan Bridge 將 IXP、IPLC、從節點、Client 設定檔與傳輸端點整合進同一個策略可見的交付平面。",
-    "Install flow, route modes, diagnostics, transport endpoint rollout, and recovery notes live in the panel docs.": "安裝流程、路由模式、診斷、傳輸端點發布與復原說明都在面板文件中。"
+    "Install flow, route modes, diagnostics, transport endpoint rollout, and recovery notes live in the panel docs.": "安裝流程、路由模式、診斷、傳輸端點發布與復原說明都在面板文件中。",
+    "User Guides": "使用者指南",
+    "Start here": "從這裡開始",
+    "Learn as needed": "按需了解",
+    "This topic is not available in your selected language. Showing English.": "此主題暫無所選語言版本，現顯示英文內容。",
+    "Diagram could not be rendered. The source is shown below.": "圖表無法呈現，來源內容顯示如下。",
+    "No published guides yet.": "暫無已發布的指南。",
+    "Open guide editor": "開啟指南編輯器",
+    "Practical guides for setting up and using your service": "設定和使用服務的實用指南",
+    "Start with the essentials, then open another topic only when you need it.": "先從基礎內容開始，需要時再開啟其他主題。",
+    "An administrator can publish the first user guide.": "管理員可以發布第一篇使用者指南。",
+    "Untitled guide": "未命名指南"
   },
   "attributes": {
     "Client to target architecture": "\u5ba2\u6236\u7aef\u5230\u76ee\u7684\u5730\u7684\u67b6\u69cb",

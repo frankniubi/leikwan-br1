@@ -600,6 +600,14 @@ $requiredTextKeys = [
     'Registration',
     'Clear All Failed Tasks',
     'Allowed Forward Combinations',
+    'User Guides',
+    'Start here',
+    'Learn as needed',
+    'Pinned',
+    'Updated',
+    'This topic is not available in your selected language. Showing English.',
+    'Diagram could not be rendered. The source is shown below.',
+    'No published guides yet.',
 ];
 
 $requiredAttributeKeys = [

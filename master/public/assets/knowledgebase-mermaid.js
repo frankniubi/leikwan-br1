@@ -1,0 +1,54 @@
+(function () {
+  async function renderDiagrams() {
+    const sources = Array.from(document.querySelectorAll("pre.mermaid"));
+    if (!sources.length || !window.mermaid) return;
+
+    window.mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      htmlLabels: false,
+      theme: "base",
+      flowchart: { useMaxWidth: true }
+    });
+
+    for (let index = 0; index < sources.length; index += 1) {
+      const source = sources[index];
+      const definition = source.textContent || "";
+      try {
+        const result = await window.mermaid.render(`kb-mermaid-${index}`, definition);
+        const figure = document.createElement("figure");
+        figure.className = "kb-mermaid-figure";
+        figure.innerHTML = result.svg;
+        const svg = figure.querySelector("svg");
+        if (svg) {
+          const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+          const titleId = `kb-mermaid-title-${index}`;
+          title.id = titleId;
+          title.textContent = source.dataset.diagramLabel || "Guide diagram";
+          svg.prepend(title);
+          svg.setAttribute("role", "img");
+          svg.setAttribute("aria-labelledby", titleId);
+          svg.removeAttribute("height");
+          svg.style.maxWidth = "100%";
+          svg.style.height = "auto";
+        }
+        source.replaceWith(figure);
+        if (typeof result.bindFunctions === "function") result.bindFunctions(figure);
+      } catch (error) {
+        source.classList.add("kb-mermaid-failed");
+        const notice = document.createElement("p");
+        notice.className = "kb-mermaid-error";
+        notice.textContent = source.dataset.errorLabel
+          || source.getAttribute("data-error-label")
+          || "Diagram could not be rendered. The source is shown below.";
+        source.before(notice);
+      }
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", renderDiagrams);
+  } else {
+    renderDiagrams();
+  }
+}());
