@@ -72,6 +72,265 @@ final class KnowledgebaseService
     /**
      * @return array<int, array<string, mixed>>
      */
+    public function listAdminTopics(): array
+    {
+        return $this->db->fetchAll(
+            "SELECT t.id,
+                    t.topic_key,
+                    t.is_pinned,
+                    t.sort_order,
+                    t.created_at,
+                    t.updated_at,
+                    en.title AS en_title,
+                    en.status AS en_status,
+                    zh_hans.title AS zh_hans_title,
+                    zh_hans.status AS zh_hans_status,
+                    zh_tw.title AS zh_tw_title,
+                    zh_tw.status AS zh_tw_status
+             FROM knowledgebase_topics t
+             LEFT JOIN knowledgebase_articles en
+                    ON en.topic_id = t.id AND en.locale = 'en'
+             LEFT JOIN knowledgebase_articles zh_hans
+                    ON zh_hans.topic_id = t.id AND zh_hans.locale = 'zh-Hans'
+             LEFT JOIN knowledgebase_articles zh_tw
+                    ON zh_tw.topic_id = t.id AND zh_tw.locale = 'zh-TW'
+             ORDER BY t.is_pinned DESC, t.sort_order ASC, t.id ASC"
+        );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function findAdminTopicById(int $id): ?array
+    {
+        if ($id <= 0) {
+            return null;
+        }
+
+        return $this->db->fetchOne(
+            'SELECT * FROM knowledgebase_topics WHERE id = :id LIMIT 1',
+            ['id' => $id]
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    public function saveTopic(array $payload): int
+    {
+        $id = (int) ($payload['id'] ?? 0);
+        $existing = $id > 0 ? $this->findAdminTopicById($id) : null;
+        if ($id > 0 && $existing === null) {
+            throw new InvalidArgumentException('Knowledgebase topic not found.');
+        }
+
+        $topicKey = trim((string) ($payload['topic_key'] ?? ''));
+        if (preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/', $topicKey) !== 1) {
+            throw new InvalidArgumentException('Topic key must use lowercase letters, numbers, and single hyphens.');
+        }
+
+        $duplicate = $this->db->fetchOne(
+            'SELECT id FROM knowledgebase_topics WHERE topic_key = :topic_key'
+                . ($id > 0 ? ' AND id <> :id' : '')
+                . ' LIMIT 1',
+            $id > 0 ? ['topic_key' => $topicKey, 'id' => $id] : ['topic_key' => $topicKey]
+        );
+        if ($duplicate !== null) {
+            throw new InvalidArgumentException('This topic key already exists.');
+        }
+
+        $isPinned = $this->truthy($payload['is_pinned'] ?? '0') ? 1 : 0;
+        $sortOrder = (int) ($payload['sort_order'] ?? 100);
+        $now = gmdate('Y-m-d H:i:s');
+        if ($existing === null) {
+            return $this->db->insert('knowledgebase_topics', [
+                'topic_key' => $topicKey,
+                'is_pinned' => $isPinned,
+                'sort_order' => $sortOrder,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+
+        $this->db->execute(
+            'UPDATE knowledgebase_topics
+             SET topic_key = :topic_key,
+                 is_pinned = :is_pinned,
+                 sort_order = :sort_order,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $id,
+                'topic_key' => $topicKey,
+                'is_pinned' => $isPinned,
+                'sort_order' => $sortOrder,
+                'updated_at' => $now,
+            ]
+        );
+
+        return $id;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function findAdminArticle(int $topicId, string $locale): ?array
+    {
+        $locale = LocaleResolver::normalize($locale);
+        if ($topicId <= 0 || $locale === null) {
+            return null;
+        }
+
+        return $this->db->fetchOne(
+            'SELECT * FROM knowledgebase_articles WHERE topic_id = :topic_id AND locale = :locale LIMIT 1',
+            ['topic_id' => $topicId, 'locale' => $locale]
+        );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function findAdminArticleById(int $articleId): ?array
+    {
+        if ($articleId <= 0) {
+            return null;
+        }
+
+        return $this->db->fetchOne(
+            'SELECT * FROM knowledgebase_articles WHERE id = :id LIMIT 1',
+            ['id' => $articleId]
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    public function saveArticle(array $payload, int $authorUserId): int
+    {
+        $locale = LocaleResolver::normalize((string) ($payload['locale'] ?? ''));
+        if ($locale === null) {
+            throw new InvalidArgumentException('Unsupported knowledgebase locale.');
+        }
+
+        $topicId = (int) ($payload['topic_id'] ?? 0);
+        if ($this->findAdminTopicById($topicId) === null) {
+            throw new InvalidArgumentException('Knowledgebase topic not found.');
+        }
+
+        $status = trim((string) ($payload['status'] ?? 'draft'));
+        if (!in_array($status, ['draft', 'published'], true)) {
+            throw new InvalidArgumentException('Unsupported knowledgebase article status.');
+        }
+
+        $title = trim((string) ($payload['title'] ?? ''));
+        if ($title === '') {
+            throw new InvalidArgumentException('Article title is required.');
+        }
+
+        $excerpt = trim((string) ($payload['excerpt'] ?? ''));
+        $bodyHtml = (new KnowledgebaseHtmlSanitizer())->sanitize((string) ($payload['body_html'] ?? ''));
+        if ($status === 'published') {
+            if ($excerpt === '') {
+                throw new InvalidArgumentException('Published article excerpt is required.');
+            }
+            $bodyText = trim((string) preg_replace('/\s+/u', ' ', strip_tags($bodyHtml)));
+            if ($bodyText === '') {
+                throw new InvalidArgumentException('Published article body is required.');
+            }
+            MermaidSourcePolicy::assertPublishable(
+                $bodyHtml,
+                (string) ($payload['mermaid_validation_digest'] ?? '')
+            );
+        }
+
+        $id = (int) ($payload['id'] ?? 0);
+        $existing = $id > 0 ? $this->findAdminArticleById($id) : null;
+        if ($id > 0 && ($existing === null
+            || (int) $existing['topic_id'] !== $topicId
+            || (string) $existing['locale'] !== $locale)) {
+            throw new InvalidArgumentException('Knowledgebase article not found.');
+        }
+        if ($id <= 0 && $this->findAdminArticle($topicId, $locale) !== null) {
+            throw new InvalidArgumentException('This language version already exists.');
+        }
+
+        $now = gmdate('Y-m-d H:i:s');
+        $firstPublishedAt = (string) ($existing['published_at'] ?? '');
+        $publishedAt = $firstPublishedAt !== ''
+            ? $firstPublishedAt
+            : ($status === 'published' ? $now : null);
+        if ($existing === null) {
+            return $this->db->insert('knowledgebase_articles', [
+                'topic_id' => $topicId,
+                'locale' => $locale,
+                'author_user_id' => $authorUserId > 0 ? $authorUserId : null,
+                'title' => $title,
+                'excerpt' => $excerpt,
+                'body_html' => $bodyHtml,
+                'status' => $status,
+                'published_at' => $publishedAt,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+
+        $this->db->execute(
+            'UPDATE knowledgebase_articles
+             SET author_user_id = :author_user_id,
+                 title = :title,
+                 excerpt = :excerpt,
+                 body_html = :body_html,
+                 status = :status,
+                 published_at = :published_at,
+                 updated_at = :updated_at
+             WHERE id = :id AND topic_id = :topic_id AND locale = :locale',
+            [
+                'id' => $id,
+                'topic_id' => $topicId,
+                'locale' => $locale,
+                'author_user_id' => $authorUserId > 0 ? $authorUserId : null,
+                'title' => $title,
+                'excerpt' => $excerpt,
+                'body_html' => $bodyHtml,
+                'status' => $status,
+                'published_at' => $publishedAt,
+                'updated_at' => $now,
+            ]
+        );
+
+        return $id;
+    }
+
+    public function deleteArticle(int $articleId): void
+    {
+        if ($this->findAdminArticleById($articleId) === null) {
+            throw new InvalidArgumentException('Knowledgebase article not found.');
+        }
+
+        $this->db->execute('DELETE FROM knowledgebase_articles WHERE id = :id', ['id' => $articleId]);
+    }
+
+    public function deleteTopic(int $topicId): void
+    {
+        $this->db->transaction(function (Database $db) use ($topicId): void {
+            $topic = $db->fetchOne(
+                'SELECT id FROM knowledgebase_topics WHERE id = :id LIMIT 1',
+                ['id' => $topicId]
+            );
+            if ($topic === null) {
+                throw new InvalidArgumentException('Knowledgebase topic not found.');
+            }
+            $db->execute(
+                'DELETE FROM knowledgebase_articles WHERE topic_id = :topic_id',
+                ['topic_id' => $topicId]
+            );
+            $db->execute('DELETE FROM knowledgebase_topics WHERE id = :id', ['id' => $topicId]);
+        });
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
     public function listPublishedThreads(): array
     {
         return $this->db->fetchAll(
