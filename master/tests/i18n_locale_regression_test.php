@@ -213,9 +213,271 @@ function assertCoverageFromFiles(array $dictionary, array $files, array $allowli
     fail('uncovered ' . $dictionaryKey . ' locale strings:' . PHP_EOL . implode(PHP_EOL, $lines));
 }
 
+function assertPatchRuntimeBehavior(string $patchPath): void
+{
+    $harness = <<<'JS'
+'use strict';
+
+const fs = require('fs');
+const vm = require('vm');
+const patch = fs.readFileSync(process.argv[2], 'utf8');
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function same(actual, expected, message) {
+  const actualJson = JSON.stringify(actual);
+  const expectedJson = JSON.stringify(expected);
+  assert(actualJson === expectedJson, `${message}: expected ${expectedJson}, got ${actualJson}`);
+}
+
+function withoutLang(url) {
+  return Array.from(url.searchParams.entries()).filter(([name]) => name !== 'lang');
+}
+
+async function execute(options = {}) {
+  const href = options.href || 'https://example.test/account';
+  const parsed = new URL(href);
+  const storage = new Map(Object.entries(options.storage || {}));
+  const storageWrites = [];
+  const cookieWrites = [];
+  const replaceCalls = [];
+  const assignCalls = [];
+  let cookieHeader = options.cookie || '';
+
+  const switcher = {
+    value: '',
+    change: null,
+    addEventListener(type, callback) {
+      if (type === 'change') this.change = callback;
+    }
+  };
+
+  const document = {
+    readyState: 'complete',
+    documentElement: { lang: '' },
+    body: {},
+    getElementById(id) {
+      return id === 'locale-switcher' ? switcher : null;
+    },
+    createTreeWalker() {
+      throw new Error('tree walker should not run when dictionary fetch is unavailable');
+    }
+  };
+
+  Object.defineProperty(document, 'cookie', {
+    get() {
+      return cookieHeader;
+    },
+    set(value) {
+      cookieWrites.push(value);
+      const pair = value.split(';', 1)[0];
+      const separator = pair.indexOf('=');
+      const name = separator === -1 ? pair : pair.slice(0, separator);
+      const existing = cookieHeader
+        .split(';')
+        .map((part) => part.trim())
+        .filter((part) => part !== '' && part.split('=', 1)[0].trim() !== name);
+      cookieHeader = [pair, ...existing].join('; ');
+    }
+  });
+
+  const location = {
+    href,
+    pathname: parsed.pathname,
+    search: parsed.search,
+    replace(url) {
+      replaceCalls.push({ url: String(url), stack: new Error().stack || '' });
+    },
+    assign(url) {
+      assignCalls.push({ url: String(url), stack: new Error().stack || '' });
+    }
+  };
+
+  const window = {
+    LEIKWAN_I18N: Object.assign({
+      defaultLocale: 'en',
+      supported: ['en', 'zh-TW', 'zh-Hans'],
+      basePath: '/i18n'
+    }, options.config || {}),
+    location
+  };
+
+  const context = {
+    window,
+    document,
+    localStorage: {
+      getItem(key) {
+        return storage.has(key) ? storage.get(key) : null;
+      },
+      setItem(key, value) {
+        storageWrites.push([key, String(value)]);
+        storage.set(key, String(value));
+      }
+    },
+    URL,
+    URLSearchParams,
+    NodeFilter: { SHOW_TEXT: 4, FILTER_REJECT: 2, FILTER_ACCEPT: 1 },
+    MutationObserver: class {
+      observe() {}
+    },
+    fetch: async () => ({ ok: false }),
+    console
+  };
+
+  vm.runInNewContext(patch, context, { filename: process.argv[2] });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  return {
+    document,
+    switcher,
+    storage,
+    storageWrites,
+    cookieWrites,
+    replaceCalls,
+    assignCalls
+  };
+}
+
+function assertCookieWrite(write, name, encodedLocale) {
+  assert(write.startsWith(`${name}=${encodedLocale};`), `cookie must use ${name} and encode its locale`);
+  assert(write.includes('; Path=/'), 'cookie must use Path=/');
+  assert(write.includes('; Max-Age=31536000'), 'cookie must use one-year Max-Age');
+  assert(write.includes('; SameSite=Lax'), 'cookie must use SameSite=Lax');
+}
+
+(async () => {
+  const fallback = await execute({
+    href: 'https://example.test/account',
+    config: { defaultLocale: 'zh-Hans' }
+  });
+  same(fallback.document.documentElement.lang, 'en', 'missing query, cookie, and storage must fall back to English');
+
+  const query = await execute({
+    href: 'https://example.test/account?lang=zh-Hans',
+    cookie: 'leikwan_locale=zh-TW',
+    storage: { leikwan_locale: 'en' }
+  });
+  same(query.document.documentElement.lang, 'zh-Hans', 'query locale must win');
+  same(query.storage.get('leikwan_locale'), 'zh-Hans', 'query locale must persist to localStorage');
+  same(query.cookieWrites.length, 1, 'query locale must persist one cookie');
+  assertCookieWrite(query.cookieWrites[0], 'leikwan_locale', 'zh-Hans');
+  same(query.replaceCalls.length, 0, 'query locale must not replace location');
+  same(query.assignCalls.length, 0, 'query locale must not assign location');
+
+  const invalidQuery = await execute({
+    href: 'https://example.test/account?lang=unsupported',
+    cookie: 'leikwan_locale=zh-TW',
+    storage: { leikwan_locale: 'zh-Hans' }
+  });
+  same(invalidQuery.document.documentElement.lang, 'en', 'invalid query must resolve to English');
+  same(invalidQuery.storage.get('leikwan_locale'), 'en', 'resolved query fallback must persist to localStorage');
+  assertCookieWrite(invalidQuery.cookieWrites[0], 'leikwan_locale', 'en');
+
+  const cookie = await execute({
+    href: 'https://example.test/account',
+    cookie: 'other=a=b=c; custom_locale=zh%2DTW',
+    storage: { leikwan_locale: 'zh-Hans' },
+    config: { cookieName: 'custom_locale' }
+  });
+  same(cookie.document.documentElement.lang, 'zh-TW', 'decoded configured cookie must win over localStorage');
+  same(cookie.storage.get('leikwan_locale'), 'zh-TW', 'cookie locale must persist to localStorage');
+  same(cookie.cookieWrites.length, 0, 'reading a valid cookie must not rewrite it');
+
+  const firstEquals = await execute({
+    href: 'https://example.test/account',
+    cookie: 'leikwan_locale=zh%2DTW=trailing'
+  });
+  same(firstEquals.document.documentElement.lang, 'en', 'cookie parsing must retain text after the first equals');
+
+  const malformedCookie = await execute({
+    href: 'https://example.test/account',
+    cookie: 'leikwan_locale=%E0%A4%A',
+    storage: { leikwan_locale: 'zh-Hans' }
+  });
+  same(malformedCookie.document.documentElement.lang, 'zh-Hans', 'malformed cookie decoding must not abort storage fallback');
+  assertCookieWrite(malformedCookie.cookieWrites[0], 'leikwan_locale', 'zh-Hans');
+
+  const invalidCookieMigration = await execute({
+    href: 'https://example.test/knowledgebase?thread=setup',
+    cookie: 'leikwan_locale=unsupported',
+    storage: { leikwan_locale: 'zh-Hans' }
+  });
+  same(invalidCookieMigration.replaceCalls.length, 1, 'unsupported cookie must not block legacy localStorage migration');
+  same(new URL(invalidCookieMigration.replaceCalls[0].url).searchParams.get('lang'), 'zh-Hans', 'legacy migration must use supported storage locale');
+
+  for (const pathname of ['/knowledgebase/', '/knowledgebase/setup']) {
+    const guarded = await execute({
+      href: `https://example.test${pathname}?thread=setup`,
+      storage: { leikwan_locale: 'zh-Hans' }
+    });
+    same(guarded.replaceCalls.length, 0, `legacy migration must require exact /knowledgebase pathname (${pathname})`);
+    same(guarded.document.documentElement.lang, 'zh-Hans', `non-exact knowledgebase path must still patch (${pathname})`);
+  }
+
+  const legacyHref = 'https://example.test/knowledgebase?thread=setup&foo=1&foo=2#section';
+  const legacy = await execute({
+    href: legacyHref,
+    storage: { leikwan_locale: 'zh-TW' }
+  });
+  same(legacy.replaceCalls.length, 1, 'legacy knowledgebase locale must perform exactly one replace');
+  same(legacy.assignCalls.length, 0, 'legacy migration must not assign location');
+  assertCookieWrite(legacy.cookieWrites[0], 'leikwan_locale', 'zh-TW');
+  const legacyUrl = new URL(legacy.replaceCalls[0].url);
+  same(legacyUrl.searchParams.getAll('lang'), ['zh-TW'], 'legacy migration must set one lang parameter');
+  same(withoutLang(legacyUrl), withoutLang(new URL(legacyHref)), 'legacy migration must preserve every non-lang parameter');
+  same(legacyUrl.hash, '#section', 'legacy migration must preserve the fragment');
+  assert(!legacy.replaceCalls[0].stack.includes('applyPatch'), 'legacy migration navigation must happen outside applyPatch');
+  same(legacy.document.documentElement.lang, '', 'patching must not continue after legacy migration navigation');
+
+  const loopGuard = await execute({
+    href: 'https://example.test/knowledgebase?thread=setup&lang=zh-TW',
+    storage: { leikwan_locale: 'zh-TW' }
+  });
+  same(loopGuard.replaceCalls.length, 0, 'synchronized knowledgebase URL must not redirect again');
+
+  const selectionHref = 'https://example.test/knowledgebase?thread=setup&lang=en&foo=1&lang=zh-Hans#install';
+  const selection = await execute({ href: selectionHref });
+  assert(typeof selection.switcher.change === 'function', 'locale switcher change handler must be installed');
+  selection.switcher.change.call({ value: 'zh-TW' });
+  same(selection.storage.get('leikwan_locale'), 'zh-TW', 'explicit selection must persist to localStorage');
+  same(selection.cookieWrites.length, 2, 'bootstrap query and explicit selection must each persist a cookie');
+  assertCookieWrite(selection.cookieWrites[1], 'leikwan_locale', 'zh-TW');
+  same(selection.assignCalls.length, 1, 'explicit selection must perform exactly one assign');
+  same(selection.replaceCalls.length, 0, 'explicit selection must not replace location');
+  const selectionUrl = new URL(selection.assignCalls[0].url);
+  same(selectionUrl.searchParams.getAll('lang'), ['zh-TW'], 'explicit selection must replace all lang values');
+  same(withoutLang(selectionUrl), withoutLang(new URL(selectionHref)), 'explicit selection must preserve every non-lang parameter');
+  same(selectionUrl.hash, '#install', 'explicit selection must preserve the fragment');
+  assert(!selection.assignCalls[0].stack.includes('applyPatch'), 'explicit selection navigation must not run during applyPatch');
+})().catch((error) => {
+  console.error(error.message);
+  process.exit(1);
+});
+JS;
+
+    $harnessPath = tempnam(sys_get_temp_dir(), 'leikwan-i18n-');
+    if ($harnessPath === false || file_put_contents($harnessPath, $harness) === false) {
+        fail('unable to create patch runtime harness');
+    }
+
+    try {
+        $output = [];
+        $exitCode = 0;
+        exec('node ' . escapeshellarg($harnessPath) . ' ' . escapeshellarg($patchPath) . ' 2>&1', $output, $exitCode);
+        if ($exitCode !== 0) {
+            fail('patch runtime regression failed:' . PHP_EOL . implode(PHP_EOL, $output));
+        }
+    } finally {
+        @unlink($harnessPath);
+    }
+}
+
 $base = file_get_contents(__DIR__ . '/../src/Controllers/BaseController.php');
 $install = file_get_contents(__DIR__ . '/../public/install.php');
-$patch = file_get_contents(__DIR__ . '/../public/i18n/patch.js');
+$patchPath = __DIR__ . '/../public/i18n/patch.js';
+$patch = file_get_contents($patchPath);
 $zhTwPath = __DIR__ . '/../public/i18n/zh-TW.json';
 $zhHansPath = __DIR__ . '/../public/i18n/zh-Hans.json';
 
@@ -237,7 +499,7 @@ foreach ([
     'Max-Age=31536000',
     'writeLocaleCookie(resolved)',
     'writeLocaleCookie(fromStorage)',
-    'window.location.replace(synchronizedUrl.toString())',
+    'window.location.replace(currentUrl.toString())',
     'nextUrl.searchParams.set("lang", locale)',
     'window.location.assign(nextUrl.toString())',
 ] as $snippet) {
@@ -251,6 +513,20 @@ $storagePosition = strpos((string) $patch, 'const fromStorage = localStorage.get
 if ($cookiePosition === false || $storagePosition === false || $cookiePosition >= $storagePosition) {
     fail('cookie locale must be checked before localStorage');
 }
+
+$applyPatchStart = strpos((string) $patch, 'async function applyPatch()');
+$bootstrapStart = strpos((string) $patch, 'function bootstrap()');
+if ($applyPatchStart === false || $bootstrapStart === false || $applyPatchStart >= $bootstrapStart) {
+    fail('unable to locate applyPatch bootstrap boundary');
+}
+$applyPatchBody = substr((string) $patch, $applyPatchStart, $bootstrapStart - $applyPatchStart);
+foreach (['window.location.', 'setLocale(', 'migrateLegacyKnowledgebaseLocale('] as $navigationCall) {
+    if (str_contains($applyPatchBody, $navigationCall)) {
+        fail('applyPatch must not navigate or call navigation helpers: ' . $navigationCall);
+    }
+}
+
+assertPatchRuntimeBehavior($patchPath);
 
 if (!file_exists($zhTwPath)) {
     fail('missing zh-TW locale file');
