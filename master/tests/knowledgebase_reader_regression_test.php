@@ -39,6 +39,8 @@ foreach ([
     '/assets/vendor/mermaid/mermaid.min.js?v=11.12.0',
     '/assets/knowledgebase-mermaid.js?v=20260729',
     '?thread=',
+    "'<span class=\"kb-updated\"><span>Updated</span> <time>'",
+    "'<span><span>Updated</span> <time>'",
 ] as $required) {
     if (!str_contains($auth, $required)) {
         fail('missing localized guide reader snippet: ' . $required);
