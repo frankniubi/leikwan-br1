@@ -71,6 +71,7 @@ $invalidSources = [
     "flowchart BT\naccTitle: Wrong direction\naccDescr: Wrong direction.\nA --> B" => 'wrong direction',
     "flowchart TD\naccTitle: Click\naccDescr: Click is active.\nclick A href \"https://example.com\"" => 'click statement',
     "flowchart TD\naccTitle: Click\naccDescr: Click is active.\n   CLICK A href \"https://example.com\"" => 'leading whitespace case-variant click',
+    "flowchart TD\naccTitle: Click\naccDescr: Click is active.\nA[Go]; click A href \"https://example.com\"" => 'semicolon-chained click statement',
     "flowchart TD\naccTitle: Directive\naccDescr: Directive is active.\n%%{init: {'theme': 'dark'}}%%\nA --> B" => 'directive',
     "flowchart TD\naccTitle: JavaScript\naccDescr: JavaScript is active.\nA[javascript:alert(1)]" => 'javascript scheme',
     "flowchart TD\naccTitle: Script\naccDescr: Script text is active.\n&lt;script src=x&gt;" => 'entity encoded script',
