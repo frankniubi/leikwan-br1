@@ -7,8 +7,13 @@ function fail(string $message): never
     exit(1);
 }
 
-$auth = file_get_contents(__DIR__ . '/../src/Controllers/AuthController.php');
-$tenant = file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php');
+$root = __DIR__ . '/..';
+$auth = file_get_contents($root . '/src/Controllers/AuthController.php');
+$tenant = file_get_contents($root . '/src/Controllers/TenantController.php');
+$runtimePath = $root . '/public/assets/knowledgebase-mermaid.js';
+$bundlePath = $root . '/public/assets/vendor/mermaid/mermaid.min.js';
+$licensePath = $root . '/public/assets/vendor/mermaid/LICENSE';
+$packagePath = $root . '/public/assets/vendor/mermaid/package.json';
 
 if (!is_string($auth) || $auth === '') {
     fail('failed to read AuthController source');
@@ -19,27 +24,114 @@ if (!is_string($tenant) || $tenant === '') {
 
 foreach ([
     'new KnowledgebaseService($this->db)',
-    'listPublishedThreads()',
-    'findPublishedThreadBySlug',
-    'Latest Threads',
-    'No published threads yet.',
-    'Open admin editor',
+    'LocaleResolver::resolve($request)',
+    'listPublishedTopics($locale)',
+    'findPublishedTopicByKey($selectedTopicKey, $locale)',
+    "(bool) (\$selectedTopic['used_fallback'] ?? false)",
+    "'getting-started-five-minute-overview'",
+    "'install-client'",
+    "'getting-started-first-forward-checklist'",
+    "'connect-and-verify'",
+    "'Start here'",
+    "'Learn as needed'",
+    'KnowledgebaseHtmlSanitizer',
+    "str_contains(\$articleBody, '<pre class=\"mermaid\">')",
+    '/assets/vendor/mermaid/mermaid.min.js?v=11.12.0',
+    '/assets/knowledgebase-mermaid.js?v=20260729',
     '?thread=',
-    'Knowledgebase / Docs',
 ] as $required) {
     if (!str_contains($auth, $required)) {
-        fail('missing threaded reader snippet: ' . $required);
+        fail('missing localized guide reader snippet: ' . $required);
     }
 }
 
 foreach ([
-    '/knowledgebase?thread=getting-started-first-forward-checklist',
-    '/knowledgebase?thread=connection-modes-single-race-bond',
-    '/knowledgebase?thread=troubleshooting-common-mistakes',
-] as $requiredTenantLink) {
-    if (!str_contains($tenant, $requiredTenantLink)) {
-        fail('missing updated tenant knowledgebase link: ' . $requiredTenantLink);
+    'listPublishedThreads()',
+    'findPublishedThreadBySlug',
+    'Latest Threads',
+    'Threaded operational docs',
+    'https://cdn.jsdelivr.net/npm/mermaid',
+    'Slug: ',
+] as $forbidden) {
+    if (str_contains($auth, $forbidden)) {
+        fail('found stale or unsafe reader snippet: ' . $forbidden);
     }
+}
+
+if (preg_match('/private const START_HERE_TOPIC_KEYS = \[(.*?)\];/s', $auth, $startHereMatch) !== 1) {
+    fail('missing Start here topic key declaration');
+}
+preg_match_all("/'([^']+)'/", $startHereMatch[1], $startHereKeys);
+if (($startHereKeys[1] ?? []) !== [
+    'getting-started-five-minute-overview',
+    'install-client',
+    'getting-started-first-forward-checklist',
+    'connect-and-verify',
+]) {
+    fail('Start here must contain exactly the four approved topic keys in service order');
+}
+
+foreach ([
+    'getting-started-five-minute-overview',
+    'install-client',
+    'getting-started-first-forward-checklist',
+    'connect-and-verify',
+] as $legacyThreadValue) {
+    if (!str_contains($auth . $tenant, $legacyThreadValue)) {
+        fail('missing stable legacy thread value: ' . $legacyThreadValue);
+    }
+}
+
+foreach ([$runtimePath, $bundlePath, $licensePath, $packagePath] as $requiredFile) {
+    if (!is_file($requiredFile)) {
+        fail('missing local Mermaid asset: ' . $requiredFile);
+    }
+}
+
+$runtime = file_get_contents($runtimePath);
+$bundle = file_get_contents($bundlePath);
+$packageJson = file_get_contents($packagePath);
+if (!is_string($runtime) || !is_string($bundle) || !is_string($packageJson)) {
+    fail('failed to read local Mermaid assets');
+}
+
+foreach ([
+    'querySelectorAll("pre.mermaid")',
+    'securityLevel: "strict"',
+    'htmlLabels: false',
+    'await window.mermaid.render',
+    'source.replaceWith(figure)',
+    'source.classList.add("kb-mermaid-failed")',
+    'source.dataset.errorLabel',
+    'source.getAttribute("data-error-label")',
+    'svg.setAttribute("role", "img")',
+    'svg.setAttribute("aria-labelledby", titleId)',
+    'document.createElementNS("http://www.w3.org/2000/svg", "title")',
+    'svg.removeAttribute("height")',
+    'svg.style.maxWidth = "100%"',
+    'svg.style.height = "auto"',
+] as $requiredRuntimeSnippet) {
+    if (!str_contains($runtime, $requiredRuntimeSnippet)) {
+        fail('missing Mermaid runtime behavior: ' . $requiredRuntimeSnippet);
+    }
+}
+
+if (!str_contains($bundle, '11.12.0')) {
+    fail('Mermaid browser bundle is not exact version 11.12.0');
+}
+
+try {
+    $package = json_decode($packageJson, true, 512, JSON_THROW_ON_ERROR);
+} catch (JsonException $exception) {
+    fail('invalid vendored Mermaid package.json: ' . $exception->getMessage());
+}
+if (($package['name'] ?? null) !== 'mermaid' || ($package['version'] ?? null) !== '11.12.0') {
+    fail('vendored package metadata is not mermaid@11.12.0');
+}
+
+$readerAssetTags = implode("\n", array_filter(explode("\n", $auth), static fn (string $line): bool => str_contains($line, 'mermaid')));
+if (str_contains($readerAssetTags, 'http://') || str_contains($readerAssetTags, 'https://')) {
+    fail('reader Mermaid asset tags must not reference the network');
 }
 
 foreach ([
