@@ -309,7 +309,7 @@ final class AuthController extends BaseController
             $topicCard = '<a class="kb-thread-card' . ($isActive ? ' active' : '') . '" href="/knowledgebase?thread=' . urlencode($topicKey) . '">'
                 . '<div class="kb-thread-meta">'
                 . (((int) ($topic['is_pinned'] ?? 0) === 1) ? '<span class="kb-pill">Pinned</span>' : '')
-                . ($updatedAt !== '' ? '<span class="kb-updated">Updated ' . $this->escape($updatedAt) . '</span>' : '')
+                . ($updatedAt !== '' ? '<span class="kb-updated"><span>Updated</span> <time>' . $this->escape($updatedAt) . '</time></span>' : '')
                 . '</div>'
                 . '<strong>' . $this->escape((string) ($topic['title'] ?? 'Untitled guide')) . '</strong>'
                 . '<p>' . $this->escape((string) ($topic['excerpt'] ?? '')) . '</p>'
@@ -361,7 +361,7 @@ final class AuthController extends BaseController
             $articleHtml = '<article class="kb-article">'
                 . '<div class="kb-article-meta">'
                 . (((int) ($selectedTopic['is_pinned'] ?? 0) === 1) ? '<span class="kb-pill">Pinned</span>' : '')
-                . '<span>Updated ' . $this->escape((string) ($selectedTopic['updated_at'] ?? '')) . '</span>'
+                . '<span><span>Updated</span> <time>' . $this->escape((string) ($selectedTopic['updated_at'] ?? '')) . '</time></span>'
                 . '</div>'
                 . $fallbackNotice
                 . '<h2>' . $this->escape((string) ($selectedTopic['title'] ?? 'User Guide')) . '</h2>'
