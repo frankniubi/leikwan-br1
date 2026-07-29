@@ -1,24 +1,66 @@
 (function () {
   const config = window.LEIKWAN_I18N || { defaultLocale: "en", supported: ["en"], basePath: "/i18n" };
   const storageKey = "leikwan_locale";
+  const cookieName = config.cookieName || "leikwan_locale";
   const skipTags = new Set(["SCRIPT", "STYLE", "CODE", "PRE", "TEXTAREA"]);
 
-  function getLocale() {
-    const fromQuery = new URLSearchParams(window.location.search).get("lang");
-    if (fromQuery && config.supported.includes(fromQuery)) {
-      localStorage.setItem(storageKey, fromQuery);
-      return fromQuery;
+  function writeLocaleCookie(locale) {
+    document.cookie = `${cookieName}=${encodeURIComponent(locale)}; Path=/; Max-Age=31536000; SameSite=Lax`;
+  }
+
+  function readLocaleCookie() {
+    for (const part of document.cookie.split(";")) {
+      const separator = part.indexOf("=");
+      const name = (separator === -1 ? part : part.slice(0, separator)).trim();
+      if (name !== cookieName) continue;
+      const value = separator === -1 ? "" : part.slice(separator + 1);
+      try {
+        return decodeURIComponent(value);
+      } catch (error) {
+        return null;
+      }
     }
+    return null;
+  }
+
+  function getLocale() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("lang")) {
+      const fromQuery = params.get("lang");
+      const resolved = fromQuery && config.supported.includes(fromQuery)
+        ? fromQuery
+        : (config.defaultLocale || "en");
+      localStorage.setItem(storageKey, resolved);
+      writeLocaleCookie(resolved);
+      return resolved;
+    }
+
+    const fromCookie = readLocaleCookie();
+    if (fromCookie && config.supported.includes(fromCookie)) {
+      localStorage.setItem(storageKey, fromCookie);
+      return fromCookie;
+    }
+
     const fromStorage = localStorage.getItem(storageKey);
     if (fromStorage && config.supported.includes(fromStorage)) {
+      writeLocaleCookie(fromStorage);
+      if (window.location.pathname === "/knowledgebase") {
+        const synchronizedUrl = new URL(window.location.href);
+        synchronizedUrl.searchParams.set("lang", fromStorage);
+        window.location.replace(synchronizedUrl.toString());
+      }
       return fromStorage;
     }
+
     return config.defaultLocale || "en";
   }
 
   function setLocale(locale) {
     localStorage.setItem(storageKey, locale);
-    window.location.reload();
+    writeLocaleCookie(locale);
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set("lang", locale);
+    window.location.assign(nextUrl.toString());
   }
 
   function normalizeKey(value) {
@@ -66,18 +108,18 @@
     });
   }
 
-  function patchSelectLabels() {
+  function patchSelectLabels(locale) {
     const switcher = document.getElementById("locale-switcher");
     if (!switcher) return;
-    switcher.value = getLocale();
+    switcher.value = locale;
     switcher.addEventListener("change", function () {
       setLocale(this.value);
     });
   }
 
   async function applyPatch() {
-    patchSelectLabels();
     const locale = getLocale();
+    patchSelectLabels(locale);
     document.documentElement.lang = locale;
     if (locale === "en") return;
 
