@@ -8,8 +8,65 @@ use Leikwan\Master\Database\Database;
 
 final class KnowledgebaseService
 {
+    private const RESOLVED_TOPIC_SELECT =
+        "SELECT t.id AS topic_id,
+                t.topic_key,
+                t.is_pinned,
+                t.sort_order,
+                CASE WHEN requested.id IS NOT NULL THEN requested.title ELSE fallback.title END AS title,
+                CASE WHEN requested.id IS NOT NULL THEN requested.excerpt ELSE fallback.excerpt END AS excerpt,
+                CASE WHEN requested.id IS NOT NULL THEN requested.body_html ELSE fallback.body_html END AS body_html,
+                CASE WHEN requested.id IS NOT NULL THEN requested.locale ELSE fallback.locale END AS locale_resolved,
+                CASE WHEN requested.id IS NULL AND fallback.id IS NOT NULL THEN 1 ELSE 0 END AS used_fallback,
+                CASE WHEN requested.id IS NOT NULL THEN requested.updated_at ELSE fallback.updated_at END AS updated_at
+         FROM knowledgebase_topics t
+         LEFT JOIN knowledgebase_articles requested
+                ON requested.topic_id = t.id
+               AND requested.locale = :locale
+               AND requested.status = 'published'
+         LEFT JOIN knowledgebase_articles fallback
+                ON fallback.topic_id = t.id
+               AND fallback.locale = 'en'
+               AND fallback.status = 'published'
+         WHERE (requested.id IS NOT NULL OR fallback.id IS NOT NULL)";
+
     public function __construct(private Database $db)
     {
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listPublishedTopics(string $locale): array
+    {
+        $locale = LocaleResolver::normalize($locale) ?? LocaleResolver::DEFAULT_LOCALE;
+        $rows = $this->db->fetchAll(
+            self::RESOLVED_TOPIC_SELECT
+            . ' ORDER BY t.is_pinned DESC, t.sort_order ASC, t.id ASC',
+            ['locale' => $locale]
+        );
+
+        return array_map($this->normalizeResolvedTopic(...), $rows);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function findPublishedTopicByKey(string $topicKey, string $locale): ?array
+    {
+        $topicKey = trim($topicKey);
+        if ($topicKey === '') {
+            return null;
+        }
+
+        $locale = LocaleResolver::normalize($locale) ?? LocaleResolver::DEFAULT_LOCALE;
+        $row = $this->db->fetchOne(
+            self::RESOLVED_TOPIC_SELECT
+            . ' AND t.topic_key = :topic_key LIMIT 1',
+            ['locale' => $locale, 'topic_key' => $topicKey]
+        );
+
+        return $row === null ? null : $this->normalizeResolvedTopic($row);
     }
 
     /**
@@ -156,6 +213,17 @@ final class KnowledgebaseService
         );
 
         return $id;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function normalizeResolvedTopic(array $row): array
+    {
+        $row['used_fallback'] = (bool) $row['used_fallback'];
+
+        return $row;
     }
 
     private function buildUniqueSlug(string $requestedSlug, string $title, ?int $ignoreId = null): string

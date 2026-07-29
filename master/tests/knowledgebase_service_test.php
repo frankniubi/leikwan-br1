@@ -7,12 +7,20 @@ use Leikwan\Master\Support\KnowledgebaseService;
 
 require_once __DIR__ . '/../src/Config.php';
 require_once __DIR__ . '/../src/Database/Database.php';
+require_once __DIR__ . '/../src/Support/LocaleResolver.php';
 require_once __DIR__ . '/../src/Support/KnowledgebaseService.php';
 
 function fail(string $message): never
 {
     fwrite(STDERR, $message . PHP_EOL);
     exit(1);
+}
+
+function assertSameValue(mixed $expected, mixed $actual, string $message): void
+{
+    if ($actual !== $expected) {
+        fail($message . '; expected ' . var_export($expected, true) . ', got ' . var_export($actual, true));
+    }
 }
 
 $tmpDir = sys_get_temp_dir() . '/leikwan-kb-' . bin2hex(random_bytes(4));
@@ -30,6 +38,32 @@ $pdo = $db->pdo();
 
 $pdo->exec('CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)');
 $pdo->exec(
+    'CREATE TABLE knowledgebase_topics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic_key TEXT NOT NULL UNIQUE,
+        is_pinned INTEGER NOT NULL DEFAULT 0,
+        sort_order INTEGER NOT NULL DEFAULT 100,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )'
+);
+$pdo->exec(
+    'CREATE TABLE knowledgebase_articles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic_id INTEGER NOT NULL,
+        locale TEXT NOT NULL,
+        author_user_id INTEGER NULL,
+        title TEXT NOT NULL,
+        excerpt TEXT NULL,
+        body_html TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT "draft",
+        published_at TEXT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (topic_id, locale)
+    )'
+);
+$pdo->exec(
     'CREATE TABLE knowledgebase_threads (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         author_user_id INTEGER NULL,
@@ -46,57 +80,82 @@ $pdo->exec(
     )'
 );
 $pdo->exec("INSERT INTO users (name) VALUES ('Admin')");
+$pdo->exec(
+    "INSERT INTO knowledgebase_threads
+        (author_user_id, title, slug, excerpt, body_html, status, is_pinned, sort_order, published_at, created_at, updated_at)
+     VALUES
+        (1, 'Legacy rollback sentinel', 'legacy-rollback-sentinel', 'legacy excerpt', '<p>legacy body</p>',
+         'published', 0, 100, '2026-07-01 00:00:00', '2026-07-01 00:00:00', '2026-07-01 00:00:00')"
+);
+$pdo->exec(
+    "INSERT INTO knowledgebase_topics (id, topic_key, is_pinned, sort_order, created_at, updated_at) VALUES
+        (1, 'getting-started-first-forward-checklist', 1, 90, '2026-07-01 00:00:00', '2026-07-10 00:00:00'),
+        (2, 'requested-draft-falls-back', 0, 10, '2026-07-02 00:00:00', '2026-07-11 00:00:00'),
+        (3, 'connection-modes-single-race-bond', 0, 20, '2026-07-03 00:00:00', '2026-07-12 00:00:00'),
+        (4, 'draft-only', 0, 1, '2026-07-04 00:00:00', '2026-07-13 00:00:00')"
+);
+$pdo->exec(
+    "INSERT INTO knowledgebase_articles
+        (topic_id, locale, author_user_id, title, excerpt, body_html, status, published_at, created_at, updated_at) VALUES
+        (1, 'en', 1, 'English getting started', 'English excerpt must not leak', '<p>English getting started body</p>', 'published', '2026-07-10 00:00:00', '2026-07-01 00:00:00', '2026-07-10 00:00:00'),
+        (1, 'zh-Hans', 1, '简体入门', NULL, '<p>简体入门正文</p>', 'published', '2026-07-20 00:00:00', '2026-07-02 00:00:00', '2026-07-20 00:00:00'),
+        (2, 'en', 1, 'Published English fallback', 'Published English excerpt', '<p>Published English body</p>', 'published', '2026-07-11 00:00:00', '2026-07-02 00:00:00', '2026-07-11 00:00:00'),
+        (2, 'zh-Hans', 1, '未发布简体', '未发布简体摘要', '<p>未发布简体正文</p>', 'draft', NULL, '2026-07-03 00:00:00', '2026-07-21 00:00:00'),
+        (3, 'en', 1, 'Connection modes', 'Single, race, and bond', '<p>English modes body</p>', 'published', '2026-07-12 00:00:00', '2026-07-03 00:00:00', '2026-07-12 00:00:00'),
+        (4, 'en', 1, 'Draft only', 'Hidden draft', '<p>Hidden draft body</p>', 'draft', NULL, '2026-07-04 00:00:00', '2026-07-13 00:00:00')"
+);
 
 $service = new KnowledgebaseService($db);
-$firstId = $service->saveThread([
-    'title' => 'Getting Started: First Forward Checklist',
-    'excerpt' => '',
-    'body_html' => '<p>Start with one healthy slave group, one route package, and one backend target.</p>',
-    'status' => 'published',
-    'is_pinned' => '1',
-    'sort_order' => '10',
-], 1);
-$secondId = $service->saveThread([
-    'title' => 'Getting Started: First Forward Checklist',
-    'excerpt' => '',
-    'body_html' => '<p>This second thread forces slug uniquing.</p>',
-    'status' => 'published',
-    'is_pinned' => '0',
-    'sort_order' => '20',
-], 1);
-$draftId = $service->saveThread([
-    'title' => 'Draft Only Thread',
-    'excerpt' => 'admin only draft',
-    'body_html' => '<p>Hidden from tenants.</p>',
-    'status' => 'draft',
-    'is_pinned' => '0',
-    'sort_order' => '999',
-], 1);
+$zhHans = $service->listPublishedTopics('zh-Hans');
+assertSameValue(3, count($zhHans), 'only topics with a published requested or English article are visible');
+assertSameValue(
+    ['getting-started-first-forward-checklist', 'requested-draft-falls-back', 'connection-modes-single-race-bond'],
+    array_column($zhHans, 'topic_key'),
+    'pinned topics must sort first, then by sort order'
+);
 
-$published = $service->listPublishedThreads();
-if (count($published) !== 2) {
-    fail('expected exactly two published threads');
-}
-if ((int) $published[0]['id'] !== $firstId || (string) $published[0]['slug'] !== 'getting-started-first-forward-checklist') {
-    fail('expected the pinned published thread to sort first');
-}
-if ((int) $published[1]['id'] !== $secondId || (string) $published[1]['slug'] !== 'getting-started-first-forward-checklist-2') {
-    fail('expected duplicate titles to get a stable unique slug');
-}
-if (($service->findPublishedThreadBySlug('draft-only-thread')) !== null) {
-    fail('draft threads must not be visible from the reader lookup');
-}
-if (trim((string) ($published[0]['excerpt'] ?? '')) === '') {
-    fail('expected saveThread() to derive an excerpt when excerpt is blank');
-}
+$requested = $zhHans[0];
+assertSameValue('zh-Hans', $requested['locale_resolved'], 'published requested locale must win');
+assertSameValue(false, $requested['used_fallback'], 'requested locale must report no fallback');
+assertSameValue(true, is_bool($requested['used_fallback']), 'used_fallback false must be a real boolean');
+assertSameValue('简体入门', $requested['title'], 'requested title must be selected');
+assertSameValue(null, $requested['excerpt'], 'a nullable requested field must not be mixed with English fallback');
+assertSameValue('<p>简体入门正文</p>', $requested['body_html'], 'requested body must be selected');
+assertSameValue('2026-07-20 00:00:00', $requested['updated_at'], 'requested updated_at must be selected');
 
-$adminThreads = $service->listAdminThreads();
-if (count($adminThreads) !== 3) {
-    fail('expected admin listing to include published and draft threads');
+$draftFallback = $zhHans[1];
+assertSameValue('en', $draftFallback['locale_resolved'], 'a requested draft must use published English fallback');
+assertSameValue(true, $draftFallback['used_fallback'], 'a requested draft must report fallback');
+assertSameValue(true, is_bool($draftFallback['used_fallback']), 'used_fallback true must be a real boolean');
+assertSameValue('Published English fallback', $draftFallback['title'], 'draft requested title must stay hidden');
+assertSameValue('Published English excerpt', $draftFallback['excerpt'], 'fallback excerpt must come from the complete English row');
+assertSameValue('<p>Published English body</p>', $draftFallback['body_html'], 'fallback body must come from the complete English row');
+assertSameValue('2026-07-11 00:00:00', $draftFallback['updated_at'], 'fallback updated_at must come from the complete English row');
+
+$missingFallback = $zhHans[2];
+assertSameValue('en', $missingFallback['locale_resolved'], 'a missing requested locale must fall back to English');
+assertSameValue(true, $missingFallback['used_fallback'], 'a missing requested locale must report fallback');
+assertSameValue(null, $service->findPublishedTopicByKey('draft-only', 'zh-Hans'), 'draft-only topic must stay hidden');
+assertSameValue(null, $service->findPublishedTopicByKey('missing', 'en'), 'unknown topic must return null');
+
+$detail = $service->findPublishedTopicByKey('requested-draft-falls-back', 'zh-Hans');
+assertSameValue($draftFallback, $detail, 'list and detail reads must return the same resolved row shape');
+
+$normalized = $service->findPublishedTopicByKey('getting-started-first-forward-checklist', 'unsupported-locale');
+if ($normalized === null) {
+    fail('unsupported locale must normalize to English');
 }
-$lastThread = $adminThreads[count($adminThreads) - 1] ?? null;
-if (!is_array($lastThread) || (int) ($lastThread['id'] ?? 0) !== $draftId || (string) ($lastThread['status'] ?? '') !== 'draft') {
-    fail('expected drafts to sort after published threads in the admin listing');
-}
+assertSameValue('en', $normalized['locale_resolved'], 'unsupported locale must normalize to English');
+assertSameValue(false, $normalized['used_fallback'], 'normalized English request must not report fallback');
+assertSameValue('English getting started', $normalized['title'], 'normalized locale must select the English row');
+
+$legacy = $service->listPublishedThreads();
+assertSameValue(1, count($legacy), 'legacy published thread reader must remain available');
+assertSameValue('legacy-rollback-sentinel', $legacy[0]['slug'], 'legacy rollback sentinel must remain readable');
+assertSameValue(
+    'legacy-rollback-sentinel',
+    $service->findPublishedThreadBySlug('legacy-rollback-sentinel')['slug'] ?? null,
+    'legacy detail reader must remain available'
+);
 
 echo "ok\n";
