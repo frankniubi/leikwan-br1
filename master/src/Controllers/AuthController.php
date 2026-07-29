@@ -195,7 +195,6 @@ final class AuthController extends BaseController
                     <h2>选择登录方式</h2>
                     ' . $loginMethods . '
                     <div class="actions login-method-actions">
-                      <a class="button ghost" href="/register">Create Account</a>
                       <a class="button secondary" href="/">Back Home</a>
                     </div>
                   </section>

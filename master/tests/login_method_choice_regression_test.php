@@ -111,6 +111,14 @@ try {
     assertContains('href="/login?legacy=1"', $defaultBody, 'legacy login method must open the legacy form');
     assertNotContains('name="email"', $defaultBody, 'default login page must hide the legacy email input');
     assertNotContains('name="password"', $defaultBody, 'default login page must hide the legacy password input');
+    assertNotContains('href="/register"', $defaultBody, 'default login page must hide panel registration links');
+    assertNotContains('Create Account', $defaultBody, 'default login page must hide panel registration actions');
+
+    $homeResponse = $app->handle(new Request('GET', '/', [], [], [], ''));
+    if ($homeResponse->status() !== 200) {
+        fail('public home page did not return 200');
+    }
+    assertNotContains('href="/register"', $homeResponse->body(), 'public navigation must hide panel registration links');
 
     $legacyResponse = $app->handle(new Request('GET', '/login', ['legacy' => '1'], [], [], ''));
     if ($legacyResponse->status() !== 200) {
