@@ -41,6 +41,7 @@ final class WhmcsClient
             CURLOPT_POSTFIELDS => http_build_query($payload),
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 30,
+            CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
         ]);
 
         $response = curl_exec($ch);

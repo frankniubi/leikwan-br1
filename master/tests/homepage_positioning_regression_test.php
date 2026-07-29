@@ -9,67 +9,79 @@ function fail(string $message): never
 
 $root = dirname(__DIR__);
 $auth = (string) file_get_contents($root . '/src/Controllers/AuthController.php');
-$css = (string) file_get_contents($root . '/public/assets/signal-chamber.css');
-$zhTw = json_decode((string) file_get_contents($root . '/public/i18n/zh-TW.json'), true);
-$zhHans = json_decode((string) file_get_contents($root . '/public/i18n/zh-Hans.json'), true);
-
-if (!is_array($zhTw) || !is_array($zhHans)) {
-    fail('failed to load locale dictionaries');
-}
+$css = (string) file_get_contents($root . '/public/assets/bridge-home.css');
 
 foreach ([
-    '&#21033;&#32676;&#26371;&#32858; LeiKwan Bridge',
-    'Multi-Slave Transport',
-    'Speed has more than one way through.',
-    'One service, distributed transport.',
-    'Every slave runs the same service.',
-    'Client &rarr; Slave &rarr; Sidecar &rarr; Target',
-    'Active Slaves',
-    'Sidecar Endpoints',
+    'class="bridge-home-hero"',
+    '利群會聚 <span>Bridge Control</span>',
+    '分布式传输，清晰可控。',
+    '进入控制台',
+    '查看网络路径',
+    '沪日',
+    '沪韩',
+    '沪德',
+    '沪俄',
+    '沪港',
+    'class="bridge-home-route-catalog"',
+    'class="bridge-home-route-grid"',
+    'class="bridge-home-route"',
+    '每条路径都应该能被解释。',
+    "'bridge-home'",
 ] as $snippet) {
     if (!str_contains($auth, $snippet)) {
-        fail('missing homepage positioning snippet: ' . $snippet);
+        fail('missing bridge home snippet: ' . $snippet);
     }
 }
 
 foreach ([
-    'client strategy',
-    'client latency',
-    'client RTT',
-    'Speed max',
-    'Latency Best',
-    'Random',
-] as $privateTerm) {
-    if (stripos($auth, $privateTerm) !== false) {
-        fail('homepage exposes client-local selection detail: ' . $privateTerm);
-    }
-}
-
-foreach (['.signal-hero', '.signal-canvas', '.signal-summary', '.signal-light-detail', '.signal-architecture'] as $selector) {
-    if (!str_contains($css, $selector)) {
-        fail('missing homepage style selector: ' . $selector);
-    }
-}
-
-foreach ([
+    'signal-hero',
+    'signal-canvas',
+    'signal-summary',
+    'signal-light-detail',
+    'signal-architecture',
+    'bridge-home-metrics',
+    '活跃节点',
+    '覆盖区域',
+    '边缘端点',
+    '管理员账户',
+    'LIVE',
     'Multi-Slave Transport',
-    'Speed has more than one way through.',
     'Open Console',
     'View Network',
-    'Active Slaves',
-    'Regions',
-    'Sidecar Endpoints',
-    'One service, distributed transport.',
-] as $localeKey) {
-    foreach (['zh-TW' => $zhTw, 'zh-Hans' => $zhHans] as $locale => $dictionary) {
-        $value = (string) (($dictionary['text'] ?? [])[$localeKey] ?? '');
-        if ($value === '') {
-            fail('missing homepage locale key for ' . $locale . ': ' . $localeKey);
-        }
-        if (str_contains($value, "\u{FFFD}")) {
-            fail('corrupted homepage locale value for ' . $locale . ': ' . $localeKey);
-        }
+    '鍒╃兢',
+] as $forbidden) {
+    if (str_contains($auth, $forbidden)) {
+        fail('old or unreadable homepage content remains: ' . $forbidden);
     }
+}
+
+foreach ([
+    '.bridge-home-page',
+    '.bridge-home-hero',
+    '.bridge-home-status',
+    '.bridge-home-route-catalog',
+    '.bridge-home-route-grid',
+    '.bridge-home-route-card',
+    '.bridge-home-route',
+    '.bridge-home-footer-grid',
+    '.bridge-home-page .site-mark',
+    '--bridge-paper: #ffffff',
+    'border-radius: 999px',
+    '@media (max-width: 820px)',
+] as $selector) {
+    if (!str_contains($css, $selector)) {
+        fail('missing bridge home style selector: ' . $selector);
+    }
+}
+
+foreach (['linear-gradient(', 'radial-gradient(', 'clamp('] as $forbiddenCss) {
+    if (str_contains($css, $forbiddenCss)) {
+        fail('bridge home uses forbidden visual primitive: ' . $forbiddenCss);
+    }
+}
+
+if (str_contains($css, 'border: 1px solid var(--bridge-ink)')) {
+    fail('bridge home still frames the logo with a dark square border');
 }
 
 echo "ok\n";

@@ -1164,8 +1164,9 @@ abstract class BaseController
 HTML;
     }
 
-    protected function publicPage(string $title, string $body, ?array $viewer = null): Response
+    protected function publicPage(string $title, string $body, ?array $viewer = null, string $variant = 'default'): Response
     {
+        $isBridgeHome = $variant === 'bridge-home';
         $escapedTitle = $this->escape($title);
         $appName = $this->appName();
         $escapedAppName = $this->escape($appName);
@@ -1174,7 +1175,16 @@ HTML;
         $flashHtml = $this->flashHtml();
         $languageSwitcher = $this->localeSwitcherHtml();
         $csrfToken = $this->escape(SessionAuth::csrfToken());
-        $body = '<div class="pg-public-body pg-auth-layout">' . $body . '</div>';
+        $bodyLayoutClass = $isBridgeHome ? 'bridge-home-body' : 'pg-auth-layout';
+        $pageClass = $isBridgeHome ? ' bridge-home-page' : '';
+        $topbarClass = $isBridgeHome ? ' bridge-home-topbar' : '';
+        $mainClass = $isBridgeHome ? ' bridge-home-main' : '';
+        $styleLinks = '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
+            . ($isBridgeHome
+                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260728a">'
+                : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260728a">');
+        $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
+        $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
 
         $actionsHtml = '<a class="button ghost" href="/register">Create Account</a><a class="button" href="/login">Sign In</a>';
         if ($viewer !== null) {
@@ -1201,12 +1211,11 @@ HTML;
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{$escapedTitle}</title>
-  <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
-  <link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725">
+  {$styleLinks}
 </head>
-<body class="pg-public">
+<body class="pg-public{$pageClass}">
   <div class="public-shell">
-    <header class="site-topbar">
+    <header class="site-topbar{$topbarClass}">
       <a class="site-brand" href="/">
         <span class="site-mark"><img src="{$brandLogoUrl}" alt="{$escapedBrandName} logo"></span>
         <span class="site-copy">
@@ -1215,21 +1224,22 @@ HTML;
         </span>
       </a>
       <div class="site-actions">
+        {$languageSwitcher}
         {$actionsHtml}
       </div>
     </header>
-    <main class="landing-stack">
+    <main class="landing-stack{$mainClass}">
       {$flashHtml}
       {$body}
     </main>
     <footer class="page-footer">
       <div class="footer-tools">
-        {$languageSwitcher}
+        <span class="muted">Language can also be changed from the top bar.</span>
       </div>
     </footer>
   </div>
 {$this->i18nBootstrapHtml()}
-  <script src="/assets/signal-chamber.js?v=20260725" defer></script>
+  {$script}
 </body>
 </html>
 HTML;
@@ -1309,6 +1319,7 @@ HTML;
   <title>{$escapedTitle}</title>
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260725">
+  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260728a">
 </head>
 <body class="pg-app">
   <div class="shell">
@@ -1322,6 +1333,7 @@ HTML;
       </div>
       <div class="toolbar">
         <button class="mobile-nav-toggle" type="button" aria-controls="workspace-navigation" aria-expanded="false">&#9776;<span class="pg-visually-hidden">Navigation</span></button>
+        {$languageSwitcher}
         {$viewerHtml}
       </div>
     </div>
@@ -1341,7 +1353,7 @@ HTML;
     </div>
     <footer class="page-footer">
       <div class="footer-tools">
-        {$languageSwitcher}
+        <span class="muted">Language can also be changed from the top bar.</span>
       </div>
     </footer>
   </div>
