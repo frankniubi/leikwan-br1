@@ -26,7 +26,8 @@
   function getLocale() {
     const params = new URLSearchParams(window.location.search);
     if (params.has("lang")) {
-      const fromQuery = params.get("lang");
+      const queryLocales = params.getAll("lang");
+      const fromQuery = queryLocales[queryLocales.length - 1];
       const resolved = fromQuery && config.supported.includes(fromQuery)
         ? fromQuery
         : "en";
