@@ -97,7 +97,7 @@ assertCatalog(is_file($manifestPath), 'knowledgebase topic manifest is missing')
 $topics = require $manifestPath;
 assertCatalog(is_array($topics), 'knowledgebase topic manifest must return an array');
 
-$expectedLocales = ['en', 'zh-Hans'];
+$expectedLocales = ['en', 'zh-Hans', 'zh-TW'];
 $expectedHeadings = [
     'en' => [
         'What you will accomplish',
@@ -115,7 +115,20 @@ $expectedHeadings = [
         '如果没有成功',
         '相关指南',
     ],
+    'zh-TW' => [
+        '你將完成什麼',
+        '開始前準備',
+        '操作步驟',
+        '如何確認成功',
+        '如果沒有成功',
+        '相關指南',
+    ],
 ];
+$expectedSectionRoles = ['outcome', 'prerequisites', 'steps', 'success', 'failure', 'related'];
+$headingRoles = [];
+foreach ($expectedHeadings as $locale => $localeHeadings) {
+    $headingRoles[$locale] = array_combine($localeHeadings, $expectedSectionRoles);
+}
 $expectedTopics = [
     'getting-started-five-minute-overview' => [
         'is_pinned' => 1,
@@ -127,6 +140,10 @@ $expectedTopics = [
         'zh-Hans' => [
             'title' => '五分钟完成首次连接',
             'excerpt' => '按最短路径完成套餐、转发、客户端安装和连接验证。',
+        ],
+        'zh-TW' => [
+            'title' => '五分鐘完成首次連線',
+            'excerpt' => '按最短路徑完成方案、轉發、用戶端安裝和連線驗證。',
         ],
     ],
     'install-client' => [
@@ -140,6 +157,10 @@ $expectedTopics = [
             'title' => '安装客户端',
             'excerpt' => '在 Windows、Android 或 Linux 上安装并登录，然后确认客户端在线。',
         ],
+        'zh-TW' => [
+            'title' => '安裝用戶端',
+            'excerpt' => '在 Windows、Android 或 Linux 上安裝並登入，然後確認用戶端在線。',
+        ],
     ],
     'getting-started-first-forward-checklist' => [
         'is_pinned' => 0,
@@ -151,6 +172,10 @@ $expectedTopics = [
         'zh-Hans' => [
             'title' => '创建第一条转发',
             'excerpt' => '选择线路方案、填写目标地址并记下系统分配的本地端口。',
+        ],
+        'zh-TW' => [
+            'title' => '建立第一條轉發',
+            'excerpt' => '選擇線路方案、填寫目標位址並記下系統分配的本機連接埠。',
         ],
     ],
     'connect-and-verify' => [
@@ -164,6 +189,10 @@ $expectedTopics = [
             'title' => '连接并验证',
             'excerpt' => '选择正确的客户端地址，测试服务并确认转发已经工作。',
         ],
+        'zh-TW' => [
+            'title' => '連線並驗證',
+            'excerpt' => '選擇正確的用戶端位址，測試服務並確認轉發已經運作。',
+        ],
     ],
     'connection-modes-single-race-bond' => [
         'is_pinned' => 0,
@@ -175,6 +204,10 @@ $expectedTopics = [
         'zh-Hans' => [
             'title' => '选择连接模式',
             'excerpt' => '按稳定、容错或多路径需求理解 Single、Race 和 Bond。',
+        ],
+        'zh-TW' => [
+            'title' => '選擇連線模式',
+            'excerpt' => '按穩定、容錯或多路徑需求理解 Single、Race 和 Bond。',
         ],
     ],
     'bond-sidecar-setup' => [
@@ -188,6 +221,10 @@ $expectedTopics = [
             'title' => '配置 Sidecar',
             'excerpt' => '仅在线路方案明确需要时创建并验证 Sidecar。',
         ],
+        'zh-TW' => [
+            'title' => '設定 Sidecar',
+            'excerpt' => '僅在線路方案明確需要時建立並驗證 Sidecar。',
+        ],
     ],
     'troubleshooting-common-mistakes' => [
         'is_pinned' => 0,
@@ -200,6 +237,10 @@ $expectedTopics = [
             'title' => '排查常见问题',
             'excerpt' => '从看得见的症状开始，按最短且安全的顺序恢复连接。',
         ],
+        'zh-TW' => [
+            'title' => '排查常見問題',
+            'excerpt' => '從看得見的症狀開始，按最短且安全的順序恢復連線。',
+        ],
     ],
     'glossary' => [
         'is_pinned' => 0,
@@ -211,6 +252,10 @@ $expectedTopics = [
         'zh-Hans' => [
             'title' => '名词解释',
             'excerpt' => '用通俗语言解释指南中出现的产品和网络术语。',
+        ],
+        'zh-TW' => [
+            'title' => '名詞解釋',
+            'excerpt' => '用淺白語言解釋指南中出現的產品和網路術語。',
         ],
     ],
 ];
@@ -332,6 +377,7 @@ $requiredArticleText = [
 $forbiddenFirstForwardText = [
     'en' => ['Connection Mode', 'Forward Combination', 'slave', 'leg', 'runtime'],
     'zh-Hans' => ['连接模式', '转发组合', 'Slave', '链路', '运行时'],
+    'zh-TW' => ['連線模式', '轉發組合', 'Slave', '鏈路', '執行階段'],
 ];
 $requiredLocalizedArticleText = [
     'zh-Hans' => [
@@ -344,6 +390,16 @@ $requiredLocalizedArticleText = [
         'troubleshooting-common-mistakes' => ['最近同步', '地址是否正确', '端口已放行', '转发和线路', '从目标服务自己的主机测试目标服务', 'View Diagnostics', '支持', '随机修改拓扑', '实际应用协议'],
         'glossary' => ['有效套餐', '转发', 'Forward Route', 'Target Host', 'Target Port', 'Local Listen Port', '客户端', 'Single', 'Race', 'Bond', 'Sidecar', '最近同步', 'Running', '应用验证', '不是带宽聚合', '不保证速度翻倍'],
     ],
+    'zh-TW' => [
+        'getting-started-five-minute-overview' => ['有效方案', '建立轉發', '系統分配的本機連接埠', '實際應用協定', '應用程式要求成功', '儲存', '佈建', '最近同步', 'Running'],
+        'install-client' => ['下載 Windows App', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '支援的 LeiGod 服務', 'Linux 安裝', '複製安裝指令', 'systemd', 'Python 3', '等同 root', '身分驗證權杖', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', '不能因此承諾 Android 支援 Race 或 MPTCP'],
+        'getting-started-first-forward-checklist' => ['有效', '建立轉發', '轉發路由', '目標主機', '目標連接埠', '本地監聽連接埠', '傳輸', 'TCP', 'TCP + UDP', 'UDP', '儲存', '佈建', '最近同步', 'Running', '應用程式成功'],
+        'connect-and-verify' => ['127.0.0.1', '可連到的 Windows 或 Linux 用戶端主機位址', '防火牆', '安全群組', 'NAT', 'Android', '只監聽迴送位址', '實際應用協定', '目標服務記錄', '公用 IP'],
+        'connection-modes-single-race-bond' => ['Single', 'Race', 'Bond', '不是頻寬聚合', '每條連線選出一條勝出路徑', '資料包送往多條可用路徑', '至少兩個可用端點', '依用戶端平台而異', 'Android 不承諾 Race 或 MPTCP', '已發布的線路約定', '僅在線路約定要求時使用 Sidecar', '速度加倍', '跑滿頻寬', '所有路徑'],
+        'bond-sidecar-setup' => ['Sidecar', '目標端的中介傳輸元件', '不是目標應用程式', '已發布的線路約定', '目標端點', '建立傳輸端點', '傳輸監聽連接埠', '儲存傳輸端點', '最後一次心跳', '後端監聽服務', '只有心跳不能證明後端健康', '權杖', '密碼', '指令', '私密金鑰', '工作階段', '線路資料'],
+        'troubleshooting-common-mistakes' => ['最近同步', '位址是否正確', '連接埠已開放', '轉發和線路', '從目標服務所在主機測試目標服務', '查看診斷', '支援', '隨意變更拓撲', '實際應用協定'],
+        'glossary' => ['有效方案', '轉發', '轉發路由', '目標主機', '目標連接埠', '本地監聽連接埠', '用戶端', 'Single', 'Race', 'Bond', 'Sidecar', '最近同步', 'Running', '應用程式驗證', '不是頻寬聚合', '不保證速度加倍'],
+    ],
 ];
 $forbiddenLocalizedArticleText = [
     'zh-Hans' => [
@@ -351,6 +407,12 @@ $forbiddenLocalizedArticleText = [
         'connect-and-verify' => ['任意公网 IP 都可用', 'Android 跨设备监听'],
         'connection-modes-single-race-bond' => ['Race 是带宽聚合', '保证速度翻倍', '保证跑满带宽', '保证所有路径'],
         'bond-sidecar-setup' => ['每条 Bond 转发都必须配置', '心跳证明后端健康'],
+    ],
+    'zh-TW' => [
+        'install-client' => ['Android 保證支援 Race', 'Android 保證支援 MPTCP'],
+        'connect-and-verify' => ['任何公用 IP 都可以使用', 'Android 跨裝置監聽'],
+        'connection-modes-single-race-bond' => ['Race 是頻寬聚合', '保證速度加倍', '保證跑滿頻寬', '保證所有路徑'],
+        'bond-sidecar-setup' => ['每條 Bond 轉發都必須設定', '心跳證明後端健康'],
     ],
 ];
 $localizedDiagramRequirements = [
@@ -362,6 +424,15 @@ $localizedDiagramRequirements = [
         'connection-modes-single-race-bond' => ['连接模式选择路径', '需要最简单的稳定路径时', '你需要什么结果', '最简单的稳定路径吗', '选择 Single', '需要非聚合容错吗', '选择 Race', '方案明确支持 Bond 吗', '选择 Bond 并核对要求', '咨询管理员', '是', '否'],
         'bond-sidecar-setup' => ['使用 Sidecar 的 Bond 线路', '客户端经过托管的 Slave 路径', '客户端', '托管 Slave 路径', 'Sidecar', '目标服务'],
         'troubleshooting-common-mistakes' => ['从症状开始排查连接', '请求失败后依次检查', '应用请求失败', '最近同步正常吗', '恢复客户端同步', '地址正确吗', '使用回环或可达客户端主机', '端口已放行吗', '只放行所需端口', '转发和线路健康吗', '打开 View Diagnostics', '从目标主机测试服务', '重试应用', '整理诊断并联系支持', '是', '否'],
+    ],
+    'zh-TW' => [
+        'getting-started-five-minute-overview' => ['五分鐘首次連線流程', '從有效方案開始', '有效方案', '建立一條轉發', '安裝並登入用戶端', '測試分配的本機連接埠', '連線成功嗎', '首次設定完成', '開始排查問題', '是', '否'],
+        'install-client' => ['用戶端安裝流程', '依裝置的作業系統選擇', '選擇裝置', '作業系統', '下載 Windows App', '安裝 arm64 Android App', '複製 Linux 安裝指令', '確認最近同步'],
+        'getting-started-first-forward-checklist' => ['第一條轉發的表單流程', '開啟有效方案', '選擇轉發路由', '填寫目標與傳輸方式', '開啟有效方案', '選擇轉發路由', '填寫目標主機和目標連接埠', '選擇傳輸方式', '儲存', '等待轉發可用', '記下分配的本機連接埠'],
+        'connect-and-verify' => ['選擇用戶端連線位址', '應用程式與用戶端在同一台裝置時', '確認應用程式所在裝置', '與用戶端在同一台裝置嗎', '使用 127.0.0.1 和本機連接埠', '用戶端平台', '使用可連到的主機位址與連接埠', '視需要開放防火牆安全群組或 NAT', '保持只監聽迴送位址', '測試實際應用協定', '是', '否'],
+        'connection-modes-single-race-bond' => ['連線模式選擇流程', '需要最簡單的穩定路徑時', '你需要什麼結果', '最簡單的穩定路徑嗎', '選擇 Single', '需要非聚合容錯嗎', '選擇 Race', '方案明確支援 Bond 嗎', '選擇 Bond 並核對要求', '詢問管理員', '是', '否'],
+        'bond-sidecar-setup' => ['使用 Sidecar 的 Bond 線路', '用戶端經過受管理的 Slave 路徑', '用戶端', '受管理的 Slave 路徑', 'Sidecar', '目標服務'],
+        'troubleshooting-common-mistakes' => ['從症狀開始排查連線', '要求失敗後依序檢查', '應用程式要求失敗', '最近同步正常嗎', '恢復用戶端同步', '位址正確嗎', '使用迴送位址或可連到的用戶端主機', '連接埠已開放嗎', '只開放必要連接埠', '轉發和線路健康嗎', '開啟查看診斷', '從目標主機測試服務', '重試應用程式', '整理診斷後聯絡支援', '是', '否'],
     ],
 ];
 $allTopicKeys = array_keys($expectedTopics);
@@ -401,6 +472,8 @@ foreach ($topics as $topicKey => $topic) {
         $h2Elements = catalogElementsByTag($body, 'h2');
         $headings = array_map(static fn (DOMElement $heading): string => trim($heading->textContent), $h2Elements);
         assertCatalogSame($expectedHeadings[$locale], $headings, $topicKey . ': ' . $locale . ' h2 headings must appear exactly once and in order');
+        $normalizedRoles = array_map(static fn (string $heading): string => $headingRoles[$locale][$heading], $headings);
+        assertCatalogSame($expectedSectionRoles, $normalizedRoles, $topicKey . ': ' . $locale . ' section roles must match every language');
 
         assertCatalog(str_contains($body, '<ol>'), $topicKey . ': actions must be presented as short ordered steps');
         if ($locale === 'en') {
@@ -409,10 +482,17 @@ foreach ($topics as $topicKey => $topic) {
                 assertCatalog(str_contains($body, $requiredText), $topicKey . ': missing required beginner guidance: ' . $requiredText);
             }
         } else {
-            assertCatalog(str_contains($body, '<strong>先停止') || str_contains($body, '<strong>请先停止'), $topicKey . ': ' . $locale . ' failure guidance must include a safe stop');
-            assertCatalog(str_contains($body, '连接') && str_contains($body, '转发') && str_contains($body, '客户端'), $topicKey . ': zh-Hans must naturally use representative terminology');
-            foreach (['連線', '轉發', '用戶端'] as $forbiddenTerm) {
-                assertCatalog(!str_contains(strip_tags($body), $forbiddenTerm), $topicKey . ': zh-Hans contains Traditional-only prose: ' . $forbiddenTerm);
+            assertCatalog(str_contains($body, '<strong>先停止') || str_contains($body, '<strong>請先停止'), $topicKey . ': ' . $locale . ' failure guidance must include a safe stop');
+            if ($locale === 'zh-Hans') {
+                assertCatalog(str_contains($body, '连接') && str_contains($body, '转发') && str_contains($body, '客户端'), $topicKey . ': zh-Hans must naturally use representative terminology');
+                foreach (['連線', '轉發', '用戶端'] as $forbiddenTerm) {
+                    assertCatalog(!str_contains(strip_tags($body), $forbiddenTerm), $topicKey . ': zh-Hans contains Traditional-only prose: ' . $forbiddenTerm);
+                }
+            } else {
+                assertCatalog(str_contains($body, '連線') && str_contains($body, '轉發') && str_contains($body, '用戶端'), $topicKey . ': zh-TW must naturally use representative terminology');
+                foreach (['连接', '转发', '客户端'] as $forbiddenTerm) {
+                    assertCatalog(!str_contains(strip_tags($body), $forbiddenTerm), $topicKey . ': zh-TW contains Simplified-only prose: ' . $forbiddenTerm);
+                }
             }
             foreach ($requiredLocalizedArticleText[$locale][$topicKey] as $requiredText) {
                 assertCatalog(str_contains($body, $requiredText), $topicKey . ': ' . $locale . ' missing required factual guidance: ' . $requiredText);
@@ -472,7 +552,17 @@ foreach ($topics as $topicKey => $topic) {
     }
 }
 
-assertCatalogSame(7 * count($expectedLocales), $totalDiagrams, 'catalog must preserve seven Mermaid diagrams per locale');
+assertCatalogSame(24, count($topics) * count($expectedLocales), 'catalog must contain 24 localized articles');
+assertCatalogSame(21, $totalDiagrams, 'catalog must preserve exactly 21 Mermaid diagrams across 24 articles');
+foreach ($expectedLocales as $locale) {
+    assertCatalogSame(7, count(array_filter(
+        $diagramGraphs,
+        static fn (array $localizedGraphs): bool => isset($localizedGraphs[$locale])
+    )), 'catalog must preserve seven Mermaid diagrams for ' . $locale);
+    $glossaryBody = file_get_contents(__DIR__ . '/../resources/knowledgebase/' . $locale . '/glossary.html');
+    assertCatalog(is_string($glossaryBody), $locale . ' glossary body must be readable');
+    assertCatalogSame(0, count(MermaidSourcePolicy::extract($glossaryBody)), $locale . ' glossary must not contain a Mermaid diagram');
+}
 
 $firstForwardBody = file_get_contents(__DIR__ . '/../resources/knowledgebase/en/getting-started-first-forward-checklist.html');
 assertCatalog(is_string($firstForwardBody), 'first Forward body must be readable');

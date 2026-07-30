@@ -16,6 +16,11 @@ return [
                 'excerpt' => '按最短路径完成套餐、转发、客户端安装和连接验证。',
                 'body' => 'zh-Hans/getting-started-five-minute-overview.html',
             ],
+            'zh-TW' => [
+                'title' => '五分鐘完成首次連線',
+                'excerpt' => '按最短路徑完成方案、轉發、用戶端安裝和連線驗證。',
+                'body' => 'zh-TW/getting-started-five-minute-overview.html',
+            ],
         ],
     ],
     'install-client' => [
@@ -31,6 +36,11 @@ return [
                 'title' => '安装客户端',
                 'excerpt' => '在 Windows、Android 或 Linux 上安装并登录，然后确认客户端在线。',
                 'body' => 'zh-Hans/install-client.html',
+            ],
+            'zh-TW' => [
+                'title' => '安裝用戶端',
+                'excerpt' => '在 Windows、Android 或 Linux 上安裝並登入，然後確認用戶端在線。',
+                'body' => 'zh-TW/install-client.html',
             ],
         ],
     ],
@@ -48,6 +58,11 @@ return [
                 'excerpt' => '选择线路方案、填写目标地址并记下系统分配的本地端口。',
                 'body' => 'zh-Hans/getting-started-first-forward-checklist.html',
             ],
+            'zh-TW' => [
+                'title' => '建立第一條轉發',
+                'excerpt' => '選擇線路方案、填寫目標位址並記下系統分配的本機連接埠。',
+                'body' => 'zh-TW/getting-started-first-forward-checklist.html',
+            ],
         ],
     ],
     'connect-and-verify' => [
@@ -63,6 +78,11 @@ return [
                 'title' => '连接并验证',
                 'excerpt' => '选择正确的客户端地址，测试服务并确认转发已经工作。',
                 'body' => 'zh-Hans/connect-and-verify.html',
+            ],
+            'zh-TW' => [
+                'title' => '連線並驗證',
+                'excerpt' => '選擇正確的用戶端位址，測試服務並確認轉發已經運作。',
+                'body' => 'zh-TW/connect-and-verify.html',
             ],
         ],
     ],
@@ -80,6 +100,11 @@ return [
                 'excerpt' => '按稳定、容错或多路径需求理解 Single、Race 和 Bond。',
                 'body' => 'zh-Hans/connection-modes-single-race-bond.html',
             ],
+            'zh-TW' => [
+                'title' => '選擇連線模式',
+                'excerpt' => '按穩定、容錯或多路徑需求理解 Single、Race 和 Bond。',
+                'body' => 'zh-TW/connection-modes-single-race-bond.html',
+            ],
         ],
     ],
     'bond-sidecar-setup' => [
@@ -95,6 +120,11 @@ return [
                 'title' => '配置 Sidecar',
                 'excerpt' => '仅在线路方案明确需要时创建并验证 Sidecar。',
                 'body' => 'zh-Hans/bond-sidecar-setup.html',
+            ],
+            'zh-TW' => [
+                'title' => '設定 Sidecar',
+                'excerpt' => '僅在線路方案明確需要時建立並驗證 Sidecar。',
+                'body' => 'zh-TW/bond-sidecar-setup.html',
             ],
         ],
     ],
@@ -112,6 +142,11 @@ return [
                 'excerpt' => '从看得见的症状开始，按最短且安全的顺序恢复连接。',
                 'body' => 'zh-Hans/troubleshooting-common-mistakes.html',
             ],
+            'zh-TW' => [
+                'title' => '排查常見問題',
+                'excerpt' => '從看得見的症狀開始，按最短且安全的順序恢復連線。',
+                'body' => 'zh-TW/troubleshooting-common-mistakes.html',
+            ],
         ],
     ],
     'glossary' => [
@@ -127,6 +162,11 @@ return [
                 'title' => '名词解释',
                 'excerpt' => '用通俗语言解释指南中出现的产品和网络术语。',
                 'body' => 'zh-Hans/glossary.html',
+            ],
+            'zh-TW' => [
+                'title' => '名詞解釋',
+                'excerpt' => '用淺白語言解釋指南中出現的產品和網路術語。',
+                'body' => 'zh-TW/glossary.html',
             ],
         ],
     ],
