@@ -7,7 +7,42 @@ function fail(string $message): never
     exit(1);
 }
 
-$source = file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php');
+function sourceBetween(string $source, string $startMarker, string $endMarker, string $description): string
+{
+    $start = strpos($source, $startMarker);
+    if (!is_int($start)) {
+        fail('failed to find start of ' . $description);
+    }
+
+    $end = strpos($source, $endMarker, $start + strlen($startMarker));
+    if (!is_int($end) || $end <= $start) {
+        fail('failed to find end of ' . $description);
+    }
+
+    return substr($source, $start, $end - $start);
+}
+
+function bodyAssignmentContaining(string $source, string $visibleText): string
+{
+    $textPosition = strpos($source, $visibleText);
+    if (!is_int($textPosition)) {
+        fail('missing getting-started state text: ' . $visibleText);
+    }
+
+    $assignmentStart = strrpos(substr($source, 0, $textPosition), '$body = \'');
+    $assignmentEnd = strpos($source, "';", $textPosition + strlen($visibleText));
+    if (!is_int($assignmentStart) || !is_int($assignmentEnd) || $assignmentEnd <= $assignmentStart) {
+        fail('failed to isolate getting-started branch for: ' . $visibleText);
+    }
+
+    return substr($source, $assignmentStart, $assignmentEnd - $assignmentStart);
+}
+
+$controllerPath = getenv('TENANT_CONTROLLER_SOURCE');
+if (!is_string($controllerPath) || $controllerPath === '') {
+    $controllerPath = __DIR__ . '/../src/Controllers/TenantController.php';
+}
+$source = file_get_contents($controllerPath);
 if (!is_string($source) || $source === '') {
     fail('failed to read TenantController source');
 }
@@ -19,19 +54,36 @@ if (!is_int($start) || !is_int($end) || $end <= $start) {
 }
 
 $gettingStartedPage = substr($source, $start, $end - $start);
-$requiredPairs = [
-    ['No active package yet', 'getting-started-five-minute-overview'],
-    ['Create your first forward', 'getting-started-first-forward-checklist'],
-    ['Install the client', 'install-client'],
-    ['Connect and verify', 'connect-and-verify'],
+$stateBranches = [
+    [
+        'No active package yet',
+        'getting-started-five-minute-overview',
+        bodyAssignmentContaining($gettingStartedPage, 'No active package yet'),
+    ],
+    [
+        'Create your first forward',
+        'getting-started-first-forward-checklist',
+        bodyAssignmentContaining($gettingStartedPage, 'Create your first forward'),
+    ],
+    [
+        'Install the client',
+        'install-client',
+        bodyAssignmentContaining($gettingStartedPage, 'Install the client'),
+    ],
+    [
+        'Connect and verify',
+        'connect-and-verify',
+        bodyAssignmentContaining($gettingStartedPage, 'Connect and verify'),
+    ],
 ];
-foreach ($requiredPairs as [$state, $topicKey]) {
-    if (!str_contains($gettingStartedPage, $state) || !str_contains($gettingStartedPage, $topicKey)) {
+foreach ($stateBranches as [$state, $topicKey, $branch]) {
+    $href = 'href="/knowledgebase?thread=' . $topicKey . '"';
+    if (!str_contains($branch, $state) || !str_contains($branch, $href)) {
         fail('missing state-specific getting-started guide pair: ' . $state . ' -> ' . $topicKey);
     }
 }
 
-foreach ([
+$topicKeys = [
     'getting-started-five-minute-overview',
     'install-client',
     'getting-started-first-forward-checklist',
@@ -40,13 +92,28 @@ foreach ([
     'bond-sidecar-setup',
     'troubleshooting-common-mistakes',
     'glossary',
-] as $topicKey) {
-    if (!str_contains($source, $topicKey)) {
+];
+foreach ($topicKeys as $topicKey) {
+    if (preg_match(
+        '/href=["\']\/knowledgebase\?thread=' . preg_quote($topicKey, '/') . '(?:&|&amp;)(?:lang|locale)=/i',
+        $source
+    ) === 1) {
+        fail('tenant guide link must not append a locale parameter: ' . $topicKey);
+    }
+
+    $href = 'href="/knowledgebase?thread=' . $topicKey . '"';
+    if (!str_contains($source, $href)) {
         fail('missing stable tenant guide link: ' . $topicKey);
     }
 }
 
-if (str_contains($source, '</a> ? <a')) {
+$contextualHelp = sourceBetween(
+    $source,
+    '<p class="field-note">Need help?',
+    '</p>',
+    'tenant contextual help'
+);
+if (preg_match('/<\/a>\s*(?:<[^>]+>\s*)*\?\s*(?:<[^>]+>\s*)*<a\b/is', $contextualHelp) === 1) {
     fail('tenant contextual help still uses malformed question-mark separators');
 }
 foreach (['Advanced Options', 'Usage Patterns'] as $vagueLabel) {
