@@ -608,6 +608,27 @@ $requiredTextKeys = [
     'This topic is not available in your selected language. Showing English.',
     'Diagram could not be rendered. The source is shown below.',
     'No published guides yet.',
+    'Knowledgebase Topics',
+    'Create Topic',
+    'Edit Topic',
+    'Edit Language Version',
+    'Topic Key',
+    'Language Versions',
+    'Missing',
+    'Draft',
+    'Published',
+    'Pinned',
+    'Order',
+    'Summary',
+    'Title',
+    'Preview',
+    'Save Topic',
+    'Save Language Version',
+    'Delete Topic',
+    'Delete Language Version',
+    'Delete this topic and all three language versions?',
+    'Delete this language version?',
+    'Preview — not published',
 ];
 
 $requiredAttributeKeys = [
@@ -674,8 +695,34 @@ assertAttributeKeys($zhTw, 'zh-TW', $requiredAttributeKeys);
 assertAttributeKeys($zhHans, 'zh-Hans', $requiredAttributeKeys);
 assertNoAsciiQuestionMarks($zhTw, 'zh-TW', $requiredTextKeys);
 assertNoAsciiQuestionMarks($zhHans, 'zh-Hans', $requiredTextKeys);
+$knowledgebaseAdminTextKeys = [
+    'Knowledgebase Topics',
+    'Create Topic',
+    'Edit Topic',
+    'Edit Language Version',
+    'Topic Key',
+    'Language Versions',
+    'Missing',
+    'Draft',
+    'Published',
+    'Pinned',
+    'Order',
+    'Summary',
+    'Title',
+    'Preview',
+    'Save Topic',
+    'Save Language Version',
+    'Delete Topic',
+    'Delete Language Version',
+    'Delete this topic and all three language versions?',
+    'Delete this language version?',
+    'Preview — not published',
+];
+
 assertLocalizedEntries($zhTw, 'zh-TW', $frontendHardeningTextKeys, 'text');
 assertLocalizedEntries($zhHans, 'zh-Hans', $frontendHardeningTextKeys, 'text');
+assertLocalizedEntries($zhTw, 'zh-TW', $knowledgebaseAdminTextKeys, 'text');
+assertLocalizedEntries($zhHans, 'zh-Hans', $knowledgebaseAdminTextKeys, 'text');
 assertLocalizedEntries($zhTw, 'zh-TW', $frontendHardeningAttributeKeys, 'attributes');
 assertLocalizedEntries($zhHans, 'zh-Hans', $frontendHardeningAttributeKeys, 'attributes');
 

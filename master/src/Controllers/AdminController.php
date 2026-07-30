@@ -15,7 +15,10 @@ use Leikwan\Master\Support\LeigodRetirementActivationContext;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\PrecisionGridUi;
 use Leikwan\Master\Support\SessionAuth;
+use Leikwan\Master\Support\KnowledgebaseHtmlSanitizer;
 use Leikwan\Master\Support\KnowledgebaseService;
+use Leikwan\Master\Support\LocaleResolver;
+use Leikwan\Master\Support\MermaidSourcePolicy;
 use Leikwan\Master\Support\SslCertificateService;
 use Leikwan\Master\Support\TenantRegistrationService;
 
@@ -4714,7 +4717,7 @@ final class AdminController extends BaseController
         });
     }
 
-    public function knowledgebaseThreadsPage(Request $request, array $params): Response
+    public function knowledgebaseTopicsPage(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
         if ($viewer === null) {
@@ -4722,48 +4725,64 @@ final class AdminController extends BaseController
         }
 
         $service = new KnowledgebaseService($this->db);
-        $threads = $service->listAdminThreads();
+        $topics = $service->listAdminTopics();
+        $languages = [
+            ['en', 'English', 'en_status'],
+            ['zh-Hans', 'Simplified Chinese', 'zh_hans_status'],
+            ['zh-TW', 'Traditional Chinese', 'zh_tw_status'],
+        ];
         $rows = '';
-        foreach ($threads as $thread) {
-            $status = (string) ($thread['status'] ?? 'draft');
-            $statusClass = $status === 'published' ? 'success' : 'info';
+        foreach ($topics as $topic) {
+            $topicId = (int) ($topic['id'] ?? 0);
+            $topicKey = (string) ($topic['topic_key'] ?? '');
+            $languageCards = '';
+            foreach ($languages as [$locale, $label, $statusField]) {
+                $status = (string) ($topic[$statusField] ?? '');
+                $statusLabel = $status === '' ? 'Missing' : ucfirst($status);
+                $statusClass = $status === 'published' ? 'success' : ($status === 'draft' ? 'info' : 'muted');
+                $languageCards .= '<div class="card" style="min-width:180px;padding:14px;">'
+                    . '<strong>' . $label . '</strong>'
+                    . '<div style="margin:8px 0;"><span class="badge ' . $statusClass . '">' . $statusLabel . '</span></div>'
+                    . '<a class="button ghost" href="/admin/knowledgebase/topics/' . $topicId . '/articles/' . $locale . '/edit">Edit Language Version</a>'
+                    . '</div>';
+            }
+
             $rows .= '<tr>'
-                . '<td>' . (int) ($thread['id'] ?? 0) . '</td>'
-                . '<td><strong>' . $this->escape((string) ($thread['title'] ?? '')) . '</strong><div class="muted">' . $this->escape((string) ($thread['excerpt'] ?? '')) . '</div></td>'
-                . '<td>' . $this->escape((string) ($thread['slug'] ?? '')) . '</td>'
-                . '<td><span class="badge ' . $statusClass . '">' . $this->escape($status) . '</span></td>'
-                . '<td>' . (((int) ($thread['is_pinned'] ?? 0) === 1) ? 'yes' : 'no') . '</td>'
-                . '<td>' . (int) ($thread['sort_order'] ?? 100) . '</td>'
-                . '<td>' . $this->escape((string) ($thread['updated_at'] ?? '')) . '</td>'
-                . '<td><div class="actions"><a class="button" href="/admin/knowledgebase/' . (int) ($thread['id'] ?? 0) . '/edit">Edit</a><a class="button ghost" href="/knowledgebase?thread=' . urlencode((string) ($thread['slug'] ?? '')) . '" target="_blank" rel="noopener">View Live Page</a></div></td>'
+                . '<td><strong>' . $this->escape($topicKey) . '</strong></td>'
+                . '<td>' . (((int) ($topic['is_pinned'] ?? 0) === 1) ? 'Yes' : 'No') . '</td>'
+                . '<td>' . (int) ($topic['sort_order'] ?? 100) . '</td>'
+                . '<td><div style="display:flex;flex-wrap:wrap;gap:10px;">' . $languageCards . '</div></td>'
+                . '<td><div class="actions">'
+                . '<a class="button" href="/admin/knowledgebase/topics/' . $topicId . '/edit">Edit Topic</a>'
+                . '<a class="button ghost" href="' . '/knowledgebase?thread=' . urlencode($topicKey) . '" target="_blank" rel="noopener">View Live Page</a>'
+                . '</div></td>'
                 . '</tr>';
         }
 
         $body = '
             <div class="hero">
               <div>
-                <h2>Thread Library</h2>
-                <p class="muted">Admins can create starter docs, update operational guidance, and publish new threads for tenants without touching PHP templates.</p>
+                <h2>Knowledgebase Topics</h2>
+                <p class="muted">Manage topic ordering and each language version independently.</p>
               </div>
               <div class="actions">
-                <a class="button" href="/admin/knowledgebase/new">Create Thread</a>
+                <a class="button" href="/admin/knowledgebase/topics/new">Create Topic</a>
                 <a class="button ghost" href="/knowledgebase" target="_blank" rel="noopener">Open Reader</a>
               </div>
             </div>
             <section class="card" style="margin-top:20px;">
-              <h3>Manage Threads</h3>
               <div class="table-wrap">
                 <table>
-                  <thead><tr><th>ID</th><th>Title</th><th>Slug</th><th>Status</th><th>Pinned</th><th>Order</th><th>Updated</th><th>Actions</th></tr></thead>
-                  <tbody>' . ($rows !== '' ? $rows : '<tr><td colspan="8" class="muted">No threads yet.</td></tr>') . '</tbody>
+                  <thead><tr><th>Topic Key</th><th>Pinned</th><th>Order</th><th>Language Versions</th><th>Actions</th></tr></thead>
+                  <tbody>' . ($rows !== '' ? $rows : '<tr><td colspan="5" class="muted">No topics yet.</td></tr>') . '</tbody>
                 </table>
               </div>
             </section>';
 
-        return $this->adminPage('Knowledgebase', $body, $viewer, 'knowledgebase');
+        return $this->adminPage('Knowledgebase Topics', $body, $viewer, 'knowledgebase');
     }
 
-    public function knowledgebaseEditorPage(Request $request, array $params): Response
+    public function knowledgebaseTopicEditorPage(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
         if ($viewer === null) {
@@ -4771,86 +4790,211 @@ final class AdminController extends BaseController
         }
 
         $service = new KnowledgebaseService($this->db);
-        $threadId = $this->idParam($params);
-        $thread = $threadId > 0 ? $service->findAdminThreadById($threadId) : null;
-        if ($threadId > 0 && $thread === null) {
-            SessionAuth::flash('error', 'Knowledgebase thread not found.');
+        $topicId = $this->idParam($params);
+        $topic = $topicId > 0 ? $service->findAdminTopicById($topicId) : null;
+        if ($topicId > 0 && $topic === null) {
+            SessionAuth::flash('error', 'Knowledgebase topic not found.');
             return Response::redirect('/admin/knowledgebase');
         }
 
-        $csrf = $this->escape(SessionAuth::csrfToken());
-        $thread = $thread ?? [
+        $topic = $topic ?? [
             'id' => 0,
-            'title' => '',
-            'slug' => '',
-            'excerpt' => '',
-            'body_html' => '<p>Start writing here.</p>',
-            'status' => 'draft',
+            'topic_key' => '',
             'is_pinned' => 0,
             'sort_order' => 100,
         ];
-
-        $pageTitle = (int) ($thread['id'] ?? 0) > 0 ? 'Edit Thread' : 'Create Thread';
-        $threadIdValue = (int) ($thread['id'] ?? 0);
-        $titleValue = $this->escape((string) ($thread['title'] ?? ''));
-        $slugValue = $this->escape((string) ($thread['slug'] ?? ''));
-        $excerptValue = $this->escape((string) ($thread['excerpt'] ?? ''));
-        $bodyHtmlValue = $this->escape((string) ($thread['body_html'] ?? ''));
-        $sortOrderValue = (int) ($thread['sort_order'] ?? 100);
-        $draftSelected = (string) ($thread['status'] ?? 'draft') === 'draft' ? ' selected' : '';
-        $publishedSelected = (string) ($thread['status'] ?? 'draft') === 'published' ? ' selected' : '';
-        $pinnedNoSelected = (int) ($thread['is_pinned'] ?? 0) === 0 ? ' selected' : '';
-        $pinnedYesSelected = (int) ($thread['is_pinned'] ?? 0) === 1 ? ' selected' : '';
-        $viewLiveButton = $threadIdValue > 0 && (string) ($thread['slug'] ?? '') !== ''
-            ? '<a class="button secondary" target="_blank" rel="noopener" href="/knowledgebase?thread=' . urlencode((string) ($thread['slug'] ?? '')) . '">View Live Page</a>'
-            : '';
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $topicIdValue = (int) ($topic['id'] ?? 0);
+        $pageTitle = $topicIdValue > 0 ? 'Edit Topic' : 'Create Topic';
+        $topicKeyValue = $this->escape((string) ($topic['topic_key'] ?? ''));
+        $sortOrderValue = (int) ($topic['sort_order'] ?? 100);
+        $pinnedNoSelected = (int) ($topic['is_pinned'] ?? 0) === 0 ? ' selected' : '';
+        $pinnedYesSelected = (int) ($topic['is_pinned'] ?? 0) === 1 ? ' selected' : '';
+        $deleteForm = '';
+        if ($topicIdValue > 0) {
+            $deleteForm = <<<HTML
+                <form method="post" action="/admin/knowledgebase/topics/{$topicIdValue}/delete" data-kb-confirm="kb-topic-delete-confirm">
+                  <input type="hidden" name="csrf_token" value="{$csrf}">
+                  <button class="button danger" type="submit">Delete Topic</button>
+                </form>
+                <span hidden id="kb-topic-delete-confirm">Delete this topic and all three language versions?</span>
+            HTML;
+        }
 
         $body = <<<HTML
             <section class="card">
               <div class="hero" style="margin-bottom:20px;">
-                <div>
-                  <h2>{$pageTitle}</h2>
-                  <p class="muted">Paste images directly into the editor. The panel will upload them and replace the pasted blob with a real URL.</p>
-                </div>
-                <div class="actions">
-                  <a class="button ghost" href="/admin/knowledgebase">Back to Library</a>
-                  {$viewLiveButton}
-                </div>
+                <div><h2>{$pageTitle}</h2><p class="muted">The topic key is used in the public knowledgebase link.</p></div>
+                <div class="actions"><a class="button ghost" href="/admin/knowledgebase">Back to Library</a></div>
               </div>
-              <form method="post" action="/admin/knowledgebase/save" enctype="multipart/form-data" data-kb-editor data-csrf-token="{$csrf}">
+              <form method="post" action="/admin/knowledgebase/topics/save">
                 <input type="hidden" name="csrf_token" value="{$csrf}">
-                <input type="hidden" name="id" value="{$threadIdValue}">
+                <input type="hidden" name="id" value="{$topicIdValue}">
+                <div class="form-grid">
+                  <div class="field"><label>Topic Key</label><input type="text" name="topic_key" value="{$topicKeyValue}" required></div>
+                  <div class="field"><label>Order</label><input type="number" name="sort_order" value="{$sortOrderValue}"></div>
+                  <div class="field"><label>Pinned</label><select name="is_pinned"><option value="0"{$pinnedNoSelected}>No</option><option value="1"{$pinnedYesSelected}>Yes</option></select></div>
+                </div>
+                <div class="actions" style="margin-top:18px;"><button class="button" type="submit">Save Topic</button></div>
+              </form>
+              <div class="actions" style="margin-top:18px;">{$deleteForm}</div>
+            </section>
+            <script>
+              document.querySelectorAll('[data-kb-confirm]').forEach((form) => {
+                form.addEventListener('submit', (event) => {
+                  const message = document.getElementById(form.dataset.kbConfirm || '');
+                  if (message && !confirm(message.textContent || '')) event.preventDefault();
+                });
+              });
+            </script>
+        HTML;
+
+        return $this->adminPage($pageTitle, $body, $viewer, 'knowledgebase');
+    }
+
+    public function saveKnowledgebaseTopic(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $topicId = (int) $request->input('id', 0);
+        try {
+            SessionAuth::validateCsrf($request);
+            $service = new KnowledgebaseService($this->db);
+            $topicId = $service->saveTopic([
+                'id' => $request->input('id', 0),
+                'topic_key' => $request->input('topic_key', ''),
+                'sort_order' => $request->input('sort_order', '100'),
+                'is_pinned' => $request->input('is_pinned', '0'),
+            ]);
+            SessionAuth::flash('success', 'Knowledgebase topic saved.');
+            return Response::redirect('/admin/knowledgebase/topics/' . $topicId . '/edit');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', $this->displayThrowableMessage($throwable));
+            return Response::redirect($topicId > 0
+                ? '/admin/knowledgebase/topics/' . $topicId . '/edit'
+                : '/admin/knowledgebase/topics/new');
+        }
+    }
+
+    public function deleteKnowledgebaseTopic(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $topicId = $this->idParam($params);
+            if ($topicId <= 0) {
+                throw new \InvalidArgumentException('Knowledgebase topic not found.');
+            }
+            (new KnowledgebaseService($this->db))->deleteTopic($topicId);
+            SessionAuth::flash('success', 'Knowledgebase topic deleted.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', $this->displayThrowableMessage($throwable));
+        }
+
+        return Response::redirect('/admin/knowledgebase');
+    }
+
+    public function knowledgebaseArticleEditorPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $topicId = $this->idParam($params);
+        $routeLocale = $params['locale'] ?? null;
+        $locale = is_scalar($routeLocale) ? LocaleResolver::normalize((string) $routeLocale) : null;
+        if ($locale === null) {
+            SessionAuth::flash('error', 'Unsupported knowledgebase locale.');
+            return Response::redirect($topicId > 0
+                ? '/admin/knowledgebase/topics/' . $topicId . '/edit'
+                : '/admin/knowledgebase');
+        }
+
+        $service = new KnowledgebaseService($this->db);
+        $topic = $service->findAdminTopicById($topicId);
+        if ($topic === null) {
+            SessionAuth::flash('error', 'Knowledgebase topic not found.');
+            return Response::redirect('/admin/knowledgebase');
+        }
+
+        $article = $service->findAdminArticle($topicId, $locale) ?? [
+            'id' => 0,
+            'topic_id' => $topicId,
+            'locale' => $locale,
+            'title' => '',
+            'excerpt' => '',
+            'body_html' => '',
+            'status' => 'draft',
+        ];
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $articleId = (int) ($article['id'] ?? 0);
+        $titleValue = $this->escape((string) ($article['title'] ?? ''));
+        $excerptValue = $this->escape((string) ($article['excerpt'] ?? ''));
+        $bodyHtmlValue = $this->escape((string) ($article['body_html'] ?? ''));
+        $topicKey = $this->escape((string) ($topic['topic_key'] ?? ''));
+        $localeValue = $this->escape($locale);
+        $draftSelected = (string) ($article['status'] ?? 'draft') === 'draft' ? ' selected' : '';
+        $publishedSelected = (string) ($article['status'] ?? 'draft') === 'published' ? ' selected' : '';
+        $deleteForm = '';
+        if ($articleId > 0) {
+            $deleteForm = <<<HTML
+                <form method="post" action="/admin/knowledgebase/articles/{$articleId}/delete" data-kb-confirm="kb-article-delete-confirm">
+                  <input type="hidden" name="csrf_token" value="{$csrf}">
+                  <button class="button danger" type="submit">Delete Language Version</button>
+                </form>
+                <span hidden id="kb-article-delete-confirm">Delete this language version?</span>
+            HTML;
+        }
+
+        $body = <<<HTML
+            <section class="card">
+              <div class="hero" style="margin-bottom:20px;">
+                <div><h2>Edit Language Version</h2><p class="muted">{$topicKey} · {$localeValue}</p></div>
+                <div class="actions"><a class="button ghost" href="/admin/knowledgebase/topics/{$topicId}/edit">Edit Topic</a></div>
+              </div>
+              <form method="post" action="/admin/knowledgebase/articles/save" enctype="multipart/form-data" data-kb-article-editor data-csrf-token="{$csrf}">
+                <input type="hidden" name="csrf_token" value="{$csrf}">
+                <input type="hidden" name="id" value="{$articleId}">
+                <input type="hidden" name="topic_id" value="{$topicId}">
+                <input type="hidden" name="locale" value="{$localeValue}">
+                <input type="hidden" name="mermaid_validation_digest" value="">
                 <div class="form-grid">
                   <div class="field"><label>Title</label><input type="text" name="title" value="{$titleValue}" required></div>
-                  <div class="field"><label>Slug</label><input type="text" name="slug" value="{$slugValue}"></div>
                   <div class="field"><label>Summary</label><input type="text" name="excerpt" value="{$excerptValue}"></div>
-                  <div class="field"><label>Order</label><input type="number" name="sort_order" value="{$sortOrderValue}"></div>
                   <div class="field"><label>Status</label><select name="status"><option value="draft"{$draftSelected}>Draft</option><option value="published"{$publishedSelected}>Published</option></select></div>
-                  <div class="field"><label>Pinned</label><select name="is_pinned"><option value="0"{$pinnedNoSelected}>No</option><option value="1"{$pinnedYesSelected}>Yes</option></select></div>
                 </div>
                 <div class="field" style="margin-top:16px;">
                   <label>Body HTML</label>
-                  <textarea id="body_html" name="body_html" rows="20">{$bodyHtmlValue}</textarea>
+                  <textarea id="body_html" name="body_html" rows="24">{$bodyHtmlValue}</textarea>
                 </div>
+                <div data-kb-mermaid-error class="flash error" role="alert" hidden style="margin-top:14px;"></div>
                 <div class="actions" style="margin-top:18px;">
-                  <button class="button" type="submit">Save Thread</button>
+                  <button class="button" type="submit">Save Language Version</button>
+                  <button class="button ghost" type="submit" formaction="/admin/knowledgebase/articles/preview" formtarget="_blank" formnovalidate>Preview</button>
                 </div>
               </form>
+              <div class="actions" style="margin-top:18px;">{$deleteForm}</div>
             </section>
             <script src="https://cdn.jsdelivr.net/npm/tinymce@7/tinymce.min.js" referrerpolicy="origin"></script>
             <script>
-              (function () {
-                const form = document.querySelector('[data-kb-editor]');
-                if (!form || typeof tinymce === 'undefined') {
-                  return;
-                }
-                const csrfToken = form.getAttribute('data-csrf-token') || '';
+              if (typeof tinymce !== 'undefined') {
+                const form = document.querySelector('[data-kb-article-editor]');
+                const csrfToken = form ? form.getAttribute('data-csrf-token') || '' : '';
                 tinymce.init({
                   selector: '#body_html',
                   height: 560,
                   menubar: 'file edit view insert format table tools help',
                   plugins: 'advlist autolink lists link image table code codesample fullscreen paste',
                   toolbar: 'undo redo | blocks | bold italic underline | bullist numlist blockquote | alignleft aligncenter alignright | link image table codesample | fullscreen code',
+                  extended_valid_elements: 'pre[class],img[src|alt|width|height]',
                   paste_data_images: true,
                   automatic_uploads: true,
                   images_upload_handler: (blobInfo) => new Promise((resolve, reject) => {
@@ -4861,25 +5005,63 @@ final class AdminController extends BaseController
                       method: 'POST',
                       body: formData,
                       credentials: 'same-origin'
-                    })
-                      .then(async (response) => {
-                        const payload = await response.json();
-                        if (!response.ok || !payload.location) {
-                          throw new Error(payload.error || 'Image upload failed');
-                        }
-                        resolve(payload.location);
-                      })
-                      .catch((error) => reject(error.message));
+                    }).then(async (response) => {
+                      const payload = await response.json();
+                      if (!response.ok || !payload.location) throw new Error(payload.error || 'Image upload failed');
+                      resolve(payload.location);
+                    }).catch((error) => reject(error.message));
                   })
                 });
-              }());
+              }
+              document.querySelectorAll('[data-kb-confirm]').forEach((form) => {
+                form.addEventListener('submit', (event) => {
+                  const message = document.getElementById(form.dataset.kbConfirm || '');
+                  if (message && !confirm(message.textContent || '')) event.preventDefault();
+                });
+              });
             </script>
+            <script src="/assets/vendor/mermaid/mermaid.min.js?v=11.12.0"></script>
+            <script src="/assets/knowledgebase-admin.js?v=20260729"></script>
         HTML;
 
-        return $this->adminPage('Knowledgebase Editor', $body, $viewer, 'knowledgebase');
+        return $this->adminPage('Edit Language Version', $body, $viewer, 'knowledgebase');
     }
 
-    public function saveKnowledgebaseThread(Request $request, array $params): Response
+    public function saveKnowledgebaseArticle(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $topicId = (int) $request->input('topic_id', 0);
+        $localeInput = $request->input('locale', '');
+        $locale = is_scalar($localeInput) ? LocaleResolver::normalize((string) $localeInput) : null;
+        $editorPath = $topicId > 0 && $locale !== null
+            ? '/admin/knowledgebase/topics/' . $topicId . '/articles/' . $locale . '/edit'
+            : '/admin/knowledgebase';
+        try {
+            SessionAuth::validateCsrf($request);
+            $service = new KnowledgebaseService($this->db);
+            $service->saveArticle([
+                'id' => $request->input('id', 0),
+                'topic_id' => $request->input('topic_id', 0),
+                'locale' => $request->input('locale', ''),
+                'title' => $request->input('title', ''),
+                'excerpt' => $request->input('excerpt', ''),
+                'status' => $request->input('status', 'draft'),
+                'body_html' => $request->input('body_html', ''),
+                'mermaid_validation_digest' => $request->input('mermaid_validation_digest', ''),
+            ], (int) ($viewer['id'] ?? 0));
+            SessionAuth::flash('success', 'Knowledgebase language version saved.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', $this->displayThrowableMessage($throwable));
+        }
+
+        return Response::redirect($editorPath);
+    }
+
+    public function previewKnowledgebaseArticle(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
         if ($viewer === null) {
@@ -4888,23 +5070,123 @@ final class AdminController extends BaseController
 
         try {
             SessionAuth::validateCsrf($request);
-            $service = new KnowledgebaseService($this->db);
-            $threadId = $service->saveThread([
-                'id' => $request->input('id', 0),
-                'title' => $request->input('title', ''),
-                'slug' => $request->input('slug', ''),
-                'excerpt' => $request->input('excerpt', ''),
-                'body_html' => $request->input('body_html', ''),
-                'status' => $request->input('status', 'draft'),
-                'is_pinned' => $request->input('is_pinned', '0'),
-                'sort_order' => $request->input('sort_order', '100'),
-            ], (int) ($viewer['id'] ?? 0));
-            SessionAuth::flash('success', 'Knowledgebase thread saved.');
-            return Response::redirect('/admin/knowledgebase/' . $threadId . '/edit');
-        } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Failed to save knowledgebase thread: ' . $this->displayThrowableMessage($throwable));
+        } catch (ApiException $exception) {
+            return $this->knowledgebasePreviewErrorPage(
+                $exception->statusCode(),
+                'Preview request expired. Reload the editor and try again.'
+            );
+        }
+
+        try {
+            $localeInput = $request->input('locale', '');
+            $titleInput = $request->input('title', '');
+            $excerptInput = $request->input('excerpt', '');
+            $bodyInput = $request->input('body_html', '');
+            if (!is_scalar($localeInput) || !is_scalar($titleInput) || !is_scalar($excerptInput) || !is_scalar($bodyInput)) {
+                throw new \InvalidArgumentException('Invalid preview content.');
+            }
+            $locale = LocaleResolver::normalize((string) $localeInput);
+            if ($locale === null) {
+                throw new \InvalidArgumentException('Unsupported preview locale.');
+            }
+
+            $sanitizedBody = (new KnowledgebaseHtmlSanitizer())->sanitize((string) $bodyInput);
+            MermaidSourcePolicy::assertPreviewable($sanitizedBody);
+        } catch (\Throwable) {
+            return $this->knowledgebasePreviewErrorPage(
+                422,
+                'Preview could not be rendered. Check the article and diagrams.'
+            );
+        }
+
+        $banners = [
+            'en' => 'Preview — not published',
+            'zh-Hans' => '预览 — 尚未发布',
+            'zh-TW' => '預覽 — 尚未發佈',
+        ];
+        $safeLocale = $this->escape($locale);
+        $safeTitle = $this->escape((string) $titleInput);
+        $safeExcerpt = $this->escape((string) $excerptInput);
+        $safeBanner = $this->escape($banners[$locale]);
+        $diagramAssets = str_contains($sanitizedBody, 'class="mermaid"')
+            ? '<script src="/assets/vendor/mermaid/mermaid.min.js?v=11.12.0"></script>'
+                . '<script src="/assets/knowledgebase-mermaid.js?v=20260729"></script>'
+            : '';
+        $html = <<<HTML
+            <!doctype html>
+            <html lang="{$safeLocale}">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>{$safeBanner}</title>
+              <style>
+                :root{color-scheme:light dark;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.65}
+                body{margin:0;background:#f4f7fb;color:#172033}.kb-preview{width:min(920px,calc(100% - 32px));margin:32px auto;background:#fff;border:1px solid #dbe3ee;border-radius:18px;box-shadow:0 18px 50px rgba(23,32,51,.08);overflow:hidden}.kb-preview-banner{padding:12px 24px;background:#eef4ff;color:#244d86;font-weight:700}.kb-preview-article{padding:clamp(24px,6vw,56px)}h1{font-size:clamp(2rem,6vw,3.25rem);line-height:1.1;margin:0 0 12px}.kb-preview-excerpt{font-size:1.1rem;color:#56657a;margin:0 0 32px}.kb-preview-body{overflow-wrap:anywhere}.kb-preview-body img{max-width:100%;height:auto}.kb-preview-body table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse}.kb-preview-body th,.kb-preview-body td{padding:8px 12px;border:1px solid #ccd6e3}.kb-preview-body pre{max-width:100%;overflow:auto;padding:16px;border-radius:10px;background:#edf1f7}.kb-preview-locale{font-size:.85rem;color:#6b7789}@media(max-width:600px){.kb-preview{width:100%;margin:0;border:0;border-radius:0;min-height:100vh}.kb-preview-banner{padding:10px 18px}.kb-preview-article{padding:24px 18px}}
+                @media(prefers-color-scheme:dark){body{background:#111827;color:#e5e7eb}.kb-preview{background:#182131;border-color:#334155}.kb-preview-banner{background:#24324a;color:#bfdbfe}.kb-preview-excerpt,.kb-preview-locale{color:#aab7ca}.kb-preview-body pre{background:#111827}}
+              </style>
+            </head>
+            <body>
+              <main class="kb-preview">
+                <div class="kb-preview-banner">{$safeBanner}</div>
+                <article class="kb-preview-article">
+                  <div class="kb-preview-locale">{$safeLocale}</div>
+                  <h1>{$safeTitle}</h1>
+                  <p class="kb-preview-excerpt">{$safeExcerpt}</p>
+                  <div class="kb-preview-body">{$sanitizedBody}</div>
+                </article>
+              </main>
+              {$diagramAssets}
+            </body>
+            </html>
+        HTML;
+
+        return Response::html(200, $html);
+    }
+
+    private function knowledgebasePreviewErrorPage(int $status, string $message): Response
+    {
+        $safeMessage = $this->escape($message);
+        $html = <<<HTML
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{$safeMessage}</title>
+</head>
+<body><p>{$safeMessage}</p></body>
+</html>
+HTML;
+
+        return Response::html($status, $html);
+    }
+
+    public function deleteKnowledgebaseArticle(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $service = new KnowledgebaseService($this->db);
+        $articleId = $this->idParam($params);
+        $article = $service->findAdminArticleById($articleId);
+        if ($article === null) {
+            SessionAuth::flash('error', 'Knowledgebase article not found.');
             return Response::redirect('/admin/knowledgebase');
         }
+
+        $topicId = (int) ($article['topic_id'] ?? 0);
+        $redirect = '/admin/knowledgebase/topics/' . $topicId . '/edit';
+        try {
+            SessionAuth::validateCsrf($request);
+            $service->deleteArticle($articleId);
+            SessionAuth::flash('success', 'Knowledgebase language version deleted.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', $this->displayThrowableMessage($throwable));
+        }
+
+        return Response::redirect($redirect);
     }
 
     public function uploadKnowledgebaseImage(Request $request, array $params): Response
