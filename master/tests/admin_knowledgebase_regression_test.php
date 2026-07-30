@@ -14,6 +14,21 @@ function requireSnippet(string $source, string $snippet, string $label): void
     }
 }
 
+function runAdminBehaviorTest(string $javascriptPath): void
+{
+    $behaviorTest = __DIR__ . '/admin_knowledgebase_behavior_test.js';
+    if (!is_file($behaviorTest)) {
+        fail('missing executable knowledgebase admin behavior test');
+    }
+
+    $output = [];
+    $exitCode = 0;
+    exec('node ' . escapeshellarg($behaviorTest) . ' ' . escapeshellarg($javascriptPath) . ' 2>&1', $output, $exitCode);
+    if ($exitCode !== 0) {
+        fail('knowledgebase admin behavior regression failed:' . PHP_EOL . implode(PHP_EOL, $output));
+    }
+}
+
 $admin = file_get_contents(__DIR__ . '/../src/Controllers/AdminController.php');
 $bootstrap = file_get_contents(__DIR__ . '/../src/Bootstrap.php');
 $javascript = file_get_contents(__DIR__ . '/../public/assets/knowledgebase-admin.js');
@@ -181,5 +196,7 @@ foreach (['readKnowledgebaseImageUpload()', "move_uploaded_file(", "Response::js
 if (str_contains($admin, 'knowledgebase_threads')) {
     fail('topic-oriented admin controller must not access knowledgebase_threads');
 }
+
+runAdminBehaviorTest(__DIR__ . '/../public/assets/knowledgebase-admin.js');
 
 echo "ok\n";
