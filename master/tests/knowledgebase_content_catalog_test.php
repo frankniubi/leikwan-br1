@@ -392,11 +392,11 @@ $requiredLocalizedArticleText = [
     ],
     'zh-TW' => [
         'getting-started-five-minute-overview' => ['有效方案', '建立轉發', '系統分配的本機連接埠', '實際應用協定', '應用程式要求成功', '儲存', '佈建', '最近同步', 'Running'],
-        'install-client' => ['下載 Windows App', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '支援的 LeiGod 服務', 'Linux 安裝', '複製安裝指令', 'systemd', 'Python 3', '等同 root', '身分驗證權杖', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', '不能因此承諾 Android 支援 Race 或 MPTCP'],
+        'install-client' => ['下載 Windows App', 'Tenant → 線路', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '支援的 LeiGod 服務', 'Linux 安裝', '複製安裝指令', 'systemd', 'Python 3', '等同 root', '身分驗證權杖', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', '不能因此承諾 Android 支援 Race 或 MPTCP'],
         'getting-started-first-forward-checklist' => ['有效', '建立轉發', '轉發路由', '目標主機', '目標連接埠', '本地監聽連接埠', '傳輸', 'TCP', 'TCP + UDP', 'UDP', '儲存', '佈建', '最近同步', 'Running', '應用程式成功'],
         'connect-and-verify' => ['127.0.0.1', '可連到的 Windows 或 Linux 用戶端主機位址', '防火牆', '安全群組', 'NAT', 'Android', '只監聽迴送位址', '實際應用協定', '目標服務記錄', '公用 IP'],
         'connection-modes-single-race-bond' => ['Single', 'Race', 'Bond', '不是頻寬聚合', '每條連線選出一條勝出路徑', '資料包送往多條可用路徑', '至少兩個可用端點', '依用戶端平台而異', 'Android 不承諾 Race 或 MPTCP', '已發布的線路約定', '僅在線路約定要求時使用 Sidecar', '速度加倍', '跑滿頻寬', '所有路徑'],
-        'bond-sidecar-setup' => ['Sidecar', '目標端的中介傳輸元件', '不是目標應用程式', '已發布的線路約定', '目標端點', '建立傳輸端點', '傳輸監聽連接埠', '儲存傳輸端點', '最後一次心跳', '後端監聽服務', '只有心跳不能證明後端健康', '權杖', '密碼', '指令', '私密金鑰', '工作階段', '線路資料'],
+        'bond-sidecar-setup' => ['Sidecar', '目標端的中介傳輸元件', '不是目標應用程式', '已發布的線路約定', '目標端點', '建立傳輸端點', 'Sidecar 主機', '傳輸監聽連接埠', '儲存傳輸端點', '最後一次心跳', '代理版本', '最後狀態', '後端監聽服務', '只有心跳不能證明後端健康', '權杖', '密碼', '指令', '私密金鑰', '工作階段', '線路資料'],
         'troubleshooting-common-mistakes' => ['最近同步', '位址是否正確', '連接埠已開放', '轉發和線路', '從目標服務所在主機測試目標服務', '查看診斷', '支援', '隨意變更拓撲', '實際應用協定'],
         'glossary' => ['有效方案', '轉發', '轉發路由', '目標主機', '目標連接埠', '本地監聽連接埠', '用戶端', 'Single', 'Race', 'Bond', 'Sidecar', '最近同步', 'Running', '應用程式驗證', '不是頻寬聚合', '不保證速度加倍'],
     ],
