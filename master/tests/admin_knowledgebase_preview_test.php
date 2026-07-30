@@ -71,21 +71,52 @@ final class KnowledgebasePreviewStatement extends PDOStatement
 final class KnowledgebasePreviewPdo extends PDO
 {
     /** @var array<int, string> */
-    public array $preparedQueries = [];
+    public array $readQueries = [];
 
     /** @param array<string, mixed> $user */
     public function __construct(private array $user)
     {
     }
 
-    public function prepare(string $query, array $options = []): PDOStatement|false
+    private function recordSelect(string $query, string $method): void
     {
-        $this->preparedQueries[] = $query;
-        if (!str_starts_with(strtoupper(ltrim($query)), 'SELECT')) {
-            throw new RuntimeException('preview attempted a non-SELECT prepared query: ' . $query);
+        if (preg_match('/^\s*SELECT\b/i', $query) !== 1) {
+            throw new RuntimeException('preview attempted a non-SELECT ' . $method . ': ' . $query);
         }
 
+        $this->readQueries[] = $query;
+    }
+
+    public function prepare(string $query, array $options = []): PDOStatement|false
+    {
+        $this->recordSelect($query, 'prepare');
         return new KnowledgebasePreviewStatement($query, $this->user);
+    }
+
+    public function exec(string $statement): int|false
+    {
+        throw new RuntimeException('preview attempted PDO::exec: ' . $statement);
+    }
+
+    public function query(string $query, ?int $fetchMode = null, mixed ...$fetchModeArgs): PDOStatement|false
+    {
+        $this->recordSelect($query, 'query');
+        return new KnowledgebasePreviewStatement($query, $this->user);
+    }
+
+    public function beginTransaction(): bool
+    {
+        throw new RuntimeException('preview attempted to begin a transaction');
+    }
+
+    public function commit(): bool
+    {
+        throw new RuntimeException('preview attempted to commit a transaction');
+    }
+
+    public function rollBack(): bool
+    {
+        throw new RuntimeException('preview attempted to roll back a transaction');
     }
 }
 
@@ -227,13 +258,20 @@ try {
     assertSameValue(302, $loggedOut->status(), 'logged-out preview status');
     assertSameValue('/login', $loggedOut->headers()['Location'] ?? null, 'logged-out preview location');
 
-    if ($pdo->preparedQueries === []) {
+    if ($pdo->readQueries === []) {
         fail('preview test expected authentication SELECT queries');
     }
-    foreach ($pdo->preparedQueries as $query) {
-        if (!str_starts_with(strtoupper(ltrim($query)), 'SELECT')) {
-            fail('preview prepared a write query: ' . $query);
+    foreach ($pdo->readQueries as $query) {
+        if (preg_match('/^\s*SELECT\b/i', $query) !== 1) {
+            fail('preview recorded a non-SELECT query: ' . $query);
         }
+    }
+    $authenticationReads = array_filter(
+        $pdo->readQueries,
+        static fn (string $query): bool => str_contains($query, 'SELECT * FROM users WHERE id = :id LIMIT 1')
+    );
+    if ($authenticationReads === []) {
+        fail('preview test did not record the administrator authentication SELECT');
     }
 } finally {
     @unlink($env);
