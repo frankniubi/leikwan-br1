@@ -53,8 +53,13 @@
       delete form.dataset.mermaidValidated;
       return;
     }
+    if (form.dataset.mermaidValidationPending === 'true') {
+      event.preventDefault();
+      return;
+    }
 
     event.preventDefault();
+    form.dataset.mermaidValidationPending = 'true';
     clearError();
 
     const detached = document.createElement('div');
@@ -75,6 +80,7 @@
         await window.mermaid.parse(source);
         sources.push(source);
       } catch (error) {
+        delete form.dataset.mermaidValidationPending;
         const message = messageFrom(error);
         showError(`Diagram ${index + 1}: ${message}`);
         return;
@@ -87,6 +93,7 @@
     if (digestField) {
       digestField.value = hex;
     }
+    delete form.dataset.mermaidValidationPending;
     form.dataset.mermaidValidated = 'true';
     form.requestSubmit(submitter);
   });

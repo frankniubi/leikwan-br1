@@ -162,6 +162,7 @@ foreach ([
     "crypto.subtle.digest('SHA-256'",
     "padStart(2, '0')",
     'dataset.mermaidValidated',
+    'dataset.mermaidValidationPending',
     'form.requestSubmit(submitter)',
     '`Diagram ${index + 1}: ${message}`',
 ] as $requiredJavascript) {
