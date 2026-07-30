@@ -47,12 +47,42 @@ function assertMigrationBehavior(bool $condition, string $message): void
     }
 }
 
+function restartMigrationBehaviorWithSqlite(): never
+{
+    $extensionDir = (string) ini_get('extension_dir');
+    if ($extensionDir === '') {
+        $extensionDir = dirname(PHP_BINARY) . DIRECTORY_SEPARATOR . 'ext';
+    }
+    assertMigrationBehavior(is_dir($extensionDir), 'SQLite test extension directory is missing: ' . $extensionDir);
+
+    $command = escapeshellarg(PHP_BINARY)
+        . ' -n'
+        . ' -d extension_dir=' . escapeshellarg($extensionDir)
+        . ' -d extension=pdo_sqlite'
+        . ' -d extension=sqlite3 '
+        . escapeshellarg(__FILE__);
+    $output = [];
+    $exitCode = 0;
+    exec($command . ' 2>&1', $output, $exitCode);
+    $stream = $exitCode === 0 ? STDOUT : STDERR;
+    if ($output !== []) {
+        fwrite($stream, implode(PHP_EOL, $output) . PHP_EOL);
+    }
+    exit($exitCode);
+}
+
+if (!in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+    restartMigrationBehaviorWithSqlite();
+}
+
 $root = realpath(__DIR__ . '/..');
 assertMigrationBehavior($root !== false, 'could not resolve master root');
 
 require_once $root . '/src/Config.php';
 require_once $root . '/src/Database/Database.php';
 require_once $root . '/src/Support/ApiException.php';
+require_once $root . '/src/Support/LocaleResolver.php';
+require_once $root . '/src/Support/KnowledgebaseService.php';
 require_once $root . '/src/Support/MigrationRunner.php';
 
 $previousEnvironment = [];
@@ -219,6 +249,25 @@ try {
         )->fetchColumn(),
         'rerun must preserve an administrator edit to the custom legacy article'
     );
+
+    $service = new Leikwan\Master\Support\KnowledgebaseService($db);
+    $topics = $service->listPublishedTopics('zh-Hans');
+    assertMigrationBehaviorSame(9, count($topics), 'reader service must expose the migrated custom plus default topics');
+    $customResolved = $service->findPublishedTopicByKey('administrator-custom-guide', 'zh-Hans');
+    assertMigrationBehavior(is_array($customResolved), 'reader service must expose the custom English article');
+    assertMigrationBehaviorSame('en', $customResolved['locale_resolved'] ?? '', 'custom English article must resolve as English');
+    assertMigrationBehavior((bool) ($customResolved['used_fallback'] ?? false), 'custom English article must expose the visible fallback contract');
+    foreach ([
+        'getting-started-first-forward-checklist',
+        'connection-modes-single-race-bond',
+        'bond-sidecar-setup',
+        'troubleshooting-common-mistakes',
+    ] as $legacyKey) {
+        assertMigrationBehavior(
+            $service->findPublishedTopicByKey($legacyKey, 'zh-TW') !== null,
+            'legacy stable key must remain readable after migration: ' . $legacyKey
+        );
+    }
 } catch (Throwable $throwable) {
     $failure = $throwable;
 } finally {
