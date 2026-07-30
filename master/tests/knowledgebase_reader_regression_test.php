@@ -78,9 +78,13 @@ foreach ([
     'install-client',
     'getting-started-first-forward-checklist',
     'connect-and-verify',
-] as $legacyThreadValue) {
-    if (!str_contains($auth . $tenant, $legacyThreadValue)) {
-        fail('missing stable legacy thread value: ' . $legacyThreadValue);
+    'connection-modes-single-race-bond',
+    'bond-sidecar-setup',
+    'troubleshooting-common-mistakes',
+    'glossary',
+] as $stableThreadValue) {
+    if (!str_contains($auth . $tenant, $stableThreadValue)) {
+        fail('missing stable guide thread value: ' . $stableThreadValue);
     }
 }
 
