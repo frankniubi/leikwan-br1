@@ -117,6 +117,11 @@ try {
     $config = new Config($envPath);
     $db = new Database($config);
     $pdo = $db->pdo();
+    assertMigrationBehavior(method_exists($pdo, 'sqliteCreateCollation'), 'PDO SQLite collation registration is unavailable');
+    $pdo->sqliteCreateCollation(
+        'utf8mb4_general_ci',
+        static fn (string $left, string $right): int => strcasecmp($left, $right)
+    );
     $pdo->exec('CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)');
     $pdo->exec(
         'CREATE TABLE knowledgebase_threads (

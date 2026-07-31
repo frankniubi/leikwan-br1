@@ -592,7 +592,7 @@ foreach ([
     'FROM knowledgebase_topics AS existing_topic',
     'FROM knowledgebase_articles AS existing_article',
     'WHERE NOT EXISTS',
-    'topic.topic_key = legacy.slug',
+    'topic.topic_key COLLATE utf8mb4_general_ci = legacy.slug COLLATE utf8mb4_general_ci',
     'legacy.is_pinned, legacy.sort_order, legacy.created_at, legacy.updated_at',
     "topic.id, 'en', legacy.author_user_id, legacy.title, legacy.excerpt, legacy.body_html",
     'legacy.status, legacy.published_at, legacy.created_at, legacy.updated_at',

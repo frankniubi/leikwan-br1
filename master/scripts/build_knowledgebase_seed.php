@@ -84,7 +84,7 @@ FROM knowledgebase_threads AS legacy
 WHERE NOT EXISTS (
     SELECT 1
     FROM knowledgebase_topics AS existing_topic
-    WHERE existing_topic.topic_key = legacy.slug
+    WHERE existing_topic.topic_key COLLATE utf8mb4_general_ci = legacy.slug COLLATE utf8mb4_general_ci
 );
 SQL;
 
@@ -98,7 +98,7 @@ SELECT
     legacy.status, legacy.published_at, legacy.created_at, legacy.updated_at
 FROM knowledgebase_threads AS legacy
 INNER JOIN knowledgebase_topics AS topic
-    ON topic.topic_key = legacy.slug
+    ON topic.topic_key COLLATE utf8mb4_general_ci = legacy.slug COLLATE utf8mb4_general_ci
 WHERE legacy.slug NOT IN ('getting-started-first-forward-checklist', 'connection-modes-single-race-bond', 'bond-sidecar-setup', 'troubleshooting-common-mistakes')
   AND NOT EXISTS (
       SELECT 1
