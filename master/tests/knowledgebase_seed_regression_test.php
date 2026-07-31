@@ -74,6 +74,10 @@ try {
     assertSeedRegression(str_contains($committed, 'FROM knowledgebase_threads AS legacy'), 'custom legacy rows must migrate from legacy threads');
     assertSeedRegression(str_contains($committed, "topic.id, 'en', legacy.author_user_id, legacy.title, legacy.excerpt, legacy.body_html"), 'custom legacy rows must migrate as locale en');
     assertSeedRegression(str_contains($committed, "existing_article.locale = 'en'"), 'custom legacy migration must preserve an existing English article');
+    assertSeedRegression(
+        substr_count($committed, 'COLLATE utf8mb4_general_ci = legacy.slug COLLATE utf8mb4_general_ci') === 2,
+        'legacy topic-key comparisons must normalize mixed MySQL collations'
+    );
 
     foreach (['INSERT IGNORE', 'ON DUPLICATE KEY', 'REPLACE INTO'] as $forbidden) {
         assertSeedRegression(stripos($committed, $forbidden) === false, 'generated migration must not use ' . $forbidden);
