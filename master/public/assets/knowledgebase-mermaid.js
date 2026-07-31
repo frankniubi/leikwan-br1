@@ -21,13 +21,18 @@
         figure.innerHTML = result.svg;
         const svg = figure.querySelector("svg");
         if (svg) {
-          const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-          const titleId = `kb-mermaid-title-${index}`;
-          title.id = titleId;
-          title.textContent = source.dataset.diagramLabel || "Guide diagram";
-          svg.prepend(title);
+          let title = svg.querySelector("title[id]");
+          if (!title) {
+            title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+            title.id = `kb-mermaid-title-${index}`;
+            title.textContent = source.dataset.diagramLabel || "Guide diagram";
+            svg.prepend(title);
+          }
+          const description = svg.querySelector("desc[id]");
+          const labelledBy = [title.id];
+          if (description) labelledBy.push(description.id);
           svg.setAttribute("role", "img");
-          svg.setAttribute("aria-labelledby", titleId);
+          svg.setAttribute("aria-labelledby", labelledBy.join(" "));
           svg.removeAttribute("height");
           svg.style.maxWidth = "100%";
           svg.style.height = "auto";
