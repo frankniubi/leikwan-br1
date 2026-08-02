@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.07.28.1"
+AGENT_VERSION = "2026.08.02.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -477,6 +477,8 @@ def path_matches_prefix(request_path: str, route_path: str) -> bool:
 
 
 def shell_arg(value: str) -> str:
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        raise RuntimeError("unsafe unit argument")
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
