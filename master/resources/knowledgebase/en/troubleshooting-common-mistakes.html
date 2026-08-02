@@ -1,0 +1,55 @@
+<h2>What you will accomplish</h2>
+<p>You will start with the symptom you can see, check one boundary at a time, and stop before broad or random changes make the original problem harder to identify.</p>
+
+<h2>Before you begin</h2>
+<ul>
+  <li>Write down the exact error, time, Client platform, Forward name, and local port.</li>
+  <li>Keep the saved Forward unchanged while you check its current state.</li>
+  <li>Do not include passwords, tokens, generated commands, route keys, private keys, or internal session material in screenshots or support messages.</li>
+  <li>Use the real application protocol for the final test.</li>
+</ul>
+
+<h2>Steps</h2>
+<pre class="mermaid">flowchart TD
+accTitle: Symptom-first troubleshooting
+accDescr: After a failed request, check recent sync, the address, network access to the port, Forward and route health, and the target service before using diagnostics and support.
+A[Application request failed] --&gt; B{Recent sync?}
+B -- No --&gt; C[Restore Client sync]
+B -- Yes --&gt; D{Correct address?}
+D -- No --&gt; E[Use loopback or reachable client host]
+D -- Yes --&gt; F{Port allowed?}
+F -- No --&gt; G[Allow only the required port]
+F -- Yes --&gt; H{Forward and route healthy?}
+H -- No --&gt; I[Open View Diagnostics]
+H -- Yes --&gt; J[Test target from its own host]
+C --&gt; K[Retry application]
+E --&gt; K
+G --&gt; K
+I --&gt; L[Diagnostics and support]
+J --&gt; L</pre>
+<p>The checks move from the Client toward the target. Fix the first failed boundary, retry once, and preserve evidence instead of making random topology changes.</p>
+<ol>
+  <li>Confirm a recent sync for the expected Client.</li>
+  <li>Confirm the Forward shows <strong>Running</strong>.</li>
+  <li>Check the correct address: use <code>127.0.0.1</code> on the same Client device.</li>
+  <li>For another device, use a reachable Windows or Linux Client-host address. Do not treat Android as a cross-device listener.</li>
+  <li>Confirm the local port matches the Forward card.</li>
+  <li>For cross-device use, confirm that only the required port is allowed by the firewall, security group, and NAT as applicable.</li>
+  <li>Check that the forward and route are healthy in <strong>View Diagnostics</strong>.</li>
+  <li>Test the target service from its own host and port.</li>
+  <li>Retry with the actual application protocol.</li>
+  <li>If it still fails, collect diagnostics and contact support with the symptom and time.</li>
+</ol>
+
+<h2>How to know it worked</h2>
+<p>The first failing boundary becomes healthy and the real application request succeeds. A recent sync proves configuration delivery, <strong>Running</strong> proves a local process state, and a successful target response proves the complete request path.</p>
+
+<h2>If it did not work</h2>
+<p><strong>Stop before reinstalling everything, opening broad port ranges, or making random topology changes.</strong> Preserve the error and diagnostics. Contact support with the Forward name, Client platform, test time, address type, local port, and sanitized results. Never send secrets.</p>
+
+<h2>Related guides</h2>
+<ul>
+  <li><a href="/knowledgebase?thread=install-client">Install the Client</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">Connect and Verify</a></li>
+  <li><a href="/knowledgebase?thread=glossary">Glossary</a></li>
+</ul>
