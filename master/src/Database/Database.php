@@ -149,13 +149,20 @@ final class Database
     public function transaction(callable $callback)
     {
         $pdo = $this->pdo();
-        $pdo->beginTransaction();
+        $ownsTransaction = !$pdo->inTransaction();
+        if ($ownsTransaction) {
+            $pdo->beginTransaction();
+        }
         try {
             $result = $callback($this);
-            $pdo->commit();
+            if ($ownsTransaction) {
+                $pdo->commit();
+            }
             return $result;
         } catch (\Throwable $throwable) {
-            $pdo->rollBack();
+            if ($ownsTransaction && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $throwable;
         }
     }
