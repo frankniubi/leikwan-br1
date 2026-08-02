@@ -379,9 +379,17 @@ final class ProvisioningService
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
-    public function createForward(int $serviceId, array $payload, string $actor = 'user'): array
+    public function createForward(
+        int $serviceId,
+        array $payload,
+        string $actor = 'user',
+        ?string $idempotencyKeyHash = null,
+        ?string $requestHash = null
+    ): array
     {
-        return $this->saveForward($serviceId, null, $payload, $actor);
+        return $this->db->transaction(function () use ($serviceId, $payload, $actor, $idempotencyKeyHash, $requestHash): array {
+            return $this->saveForward($serviceId, null, $payload, $actor, $idempotencyKeyHash, $requestHash);
+        });
     }
 
     /**
@@ -992,8 +1000,8 @@ final class ProvisioningService
     }
 
     /**
-     * Routes a service may select in the tenant add-forward UI. If the plan gates routes
-     * (service_plan_forward_routes), only those are offered; otherwise all active routes.
+     * Routes a service may select in the tenant add-forward UI. Route visibility is
+     * allowlist-only: a plan without explicit service_plan_forward_routes rows has no routes.
      */
     public function availableForwardRoutesForService(int $serviceId): array
     {
@@ -1009,11 +1017,7 @@ final class ProvisioningService
              ORDER BY fr.sort_order ASC, fr.id ASC',
             ['plan_id' => $planId]
         );
-        $routes = $gated !== [] || $this->planUsesForwardRoutes($planId)
-            ? array_values($gated)
-            : array_values($this->db->fetchAll(
-                'SELECT * FROM forward_routes WHERE is_active = 1 ORDER BY sort_order ASC, id ASC'
-            ));
+        $routes = array_values($gated);
         foreach ($routes as &$route) {
             $routeId = (int) ($route['id'] ?? 0);
             if (!$this->forwardRouteUsesDedicatedLeigod($routeId)) {
@@ -3871,14 +3875,14 @@ final class ProvisioningService
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
-    public function updateForward(int $forwardId, array $payload, string $actor = 'user'): array
+    public function updateForward(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null): array
     {
-        $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
-        if ($forward === null) {
-            throw new ApiException('forward_not_found', 404);
-        }
-
-        return $this->db->transaction(function () use ($forwardId, $forward, $payload, $actor): array {
+        return $this->db->transaction(function () use ($forwardId, $payload, $actor, $expectedRevision): array {
+            $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1 FOR UPDATE', ['id' => $forwardId]);
+            if ($forward === null) {
+                throw new ApiException('forward_not_found', 404);
+            }
+            $this->assertExpectedForwardRevision($forward, $expectedRevision);
             $this->revokeForwardEndpoints($forwardId, 'update');
             return $this->saveForward((int) $forward['service_id'], $forwardId, $payload, $actor);
         });
@@ -3888,32 +3892,42 @@ final class ProvisioningService
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
-    public function updateForwardNonStructural(int $forwardId, array $payload, string $actor = 'user'): array
+    public function updateForwardNonStructural(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null): array
     {
-        $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
-        if ($forward === null) {
-            throw new ApiException('forward_not_found', 404);
-        }
+        return $this->db->transaction(function () use ($forwardId, $payload, $actor, $expectedRevision): array {
+            $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1 FOR UPDATE', ['id' => $forwardId]);
+            if ($forward === null) {
+                throw new ApiException('forward_not_found', 404);
+            }
+            $this->assertExpectedForwardRevision($forward, $expectedRevision);
 
-        $listenPort = max(0, (int) ($payload['listen_port'] ?? $forward['listen_port'] ?? 0));
-        $targetHost = trim((string) ($payload['target_host'] ?? $forward['target_host'] ?? ''));
-        $targetPort = max(0, (int) ($payload['target_port'] ?? $forward['target_port'] ?? 0));
-        $transportMode = match (strtolower(trim((string) ($payload['transport_mode'] ?? $forward['transport_mode'] ?? 'tcp')))) {
-            'udp' => 'udp',
-            'tcp+udp', 'udp+tcp', 'both' => 'tcp+udp',
-            default => 'tcp',
-        };
+            $listenPort = max(0, (int) ($payload['listen_port'] ?? $forward['listen_port'] ?? 0));
+            $targetHost = trim((string) ($payload['target_host'] ?? $forward['target_host'] ?? ''));
+            $targetPort = max(0, (int) ($payload['target_port'] ?? $forward['target_port'] ?? 0));
+            $transportMode = match (strtolower(trim((string) ($payload['transport_mode'] ?? $forward['transport_mode'] ?? 'tcp')))) {
+                'udp' => 'udp',
+                'tcp+udp', 'udp+tcp', 'both' => 'tcp+udp',
+                default => 'tcp',
+            };
 
-        if ($listenPort <= 0 || $targetHost === '' || $targetPort <= 0) {
-            throw new ApiException('invalid_forward_payload', 422, ['payload' => $payload]);
-        }
+            if ($listenPort <= 0 || $targetHost === '' || $targetPort <= 0) {
+                throw new ApiException('invalid_forward_payload', 422, ['payload' => $payload]);
+            }
+            [$targetHost, $targetPort, $listenPort] = $this->validateForwardMutationInputs(
+                $targetHost,
+                $targetPort,
+                $listenPort,
+                false
+            );
 
-        $this->db->execute(
+            $nextRevision = max(1, (int) ($forward['api_revision'] ?? 1)) + 1;
+            $this->db->execute(
             'UPDATE forwards
              SET listen_port = :listen_port,
                  target_host = :target_host,
                  target_port = :target_port,
                  transport_mode = :transport_mode,
+                 api_revision = :api_revision,
                  updated_at = :updated_at
              WHERE id = :id',
             [
@@ -3922,36 +3936,49 @@ final class ProvisioningService
                 'target_host' => $targetHost,
                 'target_port' => $targetPort,
                 'transport_mode' => $transportMode,
+                'api_revision' => $nextRevision,
                 'updated_at' => $this->now(),
             ]
-        );
+            );
 
-        $this->audit('forward.updated', [
-            'forward_id' => $forwardId,
-            'service_id' => (int) ($forward['service_id'] ?? 0),
-            'actor' => $actor,
-            'scope' => 'non_structural',
-        ]);
+            $this->audit('forward.updated', [
+                'forward_id' => $forwardId,
+                'service_id' => (int) ($forward['service_id'] ?? 0),
+                'actor' => $actor,
+                'scope' => 'non_structural',
+                'revision' => $nextRevision,
+            ]);
 
-        $this->revokeForwardEndpoints($forwardId, 'update');
-        $this->reconcileForwardEndpoints($forwardId);
+            $this->revokeForwardEndpoints($forwardId, 'update');
+            $this->reconcileForwardEndpoints($forwardId);
 
-        return $this->buildClientConfig($forwardId);
+            return $this->buildClientConfig($forwardId);
+        });
     }
 
-    public function deleteForward(int $forwardId, string $actor = 'user'): void
+    public function deleteForward(int $forwardId, string $actor = 'user', ?int $expectedRevision = null): void
     {
-        $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
-        if ($forward === null) {
-            throw new ApiException('forward_not_found', 404);
-        }
+        $this->db->transaction(function () use ($forwardId, $actor, $expectedRevision): void {
+            $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1 FOR UPDATE', ['id' => $forwardId]);
+            if ($forward === null) {
+                throw new ApiException('forward_not_found', 404);
+            }
+            $this->assertExpectedForwardRevision($forward, $expectedRevision);
+            $nextRevision = max(1, (int) ($forward['api_revision'] ?? 1)) + 1;
 
-        $this->revokeForwardEndpoints($forwardId, 'delete');
-        $this->db->execute('UPDATE forwards SET enabled = 0, updated_at = :updated_at WHERE id = :id', [
-            'id' => $forwardId,
-            'updated_at' => $this->now(),
-        ]);
-        $this->audit('forward.deleted', ['forward_id' => $forwardId, 'actor' => $actor]);
+            $this->revokeForwardEndpoints($forwardId, 'delete');
+            $this->db->execute('UPDATE forwards SET enabled = 0, api_revision = :api_revision, updated_at = :updated_at WHERE id = :id', [
+                'id' => $forwardId,
+                'api_revision' => $nextRevision,
+                'updated_at' => $this->now(),
+            ]);
+            $this->audit('forward.deleted', [
+                'forward_id' => $forwardId,
+                'service_id' => (int) ($forward['service_id'] ?? 0),
+                'actor' => $actor,
+                'revision' => $nextRevision,
+            ]);
+        });
     }
 
     /**
@@ -4665,7 +4692,14 @@ final class ProvisioningService
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
-    private function saveForward(int $serviceId, ?int $forwardId, array $payload, string $actor): array
+    private function saveForward(
+        int $serviceId,
+        ?int $forwardId,
+        array $payload,
+        string $actor,
+        ?string $idempotencyKeyHash = null,
+        ?string $requestHash = null
+    ): array
     {
         unset($payload['endpoint_count']);
 
@@ -4763,6 +4797,13 @@ final class ProvisioningService
             }
             $targetHost = $serviceIp;
         }
+
+        [$targetHost, $targetPort, $listenPort] = $this->validateForwardMutationInputs(
+            $targetHost,
+            $targetPort,
+            $listenPort,
+            true
+        );
 
         if ($forwardRouteId > 0) {
             $this->visibleForwardRouteForService($forwardRouteId, $serviceId);
@@ -5137,6 +5178,9 @@ final class ProvisioningService
         if ($forwardId === null) {
             $forwardId = $this->db->insert('forwards', [
                 'service_id' => $serviceId,
+                'api_revision' => 1,
+                'api_idempotency_key_hash' => $idempotencyKeyHash,
+                'api_request_hash' => $requestHash,
                 'listen_port' => $listenPort,
                 'target_host' => $targetHost,
                 'target_port' => $targetPort,
@@ -5173,6 +5217,7 @@ final class ProvisioningService
             ]);
             $this->audit('forward.created', ['forward_id' => $forwardId, 'service_id' => $serviceId, 'actor' => $actor]);
         } else {
+            $nextRevision = max(1, (int) ($existingForward['api_revision'] ?? 1)) + 1;
             $this->db->execute(
                 'UPDATE forwards
                  SET listen_port = :listen_port,
@@ -5206,6 +5251,7 @@ final class ProvisioningService
                      cdn_host = :cdn_host,
                      filter_profile = :filter_profile,
                      enabled = 1,
+                     api_revision = :api_revision,
                      updated_at = :updated_at
                  WHERE id = :id',
                 [
@@ -5239,8 +5285,9 @@ final class ProvisioningService
                     'endpoint_count' => $endpointCount,
                     'public_port' => $publicPort > 0 ? $publicPort : $listenPort,
                     'cdn_host' => $cdnHost,
-                    'filter_profile' => $filterProfile,
-                    'updated_at' => $this->now(),
+                     'filter_profile' => $filterProfile,
+                     'api_revision' => $nextRevision,
+                     'updated_at' => $this->now(),
                 ]
             );
             $this->audit('forward.updated', ['forward_id' => $forwardId, 'service_id' => $serviceId, 'actor' => $actor]);
@@ -8600,6 +8647,41 @@ final class ProvisioningService
             'context_json' => json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             'created_at' => $this->now(),
         ]);
+    }
+
+    /**
+     * Validate values that eventually reach generated slave units. The v1
+     * contract performs strict JSON typing; this shared boundary protects
+     * legacy, Web, and internal callers after their normalizers run.
+     *
+     * @return array{0:string,1:int,2:int}
+     */
+    private function validateForwardMutationInputs(
+        string $targetHost,
+        int $targetPort,
+        int $listenPort,
+        bool $allowAutomaticListenPort
+    ): array {
+        if ($targetPort < 1 || $targetPort > 65535) {
+            throw new ApiException('invalid_forward_payload', 422);
+        }
+        if ($listenPort < 0 || $listenPort > 65535 || (!$allowAutomaticListenPort && $listenPort === 0)) {
+            throw new ApiException('invalid_forward_payload', 422);
+        }
+
+        return [ForwardLineApiContract::validateTargetHost($targetHost), $targetPort, $listenPort];
+    }
+
+    /** @param array<string, mixed> $forward */
+    private function assertExpectedForwardRevision(array $forward, ?int $expectedRevision): void
+    {
+        if ($expectedRevision === null) {
+            return;
+        }
+        $actualRevision = max(1, (int) ($forward['api_revision'] ?? 1));
+        if ($expectedRevision !== $actualRevision) {
+            throw new ApiException('forward_version_conflict', 412);
+        }
     }
 
     /**
