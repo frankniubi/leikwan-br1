@@ -304,4 +304,13 @@ throwsCode(
     'legacy update rejects unknown transport'
 );
 
+$ungatedRoute = ForwardLineApiContract::presentRoute([
+    'id' => 15,
+    'tenant_label' => 'Plain Route',
+    'availability' => null,
+]);
+foreach (['tcp', 'udp', 'tcp+udp'] as $transport) {
+    trueValue(($ungatedRoute['transports'][$transport]['available'] ?? false) === true, 'ungated route should be available for ' . $transport);
+}
+
 echo "ok\n";
