@@ -68,7 +68,8 @@ Example response:
 }
 ```
 
-Only routes explicitly mapped to the service plan are returned. Missing plan
+Only active routes explicitly mapped to the service plan and containing at
+least one enabled active combination are returned. Missing or stale plan
 mapping is fail-closed and returns an empty route list. Stable availability
 reasons are limited to `route_unavailable`, `no_healthy_nodes`,
 `transport_unavailable`, and `not_configured`.
@@ -215,9 +216,18 @@ If-Match: "forward-123-r3"
 ```
 
 The response returns the updated safe resource and a new ETag, for example
-`"forward-123-r4"`. Changing route ID, target source, or target service ID
-uses the structural provisioning path; changing target, listen port, or
-transport only uses the narrower update path.
+`"forward-123-r4"`. Changing route ID, target source, target service ID, or
+transport uses the structural provisioning path; changing only the target or
+an explicit nonzero listen port uses the narrower update path. Setting
+`listen_port` to `null` requests a new automatic allocation and also uses the
+structural path. Structural validation completes before endpoint retirement,
+so an unavailable transport fails atomically with `409 route_unavailable`.
+
+A partial target patch keeps the current source. A manual target cannot accept
+`service_id`, and a service-IP target cannot accept a caller-controlled `host`.
+Changing from `manual` to `service_ip` requires `source` and `service_id` in the
+same patch. Changing back requires `source` and `host` in the same patch; stale
+fields from the previous target type are cleared server-side.
 
 ## Delete
 
@@ -229,7 +239,14 @@ If-Match: "forward-123-r4"
 
 Successful deletion is a soft delete through the existing retirement protocol
 and returns `204` with an empty body. A stale or missing ETag never retires an
-endpoint.
+endpoint. User deletion writes a permanent tombstone marker; the tenant account
+reactivation action never revives that row. The billing job writes a separate
+balance-suspension marker and increments the revision. Only rows carrying that
+explicit marker are eligible for account reactivation; they are rechecked under
+the current tenant status, wallet balance, feature policy, and active quota,
+then the marker is cleared and the revision is incremented. Historical disabled
+rows whose cause cannot be attributed to an individual forward remain
+unclassified and are never restored automatically.
 
 ## Retry and Concurrency
 
@@ -240,11 +257,21 @@ endpoint.
 - Reusing a key with a different normalized request returns
   `409 idempotency_conflict`. Do not generate a new key merely because the
   first response was lost.
+- If the original resource was deleted, replay returns
+  `409 idempotency_resource_inactive`; an idempotency key never resurrects or
+  successfully replays a tombstone.
 - `PATCH` and `DELETE` are conditional writes. On `412 forward_version_conflict`,
   fetch the current detail resource, review the new ETag, and decide whether to
   apply the operation again. Never retry a stale mutation unchanged.
 - A successful patch increments `revision`. A successful delete increments the
   server-side revision before the resource becomes inactive.
+- Create locks the service and rechecks owner, account/service status, feature
+  policy, idempotency, and quota. Concurrent creates cannot jointly exceed the
+  configured limit.
+- Soft-deleted rows count toward the configurable retained-history limit. Once
+  reached, create returns `409 forward_storage_quota_exceeded`; operators must
+  review and deliberately archive old records rather than allowing unbounded
+  create/delete churn.
 
 ## Validation and Errors
 
@@ -273,7 +300,7 @@ Expected codes include:
 | --- | --- |
 | `401` | `user_auth_failed` |
 | `404` | `service_not_found`, `forward_not_found` |
-| `409` | `service_inactive`, `forward_quota_exceeded`, `idempotency_conflict` |
+| `409` | `service_inactive`, `forward_quota_exceeded`, `forward_storage_quota_exceeded`, `idempotency_conflict`, `idempotency_resource_inactive`, `route_unavailable` |
 | `412` | `forward_version_conflict` |
 | `413` | `request_too_large` |
 | `415` | `unsupported_media_type` |
@@ -283,7 +310,9 @@ Expected codes include:
 
 Feature-policy failures use `403 feature_denied_manage_forwards` or
 `403 feature_denied_delete_forwards`. Unexpected exception details are logged
-server-side and are never returned in the response.
+server-side and are never returned in the response. Provider-specific failures,
+node identities, group names, and topology details are mapped to stable public
+codes rather than exposed.
 
 ## Resource Boundary
 
@@ -305,4 +334,19 @@ remain registered for existing clients. New integrations should use v1. Legacy
 write responses carry `Deprecation: true`, use the same tenant ownership,
 active-service, feature-policy, quota, host, port, and payload allowlists, and
 return a safe forward resource plus a client-config URL rather than embedding
-runtime client configuration in a management mutation response.
+runtime client configuration in a management mutation response. They require an
+active tenant account, pass the current revision into the transaction, and
+redact internal provisioning errors across preflight, provisioning, and
+client-config reads. Client config is available only while both the forward and
+service are active. For compatibility, legacy writes ignore `endpoint_count`,
+canonicalize decimal-string IDs/ports and case-insensitive `tcp`/`udp`,
+`udp+tcp`, and `both`; internal
+combination, node, Sidecar, and placement fields remain rejected.
+
+Administrators assign active Forward Routes directly on the plan editor. A plan
+save validates that every selected route contains an enabled active combination,
+then writes both the explicit route allowlist and its compatibility combination
+mapping in one transaction. A missing explicit route mapping remains fail-closed.
+Automatic MySQL migrations use a database advisory lock, retry standalone
+deadlocked statements through the database wrapper, and return only stable
+migration errors while logging implementation details server-side.

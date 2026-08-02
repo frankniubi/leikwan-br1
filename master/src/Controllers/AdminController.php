@@ -1519,10 +1519,9 @@ final class AdminController extends BaseController
         }
 
         $plans = $this->provisioning?->listPlans() ?? [];
-        $forwardCombinations = array_values(array_filter(
-            $this->provisioning?->listForwardCombinations() ?? [],
-            static fn(array $combination): bool => (int) ($combination['is_active'] ?? 0) === 1
-        ));
+        $forwardRoutes = $this->db->fetchAll(
+            'SELECT * FROM forward_routes WHERE is_active = 1 ORDER BY sort_order ASC, id ASC'
+        );
         $defaults = $this->provisioning?->defaultFeatureFlags() ?? [];
         $editId = (int) $request->input('edit', 0);
         $editing = null;
@@ -1532,20 +1531,19 @@ final class AdminController extends BaseController
                 break;
             }
         }
-        $editingAllowedForwardCombinationIds = array_map(
-            static fn(array $combination): int => (int) ($combination['id'] ?? 0),
-            $editing['allowed_forward_combinations'] ?? []
+        $editingAllowedForwardRouteIds = array_map(
+            static fn(array $route): int => (int) ($route['id'] ?? 0),
+            $editing['allowed_forward_routes'] ?? []
         );
-        $editingIsLegacyPlan = $editing !== null && empty($editing['uses_forward_combinations']);
         $rows = '';
         foreach ($plans as $plan) {
-            $allowedForwardCombinations = array_map(
-                static fn(array $combination): string => trim((string) (($combination['tenant_label'] ?? '') !== '' ? $combination['tenant_label'] : ($combination['name'] ?? ''))),
-                $plan['allowed_forward_combinations'] ?? []
+            $allowedForwardRoutes = array_map(
+                static fn(array $route): string => trim((string) (($route['tenant_label'] ?? '') !== '' ? $route['tenant_label'] : ($route['name'] ?? ''))),
+                $plan['allowed_forward_routes'] ?? []
             );
-            $forwardCombinationSummary = $allowedForwardCombinations !== []
-                ? $this->escape(implode(', ', $allowedForwardCombinations))
-                : '<span class="muted">Legacy rules (edit to convert)</span>';
+            $forwardRouteSummary = $allowedForwardRoutes !== []
+                ? $this->escape(implode(', ', $allowedForwardRoutes))
+                : '<span class="badge danger">0</span>';
             $billingSummary = ((string) ($plan['billing_mode'] ?? 'monthly_bundle') === 'metered')
                 ? 'Metered / ' . $this->escape((string) ($plan['billing_currency'] ?? 'CNY')) . ' ' . $this->escape((string) ($plan['monthly_base_fee'] ?? '0.00')) . ' base + ' . $this->escape((string) ($plan['traffic_price_per_gb'] ?? '0.0000')) . ' / GB'
                 : 'Bundle / ' . $this->escape((string) ($plan['billing_currency'] ?? 'CNY')) . ' ' . $this->escape((string) ($plan['monthly_base_fee'] ?? '0.00')) . ' + ' . (int) ($plan['monthly_included_traffic_gb'] ?? 0) . ' GB / month';
@@ -1567,7 +1565,7 @@ final class AdminController extends BaseController
                 <td>' . (int) $plan['default_bandwidth_limit_mbps'] . ' Mbps</td>
                 <td>' . (int) $plan['default_traffic_limit_gb'] . ' GB</td>
                 <td>' . $billingSummary . '</td>
-                <td>' . $forwardCombinationSummary . '</td>
+                <td>' . $forwardRouteSummary . '</td>
                 <td>' . $visibilitySummary . '</td>
                 <td>' . ((int) $plan['is_active'] === 1 ? '<span class="badge success">active</span>' : '<span class="badge danger">inactive</span>') . '</td>
                 <td>
@@ -1583,14 +1581,11 @@ final class AdminController extends BaseController
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
-        $forwardCombinationFieldNote = $editingIsLegacyPlan
-            ? '<p class="muted">Legacy plan detected. Choose forward combinations and save to convert this plan.</p>'
-            : '<p class="muted">Plans now authorize tenant route packages through grouped forward combinations.</p>';
         $body = '
             <div class="hero">
               <div>
                 <h2>Plans</h2>
-                <p class="muted">Plans define usable resources, billing, and allowed forward combinations for each tenant service.</p>
+                <p class="muted">Product entitlements, billing, and tenant routing.</p>
               </div>
             </div>
             <div class="grid two">
@@ -1626,9 +1621,9 @@ final class AdminController extends BaseController
                     <div class="field"><label>Client Device Limit</label><input type="number" min="1" name="default_client_online_device_limit" value="' . $this->escape((string) ($editing['default_client_online_device_limit'] ?? '1')) . '" required><p class="muted">Tenant-visible default entitlement shown on the package card. Per-client enforcement still lives on the client record.</p></div>
                   </div>
                   <div class="field" style="margin-top:14px;">
-                    <label>Allowed Forward Combinations</label>
-                    ' . $forwardCombinationFieldNote . '
-                    <div class="stack">' . $this->renderForwardCombinationPlanGroups($forwardCombinations, $editingAllowedForwardCombinationIds) . '</div>
+                    <label>Forward Routes</label>
+                    <p class="muted">Routes available to services on this plan.</p>
+                    <div class="stack">' . $this->renderForwardRoutePlanCheckboxes($forwardRoutes, $editingAllowedForwardRouteIds) . '</div>
                   </div>
                   <div class="field" style="margin-top:14px;">
                     <label>Plan Feature Flags</label>
@@ -1643,7 +1638,7 @@ final class AdminController extends BaseController
                 <h3>Plan List</h3>
                 <div class="table-wrap">
                   <table>
-                    <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>Bandwidth</th><th>Traffic</th><th>Billing</th><th>Forward Combinations</th><th>Visibility</th><th>Status</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>Bandwidth</th><th>Traffic</th><th>Billing</th><th>Forward Routes</th><th>Visibility</th><th>Status</th><th>Actions</th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
@@ -3960,7 +3955,7 @@ final class AdminController extends BaseController
                 'default_client_online_device_limit' => $request->input('default_client_online_device_limit', '1'),
                 'is_active' => $request->input('is_active', '1'),
                 'is_tenant_visible' => $request->input('is_tenant_visible', '1'),
-                'allowed_forward_combination_ids' => $request->body()['allowed_forward_combination_ids'] ?? [],
+                'allowed_forward_route_ids' => $request->body()['allowed_forward_route_ids'] ?? [],
                 'allowed_node_group_ids' => $request->body()['allowed_node_group_ids'] ?? [],
                 'allowed_client_group_ids' => $request->body()['allowed_client_group_ids'] ?? [],
                 'allowed_sidecar_point_ids' => $request->body()['allowed_sidecar_point_ids'] ?? [],
@@ -4995,54 +4990,29 @@ final class AdminController extends BaseController
     }
 
     /**
-     * @param array<int, array<string, mixed>> $combinations
+     * @param array<int, array<string, mixed>> $routes
      * @param array<int, int> $selectedIds
      */
-    private function renderForwardCombinationPlanGroups(array $combinations, array $selectedIds): string
+    private function renderForwardRoutePlanCheckboxes(array $routes, array $selectedIds): string
     {
-        if ($combinations === []) {
-            return '<div class="muted">No forward combinations yet. Create a forward combination first.</div>';
+        if ($routes === []) {
+            return '<div class="muted">No active Forward Routes.</div>';
         }
 
-        $groups = [];
-        foreach ($combinations as $combination) {
-            $backendMode = strtoupper(trim((string) ($combination['backend_mode'] ?? 'current_mode')));
-            $clientMode = strtoupper(trim((string) ($combination['client_mode'] ?? 'single')));
-            $groupLabel = $backendMode . ' / ' . $clientMode;
-            if ((string) ($combination['backend_mode'] ?? '') === 'cf_mode' && trim((string) ($combination['cf_location_group_name'] ?? '')) !== '') {
-                $groupLabel .= ' / ' . trim((string) $combination['cf_location_group_name']);
-            }
-            $groups[$groupLabel][] = $combination;
-        }
-
-        ksort($groups);
         $html = '';
-        foreach ($groups as $groupLabel => $items) {
-            $html .= '<div style="border:1px solid var(--line);border-radius:18px;padding:14px 16px;background:rgba(250,251,252,0.88);">
-                <strong style="display:block;margin-bottom:10px;">' . $this->escape($groupLabel) . '</strong>';
-            foreach ($items as $combination) {
-                $combinationId = (int) ($combination['id'] ?? 0);
-                $label = trim((string) (($combination['tenant_label'] ?? '') !== '' ? $combination['tenant_label'] : ($combination['name'] ?? '')));
-                $meta = [];
-                $meta[] = 'Internal: ' . trim((string) ($combination['name'] ?? ''));
-                $meta[] = 'Node Group: ' . trim((string) ($combination['node_group_key'] ?? ''));
-                if (trim((string) ($combination['tenant_badge'] ?? '')) !== '') {
-                    $meta[] = 'Badge: ' . trim((string) $combination['tenant_badge']);
-                }
-                if (trim((string) ($combination['tenant_description'] ?? '')) !== '') {
-                    $meta[] = trim((string) $combination['tenant_description']);
-                }
-                $html .= '<label style="display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid rgba(19,34,56,0.08);">
-                    <input type="checkbox" name="allowed_forward_combination_ids[]" value="' . $combinationId . '"' . (in_array($combinationId, $selectedIds, true) ? ' checked' : '') . '>
-                    <span>
-                      <strong>' . $this->escape($label) . '</strong><br>
-                      <span class="muted" style="font-size:12px;line-height:1.6;">' . $this->escape(implode(' / ', array_values(array_filter($meta)))) . '</span>
-                    </span>
-                </label>';
-            }
-            $html .= '</div>';
+        foreach ($routes as $route) {
+            $routeId = (int) ($route['id'] ?? 0);
+            $label = trim((string) (($route['tenant_label'] ?? '') !== '' ? $route['tenant_label'] : ($route['name'] ?? '')));
+            $details = array_values(array_filter([
+                trim((string) ($route['tenant_badge'] ?? '')),
+                trim((string) ($route['tenant_description'] ?? '')),
+            ]));
+            $html .= '<label style="display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid rgba(19,34,56,0.08);">
+                <input type="checkbox" name="allowed_forward_route_ids[]" value="' . $routeId . '"' . (in_array($routeId, $selectedIds, true) ? ' checked' : '') . '>
+                <span><strong>' . $this->escape($label) . '</strong>'
+                . ($details !== [] ? '<br><span class="muted" style="font-size:12px;line-height:1.6;">' . $this->escape(implode(' / ', $details)) . '</span>' : '')
+                . '</span></label>';
         }
-
         return $html;
     }
 

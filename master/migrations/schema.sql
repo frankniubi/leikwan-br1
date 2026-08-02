@@ -404,6 +404,8 @@ CREATE TABLE IF NOT EXISTS forwards (
     api_revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
     api_idempotency_key_hash CHAR(64) NULL,
     api_request_hash CHAR(64) NULL,
+    user_deleted_at DATETIME NULL,
+    balance_suspended_at DATETIME NULL,
     target_source VARCHAR(32) NOT NULL DEFAULT 'manual',
     target_service_id BIGINT UNSIGNED NULL,
     listen_port INT NOT NULL,

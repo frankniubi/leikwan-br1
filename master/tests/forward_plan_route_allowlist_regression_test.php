@@ -70,8 +70,24 @@ namespace Leikwan\Master\Database {
                         $mappedIds[(int) ($mapping['forward_route_id'] ?? 0)] = true;
                     }
                 }
-                return array_values(array_filter($this->tables['forward_routes'] ?? [], static function (array $route) use ($mappedIds): bool {
-                    return (int) ($route['is_active'] ?? 0) === 1 && isset($mappedIds[(int) ($route['id'] ?? 0)]);
+                $activeCombinationIds = [];
+                foreach ($this->tables['forward_combinations'] ?? [] as $combination) {
+                    if ((int) ($combination['is_active'] ?? 0) === 1) {
+                        $activeCombinationIds[(int) ($combination['id'] ?? 0)] = true;
+                    }
+                }
+                $routeIdsWithActiveCombination = [];
+                foreach ($this->tables['forward_route_combinations'] ?? [] as $mapping) {
+                    if ((int) ($mapping['enabled'] ?? 0) === 1
+                        && isset($activeCombinationIds[(int) ($mapping['forward_combination_id'] ?? 0)])) {
+                        $routeIdsWithActiveCombination[(int) ($mapping['forward_route_id'] ?? 0)] = true;
+                    }
+                }
+                return array_values(array_filter($this->tables['forward_routes'] ?? [], static function (array $route) use ($mappedIds, $routeIdsWithActiveCombination): bool {
+                    $routeId = (int) ($route['id'] ?? 0);
+                    return (int) ($route['is_active'] ?? 0) === 1
+                        && isset($mappedIds[$routeId])
+                        && isset($routeIdsWithActiveCombination[$routeId]);
                 }));
             }
             if (str_contains($normalized, 'SELECT * FROM forward_routes WHERE is_active = 1')) {
@@ -139,6 +155,19 @@ namespace {
         'id' => 1,
         'plan_id' => 6,
         'forward_route_id' => 14,
+    ]]);
+    $mappedWithoutActiveCombination = $service->availableForwardRoutesForService(42);
+    if ($mappedWithoutActiveCombination !== []) {
+        fail('mapped route without an enabled active combination must stay hidden');
+    }
+    $db->seed('forward_combinations', [[
+        'id' => 22,
+        'is_active' => 1,
+    ]]);
+    $db->seed('forward_route_combinations', [[
+        'forward_route_id' => 14,
+        'forward_combination_id' => 22,
+        'enabled' => 1,
     ]]);
     $mapped = $service->availableForwardRoutesForService(42);
     if (count($mapped) !== 1 || (int) ($mapped[0]['id'] ?? 0) !== 14) {

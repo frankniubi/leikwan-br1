@@ -12,6 +12,8 @@ final class NestedTransactionPdo extends PDO
     public int $beginCalls = 0;
     public int $commitCalls = 0;
     public int $rollbackCalls = 0;
+    /** @var list<string> */
+    public array $execCalls = [];
     private bool $active = false;
 
     public function __construct()
@@ -52,6 +54,12 @@ final class NestedTransactionPdo extends PDO
         $this->rollbackCalls++;
         return true;
     }
+
+    public function exec(string $statement): int|false
+    {
+        $this->execCalls[] = $statement;
+        return 0;
+    }
 }
 
 function fail_nested_transaction(string $message): never
@@ -78,6 +86,32 @@ if ($result !== 'nested-ok') {
 }
 if ($pdo->beginCalls !== 1 || $pdo->commitCalls !== 1 || $pdo->rollbackCalls !== 0) {
     fail_nested_transaction('nested transaction must use one outer begin/commit');
+}
+if (count(array_filter($pdo->execCalls, static fn(string $sql): bool => str_starts_with($sql, 'SAVEPOINT '))) !== 1
+    || count(array_filter($pdo->execCalls, static fn(string $sql): bool => str_starts_with($sql, 'RELEASE SAVEPOINT '))) !== 1) {
+    fail_nested_transaction('successful nested transaction must create and release one savepoint');
+}
+
+$pdoFailure = new NestedTransactionPdo();
+$dbFailure = new Database(new Config($envPath));
+$dbFailure->setPdo($pdoFailure);
+$outerResult = $dbFailure->transaction(static function (Database $db): string {
+    try {
+        $db->transaction(static function (): void {
+            throw new RuntimeException('inner failure');
+        });
+    } catch (RuntimeException $exception) {
+        if ($exception->getMessage() !== 'inner failure') {
+            throw $exception;
+        }
+    }
+    return 'outer-continued';
+});
+if ($outerResult !== 'outer-continued' || $pdoFailure->commitCalls !== 1 || $pdoFailure->rollbackCalls !== 0) {
+    fail_nested_transaction('outer transaction should continue after a caught inner failure');
+}
+if (count(array_filter($pdoFailure->execCalls, static fn(string $sql): bool => str_starts_with($sql, 'ROLLBACK TO SAVEPOINT '))) !== 1) {
+    fail_nested_transaction('caught inner failure must roll back to its savepoint before outer commit');
 }
 
 echo "ok\n";

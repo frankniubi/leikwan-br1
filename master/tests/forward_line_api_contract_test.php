@@ -70,6 +70,59 @@ same(443, $create['target_port'] ?? null, 'target port normalization');
 $patch = ForwardLineApiContract::normalizePatch(['target' => ['port' => 8443]]);
 same(['target_port' => 8443], $patch['changes'] ?? null, 'patch target normalization');
 
+$manualForward = [
+    'forward_route_id' => 14,
+    'listen_port' => 11024,
+    'transport_mode' => 'tcp',
+    'target_source' => 'manual',
+    'target_host' => '10.0.0.5',
+    'target_port' => 443,
+    'target_service_id' => null,
+];
+$mergedManual = ForwardLineApiContract::mergePatch($manualForward, ['target_port' => 8443]);
+same('manual', $mergedManual['target_source'] ?? null, 'partial target patch keeps manual source');
+same('10.0.0.5', $mergedManual['target_host'] ?? null, 'partial target patch keeps manual host');
+same(8443, $mergedManual['target_port'] ?? null, 'partial target patch updates port');
+
+throwsCode(
+    static fn(): array => ForwardLineApiContract::mergePatch($manualForward, ['target_service_id' => 99]),
+    'validation_failed',
+    'manual target rejects service id without source change'
+);
+throwsCode(
+    static fn(): array => ForwardLineApiContract::mergePatch($manualForward, ['target_source' => 'service_ip']),
+    'validation_failed',
+    'switching to service target requires service id'
+);
+$mergedServiceTarget = ForwardLineApiContract::mergePatch($manualForward, [
+    'target_source' => 'service_ip',
+    'target_service_id' => 99,
+]);
+same('service_ip', $mergedServiceTarget['target_source'] ?? null, 'source switches to service target');
+same('', $mergedServiceTarget['target_host'] ?? null, 'service target drops stale manual host');
+same(99, $mergedServiceTarget['target_service_id'] ?? null, 'service target keeps requested service id');
+
+$serviceForward = $manualForward;
+$serviceForward['target_source'] = 'service_ip';
+$serviceForward['target_host'] = '192.0.2.44';
+$serviceForward['target_service_id'] = 99;
+throwsCode(
+    static fn(): array => ForwardLineApiContract::mergePatch($serviceForward, ['target_host' => 'backend.example.com']),
+    'validation_failed',
+    'service target rejects caller-controlled host'
+);
+throwsCode(
+    static fn(): array => ForwardLineApiContract::mergePatch($serviceForward, ['target_source' => 'manual']),
+    'validation_failed',
+    'switching to manual target requires explicit host'
+);
+$mergedBackToManual = ForwardLineApiContract::mergePatch($serviceForward, [
+    'target_source' => 'manual',
+    'target_host' => 'backend.example.com',
+]);
+same('manual', $mergedBackToManual['target_source'] ?? null, 'source switches back to manual');
+same(0, $mergedBackToManual['target_service_id'] ?? null, 'manual target drops stale service id');
+
 throwsCode(
     static fn(): array => ForwardLineApiContract::normalizeCreate([
         'route_id' => 14,
@@ -210,6 +263,8 @@ $forward = [
     'socks_port' => 47001,
     'path_prefix' => 'INTERNAL_PATH_PREFIX',
     'backend_mode' => 'INTERNAL_BACKEND_MODE',
+    'user_deleted_at' => 'INTERNAL_TOMBSTONE_TIME',
+    'balance_suspended_at' => 'INTERNAL_BALANCE_SUSPENSION_TIME',
 ];
 $presented = ForwardLineApiContract::presentForward($forward);
 same('"forward-123-r3"', ForwardLineApiContract::etag($forward), 'current forward etag');
@@ -224,8 +279,9 @@ if (!is_string($encoded)) {
 foreach ([
     'client_token', 'token_secret', 'agent_token', 'node_id', 'node_name', 'node_public_ip',
     'sidecar_point_id', 'sidecar_host', 'forward_combination_id', 'active_combination_id',
-    'leigod_line_id', 'config_json', 'socks_port', 'path_prefix', 'backend_mode',
-    'SECRET_CLIENT_TOKEN', 'INTERNAL_NODE_NAME', 'INTERNAL_SIDECAR_HOST', 'INTERNAL_CONFIG_JSON',
+    'leigod_line_id', 'config_json', 'socks_port', 'path_prefix', 'backend_mode', 'user_deleted_at', 'balance_suspended_at',
+    'SECRET_CLIENT_TOKEN', 'INTERNAL_NODE_NAME', 'INTERNAL_SIDECAR_HOST', 'INTERNAL_CONFIG_JSON', 'INTERNAL_TOMBSTONE_TIME',
+    'INTERNAL_BALANCE_SUSPENSION_TIME',
 ] as $forbidden) {
     trueValue(!str_contains($encoded, $forbidden), 'safe forward leaks ' . $forbidden);
 }
@@ -282,6 +338,18 @@ $legacy = ForwardLineApiContract::normalizeLegacyCreate([
     'transport_mode' => 'tcp',
 ]);
 same(14, $legacy['forward_route_id'] ?? null, 'legacy route allowlist');
+$legacyServiceTarget = ForwardLineApiContract::normalizeLegacyCreate([
+    'forward_route_id' => 14,
+    'listen_port' => null,
+    'target_host' => '',
+    'target_port' => 443,
+    'target_source' => 'service_ip',
+    'target_service_id' => 99,
+    'transport_mode' => 'tcp',
+]);
+same('service_ip', $legacyServiceTarget['target_source'] ?? null, 'legacy service target source');
+same(99, $legacyServiceTarget['target_service_id'] ?? null, 'legacy service target id');
+trueValue(!array_key_exists('target_host', $legacyServiceTarget), 'legacy service target drops blank manual host');
 throwsCode(
     static fn(): array => ForwardLineApiContract::normalizeLegacyCreate([
         'forward_route_id' => 14,

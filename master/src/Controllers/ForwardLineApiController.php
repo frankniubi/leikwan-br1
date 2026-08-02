@@ -55,13 +55,17 @@ final class ForwardLineApiController extends BaseController
             $serviceId = $this->pathId($params, 'service_not_found');
             $this->loadService($serviceId, (int) $user['id']);
             $rows = $this->db->fetchAll(
-                'SELECT f.*, fr.tenant_label AS route_label
+                'SELECT f.*, fr.tenant_label AS route_label,
+                        (SELECT COUNT(*)
+                         FROM service_endpoints se
+                         WHERE se.forward_id = f.id
+                           AND se.health_status = :active_endpoint_status) AS active_endpoint_count
                  FROM forwards f
                  LEFT JOIN forward_routes fr ON fr.id = f.forward_route_id
                  WHERE f.service_id = :service_id
                    AND f.enabled = 1
                  ORDER BY f.id ASC',
-                ['service_id' => $serviceId]
+                ['service_id' => $serviceId, 'active_endpoint_status' => 'active']
             );
 
             return $this->success([
@@ -114,7 +118,9 @@ final class ForwardLineApiController extends BaseController
                     $payload,
                     'user_api:' . (int) $user['id'],
                     $idempotencyKeyHash,
-                    $requestHash
+                    $requestHash,
+                    $this->forwardLimit(),
+                    ['user_id' => (int) $user['id'], 'feature' => 'allow_manage_forwards']
                 );
             } catch (ApiException $exception) {
                 throw $exception;
@@ -157,35 +163,29 @@ final class ForwardLineApiController extends BaseController
             }
 
             $changes = ForwardLineApiContract::normalizePatch($this->jsonPayload($request))['changes'];
-            $merged = [
-                'forward_route_id' => (int) ($forward['forward_route_id'] ?? 0),
-                'listen_port' => (int) ($forward['listen_port'] ?? 0),
-                'target_host' => (string) ($forward['target_host'] ?? ''),
-                'target_port' => (int) ($forward['target_port'] ?? 0),
-                'target_source' => (string) ($forward['target_source'] ?? 'manual'),
-                'target_service_id' => isset($forward['target_service_id']) ? (int) $forward['target_service_id'] : 0,
-                'transport_mode' => (string) ($forward['transport_mode'] ?? 'tcp'),
-            ];
-            foreach ($changes as $key => $value) {
-                $merged[$key] = $value;
-            }
+            $merged = ForwardLineApiContract::mergePatch($forward, $changes);
 
             $structural = array_key_exists('forward_route_id', $changes)
                 || array_key_exists('target_source', $changes)
-                || array_key_exists('target_service_id', $changes);
+                || array_key_exists('target_service_id', $changes)
+                || (array_key_exists('transport_mode', $changes)
+                    && (string) $merged['transport_mode'] !== (string) ($forward['transport_mode'] ?? 'tcp'))
+                || (array_key_exists('listen_port', $changes) && (int) $changes['listen_port'] === 0);
             if ($structural) {
                 $this->provisioning->updateForward(
                     $forwardId,
                     $merged,
                     'user_api:' . (int) $user['id'],
-                    (int) ($forward['api_revision'] ?? 1)
+                    (int) ($forward['api_revision'] ?? 1),
+                    ['user_id' => (int) $user['id'], 'feature' => 'allow_manage_forwards']
                 );
             } else {
                 $this->provisioning->updateForwardNonStructural(
                     $forwardId,
                     $merged,
                     'user_api:' . (int) $user['id'],
-                    (int) ($forward['api_revision'] ?? 1)
+                    (int) ($forward['api_revision'] ?? 1),
+                    ['user_id' => (int) $user['id'], 'feature' => 'allow_manage_forwards']
                 );
             }
 
@@ -213,7 +213,8 @@ final class ForwardLineApiController extends BaseController
             $this->provisioning->deleteForward(
                 $forwardId,
                 'user_api:' . (int) $user['id'],
-                (int) ($forward['api_revision'] ?? 1)
+                (int) ($forward['api_revision'] ?? 1),
+                ['user_id' => (int) $user['id'], 'feature' => 'allow_delete_forwards']
             );
             return new Response(204, [
                 'Cache-Control' => 'no-store',
@@ -306,12 +307,16 @@ final class ForwardLineApiController extends BaseController
     {
         $forward = $this->db->fetchOne(
             'SELECT f.*, s.user_id, s.status AS service_status,
-                    fr.tenant_label AS route_label
+                    fr.tenant_label AS route_label,
+                    (SELECT COUNT(*)
+                     FROM service_endpoints se
+                     WHERE se.forward_id = f.id
+                       AND se.health_status = :active_endpoint_status) AS active_endpoint_count
              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
              LEFT JOIN forward_routes fr ON fr.id = f.forward_route_id
              WHERE f.id = :id AND s.user_id = :user_id' . ($activeOnly ? ' AND f.enabled = 1' : '') . ' LIMIT 1',
-            ['id' => $forwardId, 'user_id' => $userId]
+            ['id' => $forwardId, 'user_id' => $userId, 'active_endpoint_status' => 'active']
         );
         if ($forward === null) {
             throw new ApiException('forward_not_found', 404);
@@ -337,6 +342,9 @@ final class ForwardLineApiController extends BaseController
     {
         if (!hash_equals((string) ($forward['api_request_hash'] ?? ''), $requestHash)) {
             throw new ApiException('idempotency_conflict', 409);
+        }
+        if ((int) ($forward['enabled'] ?? 0) !== 1) {
+            throw new ApiException('idempotency_resource_inactive', 409);
         }
         $owned = $this->loadOwnedForward((int) $forward['id'], $userId, false);
         return $this->resourceResponse(
@@ -422,24 +430,66 @@ final class ForwardLineApiController extends BaseController
 
     private function errorResponse(ApiException $exception): Response
     {
-        $code = $exception->getMessage();
+        $internalCode = $exception->getMessage();
+        $aliases = [
+            'leigod_route_no_healthy_candidate' => 'route_unavailable',
+            'no_available_nodes' => 'route_unavailable',
+            'forward_route_combination_mismatch' => 'route_unavailable',
+            'invalid_forward_payload' => 'validation_failed',
+            'invalid_forward_target_source' => 'validation_failed',
+            'target_service_not_found' => 'validation_failed',
+            'target_service_not_allowed' => 'validation_failed',
+            'target_service_ip_missing' => 'validation_failed',
+        ];
+        $code = $aliases[$internalCode] ?? $internalCode;
+        $statuses = [
+            'user_auth_failed' => 401,
+            'service_not_found' => 404,
+            'forward_not_found' => 404,
+            'validation_failed' => 422,
+            'unknown_fields' => 422,
+            'service_inactive' => 409,
+            'forward_quota_exceeded' => 409,
+            'forward_storage_quota_exceeded' => 409,
+            'idempotency_conflict' => 409,
+            'idempotency_resource_inactive' => 409,
+            'route_unavailable' => 409,
+            'forward_version_conflict' => 412,
+            'request_too_large' => 413,
+            'unsupported_media_type' => 415,
+            'idempotency_key_invalid' => 422,
+            'forward_route_not_allowed' => 422,
+            'forward_route_has_no_enabled_combination' => 422,
+            'idempotency_key_required' => 428,
+            'precondition_required' => 428,
+            'feature_denied_manage_forwards' => 403,
+            'feature_denied_delete_forwards' => 403,
+            'operation_failed' => 500,
+        ];
+        if (!array_key_exists($code, $statuses)) {
+            $safeInternalCode = preg_replace('/[^A-Za-z0-9_.:-]/', '?', substr($internalCode, 0, 80));
+            error_log('forward v1 API internal error code: ' . $safeInternalCode);
+            $code = 'operation_failed';
+        }
         $messages = [
             'user_auth_failed' => 'Authentication failed.',
             'service_not_found' => 'Service not found.',
             'forward_not_found' => 'Forward not found.',
             'validation_failed' => 'The forward request is invalid.',
             'unknown_fields' => 'The forward request contains unknown fields.',
+            'route_unavailable' => 'The selected route is currently unavailable.',
         ];
         $error = [
             'code' => $code,
             'message' => $messages[$code] ?? 'The forward operation could not be completed.',
         ];
         $details = $exception->details();
-        if (is_array($details['fields'] ?? null)) {
+        if (in_array($code, ['validation_failed', 'unknown_fields'], true)
+            && is_array($details['fields'] ?? null)) {
             $error['fields'] = $this->safeFields($details['fields']);
         }
 
-        return $this->success(['ok' => false, 'error' => $error], $exception->statusCode());
+        return $this->success(['ok' => false, 'error' => $error], $statuses[$code]);
     }
 
     /** @return array<string, string>|list<string> */

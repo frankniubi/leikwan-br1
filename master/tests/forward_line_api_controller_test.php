@@ -58,25 +58,25 @@ namespace Leikwan\Master\Support {
             ]];
         }
 
-        public function createForward(int $serviceId, array $payload, string $actor = 'user', ?string $idempotencyKeyHash = null, ?string $requestHash = null): array
+        public function createForward(int $serviceId, array $payload, string $actor = 'user', ?string $idempotencyKeyHash = null, ?string $requestHash = null, ?int $activeForwardLimit = null, ?array $mutationPolicy = null): array
         {
-            $this->calls[] = ['create', $serviceId, $payload, $actor, $idempotencyKeyHash, $requestHash];
+            $this->calls[] = ['create', $serviceId, $payload, $actor, $idempotencyKeyHash, $requestHash, $activeForwardLimit, $mutationPolicy];
             return ['forward_id' => 123];
         }
 
-        public function updateForward(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null): array
+        public function updateForward(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): array
         {
             $this->calls[] = ['update', $forwardId, $payload, $actor, $expectedRevision];
             return ['forward_id' => $forwardId];
         }
 
-        public function updateForwardNonStructural(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null): array
+        public function updateForwardNonStructural(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): array
         {
             $this->calls[] = ['update_non_structural', $forwardId, $payload, $actor, $expectedRevision];
             return ['forward_id' => $forwardId];
         }
 
-        public function deleteForward(int $forwardId, string $actor = 'user', ?int $expectedRevision = null): void
+        public function deleteForward(int $forwardId, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): void
         {
             $this->calls[] = ['delete', $forwardId, $actor, $expectedRevision];
         }
@@ -127,6 +127,9 @@ namespace Leikwan\Master\Database {
                     if (array_key_exists('service_id', $params) && (int) ($row['service_id'] ?? 0) !== (int) $params['service_id']) {
                         continue;
                     }
+                    if (str_contains($sql, 'AS active_endpoint_count')) {
+                        $row['active_endpoint_count'] = 1;
+                    }
                     return $row;
                 }
                 return null;
@@ -142,7 +145,14 @@ namespace Leikwan\Master\Database {
                 return [['active_count' => $count]];
             }
             if (str_contains($sql, 'FROM forwards')) {
-                return array_values(array_filter($this->tables['forwards'] ?? [], static fn(array $row): bool => (int) ($row['service_id'] ?? 0) === (int) ($params['service_id'] ?? 0) && (int) ($row['enabled'] ?? 0) === 1));
+                $rows = array_values(array_filter($this->tables['forwards'] ?? [], static fn(array $row): bool => (int) ($row['service_id'] ?? 0) === (int) ($params['service_id'] ?? 0) && (int) ($row['enabled'] ?? 0) === 1));
+                if (str_contains($sql, 'AS active_endpoint_count')) {
+                    foreach ($rows as &$row) {
+                        $row['active_endpoint_count'] = 1;
+                    }
+                    unset($row);
+                }
+                return $rows;
             }
             return [];
         }
@@ -222,7 +232,7 @@ namespace {
         'api_revision' => 3,
         'created_at' => '2026-08-02 03:00:00',
         'updated_at' => '2026-08-02 03:05:00',
-        'endpoints' => [['health_status' => 'active']],
+        'endpoint_count' => 2,
         'client_token' => 'SECRET',
         'node_id' => 8,
         'forward_combination_id' => 11,
@@ -239,6 +249,9 @@ namespace {
     if (($detail['ok'] ?? false) !== true || !isset($detail['forward']['id'])) {
         fail('owned detail missing safe forward resource');
     }
+    if (($detail['forward']['endpoint_count'] ?? null) !== 2 || ($detail['forward']['active_endpoint_count'] ?? null) !== 1) {
+        fail('owned detail must report configured and live active endpoint counts');
+    }
     foreach (['client_token', 'node_id', 'forward_combination_id', 'SECRET'] as $forbidden) {
         if (str_contains($response->body(), $forbidden)) {
             fail('detail leaked internal field/value ' . $forbidden);
@@ -254,6 +267,9 @@ namespace {
     if ($list->status() !== 200 || !isset(body($list)['forwards'][0])) {
         fail('owned forward list should return safe resources');
     }
+    if ((body($list)['forwards'][0]['active_endpoint_count'] ?? null) !== 1) {
+        fail('owned forward list must report live active endpoint count');
+    }
 
     $options = $controller->options(new Request('GET', '/api/v1/user/services/42/forward-options', [], [], $headers, ''), ['id' => '42']);
     if ($options->status() !== 200 || !isset(body($options)['routes'][0]['transports']['tcp'])) {
@@ -268,6 +284,27 @@ namespace {
     $missing = $controller->show(new Request('GET', '/api/v1/user/forwards/999', [], [], $headers, ''), ['id' => '999']);
     if ($missing->status() !== 404) {
         fail('missing forward should return 404');
+    }
+
+    $db->seed('users', [[
+        'id' => 7,
+        'api_token' => 'user-token',
+        'role' => 'admin',
+        'status' => 'active',
+    ]]);
+    $admin = $controller->show(new Request('GET', '/api/v1/user/forwards/123', [], [], $headers, ''), ['id' => '123']);
+    if ($admin->status() !== 401 || (body($admin)['error']['code'] ?? '') !== 'user_auth_failed') {
+        fail('active non-tenant token must not use tenant forward API');
+    }
+    $db->seed('users', [[
+        'id' => 7,
+        'api_token' => 'user-token',
+        'role' => 'tenant',
+        'status' => 'suspended',
+    ]]);
+    $suspended = $controller->show(new Request('GET', '/api/v1/user/forwards/123', [], [], $headers, ''), ['id' => '123']);
+    if ($suspended->status() !== 401 || (body($suspended)['error']['code'] ?? '') !== 'user_auth_failed') {
+        fail('suspended tenant token must not use tenant forward API');
     }
 
     echo "ok\n";

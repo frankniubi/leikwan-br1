@@ -28,6 +28,7 @@ namespace Leikwan\Master\Support {
     final class ProvisioningService
     {
         public array $calls = [];
+        public ?ApiException $nextException = null;
         public function __construct(private object $db) {}
 
         public function effectiveFeatureFlagsForService(array $service): array
@@ -37,30 +38,33 @@ namespace Leikwan\Master\Support {
 
         public function availableForwardRoutesForService(int $serviceId): array { return []; }
 
-        public function createForward(int $serviceId, array $payload, string $actor = 'user', ?string $idempotencyKeyHash = null, ?string $requestHash = null): array
+        public function createForward(int $serviceId, array $payload, string $actor = 'user', ?string $idempotencyKeyHash = null, ?string $requestHash = null, ?int $activeForwardLimit = null, ?array $mutationPolicy = null): array
         {
-            $this->calls[] = ['create', $serviceId, $payload, $actor, $idempotencyKeyHash, $requestHash];
+            if ($this->nextException instanceof ApiException) {
+                throw $this->nextException;
+            }
+            $this->calls[] = ['create', $serviceId, $payload, $actor, $idempotencyKeyHash, $requestHash, $activeForwardLimit, $mutationPolicy];
             $this->db->createForwardRow($serviceId, $payload, $idempotencyKeyHash, $requestHash);
             return ['forward_id' => 123];
         }
 
-        public function updateForward(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null): array
+        public function updateForward(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): array
         {
-            $this->calls[] = ['update', $forwardId, $payload, $actor, $expectedRevision];
+            $this->calls[] = ['update', $forwardId, $payload, $actor, $expectedRevision, $mutationPolicy];
             $this->db->updateForwardRow($forwardId, $payload);
             return ['forward_id' => $forwardId];
         }
 
-        public function updateForwardNonStructural(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null): array
+        public function updateForwardNonStructural(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): array
         {
-            $this->calls[] = ['update_non_structural', $forwardId, $payload, $actor, $expectedRevision];
+            $this->calls[] = ['update_non_structural', $forwardId, $payload, $actor, $expectedRevision, $mutationPolicy];
             $this->db->updateForwardRow($forwardId, $payload);
             return ['forward_id' => $forwardId];
         }
 
-        public function deleteForward(int $forwardId, string $actor = 'user', ?int $expectedRevision = null): void
+        public function deleteForward(int $forwardId, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): void
         {
-            $this->calls[] = ['delete', $forwardId, $actor, $expectedRevision];
+            $this->calls[] = ['delete', $forwardId, $actor, $expectedRevision, $mutationPolicy];
             $this->db->deleteForwardRow($forwardId);
         }
     }
@@ -321,6 +325,37 @@ namespace {
         'transport' => 'tcp',
         'target' => ['source' => 'manual', 'host' => '10.0.0.5', 'port' => 443],
     ];
+
+    $fixture = fixture(false);
+    $fixture['db']->seed('services', [[
+        'id' => 42,
+        'user_id' => 7,
+        'plan_id' => 6,
+        'name' => 'Tenant service',
+        'status' => 'active',
+    ], [
+        'id' => 43,
+        'user_id' => 8,
+        'plan_id' => 6,
+        'name' => 'Other tenant service',
+        'status' => 'active',
+    ]]);
+    $fixture['db']->seed('forwards', [[
+        'id' => 124,
+        'service_id' => 43,
+        'user_id' => 8,
+        'enabled' => 1,
+        'api_revision' => 1,
+    ]]);
+    $crossCreate = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/43/forwards', $fixture['headers'] + ['Idempotency-Key' => 'cross-key-1'], $payload), ['id' => '43']);
+    $crossPatch = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/124', $fixture['headers'] + ['If-Match' => '"forward-124-r1"'], ['target' => ['port' => 8443]]), ['id' => '124']);
+    $crossDelete = $fixture['controller']->delete(new Request('DELETE', '/api/v1/user/forwards/124', [], [], $fixture['headers'] + ['If-Match' => '"forward-124-r1"'], ''), ['id' => '124']);
+    foreach (['create' => $crossCreate, 'patch' => $crossPatch, 'delete' => $crossDelete] as $operation => $crossResponse) {
+        if ($crossResponse->status() !== 404 || $fixture['provisioning']->calls !== []) {
+            fail('cross-tenant ' . $operation . ' must return 404 without provisioning');
+        }
+    }
+
     $fixture = fixture(false);
     $response = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'], $payload), ['id' => '42']);
     if ($response->status() !== 428) {
@@ -361,6 +396,23 @@ namespace {
     }
 
     $fixture = fixture(true);
+    $fixture['db']->seed('forwards', [[
+        'id' => 123,
+        'service_id' => 42,
+        'user_id' => 7,
+        'enabled' => 0,
+        'api_revision' => 4,
+        'api_idempotency_key_hash' => $keyHash,
+        'api_request_hash' => \Leikwan\Master\Support\ForwardLineApiContract::requestHash(
+            \Leikwan\Master\Support\ForwardLineApiContract::normalizeCreate($payload)
+        ),
+    ]]);
+    $response = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => $key], $payload), ['id' => '42']);
+    if ($response->status() !== 409 || (responseBody($response)['error']['code'] ?? '') !== 'idempotency_resource_inactive') {
+        fail('idempotent replay of an inactive resource must return 409 idempotency_resource_inactive');
+    }
+
+    $fixture = fixture(true);
     $before = $fixture['db']->rows('forwards');
     $response = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/123', $fixture['headers'] + ['If-Match' => '"forward-123-r2"'], ['target' => ['port' => 8443]]), ['id' => '123']);
     if ($response->status() !== 412 || $fixture['provisioning']->calls !== [] || $fixture['db']->rows('forwards') !== $before) {
@@ -396,7 +448,12 @@ namespace {
 
     $fixture = fixture(false);
     $response = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
-    if ($response->status() !== 201 || count($fixture['provisioning']->calls) !== 1) {
+    $createPolicy = $fixture['provisioning']->calls[0][7] ?? [];
+    if ($response->status() !== 201
+        || count($fixture['provisioning']->calls) !== 1
+        || ($fixture['provisioning']->calls[0][6] ?? null) !== 64
+        || ($createPolicy['user_id'] ?? null) !== 7
+        || ($createPolicy['feature'] ?? null) !== 'allow_manage_forwards') {
         fail('valid create must return 201 and call provisioning once');
     }
     $replay = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
@@ -410,6 +467,36 @@ namespace {
         fail('changed request under same idempotency key must return 409');
     }
 
+    $fixture = fixture(false);
+    $fixture['provisioning']->nextException = new \Leikwan\Master\Support\ApiException(
+        'leigod_route_no_healthy_candidate',
+        409,
+        ['node_id' => 88, 'provider' => 'internal']
+    );
+    $response = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
+    if ($response->status() !== 409 || (responseBody($response)['error']['code'] ?? '') !== 'route_unavailable') {
+        fail('provider availability failure must map to stable route_unavailable');
+    }
+    foreach (['leigod', 'node_id', 'provider', 'internal'] as $forbidden) {
+        if (str_contains($response->body(), $forbidden)) {
+            fail('provider availability error leaked internal detail ' . $forbidden);
+        }
+    }
+
+    $fixture = fixture(false);
+    $fixture['provisioning']->nextException = new \Leikwan\Master\Support\ApiException(
+        'secret_internal_failure_code',
+        422,
+        ['fields' => ['secret_internal_field' => 'secret_internal_reason']]
+    );
+    $response = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
+    if ($response->status() !== 500 || (responseBody($response)['error']['code'] ?? '') !== 'operation_failed') {
+        fail('unknown provisioning error must map to generic operation_failed');
+    }
+    if (str_contains($response->body(), 'secret_internal')) {
+        fail('unknown provisioning error leaked internal code or fields');
+    }
+
     $fixture = fixture(true);
     $response = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/123', $fixture['headers'] + ['If-Match' => '"forward-123-r3"'], ['route_id' => 18]), ['id' => '123']);
     if ($response->status() !== 200 || ($fixture['provisioning']->calls[0][0] ?? '') !== 'update') {
@@ -420,15 +507,65 @@ namespace {
     if ($response->status() !== 200 || ($fixture['provisioning']->calls[0][0] ?? '') !== 'update_non_structural') {
         fail('target-only patch must use non-structural update');
     }
+    $patchPolicy = $fixture['provisioning']->calls[0][5] ?? [];
+    if (($patchPolicy['user_id'] ?? null) !== 7 || ($patchPolicy['feature'] ?? null) !== 'allow_manage_forwards') {
+        fail('patch must recheck tenant ownership and manage feature inside the transaction');
+    }
+    $fixture = fixture(true);
+    $response = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/123', $fixture['headers'] + ['If-Match' => '"forward-123-r3"'], ['transport' => 'udp']), ['id' => '123']);
+    if ($response->status() !== 200 || ($fixture['provisioning']->calls[0][0] ?? '') !== 'update') {
+        fail('transport patch must use structural update so route availability is validated atomically');
+    }
+    $fixture = fixture(true);
+    $response = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/123', $fixture['headers'] + ['If-Match' => '"forward-123-r3"'], ['listen_port' => null]), ['id' => '123']);
+    if ($response->status() !== 200 || ($fixture['provisioning']->calls[0][0] ?? '') !== 'update') {
+        fail('null listen port must use structural update so provisioning can allocate a new port');
+    }
     $fixture = fixture(true);
     $response = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/123', $fixture['headers'] + ['If-Match' => '"forward-123-r3"'], ['target' => ['service_id' => 99]]), ['id' => '123']);
-    if ($response->status() !== 200 || ($fixture['provisioning']->calls[0][0] ?? '') !== 'update') {
-        fail('target service change must use structural update');
+    if ($response->status() !== 422 || $fixture['provisioning']->calls !== []) {
+        fail('manual target must reject service id without an explicit source switch');
+    }
+    $fixture = fixture(true);
+    $response = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/123', $fixture['headers'] + ['If-Match' => '"forward-123-r3"'], [
+        'target' => ['source' => 'service_ip', 'service_id' => 99],
+    ]), ['id' => '123']);
+    $structuralPayload = $fixture['provisioning']->calls[0][2] ?? [];
+    if ($response->status() !== 200
+        || ($fixture['provisioning']->calls[0][0] ?? '') !== 'update'
+        || ($structuralPayload['target_host'] ?? null) !== ''
+        || ($structuralPayload['target_service_id'] ?? null) !== 99) {
+        fail('complete service target switch must use structural update without stale manual host');
+    }
+    $fixture = fixture(true);
+    $fixture['db']->seed('forwards', [[
+        'id' => 123,
+        'service_id' => 42,
+        'user_id' => 7,
+        'forward_route_id' => 14,
+        'listen_port' => 11024,
+        'transport_mode' => 'tcp',
+        'target_source' => 'service_ip',
+        'target_host' => '192.0.2.44',
+        'target_port' => 443,
+        'target_service_id' => 99,
+        'enabled' => 1,
+        'api_revision' => 3,
+    ]]);
+    $response = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/123', $fixture['headers'] + ['If-Match' => '"forward-123-r3"'], [
+        'target' => ['host' => 'backend.example.com'],
+    ]), ['id' => '123']);
+    if ($response->status() !== 422 || $fixture['provisioning']->calls !== []) {
+        fail('service target must reject caller-controlled host changes');
     }
 
     $fixture = fixture(true);
     $response = $fixture['controller']->delete(new Request('DELETE', '/api/v1/user/forwards/123', [], [], $fixture['headers'] + ['If-Match' => '"forward-123-r3"'], ''), ['id' => '123']);
-    if ($response->status() !== 204 || ($fixture['provisioning']->calls[0][0] ?? '') !== 'delete') {
+    $deletePolicy = $fixture['provisioning']->calls[0][4] ?? [];
+    if ($response->status() !== 204
+        || ($fixture['provisioning']->calls[0][0] ?? '') !== 'delete'
+        || ($deletePolicy['user_id'] ?? null) !== 7
+        || ($deletePolicy['feature'] ?? null) !== 'allow_delete_forwards') {
         fail('current ETag delete must return 204 and call provisioning');
     }
 
