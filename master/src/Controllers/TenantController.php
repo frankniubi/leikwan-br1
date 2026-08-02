@@ -216,21 +216,20 @@ final class TenantController extends BaseController
             ['user_id' => $user['id'], 'status' => 'active']
         );
 
-        $body = '';
-
         if ($activeServices === []) {
             $body = '
                 <div class="hero">
                   <div>
                     <h2>Getting Started - Step 1: Get a Service</h2>
-                    <p class="muted">You do not have any active services yet. Please purchase a plan to get started.</p>
+                    <p class="muted">No active package yet. Choose a package first so you have a service to configure.</p>
                   </div>
                 </div>
                 <section class="card">
-                  <h3>Purchase a Plan</h3>
-                  <p>To use the service, you first need to purchase a plan. This will give you an active service that you can configure.</p>
+                  <h3>Choose a package</h3>
+                  <p>Open Packages and activate the plan that fits this device or location.</p>
                   <div class="actions">
-                    <a class="button" href="/tenant/plans">Go to Plans</a>
+                    <a class="button" href="/tenant/plans">View packages</a>
+                    <a class="button ghost" href="/knowledgebase?thread=getting-started-five-minute-overview">Read the five-minute overview</a>
                   </div>
                 </section>
             ';
@@ -249,41 +248,58 @@ final class TenantController extends BaseController
                     <div class="hero">
                       <div>
                         <h2>Getting Started - Step 2: Add a Forward</h2>
-                        <p class="muted">Great, you have an active service. Now create your first forward rule.</p>
+                        <p class="muted">Your package is active. Create your first forward to choose where traffic should go.</p>
                       </div>
                     </div>
                     <section class="card">
-                      <h3>Create a Forward</h3>
-                      <p>A forward rule tells our service where to send your traffic. You can create a forward from your service detail page.</p>
+                      <h3>Create your first forward</h3>
+                      <p>Use the guided form and start with the recommended defaults.</p>
                       <div class="actions">
-                        <a class="button" href="/tenant/services/' . $firstServiceId . '/forward-wizard">Create Forward</a>
-                        <a class="button ghost" href="/tenant/services/' . $firstServiceId . '">Go to your Service</a>
+                        <a class="button" href="/tenant/services/' . $firstServiceId . '/forward-wizard">Create a forward</a>
+                        <a class="button ghost" href="/knowledgebase?thread=getting-started-first-forward-checklist">Open the first-forward checklist</a>
                       </div>
                     </section>
                 ';
             } else {
-                $body = '
-                    <div class="hero">
-                      <div>
-                        <h2>Getting Started - Step 3: Install Client</h2>
-                        <p class="muted">You are almost there. The last step is to install the client on your device.</p>
-                      </div>
-                    </div>
-                    <section class="card">
-                      <h3>Install the Client</h3>
-                      <p>Download and install the client for your operating system. After installation, your forwards will be active.</p>
-                      <div class="actions">
-                        <a class="button" href="/tenant/clients">Go to Client Downloads</a>
-                      </div>
-                    </section>
-                    <section class="card" style="margin-top: 20px;">
-                      <h3>All Set!</h3>
-                      <p>Once the client is installed and running, your service is ready to use. You can manage your forwards and services from the dashboard.</p>
-                      <div class="actions">
-                        <a class="button ghost" href="/tenant/forwards">View my Forwards</a>
-                      </div>
-                    </section>
-                ';
+                $clientCount = (int) ($this->db->fetchOne(
+                    'SELECT COUNT(*) AS total FROM clients WHERE user_id = :user_id',
+                    ['user_id' => $user['id']]
+                )['total'] ?? 0);
+                if ($clientCount === 0) {
+                    $body = '
+                        <div class="hero">
+                          <div>
+                            <h2>Getting Started - Step 3: Install Client</h2>
+                            <p class="muted">Your forward is ready. Install the client on this device to start using it.</p>
+                          </div>
+                        </div>
+                        <section class="card">
+                          <h3>Install the client</h3>
+                          <p>Open Clients to download the app or copy the Linux installation command.</p>
+                          <div class="actions">
+                            <a class="button" href="/tenant/clients">Open client downloads</a>
+                            <a class="button ghost" href="/knowledgebase?thread=install-client">Read the installation guide</a>
+                          </div>
+                        </section>
+                    ';
+                } else {
+                    $body = '
+                        <div class="hero">
+                          <div>
+                            <h2>Getting Started - Setup Complete</h2>
+                            <p class="muted">Your package, forward, and client are ready.</p>
+                          </div>
+                        </div>
+                        <section class="card">
+                          <h3>Connect and verify</h3>
+                          <p>Open Forwards to manage traffic, then use the verification guide to confirm the complete path.</p>
+                          <div class="actions">
+                            <a class="button" href="/tenant/forwards">Open forwards</a>
+                            <a class="button ghost" href="/knowledgebase?thread=connect-and-verify">Read the connection check</a>
+                          </div>
+                        </section>
+                    ';
+                }
             }
         }
 
@@ -1964,7 +1980,7 @@ final class TenantController extends BaseController
               <section class="card">
                 <h3>Create Forward</h3>
                 <p class="muted">Choose one route package, then fill your backend target on the dedicated create page.</p>
-                <p class="field-note">Need help? <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Quick Start</a> ? <a href="/knowledgebase?thread=connection-modes-single-race-bond">Advanced Options</a> ? <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Usage Patterns</a></p>
+                <p class="field-note">Need help? <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create your first forward</a> &middot; <a href="/knowledgebase?thread=connection-modes-single-race-bond">Choose a connection mode</a> &middot; <a href="/knowledgebase?thread=bond-sidecar-setup">Set up Bond and Sidecar</a> &middot; <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot a connection</a> &middot; <a href="/knowledgebase?thread=glossary">Read the glossary</a></p>
                 ' . (empty($features['allow_manage_forwards']) ? '<div class="flash danger">Forward creation is disabled for your plan/account.</div>' : '') . '
                 ' . $createForwardNotice . '
                 <div class="actions" style="margin-top:12px;">

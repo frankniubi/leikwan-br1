@@ -7,15 +7,24 @@ use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
+use Leikwan\Master\Support\KnowledgebaseHtmlSanitizer;
+use Leikwan\Master\Support\KnowledgebaseService;
+use Leikwan\Master\Support\LocaleResolver;
 use Leikwan\Master\Support\PasswordResetService;
 use Leikwan\Master\Support\SessionAuth;
-use Leikwan\Master\Support\KnowledgebaseService;
 use Leikwan\Master\Support\OidcClient;
 use Leikwan\Master\Support\TenantRegistrationService;
 use Leikwan\Master\Support\WhmcsIdentityService;
 
 final class AuthController extends BaseController
 {
+    private const START_HERE_TOPIC_KEYS = [
+        'getting-started-five-minute-overview',
+        'install-client',
+        'getting-started-first-forward-checklist',
+        'connect-and-verify',
+    ];
+
     private ?OidcClient $oidcClient;
 
     public function __construct(Config $config, Database $db, ?OidcClient $oidcClient = null)
@@ -279,68 +288,106 @@ final class AuthController extends BaseController
         }
 
         $service = new KnowledgebaseService($this->db);
-        $threads = $service->listPublishedThreads();
-        $selectedSlug = trim((string) $request->input('thread', ''));
-        $selectedThread = $selectedSlug !== ''
-            ? $service->findPublishedThreadBySlug($selectedSlug)
+        $locale = LocaleResolver::resolve($request);
+        $topics = $service->listPublishedTopics($locale);
+        $selectedTopicKey = trim((string) $request->input('thread', ''));
+        $selectedTopic = $selectedTopicKey !== ''
+            ? $service->findPublishedTopicByKey($selectedTopicKey, $locale)
             : null;
 
-        if ($selectedThread === null && $threads !== []) {
-            $selectedThread = $threads[0];
-            $selectedSlug = (string) ($selectedThread['slug'] ?? '');
+        if ($selectedTopic === null && $topics !== []) {
+            $selectedTopic = $topics[0];
+            $selectedTopicKey = (string) ($selectedTopic['topic_key'] ?? '');
         }
 
-        $threadCards = '';
-        foreach ($threads as $thread) {
-            $isActive = (string) ($thread['slug'] ?? '') === $selectedSlug;
-            $updatedAt = trim((string) ($thread['updated_at'] ?? ''));
-            $threadCards .= '<a class="kb-thread-card' . ($isActive ? ' active' : '') . '" href="/knowledgebase?thread=' . urlencode((string) ($thread['slug'] ?? '')) . '">'
+        $startHereCards = '';
+        $learnAsNeededCards = '';
+        foreach ($topics as $topic) {
+            $topicKey = (string) ($topic['topic_key'] ?? '');
+            $isActive = $topicKey === $selectedTopicKey;
+            $updatedAt = trim((string) ($topic['updated_at'] ?? ''));
+            $topicCard = '<a class="kb-thread-card' . ($isActive ? ' active' : '') . '" href="/knowledgebase?thread=' . urlencode($topicKey) . '">'
                 . '<div class="kb-thread-meta">'
-                . (((int) ($thread['is_pinned'] ?? 0) === 1) ? '<span class="kb-pill">Pinned</span>' : '')
-                . ($updatedAt !== '' ? '<span class="kb-updated">Updated ' . $this->escape($updatedAt) . '</span>' : '')
+                . (((int) ($topic['is_pinned'] ?? 0) === 1) ? '<span class="kb-pill">Pinned</span>' : '')
+                . ($updatedAt !== '' ? '<span class="kb-updated"><span>Updated</span> <time>' . $this->escape($updatedAt) . '</time></span>' : '')
                 . '</div>'
-                . '<strong>' . $this->escape((string) ($thread['title'] ?? 'Untitled')) . '</strong>'
-                . '<p>' . $this->escape((string) ($thread['excerpt'] ?? '')) . '</p>'
+                . '<strong>' . $this->escape((string) ($topic['title'] ?? 'Untitled guide')) . '</strong>'
+                . '<p>' . $this->escape((string) ($topic['excerpt'] ?? '')) . '</p>'
                 . '</a>';
+            if (in_array($topicKey, self::START_HERE_TOPIC_KEYS, true)) {
+                $startHereCards .= $topicCard;
+            } else {
+                $learnAsNeededCards .= $topicCard;
+            }
+        }
+
+        $topicGroups = '';
+        $startHereLabel = 'Start here';
+        $learnAsNeededLabel = 'Learn as needed';
+        if ($startHereCards !== '') {
+            $topicGroups .= '<section class="kb-topic-group"><h3>' . $startHereLabel . '</h3><div class="kb-thread-list">' . $startHereCards . '</div></section>';
+        }
+        if ($learnAsNeededCards !== '') {
+            $topicGroups .= '<section class="kb-topic-group"><h3>' . $learnAsNeededLabel . '</h3><div class="kb-thread-list">' . $learnAsNeededCards . '</div></section>';
+        }
+        if ($topicGroups === '') {
+            $topicGroups = '<div class="card"><p class="muted">No published guides yet.</p></div>';
         }
 
         $adminButton = (string) ($user['role'] ?? '') === 'admin'
-            ? '<a class="button secondary" href="/admin/knowledgebase">Open admin editor</a>'
+            ? '<a class="button secondary" href="/admin/knowledgebase">Open guide editor</a>'
             : '';
 
-        $articleHtml = $selectedThread !== null
-            ? '<article class="kb-article">'
+        $articleHtml = '<section class="card"><h3>No published guides yet.</h3><p class="muted">An administrator can publish the first user guide.</p></section>';
+        $mermaidAssets = '';
+        if ($selectedTopic !== null) {
+            $sanitizer = new KnowledgebaseHtmlSanitizer();
+            $articleBody = $sanitizer->sanitize((string) ($selectedTopic['body_html'] ?? ''));
+            $hasMermaid = str_contains($articleBody, '<pre class="mermaid">');
+            if ($hasMermaid) {
+                $diagramErrorLabel = $this->escape('Diagram could not be rendered. The source is shown below.');
+                $articleBody = str_replace(
+                    '<pre class="mermaid">',
+                    '<pre class="mermaid" data-error-label="' . $diagramErrorLabel . '">',
+                    $articleBody
+                );
+                $mermaidAssets = '<script src="/assets/vendor/mermaid/mermaid.min.js?v=11.12.0" defer></script>'
+                    . '<script src="/assets/knowledgebase-mermaid.js?v=20260729" defer></script>';
+            }
+            $usedFallback = (bool) ($selectedTopic['used_fallback'] ?? false);
+            $fallbackNotice = $usedFallback
+                ? '<p class="kb-fallback-notice">This topic is not available in your selected language. Showing English.</p>'
+                : '';
+            $articleHtml = '<article class="kb-article">'
                 . '<div class="kb-article-meta">'
-                . (((int) ($selectedThread['is_pinned'] ?? 0) === 1) ? '<span class="kb-pill">Pinned</span>' : '')
-                . '<span>Slug: ' . $this->escape((string) ($selectedThread['slug'] ?? '')) . '</span>'
+                . (((int) ($selectedTopic['is_pinned'] ?? 0) === 1) ? '<span class="kb-pill">Pinned</span>' : '')
+                . '<span><span>Updated</span> <time>' . $this->escape((string) ($selectedTopic['updated_at'] ?? '')) . '</time></span>'
                 . '</div>'
-                . '<h2>' . $this->escape((string) ($selectedThread['title'] ?? 'Knowledgebase')) . '</h2>'
-                . '<div class="kb-article-body">' . (string) ($selectedThread['body_html'] ?? '') . '</div>'
-                . '</article>'
-            : '<section class="card"><h3>No published threads yet.</h3><p class="muted">Admins can create the first knowledgebase thread from the admin panel.</p></section>';
+                . $fallbackNotice
+                . '<h2>' . $this->escape((string) ($selectedTopic['title'] ?? 'User Guide')) . '</h2>'
+                . '<div class="kb-article-body">' . $articleBody . '</div>'
+                . '</article>';
+        }
 
         $body = $this->knowledgebaseStyles() . '
             <section class="kb-shell">
               <section class="kb-hero">
                 <div>
-                  <span class="kb-eyebrow">Knowledgebase / Docs</span>
-                  <h2>Threaded operational docs for admins and tenants</h2>
-                  <p class="muted">Read the starter threads, open the exact topic you need, and keep future updates as normal panel-managed content instead of one giant static page.</p>
+                  <span class="kb-eyebrow">User Guides</span>
+                  <h2>Practical guides for setting up and using your service</h2>
+                  <p class="muted">Start with the essentials, then open another topic only when you need it.</p>
                 </div>
                 <div class="actions">
                   ' . $adminButton . '
                 </div>
               </section>
               <section class="kb-layout">
-                <aside class="kb-sidebar">
-                  <h3>Latest Threads</h3>
-                  <div class="kb-thread-list">' . ($threadCards !== '' ? $threadCards : '<div class="card"><p class="muted">No published threads yet.</p></div>') . '</div>
-                </aside>
+                <aside class="kb-sidebar">' . $topicGroups . '</aside>
                 <div class="kb-content">' . $articleHtml . '</div>
               </section>
-            </section>';
+            </section>' . $mermaidAssets;
 
-        return $this->page('Knowledgebase', $body, $user, $this->knowledgebaseNav($user));
+        return $this->page('User Guides', $body, $user, $this->knowledgebaseNav($user));
     }
 
     public function registerPage(Request $request, array $params): Response
@@ -897,6 +944,9 @@ final class AuthController extends BaseController
   .kb-sidebar {
     padding: 22px;
   }
+  .kb-topic-group + .kb-topic-group {
+    margin-top: 24px;
+  }
   .kb-thread-list {
     display: flex;
     flex-direction: column;
@@ -965,10 +1015,20 @@ final class AuthController extends BaseController
   .kb-article-body ol {
     margin: 0;
   }
+  .kb-mermaid-figure { margin: 8px 0; max-width: 100%; overflow: hidden; }
+  .kb-mermaid-figure svg { display: block; width: 100%; max-width: 100%; height: auto; }
+  .kb-mermaid-error { color: var(--danger, #b42318); font-weight: 700; }
+  .kb-mermaid-failed { max-width: 100%; overflow-x: auto; white-space: pre; }
+  .kb-fallback-notice { border-left: 4px solid #b7791f; padding: 12px 14px; background: #fff8e6; }
   @media (max-width: 980px) {
     .kb-layout {
       grid-template-columns: 1fr;
     }
+  }
+  @media (max-width: 520px) {
+    .kb-article { padding: 20px 16px; }
+    .kb-sidebar { padding: 16px; }
+    .kb-mermaid-figure svg { min-width: 0; }
   }
 </style>
 HTML;
