@@ -192,6 +192,14 @@ final class ForwardLineApiContract
         $availability = is_array($route['availability'] ?? null) ? $route['availability'] : [];
         $transports = [];
         foreach (self::TRANSPORTS as $transport) {
+            if (!is_array($route['availability'] ?? null)) {
+                $transports[$transport] = [
+                    'available' => true,
+                    'healthy_node_count' => 0,
+                    'unavailable_reason' => null,
+                ];
+                continue;
+            }
             $source = $availability[$transport] ?? ($transport === 'tcp+udp' ? ($availability['both'] ?? null) : null);
             $source = is_array($source) ? $source : [];
             $reason = (string) ($source['unavailable_reason'] ?? '');
