@@ -8,6 +8,7 @@ use Leikwan\Master\Controllers\ArtifactController;
 use Leikwan\Master\Controllers\AuthController;
 use Leikwan\Master\Controllers\ClientAgentController;
 use Leikwan\Master\Controllers\HealthController;
+use Leikwan\Master\Controllers\ForwardLineApiController;
 use Leikwan\Master\Controllers\NodeController;
 use Leikwan\Master\Controllers\OidcController;
 use Leikwan\Master\Controllers\ServiceController;
@@ -130,6 +131,7 @@ final class Bootstrap
         $admin = new AdminController($this->config, $this->db, $this->provisioning, $this->leigodOnlyAdminServices());
         $whmcs = new WhmcsController($this->config, $this->db, $this->provisioning);
         $services = new ServiceController($this->config, $this->db, $this->provisioning);
+        $forwardApi = new ForwardLineApiController($this->config, $this->db, $this->provisioning);
         $nodes = new NodeController($this->config, $this->db, $this->provisioning);
         $clientAgent = new ClientAgentController($this->config, $this->db, $this->provisioning);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
@@ -272,6 +274,13 @@ final class Bootstrap
         $this->router->add('DELETE', '/api/user/forwards/{id}', [$services, 'deleteForward']);
         $this->router->add('GET', '/api/user/forwards/{id}/client-config', [$services, 'clientConfig']);
         $this->router->add('POST', '/api/user/services/{id}/regenerate-client-token', [$services, 'regenerateClientToken']);
+
+        $this->router->add('GET', '/api/v1/user/services/{id}/forward-options', [$forwardApi, 'options']);
+        $this->router->add('GET', '/api/v1/user/services/{id}/forwards', [$forwardApi, 'index']);
+        $this->router->add('POST', '/api/v1/user/services/{id}/forwards', [$forwardApi, 'create']);
+        $this->router->add('GET', '/api/v1/user/forwards/{id}', [$forwardApi, 'show']);
+        $this->router->add('PATCH', '/api/v1/user/forwards/{id}', [$forwardApi, 'patch']);
+        $this->router->add('DELETE', '/api/v1/user/forwards/{id}', [$forwardApi, 'delete']);
 
         $this->router->add('POST', '/api/node/register', [$nodes, 'register']);
         $this->router->add('POST', '/api/node/heartbeat', [$nodes, 'heartbeat']);
