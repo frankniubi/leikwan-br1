@@ -42,6 +42,13 @@
 - `/tenant`: 租户控制台
 - `/install.php`: 幂等安装/更新页面
 
+## User Forward API v1
+
+The versioned tenant forward resource API is documented in
+[docs/api/user-forward-lines-v1.md](../docs/api/user-forward-lines-v1.md).
+It is the supported integration surface for tenant-owned forwards; internal
+line, node, Sidecar, and provider placement records are not tenant resources.
+
 ## Artifact And Update Endpoints
 
 - `/artifacts/slave-manifest.json`
