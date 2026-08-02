@@ -401,6 +401,9 @@ CREATE TABLE IF NOT EXISTS sidecar_points (
 CREATE TABLE IF NOT EXISTS forwards (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     service_id BIGINT UNSIGNED NOT NULL,
+    api_revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    api_idempotency_key_hash CHAR(64) NULL,
+    api_request_hash CHAR(64) NULL,
     target_source VARCHAR(32) NOT NULL DEFAULT 'manual',
     target_service_id BIGINT UNSIGNED NULL,
     listen_port INT NOT NULL,
@@ -440,6 +443,7 @@ CREATE TABLE IF NOT EXISTS forwards (
     CONSTRAINT fk_forwards_line_client_group FOREIGN KEY (line_client_group_id) REFERENCES client_groups(id),
     CONSTRAINT fk_forwards_sidecar_point FOREIGN KEY (bond_sidecar_point_id) REFERENCES sidecar_points(id),
     CONSTRAINT fk_forwards_chain FOREIGN KEY (forward_chain_id) REFERENCES forward_chains(id),
+    UNIQUE KEY uniq_forward_service_idempotency (service_id, api_idempotency_key_hash),
     INDEX idx_forwards_service (service_id),
     INDEX idx_forwards_target_service (target_service_id)
 );
