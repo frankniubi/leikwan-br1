@@ -8,6 +8,7 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
+use Leikwan\Master\Support\ForwardLineApiContract;
 use Leikwan\Master\Support\PrecisionGridUi;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\SessionAuth;
@@ -314,10 +315,11 @@ final class TenantController extends BaseController
         $forwards = $this->db->fetchAll(
             'SELECT s.id AS service_id, s.name AS service_name, s.status AS service_status,
                     f.id AS forward_id, f.listen_port, f.target_host, f.target_port, f.enabled
-             FROM services s
-             LEFT JOIN forwards f ON f.service_id = s.id
-             WHERE s.user_id = :user_id
-             ORDER BY s.id DESC, f.id DESC',
+              FROM services s
+              LEFT JOIN forwards f ON f.service_id = s.id
+              WHERE s.user_id = :user_id
+                AND (f.id IS NULL OR f.enabled = 1)
+              ORDER BY s.id DESC, f.id DESC',
             ['user_id' => $user['id']]
         );
 
@@ -380,7 +382,7 @@ final class TenantController extends BaseController
                 : ucfirst((string) $forward['service_status']);
             $statusState = ($forwardId > 0 ? (int) $forward['enabled'] === 1 : (string) $forward['service_status'] === 'active') ? 'ok' : 'warning';
             $commands = '<a href="/tenant/services/' . $serviceId . '/create-forward">Add Forward</a>'
-                . ($forwardId > 0 ? '<a href="/tenant/forwards/' . $forwardId . '/edit">Edit Forward</a>' : '')
+                . ($forwardId > 0 ? '<a href="/tenant/services/' . $serviceId . '/forward/' . $forwardId . '/edit">Edit Forward</a>' : '')
                 . '<a href="/tenant/services/' . $serviceId . '">Service Details</a>';
             $forwardRows .= '<tr><td>' . PrecisionGridUi::resourceCell($serviceName, $forwardLabel) . '</td>'
                 . '<td>' . ($forwardId > 0 ? (int) $forward['listen_port'] : '-') . '</td>'
@@ -2002,6 +2004,9 @@ final class TenantController extends BaseController
         if ($service === null) {
             throw new ApiException('service_not_found', 404);
         }
+        if ((string) ($service['status'] ?? '') !== 'active') {
+            throw new ApiException('service_inactive', 409);
+        }
 
         $summary = $this->provisioning->serviceSummary($serviceId);
         $features = $summary['effective_features'] ?? [];
@@ -2013,7 +2018,10 @@ final class TenantController extends BaseController
                 if (empty($features['allow_manage_forwards'])) {
                     throw new ApiException('feature_denied_manage_forwards', 403);
                 }
-                $payload = $this->normalizeTenantForwardPayload($request->body());
+                $this->assertTenantForwardQuota($serviceId);
+                $payload = ForwardLineApiContract::normalizeLegacyCreate(
+                    $this->normalizeTenantForwardPayload($request->body())
+                );
                 $this->provisioning->createForward($serviceId, $payload, 'tenant');
                 SessionAuth::flash('success', 'Forward created.');
                 return Response::redirect('/tenant/services/' . $serviceId);
@@ -2065,7 +2073,7 @@ final class TenantController extends BaseController
                 </div>
                 <div class="field-note" id="forward-combination-help">Choose one admin-defined route package. The panel keeps routing details hidden until you create the forward.</div>
                 <div class="actions" style="margin-top:20px;">
-                  <button class="button" type="submit" ' . (empty($features['allow_manage_forwards']) || $availableForwardCombinations === [] ? 'disabled' : '') . '>Create Forward</button>
+                  <button class="button" type="submit" ' . (empty($features['allow_manage_forwards']) || $availableForwardRoutes === [] ? 'disabled' : '') . '>Create Forward</button>
                   <a class="button ghost" href="/tenant/services/' . $serviceId . '">Cancel</a>
                 </div>
               </form>
@@ -2090,16 +2098,18 @@ final class TenantController extends BaseController
         $serviceId = $this->idParam($params);
         $forwardId = (int) ($params['fid'] ?? 0);
         $forward = $this->db->fetchOne(
-            'SELECT f.*, s.user_id, combo.tenant_label AS forward_combination_label
+            'SELECT f.*, s.user_id, s.status AS service_status, fr.tenant_label AS forward_route_label
              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
-             LEFT JOIN forward_combinations combo ON combo.id = f.forward_combination_id
-             WHERE f.id = :id AND f.service_id = :service_id LIMIT 1',
+             LEFT JOIN forward_routes fr ON fr.id = f.forward_route_id
+             WHERE f.id = :id AND f.service_id = :service_id AND f.enabled = 1 LIMIT 1',
             ['id' => $forwardId, 'service_id' => $serviceId]
         );
         if ($forward === null || (int) $forward['user_id'] !== (int) $user['id']) {
             throw new ApiException('forward_not_found', 404);
         }
+        $this->assertTenantServiceActive($forward);
+        $this->assertTenantForwardFeature($serviceId, 'allow_manage_forwards', 'feature_denied_manage_forwards');
 
         $csrf = $this->escape(SessionAuth::csrfToken());
         $body = '
@@ -2113,7 +2123,7 @@ final class TenantController extends BaseController
               <form method="post" action="/tenant/services/' . $serviceId . '/forward/' . $forwardId . '/edit">
                 <input type="hidden" name="csrf_token" value="' . $csrf . '">
                 <div class="form-grid">
-                  <div class="field"><label>Current Forward Combination</label><div class="value-chip">' . $this->escape((string) ($forward['forward_combination_label'] ?? '')) . '</div></div>
+                  <div class="field"><label>Current Forward Route</label><div class="value-chip">' . $this->escape((string) ($forward['forward_route_label'] ?? '')) . '</div></div>
                   <div class="field"><label>Target Host</label><input type="text" name="target_host" value="' . $this->escape((string) $forward['target_host']) . '" required></div>
                   <div class="field"><label>Target Port</label><input type="number" name="target_port" value="' . (int) $forward['target_port'] . '" required></div>
                   <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" value="' . (int) $forward['listen_port'] . '"></div>
@@ -2142,17 +2152,21 @@ final class TenantController extends BaseController
         try {
             SessionAuth::validateCsrf($request);
             $forward = $this->db->fetchOne(
-                'SELECT f.*, s.user_id
+                'SELECT f.*, s.user_id, s.status AS service_status
                  FROM forwards f
                  INNER JOIN services s ON s.id = f.service_id
-                 WHERE f.id = :id AND f.service_id = :service_id LIMIT 1',
+                 WHERE f.id = :id AND f.service_id = :service_id AND f.enabled = 1 LIMIT 1',
                 ['id' => $forwardId, 'service_id' => $serviceId]
             );
             if ($forward === null || (int) $forward['user_id'] !== (int) $user['id']) {
                 throw new ApiException('forward_not_found', 404);
             }
 
-            $payload = $this->normalizeTenantForwardEditPayload($request->body());
+            $this->assertTenantServiceActive($forward);
+            $this->assertTenantForwardFeature($serviceId, 'allow_manage_forwards', 'feature_denied_manage_forwards');
+            $payload = ForwardLineApiContract::normalizeLegacyUpdate(
+                $this->normalizeTenantForwardEditPayload($request->body())
+            );
             $this->provisioning->updateForwardNonStructural($forwardId, $payload, 'tenant');
             SessionAuth::flash('success', 'Forward updated.');
             return Response::redirect('/tenant/services/' . $serviceId);
@@ -2385,12 +2399,16 @@ final class TenantController extends BaseController
             if ($service === null) {
                 throw new ApiException('service_not_found', 404);
             }
+            $this->assertTenantServiceActive($service);
             $summary = $this->provisioning->serviceSummary($serviceId);
             if (empty(($summary['effective_features'] ?? [])['allow_manage_forwards'])) {
                 throw new ApiException('feature_denied_manage_forwards', 403);
             }
+            $this->assertTenantForwardQuota($serviceId);
 
-            $payload = $this->normalizeTenantForwardPayload($request->body());
+            $payload = ForwardLineApiContract::normalizeLegacyCreate(
+                $this->normalizeTenantForwardPayload($request->body())
+            );
             $this->provisioning->createForward($serviceId, $payload, 'tenant');
             SessionAuth::flash('success', 'Forward created and queued for provisioning.');
         } catch (\Throwable $throwable) {
@@ -2488,15 +2506,16 @@ final class TenantController extends BaseController
         try {
             SessionAuth::validateCsrf($request);
             $forward = $this->db->fetchOne(
-                'SELECT f.*, s.user_id
+                'SELECT f.*, s.user_id, s.status AS service_status
                  FROM forwards f
                  INNER JOIN services s ON s.id = f.service_id
-                 WHERE f.id = :id LIMIT 1',
+                 WHERE f.id = :id AND f.enabled = 1 LIMIT 1',
                 ['id' => $forwardId]
             );
             if ($forward === null || (int) $forward['user_id'] !== (int) $user['id']) {
                 throw new ApiException('forward_not_found', 404);
             }
+            $this->assertTenantServiceActive($forward);
             $summary = $this->provisioning->serviceSummary((int) $forward['service_id']);
             if (empty(($summary['effective_features'] ?? [])['allow_delete_forwards'])) {
                 throw new ApiException('feature_denied_delete_forwards', 403);
@@ -2781,6 +2800,38 @@ final class TenantController extends BaseController
         return Response::redirect('/tenant/slave-groups');
     }
 
+    /** @param array<string, mixed> $serviceOrForward */
+    private function assertTenantServiceActive(array $serviceOrForward): void
+    {
+        $status = (string) ($serviceOrForward['status'] ?? $serviceOrForward['service_status'] ?? '');
+        if ($status !== 'active') {
+            throw new ApiException('service_inactive', 409);
+        }
+    }
+
+    /** @param array<string, mixed> $features */
+    private function assertTenantForwardFeature(int $serviceId, string $feature, string $errorCode): void
+    {
+        $summary = $this->provisioning->serviceSummary($serviceId);
+        $features = $summary['effective_features'] ?? [];
+        if (!is_array($features) || empty($features[$feature])) {
+            throw new ApiException($errorCode, 403);
+        }
+    }
+
+    private function assertTenantForwardQuota(int $serviceId): void
+    {
+        $active = $this->db->fetchOne(
+            'SELECT COUNT(*) AS active_forward_count
+             FROM forwards
+             WHERE service_id = :service_id AND enabled = 1',
+            ['service_id' => $serviceId]
+        );
+        if ((int) ($active['active_forward_count'] ?? 0) >= max(1, $this->config->getInt('USER_FORWARD_LIMIT_PER_SERVICE', 64))) {
+            throw new ApiException('forward_quota_exceeded', 409);
+        }
+    }
+
     /**
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
@@ -2792,20 +2843,31 @@ final class TenantController extends BaseController
             $targetSource = 'manual';
         }
 
-        return [
-            'forward_combination_id' => max(0, (int) ($payload['forward_combination_id'] ?? 0)),
+        $listenPort = $payload['listen_port'] ?? null;
+        if ($listenPort === '' || $listenPort === null) {
+            $listenPort = null;
+        } else {
+            $listenPort = (int) $listenPort;
+        }
+
+        $normalized = [
             'forward_route_id' => max(0, (int) ($payload['forward_route_id'] ?? 0)),
-            'listen_port' => max(0, (int) ($payload['listen_port'] ?? 0)),
+            'listen_port' => $listenPort,
             'target_host' => trim((string) ($payload['target_host'] ?? '')),
             'target_port' => max(0, (int) ($payload['target_port'] ?? 0)),
             'target_source' => $targetSource,
-            'target_service_id' => $targetSource === 'service_ip' ? max(0, (int) ($payload['target_service_id'] ?? 0)) : 0,
             'transport_mode' => match (strtolower(trim((string) ($payload['transport_mode'] ?? 'tcp')))) {
                 'udp' => 'udp',
                 'tcp+udp', 'udp+tcp', 'both' => 'tcp+udp',
                 default => 'tcp',
             },
         ];
+
+        if ($targetSource === 'service_ip') {
+            $normalized['target_service_id'] = max(0, (int) ($payload['target_service_id'] ?? 0));
+        }
+
+        return $normalized;
     }
 
     /**
@@ -2814,8 +2876,15 @@ final class TenantController extends BaseController
      */
     private function normalizeTenantForwardEditPayload(array $payload): array
     {
+        $listenPort = $payload['listen_port'] ?? null;
+        if ($listenPort === '' || $listenPort === null) {
+            $listenPort = null;
+        } else {
+            $listenPort = (int) $listenPort;
+        }
+
         return [
-            'listen_port' => max(0, (int) ($payload['listen_port'] ?? 0)),
+            'listen_port' => $listenPort,
             'target_host' => trim((string) ($payload['target_host'] ?? '')),
             'target_port' => max(0, (int) ($payload['target_port'] ?? 0)),
             'transport_mode' => match (strtolower(trim((string) ($payload['transport_mode'] ?? 'tcp')))) {

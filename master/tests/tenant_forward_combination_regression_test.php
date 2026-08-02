@@ -13,10 +13,10 @@ $serviceSummarySource = file_get_contents(__DIR__ . '/../src/Support/Provisionin
 
 foreach ([
     'available_forward_combinations',
-    'forward_combination_id',
-    'Forward Combination',
+    'forward_route_id',
+    'Forward Route',
     'No route package is available for this service yet. Ask admin to publish a forward combination first.',
-    "'forward_combination_id' => max(0, (int) (\$payload['forward_combination_id'] ?? 0)),",
+    'ForwardLineApiContract::normalizeLegacyCreate',
     '/tenant/services/{id}/create-forward',
     'Create Forward',
     'Choose one admin-defined route package. The panel keeps routing details hidden until you create the forward.',
@@ -24,6 +24,10 @@ foreach ([
     if (!str_contains($source . $bootstrap . $serviceSummarySource, $snippet)) {
         fail('missing required combination-only snippet: ' . $snippet);
     }
+}
+
+if (str_contains($source, "'forward_combination_id' => max(0, (int) (\$payload['forward_combination_id'] ?? 0)),")) {
+    fail('tenant payload must not accept forward_combination_id');
 }
 
 foreach ([
