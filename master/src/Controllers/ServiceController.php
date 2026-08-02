@@ -22,7 +22,7 @@ final class ServiceController extends BaseController
 
     public function listServices(Request $request, array $params): Response
     {
-        $user = Auth::requireUser($request, $this->db);
+        $user = $this->requireTenant($request);
         $services = $this->db->fetchAll(
             'SELECT id, name, status, whmcs_service_id, expire_at, bandwidth_limit_mbps, traffic_limit_gb, traffic_used_bytes
              FROM services
@@ -39,7 +39,7 @@ final class ServiceController extends BaseController
 
     public function showService(Request $request, array $params): Response
     {
-        $user = Auth::requireUser($request, $this->db);
+        $user = $this->requireTenant($request);
         $serviceId = $this->idParam($params);
         $service = $this->db->fetchOne(
             'SELECT id, user_id, plan_id, name, status
@@ -62,7 +62,8 @@ final class ServiceController extends BaseController
 
     public function createForward(Request $request, array $params): Response
     {
-        $user = Auth::requireUser($request, $this->db);
+        try {
+        $user = $this->requireTenant($request);
         $serviceId = $this->idParam($params);
         $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id AND user_id = :user_id LIMIT 1', [
             'id' => $serviceId,
@@ -76,12 +77,16 @@ final class ServiceController extends BaseController
         $this->assertFeature($features, 'allow_manage_forwards', 'feature_denied_manage_forwards');
         $this->assertForwardQuota($serviceId);
 
-        $payload = ForwardLineApiContract::normalizeLegacyCreate($request->body());
-        $runtime = $this->provisioning->createForward(
+        $payload = $this->normalizeLegacyCreatePayload($request->body());
+        $runtime = $this->safeForwardMutation(fn(): array => $this->provisioning->createForward(
             $serviceId,
             $payload,
-            'user_legacy:' . (int) $user['id']
-        );
+            'user_legacy:' . (int) $user['id'],
+            null,
+            null,
+            max(1, $this->config->getInt('USER_FORWARD_LIMIT_PER_SERVICE', 64)),
+            ['user_id' => (int) $user['id'], 'feature' => 'allow_manage_forwards']
+        ));
         $forwardId = (int) ($runtime['forward_id'] ?? 0);
         if ($forwardId <= 0) {
             throw new ApiException('forward_creation_failed', 500);
@@ -93,11 +98,15 @@ final class ServiceController extends BaseController
             'forward' => ForwardLineApiContract::presentForward($forward),
             'client_config_url' => '/api/user/forwards/' . $forwardId . '/client-config',
         ], 201);
+        } catch (\Throwable $throwable) {
+            return $this->legacyForwardErrorResponse($throwable);
+        }
     }
 
     public function updateForward(Request $request, array $params): Response
     {
-        $user = Auth::requireUser($request, $this->db);
+        try {
+        $user = $this->requireTenant($request);
         $forwardId = $this->idParam($params);
         $forward = $this->loadOwnedForward($forwardId, (int) $user['id']);
         $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id AND user_id = :user_id LIMIT 1', [
@@ -112,25 +121,29 @@ final class ServiceController extends BaseController
         $this->assertFeature($features, 'allow_manage_forwards', 'feature_denied_manage_forwards');
 
         $changes = $this->normalizeForwardNonStructuralPayload($request->body());
-        $merged = [
-            'forward_route_id' => (int) ($forward['forward_route_id'] ?? 0),
-            'listen_port' => (int) ($forward['listen_port'] ?? 0),
-            'target_host' => (string) ($forward['target_host'] ?? ''),
-            'target_port' => (int) ($forward['target_port'] ?? 0),
-            'target_source' => (string) ($forward['target_source'] ?? 'manual'),
-            'target_service_id' => isset($forward['target_service_id']) ? (int) $forward['target_service_id'] : 0,
-            'transport_mode' => (string) ($forward['transport_mode'] ?? 'tcp'),
-        ];
-        foreach ($changes as $key => $value) {
-            $merged[$key] = $value;
-        }
+        $merged = ForwardLineApiContract::mergePatch($forward, $changes);
         $structural = array_key_exists('forward_route_id', $changes)
             || array_key_exists('target_source', $changes)
-            || array_key_exists('target_service_id', $changes);
+            || array_key_exists('target_service_id', $changes)
+            || (array_key_exists('transport_mode', $changes)
+                && (string) $merged['transport_mode'] !== (string) ($forward['transport_mode'] ?? 'tcp'))
+            || (array_key_exists('listen_port', $changes) && (int) $changes['listen_port'] === 0);
         if ($structural) {
-            $this->provisioning->updateForward($forwardId, $merged, 'user_legacy:' . (int) $user['id']);
+            $this->safeForwardMutation(fn(): array => $this->provisioning->updateForward(
+                $forwardId,
+                $merged,
+                'user_legacy:' . (int) $user['id'],
+                (int) ($forward['api_revision'] ?? 1),
+                ['user_id' => (int) $user['id'], 'feature' => 'allow_manage_forwards']
+            ));
         } else {
-            $this->provisioning->updateForwardNonStructural($forwardId, $merged, 'user_legacy:' . (int) $user['id']);
+            $this->safeForwardMutation(fn(): array => $this->provisioning->updateForwardNonStructural(
+                $forwardId,
+                $merged,
+                'user_legacy:' . (int) $user['id'],
+                (int) ($forward['api_revision'] ?? 1),
+                ['user_id' => (int) $user['id'], 'feature' => 'allow_manage_forwards']
+            ));
         }
         $updated = $this->loadOwnedForward($forwardId, (int) $user['id']);
 
@@ -139,11 +152,15 @@ final class ServiceController extends BaseController
             'forward' => ForwardLineApiContract::presentForward($updated),
             'client_config_url' => '/api/user/forwards/' . $forwardId . '/client-config',
         ]);
+        } catch (\Throwable $throwable) {
+            return $this->legacyForwardErrorResponse($throwable);
+        }
     }
 
     public function deleteForward(Request $request, array $params): Response
     {
-        $user = Auth::requireUser($request, $this->db);
+        try {
+        $user = $this->requireTenant($request);
         $forwardId = $this->idParam($params);
         $forward = $this->loadOwnedForward($forwardId, (int) $user['id']);
         $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id AND user_id = :user_id LIMIT 1', [
@@ -157,22 +174,37 @@ final class ServiceController extends BaseController
         $features = $this->serviceFeatures((int) $forward['service_id']);
         $this->assertFeature($features, 'allow_delete_forwards', 'feature_denied_delete_forwards');
 
-        $this->provisioning->deleteForward($forwardId, 'user');
+        $this->safeForwardMutation(function () use ($forwardId, $user, $forward): null {
+            $this->provisioning->deleteForward(
+                $forwardId,
+                'user_legacy:' . (int) $user['id'],
+                (int) ($forward['api_revision'] ?? 1),
+                ['user_id' => (int) $user['id'], 'feature' => 'allow_delete_forwards']
+            );
+            return null;
+        });
         return $this->legacyJson(['ok' => true]);
+        } catch (\Throwable $throwable) {
+            return $this->legacyForwardErrorResponse($throwable);
+        }
     }
 
     public function clientConfig(Request $request, array $params): Response
     {
+        try {
         $forwardId = $this->idParam($params);
 
         try {
-            $user = Auth::requireUser($request, $this->db);
+            $user = $this->requireTenant($request);
             $forward = $this->db->fetchOne(
                 'SELECT f.*, s.user_id
                  FROM forwards f
                  INNER JOIN services s ON s.id = f.service_id
-                 WHERE f.id = :id LIMIT 1',
-                ['id' => $forwardId]
+                 WHERE f.id = :id
+                   AND f.enabled = 1
+                   AND s.status = :active_status
+                 LIMIT 1',
+                ['id' => $forwardId, 'active_status' => 'active']
             );
             if ($forward === null || (int) $forward['user_id'] !== (int) $user['id']) {
                 throw new ApiException('forward_not_found', 404);
@@ -184,12 +216,18 @@ final class ServiceController extends BaseController
         return $this->json([
             'ok' => true,
             'config' => $this->provisioning->buildClientConfig($forwardId),
+        ])->withHeaders([
+            'Cache-Control' => 'no-store',
+            'X-Content-Type-Options' => 'nosniff',
         ]);
+        } catch (\Throwable $throwable) {
+            return $this->legacyForwardErrorResponse($throwable);
+        }
     }
 
     public function regenerateClientToken(Request $request, array $params): Response
     {
-        $user = Auth::requireUser($request, $this->db);
+        $user = $this->requireTenant($request);
         $serviceId = $this->idParam($params);
         $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id AND user_id = :user_id LIMIT 1', [
             'id' => $serviceId,
@@ -220,6 +258,87 @@ final class ServiceController extends BaseController
             'ok' => true,
             'services' => $services,
         ]);
+    }
+
+    /** @return array<string, mixed> */
+    private function requireTenant(Request $request): array
+    {
+        $user = Auth::requireUser($request, $this->db);
+        if ((string) ($user['role'] ?? '') !== 'tenant') {
+            throw new ApiException('user_auth_failed', 401);
+        }
+        return $user;
+    }
+
+    private function safeForwardMutation(callable $callback): mixed
+    {
+        try {
+            return $callback();
+        } catch (\Throwable $throwable) {
+            throw $this->normalizeForwardThrowable($throwable);
+        }
+    }
+
+    private function legacyForwardErrorResponse(\Throwable $throwable): Response
+    {
+        $safe = $this->normalizeForwardThrowable($throwable);
+        return $this->legacyJson([
+            'error' => $safe->getMessage(),
+            'details' => $safe->details(),
+        ], $safe->statusCode());
+    }
+
+    private function normalizeForwardThrowable(\Throwable $throwable): ApiException
+    {
+        if (!$throwable instanceof ApiException) {
+            error_log('legacy user forward API operation failed: ' . $throwable::class);
+            return new ApiException('operation_failed', 500);
+        }
+
+        $internalCode = $throwable->getMessage();
+        $aliases = [
+            'leigod_route_no_healthy_candidate' => 'route_unavailable',
+            'no_available_nodes' => 'route_unavailable',
+            'forward_route_combination_mismatch' => 'route_unavailable',
+            'invalid_forward_payload' => 'validation_failed',
+            'invalid_forward_target_source' => 'validation_failed',
+            'target_service_not_found' => 'validation_failed',
+            'target_service_not_allowed' => 'validation_failed',
+            'target_service_ip_missing' => 'validation_failed',
+        ];
+        $code = $aliases[$internalCode] ?? $internalCode;
+        $statuses = [
+            'user_auth_failed' => 401,
+            'client_token_missing' => 401,
+            'client_auth_failed' => 401,
+            'service_not_found' => 404,
+            'forward_not_found' => 404,
+            'validation_failed' => 422,
+            'unknown_fields' => 422,
+            'service_inactive' => 409,
+            'forward_quota_exceeded' => 409,
+            'forward_storage_quota_exceeded' => 409,
+            'route_unavailable' => 409,
+            'forward_version_conflict' => 412,
+            'forward_route_not_allowed' => 422,
+            'forward_route_has_no_enabled_combination' => 422,
+            'feature_denied_manage_forwards' => 403,
+            'feature_denied_delete_forwards' => 403,
+            'operation_failed' => 500,
+        ];
+        if (!array_key_exists($code, $statuses)) {
+            $safeInternalCode = preg_replace('/[^A-Za-z0-9_.:-]/', '?', substr($internalCode, 0, 80));
+            error_log('legacy user forward API internal error code: ' . $safeInternalCode);
+            return new ApiException('operation_failed', 500);
+        }
+
+        $details = [];
+        $sourceDetails = $throwable->details();
+        if (in_array($code, ['validation_failed', 'unknown_fields'], true)
+            && is_array($sourceDetails['fields'] ?? null)) {
+            $details['fields'] = $sourceDetails['fields'];
+        }
+        return new ApiException($code, $statuses[$code], $details);
     }
 
     /** @param array<string, mixed> $service */
@@ -258,9 +377,58 @@ final class ServiceController extends BaseController
     }
 
     /** @param array<string, mixed> $payload @return array<string, mixed> */
+    private function normalizeLegacyCreatePayload(array $payload): array
+    {
+        unset($payload['endpoint_count']);
+        $payload = $this->normalizeLegacyScalarFields($payload);
+        if (array_key_exists('transport_mode', $payload)) {
+            $payload['transport_mode'] = $this->normalizeLegacyTransport($payload['transport_mode']);
+        }
+        return ForwardLineApiContract::normalizeLegacyCreate($payload);
+    }
+
+    /** @param array<string, mixed> $payload @return array<string, mixed> */
     private function normalizeForwardNonStructuralPayload(array $payload): array
     {
+        unset($payload['endpoint_count']);
+        $payload = $this->normalizeLegacyScalarFields($payload);
+        if (array_key_exists('transport_mode', $payload)) {
+            $payload['transport_mode'] = $this->normalizeLegacyTransport($payload['transport_mode']);
+        }
         return ForwardLineApiContract::normalizeLegacyUpdate($payload);
+    }
+
+    /** @param array<string, mixed> $payload @return array<string, mixed> */
+    private function normalizeLegacyScalarFields(array $payload): array
+    {
+        if (array_key_exists('listen_port', $payload)
+            && ($payload['listen_port'] === '' || $payload['listen_port'] === 0 || $payload['listen_port'] === '0')) {
+            $payload['listen_port'] = null;
+        }
+        foreach (['forward_route_id', 'route_id', 'listen_port', 'target_port', 'target_service_id'] as $field) {
+            if (!is_string($payload[$field] ?? null)) {
+                continue;
+            }
+            $value = trim((string) $payload[$field]);
+            if (preg_match('/\A[0-9]+\z/D', $value) === 1) {
+                $payload[$field] = (int) $value;
+            }
+        }
+        return $payload;
+    }
+
+    private function normalizeLegacyTransport(mixed $value): mixed
+    {
+        if (!is_string($value)) {
+            return $value;
+        }
+        $normalized = strtolower(trim($value));
+        return match ($normalized) {
+            'udp' => 'udp',
+            'tcp+udp', 'udp+tcp', 'both' => 'tcp+udp',
+            'tcp' => 'tcp',
+            default => $normalized,
+        };
     }
 
     /** @param array<string, mixed> $service */

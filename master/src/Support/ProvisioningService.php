@@ -384,10 +384,65 @@ final class ProvisioningService
         array $payload,
         string $actor = 'user',
         ?string $idempotencyKeyHash = null,
-        ?string $requestHash = null
+        ?string $requestHash = null,
+        ?int $activeForwardLimit = null,
+        ?array $mutationPolicy = null
     ): array
     {
-        return $this->db->transaction(function () use ($serviceId, $payload, $actor, $idempotencyKeyHash, $requestHash): array {
+        return $this->db->transaction(function () use ($serviceId, $payload, $actor, $idempotencyKeyHash, $requestHash, $activeForwardLimit, $mutationPolicy): array {
+            $this->lockForwardMutationService($serviceId, $mutationPolicy, 'service_not_found');
+
+            if (is_string($idempotencyKeyHash) && $idempotencyKeyHash !== '') {
+                $existing = $this->db->fetchOne(
+                    'SELECT id, enabled, api_request_hash
+                     FROM forwards
+                     WHERE service_id = :service_id
+                       AND api_idempotency_key_hash = :key_hash
+                     LIMIT 1',
+                    ['service_id' => $serviceId, 'key_hash' => $idempotencyKeyHash]
+                );
+                if ($existing !== null) {
+                    if (!is_string($requestHash)
+                        || !hash_equals((string) ($existing['api_request_hash'] ?? ''), $requestHash)) {
+                        throw new ApiException('idempotency_conflict', 409);
+                    }
+                    if ((int) ($existing['enabled'] ?? 0) !== 1) {
+                        throw new ApiException('idempotency_resource_inactive', 409);
+                    }
+                    return ['forward_id' => (int) $existing['id'], 'idempotent_replay' => true];
+                }
+            }
+
+            if ($activeForwardLimit !== null) {
+                $limit = max(1, min(100000, $activeForwardLimit));
+                $count = $this->db->fetchOne(
+                    'SELECT COUNT(*) AS active_count
+                     FROM forwards
+                     WHERE service_id = :service_id AND enabled = 1',
+                    ['service_id' => $serviceId]
+                );
+                if ((int) ($count['active_count'] ?? 0) >= $limit) {
+                    throw new ApiException('forward_quota_exceeded', 409);
+                }
+            }
+
+            if ($mutationPolicy !== null) {
+                $storedLimit = max(
+                    1,
+                    $activeForwardLimit ?? 0,
+                    min(1000000, $this->config->getInt('USER_FORWARD_STORED_LIMIT_PER_SERVICE', 512))
+                );
+                $stored = $this->db->fetchOne(
+                    'SELECT COUNT(*) AS stored_count
+                     FROM forwards
+                     WHERE service_id = :service_id',
+                    ['service_id' => $serviceId]
+                );
+                if ((int) ($stored['stored_count'] ?? 0) >= $storedLimit) {
+                    throw new ApiException('forward_storage_quota_exceeded', 409);
+                }
+            }
+
             return $this->saveForward($serviceId, null, $payload, $actor, $idempotencyKeyHash, $requestHash);
         });
     }
@@ -962,6 +1017,25 @@ final class ProvisioningService
     /**
      * @return array<int, array<string, mixed>>
      */
+    public function allowedForwardRoutesForPlan(int $planId): array
+    {
+        if ($planId <= 0) {
+            return [];
+        }
+
+        return $this->db->fetchAll(
+            'SELECT fr.*
+             FROM service_plan_forward_routes spfr
+             INNER JOIN forward_routes fr ON fr.id = spfr.forward_route_id
+             WHERE spfr.plan_id = :plan_id
+             ORDER BY fr.sort_order ASC, fr.id ASC',
+            ['plan_id' => $planId]
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
     public function allowedForwardCombinationsForPlan(int $planId): array
     {
         if ($planId <= 0) {
@@ -991,9 +1065,13 @@ final class ProvisioningService
             return 0;
         }
         $row = $this->db->fetchOne(
-            'SELECT forward_combination_id FROM forward_route_combinations
-             WHERE forward_route_id = :id AND enabled = 1
-             ORDER BY sort_order ASC, id ASC LIMIT 1',
+            'SELECT frc.forward_combination_id
+             FROM forward_route_combinations frc
+             INNER JOIN forward_combinations fc ON fc.id = frc.forward_combination_id
+             WHERE frc.forward_route_id = :id
+               AND frc.enabled = 1
+               AND fc.is_active = 1
+             ORDER BY frc.sort_order ASC, frc.id ASC LIMIT 1',
             ['id' => $routeId]
         );
         return is_array($row) ? (int) ($row['forward_combination_id'] ?? 0) : 0;
@@ -1011,8 +1089,10 @@ final class ProvisioningService
         }
         $planId = (int) ($service['plan_id'] ?? 0);
         $gated = $this->db->fetchAll(
-            'SELECT fr.* FROM forward_routes fr
+            'SELECT DISTINCT fr.* FROM forward_routes fr
              INNER JOIN service_plan_forward_routes spfr ON spfr.forward_route_id = fr.id
+             INNER JOIN forward_route_combinations frc ON frc.forward_route_id = fr.id AND frc.enabled = 1
+             INNER JOIN forward_combinations fc ON fc.id = frc.forward_combination_id AND fc.is_active = 1
              WHERE spfr.plan_id = :plan_id AND fr.is_active = 1
              ORDER BY fr.sort_order ASC, fr.id ASC',
             ['plan_id' => $planId]
@@ -2289,11 +2369,14 @@ final class ProvisioningService
 
         foreach ($plans as &$plan) {
             $plan['uses_forward_combinations'] = $this->planUsesForwardCombinations((int) $plan['id']);
+            $plan['uses_forward_routes'] = $this->planUsesForwardRoutes((int) $plan['id']);
             $plan['allowed_forward_combinations'] = $this->allowedForwardCombinationsForPlan((int) $plan['id']);
+            $plan['allowed_forward_routes'] = $this->allowedForwardRoutesForPlan((int) $plan['id']);
             $plan['allowed_node_groups'] = $this->allowedNodeGroupsForPlan((int) $plan['id']);
             $plan['allowed_client_groups'] = $this->allowedClientGroupsForPlan((int) $plan['id']);
             $plan['allowed_sidecar_points'] = $this->allowedSidecarPointsForPlan((int) $plan['id']);
             $plan['forward_combination_count'] = count($plan['allowed_forward_combinations'] ?? []);
+            $plan['forward_route_count'] = count($plan['allowed_forward_routes'] ?? []);
             $plan['feature_flags'] = $this->decodeFeatureFlags((string) ($plan['feature_flags_json'] ?? ''));
         }
         unset($plan);
@@ -2572,23 +2655,23 @@ final class ProvisioningService
                 $sidecarPointIds[] = $casted;
             }
         }
-        $forwardCombinationIds = [];
-        foreach ((array) ($payload['allowed_forward_combination_ids'] ?? []) as $combinationId) {
-            $casted = (int) $combinationId;
+        $forwardRouteIds = [];
+        foreach ((array) ($payload['allowed_forward_route_ids'] ?? []) as $routeId) {
+            $casted = (int) $routeId;
             if ($casted > 0) {
-                $forwardCombinationIds[] = $casted;
+                $forwardRouteIds[] = $casted;
             }
         }
-        $forwardCombinationIds = array_values(array_unique($forwardCombinationIds));
+        $forwardRouteIds = array_values(array_unique($forwardRouteIds));
 
         if ($name === '' || $productCode === '') {
             throw new ApiException('invalid_plan_payload', 422, ['payload' => $payload]);
         }
-        if ($forwardCombinationIds === []) {
+        if ($forwardRouteIds === []) {
             throw new ApiException(
-                'invalid_plan_forward_combination_payload',
+                'invalid_plan_forward_route_payload',
                 422,
-                ['message' => 'Select at least one active forward combination before saving the plan.']
+                ['message' => 'Select at least one active forward route before saving the plan.']
             );
         }
 
@@ -2599,29 +2682,57 @@ final class ProvisioningService
             $monthlyIncludedTraffic = $traffic;
         }
 
-        $forwardCombinationRows = $this->db->fetchAll(
+        $forwardRouteRows = $this->db->fetchAll(
             'SELECT id, is_active
-             FROM forward_combinations
-             WHERE id IN (' . implode(',', array_map('intval', $forwardCombinationIds)) . ')'
+             FROM forward_routes
+             WHERE id IN (' . implode(',', array_map('intval', $forwardRouteIds)) . ')'
         );
-        $validForwardCombinationIds = [];
-        foreach ($forwardCombinationRows as $row) {
+        $validForwardRouteIds = [];
+        foreach ($forwardRouteRows as $row) {
             if ((int) ($row['is_active'] ?? 0) === 1) {
-                $validForwardCombinationIds[] = (int) ($row['id'] ?? 0);
+                $validForwardRouteIds[] = (int) ($row['id'] ?? 0);
             }
         }
-        sort($validForwardCombinationIds);
-        $expectedForwardCombinationIds = $forwardCombinationIds;
-        sort($expectedForwardCombinationIds);
-        if ($validForwardCombinationIds !== $expectedForwardCombinationIds) {
+        sort($validForwardRouteIds);
+        $expectedForwardRouteIds = $forwardRouteIds;
+        sort($expectedForwardRouteIds);
+        if ($validForwardRouteIds !== $expectedForwardRouteIds) {
             throw new ApiException(
-                'invalid_plan_forward_combination_payload',
+                'invalid_plan_forward_route_payload',
                 422,
-                ['message' => 'Select at least one active forward combination before saving the plan.']
+                ['message' => 'Select at least one active forward route before saving the plan.']
             );
         }
 
-        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $payload): array {
+        $forwardCombinationRows = $this->db->fetchAll(
+            'SELECT DISTINCT frc.forward_route_id, frc.forward_combination_id AS id
+             FROM forward_route_combinations frc
+             INNER JOIN forward_combinations fc ON fc.id = frc.forward_combination_id
+             WHERE frc.forward_route_id IN (' . implode(',', array_map('intval', $forwardRouteIds)) . ')
+               AND frc.enabled = 1
+               AND fc.is_active = 1
+             ORDER BY frc.forward_route_id ASC, frc.forward_combination_id ASC'
+        );
+        $routesWithActiveCombinations = [];
+        $forwardCombinationIds = [];
+        foreach ($forwardCombinationRows as $row) {
+            $routeId = (int) ($row['forward_route_id'] ?? 0);
+            $combinationId = (int) ($row['id'] ?? 0);
+            if ($routeId > 0 && $combinationId > 0) {
+                $routesWithActiveCombinations[$routeId] = true;
+                $forwardCombinationIds[$combinationId] = $combinationId;
+            }
+        }
+        $forwardCombinationIds = array_values($forwardCombinationIds);
+        if (count($routesWithActiveCombinations) !== count($forwardRouteIds)) {
+            throw new ApiException(
+                'invalid_plan_forward_route_payload',
+                422,
+                ['message' => 'Every selected route must contain an enabled active forward combination.']
+            );
+        }
+
+        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $forwardRouteIds, $payload): array {
             if ($id > 0) {
                 $this->db->execute(
                     'UPDATE service_plans
@@ -2743,13 +2854,28 @@ final class ProvisioningService
                 ]);
             }
 
+            $this->db->execute('DELETE FROM service_plan_forward_routes WHERE plan_id = :plan_id', [
+                'plan_id' => $id,
+            ]);
+            foreach ($forwardRouteIds as $routeId) {
+                $this->db->insert('service_plan_forward_routes', [
+                    'plan_id' => $id,
+                    'forward_route_id' => $routeId,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+            }
+
             $plan = $this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id LIMIT 1', ['id' => $id]) ?? [];
             $plan['uses_forward_combinations'] = $this->planUsesForwardCombinations($id);
+            $plan['uses_forward_routes'] = $this->planUsesForwardRoutes($id);
             $plan['allowed_forward_combinations'] = $this->allowedForwardCombinationsForPlan($id);
+            $plan['allowed_forward_routes'] = $this->allowedForwardRoutesForPlan($id);
             $plan['allowed_node_groups'] = $this->allowedNodeGroupsForPlan($id);
             $plan['allowed_client_groups'] = $this->allowedClientGroupsForPlan($id);
             $plan['allowed_sidecar_points'] = $this->allowedSidecarPointsForPlan($id);
             $plan['forward_combination_count'] = count($plan['allowed_forward_combinations'] ?? []);
+            $plan['forward_route_count'] = count($plan['allowed_forward_routes'] ?? []);
             $plan['feature_flags'] = $this->decodeFeatureFlags((string) ($plan['feature_flags_json'] ?? ''));
             return $plan;
         });
@@ -3221,7 +3347,9 @@ final class ProvisioningService
              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
              WHERE f.enabled = 1
-             ORDER BY f.id ASC'
+               AND s.status = :active_status
+             ORDER BY f.id ASC',
+            ['active_status' => 'active']
         );
 
         $matched = [];
@@ -3875,13 +4003,14 @@ final class ProvisioningService
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
-    public function updateForward(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null): array
+    public function updateForward(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): array
     {
-        return $this->db->transaction(function () use ($forwardId, $payload, $actor, $expectedRevision): array {
+        return $this->db->transaction(function () use ($forwardId, $payload, $actor, $expectedRevision, $mutationPolicy): array {
             $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1 FOR UPDATE', ['id' => $forwardId]);
             if ($forward === null) {
                 throw new ApiException('forward_not_found', 404);
             }
+            $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
             $this->assertExpectedForwardRevision($forward, $expectedRevision);
             $this->revokeForwardEndpoints($forwardId, 'update');
             return $this->saveForward((int) $forward['service_id'], $forwardId, $payload, $actor);
@@ -3892,13 +4021,14 @@ final class ProvisioningService
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
-    public function updateForwardNonStructural(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null): array
+    public function updateForwardNonStructural(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): array
     {
-        return $this->db->transaction(function () use ($forwardId, $payload, $actor, $expectedRevision): array {
+        return $this->db->transaction(function () use ($forwardId, $payload, $actor, $expectedRevision, $mutationPolicy): array {
             $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1 FOR UPDATE', ['id' => $forwardId]);
             if ($forward === null) {
                 throw new ApiException('forward_not_found', 404);
             }
+            $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
             $this->assertExpectedForwardRevision($forward, $expectedRevision);
 
             $listenPort = max(0, (int) ($payload['listen_port'] ?? $forward['listen_port'] ?? 0));
@@ -3956,28 +4086,143 @@ final class ProvisioningService
         });
     }
 
-    public function deleteForward(int $forwardId, string $actor = 'user', ?int $expectedRevision = null): void
+    public function deleteForward(int $forwardId, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): void
     {
-        $this->db->transaction(function () use ($forwardId, $actor, $expectedRevision): void {
+        $this->db->transaction(function () use ($forwardId, $actor, $expectedRevision, $mutationPolicy): void {
             $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1 FOR UPDATE', ['id' => $forwardId]);
             if ($forward === null) {
                 throw new ApiException('forward_not_found', 404);
             }
+            $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
             $this->assertExpectedForwardRevision($forward, $expectedRevision);
             $nextRevision = max(1, (int) ($forward['api_revision'] ?? 1)) + 1;
 
             $this->revokeForwardEndpoints($forwardId, 'delete');
-            $this->db->execute('UPDATE forwards SET enabled = 0, api_revision = :api_revision, updated_at = :updated_at WHERE id = :id', [
-                'id' => $forwardId,
-                'api_revision' => $nextRevision,
-                'updated_at' => $this->now(),
-            ]);
+            $now = $this->now();
+            $this->db->execute(
+                'UPDATE forwards
+                 SET enabled = 0,
+                     user_deleted_at = :user_deleted_at,
+                     balance_suspended_at = NULL,
+                     api_revision = :api_revision,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                [
+                    'id' => $forwardId,
+                    'user_deleted_at' => $now,
+                    'api_revision' => $nextRevision,
+                    'updated_at' => $now,
+                ]
+            );
             $this->audit('forward.deleted', [
                 'forward_id' => $forwardId,
                 'service_id' => (int) ($forward['service_id'] ?? 0),
                 'actor' => $actor,
                 'revision' => $nextRevision,
             ]);
+        });
+    }
+
+    public function reactivateEligibleForwardsForUser(int $userId, int $activeForwardLimit): int
+    {
+        if ($userId <= 0) {
+            throw new ApiException('user_auth_failed', 401);
+        }
+        $limit = max(1, min(100000, $activeForwardLimit));
+
+        return $this->db->transaction(function () use ($userId, $limit): int {
+            $user = $this->db->fetchOne(
+                'SELECT id, role, status FROM users WHERE id = :id LIMIT 1',
+                ['id' => $userId]
+            );
+            if ($user === null
+                || (string) ($user['role'] ?? '') !== 'tenant'
+                || (string) ($user['status'] ?? '') !== 'active') {
+                throw new ApiException('user_auth_failed', 401);
+            }
+
+            $services = $this->db->fetchAll(
+                'SELECT id
+                 FROM services
+                 WHERE user_id = :user_id AND status = :status
+                 ORDER BY id ASC',
+                ['user_id' => $userId, 'status' => 'active']
+            );
+            $reactivated = 0;
+            foreach ($services as $serviceRow) {
+                $serviceId = (int) ($serviceRow['id'] ?? 0);
+                if ($serviceId <= 0) {
+                    continue;
+                }
+                try {
+                    $lockedService = $this->lockForwardMutationService(
+                        $serviceId,
+                        ['user_id' => $userId, 'feature' => 'allow_manage_forwards'],
+                        'service_not_found'
+                    );
+                    if ((float) ($lockedService['user_wallet_balance'] ?? 0) <= 0) {
+                        throw new ApiException('insufficient_balance', 409);
+                    }
+                } catch (ApiException $exception) {
+                    if ($exception->getMessage() === 'feature_denied_manage_forwards') {
+                        continue;
+                    }
+                    throw $exception;
+                }
+
+                $active = $this->db->fetchOne(
+                    'SELECT COUNT(*) AS active_count
+                     FROM forwards
+                     WHERE service_id = :service_id AND enabled = 1',
+                    ['service_id' => $serviceId]
+                );
+                $remaining = max(0, $limit - (int) ($active['active_count'] ?? 0));
+                if ($remaining === 0) {
+                    continue;
+                }
+
+                $candidates = $this->db->fetchAll(
+                    'SELECT id
+                     FROM forwards
+                     WHERE service_id = :service_id
+                       AND enabled = 0
+                       AND user_deleted_at IS NULL
+                       AND balance_suspended_at IS NOT NULL
+                     ORDER BY id ASC
+                     LIMIT ' . $remaining . ' FOR UPDATE',
+                    ['service_id' => $serviceId]
+                );
+                foreach ($candidates as $candidate) {
+                    $forwardId = (int) ($candidate['id'] ?? 0);
+                    if ($forwardId <= 0) {
+                        continue;
+                    }
+                    $updated = $this->db->execute(
+                        'UPDATE forwards
+                          SET enabled = 1,
+                              balance_suspended_at = NULL,
+                              api_revision = GREATEST(1, api_revision) + 1,
+                             updated_at = :updated_at
+                         WHERE id = :id
+                            AND enabled = 0
+                            AND user_deleted_at IS NULL
+                            AND balance_suspended_at IS NOT NULL',
+                        ['id' => $forwardId, 'updated_at' => $this->now()]
+                    );
+                    if ($updated <= 0) {
+                        continue;
+                    }
+                    $this->audit('forward.reactivated', [
+                        'forward_id' => $forwardId,
+                        'service_id' => $serviceId,
+                        'actor' => 'tenant:' . $userId,
+                    ]);
+                    $this->reconcileForwardEndpoints($forwardId);
+                    $reactivated++;
+                }
+            }
+
+            return $reactivated;
         });
     }
 
@@ -4043,8 +4288,11 @@ final class ProvisioningService
              LEFT JOIN forward_chains fc ON fc.id = f.forward_chain_id
              LEFT JOIN sidecar_points sp ON sp.id = f.bond_sidecar_point_id
              LEFT JOIN forward_combinations combo ON combo.id = f.forward_combination_id
-             WHERE f.id = :id LIMIT 1',
-            ['id' => $forwardId]
+             WHERE f.id = :id
+               AND f.enabled = 1
+               AND s.status = :active_status
+             LIMIT 1',
+            ['id' => $forwardId, 'active_status' => 'active']
         );
 
         if ($forward === null) {
@@ -7457,7 +7705,8 @@ final class ProvisioningService
              FROM forward_route_combinations frc
              INNER JOIN forward_combinations fc ON fc.id = frc.forward_combination_id
              WHERE frc.forward_route_id = :route_id
-               AND frc.enabled = 1',
+               AND frc.enabled = 1
+               AND fc.is_active = 1',
             [
                 'route_id' => $routeId,
                 'backend_mode' => 'leigod_mode',
@@ -8670,6 +8919,73 @@ final class ProvisioningService
         }
 
         return [ForwardLineApiContract::validateTargetHost($targetHost), $targetPort, $listenPort];
+    }
+
+    /**
+     * @param array{user_id?: int, feature?: string}|null $mutationPolicy
+     * @return array<string, mixed>
+     */
+    private function lockForwardMutationService(int $serviceId, ?array $mutationPolicy, string $notFoundCode): array
+    {
+        $service = $this->db->fetchOne(
+            'SELECT * FROM services WHERE id = :id LIMIT 1 FOR UPDATE',
+            ['id' => $serviceId]
+        );
+        if ($service === null) {
+            throw new ApiException($notFoundCode, 404);
+        }
+        if ($mutationPolicy === null) {
+            return $service;
+        }
+
+        $expectedUserId = (int) ($mutationPolicy['user_id'] ?? 0);
+        if ($expectedUserId <= 0 || (int) ($service['user_id'] ?? 0) !== $expectedUserId) {
+            throw new ApiException($notFoundCode, 404);
+        }
+        if ((string) ($service['status'] ?? '') !== 'active') {
+            throw new ApiException('service_inactive', 409);
+        }
+
+        $user = $this->db->fetchOne(
+            'SELECT * FROM users WHERE id = :id LIMIT 1 FOR UPDATE',
+            ['id' => $expectedUserId]
+        );
+        if ($user === null
+            || (string) ($user['role'] ?? '') !== 'tenant'
+            || (string) ($user['status'] ?? '') !== 'active') {
+            throw new ApiException('user_auth_failed', 401);
+        }
+
+        $planFeatureFlagsJson = '';
+        $planId = (int) ($service['plan_id'] ?? 0);
+        if ($planId > 0) {
+            $plan = $this->db->fetchOne(
+                'SELECT * FROM service_plans WHERE id = :id LIMIT 1 FOR UPDATE',
+                ['id' => $planId]
+            );
+            if ($plan === null) {
+                throw new ApiException('operation_failed', 500);
+            }
+            $planFeatureFlagsJson = (string) ($plan['feature_flags_json'] ?? '');
+        }
+
+        $service['plan_feature_flags_json'] = $planFeatureFlagsJson;
+        $service['user_feature_flags_json'] = (string) ($user['feature_flags_json'] ?? '');
+        $service['user_wallet_balance'] = $user['wallet_balance'] ?? 0;
+        $feature = (string) ($mutationPolicy['feature'] ?? '');
+        $featureErrors = [
+            'allow_manage_forwards' => 'feature_denied_manage_forwards',
+            'allow_delete_forwards' => 'feature_denied_delete_forwards',
+        ];
+        if (!array_key_exists($feature, $featureErrors)) {
+            throw new ApiException('operation_failed', 500);
+        }
+        $features = $this->effectiveFeatureFlagsForService($service);
+        if (empty($features[$feature])) {
+            throw new ApiException($featureErrors[$feature], 403);
+        }
+
+        return $service;
     }
 
     /** @param array<string, mixed> $forward */

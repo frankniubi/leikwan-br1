@@ -25,7 +25,7 @@ foreach ([
     "max_client_profiles = :max_client_profiles",
     "'max_client_profiles' => max(1, (int) (\$payload['max_client_profiles'] ?? 1))",
     "'plan_max_client_profiles' => (int) (\$plan['max_client_profiles'] ?? 1)",
-    "'message' => 'Select at least one active forward combination before saving the plan.'",
+    "'message' => 'Select at least one active forward route before saving the plan.'",
 ] as $needle) {
     if (!str_contains($provisioning, $needle)) {
         fail('missing provisioning client-profile-limit snippet: ' . $needle);

@@ -155,10 +155,22 @@ foreach ($users as $user) {
 
         // Auto-stop on zero balance
         if ($balanceAfter <= 0) {
+            $suspendedAt = gmdate('Y-m-d H:i:s');
             $db->execute(
-                'UPDATE forwards SET enabled = 0
-                 WHERE service_id IN (SELECT id FROM services WHERE user_id = :user_id AND status = :status)',
-                ['user_id' => $userId, 'status' => 'active']
+                'UPDATE forwards
+                 SET enabled = 0,
+                     balance_suspended_at = :balance_suspended_at,
+                     api_revision = GREATEST(1, api_revision) + 1,
+                     updated_at = :updated_at
+                 WHERE enabled = 1
+                   AND user_deleted_at IS NULL
+                   AND service_id IN (SELECT id FROM services WHERE user_id = :user_id AND status = :status)',
+                [
+                    'user_id' => $userId,
+                    'status' => 'active',
+                    'balance_suspended_at' => $suspendedAt,
+                    'updated_at' => $suspendedAt,
+                ]
             );
 
             $db->insert('audit_logs', [

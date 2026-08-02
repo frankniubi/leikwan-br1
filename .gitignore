@@ -9,6 +9,8 @@
 *.env.local
 .env
 /tmp-artifact-config.env
+/master/.installer-access-token
+/master/.installer.lock
 
 # Scratch files from live debugging and handoff planning.
 /.codex-tmp/

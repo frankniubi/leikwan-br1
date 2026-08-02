@@ -4,7 +4,7 @@
 
 **Goal:** Deliver a tenant-owned forward-rule CRUD API with strict authorization, idempotent creation, optimistic concurrency, safe response DTOs, shared injection-resistant validation, and hardened legacy/Web compatibility paths.
 
-**Architecture:** Add a pure `ForwardLineApiContract` for request validation and safe DTO construction, and a focused `ForwardLineApiController` for the v1 Bearer transport. Keep provisioning in `ProvisioningService`, but make its route authorization fail closed and its mutations transactional. Persist revision and hashed idempotency metadata on `forwards`; legacy API and tenant Web handlers reuse the same allowlists and policy checks.
+**Architecture:** Add a pure `ForwardLineApiContract` for request validation and safe DTO construction, and a focused `ForwardLineApiController` for the v1 Bearer transport. Keep provisioning in `ProvisioningService`, but make its route authorization fail closed and its mutations transactional. Persist revision, hashed idempotency metadata, an explicit user-deletion tombstone, and a distinct balance-suspension marker on `forwards`; legacy API and tenant Web handlers reuse the same allowlists and policy checks.
 
 **Tech Stack:** PHP 8.3+, MySQL/MariaDB migrations, existing custom Router/Request/Response stack, standalone PHP regression tests, Python `unittest`/`pytest` for slave-agent defense-in-depth tests.
 
@@ -27,11 +27,13 @@ $requiredColumns = [
     'api_revision BIGINT UNSIGNED NOT NULL DEFAULT 1',
     'api_idempotency_key_hash CHAR(64) NULL',
     'api_request_hash CHAR(64) NULL',
+    'user_deleted_at DATETIME NULL',
+    'balance_suspended_at DATETIME NULL',
     'UNIQUE KEY uniq_forward_service_idempotency (service_id, api_idempotency_key_hash)',
 ];
 ```
 
-Also require `USER_FORWARD_LIMIT_PER_SERVICE=64` in `.env.example` and reject plaintext idempotency-key storage names.
+Also require `USER_FORWARD_LIMIT_PER_SERVICE=64` and `USER_FORWARD_STORED_LIMIT_PER_SERVICE=512` in `.env.example`, and reject plaintext idempotency-key storage names.
 
 - [ ] **Step 2: Run the test and verify RED**
 
@@ -41,10 +43,11 @@ Expected: exit 1 naming the first missing `api_revision` schema fragment.
 
 - [ ] **Step 3: Add the migration, canonical schema, and configuration default**
 
-The migration adds the three columns and unique composite index. The canonical `forwards` table includes the same fields. Document the bounded default in `.env.example`:
+The migration adds five columns, backfills only explicit historical deletes with forward-level audit evidence, leaves ambiguous disabled rows unclassified and non-reactivatable, and adds the unique composite index. The canonical `forwards` table includes the same fields. Document the bounded defaults in `.env.example`:
 
 ```dotenv
 USER_FORWARD_LIMIT_PER_SERVICE=64
+USER_FORWARD_STORED_LIMIT_PER_SERVICE=512
 ```
 
 - [ ] **Step 4: Run focused verification**
@@ -154,7 +157,7 @@ Prove `createForward()` and `updateForwardNonStructural()` reject unsafe hosts a
 
 - [ ] **Step 4: Make all forward mutations transactional and revision-aware**
 
-Wrap create, structural update, non-structural update, and delete in `Database::transaction()`. Validate the resolved target with `ForwardLineApiContract::validateTargetHost()` and strict port checks before persistence. Initialize `api_revision=1`, persist the two API hashes on v1 create, and increment `api_revision` on update/delete. Add optional expected-revision arguments so the v1 controller can verify again inside the transaction before endpoint retirement.
+Wrap create, structural update, non-structural update, and delete in `Database::transaction()`. Validate the resolved target with `ForwardLineApiContract::validateTargetHost()` and strict port checks before persistence. Initialize `api_revision=1`, persist the two API hashes on v1 create, set `user_deleted_at` on delete, set `balance_suspended_at` only in the billing suspension job, and increment `api_revision` on update/delete/suspension/reactivation. Add optional expected-revision arguments so the v1 controller can verify again inside the transaction before endpoint retirement.
 
 - [ ] **Step 5: Run focused provisioning tests**
 
@@ -206,7 +209,7 @@ Test `415` for non-JSON, `413` for bodies over 16 KiB, `428` for missing `Idempo
 
 - [ ] **Step 5: Implement create/patch/delete**
 
-Create hashes the idempotency header, checks an existing scoped row, enforces the active-forward limit, and calls provisioning with `actor=user_api:{user_id}`. Patch merges allowed fields with current values and uses structural update only for route/target-source changes. Delete performs the existing soft retirement and returns `204`. Each successful single-resource response includes the current ETag and `Location` on create.
+Create hashes the idempotency header, checks an existing scoped row, and enforces both active and retained-history limits before provisioning with `actor=user_api:{user_id}`. Patch merges allowed fields with current values and uses structural update for route, target-source, transport, and automatic listen-port changes. Delete performs the existing soft retirement and returns `204`. Each successful single-resource response includes the current ETag and `Location` on create.
 
 - [ ] **Step 6: Run controller tests and PHP lint**
 
@@ -251,7 +254,7 @@ Expected: current broad payload/summary and broken href assertions fail.
 
 - [ ] **Step 3: Apply shared gates and DTOs**
 
-Use `ForwardLineApiContract::normalizeLegacyCreate/Update()` and `presentService()`. Add active-service and feature checks to legacy create/update/delete. Stop returning client runtime config from management mutations; return the safe forward resource plus its client-config URL. Add deprecation headers to old write responses.
+Use `ForwardLineApiContract::normalizeLegacyCreate/Update()` and `presentService()`. Add active-service and feature checks to legacy create/update/delete. Keep only safe historical coercions (`endpoint_count` ignored, decimal strings and transport aliases canonicalized), while internal topology fields remain forbidden. Stop returning client runtime config from management mutations; return the safe forward resource plus its client-config URL, and serve that URL only for active forwards on active services. Normalize every legacy forward error before it reaches the global handler. Add deprecation headers to old write responses.
 
 - [ ] **Step 4: Fix tenant edit authorization and link**
 

@@ -55,7 +55,7 @@ final class SessionAuth
         }
 
         $user = $db->fetchOne('SELECT * FROM users WHERE id = :id LIMIT 1', ['id' => $identity['user_id']]);
-        if ($user === null) {
+        if ($user === null || (string) ($user['status'] ?? '') !== 'active') {
             self::logout();
             return null;
         }

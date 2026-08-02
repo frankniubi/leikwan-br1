@@ -85,6 +85,78 @@ final class ForwardLineApiContract
         return ['changes' => $changes];
     }
 
+    /**
+     * Merge normalized patch fields with the stored forward while preserving
+     * the mutually exclusive manual and service-IP target invariants.
+     *
+     * @param array<string, mixed> $current
+     * @param array<string, mixed> $changes
+     * @return array<string, mixed>
+     */
+    public static function mergePatch(array $current, array $changes): array
+    {
+        $currentSource = (string) ($current['target_source'] ?? 'manual');
+        if (!in_array($currentSource, ['manual', 'service_ip'], true)) {
+            self::invalid(['target.source' => 'invalid']);
+        }
+        $targetSource = array_key_exists('target_source', $changes)
+            ? (string) $changes['target_source']
+            : $currentSource;
+        if (!in_array($targetSource, ['manual', 'service_ip'], true)) {
+            self::invalid(['target.source' => 'invalid']);
+        }
+
+        $sourceChanged = $targetSource !== $currentSource;
+        $targetPort = array_key_exists('target_port', $changes)
+            ? $changes['target_port']
+            : (int) ($current['target_port'] ?? 0);
+
+        if ($targetSource === 'manual') {
+            if (array_key_exists('target_service_id', $changes)) {
+                self::invalid(['target.service_id' => 'forbidden_for_manual']);
+            }
+            if ($sourceChanged && !array_key_exists('target_host', $changes)) {
+                self::invalid(['target.host' => 'required']);
+            }
+            $targetHost = array_key_exists('target_host', $changes)
+                ? $changes['target_host']
+                : (string) ($current['target_host'] ?? '');
+            if (!is_string($targetHost)) {
+                self::invalid(['target.host' => 'string_required']);
+            }
+            $targetHost = self::validateTargetHost($targetHost);
+            $targetServiceId = 0;
+        } else {
+            if (array_key_exists('target_host', $changes)) {
+                self::invalid(['target.host' => 'forbidden_for_service_ip']);
+            }
+            if ($sourceChanged && !array_key_exists('target_service_id', $changes)) {
+                self::invalid(['target.service_id' => 'required']);
+            }
+            $targetServiceId = array_key_exists('target_service_id', $changes)
+                ? $changes['target_service_id']
+                : (int) ($current['target_service_id'] ?? 0);
+            $targetServiceId = self::positiveInt($targetServiceId, 'target.service_id');
+            $targetHost = $sourceChanged ? '' : (string) ($current['target_host'] ?? '');
+        }
+
+        return [
+            'forward_route_id' => array_key_exists('forward_route_id', $changes)
+                ? self::positiveInt($changes['forward_route_id'], 'route_id')
+                : (int) ($current['forward_route_id'] ?? 0),
+            'listen_port' => array_key_exists('listen_port', $changes)
+                ? (int) $changes['listen_port']
+                : (int) ($current['listen_port'] ?? 0),
+            'target_host' => $targetHost,
+            'target_port' => self::requiredPort($targetPort, 'target.port'),
+            'target_source' => $targetSource,
+            'target_service_id' => $targetServiceId,
+            'transport_mode' => array_key_exists('transport_mode', $changes)
+                ? self::transport($changes['transport_mode'])
+                : self::transport((string) ($current['transport_mode'] ?? 'tcp')),
+        ];
+    }
+
     /** @param array<string, mixed> $payload */
     public static function normalizeLegacyCreate(array $payload): array
     {
@@ -92,8 +164,22 @@ final class ForwardLineApiContract
         if (!array_key_exists('forward_route_id', $normalized)) {
             self::invalid(['forward_route_id' => 'required']);
         }
-        if (!array_key_exists('target_host', $normalized) || !array_key_exists('target_port', $normalized)) {
+        if (!array_key_exists('target_port', $normalized)) {
             self::invalid(['target' => 'required']);
+        }
+        $targetSource = (string) ($normalized['target_source'] ?? 'manual');
+        if ($targetSource === 'manual') {
+            if (!array_key_exists('target_host', $normalized)) {
+                self::invalid(['target.host' => 'required']);
+            }
+            if (array_key_exists('target_service_id', $normalized)) {
+                self::invalid(['target.service_id' => 'forbidden_for_manual']);
+            }
+        } else {
+            if (!array_key_exists('target_service_id', $normalized)) {
+                self::invalid(['target.service_id' => 'required']);
+            }
+            unset($normalized['target_host']);
         }
         return $normalized;
     }
@@ -260,6 +346,11 @@ final class ForwardLineApiContract
             self::invalid(['patch' => 'non_empty']);
         }
 
+        $effectiveTargetSource = $payload['target_source'] ?? 'manual';
+        if (!is_string($effectiveTargetSource) || !in_array($effectiveTargetSource, ['manual', 'service_ip'], true)) {
+            self::invalid(['target.source' => 'invalid']);
+        }
+
         $normalized = [];
         if (array_key_exists('forward_route_id', $payload) || array_key_exists('route_id', $payload)) {
             $normalized['forward_route_id'] = self::positiveInt(
@@ -274,16 +365,15 @@ final class ForwardLineApiContract
             if (!is_string($payload['target_host'])) {
                 self::invalid(['target.host' => 'string_required']);
             }
-            $normalized['target_host'] = self::validateTargetHost($payload['target_host']);
+            if (!($effectiveTargetSource === 'service_ip' && trim($payload['target_host']) === '')) {
+                $normalized['target_host'] = self::validateTargetHost($payload['target_host']);
+            }
         }
         if (array_key_exists('target_port', $payload)) {
             $normalized['target_port'] = self::requiredPort($payload['target_port'], 'target.port');
         }
         if (array_key_exists('target_source', $payload)) {
-            if (!is_string($payload['target_source']) || !in_array($payload['target_source'], ['manual', 'service_ip'], true)) {
-                self::invalid(['target.source' => 'invalid']);
-            }
-            $normalized['target_source'] = $payload['target_source'];
+            $normalized['target_source'] = $effectiveTargetSource;
         }
         if (array_key_exists('target_service_id', $payload)) {
             $normalized['target_service_id'] = self::positiveInt($payload['target_service_id'], 'target.service_id');

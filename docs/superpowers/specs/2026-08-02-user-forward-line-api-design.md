@@ -99,13 +99,15 @@ It must not include combination IDs, provider line IDs, node IDs or addresses, c
 }
 ```
 
-Every field is optional, but at least one mutable field must be present. A route or target-source change uses the existing structural update path and recreates endpoints transactionally. A target, listen-port, or transport-only change uses the narrower update path.
+Every field is optional, but at least one mutable field must be present. A route, target-source, transport, or automatic listen-port change uses the existing structural update path and recreates endpoints transactionally after route availability validation. A target-only or explicit nonzero listen-port change uses the narrower update path.
 
-The client sends the exact `ETag` returned by the last detail, list, create, or patch response in `If-Match`. Missing preconditions return `428 precondition_required`; stale values return `412 forward_version_conflict` before any endpoint is retired.
+The client sends the exact `ETag` returned by the last detail, create, or patch response in `If-Match`. List items expose a revision but not an item-specific response header, so clients fetch detail before mutating. Missing preconditions return `428 precondition_required`; stale values return `412 forward_version_conflict` before any endpoint is retired.
+
+Target patches preserve the current source unless `target.source` is present. Switching from `manual` to `service_ip` requires an owned `service_id` in the same patch and discards the stale manual host. Switching back requires an explicit manual host and clears the service ID. A caller can never patch the resolved host of a `service_ip` target. `listen_port: null` requests a new automatic allocation and therefore uses the structural update path.
 
 ### Delete
 
-Delete is a soft delete through the existing retirement protocol. A successful delete returns `204`. Repeating a delete with the same owned ID returns `204` only when ownership can still be established; another tenant always receives `404`.
+Delete is a soft delete through the existing retirement protocol. A successful delete returns `204`. Repeating a delete after the row becomes inactive returns `404 forward_not_found`; another tenant receives the same response.
 
 ## Safe Forward Representation
 
@@ -148,13 +150,15 @@ Add these nullable/defaulted fields to `forwards`:
 
 - `api_revision BIGINT UNSIGNED NOT NULL DEFAULT 1`;
 - `api_idempotency_key_hash CHAR(64) NULL`;
-- `api_request_hash CHAR(64) NULL`.
+- `api_request_hash CHAR(64) NULL`;
+- `user_deleted_at DATETIME NULL`;
+- `balance_suspended_at DATETIME NULL`.
 
 Add a unique index on `(service_id, api_idempotency_key_hash)`. Existing rows remain valid because MySQL permits multiple `NULL` values in a unique index.
 
 All create, update, and delete paths increment or initialize `api_revision`. The ETag is `"forward-{id}-r{revision}"`; it contains no secret. Idempotency lookup is scoped by the already-authorized service ID.
 
-Create, structural update, non-structural update, and delete each run in one database transaction, including endpoint retirement/creation and provisioning-task enqueue. Validation or placement failure rolls back the forward row, endpoints, tasks, audit event, and revision change together. The API checks an ETag before entering the transaction, then verifies the revision again inside the transaction before mutation.
+Create, structural update, non-structural update, and delete each run in one database transaction, including endpoint retirement/creation and provisioning-task enqueue. Validation or placement failure rolls back the forward row, endpoints, tasks, audit event, and revision change together. The API checks an ETag before entering the transaction, then verifies the revision again inside the transaction before mutation. Delete sets `user_deleted_at` and clears any balance marker. Billing suspension sets `balance_suspended_at`; account reactivation requires that marker, excludes tombstones, reapplies tenant status, balance, policy, and quota under lock, clears the marker, and increments the revision. Historical disabled rows without forward-level evidence remain unclassified and cannot be restored automatically. Nested transactions use savepoints. InnoDB deadlocks are never retried one statement at a time inside an aborted transaction; the owning transaction retries its complete callback.
 
 ## Authorization and Policy
 
@@ -165,7 +169,7 @@ Every operation follows this order:
 3. Return `404` for missing and cross-tenant resources to avoid an object-existence oracle.
 4. For writes, require service status `active`.
 5. Enforce `allow_manage_forwards` for create/update and `allow_delete_forwards` for delete.
-6. Enforce the configured per-service active-forward limit before create.
+6. Lock the service row and recheck owner, active user, active service, feature policy, idempotency, and the configured active-forward limit inside the create transaction.
 7. Resolve `route_id` only through the fail-closed `availableForwardRoutesForService()` allowlist.
 8. Let `ProvisioningService` perform the final route, target-service ownership, health, port, and endpoint realization checks.
 
@@ -178,9 +182,9 @@ The legacy `/api/user/...` create, update, and delete handlers receive the same 
 - Manual hosts are ASCII IPv4, IPv6, or DNS host names up to 253 characters.
 - Hosts containing a URL scheme, userinfo, path, whitespace, control bytes, shell metacharacters, or an IPv6 zone identifier are rejected.
 - Route and service IDs are positive integers.
-- Transport values are exact enum members and are never silently coerced.
+- V1 transport values and numeric fields use exact JSON types and are never silently coerced. Deprecated legacy routes canonicalize historical decimal-string IDs/ports plus case-insensitive and `udp+tcp`/`both` transport aliases.
 - Unknown top-level and nested fields return `422 unknown_fields`.
-- The server never accepts client-supplied `endpoint_count`, `public_port`, `cdn_host`, `node_group`, `forward_combination_id`, `backend_mode`, `client_mode`, Sidecar fields, or configuration material.
+- V1 never accepts client-supplied `endpoint_count`; deprecated legacy routes accept and ignore that historical field. Neither surface accepts `public_port`, `cdn_host`, `node_group`, `forward_combination_id`, `backend_mode`, `client_mode`, Sidecar fields, or configuration material.
 
 Private and loopback target addresses remain valid because forwarding to a tenant-owned LAN/backend is the product's purpose. The panel does not make an HTTP request to the target during API validation.
 
@@ -209,15 +213,19 @@ Expected statuses are `401` authentication failure, `404` missing/not-owned reso
 
 Existing `forward.created`, `forward.updated`, and `forward.deleted` audit events remain authoritative. New user-API calls record the authenticated user ID, service ID, forward ID, action, and revision, without logging bearer tokens, idempotency keys, full targets, request bodies, or client configuration.
 
-The application enforces a configurable `USER_FORWARD_LIMIT_PER_SERVICE` with a conservative default of 64. HTTP request-rate limiting remains a reverse-proxy deployment control; the application-level quota prevents unbounded persistent resources even if proxy rate limiting is absent.
+The application enforces a configurable `USER_FORWARD_LIMIT_PER_SERVICE` with a conservative default of 64. Service-row serialization prevents concurrent requests with different idempotency keys from exceeding that quota. It also caps all retained forward rows per service with `USER_FORWARD_STORED_LIMIT_PER_SERVICE` (default 512), including soft-deleted rows, so create/delete churn cannot grow forward-owned persistent state without bound. HTTP request-rate limiting remains a reverse-proxy deployment control.
 
 ## Compatibility
 
 - Existing `/api/user/...` routes remain registered.
 - Existing client-config installers are unchanged.
-- Existing Web tenant forms and CSRF protection are unchanged.
+- Existing Web tenant forms remain available with CSRF protection; service-IP target hosts are rendered as server-managed rather than editable fields.
+- Suspended users lose existing Web sessions, and legacy Bearer routes require the active `tenant` role.
 - The existing tenant forward Edit link is corrected to the registered service-scoped route.
 - Tenant Web edit receives the same `allow_manage_forwards` gate as create.
+- Admin plan editing persists an explicit Forward Route allowlist and derives the legacy combination mapping transactionally.
+- Route options exclude packages with no enabled active combination, and client-config reads require both an active forward and active service.
+- Automatic MySQL migration execution is serialized with an advisory lock; statements use the standalone deadlock retry wrapper and public migration errors contain no SQL or driver message.
 - The legacy write routes are marked deprecated in response headers and documentation, but are security-hardened rather than removed.
 - The v1 API is the documented integration surface for new clients.
 

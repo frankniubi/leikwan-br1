@@ -37,6 +37,7 @@ final class FakeStatement extends PDOStatement
 {
     /** @var array<int, ?PDOException> queued exceptions per execute() call (null = success) */
     private array $script;
+    private mixed $onFailure = null;
     public int $executeCalls = 0;
 
     /** @param array<int, ?PDOException> $script */
@@ -51,10 +52,15 @@ final class FakeStatement extends PDOStatement
         $this->executeCalls++;
         $exception = $this->script[$index] ?? null;
         if ($exception instanceof PDOException) {
+            if (is_callable($this->onFailure)) {
+                ($this->onFailure)();
+            }
             throw $exception;
         }
         return true;
     }
+
+    public function setOnFailure(callable $callback): void { $this->onFailure = $callback; }
 
     public function rowCount(): int
     {
@@ -68,6 +74,10 @@ final class FakeStatement extends PDOStatement
 final class FakePdo extends PDO
 {
     public int $prepareCalls = 0;
+    public int $beginCalls = 0;
+    public int $commitCalls = 0;
+    public int $rollbackCalls = 0;
+    private bool $active = false;
 
     public function __construct(private FakeStatement $statement)
     {
@@ -79,6 +89,12 @@ final class FakePdo extends PDO
         $this->prepareCalls++;
         return $this->statement;
     }
+
+    public function beginTransaction(): bool { $this->active = true; $this->beginCalls++; return true; }
+    public function inTransaction(): bool { return $this->active; }
+    public function commit(): bool { $this->active = false; $this->commitCalls++; return true; }
+    public function rollBack(): bool { $this->active = false; $this->rollbackCalls++; return true; }
+    public function simulateServerRollback(): void { $this->active = false; }
 }
 
 function makeDeadlock(): PDOException
@@ -155,6 +171,25 @@ if (!$threw3) {
 }
 if ($stmt3->executeCalls !== 1) {
     fail("non-deadlock error must NOT be retried; expected 1 attempt, got {$stmt3->executeCalls}");
+}
+
+// --- Case 4: a deadlock inside a transaction retries the whole callback.
+$stmt4 = new FakeStatement([makeDeadlock(), null]);
+$pdo4 = new FakePdo($stmt4);
+$stmt4->setOnFailure(static fn() => $pdo4->simulateServerRollback());
+$db4 = new Database($config);
+$db4->setPdo($pdo4);
+$callbackCalls = 0;
+$result = $db4->transaction(static function (Database $db) use (&$callbackCalls): string {
+    $callbackCalls++;
+    $db->execute('UPDATE provision_tasks SET status = :s WHERE node_id = :n', ['s' => 'completed', 'n' => 10]);
+    return 'transaction-ok';
+});
+if ($result !== 'transaction-ok' || $callbackCalls !== 2) {
+    fail('deadlock inside a transaction must rerun the complete callback');
+}
+if ($pdo4->beginCalls !== 2 || $pdo4->rollbackCalls !== 0 || $pdo4->commitCalls !== 1) {
+    fail('server-rolled-back deadlock must begin and commit a fresh transaction without retrying one statement');
 }
 
 echo "ok\n";
