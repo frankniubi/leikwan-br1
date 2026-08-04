@@ -513,6 +513,9 @@ class OrphanCleanupBehaviorTests(_AgentFactory):
             "wg-quick@lwsp10n99.service loaded active running\n"
             "wg-quick@lwpdeadbeef.service loaded active running\n"
             "leikwan-wgcf-lws9z9z9z.service loaded active running\n"
+            "leikwan-uot-lws9z9z9z.service loaded active running\n"
+            "leikwan-uot-lwpdeadbeef.service loaded active running\n"
+            "leikwan-uot-lwsp10.service loaded active running\n"
             "wstunnel-svc-9-999-sidecar-selector.service loaded active running\n"
             f"{kept_service}-sidecar-selector.service loaded active running\n"
         )
@@ -547,6 +550,12 @@ class OrphanCleanupBehaviorTests(_AgentFactory):
         # leikwan-wgcf orphan unit stopped/disabled.
         self.assertIn("systemctl stop leikwan-wgcf-lws9z9z9z.service", commands)
         self.assertIn("systemctl disable leikwan-wgcf-lws9z9z9z.service", commands)
+
+        # Unit-only legacy/fallback UoT orphans are removed, but a cohost
+        # point-level shared interface remains owned by the sidecar agent.
+        self.assertIn("systemctl stop leikwan-uot-lws9z9z9z.service", commands)
+        self.assertIn("systemctl stop leikwan-uot-lwpdeadbeef.service", commands)
+        self.assertNotIn("systemctl stop leikwan-uot-lwsp10.service", commands)
 
         # Orphan selector unit (no config on disk) stopped; tracked selector kept.
         self.assertIn("systemctl stop wstunnel-svc-9-999-sidecar-selector.service", commands)
