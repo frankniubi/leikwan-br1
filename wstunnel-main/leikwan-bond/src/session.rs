@@ -375,6 +375,7 @@ struct PendingChunk {
     last_sent_at: Instant,
     last_leg_id: usize,
     transmit_count: u8,
+    write_pending: bool,
 }
 
 struct FinTracker {
@@ -990,6 +991,7 @@ enum TcpTransportEvent {
     LocalWriteCommitted { stream_id: u32, bytes: usize },
     LocalWriteClosed { stream_id: u32 },
     LocalWriteFailed { stream_id: u32, error: String },
+    FrameWritten { leg_id: usize, stream_id: u32, seq: u64 },
     Frame { _leg_id: usize, frame: WireFrame },
     LegClosed { leg_id: usize },
     UpstreamConnected { stream_id: u32, stream: TcpStream },
@@ -1987,6 +1989,11 @@ async fn run_tcp_transport_session(
                             ));
                         }
                     }
+                    TcpTransportEvent::FrameWritten { leg_id, stream_id, seq } => {
+                        if let Some(state) = streams.get_mut(&stream_id) {
+                            mark_transport_chunk_written(&mut state.pending_chunks, leg_id, seq, Instant::now());
+                        }
+                    }
                     TcpTransportEvent::Frame { _leg_id, frame } => {
                         handle_tcp_transport_frame(
                             session_id,
@@ -2687,10 +2694,23 @@ async fn run_tcp_leg_writer<W>(
     W: AsyncWrite + Unpin + Send + 'static,
 {
     while let Some(frame) = rx.recv().await {
+        let data_marker = match &frame {
+            WireFrame::DataC2S { stream_id, seq, .. } | WireFrame::DataS2C { stream_id, seq, .. } => {
+                Some((*stream_id, *seq))
+            }
+            _ => None,
+        };
         if let Err(err) = write_frame(&mut writer, &frame).await {
             debug!("bond tcp leg {} writer closed: {:?}", leg_id, err);
             let _ = event_tx.send(TcpTransportEvent::LegClosed { leg_id });
             return;
+        }
+        if let Some((stream_id, seq)) = data_marker {
+            let _ = event_tx.send(TcpTransportEvent::FrameWritten {
+                leg_id,
+                stream_id,
+                seq,
+            });
         }
     }
     let _ = event_tx.send(TcpTransportEvent::LegClosed { leg_id });
@@ -2837,7 +2857,8 @@ fn flush_tcp_stream_backlogs(
                     payload: payload.clone(),
                     last_sent_at: Instant::now(),
                     last_leg_id: leg_index,
-                    transmit_count: 1,
+                    transmit_count: 0,
+                    write_pending: true,
                 },
             );
             if state.striping_stage != TcpStripingStage::Bulk {
@@ -2922,19 +2943,18 @@ fn retransmit_transport_pending(
             break;
         };
         if send_to_leg(legs, leg_index, role.outbound_data(stream_id, seq, chunk.payload.clone())) {
-            chunk.last_sent_at = now;
             chunk.last_leg_id = leg_index;
-            chunk.transmit_count = chunk.transmit_count.saturating_add(1);
+            chunk.write_pending = true;
             if !bulk_mode {
                 *preferred_leg_id = Some(leg_index);
             }
             debug!(
-                "transport retransmitted data stream={} seq={} bytes={} leg={} count={}",
+                "transport queued retransmit stream={} seq={} bytes={} leg={} next_count={}",
                 stream_id,
                 seq,
                 chunk.payload.len(),
                 leg_index,
-                chunk.transmit_count
+                chunk.transmit_count.saturating_add(1)
             );
         }
     }
@@ -2954,7 +2974,7 @@ fn collect_retransmit_sequences(
     pending
         .iter()
         .filter_map(|(seq, chunk)| {
-            if now.duration_since(chunk.last_sent_at) >= retransmit_after {
+            if !chunk.write_pending && now.duration_since(chunk.last_sent_at) >= retransmit_after {
                 Some(*seq)
             } else {
                 None
@@ -2962,6 +2982,24 @@ fn collect_retransmit_sequences(
         })
         .take(batch_limit)
         .collect()
+}
+
+fn mark_transport_chunk_written(
+    pending: &mut BTreeMap<u64, PendingChunk>,
+    leg_id: usize,
+    seq: u64,
+    written_at: Instant,
+) -> bool {
+    let Some(chunk) = pending.get_mut(&seq) else {
+        return false;
+    };
+    if !chunk.write_pending || chunk.last_leg_id != leg_id {
+        return false;
+    }
+    chunk.write_pending = false;
+    chunk.last_sent_at = written_at;
+    chunk.transmit_count = chunk.transmit_count.saturating_add(1);
+    true
 }
 
 fn release_transport_read_credit(state: &mut TcpStreamState, completed_chunks: usize) -> usize {
@@ -3734,6 +3772,7 @@ fn flush_local_backlog(
                 last_sent_at: Instant::now(),
                 last_leg_id: leg_index,
                 transmit_count: 1,
+                write_pending: false,
             },
         );
         *outbound_next_offset += payload.len() as u64;
@@ -5182,6 +5221,7 @@ fn mark_pending_for_retry(pending: &mut BTreeMap<u64, PendingChunk>, leg_id: usi
     for chunk in pending.values_mut() {
         if chunk.last_leg_id == leg_id {
             chunk.last_sent_at = force_retry;
+            chunk.write_pending = false;
         }
     }
 }
@@ -5499,6 +5539,7 @@ mod tests {
                     last_sent_at: old,
                     last_leg_id: 0,
                     transmit_count: 1,
+                    write_pending: false,
                 },
             );
         }
@@ -5515,6 +5556,107 @@ mod tests {
     }
 
     #[test]
+    fn queued_transport_chunk_waits_for_socket_write_before_retransmit() {
+        let now = Instant::now();
+        let old = now.checked_sub(Duration::from_secs(1)).unwrap();
+        let pending = BTreeMap::from([(
+            0,
+            PendingChunk {
+                payload: Bytes::from_static(b"x"),
+                last_sent_at: old,
+                last_leg_id: 0,
+                transmit_count: 0,
+                write_pending: true,
+            },
+        )]);
+
+        let resend = collect_retransmit_sequences(
+            &pending,
+            now,
+            Duration::from_millis(300),
+            old,
+            8,
+        );
+
+        assert!(resend.is_empty(), "a queued frame has not started its retransmit clock");
+    }
+
+    #[test]
+    fn socket_write_confirmation_starts_transport_retransmit_clock() {
+        let queued_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        let written_at = Instant::now();
+        let mut pending = BTreeMap::from([(
+            128,
+            PendingChunk {
+                payload: Bytes::from_static(b"x"),
+                last_sent_at: queued_at,
+                last_leg_id: 2,
+                transmit_count: 0,
+                write_pending: true,
+            },
+        )]);
+
+        assert!(mark_transport_chunk_written(&mut pending, 2, 128, written_at));
+        let chunk = pending.get(&128).unwrap();
+        assert!(!chunk.write_pending);
+        assert_eq!(chunk.transmit_count, 1);
+        assert_eq!(chunk.last_sent_at, written_at);
+        assert!(collect_retransmit_sequences(
+            &pending,
+            written_at + Duration::from_millis(299),
+            Duration::from_millis(300),
+            queued_at,
+            8,
+        )
+        .is_empty());
+        assert_eq!(
+            collect_retransmit_sequences(
+                &pending,
+                written_at + Duration::from_millis(300),
+                Duration::from_millis(300),
+                queued_at,
+                8,
+            ),
+            vec![128]
+        );
+    }
+
+    #[tokio::test]
+    async fn tcp_leg_writer_confirms_data_after_socket_write_completes() {
+        let (writer, mut reader) = tokio::io::duplex(64);
+        let (frame_tx, frame_rx) = mpsc::unbounded_channel();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        tokio::spawn(run_tcp_leg_writer(7, writer, frame_rx, event_tx));
+
+        frame_tx
+            .send(WireFrame::DataC2S {
+                stream_id: 9,
+                seq: 128,
+                payload: Bytes::from(vec![0x5a; 4096]),
+            })
+            .unwrap();
+
+        assert!(
+            timeout(Duration::from_millis(20), event_rx.recv()).await.is_err(),
+            "writer confirmation must wait while the socket is backpressured"
+        );
+        let frame = read_frame(&mut reader).await.unwrap();
+        assert!(matches!(frame, WireFrame::DataC2S { stream_id: 9, seq: 128, .. }));
+        let event = timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event,
+            TcpTransportEvent::FrameWritten {
+                leg_id: 7,
+                stream_id: 9,
+                seq: 128,
+            }
+        ));
+    }
+
+    #[test]
     fn retransmit_candidates_cap_to_oldest_gap_chunks() {
         let now = Instant::now();
         let old = now.checked_sub(Duration::from_secs(1)).unwrap();
@@ -5527,6 +5669,7 @@ mod tests {
                     last_sent_at: old,
                     last_leg_id: 0,
                     transmit_count: 1,
+                    write_pending: false,
                 },
             );
         }
@@ -5741,6 +5884,7 @@ mod tests {
                 last_sent_at: Instant::now(),
                 last_leg_id: 0,
                 transmit_count: 1,
+                write_pending: false,
             },
         );
 
@@ -5986,6 +6130,7 @@ mod tests {
                 last_sent_at: Instant::now(),
                 last_leg_id: 0,
                 transmit_count: 1,
+                write_pending: false,
             },
         );
         let mut legs = vec![fake_leg(0, 10, 0, 20)];
@@ -6198,6 +6343,7 @@ mod tests {
                 last_sent_at: Instant::now(),
                 last_leg_id: 0,
                 transmit_count: 1,
+                write_pending: false,
             },
         );
 
