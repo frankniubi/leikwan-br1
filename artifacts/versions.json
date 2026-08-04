@@ -186,12 +186,12 @@
     "size_bytes": 55652648
   },
   "install_forward_runtime": {
-    "version": "2026.08.04.1",
+    "version": "2026.08.04.2",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "ff70c11c2969fcd8b37b8d19ec6bc03022bd5790c9902ab8c413f57cf5df52a6",
-    "size_bytes": 73241,
-    "size": 73241
+    "sha256": "95b9da49c3d52f35e0eb40962373307840bc5825e4870c31a152227eb8189684",
+    "size_bytes": 73001,
+    "size": 73001
   },
   "tcp_race_runtime": {
     "version": "2026.07.27.1",
