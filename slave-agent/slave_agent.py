@@ -6524,7 +6524,7 @@ WantedBy=multi-user.target
 
         if shutil.which("systemctl"):
             unit_result = run_command(
-                "systemctl list-units 'wg-quick@lws*' 'wg-quick@lwp*' 'leikwan-wgcf-lws*' 'leikwan-wgcf-lwp*' 'leikwan-gost-lws*' 'leikwan-gost-lwp*' 'leikwan-lguot-lws*' 'leikwan-lguot-lwp*' '*-sidecar-selector.service' --type=service --all --no-legend --no-pager",
+                "systemctl list-units 'wg-quick@lws*' 'wg-quick@lwp*' 'leikwan-wgcf-lws*' 'leikwan-wgcf-lwp*' 'leikwan-uot-lws*' 'leikwan-uot-lwp*' 'leikwan-gost-lws*' 'leikwan-gost-lwp*' 'leikwan-lguot-lws*' 'leikwan-lguot-lwp*' '*-sidecar-selector.service' --type=service --all --no-legend --no-pager",
                 check=False,
             )
             for line in str(getattr(unit_result, "stdout", "") or "").splitlines():
@@ -6533,6 +6533,7 @@ WantedBy=multi-user.target
                     continue
                 wg_match = re.match(r"^wg-quick@(lw[sp][^.]+)\.service$", unit_name)
                 cf_match = re.match(r"^leikwan-wgcf-(lw[sp][^.]+)\.service$", unit_name)
+                uot_match = re.match(r"^leikwan-uot-(lw[sp][^.]+)\.service$", unit_name)
                 gost_match = re.match(r"^leikwan-gost-(lw[sp][^.]+)\.service$", unit_name)
                 lguot_match = re.match(r"^leikwan-lguot-(lw[sp][^.]+)\.service$", unit_name)
                 selector_match = re.match(r"^(.+)-sidecar-selector\.service$", unit_name)
@@ -6544,6 +6545,12 @@ WantedBy=multi-user.target
                         run_command(f"systemctl reset-failed {unit_name}", check=False)
                 elif cf_match is not None:
                     iface = cf_match.group(1)
+                    if not is_sidecar_owned_shared_interface(iface) and iface not in active_interfaces:
+                        run_command(f"systemctl stop {unit_name}", check=False)
+                        run_command(f"systemctl disable {unit_name}", check=False)
+                        run_command(f"systemctl reset-failed {unit_name}", check=False)
+                elif uot_match is not None:
+                    iface = uot_match.group(1)
                     if not is_sidecar_owned_shared_interface(iface) and iface not in active_interfaces:
                         run_command(f"systemctl stop {unit_name}", check=False)
                         run_command(f"systemctl disable {unit_name}", check=False)
