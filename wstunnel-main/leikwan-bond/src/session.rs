@@ -37,7 +37,7 @@ const MIN_TRANSPORT_RESUME_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_TRANSPORT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CLIENT_TCP_LEG_JOIN_GRACE: Duration = Duration::from_millis(600);
 const TRANSPORT_STREAM_CLOSE_GRACE: Duration = Duration::from_secs(2);
-const MIN_TRANSPORT_LEG_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+const MIN_TRANSPORT_LEG_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const LEG_WRITE_QUEUE_CAPACITY: usize = 16;
 const MAX_TCP_RETRANSMIT_BATCH: usize = 8;
 const MAX_RECENT_HEALTH_EVENTS: usize = 20;
@@ -5534,15 +5534,15 @@ mod tests {
     }
 
     #[test]
-    fn transport_leg_write_timeout_tracks_rto_with_a_one_second_floor() {
+    fn transport_leg_write_timeout_tolerates_multi_second_backpressure() {
         let mut config = test_config();
-        assert_eq!(transport_leg_write_timeout(&config), Duration::from_millis(1200));
+        assert_eq!(transport_leg_write_timeout(&config), Duration::from_secs(30));
 
         config.retransmit_after = Duration::from_millis(100);
-        assert_eq!(transport_leg_write_timeout(&config), Duration::from_secs(1));
+        assert_eq!(transport_leg_write_timeout(&config), Duration::from_secs(30));
 
-        config.retransmit_after = Duration::from_millis(500);
-        assert_eq!(transport_leg_write_timeout(&config), Duration::from_secs(2));
+        config.retransmit_after = Duration::from_secs(10);
+        assert_eq!(transport_leg_write_timeout(&config), Duration::from_secs(40));
     }
 
     #[test]
