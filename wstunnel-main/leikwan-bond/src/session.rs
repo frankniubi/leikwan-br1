@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket, lookup_host};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, interval, sleep, timeout};
 use log::{debug, info, warn};
@@ -40,6 +40,13 @@ const TRANSPORT_STREAM_CLOSE_GRACE: Duration = Duration::from_secs(2);
 const MAX_TCP_RETRANSMIT_BATCH: usize = 8;
 const MAX_RECENT_HEALTH_EVENTS: usize = 20;
 const SNAPSHOT_WRITE_INTERVAL: Duration = Duration::from_millis(250);
+const DEFAULT_READ_CREDIT_CHUNKS: usize = 128;
+
+fn read_credit_chunks(config: &SessionConfig) -> usize {
+    let chunk_size = config.chunk_size.max(1024);
+    let window = config.max_window_bytes.max(chunk_size);
+    window.saturating_add(chunk_size - 1) / chunk_size
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -973,7 +980,11 @@ enum ClientTransportCommand {
 }
 
 enum TcpTransportEvent {
-    LocalChunk { stream_id: u32, payload: Bytes },
+    LocalChunk {
+        stream_id: u32,
+        payload: Bytes,
+        read_credit: Arc<Semaphore>,
+    },
     LocalEof { stream_id: u32 },
     LocalReadFailed { stream_id: u32, error: String },
     LocalWriteCommitted { stream_id: u32, bytes: usize },
@@ -1008,6 +1019,8 @@ struct TcpStreamState {
     close_deadline_at: Option<Instant>,
     local_write_tx: mpsc::Sender<LocalWriteCommand>,
     close_tx: watch::Sender<bool>,
+    read_credit: Arc<Semaphore>,
+    read_credit_in_use: usize,
 }
 
 impl TcpStreamState {
@@ -1020,6 +1033,22 @@ impl TcpStreamState {
         close_tx: watch::Sender<bool>,
         opened: bool,
         strategy: ClientStrategy,
+    ) -> Self {
+        Self::new_with_strategy_and_read_credit(
+            local_write_tx,
+            close_tx,
+            opened,
+            strategy,
+            Arc::new(Semaphore::new(DEFAULT_READ_CREDIT_CHUNKS)),
+        )
+    }
+
+    fn new_with_strategy_and_read_credit(
+        local_write_tx: mpsc::Sender<LocalWriteCommand>,
+        close_tx: watch::Sender<bool>,
+        opened: bool,
+        strategy: ClientStrategy,
+        read_credit: Arc<Semaphore>,
     ) -> Self {
         Self {
             strategy,
@@ -1044,6 +1073,8 @@ impl TcpStreamState {
             close_deadline_at: None,
             local_write_tx,
             close_tx,
+            read_credit,
+            read_credit_in_use: 0,
         }
     }
 
@@ -1133,6 +1164,14 @@ fn close_timeout_failure_scope(state: &TcpStreamState) -> TcpFailureScope {
         TcpFailureScope::LocalEndpoint
     } else {
         TcpFailureScope::Transport
+    }
+}
+
+fn stream_reset_failure_scope(reason: &str) -> TcpFailureScope {
+    if reason == "unknown_stream" {
+        TcpFailureScope::Transport
+    } else {
+        TcpFailureScope::LocalEndpoint
     }
 }
 
@@ -1657,6 +1696,7 @@ async fn run_tcp_transport_session(
     let mut no_leg_deadline = None::<Instant>;
     let resume_timeout = transport_resume_timeout(&config);
     let idle_timeout = transport_idle_timeout(&config);
+    let read_credit = Arc::new(Semaphore::new(read_credit_chunks(&config)));
 
     refresh_active_spec_snapshot(&legs, active_specs_tx.as_ref());
 
@@ -1710,11 +1750,12 @@ async fn run_tcp_transport_session(
                         let (local_read, local_write) = local_stream.into_split();
                         let (local_write_tx, local_write_rx) = mpsc::channel(64);
                         let (close_tx, close_rx) = watch::channel(false);
-                        let mut state = TcpStreamState::new_with_strategy(
+                        let mut state = TcpStreamState::new_with_strategy_and_read_credit(
                             local_write_tx.clone(),
                             close_tx.clone(),
                             false,
                             strategy,
+                            read_credit.clone(),
                         );
                         state.preferred_leg_id = select_strategy_affinity_leg(
                             strategy,
@@ -1724,7 +1765,14 @@ async fn run_tcp_transport_session(
                         );
                         streams.insert(stream_id, state);
                         debug!("transport {} attached local stream {}", session_id, stream_id);
-                        spawn_transport_stream_reader(stream_id, local_read, config.chunk_size, close_rx, event_tx.clone());
+                        spawn_transport_stream_reader(
+                            stream_id,
+                            local_read,
+                            config.chunk_size,
+                            close_rx,
+                            event_tx.clone(),
+                            read_credit.clone(),
+                        );
                         spawn_transport_stream_writer(stream_id, local_write, local_write_rx, event_tx.clone());
                         if let Some(state) = streams.get_mut(&stream_id) {
                             if send_stream_control_frame(
@@ -1757,7 +1805,7 @@ async fn run_tcp_transport_session(
                 };
                 last_activity = Instant::now();
                 match event {
-                    TcpTransportEvent::LocalChunk { stream_id, payload } => {
+                    TcpTransportEvent::LocalChunk { stream_id, payload, read_credit } => {
                         if let Some(state) = streams.get_mut(&stream_id) {
                             debug!(
                                 "transport {} queued local chunk stream={} bytes={}",
@@ -1765,7 +1813,10 @@ async fn run_tcp_transport_session(
                                 stream_id,
                                 payload.len()
                             );
+                            state.read_credit_in_use = state.read_credit_in_use.saturating_add(1);
                             state.local_backlog.push_back(payload);
+                        } else {
+                            read_credit.add_permits(1);
                         }
                     }
                     TcpTransportEvent::LocalEof { stream_id } => {
@@ -1977,8 +2028,24 @@ async fn run_tcp_transport_session(
                         let (upstream_read, upstream_write) = stream.into_split();
                         let (local_write_tx, local_write_rx) = mpsc::channel(64);
                         let (close_tx, close_rx) = watch::channel(false);
-                        streams.insert(stream_id, TcpStreamState::new(local_write_tx.clone(), close_tx.clone(), true));
-                        spawn_transport_stream_reader(stream_id, upstream_read, config.chunk_size, close_rx, event_tx.clone());
+                        streams.insert(
+                            stream_id,
+                            TcpStreamState::new_with_strategy_and_read_credit(
+                                local_write_tx.clone(),
+                                close_tx.clone(),
+                                true,
+                                ClientStrategy::SpeedMax,
+                                read_credit.clone(),
+                            ),
+                        );
+                        spawn_transport_stream_reader(
+                            stream_id,
+                            upstream_read,
+                            config.chunk_size,
+                            close_rx,
+                            event_tx.clone(),
+                            read_credit.clone(),
+                        );
                         spawn_transport_stream_writer(stream_id, upstream_write, local_write_rx, event_tx.clone());
                         let _ = send_control_frame(&mut legs, &mut round_robin_cursor, WireFrame::StreamOpenAck { stream_id });
                         debug!("transport {} sent stream-open-ack for stream {}", session_id, stream_id);
@@ -2142,7 +2209,9 @@ async fn handle_tcp_transport_frame(
         if *stream_id == 0 {
             return Err(anyhow!("bond remote reset: {}", reason));
         }
-        penalize_tcp_leg(legs, leg_id, TcpPenalty::RecvReset);
+        if stream_reset_failure_scope(reason) == TcpFailureScope::Transport {
+            penalize_tcp_leg(legs, leg_id, TcpPenalty::RecvReset);
+        }
         log_transport_lifecycle(
             session_id,
             "recv_reset",
@@ -2229,7 +2298,8 @@ async fn handle_tcp_transport_frame(
             {
                 state.preferred_leg_id = Some(leg_id);
             }
-            apply_ack(&mut state.pending_chunks, legs, ack);
+            let completed_chunks = apply_ack(&mut state.pending_chunks, legs, ack);
+            release_transport_read_credit(state, completed_chunks);
             if ack > state.last_ack_offset {
                 state.last_ack_offset = ack;
                 state.last_ack_progress_at = Instant::now();
@@ -2446,38 +2516,62 @@ fn spawn_transport_stream_reader<R>(
     chunk_size: usize,
     mut close_rx: watch::Receiver<bool>,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
+    read_credit: Arc<Semaphore>,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
         let mut buf = vec![0u8; chunk_size.max(1024)];
         loop {
-            tokio::select! {
+            let permit = tokio::select! {
                 changed = close_rx.changed() => {
                     if changed.is_err() || *close_rx.borrow() {
                         return;
                     }
+                    continue;
                 }
-                read = reader.read(&mut buf) => {
-                    match read {
-                        Ok(0) => {
-                            let _ = event_tx.send(TcpTransportEvent::LocalEof { stream_id });
-                            return;
-                        }
-                        Ok(read_len) => {
-                            let _ = event_tx.send(TcpTransportEvent::LocalChunk {
-                                stream_id,
-                                payload: Bytes::copy_from_slice(&buf[..read_len]),
-                            });
-                        }
-                        Err(err) => {
-                            let _ = event_tx.send(TcpTransportEvent::LocalReadFailed {
-                                stream_id,
-                                error: err.to_string(),
-                            });
-                            return;
-                        }
+                permit = read_credit.clone().acquire_owned() => {
+                    match permit {
+                        Ok(permit) => permit,
+                        Err(_) => return,
                     }
+                }
+            };
+
+            let read = tokio::select! {
+                changed = close_rx.changed() => {
+                    if changed.is_err() || *close_rx.borrow() {
+                        return;
+                    }
+                    continue;
+                }
+                read = reader.read(&mut buf) => read,
+            };
+
+            match read {
+                Ok(0) => {
+                    let _ = event_tx.send(TcpTransportEvent::LocalEof { stream_id });
+                    return;
+                }
+                Ok(read_len) => {
+                    if event_tx
+                        .send(TcpTransportEvent::LocalChunk {
+                            stream_id,
+                            payload: Bytes::copy_from_slice(&buf[..read_len]),
+                            read_credit: read_credit.clone(),
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    permit.forget();
+                }
+                Err(err) => {
+                    let _ = event_tx.send(TcpTransportEvent::LocalReadFailed {
+                        stream_id,
+                        error: err.to_string(),
+                    });
+                    return;
                 }
             }
         }
@@ -2875,13 +2969,24 @@ fn collect_retransmit_sequences(
         .collect()
 }
 
+fn release_transport_read_credit(state: &mut TcpStreamState, completed_chunks: usize) -> usize {
+    let released = completed_chunks.min(state.read_credit_in_use);
+    if released > 0 {
+        state.read_credit_in_use -= released;
+        state.read_credit.add_permits(released);
+    }
+    released
+}
+
 fn close_transport_stream(
     stream_id: u32,
     streams: &mut HashMap<u32, TcpStreamState>,
     closed_streams: &mut HashSet<u32>,
 ) {
-    if let Some(state) = streams.remove(&stream_id) {
+    if let Some(mut state) = streams.remove(&stream_id) {
         let _ = state.close_tx.send(true);
+        let outstanding_read_credit = state.read_credit_in_use;
+        release_transport_read_credit(&mut state, outstanding_read_credit);
         let writer_shutdown = state.inbound.writer_shutdown;
         let local_write_tx = state.local_write_tx;
         if !writer_shutdown {
@@ -3957,7 +4062,7 @@ fn maybe_write_leg_health_snapshot(
     *last_written_at = Some(Instant::now());
 }
 
-fn apply_ack(pending: &mut BTreeMap<u64, PendingChunk>, legs: &mut [LegState], ack: u64) {
+fn apply_ack(pending: &mut BTreeMap<u64, PendingChunk>, legs: &mut [LegState], ack: u64) -> usize {
     let now = Instant::now();
     let completed: Vec<u64> = pending
         .iter()
@@ -3970,6 +4075,7 @@ fn apply_ack(pending: &mut BTreeMap<u64, PendingChunk>, legs: &mut [LegState], a
         })
         .collect();
 
+    let completed_count = completed.len();
     for seq in completed {
         if let Some(chunk) = pending.remove(&seq) {
             if chunk.transmit_count <= 1 {
@@ -3978,6 +4084,7 @@ fn apply_ack(pending: &mut BTreeMap<u64, PendingChunk>, legs: &mut [LegState], a
             credit_tcp_delivery(legs, chunk.last_leg_id, chunk.payload.len());
         }
     }
+    completed_count
 }
 
 #[allow(dead_code)]
@@ -5785,6 +5892,105 @@ mod tests {
 
         assert!(arm_transport_stream_close_deadline(&mut state));
         assert!(!arm_transport_stream_close_deadline(&mut state));
+    }
+
+    #[tokio::test]
+    async fn transport_reader_waits_for_read_credit_before_reading_ahead() {
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (close_tx, close_rx) = watch::channel(false);
+        let read_credit = Arc::new(tokio::sync::Semaphore::new(1));
+
+        spawn_transport_stream_reader(
+            7,
+            reader,
+            1024,
+            close_rx,
+            event_tx,
+            read_credit.clone(),
+        );
+        writer.write_all(&vec![b'x'; 2048]).await.unwrap();
+
+        let first = timeout(Duration::from_millis(200), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            first,
+            TcpTransportEvent::LocalChunk { stream_id: 7, ref payload, .. } if payload.len() == 1024
+        ));
+        assert!(timeout(Duration::from_millis(50), event_rx.recv()).await.is_err());
+
+        read_credit.add_permits(1);
+        let second = timeout(Duration::from_millis(200), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            second,
+            TcpTransportEvent::LocalChunk { stream_id: 7, ref payload, .. } if payload.len() == 1024
+        ));
+        let _ = close_tx.send(true);
+    }
+
+    #[tokio::test]
+    async fn ack_and_stream_close_return_transport_read_credit() {
+        let (tx, _rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let read_credit = Arc::new(Semaphore::new(0));
+        let mut state = TcpStreamState::new_with_strategy_and_read_credit(
+            tx,
+            close_tx,
+            true,
+            ClientStrategy::SpeedMax,
+            read_credit.clone(),
+        );
+        state.read_credit_in_use = 1;
+        state.pending_chunks.insert(
+            0,
+            PendingChunk {
+                payload: Bytes::from_static(b"data"),
+                last_sent_at: Instant::now(),
+                last_leg_id: 0,
+                transmit_count: 1,
+            },
+        );
+        let mut legs = vec![fake_leg(0, 10, 0, 20)];
+        let completed = apply_ack(&mut state.pending_chunks, &mut legs, 4);
+
+        assert_eq!(release_transport_read_credit(&mut state, completed), 1);
+        assert_eq!(state.read_credit_in_use, 0);
+        assert_eq!(read_credit.available_permits(), 1);
+
+        let (tx, _rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let close_credit = Arc::new(Semaphore::new(0));
+        let mut closing = TcpStreamState::new_with_strategy_and_read_credit(
+            tx,
+            close_tx,
+            true,
+            ClientStrategy::SpeedMax,
+            close_credit.clone(),
+        );
+        closing.read_credit_in_use = 2;
+        let mut streams = HashMap::from([(9, closing)]);
+        let mut closed_streams = HashSet::new();
+        close_transport_stream(9, &mut streams, &mut closed_streams);
+
+        assert_eq!(close_credit.available_permits(), 2);
+        assert!(closed_streams.contains(&9));
+    }
+
+    #[test]
+    fn endpoint_stream_resets_do_not_penalize_transport_legs() {
+        assert_eq!(stream_reset_failure_scope("local_read_failed"), TcpFailureScope::LocalEndpoint);
+        assert_eq!(stream_reset_failure_scope("local_write_failed"), TcpFailureScope::LocalEndpoint);
+        assert_eq!(stream_reset_failure_scope("close_timeout"), TcpFailureScope::LocalEndpoint);
+        assert_eq!(
+            stream_reset_failure_scope("failed to connect upstream target"),
+            TcpFailureScope::LocalEndpoint
+        );
+        assert_eq!(stream_reset_failure_scope("unknown_stream"), TcpFailureScope::Transport);
     }
 
     #[test]
