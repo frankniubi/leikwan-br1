@@ -44,7 +44,10 @@ const DEFAULT_READ_CREDIT_CHUNKS: usize = 128;
 
 fn read_credit_chunks(config: &SessionConfig) -> usize {
     let chunk_size = config.chunk_size.max(1024);
-    let window = config.max_window_bytes.max(chunk_size);
+    let window = config
+        .latency_guard_bytes
+        .min(config.max_window_bytes)
+        .max(chunk_size);
     window.saturating_add(chunk_size - 1) / chunk_size
 }
 
@@ -5991,6 +5994,11 @@ mod tests {
             TcpFailureScope::LocalEndpoint
         );
         assert_eq!(stream_reset_failure_scope("unknown_stream"), TcpFailureScope::Transport);
+    }
+
+    #[test]
+    fn transport_read_credit_uses_latency_guard_instead_of_full_retransmit_window() {
+        assert_eq!(read_credit_chunks(&test_config()), 2);
     }
 
     #[test]
