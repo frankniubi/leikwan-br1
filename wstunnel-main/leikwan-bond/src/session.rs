@@ -344,7 +344,7 @@ enum LocalWriteCommand {
 #[derive(Clone)]
 struct LegState {
     id: usize,
-    sender: mpsc::UnboundedSender<WireFrame>,
+    sender: Option<mpsc::UnboundedSender<WireFrame>>,
     active: bool,
     inflight_bytes: usize,
     transport: LegTransport,
@@ -2538,7 +2538,7 @@ fn spawn_tcp_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSend
     tokio::spawn(run_tcp_leg_reader(leg_id, reader, event_tx));
     LegState {
         id: leg_id,
-        sender: tx,
+        sender: Some(tx),
         active: true,
         inflight_bytes: 0,
         transport,
@@ -3460,7 +3460,7 @@ fn spawn_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<S
     tokio::spawn(run_leg_reader(leg_id, reader, event_tx));
     LegState {
         id: leg_id,
-        sender: tx,
+        sender: Some(tx),
         active: true,
         inflight_bytes: 0,
         transport,
@@ -5022,10 +5022,14 @@ fn send_to_leg(legs: &mut [LegState], leg_index: usize, frame: WireFrame) -> boo
     if !leg.active {
         return false;
     }
-    match leg.sender.send(frame) {
+    let Some(sender) = leg.sender.as_ref() else {
+        return false;
+    };
+    match sender.send(frame) {
         Ok(()) => true,
         Err(_) => {
             leg.active = false;
+            leg.sender.take();
             false
         }
     }
@@ -5049,6 +5053,7 @@ fn recompute_inflight(legs: &mut [LegState], pending: &BTreeMap<u64, PendingChun
 fn mark_leg_inactive(legs: &mut [LegState], leg_id: usize) {
     if let Some(leg) = legs.get_mut(leg_id) {
         leg.active = false;
+        leg.sender.take();
         leg.inflight_bytes = 0;
         leg.cooldown_until = Some(Instant::now());
         leg.penalty_count = leg.penalty_count.saturating_add(1);
@@ -5097,7 +5102,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         LegState {
             id,
-            sender: tx,
+            sender: Some(tx),
             active: true,
             inflight_bytes,
             transport: LegTransport::Tcp,
@@ -5147,6 +5152,21 @@ mod tests {
     #[test]
     fn default_leg_cooldown_is_extended_to_thirty_minutes() {
         assert_eq!(test_config().leg_cooldown, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn marking_leg_inactive_drops_writer_sender() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut leg = fake_leg(0, 10, 0, 20);
+        leg.sender = Some(tx);
+        let mut legs = vec![leg];
+
+        mark_leg_inactive(&mut legs, 0);
+
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]
@@ -5616,7 +5636,7 @@ mod tests {
         let (leg_tx, _leg_rx) = mpsc::unbounded_channel();
         let mut legs = vec![LegState {
             id: 0,
-            sender: leg_tx,
+            sender: Some(leg_tx),
             active: true,
             inflight_bytes: 0,
             transport: LegTransport::Tcp,
