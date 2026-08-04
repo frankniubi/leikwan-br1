@@ -103,6 +103,12 @@ namespace Leikwan\Master\Database {
             if (str_contains($normalized, 'FROM cf_location_group_cidrs')) {
                 return $this->tables['cf_location_group_cidrs'] ?? [];
             }
+            if (str_contains($normalized, 'SELECT id FROM nodes ORDER BY id ASC')) {
+                return array_map(
+                    static fn(array $row): array => ['id' => (int) ($row['id'] ?? 0)],
+                    $this->tables['nodes'] ?? []
+                );
+            }
             return [];
         }
 
@@ -174,7 +180,7 @@ namespace {
     if ($envPath === false) {
         fail('failed to create temp env');
     }
-    file_put_contents($envPath, "DEFAULT_TLS_CERT_REF=default-edge-cert\nBOND_TOKEN_SECRET=test-token-secret\nMPTCP_SLAVE_PRECONNECT=true\n");
+    file_put_contents($envPath, "DEFAULT_TLS_CERT_REF=default-edge-cert\nBOND_TOKEN_SECRET=test-token-secret\nMPTCP_SLAVE_PRECONNECT=true\nSTATIC_SIDECAR_SHARED_WG_POINT_IDS=10\n");
 
     $db = new Database();
     $db->seed('services', [['id' => 6, 'status' => 'active', 'client_token' => 'service-token']]);
@@ -463,6 +469,91 @@ namespace {
         if ((int) ($candidate['sidecar_port'] ?? 0) !== 14969) {
             fail('mptcp selector candidate must connect to sidecar mptcp service port 14969');
         }
+    }
+
+    $db->seed('sidecar_points', [[
+        'id' => 10,
+        'name' => 'yt-hk-a',
+        'sidecar_host' => 'hk-sidecar.example',
+        'listen_port' => 18501,
+        'bond_listen_port' => 18501,
+        'mptcp_listen_port' => 18502,
+        'cf_listen_port' => 18510,
+        'agent_config_json' => json_encode([
+            'wireguard_public_key' => 'sidecar10-pub',
+            'wireguard_listen_port' => 18502,
+            'wireguard_port_range_end' => 18509,
+        ], JSON_UNESCAPED_SLASHES),
+    ]]);
+    $db->seed('nodes', [[
+        'id' => 2,
+        'group_id' => 10,
+        'name' => 'sha-tencent-2',
+        'status' => 'active',
+        'public_ip' => '111.231.3.220',
+        'agent_version' => '2026.08.04.1',
+        'agent_config_json' => json_encode(['wireguard_public_key' => 'slave2-pub'], JSON_UNESCAPED_SLASHES),
+    ]]);
+    $db->seed('forward_combinations', [[
+        'id' => 13,
+        'name' => 'sha-tencent-cnix-hkg',
+        'tenant_label' => 'HK',
+        'node_group_key' => 'sha-tencent',
+        'backend_mode' => 'current_mode',
+        'sidecar_point_id' => 10,
+        'client_mode' => 'bond',
+        'runtime_preference' => 'single',
+        'helper_group_cap' => 4,
+        'bond_ingress_mode' => 'plain_tcp_mux',
+        'is_active' => 1,
+        'sort_order' => 10,
+    ]]);
+    $db->seed('forward_combination_slaves', [[
+        'id' => 1,
+        'forward_combination_id' => 13,
+        'node_id' => 2,
+        'selection_kind' => 'admin_pin',
+        'sort_order' => 10,
+        'is_active' => 1,
+    ]]);
+    $sharedForward = $forward;
+    $sharedForward['id'] = 80;
+    $sharedForward['forward_combination_id'] = 13;
+    $sharedForward['bond_sidecar_point_id'] = 10;
+    $sharedForward['bond_remote_host'] = 'hk-sidecar.example';
+    $sharedForward['bond_remote_port'] = 18501;
+    $sharedForward['target_host'] = 'v4-hkt-b.mcbar.cc';
+    $sharedForward['target_port'] = 5201;
+    $sharedNode = $db->fetchOne('SELECT * FROM nodes WHERE id = :id LIMIT 1', ['id' => 2]);
+    $sharedPayload = call_private($service, 'publishTaskPayloadForForward', $sharedForward, $sharedNode, 580);
+    $sharedUplink = $sharedPayload['sidecar_uplink'] ?? null;
+    if (!is_array($sharedUplink) || ($sharedUplink['lane'] ?? '') !== 'shared') {
+        fail('shared point publish payload must select the canonical shared uplink');
+    }
+    $sharedRelayTarget = (string) ($sharedUplink['relay_target'] ?? '');
+    if (!str_starts_with($sharedRelayTarget, '10.240.') || !str_ends_with($sharedRelayTarget, ':18501')) {
+        fail('shared point publish payload must target the private WG relay, got ' . var_export($sharedRelayTarget, true));
+    }
+    if (($sharedPayload['target'] ?? '') !== $sharedRelayTarget) {
+        fail('shared point publish target must use the private WG relay_target');
+    }
+    $validSharedManagement = $service->slaveSidecarUplinkManagementForPoint(10);
+    if (($validSharedManagement['authoritative'] ?? false) !== true || count($validSharedManagement['uplinks'] ?? []) !== 1) {
+        fail('valid shared point management must be authoritative with one peer');
+    }
+    $db->seed('sidecar_points', [[
+        'id' => 10,
+        'name' => 'yt-hk-a',
+        'sidecar_host' => 'hk-sidecar.example',
+        'listen_port' => 18501,
+        'bond_listen_port' => 18501,
+        'mptcp_listen_port' => 18502,
+        'cf_listen_port' => 18510,
+        'agent_config_json' => json_encode(['wireguard_public_key' => 'sidecar10-pub'], JSON_UNESCAPED_SLASHES),
+    ]]);
+    $invalidSharedManagement = $service->slaveSidecarUplinkManagementForPoint(10);
+    if (($invalidSharedManagement['authoritative'] ?? true) !== false) {
+        fail('invalid shared point management must be non-authoritative so agents preserve the active interface');
     }
 
     echo "ok\n";

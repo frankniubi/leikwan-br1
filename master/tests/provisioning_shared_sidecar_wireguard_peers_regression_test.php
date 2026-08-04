@@ -26,6 +26,12 @@ namespace Leikwan\Master\Database {
 
         public function fetchAll(string $sql, array $params = []): array
         {
+            if (str_contains($sql, 'SELECT id FROM nodes ORDER BY id ASC')) {
+                return array_map(
+                    static fn(array $row): array => ['id' => (int) ($row['id'] ?? 0)],
+                    $this->tables['nodes'] ?? []
+                );
+            }
             return [];
         }
 
@@ -112,6 +118,10 @@ namespace {
 
     $db = new Database();
     $db->seed('app_settings', []);
+    $db->seed('nodes', [
+        ['id' => 44],
+        ['id' => 129],
+    ]);
     $service = new ProvisioningService(new Config($envPath), $db);
 
     $combination = [
@@ -146,11 +156,36 @@ namespace {
     assert_same(18502, $pairs[0]['sidecar']['listen_port'] ?? null, 'sidecar must keep the persisted WG listen port');
     assert_same(18502, $pairs[0]['slave']['sidecar_endpoint_port'] ?? null, 'slave must dial the shared WG listen port');
 
+    $missingExplicitPort = $combination;
+    $missingExplicitPort['sidecar_agent_config_json'] = json_encode([
+        'wireguard_public_key' => 'sidecar-public-key',
+        'wireguard_port_range_end' => 18509,
+    ], JSON_UNESCAPED_SLASHES);
+    assert_same(
+        [],
+        call_private($service, 'buildStaticSidecarUplinkPairForNode', $missingExplicitPort, $node),
+        'shared mode must fail closed without an explicit wireguard_listen_port'
+    );
+
     $samePointOtherCombination = $combination;
     $samePointOtherCombination['id'] = 99;
     $repeat = call_private($service, 'buildStaticSidecarUplinkPairForNode', $samePointOtherCombination, $node);
     assert_same($pairs[0]['sidecar']['interface_name'], $repeat[0]['sidecar']['interface_name'] ?? null, 'combination must not change shared interface identity');
     assert_same($pairs[0]['sidecar']['subnet'], $repeat[0]['sidecar']['subnet'] ?? null, 'combination must not change shared subnet identity');
+
+    $node44 = ['id' => 44, 'agent_config_json' => json_encode(['wireguard_public_key' => 'slave-public-key-44'])];
+    $node129 = ['id' => 129, 'agent_config_json' => json_encode(['wireguard_public_key' => 'slave-public-key-129'])];
+    $pointRequest = new ProvisioningService(new Config($envPath), $db);
+    $point44 = call_private($pointRequest, 'buildStaticSidecarUplinkPairForNode', $combination, $node44);
+    $point129 = call_private($pointRequest, 'buildStaticSidecarUplinkPairForNode', $combination, $node129);
+    $nodeRequest = new ProvisioningService(new Config($envPath), $db);
+    $node129Alone = call_private($nodeRequest, 'buildStaticSidecarUplinkPairForNode', $combination, $node129);
+    assert_true(($point44[0]['sidecar']['subnet'] ?? '') !== ($point129[0]['sidecar']['subnet'] ?? ''), 'colliding shared peers must receive distinct subnets');
+    assert_same(
+        $point129[0]['sidecar']['subnet'] ?? null,
+        $node129Alone[0]['sidecar']['subnet'] ?? null,
+        'point and node heartbeat requests must independently derive the same shared subnet'
+    );
 
     $deduped = call_private($service, 'deduplicateStaticSidecarManagementUplinks', [
         $pairs[0]['sidecar'],

@@ -134,6 +134,86 @@ class SidecarStaticSidecarUplinkTests(unittest.TestCase):
 
         self.assertNotIn(mock.call({"interface_name": "lwsp10"}), remove.call_args_list)
 
+    def test_shared_point_rejects_multiple_interface_names_without_cleanup(self):
+        agent = self.make_agent()
+        first = self.shared_uplink(2)
+        conflicting_interface = self.shared_uplink(3)
+        conflicting_interface["interface_name"] = "lwsp10-alt"
+        agent.save_sidecar_uplink_state({
+            "slaves": {
+                "lwsp10": {"interface_name": "lwsp10"},
+                "lws10c13n2p": {"interface_name": "lws10c13n2p"},
+            }
+        })
+
+        with mock.patch.object(agent, "apply_shared_slave_sidecar_interface") as apply_shared:
+            with mock.patch.object(agent, "remove_slave_sidecar_uplink") as remove:
+                agent.apply_management({
+                    "sidecar_uplinks": [first, conflicting_interface],
+                    "bond_runtime": None,
+                    "mptcp_runtime": None,
+                })
+
+        apply_shared.assert_not_called()
+        remove.assert_not_called()
+        state = json.loads(agent.sidecar_uplink_state_path().read_text(encoding="utf-8"))
+        self.assertIn("lwsp10", state.get("slaves", {}))
+        self.assertIn("lws10c13n2p", state.get("slaves", {}))
+
+    def test_shared_restart_failure_restores_previous_configs(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().write_text("private-key\n", encoding="utf-8")
+        peers = [self.shared_uplink(2), self.shared_uplink(3)]
+        state_path = agent.sidecar_uplink_interfaces_dir() / "lwsp10.conf"
+        system_path = agent.state_dir / "system-wireguard" / "lwsp10.conf"
+        state_path.write_text("old-state-config\n", encoding="utf-8")
+        system_path.parent.mkdir(parents=True, exist_ok=True)
+        system_path.write_text("old-system-config\n", encoding="utf-8")
+        restart_attempts = 0
+
+        def fake_run(args, **kwargs):  # noqa: ANN001
+            nonlocal restart_attempts
+            command = list(args)
+            if command[:2] == ["wg-quick", "strip"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if command[:2] == ["systemctl", "restart"]:
+                restart_attempts += 1
+                return SimpleNamespace(returncode=1 if restart_attempts == 1 else 0, stdout="", stderr="restart failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(agent, "sidecar_uplink_system_path", return_value=system_path):
+            with mock.patch.object(sidecar_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+                with mock.patch.object(sidecar_agent_module.subprocess, "run", side_effect=fake_run):
+                    with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                        with self.assertRaises(RuntimeError):
+                            agent.apply_shared_slave_sidecar_interface(peers)
+
+        self.assertEqual("old-state-config\n", state_path.read_text(encoding="utf-8"))
+        self.assertEqual("old-system-config\n", system_path.read_text(encoding="utf-8"))
+        self.assertEqual(2, restart_attempts)
+
+    def test_shared_apply_failure_preserves_legacy_interfaces_for_point(self):
+        agent = self.make_agent()
+        agent.save_sidecar_uplink_state({
+            "slaves": {
+                "lws10c13n2p": {"interface_name": "lws10c13n2p"},
+                "lws10c13n2b": {"interface_name": "lws10c13n2b"},
+            }
+        })
+
+        with mock.patch.object(agent, "apply_shared_slave_sidecar_interface", side_effect=RuntimeError("restart failed")):
+            with mock.patch.object(agent, "remove_slave_sidecar_uplink") as remove:
+                agent.apply_management({
+                    "sidecar_uplinks": [self.shared_uplink(2)],
+                    "bond_runtime": None,
+                    "mptcp_runtime": None,
+                })
+
+        remove.assert_not_called()
+        state = json.loads(agent.sidecar_uplink_state_path().read_text(encoding="utf-8"))
+        self.assertIn("lws10c13n2p", state.get("slaves", {}))
+        self.assertIn("lws10c13n2b", state.get("slaves", {}))
+
     def test_static_lws_state_is_keyed_by_interface_and_cleans_legacy_lwsc(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = pathlib.Path(tmp_dir)

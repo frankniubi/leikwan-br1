@@ -31,8 +31,10 @@ final class ProvisioningService
     private array $staticSidecarUplinkPortRegistry = [];
     /** @var array<int, array<string, int>> */
     private array $staticSidecarLegPortRegistry = [];
-    /** @var array<int, array<string, string>> */
+    /** @var array<int, array<string, int>> */
     private array $staticSidecarSubnetRegistry = [];
+    /** @var array<int, bool> */
+    private array $sharedStaticSidecarSubnetRegistryPrimed = [];
     /** @var array<string, bool> */
     private array $staticSidecarUndersizeReported = [];
     /**
@@ -6558,39 +6560,43 @@ final class ProvisioningService
     }
 
     /**
-     * @return array{uplinks: array<int, array<string, mixed>>}
+     * @return array{uplinks: array<int, array<string, mixed>>, authoritative: bool}
      */
     public function slaveSidecarUplinkManagementForPoint(int $pointId): array
     {
         if ($pointId <= 0) {
-            return ['uplinks' => []];
+            return ['uplinks' => [], 'authoritative' => false];
         }
         $uplinks = [];
 
         foreach ($this->staticSlaveSidecarCombinationsForPoint($pointId) as $combination) {
             foreach ($this->staticRentedSlavesForCombination((int) ($combination['id'] ?? 0)) as $node) {
-                foreach ($this->buildStaticSidecarUplinkPairForNode($combination, $node) as $lane) {
+                $pairs = $this->buildStaticSidecarUplinkPairForNode($combination, $node);
+                if ($this->staticSidecarCombinationUsesSharedWireguardPeers($combination) && count($pairs) !== 1) {
+                    return ['uplinks' => [], 'authoritative' => false];
+                }
+                foreach ($pairs as $lane) {
                     $uplinks[] = $lane['sidecar'];
                 }
             }
         }
 
-        return ['uplinks' => $this->deduplicateStaticSidecarManagementUplinks($uplinks)];
+        return ['uplinks' => $this->deduplicateStaticSidecarManagementUplinks($uplinks), 'authoritative' => true];
     }
 
     /**
-     * @return array{uplinks: array<int, array<string, mixed>>}
+     * @return array{uplinks: array<int, array<string, mixed>>, authoritative: bool}
      */
     public function slaveSidecarUplinkManagementForNode(int $nodeId): array
     {
         if ($nodeId <= 0) {
-            return ['uplinks' => []];
+            return ['uplinks' => [], 'authoritative' => false];
         }
 
         $uplinks = [];
         $node = $this->db->fetchOne('SELECT * FROM nodes WHERE id = :id LIMIT 1', ['id' => $nodeId]);
         if (!is_array($node)) {
-            return ['uplinks' => []];
+            return ['uplinks' => [], 'authoritative' => false];
         }
         foreach ($this->staticSlaveSidecarCombinations() as $combination) {
             $selectedNodeIds = array_map(
@@ -6600,12 +6606,16 @@ final class ProvisioningService
             if (!in_array($nodeId, $selectedNodeIds, true)) {
                 continue;
             }
-            foreach ($this->buildStaticSidecarUplinkPairForNode($combination, $node) as $lane) {
+            $pairs = $this->buildStaticSidecarUplinkPairForNode($combination, $node);
+            if ($this->staticSidecarCombinationUsesSharedWireguardPeers($combination) && count($pairs) !== 1) {
+                return ['uplinks' => [], 'authoritative' => false];
+            }
+            foreach ($pairs as $lane) {
                 $uplinks[] = $lane['slave'];
             }
         }
 
-        return ['uplinks' => $this->deduplicateStaticSidecarManagementUplinks($uplinks)];
+        return ['uplinks' => $this->deduplicateStaticSidecarManagementUplinks($uplinks), 'authoritative' => true];
     }
 
     /**
@@ -6761,6 +6771,9 @@ final class ProvisioningService
         if ($combinationId <= 0 || $pointId <= 0 || $nodeId <= 0) {
             return [];
         }
+        if ($this->staticSidecarUsesSharedWireguardPeers($pointId)) {
+            $this->primeSharedStaticSidecarSubnetRegistryForPoint($pointId);
+        }
 
         $sidecarConfig = $this->decodeJsonAssoc($combination['sidecar_agent_config_json'] ?? null);
         if ($sidecarConfig === [] && isset($combination['agent_config_json'])) {
@@ -6833,8 +6846,9 @@ final class ProvisioningService
             $overlaySidecarIps = array_values(array_unique($overlaySidecarIps));
             $overlayClientIps = array_values(array_unique($overlayClientIps));
         }
-        if ($this->staticSidecarUsesSharedWireguardPeers($pointId) && !$leigodMode && !$cfMode) {
-            if ($sidecarListenPort <= 0) {
+        if ($this->staticSidecarCombinationUsesSharedWireguardPeers($combination)) {
+            $sidecarListenPort = (int) ($sidecarConfig['wireguard_listen_port'] ?? 0);
+            if ($sidecarListenPort <= 0 || $sidecarListenPort > 65535 || $sidecarHost === '') {
                 return [];
             }
             $addresses = $this->allocateStaticSidecarUplinkSubnet($pointId, 0, $nodeId, 'shared');
@@ -6842,6 +6856,9 @@ final class ProvisioningService
                 'listen_port' => (int) ($combination['sidecar_listen_port'] ?? 0),
                 'bond_listen_port' => (int) ($combination['sidecar_bond_listen_port'] ?? 0),
             ]);
+            if ($relayPort <= 0 || $relayPort > 65535) {
+                return [];
+            }
             $base = [
                 'enabled' => true,
                 'mode' => 'static_slave_sidecar',
@@ -7417,8 +7434,12 @@ final class ProvisioningService
             foreach ($routeCombos as $routeCombo) {
                 $routeCombo = $this->hydrateCombinationSidecarFields($routeCombo, (int) ($forward['bond_sidecar_point_id'] ?? 0));
                 foreach ($this->buildStaticSidecarUplinkPairForNode($routeCombo, $node) as $lane) {
-                    if (($lane['slave']['lane'] ?? '') === 'primary') {
-                        $routeUplinks[] = $lane['slave'];
+                    $slave = $lane['slave'];
+                    if ($this->isCanonicalStaticSidecarUplink($slave)) {
+                        $key = (int) ($slave['sidecar_point_id'] ?? 0)
+                            . ':' . (int) ($slave['node_id'] ?? 0)
+                            . ':' . (string) ($slave['interface_name'] ?? '');
+                        $routeUplinks[$key] = $slave;
                     }
                 }
             }
@@ -7526,7 +7547,7 @@ final class ProvisioningService
             $sidecarServicePort = (int) ($this->resolveSidecarDirectTarget($forward, $normalizedTargetMode)['port'] ?? 0);
         }
         foreach ($this->staticSidecarUplinksWithServicePort($uplinks, $sidecarServicePort) as $slave) {
-            if (($slave['lane'] ?? '') !== 'primary') {
+            if (!$this->isCanonicalStaticSidecarUplink($slave)) {
                 continue;
             }
             return $slave;
@@ -7659,7 +7680,7 @@ final class ProvisioningService
             ? $this->staticSidecarUplinksWithServicePort($this->staticSidecarUplinksForForwardNode($forward, $node), (int) ($directSidecarTarget['port'] ?? 0))
             : [];
         $staticSidecarUplink = $directSidecarTarget !== null
-            ? (array_values(array_filter($staticSidecarUplinks, static fn(array $uplink): bool => ($uplink['lane'] ?? '') === 'primary'))[0] ?? null)
+            ? (array_values(array_filter($staticSidecarUplinks, fn(array $uplink): bool => $this->isCanonicalStaticSidecarUplink($uplink)))[0] ?? null)
             : null;
         $staticSidecarSelector = $directSidecarTarget !== null
             ? $this->staticSidecarUplinkSelectorPayload($staticSidecarUplinks, (int) ($directSidecarTarget['port'] ?? 0), (int) ($forward['id'] ?? 0), $endpointId)
@@ -9876,6 +9897,38 @@ final class ProvisioningService
             }
         }
         return false;
+    }
+
+    private function staticSidecarCombinationUsesSharedWireguardPeers(array $combination): bool
+    {
+        $pointId = (int) ($combination['sidecar_point_id'] ?? 0);
+        return $this->staticSidecarUsesSharedWireguardPeers($pointId)
+            && !$this->staticSidecarCombinationUsesLeigod($combination)
+            && !$this->staticSidecarCombinationUsesCf($combination);
+    }
+
+    private function isCanonicalStaticSidecarUplink(array $uplink): bool
+    {
+        return in_array((string) ($uplink['lane'] ?? ''), ['primary', 'shared'], true);
+    }
+
+    private function primeSharedStaticSidecarSubnetRegistryForPoint(int $pointId): void
+    {
+        if ($pointId <= 0 || isset($this->sharedStaticSidecarSubnetRegistryPrimed[$pointId])) {
+            return;
+        }
+        $this->sharedStaticSidecarSubnetRegistryPrimed[$pointId] = true;
+        $nodeIds = [];
+        foreach ($this->db->fetchAll('SELECT id FROM nodes ORDER BY id ASC') as $row) {
+            $nodeId = (int) ($row['id'] ?? 0);
+            if ($nodeId > 0) {
+                $nodeIds[$nodeId] = true;
+            }
+        }
+        ksort($nodeIds, SORT_NUMERIC);
+        foreach (array_keys($nodeIds) as $nodeId) {
+            $this->allocateStaticSidecarUplinkSubnet($pointId, 0, (int) $nodeId, 'shared');
+        }
     }
 
     private function staticSidecarCombinationUsesLeigod(array $combination): bool

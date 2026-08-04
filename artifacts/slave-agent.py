@@ -2940,7 +2940,47 @@ class SlaveAgent:
     def save_static_sidecar_uplink_state(self, payload: dict[str, Any]) -> None:
         self.write_json(self.static_sidecar_uplink_state_path(), payload)
 
-    def normalize_static_sidecar_uplinks(self, raw_uplinks: list[Any]) -> tuple[list[dict[str, Any]], set[str]]:
+    @staticmethod
+    def validate_shared_static_sidecar_uplink(uplink: dict[str, Any]) -> str:
+        interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+        if interface_name == "":
+            return "missing interface_name"
+        try:
+            point_id = int(uplink.get("sidecar_point_id", 0) or 0)
+            node_id = int(uplink.get("node_id", 0) or 0)
+            listen_port = int(uplink.get("listen_port", 0) or 0)
+            endpoint_port = int(uplink.get("sidecar_endpoint_port", 0) or 0)
+            local_listen_port = int(uplink.get("local_listen_port", 0) or 0)
+        except (TypeError, ValueError):
+            return "invalid numeric identity"
+        if point_id <= 0 or node_id <= 0:
+            return "missing point or node identity"
+        if not interface_name.startswith(("lwsp", "lwp")):
+            return "invalid shared interface name"
+        if str(uplink.get("lane", "") or "").strip().lower() != "shared":
+            return "invalid shared lane"
+        if str(uplink.get("outer_transport", "") or "").strip().lower() != "udp":
+            return "shared outer transport must be udp"
+        if not (1 <= listen_port <= 65535) or endpoint_port != listen_port:
+            return "invalid shared sidecar listen port"
+        if not (1 <= local_listen_port <= 65535):
+            return "invalid shared local listen port"
+        local_address = str(uplink.get("local_address", "") or "").strip()
+        peer_address = str(uplink.get("peer_address", "") or "").strip()
+        try:
+            local_ip = ipaddress.ip_address(local_address)
+            peer_ip = ipaddress.ip_address(peer_address)
+        except ValueError:
+            return "invalid shared tunnel address"
+        if local_ip == peer_ip or local_ip.version != peer_ip.version:
+            return "invalid shared tunnel address pair"
+        if str(uplink.get("sidecar_peer_public_key", "") or "").strip() == "":
+            return "missing sidecar peer key"
+        if str(uplink.get("sidecar_endpoint_host", "") or "").strip() == "":
+            return "missing sidecar endpoint host"
+        return ""
+
+    def normalize_static_sidecar_uplinks(self, raw_uplinks: list[Any]) -> tuple[list[dict[str, Any]], set[str], bool]:
         normalized: dict[str, dict[str, Any]] = {}
         invalid: set[str] = set()
         comparable_shared_fields = (
@@ -2956,10 +2996,22 @@ class SlaveAgent:
         )
         for raw in raw_uplinks:
             if not isinstance(raw, dict):
-                continue
+                return [], set(), False
             uplink = dict(raw)
             interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
-            if interface_name == "" or not uplink.get("enabled", False):
+            if not uplink.get("enabled", False):
+                continue
+            shared = str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared"
+            if shared:
+                validation_error = self.validate_shared_static_sidecar_uplink(uplink)
+                if validation_error != "":
+                    if interface_name == "":
+                        logging.error("invalid shared sidecar uplink without interface identity: %s", validation_error)
+                        return [], set(), False
+                    logging.error("invalid shared sidecar uplink %s: %s; preserving previous interface", interface_name, validation_error)
+                    invalid.add(interface_name)
+                    continue
+            elif interface_name == "":
                 continue
             previous = normalized.get(interface_name)
             if previous is None:
@@ -2971,7 +3023,7 @@ class SlaveAgent:
                 or any(previous.get(key) != uplink.get(key) for key in comparable_shared_fields)
             ):
                 invalid.add(interface_name)
-        return [uplink for name, uplink in normalized.items() if name not in invalid], invalid
+        return [uplink for name, uplink in normalized.items() if name not in invalid], invalid, True
 
     def apply_static_sidecar_uplinks(self, raw_uplinks: Any, section_present: bool = True) -> None:
         # BUG-1: when the uplink section was absent this cycle (or the fetch
@@ -2984,7 +3036,10 @@ class SlaveAgent:
             return
         if not isinstance(raw_uplinks, list):
             return
-        uplinks, invalid_interfaces = self.normalize_static_sidecar_uplinks(raw_uplinks)
+        uplinks, invalid_interfaces, authoritative = self.normalize_static_sidecar_uplinks(raw_uplinks)
+        if not authoritative:
+            logging.error("invalid shared sidecar uplink section; preserving all previous interfaces")
+            return
         previous = self.load_static_sidecar_uplink_state()
         previous_interfaces = previous.get("interfaces", {}) if isinstance(previous.get("interfaces", {}), dict) else {}
         active: set[str] = set(invalid_interfaces)
@@ -2999,8 +3054,23 @@ class SlaveAgent:
             )
         for uplink in uplinks:
             interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+            shared = str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared"
+            if shared:
+                try:
+                    self.apply_shared_sidecar_uplink(interface_name, uplink)
+                except Exception:  # noqa: BLE001
+                    logging.exception("shared sidecar uplink %s apply failed; preserving previous interface", interface_name)
+                    active.add(interface_name)
+                    previous_info = previous_interfaces.get(interface_name)
+                    next_state["interfaces"][interface_name] = (
+                        dict(previous_info)
+                        if isinstance(previous_info, dict)
+                        else {"interface_name": interface_name}
+                    )
+                    continue
+            else:
+                self.apply_sidecar_uplink(interface_name, uplink)
             active.add(interface_name)
-            self.apply_sidecar_uplink(interface_name, uplink)
             self.watch_static_sidecar_uplink(uplink)
             next_state["interfaces"][interface_name] = {
                 "interface_name": interface_name,
@@ -5227,6 +5297,77 @@ WantedBy=multi-user.target
         lane = str(uplink.get("lane", "") or "").strip().lower()
         lane_offset = 1 if lane in {"backup", "b"} else 0
         return 43000 + abs(((point_id * 1009) + (combination_id * 131) + (node_id * 17) + lane_offset) % 2000)
+
+    def apply_shared_sidecar_uplink(self, service_name: str, uplink: dict[str, Any]) -> None:
+        validation_error = self.validate_shared_static_sidecar_uplink(uplink)
+        if validation_error != "":
+            raise ValueError(validation_error)
+        if not shutil.which("wg") or not shutil.which("wg-quick") or not shutil.which("systemctl"):
+            raise RuntimeError("WireGuard or systemd tooling is unavailable")
+        self.ensure_wireguard_identity()
+        private_key = self.wireguard_private_key_path().read_text(encoding="utf-8").strip()
+        if private_key == "":
+            raise RuntimeError("slave WireGuard private key is empty")
+
+        interface_name = str(uplink.get("interface_name", "") or service_name).strip()[:15]
+        local_address = str(uplink.get("local_address", "") or "").strip()
+        peer_address = str(uplink.get("peer_address", "") or "").strip()
+        peer_public_key = str(uplink.get("sidecar_peer_public_key", "") or "").strip()
+        endpoint_host = str(uplink.get("sidecar_endpoint_host", "") or "").strip()
+        endpoint_port = int(uplink.get("sidecar_endpoint_port", 0) or 0)
+        local_listen_port = int(uplink.get("local_listen_port", 0) or 0)
+        keepalive = max(0, int(uplink.get("peer_keepalive_seconds", 25) or 25))
+        endpoint_literal = f"[{endpoint_host}]" if ":" in endpoint_host and not endpoint_host.startswith("[") else endpoint_host
+        config = (
+            "[Interface]\n"
+            f"PrivateKey = {private_key}\n"
+            f"ListenPort = {local_listen_port}\n"
+            f"Address = {local_address}/32\n"
+            "\n"
+            "[Peer]\n"
+            f"PublicKey = {peer_public_key}\n"
+            f"Endpoint = {endpoint_literal}:{endpoint_port}\n"
+            f"AllowedIPs = {peer_address}/32\n"
+            f"PersistentKeepalive = {keepalive}\n"
+        )
+        path = self.wireguard_interface_path(interface_name)
+        previous = None
+        if path.exists():
+            previous = (path.read_text(encoding="utf-8"), path.stat().st_mode & 0o777)
+        service_name = f"wg-quick@{interface_name}"
+        was_active = self.systemd_is_active(service_name)
+        try:
+            changed = self.write_text_if_changed(path, config)
+            if os.name != "nt":
+                path.chmod(0o600)
+            if changed:
+                daemon_reload = run_command("systemctl daemon-reload", check=False)
+                if daemon_reload.returncode != 0:
+                    raise RuntimeError(f"systemctl daemon-reload failed: {daemon_reload.stderr or daemon_reload.stdout}")
+            enabled = run_command(f"systemctl enable {service_name}.service", check=False)
+            if enabled.returncode != 0:
+                raise RuntimeError(f"systemctl enable failed for {service_name}: {enabled.stderr or enabled.stdout}")
+            if changed or not was_active:
+                action = "restart" if was_active else "start"
+                started = run_command(f"systemctl {action} {service_name}.service", check=False)
+                if started.returncode != 0:
+                    raise RuntimeError(
+                        f"systemctl {action} failed for {service_name}: {started.stderr or started.stdout}"
+                    )
+        except Exception:
+            if previous is None:
+                if path.exists():
+                    path.unlink()
+            else:
+                previous_content, previous_mode = previous
+                self.write_text_if_changed(path, previous_content)
+                if os.name != "nt":
+                    path.chmod(previous_mode)
+            if was_active and previous is not None:
+                restored = run_command(f"systemctl restart {service_name}.service", check=False)
+                if restored.returncode != 0:
+                    logging.error("failed to restore previous shared sidecar uplink %s: %s", interface_name, restored.stderr or restored.stdout)
+            raise
 
     def apply_sidecar_uplink(self, service_name: str, uplink: dict[str, Any]) -> None:
         if not uplink.get("enabled") or not shutil.which("wg") or not shutil.which("wg-quick"):

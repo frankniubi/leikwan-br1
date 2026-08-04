@@ -266,9 +266,7 @@ final class SidecarAgentController extends BaseController
             ],
         ];
 
-        return Response::json(200, [
-            'ok' => true,
-            'management' => $commonManagement + [
+        $management = $commonManagement + [
                 'bind_host' => (string) ($point['bind_host'] ?? '0.0.0.0'),
                 'listen_port' => $hasMptcpRuntime ? $mptcpListenPort : $bondListenPort,
                 'mode' => $hasMptcpRuntime ? 'mptcp' : 'bond',
@@ -309,11 +307,17 @@ final class SidecarAgentController extends BaseController
                         ];
                     }, $mptcpRuntimeRows)),
                 ] : null,
-                'sidecar_uplinks' => $sidecarUplinkManagement['uplinks'] ?? [],
                 'self_leg_client_peers' => $this->provisioning->selfLegClientPeersForPoint($pointId),
                 'donation_reverse_probe_targets' => $this->provisioning->donationReverseProbeTargetsForPoint($pointId),
                 'cf_runtime' => $cfRuntime,
-            ],
+            ];
+        if (($sidecarUplinkManagement['authoritative'] ?? false) === true) {
+            $management['sidecar_uplinks'] = $sidecarUplinkManagement['uplinks'] ?? [];
+        }
+
+        return Response::json(200, [
+            'ok' => true,
+            'management' => $management,
         ]);
     }
 

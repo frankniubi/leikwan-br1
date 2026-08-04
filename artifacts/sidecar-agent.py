@@ -12,6 +12,7 @@ import shutil
 import socket
 import sys
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -105,7 +106,19 @@ def write_text_if_changed(path: pathlib.Path, content: str, mode: int | None = N
     changed = existing != content
     if changed:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+        temp_path = pathlib.Path(temp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if mode is not None and os.name != "nt":
+                temp_path.chmod(mode)
+            temp_path.replace(path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
     if mode is not None and path.exists() and os.name != "nt":
         current_mode = path.stat().st_mode & 0o777
         if current_mode != mode:
@@ -426,31 +439,106 @@ class SidecarAgent:
     def apply_shared_slave_sidecar_interface(self, uplinks: list[dict[str, object]]) -> None:
         interface_name, _ = self.validate_shared_sidecar_uplinks(uplinks)
         if shutil.which("wg") is None or shutil.which("wg-quick") is None:
-            return
+            raise RuntimeError("WireGuard tools are unavailable")
         self.ensure_wireguard_identity()
         try:
             private_key = self.wireguard_private_key_path().read_text(encoding="utf-8").strip()
-        except OSError:
-            logging.exception("shared slave-sidecar interface %s skipped: WireGuard private key is unavailable", interface_name)
-            return
+        except OSError as exc:
+            raise RuntimeError(f"shared slave-sidecar interface {interface_name} private key is unavailable") from exc
         config = self.render_shared_sidecar_wireguard_config(uplinks, private_key)
         path = self.sidecar_uplink_interfaces_dir() / f"{interface_name}.conf"
-        changed = write_text_if_changed(path, config, mode=0o600)
         system_path = self.sidecar_uplink_system_path(interface_name)
-        system_changed = write_text_if_changed(system_path, config, mode=0o600)
-        if shutil.which("systemctl") is not None:
-            service_name = f"wg-quick@{interface_name}"
-            service_active = self.systemd_is_active(service_name)
-            if changed or system_changed:
-                subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
+        with tempfile.TemporaryDirectory(prefix=f"{interface_name}-", dir=str(self.state_dir)) as staging_dir:
+            candidate_path = pathlib.Path(staging_dir) / f"{interface_name}.conf"
+            candidate_path.write_text(config, encoding="utf-8")
+            if os.name != "nt":
+                candidate_path.chmod(0o600)
+            validation = subprocess.run(
+                ["wg-quick", "strip", str(candidate_path)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if validation.returncode != 0:
+                raise RuntimeError(
+                    f"wg-quick validation failed for {interface_name}: "
+                    f"{validation.stderr or validation.stdout}"
+                )
+
+        def snapshot(target: pathlib.Path) -> tuple[str, int] | None:
+            if not target.exists():
+                return None
+            return target.read_text(encoding="utf-8"), target.stat().st_mode & 0o777
+
+        def restore(target: pathlib.Path, previous: tuple[str, int] | None) -> None:
+            if previous is None:
+                if target.exists():
+                    target.unlink()
+                return
+            previous_content, previous_mode = previous
+            write_text_if_changed(target, previous_content, mode=previous_mode)
+
+        previous_state = snapshot(path)
+        previous_system = snapshot(system_path)
+        service_name = f"wg-quick@{interface_name}"
+        service_active = shutil.which("systemctl") is not None and self.systemd_is_active(service_name)
+        try:
+            changed = write_text_if_changed(path, config, mode=0o600)
+            system_changed = write_text_if_changed(system_path, config, mode=0o600)
+            if shutil.which("systemctl") is None:
+                raise RuntimeError("systemctl is unavailable")
             if changed or system_changed or not service_active:
-                subprocess.run(["systemctl", "enable", f"{service_name}.service"], text=True, capture_output=True, check=False)
-                subprocess.run(
+                enabled = subprocess.run(
+                    ["systemctl", "enable", f"{service_name}.service"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if enabled.returncode != 0:
+                    raise RuntimeError(
+                        f"systemctl enable failed for {service_name}: {enabled.stderr or enabled.stdout}"
+                    )
+                started = subprocess.run(
                     ["systemctl", "restart" if service_active else "start", f"{service_name}.service"],
                     text=True,
                     capture_output=True,
                     check=False,
                 )
+                if started.returncode != 0:
+                    raise RuntimeError(
+                        f"systemctl {'restart' if service_active else 'start'} failed for {service_name}: "
+                        f"{started.stderr or started.stdout}"
+                    )
+        except Exception:
+            restore(path, previous_state)
+            restore(system_path, previous_system)
+            if service_active and previous_system is not None:
+                restored = subprocess.run(
+                    ["systemctl", "restart", f"{service_name}.service"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if restored.returncode != 0:
+                    logging.error(
+                        "failed to restore previous shared WireGuard interface %s: %s",
+                        interface_name,
+                        restored.stderr or restored.stdout,
+                    )
+            raise
+
+    @staticmethod
+    def static_sidecar_point_id_from_interface(interface_name: str) -> int:
+        normalized = str(interface_name or "").strip()[:15]
+        offset = 4 if normalized.startswith("lwsp") else 3 if normalized.startswith("lws") else 0
+        if offset == 0:
+            return 0
+        digits = ""
+        for char in normalized[offset:]:
+            if not char.isdigit():
+                break
+            digits += char
+        return int(digits) if digits else 0
 
     def apply_slave_sidecar_uplink(self, uplink: dict[str, object]) -> None:
         if not uplink.get("enabled") or shutil.which("wg") is None or shutil.which("wg-quick") is None:
@@ -1578,7 +1666,7 @@ WantedBy=multi-user.target
             active_interfaces: set[str] = set()
             disabled_interfaces: set[str] = set()
             static_uplink_point_ids: set[int] = set()
-            shared_groups: dict[str, list[dict[str, object]]] = {}
+            shared_groups: dict[int, list[dict[str, object]]] = {}
             legacy_uplinks: list[dict[str, object]] = []
             for uplink in sidecar_uplinks:
                 if not isinstance(uplink, dict):
@@ -1587,29 +1675,49 @@ WantedBy=multi-user.target
                 if interface_name == "":
                     continue
                 if str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared":
-                    shared_groups.setdefault(interface_name, []).append(uplink)
+                    shared_groups.setdefault(int(uplink.get("sidecar_point_id", 0) or 0), []).append(uplink)
                 else:
                     legacy_uplinks.append(uplink)
 
-            for interface_name, peers in shared_groups.items():
+            failed_shared_points: set[int] = set()
+            shared_interface_names = {
+                str(peer.get("interface_name", "") or "").strip()[:15]
+                for peers in shared_groups.values()
+                for peer in peers
+            }
+            for shared_point_id, peers in shared_groups.items():
                 enabled_peers = [peer for peer in peers if bool(peer.get("enabled", True))]
                 if not enabled_peers:
+                    disabled_names = {
+                        str(peer.get("interface_name", "") or "").strip()[:15]
+                        for peer in peers
+                        if str(peer.get("interface_name", "") or "").strip()[:15] != ""
+                    }
+                    if len(disabled_names) != 1:
+                        failed_shared_points.add(shared_point_id)
+                        logging.error("shared sidecar point %s has conflicting disabled interfaces; preserving current state", shared_point_id)
+                        continue
+                    interface_name = next(iter(disabled_names))
                     disabled_interfaces.add(interface_name)
                     self.remove_slave_sidecar_uplink({"interface_name": interface_name})
                     continue
-                active_interfaces.add(interface_name)
-                for peer in enabled_peers:
-                    point_for_uplink = int(peer.get("sidecar_point_id", point_id) or point_id)
-                    if interface_name.startswith("lws") and point_for_uplink > 0:
-                        static_uplink_point_ids.add(point_for_uplink)
                 try:
+                    interface_name, _ = self.validate_shared_sidecar_uplinks(enabled_peers)
                     self.apply_shared_slave_sidecar_interface(enabled_peers)
                 except Exception:  # noqa: BLE001
-                    logging.exception("shared slave-sidecar interface %s reconcile failed; preserving current interface", interface_name)
+                    failed_shared_points.add(shared_point_id)
+                    logging.exception("shared slave-sidecar point %s reconcile failed; preserving current interfaces", shared_point_id)
+                    continue
+                active_interfaces.add(interface_name)
+                if shared_point_id > 0:
+                    static_uplink_point_ids.add(shared_point_id)
 
             for uplink in legacy_uplinks:
                 interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
-                if interface_name in shared_groups:
+                legacy_point_id = int(uplink.get("sidecar_point_id", point_id) or point_id)
+                if legacy_point_id in failed_shared_points:
+                    continue
+                if interface_name in shared_interface_names:
                     logging.error("legacy slave-sidecar uplink %s conflicts with shared desired state; skipping legacy record", interface_name)
                     continue
                 if not bool(uplink.get("enabled", True)):
@@ -1626,18 +1734,27 @@ WantedBy=multi-user.target
                     self.apply_slave_sidecar_uplink(uplink)
                 except Exception:  # noqa: BLE001
                     logging.exception("slave-sidecar uplink %s reconcile failed; continuing", interface_name)
-            for cleanup_point_id in sorted(static_uplink_point_ids):
+            for cleanup_point_id in sorted(static_uplink_point_ids - failed_shared_points):
                 self.cleanup_stale_mptcp_transit_interfaces(cleanup_point_id, keep=transit_keep)
             existing_slaves = current_uplink_state.get("slaves", {}) if isinstance(current_uplink_state.get("slaves", {}), dict) else {}
             for slave_id, info in list(existing_slaves.items()):
                 iface = str((info if isinstance(info, dict) else {}).get("interface_name", "") or "").strip()[:15]
+                existing_point_id = self.static_sidecar_point_id_from_interface(iface)
+                if existing_point_id in failed_shared_points:
+                    active_interfaces.add(iface)
+                    continue
                 if iface != "" and iface not in active_interfaces:
                     if iface not in disabled_interfaces:
                         self.remove_slave_sidecar_uplink({"interface_name": iface})
                     existing_slaves.pop(slave_id, None)
             next_state = {"slaves": {}}
             for interface_name in sorted(active_interfaces):
-                next_state["slaves"][interface_name] = {"interface_name": interface_name}
+                previous_info = existing_slaves.get(interface_name)
+                next_state["slaves"][interface_name] = (
+                    dict(previous_info)
+                    if isinstance(previous_info, dict)
+                    else {"interface_name": interface_name}
+                )
             self.save_sidecar_uplink_state(next_state)
             self.cleanup_orphan_slave_transit_cf_backends(active_interfaces)
 
