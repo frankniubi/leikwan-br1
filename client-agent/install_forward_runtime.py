@@ -40,6 +40,17 @@ def mptcp_config(forward: dict) -> dict:
     return config if isinstance(config, dict) else {}
 
 
+def sidecar_frontend_mode(forward: dict, bond: dict) -> str:
+    frontend_mode = str(bond.get("frontend_mode", "") or "").strip().lower()
+    if frontend_mode not in {"single", "race"}:
+        return ""
+    if contract_bool(forward.get("sidecar_required")) is not True:
+        return ""
+    if not forward_contract_is_sidecar_aggregation(forward):
+        return ""
+    return frontend_mode
+
+
 def is_ip_literal(value: object) -> bool:
     text = str(value or "").strip().strip("[]")
     if text == "":
@@ -734,6 +745,7 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     service_path = f"/etc/systemd/system/{service_name}.service"
     bond = bonding_config(forward)
     mptcp = mptcp_config(forward)
+    frontend_mode = sidecar_frontend_mode(forward, bond)
     bond_remote_target = str(bond.get("remote_target", "")).strip()
     if bond_remote_target == "" and str(forward.get("backend_mode", "") or "").strip().lower() == "cf_mode":
         fallback_port = int_or_default(forward.get("bond_sidecar_port"), 0)
@@ -761,7 +773,10 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
         usable_endpoints.append(normalized)
     endpoints = usable_endpoints
 
-    if len(endpoints) > 1 and mode == "race":
+    if frontend_mode == "single":
+        endpoints = endpoints[:1]
+
+    if len(endpoints) > 1 and mode == "race" and frontend_mode == "":
         base = 20000 + ((forward_id * 37) % 15000)
         rate_base = rate_limit_base_port(forward_id)
         rate_tcp_port = rate_base
@@ -815,17 +830,18 @@ WantedBy=multi-user.target
             "start_script": "\n".join(lines) + "\n",
         }
 
-    if mode == "bond":
+    if mode == "bond" or frontend_mode != "":
         if bond_remote_target == "":
             raise RuntimeError("bond mode missing bonding.remote_target")
-        self_leg_endpoints = [
-            endpoint
-            for candidate in selected_self_leg_candidates(forward)
-            for endpoint in [self_leg_endpoint(candidate, forward)]
-            if endpoint is not None
-        ]
-        if self_leg_endpoints:
-            endpoints = self_leg_endpoints + endpoints
+        if frontend_mode == "":
+            self_leg_endpoints = [
+                endpoint
+                for candidate in selected_self_leg_candidates(forward)
+                for endpoint in [self_leg_endpoint(candidate, forward)]
+                if endpoint is not None
+            ]
+            if self_leg_endpoints:
+                endpoints = self_leg_endpoints + endpoints
         if endpoints == []:
             raise RuntimeError("bond mode requires at least one endpoint")
         sidepath = udp_uot_sidepath_settings(forward, agent_config)
@@ -839,12 +855,16 @@ WantedBy=multi-user.target
         rate_base = rate_limit_base_port(forward_id)
         lines = ["#!/usr/bin/env bash", "set -euo pipefail", "trap 'kill $(jobs -p) 2>/dev/null || true' EXIT"]
         strategy_path = f"/var/lib/leikwan-client-agent/forward-strategies/{forward_id}.strategy"
-        lines.extend(
-            [
-                "mkdir -p /var/lib/leikwan-client-agent/forward-strategies",
-                f"if [[ ! -s {strategy_path} ]]; then printf 'latency_best\\n' > {strategy_path}; fi",
-            ]
-        )
+        strategy_locked = frontend_mode != "" and truthy(bond.get("strategy_locked", True))
+        strategy_args = ""
+        if not strategy_locked:
+            lines.extend(
+                [
+                    "mkdir -p /var/lib/leikwan-client-agent/forward-strategies",
+                    f"if [[ ! -s {strategy_path} ]]; then printf 'latency_best\\n' > {strategy_path}; fi",
+                ]
+            )
+            strategy_args = f"--strategy-file {strategy_path} "
         client_id = int_or_default(agent_config.get("client_id"), 0)
         snapshot_path = f"/run/leikwan/bond-leg-health-forward-{forward_id}.json"
         lines.extend(
@@ -924,7 +944,7 @@ WantedBy=multi-user.target
                 f"{tcp_latency_flags}"
                 f"{single_leg_fast_path_flag}"
                 f"--legs '{','.join(tcp_leg_targets)}' --session-token '{bond_session_token}' "
-                f"--strategy-file {strategy_path} --default-strategy latency_best "
+                f"{strategy_args}--default-strategy latency_best "
                 f"--chunk-size {int(bond.get('chunk_size', 65536) or 65536)} "
                 f"--max-window-bytes {int(bond.get('max_window_bytes', 8388608) or 8388608)} "
                 f"--retransmit-ms {int(bond.get('retransmit_ms', 700) or 700)} "
@@ -991,7 +1011,7 @@ WantedBy=multi-user.target
                 f"{bond_bin} client --protocol udp --listen {udp_listen_host}:{udp_listen_port} "
                 f"{udp_latency_flags}"
                 f"--legs '{','.join(udp_leg_targets)}' --session-token '{udp_token}' "
-                f"--strategy-file {strategy_path} --default-strategy latency_best "
+                f"{strategy_args}--default-strategy latency_best "
                 f"--chunk-size {int(bond.get('chunk_size', 65536) or 65536)} "
                 f"--max-window-bytes {int(bond.get('max_window_bytes', 8388608) or 8388608)} "
                 f"--retransmit-ms {int(bond.get('retransmit_ms', 700) or 700)} "
