@@ -27,6 +27,9 @@ namespace Leikwan\Master\Database {
             if (str_contains($n, 'SELECT * FROM services WHERE id = :id LIMIT 1')) {
                 return $this->findById('services', (int) ($params['id'] ?? 0));
             }
+            if (str_contains($n, 'SELECT * FROM forwards WHERE id = :id LIMIT 1')) {
+                return $this->findById('forwards', (int) ($params['id'] ?? 0));
+            }
             if (str_contains($n, 'SELECT * FROM node_groups WHERE group_key = :group_key LIMIT 1')) {
                 foreach ($this->tables['node_groups'] ?? [] as $row) {
                     if ((string) ($row['group_key'] ?? '') === (string) ($params['group_key'] ?? '')) {
@@ -85,6 +88,12 @@ namespace Leikwan\Master\Database {
         public function transaction(callable $callback)
         {
             return $callback($this);
+        }
+
+        /** @return array<int, array<string, mixed>> */
+        public function rows(string $table): array
+        {
+            return $this->tables[$table] ?? [];
         }
 
         private function findById(string $table, int $id): ?array
@@ -194,6 +203,59 @@ namespace {
         static fn() => $service->createForward(2, $basePayload + ['bond_sidecar_point_id' => 5]),
         'sidecar_must_be_overseas_for_aggregation'
     );
+
+    // Gated current-mode single/race frontends must retain their explicit sidecar point during
+    // creation. The fake has no nodes, so creation stops after persisting the forward; inspecting
+    // that row catches the old path that silently cleared bond_sidecar_point_id before publish.
+    foreach (['single', 'race'] as $frontendMode) {
+        $db = new Database();
+        $db->seed('services', [['id' => 2, 'user_id' => 7, 'plan_id' => 0, 'status' => 'active', 'client_token' => 'svc-token', 'name' => 'svc']]);
+        $db->seed('node_groups', [['id' => 1, 'group_key' => 'sha-tencent', 'name' => 'Shanghai Tencent']]);
+        $db->seed('sidecar_points', [[
+            'id' => 10,
+            'owner_user_id' => null,
+            'is_active' => 1,
+            'sidecar_host' => 'hk-bgp-b.zhuji.host',
+            'listen_port' => 18501,
+            'bond_listen_port' => 18501,
+            'mptcp_listen_port' => 18502,
+            'agent_config_json' => json_encode([
+                'aggregation_region_scope' => 'overseas',
+                'country_code' => 'HK',
+                'single_race_via_sidecar' => true,
+            ], JSON_UNESCAPED_SLASHES),
+        ]]);
+        $service = makeService($db);
+        try {
+            $service->createForward(2, [
+                'listen_port' => $frontendMode === 'single' ? 11051 : 11052,
+                'public_port' => $frontendMode === 'single' ? 7000 : 7001,
+                'target_host' => 'v4-hkt-b.mcbar.cc',
+                'target_port' => 5201,
+                'node_group' => 'sha-tencent',
+                'endpoint_mode' => 'slave_group',
+                'backend_mode' => 'current_mode',
+                'client_mode' => $frontendMode,
+                'bond_ingress_mode' => 'plain_tcp_mux',
+                'bond_sidecar_point_id' => 10,
+                'transport_mode' => 'tcp',
+            ], 'regression-test');
+            fail('expected no_available_nodes after persisting gated ' . $frontendMode . ' forward');
+        } catch (ApiException $e) {
+            if ($e->getMessage() !== 'no_available_nodes') {
+                fail('expected no_available_nodes for gated ' . $frontendMode . ', got ' . $e->getMessage());
+            }
+        }
+        $rows = $db->rows('forwards');
+        $saved = $rows[0] ?? null;
+        if (!is_array($saved) || (int) ($saved['bond_sidecar_point_id'] ?? 0) !== 10) {
+            fail('gated ' . $frontendMode . ' creation must preserve bond_sidecar_point_id');
+        }
+        if ((string) ($saved['bond_remote_host'] ?? '') !== 'hk-bgp-b.zhuji.host'
+            || (int) ($saved['bond_remote_port'] ?? 0) !== 18501) {
+            fail('gated ' . $frontendMode . ' creation must persist the bond sidecar target');
+        }
+    }
 
     echo "ok\n";
 }
