@@ -1128,6 +1128,14 @@ fn should_reset_transport_stream_on_close_timeout(state: &TcpStreamState, now: I
     true
 }
 
+fn close_timeout_failure_scope(state: &TcpStreamState) -> TcpFailureScope {
+    if state.outbound_next_offset == 0 && state.outbound_fin_acked {
+        TcpFailureScope::LocalEndpoint
+    } else {
+        TcpFailureScope::Transport
+    }
+}
+
 fn stream_lifecycle_snapshot(state: &TcpStreamState) -> String {
     format!(
         "opened={} local_eof={} inbound_next={} inbound_acked={} fin_offset={:?} writer_shutdown={} backlog={} pending_chunks={} pending_bytes={} outbound_next={} outbound_fin={:?} outbound_fin_acked={} preferred_leg={:?} close_deadline_armed={}",
@@ -2082,9 +2090,11 @@ async fn run_tcp_transport_session(
                     }
 
                     if should_reset_transport_stream_on_close_timeout(state, Instant::now()) {
-                        let _ = suppress_stream_preferred_tcp_leg(
+                        let failure_scope = close_timeout_failure_scope(state);
+                        let _ = suppress_stream_preferred_tcp_leg_for_failure_scope(
                             &mut legs,
                             state,
+                            failure_scope,
                             TcpPenalty::CloseTimeout,
                             config.leg_cooldown,
                         );
@@ -5806,6 +5816,35 @@ mod tests {
             should_reset_transport_stream_on_close_timeout(&state, Instant::now()),
             "zero-byte connect-and-close probes must not retain upstream sockets indefinitely"
         );
+    }
+
+    #[test]
+    fn zero_byte_acked_close_timeout_is_local_endpoint_failure() {
+        let (tx, _rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let mut state = TcpStreamState::new(tx, close_tx, true);
+        state.local_eof = true;
+        state.outbound_fin_acked = true;
+
+        assert_eq!(
+            close_timeout_failure_scope(&state),
+            TcpFailureScope::LocalEndpoint,
+            "a completed zero-byte health probe must not cool the transport leg"
+        );
+    }
+
+    #[test]
+    fn incomplete_or_data_close_timeout_is_transport_failure() {
+        let (tx, _rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let mut state = TcpStreamState::new(tx, close_tx, true);
+        state.local_eof = true;
+
+        assert_eq!(close_timeout_failure_scope(&state), TcpFailureScope::Transport);
+
+        state.outbound_fin_acked = true;
+        state.outbound_next_offset = 4;
+        assert_eq!(close_timeout_failure_scope(&state), TcpFailureScope::Transport);
     }
 
     #[test]
