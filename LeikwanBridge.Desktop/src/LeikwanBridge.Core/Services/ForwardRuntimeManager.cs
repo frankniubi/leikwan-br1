@@ -64,6 +64,7 @@ public class ForwardRuntimeManager : IDisposable
             selectedForward = MptcpFallbackService.ConvertToBond(selectedForward);
             mode = ModeNormalizer.Normalize(selectedForward.Mode);
         }
+        var frontendMode = WindowsForwardPolicy.GetSidecarFrontendMode(selectedForward);
 
 
         Log.Information("applying forward {ForwardId} mode={Mode} transport={Transport} endpoints={Count}",
@@ -76,13 +77,15 @@ public class ForwardRuntimeManager : IDisposable
         BondRuntimeBuilder.RuntimeSpec spec;
         try
         {
-            spec = mode switch
-            {
-                "bond" => _bondBuilder.Build(WithSelectedBondRuntimeEndpoints(selectedForward)),
-                "race" => _bondBuilder.BuildRace(selectedForward),
-                "mptcp" => _mptcpBuilder.Build(selectedForward),
-                _ => _bondBuilder.BuildSingle(selectedForward),
-            };
+            spec = frontendMode != ""
+                ? _bondBuilder.BuildFrontend(WithSelectedBondRuntimeEndpoints(selectedForward))
+                : mode switch
+                {
+                    "bond" => _bondBuilder.Build(WithSelectedBondRuntimeEndpoints(selectedForward)),
+                    "race" => _bondBuilder.BuildRace(selectedForward),
+                    "mptcp" => _mptcpBuilder.Build(selectedForward),
+                    _ => _bondBuilder.BuildSingle(selectedForward),
+                };
         }
         catch (Exception ex)
         {
@@ -266,7 +269,7 @@ public class ForwardRuntimeManager : IDisposable
 
     private ForwardConfig WithSelectedBondRuntimeEndpoints(ForwardConfig forward)
     {
-        if (ModeNormalizer.Normalize(forward.Mode) != "bond"
+        if (!WindowsForwardPolicy.UsesBondRuntime(forward)
             || !string.Equals(forward.Bonding?.PolicyMode, "latency_first", StringComparison.OrdinalIgnoreCase))
             return forward;
 

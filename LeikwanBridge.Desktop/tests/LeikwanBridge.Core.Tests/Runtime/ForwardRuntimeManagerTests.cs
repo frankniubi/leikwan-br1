@@ -7,6 +7,41 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 
 public sealed class ForwardRuntimeManagerTests
 {
+    [Theory]
+    [InlineData("single", 1)]
+    [InlineData("race", 2)]
+    public void ApplyForward_SidecarFrontend_DispatchesToLockedBondRuntime(string mode, int expectedLegs)
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+
+        var forward = CreatePlainTcpMuxBondForward();
+        forward.Mode = mode;
+        forward.ClientMode = mode;
+        forward.ActiveFamily = "sidecar_aggregation";
+        forward.TargetContract = "sidecar_aggregation";
+        forward.SidecarRequired = true;
+        forward.AggregationEnabled = false;
+        forward.BondSidecarPointId = 10;
+        forward.Bonding!.FrontendMode = mode;
+        forward.Bonding.StrategyLocked = true;
+
+        manager.ApplyForward(forward);
+
+        Assert.Equal(expectedLegs, supervisor.StartedRoles.Count(role => role.StartsWith("bond-ingress-leg-")));
+        Assert.Contains("bond-runtime", supervisor.StartedRoles);
+        Assert.DoesNotContain("single-runtime", supervisor.StartedRoles);
+        Assert.DoesNotContain("race-runtime", supervisor.StartedRoles);
+        Assert.Equal(mode, stateManager.LoadApplied()["26"].Mode);
+    }
+
     [Fact]
     public void ApplyForward_BondPlainTcpMux_StartsIngressBeforeBondRuntime()
     {
