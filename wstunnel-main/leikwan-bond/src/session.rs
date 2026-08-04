@@ -1980,7 +1980,11 @@ async fn run_tcp_transport_session(
                     }
                     TcpTransportEvent::LocalWriteCommitted { stream_id, bytes } => {
                         if let Some(state) = streams.get_mut(&stream_id) {
-                            let ack = record_inbound_write_commit(&mut state.inbound, bytes);
+                            let ack = record_inbound_write_commit_and_flush(
+                                &mut state.inbound,
+                                bytes,
+                                &state.local_write_tx,
+                            )?;
                             let _ = send_stream_control_frame(
                                 &mut legs,
                                 &mut round_robin_cursor,
@@ -2480,10 +2484,7 @@ async fn handle_tcp_transport_frame(
                 .fin_offset
                 .is_some_and(|existing| seq <= existing);
             state.inbound.fin_offset = Some(seq);
-            if state.inbound.next_offset >= seq && !state.inbound.writer_shutdown {
-                let _ = state.local_write_tx.send(LocalWriteCommand::Shutdown).await;
-                state.inbound.writer_shutdown = true;
-            }
+            try_queue_inbound_shutdown(&mut state.inbound, &state.local_write_tx)?;
             if duplicate_or_late_fin
                 && state.outbound_fin.is_some()
                 && state.is_drained_closing()
@@ -3855,37 +3856,61 @@ async fn handle_inbound_data(
         seq = inbound.next_offset;
     }
 
-    if seq == inbound.next_offset {
-        local_write_tx
-            .send(LocalWriteCommand::Data(payload.clone()))
-            .await
-            .map_err(|_| anyhow!("local writer closed"))?;
-        inbound.pending_write_lengths.push_back(payload.len());
-        inbound.next_offset += payload.len() as u64;
+    inbound.buffer.entry(seq).or_insert(payload);
+    try_flush_inbound_data(inbound, local_write_tx)?;
 
-        while let Some(chunk) = inbound.buffer.remove(&inbound.next_offset) {
-            local_write_tx
-                .send(LocalWriteCommand::Data(chunk.clone()))
-                .await
-                .map_err(|_| anyhow!("local writer closed"))?;
-            inbound.pending_write_lengths.push_back(chunk.len());
-            inbound.next_offset += chunk.len() as u64;
-        }
-    } else {
-        inbound.buffer.entry(seq).or_insert(payload);
-    }
-
-    if let Some(fin_offset) = inbound.fin_offset {
-        if inbound.next_offset >= fin_offset && !inbound.writer_shutdown {
-            local_write_tx
-                .send(LocalWriteCommand::Shutdown)
-                .await
-                .map_err(|_| anyhow!("local writer closed"))?;
-            inbound.writer_shutdown = true;
-        }
-    }
+    try_queue_inbound_shutdown(inbound, local_write_tx)?;
 
     Ok(inbound.next_offset)
+}
+
+fn try_flush_inbound_data(
+    inbound: &mut InboundState,
+    local_write_tx: &mpsc::Sender<LocalWriteCommand>,
+) -> anyhow::Result<()> {
+    loop {
+        let chunk_seq = inbound.next_offset;
+        let Some(chunk) = inbound.buffer.remove(&chunk_seq) else {
+            break;
+        };
+        match local_write_tx.try_send(LocalWriteCommand::Data(chunk.clone())) {
+            Ok(()) => {
+                inbound.pending_write_lengths.push_back(chunk.len());
+                inbound.next_offset += chunk.len() as u64;
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                inbound.buffer.insert(chunk_seq, chunk);
+                break;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                // The writer reports LocalWriteFailed/Closed before dropping this receiver.
+                // Preserve the chunk so that event retains its existing stream-local scope.
+                inbound.buffer.insert(chunk_seq, chunk);
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn try_queue_inbound_shutdown(
+    inbound: &mut InboundState,
+    local_write_tx: &mpsc::Sender<LocalWriteCommand>,
+) -> anyhow::Result<()> {
+    let ready = inbound
+        .fin_offset
+        .is_some_and(|fin_offset| inbound.next_offset >= fin_offset)
+        && !inbound.writer_shutdown;
+    if !ready {
+        return Ok(());
+    }
+    match local_write_tx.try_send(LocalWriteCommand::Shutdown) {
+        Ok(()) => inbound.writer_shutdown = true,
+        Err(mpsc::error::TrySendError::Full(_)) => {}
+        // The queued LocalWriteFailed/Closed event owns stream cleanup.
+        Err(mpsc::error::TrySendError::Closed(_)) => {}
+    }
+    Ok(())
 }
 
 fn record_inbound_write_commit(inbound: &mut InboundState, written_len: usize) -> u64 {
@@ -3893,6 +3918,17 @@ fn record_inbound_write_commit(inbound: &mut InboundState, written_len: usize) -
         inbound.acked_offset += expected_len.min(written_len) as u64;
     }
     inbound.acked_offset
+}
+
+fn record_inbound_write_commit_and_flush(
+    inbound: &mut InboundState,
+    written_len: usize,
+    local_write_tx: &mpsc::Sender<LocalWriteCommand>,
+) -> anyhow::Result<u64> {
+    let ack = record_inbound_write_commit(inbound, written_len);
+    try_flush_inbound_data(inbound, local_write_tx)?;
+    try_queue_inbound_shutdown(inbound, local_write_tx)?;
+    Ok(ack)
 }
 
 #[allow(dead_code)]
@@ -6470,6 +6506,142 @@ mod tests {
         let ack = record_inbound_write_commit(&mut inbound, 4);
         assert_eq!(ack, 4);
         assert_eq!(inbound.acked_offset, 4);
+    }
+
+    #[tokio::test]
+    async fn inbound_data_does_not_block_transport_loop_when_local_writer_queue_is_full() {
+        let (tx, mut rx) = mpsc::channel::<LocalWriteCommand>(1);
+        tx.try_send(LocalWriteCommand::Data(Bytes::from_static(b"occupied")))
+            .unwrap();
+        let mut inbound = InboundState::new();
+
+        let queued = timeout(
+            Duration::from_millis(50),
+            handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"a"), &tx),
+        )
+        .await
+        .expect("a full local writer queue must not block the transport event loop")
+        .unwrap();
+
+        assert_eq!(queued, 0);
+        assert_eq!(inbound.next_offset, 0);
+        assert_eq!(inbound.buffer.get(&0), Some(&Bytes::from_static(b"a")));
+        assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
+    }
+
+    #[tokio::test]
+    async fn later_inbound_data_flushes_contiguous_chunk_after_local_writer_backpressure() {
+        let (tx, mut rx) = mpsc::channel::<LocalWriteCommand>(1);
+        tx.try_send(LocalWriteCommand::Data(Bytes::from_static(b"occupied")))
+            .unwrap();
+        let mut inbound = InboundState::new();
+
+        timeout(
+            Duration::from_millis(50),
+            handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"a"), &tx),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
+
+        let queued = timeout(
+            Duration::from_millis(50),
+            handle_inbound_data(&mut inbound, 1, Bytes::from_static(b"b"), &tx),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(queued, 1);
+        assert_eq!(inbound.next_offset, 1);
+        assert_eq!(inbound.buffer.get(&1), Some(&Bytes::from_static(b"b")));
+        match rx.recv().await {
+            Some(LocalWriteCommand::Data(bytes)) => assert_eq!(bytes, Bytes::from_static(b"a")),
+            _ => panic!("expected resumed contiguous payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn local_write_commit_flushes_buffered_inbound_data_without_waiting_for_another_frame() {
+        let (tx, mut rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let mut inbound = InboundState::new();
+
+        handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"a"), &tx)
+            .await
+            .unwrap();
+        handle_inbound_data(&mut inbound, 1, Bytes::from_static(b"b"), &tx)
+            .await
+            .unwrap();
+        assert_eq!(inbound.next_offset, 1);
+        assert_eq!(inbound.buffer.get(&1), Some(&Bytes::from_static(b"b")));
+        assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
+
+        let ack = record_inbound_write_commit_and_flush(&mut inbound, 1, &tx).unwrap();
+
+        assert_eq!(ack, 1);
+        assert_eq!(inbound.next_offset, 2);
+        assert!(inbound.buffer.is_empty());
+        match rx.recv().await {
+            Some(LocalWriteCommand::Data(bytes)) => assert_eq!(bytes, Bytes::from_static(b"b")),
+            _ => panic!("expected buffered payload after write commit"),
+        }
+    }
+
+    #[tokio::test]
+    async fn local_write_commit_queues_fin_after_buffered_data_reaches_fin_offset() {
+        let (tx, mut rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let mut inbound = InboundState::new();
+        inbound.fin_offset = Some(1);
+
+        timeout(
+            Duration::from_millis(50),
+            handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"a"), &tx),
+        )
+            .await
+            .expect("FIN handling must not block while the local writer queue is full")
+            .unwrap();
+        assert_eq!(inbound.next_offset, 1);
+        assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
+
+        record_inbound_write_commit_and_flush(&mut inbound, 1, &tx).unwrap();
+
+        let shutdown = timeout(Duration::from_millis(50), rx.recv())
+            .await
+            .expect("FIN shutdown must not wait on a full local writer queue")
+            .expect("local writer shutdown command");
+        assert!(matches!(shutdown, LocalWriteCommand::Shutdown));
+        assert!(inbound.writer_shutdown);
+    }
+
+    #[test]
+    fn local_write_commit_keeps_closed_writer_failure_stream_scoped() {
+        let (tx, rx) = mpsc::channel::<LocalWriteCommand>(1);
+        drop(rx);
+        let mut inbound = InboundState::new();
+        inbound.next_offset = 1;
+        inbound.pending_write_lengths.push_back(1);
+        inbound.buffer.insert(1, Bytes::from_static(b"b"));
+
+        let ack = record_inbound_write_commit_and_flush(&mut inbound, 1, &tx)
+            .expect("the queued writer failure event must retain stream-local failure scope");
+
+        assert_eq!(ack, 1);
+        assert_eq!(inbound.next_offset, 1);
+        assert_eq!(inbound.buffer.get(&1), Some(&Bytes::from_static(b"b")));
+    }
+
+    #[test]
+    fn inbound_fin_keeps_closed_writer_failure_stream_scoped() {
+        let (tx, rx) = mpsc::channel::<LocalWriteCommand>(1);
+        drop(rx);
+        let mut inbound = InboundState::new();
+        inbound.fin_offset = Some(0);
+
+        try_queue_inbound_shutdown(&mut inbound, &tx)
+            .expect("the queued writer failure event must retain stream-local failure scope");
+
+        assert!(!inbound.writer_shutdown);
     }
 
     #[tokio::test]
