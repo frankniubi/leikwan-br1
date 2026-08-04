@@ -7103,6 +7103,28 @@ final class ProvisioningService
         $serviceId = (int) ($forward['service_id'] ?? 0);
         $desiredCount = $this->panelManagedEndpointCount($clientMode, $groupKeys, $serviceId ?: null);
         $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
+        $existing = $this->db->fetchAll(
+            'SELECT * FROM service_endpoints
+             WHERE forward_id = :forward_id
+               AND health_status <> :deleted
+               AND health_status <> :deleting
+             ORDER BY priority ASC, id ASC',
+            [
+                'forward_id' => $forwardId,
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+            ]
+        );
+        $preferredNodeIds = [];
+        foreach ($existing as $endpoint) {
+            if (!in_array((string) ($endpoint['health_status'] ?? ''), ['active', 'pending'], true)) {
+                continue;
+            }
+            $nodeId = (int) ($endpoint['node_id'] ?? 0);
+            if ($nodeId > 0) {
+                $preferredNodeIds[] = $nodeId;
+            }
+        }
         $eligibleLeigodNodeIds = null;
         if ($this->isDedicatedLeigodRuntime((string) ($forward['backend_mode'] ?? ''), $clientMode, $runtimePreference)) {
             $transport = $this->leigodEligibilityTransport((string) ($forward['transport_mode'] ?? 'tcp'));
@@ -7126,7 +7148,12 @@ final class ProvisioningService
                 $specificNode = $this->specificNodeForForward($specificNodeId, $serviceId);
                 $desiredNodes = is_array($specificNode) ? [$specificNode] : [];
             } else {
-                $desiredNodes = $this->pickNodesForGroups($groupKeys, $desiredCount, $serviceId ?: null);
+                $desiredNodes = $this->pickNodesForGroups(
+                    $groupKeys,
+                    $desiredCount,
+                    $serviceId ?: null,
+                    $preferredNodeIds
+                );
             }
         }
         if (is_array($eligibleLeigodNodeIds)) {
@@ -7144,18 +7171,6 @@ final class ProvisioningService
             $node['resolved_public_host'] = $publicHost;
             $reachableNodes[(int) $node['id']] = $node;
         }
-        $existing = $this->db->fetchAll(
-            'SELECT * FROM service_endpoints
-             WHERE forward_id = :forward_id
-               AND health_status <> :deleted
-               AND health_status <> :deleting
-             ORDER BY priority ASC, id ASC',
-            [
-                'forward_id' => $forwardId,
-                'deleted' => 'deleted',
-                'deleting' => 'deleting',
-            ]
-        );
         $existingByNode = [];
         foreach ($existing as $endpoint) {
             $nodeId = (int) ($endpoint['node_id'] ?? 0);
@@ -8195,7 +8210,8 @@ final class ProvisioningService
         );
     }
 
-    private function pickNodes(string $groupKey, int $count, ?int $serviceId = null): array
+    /** @param array<int, int> $preferredNodeIds */
+    private function pickNodes(string $groupKey, int $count, ?int $serviceId = null, array $preferredNodeIds = []): array
     {
         $params = [
             'active' => 'active',
@@ -8229,12 +8245,19 @@ final class ProvisioningService
         }
 
         $sql .= $this->nodeSelectionFreshnessSql($params);
-        // FIX C: order the LIMIT-bounded candidate window by current_load ASC then node_id ASC. Stale
-        // nodes are already excluded by nodeSelectionFreshnessSql(), so among fresh equal-load nodes the
-        // previous last_heartbeat_at DESC tie-break only injected volatility: it changed every heartbeat
-        // and flipped which equal-load node fell inside the LIMIT window, churning endpoint membership.
-        // node_id ASC is an immutable tie-break, so the selected window is deterministic across reconciles.
-        $sql .= ' ORDER BY n.current_load ASC, n.id ASC LIMIT ' . max(1, $count);
+        $preferredPlaceholders = [];
+        foreach (array_values(array_unique(array_filter(array_map('intval', $preferredNodeIds), static fn(int $id): bool => $id > 0))) as $index => $nodeId) {
+            $key = 'preferred_node_' . $index;
+            $preferredPlaceholders[] = ':' . $key;
+            $params[$key] = $nodeId;
+        }
+        // Keep healthy assigned nodes ahead of new capacity so their own load contribution cannot evict
+        // them on the next reconcile. Eligibility and freshness filters still force real failover; new
+        // capacity remains load-balanced with an immutable node-id tie-break.
+        $preferredOrder = $preferredPlaceholders !== []
+            ? 'CASE WHEN n.id IN (' . implode(', ', $preferredPlaceholders) . ') THEN 0 ELSE 1 END ASC, '
+            : '';
+        $sql .= ' ORDER BY ' . $preferredOrder . 'n.current_load ASC, n.id ASC LIMIT ' . max(1, $count);
         return $this->db->fetchAll($sql, $params);
     }
 
@@ -8438,9 +8461,10 @@ final class ProvisioningService
 
     /**
      * @param array<int, string> $groupKeys
+     * @param array<int, int> $preferredNodeIds
      * @return array<int, array<string, mixed>>
      */
-    private function pickNodesForGroups(array $groupKeys, int $count, ?int $serviceId = null): array
+    private function pickNodesForGroups(array $groupKeys, int $count, ?int $serviceId = null, array $preferredNodeIds = []): array
     {
         $normalized = array_values(array_unique(array_filter(array_map(static fn(string $item): string => trim($item), $groupKeys), static fn(string $item): bool => $item !== '')));
         if ($normalized === []) {
@@ -8450,7 +8474,7 @@ final class ProvisioningService
         $primary = [];
         $secondary = [];
         foreach ($normalized as $groupKey) {
-            $groupNodes = $this->pickNodes($groupKey, max(1, $count), $serviceId);
+            $groupNodes = $this->pickNodes($groupKey, max(1, $count), $serviceId, $preferredNodeIds);
             if ($groupNodes === []) {
                 continue;
             }
