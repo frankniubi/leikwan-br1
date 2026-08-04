@@ -1114,10 +1114,11 @@ fn should_reset_transport_stream_on_close_timeout(state: &TcpStreamState, now: I
         return false;
     }
 
-    // Once our FIN has been acknowledged, the peer may still legitimately send
-    // control/result bytes before it closes its own write side. Treat that as a
-    // half-closed stream, not a stuck close-path that should be reset.
+    // A stream that sent request bytes may legitimately half-close before the
+    // remote result arrives. A zero-byte connect-and-close probe has no result
+    // to wait for and must be reclaimed after the normal close grace.
     if state.outbound_fin_acked
+        && state.outbound_next_offset > 0
         && state.inbound.fin_offset.is_none()
         && !state.inbound.writer_shutdown
     {
@@ -5782,12 +5783,28 @@ mod tests {
         let (close_tx, _close_rx) = watch::channel(false);
         let mut state = TcpStreamState::new(tx, close_tx, true);
         state.local_eof = true;
+        state.outbound_next_offset = 4;
         state.outbound_fin_acked = true;
         state.close_deadline_at = Some(Instant::now() - Duration::from_secs(5));
 
         assert!(
             !should_reset_transport_stream_on_close_timeout(&state, Instant::now()),
             "once our fin is acked, keep the stream open for remote result/control data instead of resetting it immediately"
+        );
+    }
+
+    #[test]
+    fn close_timeout_reclaims_zero_byte_half_closed_probe() {
+        let (tx, _rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let mut state = TcpStreamState::new(tx, close_tx, true);
+        state.local_eof = true;
+        state.outbound_fin_acked = true;
+        state.close_deadline_at = Some(Instant::now() - Duration::from_secs(5));
+
+        assert!(
+            should_reset_transport_stream_on_close_timeout(&state, Instant::now()),
+            "zero-byte connect-and-close probes must not retain upstream sockets indefinitely"
         );
     }
 
