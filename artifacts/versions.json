@@ -1,11 +1,11 @@
 {
   "slave_agent": {
-    "version": "2026.08.04.1",
+    "version": "2026.08.04.2",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "dcd7bd1a22b5946e087f351e9bdc02fa8fd565d43c12c01fb184f39fc84696ea",
-    "size_bytes": 331365,
-    "size": 331365
+    "sha256": "3377a4147dd42a0669c400c6bb398e2f6ba3b82ea01ebe4a2f144c28d938c1f7",
+    "size_bytes": 331833,
+    "size": 331833
   },
   "gost_linux_amd64": {
     "version": "3.2.6",
