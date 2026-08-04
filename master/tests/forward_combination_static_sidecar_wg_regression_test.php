@@ -484,6 +484,7 @@ namespace {
             'wireguard_public_key' => 'sidecar10-pub',
             'wireguard_listen_port' => 18502,
             'wireguard_port_range_end' => 18509,
+            'single_race_via_sidecar' => true,
         ], JSON_UNESCAPED_SLASHES),
     ]]);
     $db->seed('nodes', [[
@@ -523,6 +524,15 @@ namespace {
     $sharedForward['bond_sidecar_point_id'] = 10;
     $sharedForward['bond_remote_host'] = 'hk-sidecar.example';
     $sharedForward['bond_remote_port'] = 18501;
+    $sharedForward['bond_sidecar_host'] = 'hk-sidecar.example';
+    $sharedForward['bond_sidecar_port'] = 18501;
+    $sharedForward['mptcp_sidecar_port'] = 18502;
+    $sharedForward['bond_sidecar_point_agent_config_json'] = json_encode([
+        'wireguard_public_key' => 'sidecar10-pub',
+        'wireguard_listen_port' => 18502,
+        'wireguard_port_range_end' => 18509,
+        'single_race_via_sidecar' => true,
+    ], JSON_UNESCAPED_SLASHES);
     $sharedForward['target_host'] = 'v4-hkt-b.mcbar.cc';
     $sharedForward['target_port'] = 5201;
     $sharedNode = $db->fetchOne('SELECT * FROM nodes WHERE id = :id LIMIT 1', ['id' => 2]);
@@ -537,6 +547,71 @@ namespace {
     }
     if (($sharedPayload['target'] ?? '') !== $sharedRelayTarget) {
         fail('shared point publish target must use the private WG relay_target');
+    }
+    foreach (['single', 'race'] as $frontendMode) {
+        $frontendForward = $sharedForward;
+        $frontendForward['id'] = $frontendMode === 'single' ? 88 : 89;
+        $frontendForward['client_mode'] = $frontendMode;
+        $frontendPayload = call_private(
+            $service,
+            'publishTaskPayloadForForward',
+            $frontendForward,
+            $sharedNode,
+            $frontendMode === 'single' ? 588 : 589
+        );
+        if (($frontendPayload['sidecar_required'] ?? false) !== true) {
+            fail($frontendMode . ' sidecar frontend must require the configured sidecar');
+        }
+        if (($frontendPayload['aggregation_enabled'] ?? true) !== false) {
+            fail($frontendMode . ' sidecar frontend must remain non-aggregating');
+        }
+        if (($frontendPayload['publish_bond_runtime'] ?? false) !== true) {
+            fail($frontendMode . ' sidecar frontend must publish the bond carrier runtime');
+        }
+        if (($frontendPayload['active_family'] ?? '') !== 'sidecar_aggregation'
+            || ($frontendPayload['target_contract'] ?? '') !== 'sidecar_aggregation') {
+            fail($frontendMode . ' sidecar frontend must retain the compatible sidecar contract family');
+        }
+        if (($frontendPayload['ingress_protocol'] ?? '') !== 'plain_tcp_mux'
+            || ($frontendPayload['backend_protocol'] ?? '') !== 'tcp_relay') {
+            fail($frontendMode . ' sidecar frontend must use authenticated plain TCP ingress');
+        }
+        if (trim((string) ($frontendPayload['ingress_auth_token'] ?? '')) === '') {
+            fail($frontendMode . ' sidecar frontend must publish an ingress auth token');
+        }
+        $frontendRelayTarget = (string) ($frontendPayload['sidecar_uplink']['relay_target'] ?? '');
+        if (!str_starts_with($frontendRelayTarget, '10.240.') || !str_ends_with($frontendRelayTarget, ':18501')) {
+            fail($frontendMode . ' sidecar frontend must target the shared private WG bond relay');
+        }
+        if (($frontendPayload['target'] ?? '') !== $frontendRelayTarget) {
+            fail($frontendMode . ' sidecar frontend slave target must be the private WG relay');
+        }
+
+        $frontendBonding = call_private($service, 'buildBondClientConfig', $frontendForward, [[
+            'id' => $frontendMode === 'single' ? 588 : 589,
+            'host' => '111.231.3.220',
+            'public_port' => 7000,
+        ]]);
+        if (($frontendBonding['frontend_mode'] ?? '') !== $frontendMode
+            || ($frontendBonding['strategy_locked'] ?? false) !== true) {
+            fail($frontendMode . ' client contract must lock the bond frontend strategy');
+        }
+    }
+
+    $ungatedSingle = $sharedForward;
+    $ungatedSingle['id'] = 87;
+    $ungatedSingle['client_mode'] = 'single';
+    $ungatedSingle['bond_sidecar_point_agent_config_json'] = json_encode([
+        'wireguard_public_key' => 'sidecar10-pub',
+        'wireguard_listen_port' => 18502,
+        'wireguard_port_range_end' => 18509,
+        'single_race_via_sidecar' => false,
+    ], JSON_UNESCAPED_SLASHES);
+    $ungatedPayload = call_private($service, 'publishTaskPayloadForForward', $ungatedSingle, $sharedNode, 587);
+    if (($ungatedPayload['publish_bond_runtime'] ?? true) !== false
+        || ($ungatedPayload['sidecar_required'] ?? true) !== false
+        || ($ungatedPayload['target'] ?? '') !== 'v4-hkt-b.mcbar.cc:5201') {
+        fail('single forward without the point gate must retain the direct legacy runtime');
     }
     $sharedPort443 = $sharedForward;
     $sharedPort443['public_port'] = 443;
