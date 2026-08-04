@@ -6805,6 +6805,10 @@ final class ProvisioningService
                 }
             }
         }
+        $wireguardEndpointHost = trim((string) ($sidecarConfig['wireguard_endpoint_host'] ?? ''));
+        if ($wireguardEndpointHost === '') {
+            $wireguardEndpointHost = $sidecarHost;
+        }
 
         $listenSource = [
             'listen_port' => (int) ($combination['sidecar_listen_port'] ?? 0),
@@ -6900,7 +6904,7 @@ final class ProvisioningService
                 'peer_address' => $addresses['sidecar_address'],
                 'sidecar_peer_public_key' => $sidecarPublicKey,
                 'slave_peer_public_key' => $slavePublicKey,
-                'sidecar_endpoint_host' => $sidecarHost,
+                'sidecar_endpoint_host' => $wireguardEndpointHost,
                 'sidecar_endpoint_port' => $sidecarListenPort,
                 'local_listen_port' => $this->stableStaticLocalUdpPort($pointId, 0, $nodeId, 'shared'),
                 'relay_target' => $addresses['sidecar_address'] . ':' . $relayPort,
@@ -6950,7 +6954,7 @@ final class ProvisioningService
                 'peer_address' => $addresses['sidecar_address'],
                 'sidecar_peer_public_key' => $sidecarPublicKey,
                 'slave_peer_public_key' => $slavePublicKey,
-                'sidecar_endpoint_host' => $sidecarHost,
+                'sidecar_endpoint_host' => $wireguardEndpointHost,
                 'sidecar_endpoint_port' => $listenPort,
                 'local_listen_port' => $slaveListenPort,
                 'relay_target' => $addresses['sidecar_address'] . ':' . $relayPort,

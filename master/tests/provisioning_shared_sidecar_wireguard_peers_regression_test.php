@@ -155,6 +155,21 @@ namespace {
     assert_same('lwsp10n2', $pairs[0]['slave']['interface_name'] ?? null, 'slave interface must be point-and-node-level');
     assert_same(18502, $pairs[0]['sidecar']['listen_port'] ?? null, 'sidecar must keep the persisted WG listen port');
     assert_same(18502, $pairs[0]['slave']['sidecar_endpoint_port'] ?? null, 'slave must dial the shared WG listen port');
+    assert_same('hk-sidecar.example', $pairs[0]['slave']['sidecar_endpoint_host'] ?? null, 'shared WG endpoint must fall back to the sidecar host');
+
+    $endpointOverride = $combination;
+    $endpointOverride['sidecar_agent_config_json'] = json_encode([
+        'wireguard_public_key' => 'sidecar-public-key',
+        'wireguard_listen_port' => 18502,
+        'wireguard_port_range_end' => 18509,
+        'wireguard_endpoint_host' => 'wg-sidecar.example',
+    ], JSON_UNESCAPED_SLASHES);
+    $overridePairs = call_private($service, 'buildStaticSidecarUplinkPairForNode', $endpointOverride, $node);
+    assert_same(
+        'wg-sidecar.example',
+        $overridePairs[0]['slave']['sidecar_endpoint_host'] ?? null,
+        'shared WG endpoint must prefer the explicit WireGuard endpoint host'
+    );
 
     $missingExplicitPort = $combination;
     $missingExplicitPort['sidecar_agent_config_json'] = json_encode([
