@@ -34,6 +34,19 @@ class ArtifactVersionsConsistencyTests(unittest.TestCase):
 
         self.assertEqual(agent_path.read_bytes(), artifact_path.read_bytes())
 
+    def test_install_forward_runtime_artifact_and_manifest_match_source(self) -> None:
+        source_path = REPO_ROOT / "client-agent" / "install_forward_runtime.py"
+        artifact_path = REPO_ROOT / "artifacts" / "install-forward-runtime.py"
+        versions_path = REPO_ROOT / "artifacts" / "versions.json"
+
+        self.assertEqual(source_path.read_bytes(), artifact_path.read_bytes())
+
+        import hashlib
+        versions = json.loads(versions_path.read_text(encoding="utf-8"))
+        runtime = versions["install_forward_runtime"]
+        self.assertEqual(hashlib.sha256(source_path.read_bytes()).hexdigest(), runtime["sha256"])
+        self.assertEqual(source_path.stat().st_size, runtime["size_bytes"])
+
 
     def test_client_agent_installer_artifact_hash_is_current(self) -> None:
         installer_path = REPO_ROOT / "install" / "install-client-agent.sh"
