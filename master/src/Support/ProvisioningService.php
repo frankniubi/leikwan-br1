@@ -5318,6 +5318,15 @@ final class ProvisioningService
         }
 
         $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $forwardRuntimePreference);
+        $sharedSidecarRequired = $sidecarRequired
+            && strtolower(trim($backendMode)) === 'current_mode'
+            && $this->staticSidecarUsesSharedWireguardPeers($bondSidecarPointId);
+        if ($sharedSidecarRequired && $publicPort === 443) {
+            throw new ApiException('shared_sidecar_public_port_forbidden', 422, [
+                'bond_sidecar_point_id' => $bondSidecarPointId,
+                'public_port' => $publicPort,
+            ]);
+        }
         if ($sidecarRequired) {
             if ($bondSidecarPointId <= 0) {
                 throw new ApiException('bond_sidecar_point_required_for_aggregation', 422, ['client_mode' => $clientMode]);
@@ -7682,6 +7691,23 @@ final class ProvisioningService
         $staticSidecarUplink = $directSidecarTarget !== null
             ? (array_values(array_filter($staticSidecarUplinks, fn(array $uplink): bool => $this->isCanonicalStaticSidecarUplink($uplink)))[0] ?? null)
             : null;
+        $sharedSidecarRequired = $directSidecarTarget !== null && $this->forwardRequiresSharedStaticSidecarUplink($forward);
+        if ($sharedSidecarRequired && (int) ($forward['public_port'] ?? 0) === 443) {
+            throw new ApiException('shared_sidecar_public_port_forbidden', 409, [
+                'forward_id' => (int) ($forward['id'] ?? 0),
+                'bond_sidecar_point_id' => (int) ($forward['bond_sidecar_point_id'] ?? 0),
+            ]);
+        }
+        if ($sharedSidecarRequired && (
+            !is_array($staticSidecarUplink)
+            || (string) ($staticSidecarUplink['wireguard_peer_mode'] ?? '') !== 'shared'
+        )) {
+            throw new ApiException('shared_sidecar_uplink_unavailable', 409, [
+                'forward_id' => (int) ($forward['id'] ?? 0),
+                'node_id' => (int) ($node['id'] ?? $node['node_id'] ?? 0),
+                'bond_sidecar_point_id' => (int) ($forward['bond_sidecar_point_id'] ?? 0),
+            ]);
+        }
         $staticSidecarSelector = $directSidecarTarget !== null
             ? $this->staticSidecarUplinkSelectorPayload($staticSidecarUplinks, (int) ($directSidecarTarget['port'] ?? 0), (int) ($forward['id'] ?? 0), $endpointId)
             : [];
@@ -9918,6 +9944,21 @@ final class ProvisioningService
         return in_array((string) ($uplink['lane'] ?? ''), ['primary', 'shared'], true);
     }
 
+    private function forwardRequiresSharedStaticSidecarUplink(array $forward): bool
+    {
+        $pointId = (int) ($forward['bond_sidecar_point_id'] ?? 0);
+        if ($pointId <= 0 || !$this->staticSidecarUsesSharedWireguardPeers($pointId)) {
+            return false;
+        }
+        $backendMode = strtolower(trim((string) ($forward['backend_mode'] ?? 'current_mode')));
+        if ($backendMode !== 'current_mode') {
+            return false;
+        }
+        $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
+        $runtimePreference = $this->runtimePreferenceForForward($forward);
+        return $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+    }
+
     private function primeSharedStaticSidecarSubnetRegistryForPoint(int $pointId): void
     {
         if ($pointId <= 0 || isset($this->sharedStaticSidecarSubnetRegistryPrimed[$pointId])) {
@@ -10828,6 +10869,16 @@ final class ProvisioningService
         $sidecarLegPort = $this->stableSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $forwardId, $nodeId);
         $staticSidecarUplink = $this->staticSidecarPrimaryUplinkForForwardNode($forward, $node, 'mptcp');
         $usesStaticSidecarUplink = is_array($staticSidecarUplink) && trim((string) ($staticSidecarUplink['peer_address'] ?? '')) !== '';
+        if ($this->forwardRequiresSharedStaticSidecarUplink($forward) && (
+            !$usesStaticSidecarUplink
+            || (string) ($staticSidecarUplink['wireguard_peer_mode'] ?? '') !== 'shared'
+        )) {
+            throw new ApiException('shared_sidecar_uplink_unavailable', 409, [
+                'forward_id' => $forwardId,
+                'node_id' => $nodeId,
+                'bond_sidecar_point_id' => (int) ($forward['bond_sidecar_point_id'] ?? 0),
+            ]);
+        }
         $clientCfRelayEnabled = $this->forwardUsesCfMode($forward) && $this->nodeSupportsCfwgRelay($nodeConfig);
         if ($clientCfRelayEnabled) {
             $outerTransport = 'wstunnel_udp';

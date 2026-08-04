@@ -161,6 +161,7 @@ namespace {
 
     use Leikwan\Master\Config;
     use Leikwan\Master\Database\Database;
+    use Leikwan\Master\Support\ApiException;
     use Leikwan\Master\Support\ProvisioningService;
 
     function fail(string $message): never
@@ -537,6 +538,16 @@ namespace {
     if (($sharedPayload['target'] ?? '') !== $sharedRelayTarget) {
         fail('shared point publish target must use the private WG relay_target');
     }
+    $sharedPort443 = $sharedForward;
+    $sharedPort443['public_port'] = 443;
+    try {
+        call_private($service, 'publishTaskPayloadForForward', $sharedPort443, $sharedNode, 581);
+        fail('allowlisted shared point must reject public port 443');
+    } catch (ApiException $exception) {
+        if ($exception->getMessage() !== 'shared_sidecar_public_port_forbidden') {
+            throw $exception;
+        }
+    }
     $validSharedManagement = $service->slaveSidecarUplinkManagementForPoint(10);
     if (($validSharedManagement['authoritative'] ?? false) !== true || count($validSharedManagement['uplinks'] ?? []) !== 1) {
         fail('valid shared point management must be authoritative with one peer');
@@ -554,6 +565,14 @@ namespace {
     $invalidSharedManagement = $service->slaveSidecarUplinkManagementForPoint(10);
     if (($invalidSharedManagement['authoritative'] ?? true) !== false) {
         fail('invalid shared point management must be non-authoritative so agents preserve the active interface');
+    }
+    try {
+        call_private($service, 'publishTaskPayloadForForward', $sharedForward, $sharedNode, 582);
+        fail('invalid shared point must not fall back to the public sidecar target');
+    } catch (ApiException $exception) {
+        if ($exception->getMessage() !== 'shared_sidecar_uplink_unavailable') {
+            throw $exception;
+        }
     }
 
     echo "ok\n";
