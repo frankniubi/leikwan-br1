@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.08.02.1"
+AGENT_VERSION = "2026.08.04.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
