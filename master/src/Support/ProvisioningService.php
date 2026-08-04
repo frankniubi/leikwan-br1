@@ -635,11 +635,14 @@ final class ProvisioningService
         if ($pointId <= 0) {
             return false;
         }
-        $pointConfig = $this->decodeJsonAssoc(
-            $forward['bond_sidecar_point_agent_config_json']
-                ?? $forward['sidecar_agent_config_json']
-                ?? null
-        );
+        $pointConfigSource = $forward['bond_sidecar_point_agent_config_json']
+            ?? $forward['sidecar_agent_config_json']
+            ?? null;
+        if ($pointConfigSource === null || $pointConfigSource === '') {
+            $point = $this->sidecarPointById($pointId);
+            $pointConfigSource = is_array($point) ? ($point['agent_config_json'] ?? null) : null;
+        }
+        $pointConfig = $this->decodeJsonAssoc($pointConfigSource);
         return $this->configValueEnabled($pointConfig['single_race_via_sidecar'] ?? false);
     }
 
@@ -5348,7 +5351,13 @@ final class ProvisioningService
             throw new ApiException('invalid_forward_payload', 422, ['payload' => $payload]);
         }
 
-        $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $forwardRuntimePreference);
+        $sidecarFrontendRequested = $this->usesSingleRaceSidecarFrontend([
+            'client_mode' => $clientMode,
+            'backend_mode' => $backendMode,
+            'bond_sidecar_point_id' => $bondSidecarPointId,
+        ]);
+        $sidecarRequired = $sidecarFrontendRequested
+            || $this->sidecarRequiredForRuntime($backendMode, $clientMode, $forwardRuntimePreference);
         $sharedSidecarRequired = $sidecarRequired
             && strtolower(trim($backendMode)) === 'current_mode'
             && $this->staticSidecarUsesSharedWireguardPeers($bondSidecarPointId);
@@ -5634,8 +5643,10 @@ final class ProvisioningService
             ]);
         }
 
-        $directSidecarTarget = in_array($clientMode, ['bond', 'mptcp'], true)
-            ? $this->resolveSidecarDirectTarget($forward, $clientMode)
+        $sidecarFrontend = $this->usesSingleRaceSidecarFrontend($forward);
+        $directSidecarMode = $sidecarFrontend ? 'bond' : $clientMode;
+        $directSidecarTarget = in_array($directSidecarMode, ['bond', 'mptcp'], true)
+            ? $this->resolveSidecarDirectTarget($forward, $directSidecarMode)
             : null;
         $publishTarget = $directSidecarTarget !== null
             ? ($directSidecarTarget['host'] . ':' . $directSidecarTarget['port'])
@@ -10038,7 +10049,8 @@ final class ProvisioningService
         }
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
         $runtimePreference = $this->runtimePreferenceForForward($forward);
-        return $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+        return $this->usesSingleRaceSidecarFrontend($forward)
+            || $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
     }
 
     private function primeSharedStaticSidecarSubnetRegistryForPoint(int $pointId): void

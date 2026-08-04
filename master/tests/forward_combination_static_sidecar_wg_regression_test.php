@@ -587,6 +587,20 @@ namespace {
             fail($frontendMode . ' sidecar frontend slave target must be the private WG relay');
         }
 
+        $rawFrontendForward = $frontendForward;
+        unset($rawFrontendForward['bond_sidecar_point_agent_config_json']);
+        $rawFrontendPayload = call_private(
+            $service,
+            'publishTaskPayloadForForward',
+            $rawFrontendForward,
+            $sharedNode,
+            $frontendMode === 'single' ? 688 : 689
+        );
+        if (($rawFrontendPayload['sidecar_required'] ?? false) !== true
+            || ($rawFrontendPayload['publish_bond_runtime'] ?? false) !== true) {
+            fail($frontendMode . ' raw persisted forward must resolve its gated point config before first publish');
+        }
+
         $frontendBonding = call_private($service, 'buildBondClientConfig', $frontendForward, [[
             'id' => $frontendMode === 'single' ? 588 : 589,
             'host' => '111.231.3.220',
