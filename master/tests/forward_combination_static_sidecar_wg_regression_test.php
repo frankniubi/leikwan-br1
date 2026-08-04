@@ -601,6 +601,25 @@ namespace {
             fail($frontendMode . ' raw persisted forward must resolve its gated point config before first publish');
         }
 
+        $uncataloguedFrontendForward = $rawFrontendForward;
+        $uncataloguedFrontendForward['forward_combination_id'] = null;
+        $uncataloguedFrontendPayload = call_private(
+            $service,
+            'publishTaskPayloadForForward',
+            $uncataloguedFrontendForward,
+            $sharedNode,
+            $frontendMode === 'single' ? 788 : 789
+        );
+        $uncataloguedUplink = $uncataloguedFrontendPayload['sidecar_uplink'] ?? null;
+        if (!is_array($uncataloguedUplink)
+            || ($uncataloguedUplink['wireguard_peer_mode'] ?? '') !== 'shared'
+            || (int) ($uncataloguedUplink['forward_combination_id'] ?? -1) !== 0) {
+            fail($frontendMode . ' uncatalogued frontend must reuse the point-scoped shared WG peer');
+        }
+        if (($uncataloguedFrontendPayload['target'] ?? '') !== ($uncataloguedUplink['relay_target'] ?? '')) {
+            fail($frontendMode . ' uncatalogued frontend must publish through the shared WG relay');
+        }
+
         $frontendBonding = call_private($service, 'buildBondClientConfig', $frontendForward, [[
             'id' => $frontendMode === 'single' ? 588 : 589,
             'host' => '111.231.3.220',

@@ -6819,7 +6819,8 @@ final class ProvisioningService
         $combinationId = (int) ($combination['id'] ?? $combination['forward_combination_id'] ?? 0);
         $pointId = (int) ($combination['sidecar_point_id'] ?? 0);
         $nodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
-        if ($combinationId <= 0 || $pointId <= 0 || $nodeId <= 0) {
+        $sharedPeerMode = $pointId > 0 && $this->staticSidecarCombinationUsesSharedWireguardPeers($combination);
+        if (($combinationId <= 0 && !$sharedPeerMode) || $pointId <= 0 || $nodeId <= 0) {
             return [];
         }
         if ($this->staticSidecarUsesSharedWireguardPeers($pointId)) {
@@ -6901,7 +6902,7 @@ final class ProvisioningService
             $overlaySidecarIps = array_values(array_unique($overlaySidecarIps));
             $overlayClientIps = array_values(array_unique($overlayClientIps));
         }
-        if ($this->staticSidecarCombinationUsesSharedWireguardPeers($combination)) {
+        if ($sharedPeerMode) {
             $sidecarListenPort = (int) ($sidecarConfig['wireguard_listen_port'] ?? 0);
             if ($sidecarListenPort <= 0 || $sidecarListenPort > 65535 || $sidecarHost === '') {
                 return [];
@@ -7519,12 +7520,26 @@ final class ProvisioningService
         }
         $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
         $nodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
-        if ($combinationId <= 0 || $nodeId <= 0) {
+        if ($nodeId <= 0) {
             return [];
         }
-        $combination = $this->forwardCombinationById($combinationId);
-        if (!is_array($combination)) {
-            return [];
+        if ($combinationId <= 0) {
+            if (!$this->usesSingleRaceSidecarFrontend($forward)) {
+                return [];
+            }
+            $combination = [
+                'id' => 0,
+                'sidecar_point_id' => (int) ($forward['bond_sidecar_point_id'] ?? 0),
+                'backend_mode' => (string) ($forward['backend_mode'] ?? 'current_mode'),
+                'client_mode' => (string) ($forward['client_mode'] ?? 'single'),
+                'runtime_preference' => $this->runtimePreferenceForForward($forward),
+                'self_leg_outer_transport' => 'cnix',
+            ];
+        } else {
+            $combination = $this->forwardCombinationById($combinationId);
+            if (!is_array($combination)) {
+                return [];
+            }
         }
         if ((int) ($combination['sidecar_point_id'] ?? 0) <= 0 && (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0) {
             $combination['sidecar_point_id'] = (int) $forward['bond_sidecar_point_id'];
