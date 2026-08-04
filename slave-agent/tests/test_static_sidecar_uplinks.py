@@ -76,6 +76,66 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
             "sidecar_static_uplinks": [uplink],
         }
 
+    @staticmethod
+    def shared_uplink(combination_id: int = 13, **overrides) -> dict:
+        uplink = {
+            "enabled": True,
+            "mode": "static_slave_sidecar",
+            "wireguard_peer_mode": "shared",
+            "forward_combination_id": combination_id,
+            "sidecar_point_id": 10,
+            "node_id": 2,
+            "lane": "shared",
+            "interface_name": "lwsp10n2",
+            "listen_port": 18502,
+            "local_address": "10.240.3.2",
+            "peer_address": "10.240.3.1",
+            "sidecar_peer_public_key": "sidecar-public-key",
+            "sidecar_endpoint_host": "hk-sidecar.example",
+            "sidecar_endpoint_port": 18502,
+            "local_listen_port": 43172,
+            "outer_transport": "udp",
+            "peer_keepalive_seconds": 25,
+        }
+        uplink.update(overrides)
+        return uplink
+
+    def test_shared_point_is_applied_once_when_panel_repeats_combination_provenance(self):
+        agent = self.make_agent()
+        first = self.shared_uplink(combination_id=13)
+        repeated = self.shared_uplink(combination_id=99)
+
+        with mock.patch.object(agent, "apply_sidecar_uplink") as apply_uplink:
+            with mock.patch.object(agent, "watch_static_sidecar_uplink"):
+                agent.apply_static_sidecar_uplinks([first, repeated])
+
+        apply_uplink.assert_called_once()
+
+    def test_conflicting_shared_duplicates_preserve_previous_interface(self):
+        agent = self.make_agent()
+        agent.save_static_sidecar_uplink_state({
+            "interfaces": {
+                "lwsp10n2": {
+                    "interface_name": "lwsp10n2",
+                    "sidecar_point_id": 10,
+                    "node_id": 2,
+                    "lane": "shared",
+                }
+            }
+        })
+        first = self.shared_uplink(combination_id=13)
+        conflict = self.shared_uplink(combination_id=99, sidecar_endpoint_port=18504)
+
+        with mock.patch.object(agent, "apply_sidecar_uplink") as apply_uplink:
+            with mock.patch.object(agent, "watch_static_sidecar_uplink"):
+                with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
+                    agent.apply_static_sidecar_uplinks([first, conflict])
+
+        apply_uplink.assert_not_called()
+        remove_uplink.assert_not_called()
+        state = agent.load_static_sidecar_uplink_state()
+        self.assertIn("lwsp10n2", state.get("interfaces", {}))
+
     def mark_selector_interfaces_ready(self, agent, *interfaces: str) -> None:
         for iface in interfaces:
             path = agent.wireguard_interface_path(iface)
