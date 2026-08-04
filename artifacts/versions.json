@@ -144,8 +144,8 @@
     "version": "0.1.0",
     "path": "artifacts/wstunnel/leikwan-ingress_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-ingress_linux_amd64",
-    "sha256": "cb53060c7a2978cbecbb2aa08d2acc28133428545f9bfc7711ca9ffe4925cd83",
-    "size_bytes": 3079928
+    "sha256": "7f6358b07911b54774d7f3b8ed99baacc880fa222eea3663d2173c5058ce44fc",
+    "size_bytes": 3236312
   },
   "leikwan_bond_windows_amd64": {
     "version": "0.1.16",
