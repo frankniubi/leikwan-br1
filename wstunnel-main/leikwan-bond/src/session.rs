@@ -111,6 +111,12 @@ enum TcpPenalty {
     CloseTimeout,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TcpFailureScope {
+    LocalEndpoint,
+    Transport,
+}
+
 impl TcpPenalty {
     fn weight(self) -> f64 {
         match self {
@@ -1809,9 +1815,10 @@ async fn run_tcp_transport_session(
                             continue;
                         }
                         if let Some(state) = streams.get_mut(&stream_id) {
-                            let _ = suppress_stream_preferred_tcp_leg(
+                            let _ = suppress_stream_preferred_tcp_leg_for_failure_scope(
                                 &mut legs,
                                 state,
+                                TcpFailureScope::LocalEndpoint,
                                 TcpPenalty::LocalReadFailed,
                                 config.leg_cooldown,
                             );
@@ -1890,9 +1897,10 @@ async fn run_tcp_transport_session(
                     }
                     TcpTransportEvent::LocalWriteFailed { stream_id, error } => {
                         if let Some(state) = streams.get_mut(&stream_id) {
-                            let _ = suppress_stream_preferred_tcp_leg(
+                            let _ = suppress_stream_preferred_tcp_leg_for_failure_scope(
                                 &mut legs,
                                 state,
+                                TcpFailureScope::LocalEndpoint,
                                 TcpPenalty::LocalWriteFailed,
                                 config.leg_cooldown,
                             );
@@ -4930,6 +4938,19 @@ fn suppress_stream_preferred_tcp_leg(
     Some(leg_id)
 }
 
+fn suppress_stream_preferred_tcp_leg_for_failure_scope(
+    legs: &mut [LegState],
+    state: &mut TcpStreamState,
+    scope: TcpFailureScope,
+    penalty: TcpPenalty,
+    cooldown: Duration,
+) -> Option<usize> {
+    if scope == TcpFailureScope::LocalEndpoint {
+        return None;
+    }
+    suppress_stream_preferred_tcp_leg(legs, state, penalty, cooldown)
+}
+
 fn select_stream_leg_warmup(
     state: &mut TcpStreamState,
     legs: &[LegState],
@@ -5272,9 +5293,10 @@ mod tests {
         state.preferred_leg_id = Some(0);
 
         let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
-        let suppressed = suppress_stream_preferred_tcp_leg(
+        let suppressed = suppress_stream_preferred_tcp_leg_for_failure_scope(
             &mut legs,
             &mut state,
+            TcpFailureScope::Transport,
             TcpPenalty::LocalWriteFailed,
             test_config().leg_cooldown,
         );
@@ -5286,6 +5308,28 @@ mod tests {
             legs[0].tcp_health.state,
             LegHealthState::Degraded | LegHealthState::Probation | LegHealthState::Quarantined
         ));
+    }
+
+    #[test]
+    fn local_endpoint_failure_does_not_cool_or_unpin_transport_leg() {
+        let (local_write_tx, _local_write_rx) = mpsc::channel::<LocalWriteCommand>(8);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let mut state = TcpStreamState::new(local_write_tx, close_tx, false);
+        state.preferred_leg_id = Some(0);
+
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        let suppressed = suppress_stream_preferred_tcp_leg_for_failure_scope(
+            &mut legs,
+            &mut state,
+            TcpFailureScope::LocalEndpoint,
+            TcpPenalty::LocalWriteFailed,
+            test_config().leg_cooldown,
+        );
+
+        assert_eq!(suppressed, None);
+        assert_eq!(state.preferred_leg_id, Some(0));
+        assert!(legs[0].cooldown_until.is_none());
+        assert_eq!(legs[0].penalty_count, 0);
     }
 
     #[test]
