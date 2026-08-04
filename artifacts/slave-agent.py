@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.08.02.1"
+AGENT_VERSION = "2026.08.04.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -2940,6 +2940,39 @@ class SlaveAgent:
     def save_static_sidecar_uplink_state(self, payload: dict[str, Any]) -> None:
         self.write_json(self.static_sidecar_uplink_state_path(), payload)
 
+    def normalize_static_sidecar_uplinks(self, raw_uplinks: list[Any]) -> tuple[list[dict[str, Any]], set[str]]:
+        normalized: dict[str, dict[str, Any]] = {}
+        invalid: set[str] = set()
+        comparable_shared_fields = (
+            "sidecar_point_id",
+            "node_id",
+            "local_address",
+            "peer_address",
+            "sidecar_peer_public_key",
+            "sidecar_endpoint_host",
+            "sidecar_endpoint_port",
+            "local_listen_port",
+            "outer_transport",
+        )
+        for raw in raw_uplinks:
+            if not isinstance(raw, dict):
+                continue
+            uplink = dict(raw)
+            interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+            if interface_name == "" or not uplink.get("enabled", False):
+                continue
+            previous = normalized.get(interface_name)
+            if previous is None:
+                normalized[interface_name] = uplink
+                continue
+            if (
+                str(previous.get("wireguard_peer_mode", "") or "").strip().lower() != "shared"
+                or str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() != "shared"
+                or any(previous.get(key) != uplink.get(key) for key in comparable_shared_fields)
+            ):
+                invalid.add(interface_name)
+        return [uplink for name, uplink in normalized.items() if name not in invalid], invalid
+
     def apply_static_sidecar_uplinks(self, raw_uplinks: Any, section_present: bool = True) -> None:
         # BUG-1: when the uplink section was absent this cycle (or the fetch
         # failed and a defaulted-empty value was passed), do NOT reconcile and
@@ -2951,15 +2984,21 @@ class SlaveAgent:
             return
         if not isinstance(raw_uplinks, list):
             return
-        active: set[str] = set()
+        uplinks, invalid_interfaces = self.normalize_static_sidecar_uplinks(raw_uplinks)
+        previous = self.load_static_sidecar_uplink_state()
+        previous_interfaces = previous.get("interfaces", {}) if isinstance(previous.get("interfaces", {}), dict) else {}
+        active: set[str] = set(invalid_interfaces)
         next_state: dict[str, Any] = {"interfaces": {}}
-        for raw in raw_uplinks:
-            if not isinstance(raw, dict):
-                continue
-            uplink = dict(raw)
+        for interface_name in sorted(invalid_interfaces):
+            logging.error("conflicting shared sidecar uplink records for %s; preserving previous interface", interface_name)
+            previous_info = previous_interfaces.get(interface_name)
+            next_state["interfaces"][interface_name] = (
+                dict(previous_info)
+                if isinstance(previous_info, dict)
+                else {"interface_name": interface_name}
+            )
+        for uplink in uplinks:
             interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
-            if interface_name == "" or not uplink.get("enabled", False):
-                continue
             active.add(interface_name)
             self.apply_sidecar_uplink(interface_name, uplink)
             self.watch_static_sidecar_uplink(uplink)
@@ -2970,8 +3009,6 @@ class SlaveAgent:
                 "node_id": int(uplink.get("node_id", 0) or 0),
                 "lane": str(uplink.get("lane", "") or ""),
             }
-        previous = self.load_static_sidecar_uplink_state()
-        previous_interfaces = previous.get("interfaces", {}) if isinstance(previous.get("interfaces", {}), dict) else {}
         for iface, info in list(previous_interfaces.items()):
             interface_name = str((info if isinstance(info, dict) else {}).get("interface_name", iface) or "").strip()[:15]
             if interface_name != "" and interface_name not in active:
