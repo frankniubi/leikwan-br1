@@ -6513,7 +6513,7 @@ WantedBy=multi-user.target
 
         result = run_command("wg show interfaces", check=False)
         for iface in str(getattr(result, "stdout", "") or "").strip().split():
-            if not iface.startswith("lws"):
+            if not iface.startswith(("lws", "lwp")):
                 continue
             if is_sidecar_owned_shared_interface(iface):
                 continue
@@ -6524,17 +6524,17 @@ WantedBy=multi-user.target
 
         if shutil.which("systemctl"):
             unit_result = run_command(
-                "systemctl list-units 'wg-quick@lws*' 'leikwan-wgcf-lws*' 'leikwan-gost-lws*' 'leikwan-lguot-lws*' '*-sidecar-selector.service' --type=service --all --no-legend --no-pager",
+                "systemctl list-units 'wg-quick@lws*' 'wg-quick@lwp*' 'leikwan-wgcf-lws*' 'leikwan-wgcf-lwp*' 'leikwan-gost-lws*' 'leikwan-gost-lwp*' 'leikwan-lguot-lws*' 'leikwan-lguot-lwp*' '*-sidecar-selector.service' --type=service --all --no-legend --no-pager",
                 check=False,
             )
             for line in str(getattr(unit_result, "stdout", "") or "").splitlines():
                 unit_name = line.strip().split()[0] if line.strip() else ""
                 if unit_name == "":
                     continue
-                wg_match = re.match(r"^wg-quick@(lws[^.]+)\.service$", unit_name)
-                cf_match = re.match(r"^leikwan-wgcf-(lws[^.]+)\.service$", unit_name)
-                gost_match = re.match(r"^leikwan-gost-(lws[^.]+)\.service$", unit_name)
-                lguot_match = re.match(r"^leikwan-lguot-(lws[^.]+)\.service$", unit_name)
+                wg_match = re.match(r"^wg-quick@(lw[sp][^.]+)\.service$", unit_name)
+                cf_match = re.match(r"^leikwan-wgcf-(lw[sp][^.]+)\.service$", unit_name)
+                gost_match = re.match(r"^leikwan-gost-(lw[sp][^.]+)\.service$", unit_name)
+                lguot_match = re.match(r"^leikwan-lguot-(lw[sp][^.]+)\.service$", unit_name)
                 selector_match = re.match(r"^(.+)-sidecar-selector\.service$", unit_name)
                 if wg_match is not None:
                     iface = wg_match.group(1)
