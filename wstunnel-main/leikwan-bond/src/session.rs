@@ -2848,6 +2848,7 @@ async fn run_tcp_leg_writer<W>(
             return;
         };
         let QueuedLegFrame { frame, enqueued_at } = queued;
+        let queued_for = enqueued_at.elapsed();
         let data_marker = match &frame {
             WireFrame::DataC2S { stream_id, seq, .. } | WireFrame::DataS2C { stream_id, seq, .. } => {
                 Some((*stream_id, *seq))
@@ -2857,7 +2858,7 @@ async fn run_tcp_leg_writer<W>(
         let result = tokio::select! {
             biased;
             _ = shutdown_rx.changed() => return,
-            result = tokio::time::timeout_at(enqueued_at + write_timeout, write_frame(&mut writer, &frame)) => result,
+            result = tokio::time::timeout(write_timeout, write_frame(&mut writer, &frame)) => result,
         };
         match result {
             Ok(Ok(())) => {}
@@ -2867,7 +2868,10 @@ async fn run_tcp_leg_writer<W>(
                 return;
             }
             Err(_) => {
-                warn!("bond tcp leg {} writer timed out after {:?}", leg_id, write_timeout);
+                warn!(
+                    "bond tcp leg {} writer timed out after {:?} (queued for {:?})",
+                    leg_id, write_timeout, queued_for
+                );
                 notify_tcp_leg_closed(leg_id, &event_tx, &shutdown_tx);
                 return;
             }
@@ -6056,7 +6060,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tcp_leg_writer_deadline_includes_queue_residence() {
+    async fn tcp_leg_writer_deadline_starts_when_frame_write_begins() {
         let write_timeout = Duration::from_millis(400);
         let (writer, mut reader) = tokio::io::duplex(64);
         let (frame_tx, frame_rx) = leg_write_channel();
@@ -6087,7 +6091,7 @@ mod tests {
             ));
         }
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
         let first = read_frame(&mut reader).await.unwrap();
         assert!(matches!(first, WireFrame::DataC2S { seq: 0, .. }));
         let written = timeout(Duration::from_millis(100), event_rx.recv())
@@ -6096,7 +6100,7 @@ mod tests {
             .unwrap();
         assert!(matches!(written, TcpTransportEvent::FrameWritten { seq: 0, .. }));
 
-        let closed = timeout(Duration::from_millis(300), async {
+        let next_leg_closed = async {
             loop {
                 match event_rx.recv().await {
                     Some(TcpTransportEvent::LegClosed { leg_id }) => break leg_id,
@@ -6104,9 +6108,18 @@ mod tests {
                     None => panic!("leg event channel closed before LegClosed"),
                 }
             }
-        })
+        };
+        let mut next_leg_closed = Box::pin(next_leg_closed);
+        assert!(
+            timeout(Duration::from_millis(200), next_leg_closed.as_mut())
+                .await
+                .is_err(),
+            "queue residence must not consume the socket write timeout"
+        );
+
+        let closed = timeout(Duration::from_millis(300), next_leg_closed.as_mut())
         .await
-        .expect("queued frame must retain its enqueue-to-write deadline");
+        .expect("a genuinely blocked socket write must still time out");
         assert_eq!(closed, 7);
     }
 
