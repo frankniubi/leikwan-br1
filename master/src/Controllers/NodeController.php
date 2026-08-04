@@ -587,7 +587,8 @@ final class NodeController extends BaseController
             is_array($agentConfig['udp_uot_sidepath'] ?? null) ? $agentConfig['udp_uot_sidepath'] : []
         );
 
-        $uplinks = $this->provisioning->slaveSidecarUplinkManagementForNode((int) $node['id'])['uplinks'] ?? [];
+        $uplinkManagement = $this->provisioning->slaveSidecarUplinkManagementForNode((int) $node['id']);
+        $uplinks = $uplinkManagement['uplinks'] ?? [];
         $leigodLineManagement = $this->provisioning->desiredLeigodLineManagementForNode((int) $node['id']);
         $leigodLines = is_array($leigodLineManagement['lines'] ?? null) ? $leigodLineManagement['lines'] : [];
         $management = [
@@ -598,9 +599,11 @@ final class NodeController extends BaseController
             'desired_agent_sha256' => (string) ($slaveAgent['sha256'] ?? ''),
             'desired_installer_version' => (string) ($slaveInstaller['version'] ?? ''),
             'desired_installer_sha256' => (string) ($slaveInstaller['sha256'] ?? ''),
-            'sidecar_static_uplinks' => $uplinks,
             'leigod_lines' => $leigodLines,
         ];
+        if (($uplinkManagement['authoritative'] ?? false) === true) {
+            $management['sidecar_static_uplinks'] = $uplinks;
+        }
         // Deliver the shared LeiGod account session only to nodes that actually run a leigod line.
         $usesLeigod = $leigodLines !== [];
         foreach ((array) $uplinks as $uplink) {

@@ -105,7 +105,7 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
         first = self.shared_uplink(combination_id=13)
         repeated = self.shared_uplink(combination_id=99)
 
-        with mock.patch.object(agent, "apply_sidecar_uplink") as apply_uplink:
+        with mock.patch.object(agent, "apply_shared_sidecar_uplink") as apply_uplink:
             with mock.patch.object(agent, "watch_static_sidecar_uplink"):
                 agent.apply_static_sidecar_uplinks([first, repeated])
 
@@ -126,7 +126,7 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
         first = self.shared_uplink(combination_id=13)
         conflict = self.shared_uplink(combination_id=99, sidecar_endpoint_port=18504)
 
-        with mock.patch.object(agent, "apply_sidecar_uplink") as apply_uplink:
+        with mock.patch.object(agent, "apply_shared_sidecar_uplink") as apply_uplink:
             with mock.patch.object(agent, "watch_static_sidecar_uplink"):
                 with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
                     agent.apply_static_sidecar_uplinks([first, conflict])
@@ -135,6 +135,73 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
         remove_uplink.assert_not_called()
         state = agent.load_static_sidecar_uplink_state()
         self.assertIn("lwsp10n2", state.get("interfaces", {}))
+
+    def test_incomplete_shared_record_preserves_previous_interface(self):
+        agent = self.make_agent()
+        agent.save_static_sidecar_uplink_state({
+            "interfaces": {
+                "lwsp10n2": {
+                    "interface_name": "lwsp10n2",
+                    "sidecar_point_id": 10,
+                    "node_id": 2,
+                    "lane": "shared",
+                }
+            }
+        })
+        incomplete = self.shared_uplink(sidecar_peer_public_key="")
+
+        with mock.patch.object(agent, "apply_shared_sidecar_uplink") as apply_uplink:
+            with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
+                agent.apply_static_sidecar_uplinks([incomplete])
+
+        apply_uplink.assert_not_called()
+        remove_uplink.assert_not_called()
+        state = agent.load_static_sidecar_uplink_state()
+        self.assertIn("lwsp10n2", state.get("interfaces", {}))
+
+    def test_shared_apply_failure_does_not_commit_or_cleanup(self):
+        agent = self.make_agent()
+        previous = {
+            "interface_name": "lwsp10n2",
+            "sidecar_point_id": 10,
+            "node_id": 2,
+            "lane": "shared",
+        }
+        agent.save_static_sidecar_uplink_state({"interfaces": {"lwsp10n2": previous}})
+
+        with mock.patch.object(agent, "apply_shared_sidecar_uplink", side_effect=RuntimeError("start failed")):
+            with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
+                agent.apply_static_sidecar_uplinks([self.shared_uplink()])
+
+        remove_uplink.assert_not_called()
+        state = agent.load_static_sidecar_uplink_state()
+        self.assertEqual(previous, state.get("interfaces", {}).get("lwsp10n2"))
+
+    def test_shared_restart_failure_restores_previous_config(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        config_path = agent.wireguard_interface_path("lwsp10n2")
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("old-config\n", encoding="utf-8")
+        restart_attempts = 0
+
+        def fake_run(command: str, check: bool = True):
+            nonlocal restart_attempts
+            if command == "systemctl is-active --quiet wg-quick@lwsp10n2.service":
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if command == "systemctl restart wg-quick@lwsp10n2.service":
+                restart_attempts += 1
+                return SimpleNamespace(returncode=1 if restart_attempts == 1 else 0, stdout="", stderr="restart failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with self.assertRaises(RuntimeError):
+                    agent.apply_shared_sidecar_uplink("lwsp10n2", self.shared_uplink())
+
+        self.assertEqual("old-config\n", config_path.read_text(encoding="utf-8"))
+        self.assertEqual(2, restart_attempts)
 
     def mark_selector_interfaces_ready(self, agent, *interfaces: str) -> None:
         for iface in interfaces:

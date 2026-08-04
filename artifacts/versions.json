@@ -3,9 +3,9 @@
     "version": "2026.08.04.1",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "938ab1eb3007d3dbefbb55adec3575a34abef436291ef92b023ec7a8c661ea81",
-    "size_bytes": 321188,
-    "size": 321188
+    "sha256": "b71c9d62fe0ff485d6ae96e656976e313be03e47e83c30525cc73a9b7b0389db",
+    "size_bytes": 329051,
+    "size": 329051
   },
   "gost_linux_amd64": {
     "version": "3.2.6",
@@ -89,9 +89,9 @@
     "version": "2026.08.04.1",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "303cc886f8c56b629f8a8a370531379ffa820680e131f3b3aa1036d49cef5479",
-    "size_bytes": 122908,
-    "size": 122908
+    "sha256": "bc0b4fd0b758c349aa49e9c81e34bccd496226010d3ce3b7531ba3f59a8a6d66",
+    "size_bytes": 128231,
+    "size": 128231
   },
   "mptcp_client_runtime": {
     "version": "2026.06.06.1",
