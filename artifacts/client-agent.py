@@ -28,7 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.07.28.1"
+AGENT_VERSION = "2026.08.04.1"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -554,6 +554,31 @@ class ClientAgent:
             return "mptcp"
         return "single"
 
+    @classmethod
+    def sidecar_frontend_mode(cls, forward: dict) -> str:
+        """Return the explicitly published single/race sidecar frontend mode."""
+        if not isinstance(forward, dict):
+            return ""
+        bonding = forward.get("bonding", {})
+        if not isinstance(bonding, dict):
+            return ""
+        frontend_mode = str(bonding.get("frontend_mode", "") or "").strip().lower()
+        if frontend_mode not in {"single", "race"}:
+            return ""
+        if cls.contract_bool(forward.get("sidecar_required")) is not True:
+            return ""
+        if not cls.forward_contract_is_sidecar_aggregation(forward):
+            return ""
+        return frontend_mode
+
+    @classmethod
+    def forward_uses_bond_runtime(cls, forward: dict) -> bool:
+        if not isinstance(forward, dict):
+            return False
+        if cls.normalize_mode(forward.get("mode", "single")) == "bond":
+            return True
+        return cls.sidecar_frontend_mode(forward) != ""
+
     @staticmethod
     def binary_available(path: pathlib.Path) -> bool:
         return path.is_file() and (os.name == "nt" or os.access(path, os.X_OK))
@@ -726,7 +751,7 @@ class ClientAgent:
         runtime_mode = self.choose_runtime_family(render_forward, self.running_kernel_supports_mptcp())
         render_forward = self.canonicalize_forward_runtime_contract(render_forward, runtime_mode)
         mode = self.normalize_mode(render_forward.get("mode", runtime_mode))
-        if mode == "bond":
+        if self.forward_uses_bond_runtime(render_forward):
             render_forward = self.apply_latency_target_candidate_escalation(render_forward)
             render_forward["endpoints"] = self.select_bond_runtime_endpoints(render_forward)
         elif mode == "mptcp":
@@ -1337,13 +1362,13 @@ class ClientAgent:
                 )
                 self.stop_forward(forward_id, delete_files=True)
                 continue
-            if mode == "bond":
+            if self.forward_uses_bond_runtime(validation_forward):
                 bond_bin = self.bond_binary_path()
                 if not self.binary_available(bond_bin):
                     skipped_invalid_forward_ids.append(forward_id)
                     self.log_invalid_forward(
                         forward_id,
-                        "skipping bond forward because required binary is missing"
+                        "skipping bond runtime because required binary is missing"
                         f" bond_bin={bond_bin}"
                         f" transport={str(forward.get('transport', 'tcp+udp'))}"
                         f" target={str(forward.get('target', ''))}",
@@ -1756,8 +1781,8 @@ class ClientAgent:
         endpoints = [endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
         bond_bin = self.bond_binary_path()
         mptcp_client = self.mptcp_client_path()
-        if mode == "bond" and not self.binary_available(bond_bin):
-            logging.warning("forward %s requested bond mode but bond binary is missing at %s", forward_id, bond_bin)
+        if self.forward_uses_bond_runtime(forward) and not self.binary_available(bond_bin):
+            logging.warning("forward %s requested bond runtime but bond binary is missing at %s", forward_id, bond_bin)
         if mode == "mptcp" and not mptcp_client.is_file():
             logging.warning("forward %s requested mptcp mode but helper is missing at %s", forward_id, mptcp_client)
 
@@ -1769,7 +1794,7 @@ class ClientAgent:
         render_forward = self.canonicalize_forward_runtime_contract(render_forward, runtime_mode)
         mode = self.normalize_mode(render_forward.get("mode", runtime_mode))
 
-        if mode == "bond":
+        if self.forward_uses_bond_runtime(render_forward):
             render_forward = self.apply_latency_target_candidate_escalation(render_forward)
             render_forward["endpoints"] = self.select_bond_runtime_endpoints(render_forward)
         elif mode == "mptcp":
@@ -1784,7 +1809,7 @@ class ClientAgent:
         listen_port = int(forward.get("listen_port", 0) or 0)
         rendered_signature = self.rendered_runtime_signature(rendered, mode, transport, listen_port)
         effective_contract_signature = self.forward_contract_signature(contract_forward)
-        if contract_signature is None or mode in {"bond", "mptcp"}:
+        if contract_signature is None or self.forward_uses_bond_runtime(render_forward) or mode == "mptcp":
             contract_signature = effective_contract_signature
         applied = self.load_applied()
         previous = applied.get(str(forward_id), {})
@@ -2140,10 +2165,11 @@ class ClientAgent:
             bonding = forward.get("bonding", {})
             if not isinstance(bonding, dict):
                 bonding = {}
-            plain_tcp_ingress = mode == "bond" and str(bonding.get("ingress_mode", "wss_path_mux")) == "plain_tcp_mux"
+            bond_runtime = self.forward_uses_bond_runtime(forward)
+            plain_tcp_ingress = bond_runtime and str(bonding.get("ingress_mode", "wss_path_mux")) == "plain_tcp_mux"
             backend_mode = str(forward.get("backend_mode", "current_mode") or "current_mode")
             bond_session_token = str(bonding.get("session_token", "") or "").strip()
-            self_leg_primary = mode == "bond" and self.forward_has_selected_self_leg(forward_id, forward)
+            self_leg_primary = bond_runtime and self.forward_has_selected_self_leg(forward_id, forward)
             for endpoint_index, endpoint in enumerate(endpoints):
                 bond_one_leg_probe_failed = False
                 if plain_tcp_ingress:
@@ -2160,7 +2186,7 @@ class ClientAgent:
                         str(forward.get("sni", "") or endpoint.get("cdn_host", "") or endpoint.get("host", "")),
                         str(forward.get("path_prefix", "")),
                     )
-                if ready and mode == "bond" and plain_tcp_ingress and bond_session_token != "":
+                if ready and bond_runtime and plain_tcp_ingress and bond_session_token != "":
                     ready, stronger_latency_ms, stronger_error = self.cf_bond_one_leg_connect_probe(forward, endpoint, endpoint_index)
                     if stronger_latency_ms is not None:
                         latency_ms = stronger_latency_ms
@@ -2168,7 +2194,7 @@ class ClientAgent:
                         error = stronger_error
                     bond_one_leg_probe_failed = not ready
                 ready_results.append(ready)
-                if mode == "bond":
+                if bond_runtime:
                     endpoint_id = int(endpoint.get("endpoint_id", 0) or 0)
                     previous_role = (
                         self.load_bond_endpoint_health()
@@ -2207,7 +2233,7 @@ class ClientAgent:
                     self.restart_forward_service(forward_id, service_name, "all slave endpoints failed ready probe")
                     continue
 
-                if mode == "bond" and plain_tcp_ingress and not self_leg_primary:
+                if bond_runtime and plain_tcp_ingress and not self_leg_primary:
                     live_matches = self.collect_live_bond_slave_connections(forward)
                     if live_matches is not None and live_matches == []:
                         self.restart_forward_service(
@@ -2583,9 +2609,9 @@ class ClientAgent:
             },
         )
 
-    @staticmethod
-    def latency_first_bond_enabled(forward: dict) -> bool:
-        if str(forward.get("mode", "") or "").strip() != "bond":
+    @classmethod
+    def latency_first_bond_enabled(cls, forward: dict) -> bool:
+        if not cls.forward_uses_bond_runtime(forward):
             return False
         bond = forward.get("bonding", {})
         if not isinstance(bond, dict):
@@ -2952,7 +2978,7 @@ class ClientAgent:
 
     def reconcile_cf_bond_runtime_health(self, forward: dict, now: float | None = None) -> dict:
         now = time.time() if now is None else now
-        if self.normalize_mode(forward.get("mode", "single")) != "bond":
+        if not self.forward_uses_bond_runtime(forward):
             return self.load_bond_endpoint_health()
         if str(forward.get("backend_mode", "current_mode") or "current_mode") != "cf_mode":
             return self.load_bond_endpoint_health()
@@ -4437,7 +4463,7 @@ class ClientAgent:
                     bonding = forward.get("bonding", {})
                     if not isinstance(bonding, dict):
                         bonding = {}
-                    plain_tcp_ingress = self.normalize_mode(forward.get("mode", "single")) == "bond" and str(bonding.get("ingress_mode", "wss_path_mux")) == "plain_tcp_mux"
+                    plain_tcp_ingress = self.forward_uses_bond_runtime(forward) and str(bonding.get("ingress_mode", "wss_path_mux")) == "plain_tcp_mux"
                     for endpoint in forward.get("endpoints", []):
                         host = str(endpoint.get("host", ""))
                         port = int(endpoint.get("port", 0))
@@ -4988,7 +5014,7 @@ class ClientAgent:
                 bond_forward_ids = [
                     int(forward.get("forward_id", 0) or 0)
                     for forward in forwards
-                    if self.normalize_mode(forward.get("mode", "single")) == "bond"
+                    if self.forward_uses_bond_runtime(forward)
                 ]
                 mptcp_forward_ids = [
                     int(forward.get("forward_id", 0) or 0)
@@ -5012,7 +5038,7 @@ class ClientAgent:
                 }
                 if bond_forward_ids and not bond_available:
                     summary["ok"] = False
-                    summary["live_pull"]["bond_dependency_error"] = f"bond mode forwards require {bond_bin}"
+                    summary["live_pull"]["bond_dependency_error"] = f"bond runtime forwards require {bond_bin}"
                 if mptcp_forward_ids and not mptcp_client_present:
                     summary["ok"] = False
                     summary["live_pull"]["mptcp_dependency_error"] = f"mptcp mode forwards require {mptcp_client}"
