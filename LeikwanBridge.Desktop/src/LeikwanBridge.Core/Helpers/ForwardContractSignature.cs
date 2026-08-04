@@ -31,6 +31,8 @@ public static class ForwardContractSignature
             forward.SpeedLimitMbps,
             Bonding = forward.Bonding is null ? null : new
             {
+                forward.Bonding.FrontendMode,
+                forward.Bonding.StrategyLocked,
                 forward.Bonding.IngressMode,
                 forward.Bonding.RouteKey,
                 forward.Bonding.SessionToken,

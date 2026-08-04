@@ -34,10 +34,25 @@ public sealed class BondRuntimeBuilder
         List<RuntimeProcess> Processes,
         List<GeneratedFile>? GeneratedFiles = null);
 
-    public RuntimeSpec Build(ForwardConfig forward)
+    public RuntimeSpec Build(ForwardConfig forward) => BuildBondRuntime(forward, "");
+
+    public RuntimeSpec BuildFrontend(ForwardConfig forward)
+    {
+        var frontendMode = (forward.Bonding?.FrontendMode ?? "").Trim().ToLowerInvariant();
+        if (frontendMode is not ("single" or "race"))
+            throw new InvalidOperationException("sidecar frontend requires bonding.frontend_mode=single|race");
+        if (!string.Equals(ModeNormalizer.Normalize(forward.Mode), frontendMode, StringComparison.Ordinal))
+            throw new InvalidOperationException("sidecar frontend mode must match forward mode");
+
+        return BuildBondRuntime(forward, frontendMode);
+    }
+
+    private RuntimeSpec BuildBondRuntime(ForwardConfig forward, string frontendMode)
     {
         var bond = forward.Bonding ?? throw new InvalidOperationException("bond mode missing bonding config");
         var endpoints = forward.Endpoints.Where(e => !string.IsNullOrEmpty(e.Host) && e.Port > 0).ToList();
+        if (frontendMode == "single")
+            endpoints = endpoints.Take(1).ToList();
         if (endpoints.Count == 0)
             throw new InvalidOperationException("bond mode requires at least one endpoint");
         if (string.IsNullOrWhiteSpace(bond.RemoteTarget))
@@ -51,11 +66,16 @@ public sealed class BondRuntimeBuilder
         var generatedFiles = new List<GeneratedFile>();
         var legPorts = new List<int>();
         int forwardId = forward.ForwardId;
-        var strategyPath = new ForwardStrategyStore(
-            _config.GetEffectiveStateDir(),
-            _config.MasterUrl,
-            _config.ClientId > 0 ? _config.ClientId : _config.ActiveClientId
-        ).EnsureRuntimeFile(forwardId);
+        string? strategyPath = null;
+        if (frontendMode == "" || !bond.StrategyLocked)
+        {
+            strategyPath = new ForwardStrategyStore(
+                _config.GetEffectiveStateDir(),
+                _config.MasterUrl,
+                _config.ClientId > 0 ? _config.ClientId : _config.ActiveClientId
+            ).EnsureRuntimeFile(forwardId);
+        }
+        var strategyArgument = strategyPath is null ? "" : $"--strategy-file \"{strategyPath}\" ";
         int listenPort = forward.ListenPort;
         string transport = (forward.Transport ?? "tcp+udp").Trim().ToLowerInvariant();
         string sni = forward.Sni;
@@ -125,7 +145,7 @@ public sealed class BondRuntimeBuilder
 
             var bondArgs = $"client --protocol tcp --listen 0.0.0.0:{listenPort} " +
                 $"--legs \"{string.Join(",", tcpLegTargets)}\" --session-token \"{tcpToken}\" " +
-                $"--strategy-file \"{strategyPath}\" --default-strategy latency_best " +
+                $"{strategyArgument}--default-strategy latency_best " +
                 $"--chunk-size {bond.ChunkSize} " +
                 $"--max-window-bytes {bond.MaxWindowBytes} " +
                 $"--retransmit-ms {bond.RetransmitMs} " +
@@ -212,7 +232,7 @@ public sealed class BondRuntimeBuilder
 
             var bondArgs = $"client --protocol udp --listen 0.0.0.0:{listenPort} " +
                 $"--legs \"{string.Join(",", udpLegTargets)}\" --session-token \"{udpToken}\" " +
-                $"--strategy-file \"{strategyPath}\" --default-strategy latency_best " +
+                $"{strategyArgument}--default-strategy latency_best " +
                 $"--chunk-size {bond.ChunkSize} " +
                 $"--max-window-bytes {bond.MaxWindowBytes} " +
                 $"--retransmit-ms {bond.RetransmitMs} " +
@@ -239,7 +259,7 @@ public sealed class BondRuntimeBuilder
                 CriticalForForwardHealth: true));
         }
 
-        return new RuntimeSpec("bond", ingressMode, listenPort, legPorts, processes, generatedFiles);
+        return new RuntimeSpec(frontendMode == "" ? "bond" : frontendMode, ingressMode, listenPort, legPorts, processes, generatedFiles);
     }
 
     public RuntimeSpec BuildRace(ForwardConfig forward)

@@ -8,6 +8,48 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class BondRuntimeBuilderTests
 {
     [Fact]
+    public void BondingConfig_DeserializesSidecarFrontendContract()
+    {
+        var bonding = JsonSerializer.Deserialize<BondingConfig>(
+            """{"frontend_mode":"race","strategy_locked":true}""");
+
+        Assert.NotNull(bonding);
+        Assert.Equal("race", bonding.FrontendMode);
+        Assert.True(bonding.StrategyLocked);
+    }
+
+    [Theory]
+    [InlineData("single", 1)]
+    [InlineData("race", 2)]
+    public void BuildFrontend_UsesLockedBondGraphWithExpectedLegCount(string mode, int expectedLegs)
+    {
+        var builder = CreateBuilder();
+        var forward = CreatePlainTcpMuxBondForward();
+        forward.Mode = mode;
+        forward.ClientMode = mode;
+        forward.ActiveFamily = "sidecar_aggregation";
+        forward.TargetContract = "sidecar_aggregation";
+        forward.SidecarRequired = true;
+        forward.AggregationEnabled = false;
+        forward.BondSidecarPointId = 10;
+        forward.Bonding!.FrontendMode = mode;
+        forward.Bonding.StrategyLocked = true;
+
+        var spec = builder.BuildFrontend(forward);
+
+        Assert.Equal(mode, spec.Mode);
+        Assert.Equal(expectedLegs, spec.Processes.Count(process => process.Role.StartsWith("bond-ingress-leg-")));
+        Assert.All(
+            spec.Processes.Where(process => process.Role is "bond-runtime" or "bond-udp-runtime"),
+            process => Assert.DoesNotContain("--strategy-file", process.Arguments));
+        Assert.All(
+            spec.Processes.Where(process => process.Role is "bond-runtime" or "bond-udp-runtime"),
+            process => Assert.Contains("--default-strategy latency_best", process.Arguments));
+        if (mode == "single")
+            Assert.DoesNotContain(spec.Processes, process => process.Arguments.Contains("8.163.90.235:7001"));
+    }
+
+    [Fact]
     public void BuildSingle_UsesDirectWstunnelRuntime()
     {
         var builder = CreateBuilder();
