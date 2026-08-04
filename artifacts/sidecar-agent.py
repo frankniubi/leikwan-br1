@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import shutil
 import socket
 import sys
@@ -45,6 +46,13 @@ def file_sha256(path: pathlib.Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def shared_wireguard_interface_name(value: object, prefixes: tuple[str, ...]) -> str:
+    interface_name = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,15}", interface_name) is None:
+        return ""
+    return interface_name if interface_name.startswith(prefixes) else ""
 
 
 def http_json(method: str, url: str, token: str, payload: dict | None = None) -> dict:
@@ -349,9 +357,12 @@ class SidecarAgent:
     def validate_shared_sidecar_uplinks(self, uplinks: list[dict[str, object]]) -> tuple[str, int]:
         if not uplinks:
             raise ValueError("shared sidecar uplink group is empty")
-        interface_name = str(uplinks[0].get("interface_name", "") or "").strip()[:15]
+        raw_interface_name = str(uplinks[0].get("interface_name", "") or "").strip()
+        interface_name = shared_wireguard_interface_name(raw_interface_name, ("lwsp",))
         listen_port = int(uplinks[0].get("listen_port", 0) or 0)
         point_id = int(uplinks[0].get("sidecar_point_id", 0) or 0)
+        if raw_interface_name != "" and interface_name == "":
+            raise ValueError("invalid shared sidecar interface name")
         if interface_name == "" or listen_port <= 0 or point_id <= 0:
             raise ValueError("shared sidecar uplink identity is incomplete")
 
@@ -1699,6 +1710,9 @@ WantedBy=multi-user.target
                     sidecar_uplinks_valid = False
                     break
                 if str(raw_uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared":
+                    if shared_wireguard_interface_name(raw_uplink.get("interface_name", ""), ("lwsp",)) == "":
+                        sidecar_uplinks_valid = False
+                        break
                     try:
                         sidecar_point_id = int(raw_uplink.get("sidecar_point_id", 0) or 0)
                     except (TypeError, ValueError):

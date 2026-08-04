@@ -159,6 +159,37 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
         state = agent.load_static_sidecar_uplink_state()
         self.assertIn("lwsp10n2", state.get("interfaces", {}))
 
+    def test_malformed_shared_interface_name_preserves_all_previous_interfaces(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                agent = self.make_agent()
+                previous = {
+                    "interface_name": "lwsp10n2",
+                    "sidecar_point_id": 10,
+                    "node_id": 2,
+                    "lane": "shared",
+                }
+                agent.save_static_sidecar_uplink_state({"interfaces": {"lwsp10n2": previous}})
+                malicious = self.shared_uplink(interface_name="lwsp10;id", enabled=enabled)
+
+                with mock.patch.object(agent, "apply_shared_sidecar_uplink") as apply_uplink:
+                    with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
+                        agent.apply_static_sidecar_uplinks([malicious])
+
+                apply_uplink.assert_not_called()
+                remove_uplink.assert_not_called()
+                state = agent.load_static_sidecar_uplink_state()
+                self.assertEqual(previous, state.get("interfaces", {}).get("lwsp10n2"))
+
+    def test_remove_sidecar_uplink_rejects_unsafe_persisted_interface_name(self):
+        agent = self.make_agent()
+
+        with mock.patch.object(slave_agent_module.shutil, "which", return_value="/usr/bin/systemctl"):
+            with mock.patch.object(slave_agent_module, "run_command") as run:
+                agent.remove_sidecar_uplink("ignored", {"interface_name": "lwsp10;id"})
+
+        run.assert_not_called()
+
     def test_shared_apply_failure_does_not_commit_or_cleanup(self):
         agent = self.make_agent()
         previous = {
@@ -1065,6 +1096,60 @@ rtt min/avg/max/mdev = 35.000/38.000/42.000/2.000 ms
 
         strict_apply.assert_called_once_with("lwsp10n2", shared)
         legacy_apply.assert_not_called()
+
+    def test_underlay_publish_failure_does_not_write_active_metadata(self):
+        agent = self.make_agent()
+        task = {"service_id": 6, "forward_id": 80, "endpoint_id": 580, "payload": {}}
+        payload = {
+            "target": "10.240.3.1:18501",
+            "listen_port": 7001,
+            "path_prefix": "f80",
+            "route_key": "f80",
+            "transport_mode": "tcp",
+            "ingress_protocol": "wss_path_mux",
+            "backend_protocol": "wss_backend",
+            "ingress_auth_token": "token",
+            "mptcp_underlay": {"enabled": True},
+            "sidecar_uplink": self.shared_uplink(),
+            "sidecar_uplink_selector": {},
+        }
+
+        with mock.patch.object(agent, "apply_mptcp_underlay"):
+            with mock.patch.object(agent, "apply_published_sidecar_uplink", side_effect=RuntimeError("shared apply failed")):
+                with self.assertRaisesRegex(RuntimeError, "shared apply failed"):
+                    agent.publish_task(task, payload)
+
+        self.assertIsNone(agent.load_service_metadata("wstunnel-svc-6-580"))
+
+    def test_forward_lifecycle_does_not_remove_management_owned_shared_uplink(self):
+        for action in ("stop", "destroy"):
+            with self.subTest(action=action):
+                agent = self.make_agent()
+                service_name = "wstunnel-svc-6-580"
+                agent.save_service_metadata(service_name, {
+                    "service_name": service_name,
+                    "service_id": 6,
+                    "forward_id": 80,
+                    "endpoint_id": 580,
+                    "listen_port": 0,
+                    "status": "active",
+                    "sidecar_uplink": self.shared_uplink(),
+                    "mptcp_underlay": {},
+                })
+                task = {"service_id": 6, "forward_id": 80, "endpoint_id": 580, "payload": {}}
+
+                with mock.patch.object(slave_agent_module.shutil, "which", return_value=None):
+                    with mock.patch.object(agent, "remove_mptcp_underlay"):
+                        with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
+                            with mock.patch.object(agent, "remove_sidecar_uplink_selector"):
+                                with mock.patch.object(agent, "remove_leigod_forward_runtime"):
+                                    with mock.patch.object(agent, "delete_nft_rules"):
+                                        if action == "stop":
+                                            agent.stop_service(task, keep_files=True)
+                                        else:
+                                            agent.destroy_service(task)
+
+                remove_uplink.assert_not_called()
 
 
 if __name__ == "__main__":
