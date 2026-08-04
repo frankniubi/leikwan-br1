@@ -482,6 +482,14 @@ class SidecarAgent:
         previous_system = snapshot(system_path)
         service_name = f"wg-quick@{interface_name}"
         service_active = shutil.which("systemctl") is not None and self.systemd_is_active(service_name)
+        service_enabled = False
+        if shutil.which("systemctl") is not None:
+            service_enabled = subprocess.run(
+                ["systemctl", "is-enabled", f"{service_name}.service"],
+                text=True,
+                capture_output=True,
+                check=False,
+            ).returncode == 0
         try:
             changed = write_text_if_changed(path, config, mode=0o600)
             system_changed = write_text_if_changed(system_path, config, mode=0o600)
@@ -525,6 +533,26 @@ class SidecarAgent:
                         interface_name,
                         restored.stderr or restored.stdout,
                     )
+            elif previous_system is None:
+                subprocess.run(
+                    ["systemctl", "stop", f"{service_name}.service"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            if not service_enabled:
+                subprocess.run(
+                    ["systemctl", "disable", f"{service_name}.service"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            subprocess.run(
+                ["systemctl", "reset-failed", f"{service_name}.service"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
             raise
 
     @staticmethod
@@ -1660,7 +1688,29 @@ WantedBy=multi-user.target
         # present (possibly empty) list IS authoritative -> empty means teardown.
         sidecar_uplinks_present = "sidecar_uplinks" in management
         raw_sidecar_uplinks = management.get("sidecar_uplinks", [])
-        sidecar_uplinks = raw_sidecar_uplinks if isinstance(raw_sidecar_uplinks, list) else []
+        sidecar_uplinks_valid = isinstance(raw_sidecar_uplinks, list)
+        if sidecar_uplinks_valid:
+            for raw_uplink in raw_sidecar_uplinks:
+                if not isinstance(raw_uplink, dict):
+                    sidecar_uplinks_valid = False
+                    break
+                interface_name = str(raw_uplink.get("interface_name", "") or "").strip()[:15]
+                if interface_name == "":
+                    sidecar_uplinks_valid = False
+                    break
+                if str(raw_uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared":
+                    try:
+                        sidecar_point_id = int(raw_uplink.get("sidecar_point_id", 0) or 0)
+                    except (TypeError, ValueError):
+                        sidecar_uplinks_valid = False
+                        break
+                    if sidecar_point_id <= 0:
+                        sidecar_uplinks_valid = False
+                        break
+        if sidecar_uplinks_present and not sidecar_uplinks_valid:
+            logging.error("malformed sidecar_uplinks section; preserving all current interfaces")
+            sidecar_uplinks_present = False
+        sidecar_uplinks = raw_sidecar_uplinks if sidecar_uplinks_valid else []
         if sidecar_uplinks_present:
             current_uplink_state = self.load_sidecar_uplink_state()
             active_interfaces: set[str] = set()

@@ -3042,16 +3042,14 @@ class SlaveAgent:
             return
         previous = self.load_static_sidecar_uplink_state()
         previous_interfaces = previous.get("interfaces", {}) if isinstance(previous.get("interfaces", {}), dict) else {}
-        active: set[str] = set(invalid_interfaces)
+        active: set[str] = set()
         next_state: dict[str, Any] = {"interfaces": {}}
         for interface_name in sorted(invalid_interfaces):
             logging.error("conflicting shared sidecar uplink records for %s; preserving previous interface", interface_name)
             previous_info = previous_interfaces.get(interface_name)
-            next_state["interfaces"][interface_name] = (
-                dict(previous_info)
-                if isinstance(previous_info, dict)
-                else {"interface_name": interface_name}
-            )
+            if isinstance(previous_info, dict):
+                active.add(interface_name)
+                next_state["interfaces"][interface_name] = dict(previous_info)
         for uplink in uplinks:
             interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
             shared = str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared"
@@ -3060,13 +3058,10 @@ class SlaveAgent:
                     self.apply_shared_sidecar_uplink(interface_name, uplink)
                 except Exception:  # noqa: BLE001
                     logging.exception("shared sidecar uplink %s apply failed; preserving previous interface", interface_name)
-                    active.add(interface_name)
                     previous_info = previous_interfaces.get(interface_name)
-                    next_state["interfaces"][interface_name] = (
-                        dict(previous_info)
-                        if isinstance(previous_info, dict)
-                        else {"interface_name": interface_name}
-                    )
+                    if isinstance(previous_info, dict):
+                        active.add(interface_name)
+                        next_state["interfaces"][interface_name] = dict(previous_info)
                     continue
             else:
                 self.apply_sidecar_uplink(interface_name, uplink)
@@ -4173,7 +4168,7 @@ WantedBy=multi-user.target
             self.apply_mptcp_underlay(service_name, mptcp_underlay)
             if sidecar_uplink.get("enabled"):
                 # compose model comment: true MPTCP underlay may ride over static uplink; early return used to skip it.
-                self.apply_sidecar_uplink(service_name, sidecar_uplink)
+                self.apply_published_sidecar_uplink(service_name, sidecar_uplink)
             if sidecar_uplink_selector.get("enabled"):
                 self.ensure_sidecar_uplink_selector(service_name, sidecar_uplink_selector)
             else:
@@ -4189,7 +4184,7 @@ WantedBy=multi-user.target
             }
 
         if sidecar_uplink.get("enabled"):
-            self.apply_sidecar_uplink(service_name, sidecar_uplink)
+            self.apply_published_sidecar_uplink(service_name, sidecar_uplink)
         if sidecar_uplink_selector.get("enabled"):
             self.ensure_sidecar_uplink_selector(service_name, sidecar_uplink_selector)
         else:
@@ -5336,6 +5331,7 @@ WantedBy=multi-user.target
             previous = (path.read_text(encoding="utf-8"), path.stat().st_mode & 0o777)
         service_name = f"wg-quick@{interface_name}"
         was_active = self.systemd_is_active(service_name)
+        was_enabled = run_command(f"systemctl is-enabled --quiet {service_name}.service", check=False).returncode == 0
         try:
             changed = self.write_text_if_changed(path, config)
             if os.name != "nt":
@@ -5367,7 +5363,19 @@ WantedBy=multi-user.target
                 restored = run_command(f"systemctl restart {service_name}.service", check=False)
                 if restored.returncode != 0:
                     logging.error("failed to restore previous shared sidecar uplink %s: %s", interface_name, restored.stderr or restored.stdout)
+            elif previous is None:
+                run_command(f"systemctl stop {service_name}.service", check=False)
+            if not was_enabled:
+                run_command(f"systemctl disable {service_name}.service", check=False)
+            run_command(f"systemctl reset-failed {service_name}.service", check=False)
             raise
+
+    def apply_published_sidecar_uplink(self, service_name: str, uplink: dict[str, Any]) -> None:
+        if str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared":
+            interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+            self.apply_shared_sidecar_uplink(interface_name, uplink)
+            return
+        self.apply_sidecar_uplink(service_name, uplink)
 
     def apply_sidecar_uplink(self, service_name: str, uplink: dict[str, Any]) -> None:
         if not uplink.get("enabled") or not shutil.which("wg") or not shutil.which("wg-quick"):

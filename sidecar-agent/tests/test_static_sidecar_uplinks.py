@@ -214,6 +214,58 @@ class SidecarStaticSidecarUplinkTests(unittest.TestCase):
         self.assertIn("lws10c13n2p", state.get("slaves", {}))
         self.assertIn("lws10c13n2b", state.get("slaves", {}))
 
+    def test_malformed_shared_section_preserves_all_previous_interfaces(self):
+        for raw_uplinks in [
+            {"not": "a-list"},
+            [{"enabled": True, "wireguard_peer_mode": "shared", "sidecar_point_id": 10}],
+            [{"enabled": True, "wireguard_peer_mode": "shared", "sidecar_point_id": "invalid", "interface_name": "lwsp10"}],
+        ]:
+            with self.subTest(raw_uplinks=raw_uplinks):
+                agent = self.make_agent()
+                previous = {"slaves": {"lwsp10": {"interface_name": "lwsp10"}}}
+                agent.save_sidecar_uplink_state(previous)
+                with mock.patch.object(agent, "remove_slave_sidecar_uplink") as remove:
+                    agent.apply_management({
+                        "sidecar_uplinks": raw_uplinks,
+                        "bond_runtime": None,
+                        "mptcp_runtime": None,
+                    })
+                remove.assert_not_called()
+                state = json.loads(agent.sidecar_uplink_state_path().read_text(encoding="utf-8"))
+                self.assertEqual(previous, state)
+
+    def test_shared_first_start_failure_disables_new_unit_and_removes_configs(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().write_text("private-key\n", encoding="utf-8")
+        peers = [self.shared_uplink(2)]
+        state_path = agent.sidecar_uplink_interfaces_dir() / "lwsp10.conf"
+        system_path = agent.state_dir / "system-wireguard" / "lwsp10.conf"
+        commands: list[list[str]] = []
+
+        def fake_run(args, **kwargs):  # noqa: ANN001
+            command = list(args)
+            commands.append(command)
+            if command[:2] == ["wg-quick", "strip"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if command[:2] == ["systemctl", "is-enabled"]:
+                return SimpleNamespace(returncode=1, stdout="disabled", stderr="")
+            if command[:2] == ["systemctl", "start"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="start failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(agent, "sidecar_uplink_system_path", return_value=system_path):
+            with mock.patch.object(sidecar_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+                with mock.patch.object(sidecar_agent_module.subprocess, "run", side_effect=fake_run):
+                    with mock.patch.object(agent, "systemd_is_active", return_value=False):
+                        with self.assertRaises(RuntimeError):
+                            agent.apply_shared_slave_sidecar_interface(peers)
+
+        self.assertFalse(state_path.exists())
+        self.assertFalse(system_path.exists())
+        self.assertIn(["systemctl", "stop", "wg-quick@lwsp10.service"], commands)
+        self.assertIn(["systemctl", "disable", "wg-quick@lwsp10.service"], commands)
+        self.assertIn(["systemctl", "reset-failed", "wg-quick@lwsp10.service"], commands)
+
     def test_static_lws_state_is_keyed_by_interface_and_cleans_legacy_lwsc(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = pathlib.Path(tmp_dir)
