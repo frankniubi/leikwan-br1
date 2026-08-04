@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.08.04.1"
+AGENT_VERSION = "2026.08.04.2"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -427,6 +427,11 @@ def safe_wireguard_interface_name(value: Any, prefixes: tuple[str, ...] = ()) ->
     if prefixes and not interface_name.startswith(prefixes):
         return ""
     return interface_name
+
+
+def is_sidecar_owned_shared_interface(value: Any) -> bool:
+    interface_name = str(value or "").strip()
+    return re.fullmatch(r"lwsp(?:[0-9]+|[0-9a-f]{8})", interface_name) is not None
 
 
 def mux_service_name(listen_port: int) -> str:
@@ -6510,6 +6515,8 @@ WantedBy=multi-user.target
         for iface in str(getattr(result, "stdout", "") or "").strip().split():
             if not iface.startswith("lws"):
                 continue
+            if is_sidecar_owned_shared_interface(iface):
+                continue
             if iface in active_interfaces:
                 continue
             logging.info("removing orphan static sidecar uplink interface: %s", iface)
@@ -6531,25 +6538,25 @@ WantedBy=multi-user.target
                 selector_match = re.match(r"^(.+)-sidecar-selector\.service$", unit_name)
                 if wg_match is not None:
                     iface = wg_match.group(1)
-                    if iface not in active_interfaces:
+                    if not is_sidecar_owned_shared_interface(iface) and iface not in active_interfaces:
                         run_command(f"systemctl stop {unit_name}", check=False)
                         run_command(f"systemctl disable {unit_name}", check=False)
                         run_command(f"systemctl reset-failed {unit_name}", check=False)
                 elif cf_match is not None:
                     iface = cf_match.group(1)
-                    if iface not in active_interfaces:
+                    if not is_sidecar_owned_shared_interface(iface) and iface not in active_interfaces:
                         run_command(f"systemctl stop {unit_name}", check=False)
                         run_command(f"systemctl disable {unit_name}", check=False)
                         run_command(f"systemctl reset-failed {unit_name}", check=False)
                 elif gost_match is not None:
                     iface = gost_match.group(1)
-                    if iface not in active_interfaces:
+                    if not is_sidecar_owned_shared_interface(iface) and iface not in active_interfaces:
                         run_command(f"systemctl stop {unit_name}", check=False)
                         run_command(f"systemctl disable {unit_name}", check=False)
                         run_command(f"systemctl reset-failed {unit_name}", check=False)
                 elif lguot_match is not None:
                     iface = lguot_match.group(1)
-                    if iface not in active_interfaces:
+                    if not is_sidecar_owned_shared_interface(iface) and iface not in active_interfaces:
                         run_command(f"systemctl stop {unit_name}", check=False)
                         run_command(f"systemctl disable {unit_name}", check=False)
                         run_command(f"systemctl reset-failed {unit_name}", check=False)
