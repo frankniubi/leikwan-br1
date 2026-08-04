@@ -619,6 +619,30 @@ final class ProvisioningService
         return $backendMode === 'cf_mode' || $this->combinationUsesAggregation($clientMode, $runtimePreference);
     }
 
+    /**
+     * @param array<string, mixed> $forward
+     */
+    public function usesSingleRaceSidecarFrontend(array $forward): bool
+    {
+        $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
+        if (!in_array($clientMode, ['single', 'race'], true)) {
+            return false;
+        }
+        if (strtolower(trim((string) ($forward['backend_mode'] ?? 'current_mode'))) !== 'current_mode') {
+            return false;
+        }
+        $pointId = (int) ($forward['bond_sidecar_point_id'] ?? $forward['sidecar_point_id'] ?? 0);
+        if ($pointId <= 0) {
+            return false;
+        }
+        $pointConfig = $this->decodeJsonAssoc(
+            $forward['bond_sidecar_point_agent_config_json']
+                ?? $forward['sidecar_agent_config_json']
+                ?? null
+        );
+        return $this->configValueEnabled($pointConfig['single_race_via_sidecar'] ?? false);
+    }
+
     private function activeFamilyForRuntime(string $backendMode, string $clientMode, string $runtimePreference): string
     {
         if ($this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference)) {
@@ -4343,12 +4367,19 @@ final class ProvisioningService
         $runtimePreference = trim((string) ($forward['forward_combination_runtime_preference'] ?? 'single'));
         $backendMode = (string) ($forward['backend_mode'] ?? 'current_mode');
         $aggregationEnabled = $this->combinationUsesAggregation($clientMode, $runtimePreference);
-        $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+        $sidecarFrontend = $this->usesSingleRaceSidecarFrontend($forward);
+        $sidecarRequired = $sidecarFrontend
+            || $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
         $dedicatedLeigod = $backendMode === 'leigod_mode' && $clientMode === 'single' && !$sidecarRequired;
-        $activeFamily = $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
-        $targetContract = $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
+        $activeFamily = $sidecarFrontend
+            ? 'sidecar_aggregation'
+            : $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
+        $targetContract = $sidecarFrontend
+            ? 'sidecar_aggregation'
+            : $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
         $publishesBondRuntime = $clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback';
         $publishesBondRuntime = $aggregationEnabled && $publishesBondRuntime;
+        $publishesBondRuntime = $publishesBondRuntime || $sidecarFrontend;
         $pointConfig = $this->decodeJsonAssoc($forward['bond_sidecar_point_agent_config_json'] ?? null);
         $pointPortSource = $sidecarRequired ? [
             'listen_port' => (int) ($forward['bond_sidecar_legacy_port'] ?? 0),
@@ -4361,13 +4392,13 @@ final class ProvisioningService
         ];
         $effectiveBondSidecarPort = $this->sidecarBondListenPort($pointPortSource);
         $effectiveMptcpSidecarPort = $this->sidecarMptcpListenPort($pointPortSource, $pointConfig);
-        $effectiveSidecarTarget = $sidecarRequired && in_array($clientMode, ['bond', 'mptcp'], true)
+        $effectiveSidecarTarget = $sidecarRequired && ($publishesBondRuntime || $clientMode === 'mptcp')
             ? $this->resolveSidecarDirectTarget(
                 array_merge($forward, [
                     'bond_sidecar_port' => $effectiveBondSidecarPort,
                     'mptcp_sidecar_port' => $effectiveMptcpSidecarPort,
                 ]),
-                $clientMode
+                $publishesBondRuntime ? 'bond' : $clientMode
             )
             : [
                 'host' => '',
@@ -7692,12 +7723,19 @@ final class ProvisioningService
         $runtimePreference = $this->runtimePreferenceForForward($forward);
         $backendMode = (string) ($forward['backend_mode'] ?? 'current_mode');
         $aggregationEnabled = $this->combinationUsesAggregation($clientMode, $runtimePreference);
-        $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+        $sidecarFrontend = $this->usesSingleRaceSidecarFrontend($forward);
+        $sidecarRequired = $sidecarFrontend
+            || $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
         $dedicatedLeigod = $backendMode === 'leigod_mode' && $clientMode === 'single' && !$sidecarRequired;
-        $activeFamily = $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
-        $targetContract = $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
+        $activeFamily = $sidecarFrontend
+            ? 'sidecar_aggregation'
+            : $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
+        $targetContract = $sidecarFrontend
+            ? 'sidecar_aggregation'
+            : $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
         $publishesBondRuntime = $clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback';
         $publishesBondRuntime = $aggregationEnabled && $publishesBondRuntime;
+        $publishesBondRuntime = $publishesBondRuntime || $sidecarFrontend;
         $plainTcpIngress = $publishesBondRuntime && $bondIngressMode === 'plain_tcp_mux';
         $routeKey = (string) ($forward['path_prefix'] ?? '');
         $directTargetMode = $publishesBondRuntime ? 'bond' : $clientMode;
@@ -9297,6 +9335,9 @@ final class ProvisioningService
         $direct = $this->resolveSidecarDirectTarget($forward, 'bond');
         $tokenSecret = $this->bondTokenSecret($forward);
         $ingressMode = $this->normalizeBondIngressMode((string) ($forward['bond_ingress_mode'] ?? 'wss_path_mux'));
+        $frontendMode = $this->usesSingleRaceSidecarFrontend($forward)
+            ? $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'))
+            : '';
         $clientDirectQuicEnabled = $this->config->getBool('BOND_CLIENT_DIRECT_QUIC_ENABLED', false);
         [
             'join_timeout_ms' => $adaptiveJoinTimeoutMs,
@@ -9307,6 +9348,8 @@ final class ProvisioningService
         ['issued_at' => $issuedAt, 'expires_at' => $expiresAt] = $this->bondTokenTimestamps();
         return [
             'enabled' => true,
+            'frontend_mode' => $frontendMode,
+            'strategy_locked' => $frontendMode !== '',
             'ingress_mode' => $ingressMode,
             'route_key' => (string) ($forward['path_prefix'] ?? ''),
             'hybrid_mode' => 'quic_ws',
@@ -9648,6 +9691,17 @@ final class ProvisioningService
         }
         $decoded = json_decode($value, true);
         return is_array($decoded) ? $decoded : [];
+    }
+
+    private function configValueEnabled(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value) || is_float($value)) {
+            return (int) $value === 1;
+        }
+        return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'on'], true);
     }
 
     /**

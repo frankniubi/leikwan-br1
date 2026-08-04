@@ -132,24 +132,7 @@ final class SidecarAgentController extends BaseController
             : $this->provisioning->mptcpSidecarManagementForPoint((int) $point['id']);
         $sidecarUplinkManagement = $this->provisioning->slaveSidecarUplinkManagementForPoint((int) $point['id']);
         $pointId = (int) ($point['id'] ?? 0);
-        $bondForwardIds = array_map(
-            static fn(array $row): int => (int) ($row['id'] ?? 0),
-            $this->db->fetchAll(
-                'SELECT f.id
-                 FROM forwards f
-                 INNER JOIN services s ON s.id = f.service_id
-                 WHERE f.bond_sidecar_point_id = :point_id
-                   AND f.enabled = 1
-                   AND f.client_mode = :client_mode
-                   AND s.status = :service_status
-                 ORDER BY f.id ASC',
-                [
-                    'point_id' => $pointId,
-                    'client_mode' => 'bond',
-                    'service_status' => 'active',
-                ]
-            )
-        );
+        $bondForwardIds = $this->bondRuntimeForwardIdsForPoint($pointId, $runtimeState);
         $cfRows = $this->db->fetchAll(
             'SELECT f.id, f.path_prefix, f.target_host, f.target_port, f.transport_mode,
                     f.bond_remote_host, f.bond_remote_port, f.backend_mode,
@@ -319,6 +302,47 @@ final class SidecarAgentController extends BaseController
             'ok' => true,
             'management' => $management,
         ]);
+    }
+
+    /**
+     * @param array<string, mixed> $runtimeState
+     * @return array<int, int>
+     */
+    private function bondRuntimeForwardIdsForPoint(int $pointId, array $runtimeState): array
+    {
+        if ($pointId <= 0) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT f.id, f.client_mode, f.backend_mode
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.bond_sidecar_point_id = :point_id
+               AND f.enabled = 1
+               AND s.status = :service_status
+             ORDER BY f.id ASC',
+            [
+                'point_id' => $pointId,
+                'service_status' => 'active',
+            ]
+        );
+        $pointConfigJson = json_encode($runtimeState, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $forwardIds = [];
+        foreach ($rows as $row) {
+            $clientMode = strtolower(trim((string) ($row['client_mode'] ?? '')));
+            if ($clientMode === 'bond') {
+                $forwardIds[] = (int) ($row['id'] ?? 0);
+                continue;
+            }
+            $candidate = $row + [
+                'bond_sidecar_point_id' => $pointId,
+                'bond_sidecar_point_agent_config_json' => $pointConfigJson,
+            ];
+            if ($this->provisioning->usesSingleRaceSidecarFrontend($candidate)) {
+                $forwardIds[] = (int) ($row['id'] ?? 0);
+            }
+        }
+        return array_values(array_filter(array_unique($forwardIds), static fn(int $id): bool => $id > 0));
     }
 
     /**
