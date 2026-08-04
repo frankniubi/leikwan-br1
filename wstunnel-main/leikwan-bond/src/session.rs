@@ -2526,21 +2526,7 @@ fn spawn_transport_stream_reader<R>(
     tokio::spawn(async move {
         let mut buf = vec![0u8; chunk_size.max(1024)];
         loop {
-            let permit = tokio::select! {
-                changed = close_rx.changed() => {
-                    if changed.is_err() || *close_rx.borrow() {
-                        return;
-                    }
-                    continue;
-                }
-                permit = read_credit.clone().acquire_owned() => {
-                    match permit {
-                        Ok(permit) => permit,
-                        Err(_) => return,
-                    }
-                }
-            };
-
+            // Idle streams must not consume shared backlog credit while waiting for data.
             let read = tokio::select! {
                 changed = close_rx.changed() => {
                     if changed.is_err() || *close_rx.borrow() {
@@ -2557,6 +2543,15 @@ fn spawn_transport_stream_reader<R>(
                     return;
                 }
                 Ok(read_len) => {
+                    let permit = tokio::select! {
+                        _ = close_rx.changed() => return,
+                        permit = read_credit.clone().acquire_owned() => {
+                            match permit {
+                                Ok(permit) => permit,
+                                Err(_) => return,
+                            }
+                        }
+                    };
                     if event_tx
                         .send(TcpTransportEvent::LocalChunk {
                             stream_id,
@@ -5934,6 +5929,44 @@ mod tests {
             TcpTransportEvent::LocalChunk { stream_id: 7, ref payload, .. } if payload.len() == 1024
         ));
         let _ = close_tx.send(true);
+    }
+
+    #[tokio::test]
+    async fn idle_transport_reader_does_not_hold_shared_read_credit() {
+        let (_idle_writer, idle_reader) = tokio::io::duplex(4096);
+        let (mut active_writer, active_reader) = tokio::io::duplex(4096);
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (_idle_close_tx, idle_close_rx) = watch::channel(false);
+        let (_active_close_tx, active_close_rx) = watch::channel(false);
+        let read_credit = Arc::new(Semaphore::new(1));
+
+        spawn_transport_stream_reader(
+            7,
+            idle_reader,
+            1024,
+            idle_close_rx,
+            event_tx.clone(),
+            read_credit.clone(),
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        spawn_transport_stream_reader(
+            8,
+            active_reader,
+            1024,
+            active_close_rx,
+            event_tx,
+            read_credit,
+        );
+        active_writer.write_all(b"data").await.unwrap();
+
+        let event = timeout(Duration::from_millis(200), event_rx.recv())
+            .await
+            .expect("idle stream must not monopolize shared read credit")
+            .unwrap();
+        assert!(matches!(
+            event,
+            TcpTransportEvent::LocalChunk { stream_id: 8, ref payload, .. } if payload.as_ref() == b"data"
+        ));
     }
 
     #[tokio::test]
