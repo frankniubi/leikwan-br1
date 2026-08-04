@@ -9899,6 +9899,12 @@ final class ProvisioningService
         return false;
     }
 
+    private function staticSidecarCombinationUsesLeigod(array $combination): bool
+    {
+        $t = strtolower(trim((string) ($combination['self_leg_outer_transport'] ?? 'cnix')));
+        return $t === 'leigod' && (int) ($combination['leigod_line_id'] ?? 0) > 0;
+    }
+
     private function staticSidecarCombinationUsesSharedWireguardPeers(array $combination): bool
     {
         $pointId = (int) ($combination['sidecar_point_id'] ?? 0);
@@ -9929,12 +9935,6 @@ final class ProvisioningService
         foreach (array_keys($nodeIds) as $nodeId) {
             $this->allocateStaticSidecarUplinkSubnet($pointId, 0, (int) $nodeId, 'shared');
         }
-    }
-
-    private function staticSidecarCombinationUsesLeigod(array $combination): bool
-    {
-        $t = strtolower(trim((string) ($combination['self_leg_outer_transport'] ?? 'cnix')));
-        return $t === 'leigod' && (int) ($combination['leigod_line_id'] ?? 0) > 0;
     }
 
     private function stableSidecarGostSocksPort(int $forwardCombinationId, int $nodeId, string $lane = ''): int
