@@ -511,6 +511,7 @@ class OrphanCleanupBehaviorTests(_AgentFactory):
             "wg-quick@lws4c2n19p.service loaded active running\n"
             "wg-quick@lwsp10.service loaded active running\n"
             "wg-quick@lwsp10n99.service loaded active running\n"
+            "wg-quick@lwpdeadbeef.service loaded active running\n"
             "leikwan-wgcf-lws9z9z9z.service loaded active running\n"
             "wstunnel-svc-9-999-sidecar-selector.service loaded active running\n"
             f"{kept_service}-sidecar-selector.service loaded active running\n"
@@ -520,7 +521,7 @@ class OrphanCleanupBehaviorTests(_AgentFactory):
         def fake_run(command: str, check: bool = True):
             commands.append(command)
             if command == "wg show interfaces":
-                return SimpleNamespace(returncode=0, stdout="lws4c2n19p lws9z9z9z lwsp10 lwsp10n99\n", stderr="")
+                return SimpleNamespace(returncode=0, stdout="lws4c2n19p lws9z9z9z lwsp10 lwsp10n99 lwpdeadbeef\n", stderr="")
             if command.startswith("systemctl list-units"):
                 return SimpleNamespace(returncode=0, stdout=list_units_output, stderr="")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -533,7 +534,7 @@ class OrphanCleanupBehaviorTests(_AgentFactory):
                         agent.cleanup_orphan_sidecar_uplinks(section_present=True)
 
         # The orphan interface is torn down; the tracked one is kept.
-        self.assertEqual(["lws9z9z9z", "lwsp10n99"], removed)
+        self.assertEqual(["lws9z9z9z", "lwsp10n99", "lwpdeadbeef"], removed)
 
         # wg-quick orphan unit stopped/disabled; tracked wg-quick unit untouched.
         self.assertIn("systemctl stop wg-quick@lws9z9z9z.service", commands)
@@ -541,6 +542,7 @@ class OrphanCleanupBehaviorTests(_AgentFactory):
         self.assertNotIn("systemctl stop wg-quick@lws4c2n19p.service", commands)
         self.assertNotIn("systemctl stop wg-quick@lwsp10.service", commands)
         self.assertIn("systemctl stop wg-quick@lwsp10n99.service", commands)
+        self.assertIn("systemctl stop wg-quick@lwpdeadbeef.service", commands)
 
         # leikwan-wgcf orphan unit stopped/disabled.
         self.assertIn("systemctl stop leikwan-wgcf-lws9z9z9z.service", commands)
