@@ -4972,13 +4972,23 @@ fn eligible_strategy_legs(legs: &[LegState]) -> Vec<&LegState> {
             leg_available_for_new_data(leg, now) && leg.tcp_health.state == LegHealthState::Healthy
         })
         .collect::<Vec<_>>();
-    if healthy.is_empty() {
-        legs.iter()
-            .filter(|leg| leg_available_for_new_data(leg, now))
-            .collect()
-    } else {
-        healthy
+    if !healthy.is_empty() {
+        return healthy;
     }
+
+    let available = legs
+        .iter()
+        .filter(|leg| leg_available_for_new_data(leg, now))
+        .collect::<Vec<_>>();
+    if !available.is_empty() {
+        return available;
+    }
+
+    // A cooldown ranks legs against alternatives; it must not stop the only
+    // writable path and strand the bounded transport read credits.
+    legs.iter()
+        .filter(|leg| leg.active && leg_writer_has_capacity(leg))
+        .collect()
 }
 
 fn select_latency_best_leg(legs: &[LegState]) -> Option<usize> {
@@ -6268,6 +6278,46 @@ mod tests {
             now,
         );
         assert_eq!(selected, Some(1));
+    }
+
+    #[test]
+    fn latency_best_skips_cooled_leg_when_an_alternative_exists() {
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        legs[0].cooldown_until = Some(now + Duration::from_secs(2));
+        let mut cursor = 0usize;
+
+        let selected = select_pinned_strategy_leg(
+            ClientStrategy::LatencyBest,
+            &legs,
+            &mut cursor,
+            Some(0),
+            128 * 1024,
+            16 * 1024 * 1024,
+            &test_config(),
+        );
+
+        assert_eq!(selected, Some(1));
+    }
+
+    #[test]
+    fn latency_best_reuses_only_active_leg_during_cooldown() {
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20)];
+        legs[0].cooldown_until = Some(now + Duration::from_secs(2));
+        let mut cursor = 0usize;
+
+        let selected = select_pinned_strategy_leg(
+            ClientStrategy::LatencyBest,
+            &legs,
+            &mut cursor,
+            Some(0),
+            128 * 1024,
+            16 * 1024 * 1024,
+            &test_config(),
+        );
+
+        assert_eq!(selected, Some(0));
     }
 
     #[test]
