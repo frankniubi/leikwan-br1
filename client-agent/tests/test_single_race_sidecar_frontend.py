@@ -112,6 +112,7 @@ class SingleRaceSidecarFrontendTests(unittest.TestCase):
         self.assertNotIn("wstunnel client", script)
         self.assertNotIn("leikwan-tcp-race.py", script)
         self.assertNotIn("--strategy-file", script)
+        self.assertNotIn("--single-leg-fast-path", script)
         self.assertIn("--default-strategy latency_best", script)
 
     def test_race_uses_all_locked_bond_frontend_legs(self) -> None:

@@ -879,7 +879,6 @@ WantedBy=multi-user.target
         use_local_rate_limit = speed_limit_mbps if not truthy(bond.get("disable_local_rate_limit", True)) else None
         ws_priority = int_or_default(bond.get("ws_priority"), 10)
         join_timeout_ms = adaptive_join_timeout_ms(bond, endpoints)
-        single_leg_fast_path = len(endpoints) == 1 and primary_transport in ("tcp", "tcp+udp")
         selected_quic_legs = select_active_quic_legs(endpoints, bond)
         use_wss_as_active_legs = selected_quic_legs == []
         interactive_chunk_bytes = int_or_default(bond.get("interactive_chunk_bytes"), 16 * 1024)
@@ -938,11 +937,9 @@ WantedBy=multi-user.target
                     tcp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{tcp_back}", endpoint_priority, endpoint))
             append_wait_for_local_listener(lines, tcp_ready_ports)
             tcp_latency_flags = "--latency-first " if latency_first else ""
-            single_leg_fast_path_flag = "--single-leg-fast-path " if single_leg_fast_path else ""
             lines.append(
                 f"{bond_bin} client --protocol tcp --listen {tcp_listen_host}:{tcp_listen_port} "
                 f"{tcp_latency_flags}"
-                f"{single_leg_fast_path_flag}"
                 f"--legs '{','.join(tcp_leg_targets)}' --session-token '{bond_session_token}' "
                 f"{strategy_args}--default-strategy latency_best "
                 f"--chunk-size {int(bond.get('chunk_size', 65536) or 65536)} "
