@@ -6575,7 +6575,7 @@ final class ProvisioningService
             }
         }
 
-        return ['uplinks' => $uplinks];
+        return ['uplinks' => $this->deduplicateStaticSidecarManagementUplinks($uplinks)];
     }
 
     /**
@@ -6605,7 +6605,40 @@ final class ProvisioningService
             }
         }
 
-        return ['uplinks' => $uplinks];
+        return ['uplinks' => $this->deduplicateStaticSidecarManagementUplinks($uplinks)];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $uplinks
+     * @return array<int, array<string, mixed>>
+     */
+    private function deduplicateStaticSidecarManagementUplinks(array $uplinks): array
+    {
+        $deduped = [];
+        foreach ($uplinks as $uplink) {
+            if (!is_array($uplink)) {
+                continue;
+            }
+            $shared = (string) ($uplink['wireguard_peer_mode'] ?? '') === 'shared';
+            if ($shared) {
+                $pointId = (int) ($uplink['sidecar_point_id'] ?? 0);
+                $nodeId = (int) ($uplink['node_id'] ?? 0);
+                if ($pointId <= 0 || $nodeId <= 0) {
+                    continue;
+                }
+                $key = 'shared:' . $pointId . ':' . $nodeId;
+            } else {
+                $interfaceName = trim((string) ($uplink['interface_name'] ?? ''));
+                if ($interfaceName === '') {
+                    continue;
+                }
+                $key = 'legacy:' . $interfaceName;
+            }
+            if (!isset($deduped[$key])) {
+                $deduped[$key] = $uplink;
+            }
+        }
+        return array_values($deduped);
     }
 
     /**
@@ -6799,6 +6832,54 @@ final class ProvisioningService
             }
             $overlaySidecarIps = array_values(array_unique($overlaySidecarIps));
             $overlayClientIps = array_values(array_unique($overlayClientIps));
+        }
+        if ($this->staticSidecarUsesSharedWireguardPeers($pointId) && !$leigodMode && !$cfMode) {
+            if ($sidecarListenPort <= 0) {
+                return [];
+            }
+            $addresses = $this->allocateStaticSidecarUplinkSubnet($pointId, 0, $nodeId, 'shared');
+            $relayPort = $this->sidecarBondListenPort([
+                'listen_port' => (int) ($combination['sidecar_listen_port'] ?? 0),
+                'bond_listen_port' => (int) ($combination['sidecar_bond_listen_port'] ?? 0),
+            ]);
+            $base = [
+                'enabled' => true,
+                'mode' => 'static_slave_sidecar',
+                'wireguard_peer_mode' => 'shared',
+                'forward_combination_id' => $combinationId,
+                'sidecar_point_id' => $pointId,
+                'node_id' => $nodeId,
+                'lane' => 'shared',
+                'subnet' => $addresses['subnet'],
+                'listen_port' => $sidecarListenPort,
+                'outer_transport' => 'udp',
+                'peer_keepalive_seconds' => max(1, (int) ($this->config->getInt('STATIC_SIDECAR_WG_KEEPALIVE_SECONDS', 25) ?? 25)),
+                'watchdog' => [
+                    'enabled' => true,
+                    'handshake_stale_seconds' => max(10, (int) ($this->config->getInt('STATIC_SIDECAR_WG_HANDSHAKE_STALE_SECONDS', 90) ?? 90)),
+                    'restart_cooldown_seconds' => max(10, (int) ($this->config->getInt('STATIC_SIDECAR_WG_RESTART_COOLDOWN_SECONDS', 30) ?? 30)),
+                ],
+            ];
+            $sidecar = $base + [
+                'interface_name' => $this->sharedSidecarWireguardInterfaceName($pointId),
+                'local_address' => $addresses['sidecar_address'],
+                'peer_address' => $addresses['slave_address'],
+                'slave_peer_public_key' => $slavePublicKey,
+                'sidecar_peer_public_key' => $sidecarPublicKey,
+                'relay_target' => $addresses['sidecar_address'] . ':' . $relayPort,
+            ];
+            $slave = $base + [
+                'interface_name' => $this->sharedSlaveWireguardInterfaceName($pointId, $nodeId),
+                'local_address' => $addresses['slave_address'],
+                'peer_address' => $addresses['sidecar_address'],
+                'sidecar_peer_public_key' => $sidecarPublicKey,
+                'slave_peer_public_key' => $slavePublicKey,
+                'sidecar_endpoint_host' => $sidecarHost,
+                'sidecar_endpoint_port' => $sidecarListenPort,
+                'local_listen_port' => $this->stableStaticLocalUdpPort($pointId, 0, $nodeId, 'shared'),
+                'relay_target' => $addresses['sidecar_address'] . ':' . $relayPort,
+            ];
+            return [['sidecar' => $sidecar, 'slave' => $slave]];
         }
         $lanes = [];
         foreach (['primary' => 'p', 'backup' => 'b'] as $lane => $suffix) {
@@ -9595,6 +9676,42 @@ final class ProvisioningService
             return $name;
         }
         return 'lws' . substr(hash('crc32b', $pointId . ':' . $combinationId . ':' . $nodeId . ':' . $laneSuffix), 0, 11);
+    }
+
+    /** @return array<int, true> */
+    private function staticSidecarSharedWireguardPointIds(): array
+    {
+        $ids = [];
+        foreach (explode(',', (string) ($this->config->get('STATIC_SIDECAR_SHARED_WG_POINT_IDS', '') ?? '')) as $raw) {
+            $pointId = (int) trim($raw);
+            if ($pointId > 0) {
+                $ids[$pointId] = true;
+            }
+        }
+        return $ids;
+    }
+
+    private function staticSidecarUsesSharedWireguardPeers(int $pointId): bool
+    {
+        return isset($this->staticSidecarSharedWireguardPointIds()[$pointId]);
+    }
+
+    private function sharedSidecarWireguardInterfaceName(int $pointId): string
+    {
+        $name = 'lwsp' . $pointId;
+        if (strlen($name) <= 15) {
+            return $name;
+        }
+        return 'lwsp' . substr(hash('crc32b', (string) $pointId), 0, 11);
+    }
+
+    private function sharedSlaveWireguardInterfaceName(int $pointId, int $nodeId): string
+    {
+        $name = 'lwsp' . $pointId . 'n' . $nodeId;
+        if (strlen($name) <= 15) {
+            return $name;
+        }
+        return 'lwp' . substr(hash('crc32b', $pointId . ':' . $nodeId), 0, 12);
     }
 
     private function stableStaticSidecarUplinkPort(int $sidecarListenPort, int $portRangeEnd, int $pointId, int $combinationId, int $nodeId, string $lane): int
