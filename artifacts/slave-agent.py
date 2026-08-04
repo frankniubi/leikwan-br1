@@ -420,6 +420,15 @@ def safe_service_basename(service_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value)[:120] or "selector"
 
 
+def safe_wireguard_interface_name(value: Any, prefixes: tuple[str, ...] = ()) -> str:
+    interface_name = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,15}", interface_name) is None:
+        return ""
+    if prefixes and not interface_name.startswith(prefixes):
+        return ""
+    return interface_name
+
+
 def mux_service_name(listen_port: int) -> str:
     return f"leikwan-wss-mux-{listen_port}"
 
@@ -2942,9 +2951,12 @@ class SlaveAgent:
 
     @staticmethod
     def validate_shared_static_sidecar_uplink(uplink: dict[str, Any]) -> str:
-        interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
-        if interface_name == "":
+        raw_interface_name = str(uplink.get("interface_name", "") or "").strip()
+        if raw_interface_name == "":
             return "missing interface_name"
+        interface_name = safe_wireguard_interface_name(raw_interface_name, ("lwsp", "lwp"))
+        if interface_name == "":
+            return "invalid shared interface name"
         try:
             point_id = int(uplink.get("sidecar_point_id", 0) or 0)
             node_id = int(uplink.get("node_id", 0) or 0)
@@ -2998,14 +3010,24 @@ class SlaveAgent:
             if not isinstance(raw, dict):
                 return [], set(), False
             uplink = dict(raw)
-            interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
-            if not uplink.get("enabled", False):
-                continue
+            raw_interface_name = str(uplink.get("interface_name", "") or "").strip()
+            interface_name = raw_interface_name[:15]
             shared = str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared"
+            validation_error = self.validate_shared_static_sidecar_uplink(uplink) if shared else ""
+            if not uplink.get("enabled", False):
+                if validation_error in {
+                    "missing interface_name",
+                    "invalid shared interface name",
+                    "invalid numeric identity",
+                    "missing point or node identity",
+                    "invalid shared lane",
+                }:
+                    logging.error("invalid disabled shared sidecar uplink identity: %s", validation_error)
+                    return [], set(), False
+                continue
             if shared:
-                validation_error = self.validate_shared_static_sidecar_uplink(uplink)
                 if validation_error != "":
-                    if interface_name == "":
+                    if validation_error in {"missing interface_name", "invalid shared interface name"}:
                         logging.error("invalid shared sidecar uplink without interface identity: %s", validation_error)
                         return [], set(), False
                     logging.error("invalid shared sidecar uplink %s: %s; preserving previous interface", interface_name, validation_error)
@@ -4164,7 +4186,6 @@ WantedBy=multi-user.target
                 "filter_profile": str(payload.get("filter_profile", "off")),
                 "status": "active",
             }
-            self.write_json(metadata_path, metadata)
             self.apply_mptcp_underlay(service_name, mptcp_underlay)
             if sidecar_uplink.get("enabled"):
                 # compose model comment: true MPTCP underlay may ride over static uplink; early return used to skip it.
@@ -4173,6 +4194,7 @@ WantedBy=multi-user.target
                 self.ensure_sidecar_uplink_selector(service_name, sidecar_uplink_selector)
             else:
                 self.remove_sidecar_uplink_selector(service_name)
+            self.write_json(metadata_path, metadata)
             return {
                 "service_name": service_name,
                 "unit_path": "",
@@ -4451,7 +4473,7 @@ WantedBy=multi-user.target
         if base_targeted:
             self.remove_leigod_forward_runtime(base_service_name, base_metadata)
             self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
-            self.remove_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
+            self.remove_published_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
             self.remove_sidecar_uplink_selector(base_service_name)
 
         if not keep_files:
@@ -4512,7 +4534,7 @@ WantedBy=multi-user.target
             self.remove_leigod_forward_runtime(base_service_name, base_metadata)
             self.remove_sidecar_uplink_selector(base_service_name)
             self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
-            self.remove_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
+            self.remove_published_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
         for service_name in service_names:
             unit_path = self.service_unit_path(service_name)
             if unit_path.exists():
@@ -5304,7 +5326,9 @@ WantedBy=multi-user.target
         if private_key == "":
             raise RuntimeError("slave WireGuard private key is empty")
 
-        interface_name = str(uplink.get("interface_name", "") or service_name).strip()[:15]
+        interface_name = safe_wireguard_interface_name(uplink.get("interface_name", ""), ("lwsp", "lwp"))
+        if interface_name == "":
+            raise ValueError("invalid shared interface name")
         local_address = str(uplink.get("local_address", "") or "").strip()
         peer_address = str(uplink.get("peer_address", "") or "").strip()
         peer_public_key = str(uplink.get("sidecar_peer_public_key", "") or "").strip()
@@ -5376,6 +5400,11 @@ WantedBy=multi-user.target
             self.apply_shared_sidecar_uplink(interface_name, uplink)
             return
         self.apply_sidecar_uplink(service_name, uplink)
+
+    def remove_published_sidecar_uplink(self, service_name: str, uplink: dict[str, Any] | None = None) -> None:
+        if str((uplink or {}).get("wireguard_peer_mode", "") or "").strip().lower() == "shared":
+            return
+        self.remove_sidecar_uplink(service_name, uplink)
 
     def apply_sidecar_uplink(self, service_name: str, uplink: dict[str, Any]) -> None:
         if not uplink.get("enabled") or not shutil.which("wg") or not shutil.which("wg-quick"):
@@ -5600,8 +5629,9 @@ WantedBy=multi-user.target
                     run_command(f"wg-quick up {interface_name}", check=False)
 
     def remove_sidecar_uplink(self, service_name: str, uplink: dict[str, Any] | None = None) -> None:
-        interface_name = str((uplink or {}).get("interface_name", "") or service_name).strip()[:15]
+        interface_name = safe_wireguard_interface_name((uplink or {}).get("interface_name", "") or service_name)
         if interface_name == "":
+            logging.error("refusing to remove sidecar uplink with invalid interface name")
             return
         if shutil.which("systemctl"):
             run_command(f"systemctl stop wg-quick@{interface_name}.service", check=False)

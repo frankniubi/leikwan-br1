@@ -234,6 +234,14 @@ class SidecarStaticSidecarUplinkTests(unittest.TestCase):
                 state = json.loads(agent.sidecar_uplink_state_path().read_text(encoding="utf-8"))
                 self.assertEqual(previous, state)
 
+    def test_shared_interface_name_rejects_shell_metacharacters(self):
+        agent = self.make_agent()
+        malicious = self.shared_uplink(2)
+        malicious["interface_name"] = "lwsp10;id"
+
+        with self.assertRaisesRegex(ValueError, "interface"):
+            agent.validate_shared_sidecar_uplinks([malicious])
+
     def test_shared_first_start_failure_disables_new_unit_and_removes_configs(self):
         agent = self.make_agent()
         agent.wireguard_private_key_path().write_text("private-key\n", encoding="utf-8")
