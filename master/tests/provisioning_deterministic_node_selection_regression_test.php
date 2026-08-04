@@ -55,10 +55,20 @@ namespace Leikwan\Master\Database {
                     $group = $this->findById('node_groups', (int) ($node['group_id'] ?? 0));
                     $rows[] = array_merge($node, ['node_group_key' => (string) ($group['group_key'] ?? '')]);
                 }
-                // Emulate the (FIXED) SQL ORDER BY current_load ASC, n.id ASC, then LIMIT. The
-                // deterministic node_id tie-break here is part of FIX C: a stale last_heartbeat_at
-                // DESC ordering would re-truncate the LIMIT window on every heartbeat.
-                usort($rows, static function (array $a, array $b): int {
+                $preferredIds = [];
+                foreach ($params as $key => $value) {
+                    if (str_starts_with((string) $key, 'preferred_node_')) {
+                        $preferredIds[(int) $value] = true;
+                    }
+                }
+                // Emulate the SQL ordering: an already assigned healthy endpoint is sticky,
+                // then new capacity is selected by load and stable node id.
+                usort($rows, static function (array $a, array $b) use ($preferredIds): int {
+                    $preferredCmp = (isset($preferredIds[(int) ($a['id'] ?? 0)]) ? 0 : 1)
+                        <=> (isset($preferredIds[(int) ($b['id'] ?? 0)]) ? 0 : 1);
+                    if ($preferredCmp !== 0) {
+                        return $preferredCmp;
+                    }
                     $loadCmp = ((int) ($a['current_load'] ?? 0)) <=> ((int) ($b['current_load'] ?? 0));
                     if ($loadCmp !== 0) {
                         return $loadCmp;
@@ -163,6 +173,28 @@ namespace {
     if ($second !== $firstIds) {
         fail('REGRESSION: desired-node set flipped when only the volatile last_heartbeat_at changed; '
             . 'first [' . implode(',', $firstIds) . '] vs second [' . implode(',', $second) . ']');
+    }
+
+    // Reconciliation must not replace a healthy existing endpoint merely because assigning it
+    // increased current_load. New forwards still use load ordering, while an existing forward
+    // stays on node 12 until that node is no longer eligible.
+    $db->seed('nodes', [
+        ['id' => 12, 'group_id' => 5, 'status' => 'active', 'current_load' => 8, 'last_heartbeat_at' => '2026-05-30 09:01:00', 'public_ip' => '203.0.113.12'],
+        ['id' => 25, 'group_id' => 5, 'status' => 'active', 'current_load' => 0, 'last_heartbeat_at' => '2026-05-30 09:01:00', 'public_ip' => '203.0.113.25'],
+    ]);
+    $sticky = $idsOf(call_private($service, 'pickNodesForGroups', ['hk-pool'], 1, null, [12]));
+    if ($sticky !== [12]) {
+        fail('REGRESSION: healthy existing endpoint must remain sticky across current_load changes; got [' . implode(',', $sticky) . ']');
+    }
+
+    // Stickiness must never resurrect an ineligible node.
+    $db->seed('nodes', [
+        ['id' => 12, 'group_id' => 5, 'status' => 'offline', 'current_load' => 8, 'last_heartbeat_at' => '2026-05-30 09:01:00', 'public_ip' => '203.0.113.12'],
+        ['id' => 25, 'group_id' => 5, 'status' => 'active', 'current_load' => 0, 'last_heartbeat_at' => '2026-05-30 09:01:00', 'public_ip' => '203.0.113.25'],
+    ]);
+    $failedOver = $idsOf(call_private($service, 'pickNodesForGroups', ['hk-pool'], 1, null, [12]));
+    if ($failedOver !== [25]) {
+        fail('ineligible preferred endpoint must fail over to an eligible node; got [' . implode(',', $failedOver) . ']');
     }
 
     echo "ok\n";
