@@ -130,8 +130,8 @@
     "version": "0.1.16",
     "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64",
-    "sha256": "a2587b603040e8947ba0fbcd3b883d3b5e6fc2b0f7fbd0203474da113b1be2d4",
-    "size_bytes": 8745640
+    "sha256": "c250c60d84514c0a16a59d1e40019c01e93155765d52a4337370283262b4376b",
+    "size_bytes": 8907496
   },
   "wstunnel_linux_amd64": {
     "version": "10.5.2",
