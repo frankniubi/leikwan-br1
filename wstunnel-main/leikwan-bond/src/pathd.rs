@@ -1,3 +1,7 @@
+use crate::pathd_line::{
+    restart_backoff, validate_line_material, write_private_atomic, LineRuntime, LineRuntimePaths,
+    LocalLineStatus, SystemLineClock,
+};
 use crate::session::{
     prepare_client_tcp_transport, run_prepared_client_tcp_listener, stop_client_tcp_transport,
     ClientTransportRuntime, SessionConfig,
@@ -12,7 +16,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -44,6 +48,11 @@ impl SecretString {
 
     fn is_empty(&self) -> bool {
         self.0.trim().is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(value: &str) -> Self {
+        Self(value.to_string())
     }
 }
 
@@ -626,6 +635,7 @@ struct DaemonStatus<'a> {
     generation: u64,
     status: &'a str,
     forwards: HashMap<String, ForwardStatus<'a>>,
+    local_lines: Vec<LocalLineStatus>,
 }
 
 #[derive(Serialize)]
@@ -640,21 +650,82 @@ pub struct PathDaemon {
     desired: Option<DesiredState>,
     active_configs: HashMap<u64, SessionConfig>,
     forwards: HashMap<u64, RunningForward>,
+    line_paths: LineRuntimePaths,
+    lines: HashMap<u32, LineRuntime>,
+    line_restart_failures: HashMap<String, (u32, Instant)>,
 }
 
 impl PathDaemon {
     pub fn new(status_path: impl Into<PathBuf>) -> Self {
+        let status_path = status_path.into();
+        let runtime_root = status_path
+            .parent()
+            .unwrap_or_else(|| Path::new("/run/leikwan-pathd"))
+            .to_path_buf();
+        Self::new_with_runtime_root(status_path, runtime_root)
+    }
+
+    pub fn new_with_runtime_root(
+        status_path: impl Into<PathBuf>,
+        runtime_root: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             status_path: status_path.into(),
             generation: 0,
             desired: None,
             active_configs: HashMap::new(),
             forwards: HashMap::new(),
+            line_paths: LineRuntimePaths::new(runtime_root),
+            lines: HashMap::new(),
+            line_restart_failures: HashMap::new(),
         }
     }
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub async fn enforce_expiry(&mut self) -> Result<bool> {
+        let Some(desired) = self.desired.as_ref() else {
+            return Ok(false);
+        };
+        let now = unix_now_i64()?;
+        let expired_lines: HashSet<u32> = desired
+            .local_leases
+            .iter()
+            .filter(|lease| lease.expires_at_unix <= now)
+            .map(|lease| lease.line_id)
+            .collect();
+        if expired_lines.is_empty() {
+            return Ok(false);
+        }
+
+        let expired_forwards: Vec<u64> = desired
+            .forwards
+            .iter()
+            .filter(|forward| {
+                forward.legs.iter().any(|leg| {
+                    leg.execution_group.starts_with("client:")
+                        && expired_lines.contains(&leg.line_id)
+                })
+            })
+            .map(|forward| forward.forward_id)
+            .collect();
+        let expired_forwards = expired_forwards
+            .into_iter()
+            .filter_map(|forward_id| self.forwards.remove(&forward_id))
+            .collect();
+        stop_forwards(expired_forwards).await;
+        let expired_runtimes = expired_lines
+            .into_iter()
+            .filter_map(|line_id| self.lines.remove(&line_id))
+            .collect();
+        stop_lines(expired_runtimes).await;
+        if self.lines.is_empty() {
+            let _ = self.line_paths.cleanup_secrets();
+        }
+        self.write_status_for(self.generation, "degraded").await?;
+        Ok(true)
     }
 
     pub async fn apply(&mut self, desired: DesiredState) -> Result<()> {
@@ -671,6 +742,14 @@ impl PathDaemon {
 
         let previous_desired = self.desired.clone();
         let previous_configs = self.active_configs.clone();
+        if let Err(line_error) = self.reconcile_lines_start(&validated.desired).await {
+            self.restore_or_fail_closed(previous_desired.as_ref(), &previous_configs)
+                .await
+                .with_context(|| {
+                    format!("line reconcile failed and previous generation could not be restored: {line_error:#}")
+                })?;
+            return Err(line_error);
+        }
         if let Err(reconcile_error) = self
             .reconcile_runtime(&validated.desired, &validated.session_configs)
             .await
@@ -682,6 +761,7 @@ impl PathDaemon {
                 })?;
             return Err(reconcile_error);
         }
+        self.prune_lines(&validated.desired).await;
 
         if let Err(status_error) = self
             .write_status_for(validated.desired.generation, "ready")
@@ -805,24 +885,160 @@ impl PathDaemon {
             forwards: Vec::new(),
         };
         let target = previous.unwrap_or(&empty);
-        if let Err(err) = self.reconcile_runtime(target, configs).await {
-            let running = std::mem::take(&mut self.forwards).into_values().collect();
-            stop_forwards(running).await;
-            self.generation = 0;
-            self.desired = None;
-            self.active_configs.clear();
+        if let Err(err) = self.reconcile_lines_start(target).await {
+            self.fail_closed().await;
             return Err(err);
         }
+        if let Err(err) = self.reconcile_runtime(target, configs).await {
+            self.fail_closed().await;
+            return Err(err);
+        }
+        self.prune_lines(target).await;
         Ok(())
+    }
+
+    async fn fail_closed(&mut self) {
+        let running = std::mem::take(&mut self.forwards).into_values().collect();
+        stop_forwards(running).await;
+        let lines = std::mem::take(&mut self.lines).into_values().collect();
+        stop_lines(lines).await;
+        let _ = self.line_paths.cleanup_secrets();
+        self.generation = 0;
+        self.desired = None;
+        self.active_configs.clear();
+    }
+
+    async fn reconcile_lines_start(&mut self, desired: &DesiredState) -> Result<()> {
+        for lease in &desired.local_leases {
+            validate_line_material(lease, &desired.provider, &SystemLineClock)?;
+        }
+        for lease in &desired.local_leases {
+            let unchanged = self
+                .lines
+                .get_mut(&lease.line_id)
+                .map(|runtime| runtime.matches(lease, &desired.provider))
+                .unwrap_or(false);
+            if unchanged {
+                continue;
+            }
+            let failure_key = format!(
+                "{}:{}:{}:{}:{}",
+                lease.line_id,
+                lease.lease_id.to_ascii_lowercase(),
+                lease.lease_generation,
+                lease.config_sha256.to_ascii_lowercase(),
+                desired.provider.session_sha256.to_ascii_lowercase(),
+            );
+            if let Some((_, retry_at)) = self.line_restart_failures.get(&failure_key) {
+                if *retry_at > Instant::now() {
+                    bail!(
+                        "provider runtime restart backoff is active for line {}",
+                        lease.line_id
+                    );
+                }
+            }
+            if let Some(previous) = self.lines.remove(&lease.line_id) {
+                stop_lines(vec![previous]).await;
+            }
+            let runtime = match LineRuntime::start(
+                lease,
+                &desired.provider,
+                &self.line_paths,
+                &SystemLineClock,
+            )
+            .await
+            {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    if self.line_restart_failures.len() >= 256 {
+                        self.line_restart_failures.clear();
+                    }
+                    let attempt = self
+                        .line_restart_failures
+                        .get(&failure_key)
+                        .map(|(attempt, _)| attempt.saturating_add(1))
+                        .unwrap_or(0);
+                    self.line_restart_failures.insert(
+                        failure_key,
+                        (attempt, Instant::now() + restart_backoff(attempt)),
+                    );
+                    return Err(err);
+                }
+            };
+            self.line_restart_failures.remove(&failure_key);
+            self.lines.insert(lease.line_id, runtime);
+        }
+        Ok(())
+    }
+
+    async fn prune_lines(&mut self, desired: &DesiredState) {
+        let wanted: HashSet<u32> = desired
+            .local_leases
+            .iter()
+            .map(|lease| lease.line_id)
+            .collect();
+        let obsolete: Vec<u32> = self
+            .lines
+            .keys()
+            .filter(|line_id| !wanted.contains(line_id))
+            .copied()
+            .collect();
+        let obsolete = obsolete
+            .into_iter()
+            .filter_map(|line_id| self.lines.remove(&line_id))
+            .collect();
+        stop_lines(obsolete).await;
+        if self.lines.is_empty() {
+            let _ = self.line_paths.cleanup_secrets();
+        }
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
         let running = std::mem::take(&mut self.forwards).into_values().collect();
         stop_forwards(running).await;
+        let lines = std::mem::take(&mut self.lines).into_values().collect();
+        stop_lines(lines).await;
+        let _ = self.line_paths.cleanup_secrets();
         self.write_status_for(self.generation, "stopped").await
     }
 
-    async fn write_status_for(&self, generation: u64, status: &str) -> Result<()> {
+    async fn write_status_for(&mut self, generation: u64, status: &str) -> Result<()> {
+        let mut probes = tokio::task::JoinSet::new();
+        for line in self.lines.values_mut() {
+            let line_id = line.line_id();
+            let status = line.status();
+            let socks_addr = line.socks_addr();
+            probes.spawn(async move {
+                let mut status = status;
+                if status.service_state == "active" {
+                    let started = Instant::now();
+                    match timeout(
+                        Duration::from_millis(500),
+                        tokio::net::TcpStream::connect(socks_addr),
+                    )
+                    .await
+                    {
+                        Ok(Ok(stream)) => {
+                            drop(stream);
+                            status.tcp_status = String::from("ok");
+                            status.tcp_connect_ms = Some(
+                                started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                            );
+                        }
+                        _ => {
+                            status.tcp_status = String::from("unreachable");
+                            status.last_error_code = Some(String::from("tcp_connect_failed"));
+                        }
+                    }
+                }
+                (line_id, status)
+            });
+        }
+        let mut local_lines = Vec::with_capacity(self.lines.len());
+        while let Some(joined) = probes.join_next().await {
+            local_lines.push(joined.context("local line status probe task failed")?.1);
+        }
+        local_lines.sort_by_key(|line| line.line_id);
         let forwards = self
             .forwards
             .iter()
@@ -844,6 +1060,7 @@ impl PathDaemon {
             generation,
             status,
             forwards,
+            local_lines,
         })?;
         atomic_write(&self.status_path, &encoded).await
     }
@@ -950,17 +1167,24 @@ async fn stop_forwards(running: Vec<RunningForward>) {
     }
 }
 
+async fn stop_lines(lines: Vec<LineRuntime>) {
+    let mut tasks = tokio::task::JoinSet::new();
+    for line in lines {
+        tasks.spawn(line.stop(Duration::from_secs(2)));
+    }
+    if timeout(LISTENER_DRAIN_TIMEOUT, async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+}
+
 async fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    tokio::fs::create_dir_all(parent).await?;
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("status.json");
-    let temporary = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
-    tokio::fs::write(&temporary, contents).await?;
-    tokio::fs::rename(&temporary, path).await?;
-    Ok(())
+    write_private_atomic(path, contents)
 }
 
 fn unix_now_i64() -> Result<i64> {
@@ -975,15 +1199,53 @@ fn unix_now_i64() -> Result<i64> {
 mod tests {
     use super::*;
     use crate::frame::{read_frame, write_frame, WireFrame};
+    use crate::pathd_line::{process_is_alive, sha256_bytes};
+    use std::fs;
     use std::net::TcpListener as StdTcpListener;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    struct FakeProvider {
+        root: PathBuf,
+        binary: PathBuf,
+    }
+
+    impl FakeProvider {
+        fn start() -> Self {
+            Self::start_with_body("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n")
+        }
+
+        fn start_with_body(body: &str) -> Self {
+            let root = temp_status_path().with_extension("provider");
+            fs::create_dir_all(&root).unwrap();
+            let binary = root.join("provider-runtime");
+            fs::write(&binary, body).unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+            Self { root, binary }
+        }
+
+        fn attach(&self, value: &mut serde_json::Value) {
+            let session = "session-secret";
+            let config = "provider-secret";
+            value["provider"]["binary"] = self.binary.display().to_string().into();
+            value["provider"]["session_json"] = session.into();
+            value["provider"]["session_sha256"] = sha256_bytes(session.as_bytes()).into();
+            value["local_leases"][0]["config_toml"] = config.into();
+            value["local_leases"][0]["config_sha256"] = sha256_bytes(config.as_bytes()).into();
+        }
+
+        fn stop(self) {
+            let _ = fs::remove_dir_all(self.root);
+        }
+    }
 
     struct FakeLegServer {
         addr: SocketAddr,
         cancel: CancellationToken,
         active: Arc<AtomicUsize>,
         handle: JoinHandle<()>,
+        provider: FakeProvider,
     }
 
     impl FakeLegServer {
@@ -993,6 +1255,7 @@ mod tests {
 
         async fn start_with_ack_delay(ack_delay: Duration) -> Self {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let provider = FakeProvider::start();
             let addr = listener.local_addr().unwrap();
             let cancel = CancellationToken::new();
             let child_cancel = cancel.clone();
@@ -1036,10 +1299,12 @@ mod tests {
                 cancel,
                 active,
                 handle,
+                provider,
             }
         }
 
         fn attach(&self, value: &mut serde_json::Value) {
+            self.provider.attach(value);
             value["local_leases"][0]["socks_addr"] = self.addr.to_string().into();
             for leg in value["forwards"][0]["legs"].as_array_mut().unwrap() {
                 leg["uri"] = format!("tcp://{}", self.addr).into();
@@ -1049,6 +1314,7 @@ mod tests {
         async fn stop(self) {
             self.cancel.cancel();
             let _ = self.handle.await;
+            self.provider.stop();
         }
     }
 
@@ -1066,6 +1332,10 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn test_daemon(status_path: &Path) -> PathDaemon {
+        PathDaemon::new_with_runtime_root(status_path, temp_status_path().with_extension("runtime"))
     }
 
     fn valid_json() -> serde_json::Value {
@@ -1274,17 +1544,19 @@ mod tests {
 
     #[tokio::test]
     async fn daemon_does_not_report_ready_without_initial_leg_quorum() {
+        let provider = FakeProvider::start();
         let listen = free_loopback_addr();
         let unreachable = free_loopback_addr();
         let status_path = temp_status_path();
         let mut value = valid_json();
+        provider.attach(&mut value);
         value["forwards"][0]["listen"] = listen.to_string().into();
         value["local_leases"][0]["socks_addr"] = unreachable.to_string().into();
         for leg in value["forwards"][0]["legs"].as_array_mut().unwrap() {
             leg["uri"] = format!("tcp://{unreachable}").into();
         }
         value["forwards"][0]["policy"]["connect_timeout_ms"] = 100.into();
-        let mut daemon = PathDaemon::new(&status_path);
+        let mut daemon = test_daemon(&status_path);
 
         assert!(daemon
             .apply(serde_json::from_value(value).unwrap())
@@ -1292,6 +1564,64 @@ mod tests {
             .is_err());
         assert_eq!(0, daemon.generation());
         assert!(!status_path.exists());
+        provider.stop();
+    }
+
+    #[tokio::test]
+    async fn repeated_provider_start_failure_is_backed_off() {
+        let provider = FakeProvider::start_with_body("#!/bin/sh\nexit 7\n");
+        let status_path = temp_status_path();
+        let mut value = valid_json();
+        provider.attach(&mut value);
+        value["forwards"] = serde_json::json!([]);
+        let desired: DesiredState = serde_json::from_value(value).unwrap();
+        let mut daemon = test_daemon(&status_path);
+
+        assert!(daemon.apply(desired.clone()).await.is_err());
+        assert_eq!(1, daemon.line_restart_failures.len());
+        let first = daemon.line_restart_failures.values().next().unwrap().0;
+        assert!(daemon.apply(desired).await.is_err());
+        assert_eq!(
+            first,
+            daemon.line_restart_failures.values().next().unwrap().0
+        );
+        assert!(daemon.lines.is_empty());
+
+        provider.stop();
+    }
+
+    #[tokio::test]
+    async fn expired_lease_stops_new_sessions_before_line_cleanup() {
+        let server = FakeLegServer::start().await;
+        let listen = free_loopback_addr();
+        let status_path = temp_status_path();
+        let mut value = valid_json();
+        server.attach(&mut value);
+        value["forwards"][0]["listen"] = listen.to_string().into();
+        let mut daemon = test_daemon(&status_path);
+        daemon
+            .apply(serde_json::from_value(value).unwrap())
+            .await
+            .unwrap();
+        daemon.desired.as_mut().unwrap().local_leases[0].expires_at_unix =
+            unix_now_i64().unwrap() - 1;
+
+        assert!(daemon.enforce_expiry().await.unwrap());
+        assert!(daemon.forwards.is_empty());
+        assert!(daemon.lines.is_empty());
+        assert!(tokio::net::TcpStream::connect(listen).await.is_err());
+        let status: serde_json::Value =
+            serde_json::from_slice(&tokio::fs::read(&status_path).await.unwrap()).unwrap();
+        assert_eq!(
+            0o600,
+            fs::metadata(&status_path).unwrap().permissions().mode() & 0o777
+        );
+        assert_eq!("degraded", status["status"]);
+        assert_eq!(0, status["local_lines"].as_array().unwrap().len());
+
+        daemon.shutdown().await.unwrap();
+        let _ = tokio::fs::remove_file(status_path).await;
+        server.stop().await;
     }
 
     #[tokio::test]
@@ -1306,7 +1636,7 @@ mod tests {
         let mut value = valid_json();
         server.attach(&mut value);
         value["forwards"][0]["listen"] = listen.to_string().into();
-        let mut daemon = PathDaemon::new(&status_path);
+        let mut daemon = test_daemon(&status_path);
 
         assert!(daemon
             .apply(serde_json::from_value(value).unwrap())
@@ -1330,7 +1660,7 @@ mod tests {
         let mut initial = valid_json();
         old_server.attach(&mut initial);
         initial["forwards"][0]["listen"] = listen.to_string().into();
-        let mut daemon = PathDaemon::new(&status_path);
+        let mut daemon = test_daemon(&status_path);
         daemon
             .apply(serde_json::from_value(initial).unwrap())
             .await
@@ -1367,7 +1697,7 @@ mod tests {
         server.attach(&mut initial);
         initial["forwards"][0]["listen"] = listen.to_string().into();
         let desired: DesiredState = serde_json::from_value(initial).unwrap();
-        let mut daemon = PathDaemon::new(&status_path);
+        let mut daemon = test_daemon(&status_path);
         daemon.apply(desired.clone()).await.unwrap();
 
         let blocked_parent = temp_status_path();
@@ -1399,7 +1729,7 @@ mod tests {
         server.attach(&mut initial);
         initial["forwards"][0]["listen"] = listen.to_string().into();
         let desired: DesiredState = serde_json::from_value(initial).unwrap();
-        let mut daemon = PathDaemon::new(&status_path);
+        let mut daemon = test_daemon(&status_path);
 
         daemon.apply(desired.clone()).await.unwrap();
         assert_eq!(42, daemon.generation());
@@ -1407,6 +1737,14 @@ mod tests {
             serde_json::from_slice(&tokio::fs::read(&status_path).await.unwrap()).unwrap();
         assert_eq!("ready", status["status"]);
         assert_eq!("ready", status["forwards"]["17"]["listener"]);
+        assert_eq!(451, status["local_lines"][0]["line_id"]);
+        assert_eq!(7, status["local_lines"][0]["lease_generation"]);
+        assert_eq!("active", status["local_lines"][0]["service_state"]);
+        assert_eq!("ok", status["local_lines"][0]["tcp_status"]);
+        assert!(status["local_lines"][0]["tcp_connect_ms"].is_number());
+        let encoded_status = serde_json::to_string(&status).unwrap();
+        assert!(!encoded_status.contains("session-secret"));
+        assert!(!encoded_status.contains("provider-secret"));
         tokio::net::TcpStream::connect(listen).await.unwrap();
 
         daemon.forwards.get(&17).unwrap().cancel.cancel();
@@ -1428,12 +1766,14 @@ mod tests {
         assert_eq!(43, daemon.generation());
         tokio::net::TcpStream::connect(listen).await.unwrap();
 
+        let line_pid = daemon.lines.get(&451).unwrap().pid();
         daemon.shutdown().await.unwrap();
         let status: serde_json::Value =
             serde_json::from_slice(&tokio::fs::read(&status_path).await.unwrap()).unwrap();
         assert_eq!("stopped", status["status"]);
         assert!(tokio::net::TcpStream::connect(listen).await.is_err());
         assert_eq!(0, server.active.load(Ordering::SeqCst));
+        assert!(!process_is_alive(line_pid));
         let _ = tokio::fs::remove_file(status_path).await;
         server.stop().await;
     }

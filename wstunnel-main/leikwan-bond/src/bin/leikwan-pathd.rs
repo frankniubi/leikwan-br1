@@ -32,6 +32,8 @@ async fn main() -> Result<()> {
     let mut hangup = signal(SignalKind::hangup()).context("register SIGHUP handler")?;
     let mut terminate = signal(SignalKind::terminate()).context("register SIGTERM handler")?;
     let mut interrupt = signal(SignalKind::interrupt()).context("register SIGINT handler")?;
+    let mut expiry_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    expiry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             _ = hangup.recv() => {
@@ -48,6 +50,11 @@ async fn main() -> Result<()> {
             }
             _ = terminate.recv() => break,
             _ = interrupt.recv() => break,
+            _ = expiry_tick.tick() => {
+                if let Err(err) = daemon.enforce_expiry().await {
+                    error!("lease expiry enforcement failed: {err:#}");
+                }
+            }
         }
     }
 
