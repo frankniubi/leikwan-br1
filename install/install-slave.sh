@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.07.27.1"
+INSTALLER_VERSION="2026.08.05.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 TOKEN=""
@@ -152,18 +152,32 @@ download_atomic() {
 }
 
 download_manifest_artifact() {
-  local key="$1" url="$2" path="$3" expected_sha256
+  local key="$1" url="$2" path="$3" expected_sha256 expected_size_bytes
   expected_sha256="$(_vers_sha256 "$key")"
-  if check_binary_current "$path" "$expected_sha256"; then
+  expected_size_bytes="$(_vers_size_bytes "$key")"
+  if [[ ! "$expected_sha256" =~ ^[a-f0-9]{64}$ || ! "$expected_size_bytes" =~ ^[1-9][0-9]*$ ]]; then
+    echo "invalid or missing artifact manifest pin: $key" >&2
+    return 1
+  fi
+  if check_manifest_artifact_current "$path" "$expected_sha256" "$expected_size_bytes"; then
     echo "  $key up to date, skipping download"
     return 0
   fi
   download_atomic "$url" "$path"
-  if [[ -n "$expected_sha256" ]] && ! check_binary_current "$path" "$expected_sha256"; then
+  if ! check_manifest_artifact_current "$path" "$expected_sha256" "$expected_size_bytes"; then
     rm -f "$path"
-    echo "downloaded artifact sha256 mismatch: $key" >&2
+    echo "downloaded artifact hash or size mismatch: $key" >&2
     return 1
   fi
+}
+
+check_manifest_artifact_current() {
+  local local_path="$1" expected_sha256="$2" expected_size_bytes="$3"
+  [[ -f "$local_path" && "$expected_sha256" =~ ^[a-f0-9]{64}$ && "$expected_size_bytes" =~ ^[1-9][0-9]*$ ]] || return 1
+  local actual_sha256 actual_size_bytes
+  actual_sha256=$(sha256sum "$local_path" 2>/dev/null | awk '{print $1}')
+  actual_size_bytes=$(wc -c < "$local_path" | tr -d '[:space:]')
+  [[ "$actual_sha256" == "$expected_sha256" && "$actual_size_bytes" == "$expected_size_bytes" ]]
 }
 
 # Returns 0 if local file exists and sha256 matches expected; 1 otherwise.
@@ -184,6 +198,19 @@ try:
     d = json.loads(sys.argv[1])
     entry = d.get(key)
     print(entry.get('sha256', '') if isinstance(entry, dict) else '')
+except Exception:
+    print('')
+" "$_VERSIONS_JSON" "$1" 2>/dev/null || echo ''
+}
+
+_vers_size_bytes() {
+  python3 -c "
+import json, sys
+key = sys.argv[2]
+try:
+    d = json.loads(sys.argv[1])
+    entry = d.get(key)
+    print(entry.get('size_bytes', '') if isinstance(entry, dict) else '')
 except Exception:
     print('')
 " "$_VERSIONS_JSON" "$1" 2>/dev/null || echo ''
@@ -387,6 +414,12 @@ else
   download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
 fi
 
+BOND_SHA256="$(_vers_sha256 leikwan_bond_linux_amd64)"
+BOND_SIZE_BYTES="$(_vers_size_bytes leikwan_bond_linux_amd64)"
+download_manifest_artifact leikwan_bond_linux_amd64 \
+  "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" \
+  "$BIN_DIR/leikwan-bond"
+
 # --- LeiGod basis binaries (gost UoT carrier + recovered LeiGod accelerator) ---
 # Both are self-hosted under leikwan's own artifact store (NOT the upstream leigod-forward
 # one-liner) and are gated by check_binary_current against versions.json sha256 so install
@@ -446,7 +479,7 @@ if running_kernel_has_mptcp; then
 fi
 
 INSTALLER_SHA256="$(current_installer_sha256)"
-python3 - <<'PY' "$CONFIG_PATH" "$MASTER_URL" "$ARTIFACT_BASE" "$TOKEN" "$GROUP_KEY" "$REGION" "$PUBLIC_IP" "$SUPPORTS_MPTCP" "$TLS_MODE" "$TLS_DOMAIN" "$TLS_EMAIL" "$TLS_WILDCARD" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "$CLOUDFLARE_EMAIL" "$CLOUDFLARE_GLOBAL_KEY" "$INSTALLER_VERSION" "$INSTALLER_SHA256"
+python3 - <<'PY' "$CONFIG_PATH" "$MASTER_URL" "$ARTIFACT_BASE" "$TOKEN" "$GROUP_KEY" "$REGION" "$PUBLIC_IP" "$SUPPORTS_MPTCP" "$TLS_MODE" "$TLS_DOMAIN" "$TLS_EMAIL" "$TLS_WILDCARD" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "$CLOUDFLARE_EMAIL" "$CLOUDFLARE_GLOBAL_KEY" "$INSTALLER_VERSION" "$INSTALLER_SHA256" "$BOND_SHA256" "$BOND_SIZE_BYTES"
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 master_url = sys.argv[2]
@@ -466,6 +499,8 @@ cloudflare_email = sys.argv[15]
 cloudflare_global_key = sys.argv[16]
 installer_version = sys.argv[17]
 installer_sha256 = sys.argv[18]
+bond_sha256 = sys.argv[19]
+bond_size_bytes = int(sys.argv[20])
 payload = {}
 if path.exists():
     try:
@@ -492,6 +527,9 @@ payload.update({
     "cloudflare_global_key": cloudflare_global_key,
     "state_dir": payload.get("state_dir", "/var/lib/leikwan-slave"),
     "ingress_bin": payload.get("ingress_bin", "/usr/local/bin/leikwan-ingress"),
+    "bond_bin": payload.get("bond_bin", "/usr/local/bin/leikwan-bond"),
+    "bond_sha256": bond_sha256,
+    "bond_size_bytes": bond_size_bytes,
     "gost_bin": payload.get("gost_bin", "/usr/local/bin/gost"),
     "leigod_bin": payload.get("leigod_bin", "/usr/local/bin/leigod-linux-amd64"),
     "log_level": payload.get("log_level", "INFO"),

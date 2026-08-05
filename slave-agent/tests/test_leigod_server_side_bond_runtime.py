@@ -39,6 +39,7 @@ class LeigodServerSideBondRuntimeTests(unittest.TestCase):
         bond_bin.parent.mkdir(parents=True)
         bond_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         os.chmod(bond_bin, 0o755)
+        bond_sha256 = hashlib.sha256(bond_bin.read_bytes()).hexdigest()
         config_path = root / "config.json"
         config_path.write_text(
             json.dumps(
@@ -49,6 +50,8 @@ class LeigodServerSideBondRuntimeTests(unittest.TestCase):
                     "systemd_dir": str(root / "systemd"),
                     "leigod_root": str(root / "leigod"),
                     "bond_bin": str(bond_bin),
+                    "bond_sha256": bond_sha256,
+                    "bond_size_bytes": bond_bin.stat().st_size,
                     "backend_port_range_start": 30000,
                     "backend_port_range_end": 30010,
                 }
@@ -334,6 +337,19 @@ class LeigodServerSideBondRuntimeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "bond binary"):
             agent.ensure_server_side_bond_runtime("wstunnel-svc-2-316", runtime)
+
+    def test_unpinned_or_hash_mismatched_bond_binary_blocks_activation(self):
+        agent, _root, _bond_bin = self.make_agent()
+        payload = self.payload()
+        runtime = agent.validate_server_side_bond_payload(
+            "wstunnel-svc-2-316", payload, payload["target"]
+        )
+
+        for expected_hash in ("", "0" * 64):
+            with self.subTest(expected_hash=expected_hash):
+                agent.config["bond_sha256"] = expected_hash
+                with self.assertRaisesRegex(RuntimeError, "bond binary.*(pin|hash)"):
+                    agent.ensure_server_side_bond_runtime("wstunnel-svc-2-316", runtime)
 
 
 if __name__ == "__main__":

@@ -66,6 +66,21 @@ class SlaveInstallerHelperTests(unittest.TestCase):
         self.assertIn("return $this->serveRepoFile('slave-agent/preconnect_relay.py', 'text/x-python; charset=utf-8', $request);", artifact_controller)
         self.assertIn("/artifacts/leikwan-preconnect-relay.py", bootstrap)
 
+    def test_slave_installer_manifest_pins_bond_binary_by_hash_and_size(self) -> None:
+        source = (REPO_ROOT / "install" / "install-slave.sh").read_text(encoding="utf-8")
+
+        for snippet in [
+            "_vers_size_bytes()",
+            "check_manifest_artifact_current()",
+            "expected_size_bytes",
+            "leikwan_bond_linux_amd64",
+            '"$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64"',
+            '"$BIN_DIR/leikwan-bond"',
+            '"bond_bin": payload.get("bond_bin", "/usr/local/bin/leikwan-bond")',
+            '"bond_sha256": bond_sha256',
+        ]:
+            self.assertIn(snippet, source)
+
 
 if __name__ == "__main__":
     unittest.main()

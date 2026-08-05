@@ -4385,6 +4385,17 @@ WantedBy=multi-user.target
         )
         if not bond_bin.is_file() or not os.access(bond_bin, os.X_OK):
             raise RuntimeError(f"server-side bond binary is missing or not executable: {bond_bin}")
+        expected_bond_sha256 = str(self.config.get("bond_sha256", "") or "").strip().lower()
+        expected_bond_size = int(self.config.get("bond_size_bytes", 0) or 0)
+        if re.fullmatch(r"[a-f0-9]{64}", expected_bond_sha256) is None or expected_bond_size <= 0:
+            raise RuntimeError("server-side bond binary pin is missing")
+        actual_bond_sha256 = file_sha256(bond_bin).lower()
+        actual_bond_size = bond_bin.stat().st_size
+        if actual_bond_sha256 != expected_bond_sha256 or actual_bond_size != expected_bond_size:
+            raise RuntimeError(
+                f"server-side bond binary hash or size mismatch: expected {expected_bond_sha256}/{expected_bond_size}, "
+                f"got {actual_bond_sha256}/{actual_bond_size}"
+            )
         credential_path = self.server_side_bond_credential_path(service_name)
         credential_changed = self.write_text_if_changed(
             credential_path,
