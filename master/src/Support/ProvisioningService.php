@@ -675,6 +675,51 @@ final class ProvisioningService
         return $this->specificNodeIdFromCustomEndpointIds($forward['custom_endpoint_ids_json'] ?? null) !== null;
     }
 
+    /**
+     * @param array<string, mixed> $forward
+     */
+    private function usesServerSideLeigodBond(array $forward): bool
+    {
+        if (!$this->usesFixedEndpointLeigodBond($forward)) {
+            return false;
+        }
+        $pointConfigSource = $forward['bond_sidecar_point_agent_config_json']
+            ?? $forward['sidecar_agent_config_json']
+            ?? null;
+        if ($pointConfigSource === null || $pointConfigSource === '') {
+            $pointId = (int) ($forward['bond_sidecar_point_id'] ?? $forward['sidecar_point_id'] ?? 0);
+            $point = $pointId > 0 ? $this->sidecarPointById($pointId) : null;
+            $pointConfigSource = is_array($point) ? ($point['agent_config_json'] ?? null) : null;
+        }
+        $pointConfig = $this->decodeJsonAssoc($pointConfigSource);
+        return $this->configValueEnabled($pointConfig['server_side_leigod_bond'] ?? false);
+    }
+
+    /** @return array<string, int|float|bool|string> */
+    private function serverSideLeigodBondPolicy(): array
+    {
+        $floatConfig = function (string $key, float $default, float $minimum, float $maximum): float {
+            $value = (float) ($this->config->get($key, (string) $default) ?? $default);
+            if (!is_finite($value)) {
+                return $default;
+            }
+            return max($minimum, min($maximum, $value));
+        };
+        return [
+            'aggregation_placement' => 'slave_sidecar',
+            'adaptive_line_admission' => true,
+            'throughput_min_mbps' => $floatConfig('BOND_LEIGOD_THROUGHPUT_MIN_MBPS', 10.0, 0.001, 10000.0),
+            'throughput_relative_floor' => $floatConfig('BOND_LEIGOD_THROUGHPUT_RELATIVE_FLOOR', 0.35, 0.001, 1.0),
+            'throughput_min_sample_bytes' => max(1, min(64 * 1024 * 1024, $this->config->getInt('BOND_LEIGOD_THROUGHPUT_MIN_SAMPLE_BYTES', 1048576))),
+            'throughput_min_sample_ms' => max(1, min(300000, $this->config->getInt('BOND_LEIGOD_THROUGHPUT_MIN_SAMPLE_MS', 1000))),
+            'throughput_bad_windows' => max(1, min(100, $this->config->getInt('BOND_LEIGOD_THROUGHPUT_BAD_WINDOWS', 3))),
+            'throughput_recovery_windows' => max(1, min(100, $this->config->getInt('BOND_LEIGOD_THROUGHPUT_RECOVERY_WINDOWS', 2))),
+            'throughput_quarantine_ms' => max(1, min(86400000, $this->config->getInt('BOND_LEIGOD_THROUGHPUT_QUARANTINE_MS', 60000))),
+            'throughput_probe_interval_ms' => max(1, min(86400000, $this->config->getInt('BOND_LEIGOD_THROUGHPUT_PROBE_INTERVAL_MS', 30000))),
+            'throughput_probe_bytes' => max(1, min(64 * 1024 * 1024, $this->config->getInt('BOND_LEIGOD_THROUGHPUT_PROBE_BYTES', 1048576))),
+        ];
+    }
+
     private function activeFamilyForRuntime(string $backendMode, string $clientMode, string $runtimePreference): string
     {
         if ($this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference)) {
@@ -4399,6 +4444,7 @@ final class ProvisioningService
         $runtimePreference = trim((string) ($forward['forward_combination_runtime_preference'] ?? 'single'));
         $backendMode = (string) ($forward['backend_mode'] ?? 'current_mode');
         $fixedEndpointLeigodBond = $this->usesFixedEndpointLeigodBond($forward);
+        $serverSideLeigodBond = $this->usesServerSideLeigodBond($forward);
         $fixedEndpointCandidates = [];
         if ($fixedEndpointLeigodBond) {
             $specificNodeId = $this->specificNodeIdFromCustomEndpointIds($forward['custom_endpoint_ids_json'] ?? null);
@@ -4473,6 +4519,15 @@ final class ProvisioningService
                 $endpoints
             )
             : null;
+        if ($serverSideLeigodBond && is_array($bondConfig)) {
+            $bondConfig = array_merge([
+                'enabled' => true,
+                'fixed_endpoint' => true,
+                'fixed_endpoint_legs' => [],
+                'ingress_mode' => 'plain_tcp_mux',
+                'route_key' => (string) ($forward['path_prefix'] ?? ''),
+            ], $this->serverSideLeigodBondPolicy());
+        }
         $mptcpConfig = $sidecarRequired && $clientMode === 'mptcp' ? $this->buildMptcpClientConfig($forward, $endpoints) : null;
         $serviceBandwidthLimitMbps = max(0, (int) ($forward['service_bandwidth_limit_mbps'] ?? 0));
         $lineSpeedLimitMbps = max(0, (int) ($forward['line_speed_limit_mbps'] ?? 0));
@@ -4511,16 +4566,16 @@ final class ProvisioningService
             'target_contract' => $targetContract,
             'sidecar_required' => $sidecarRequired,
             'cf_location_group_id' => $forward['cf_location_group_id'] !== null ? (int) $forward['cf_location_group_id'] : null,
-            'bond_sidecar_host' => $sidecarRequired ? (string) ($forward['bond_sidecar_host'] ?? '') : '',
-            'bond_sidecar_port' => $sidecarRequired && $effectiveBondSidecarPort > 0 ? $effectiveBondSidecarPort : null,
-            'mptcp_sidecar_port' => $sidecarRequired && $effectiveMptcpSidecarPort > 0 ? $effectiveMptcpSidecarPort : null,
-            'bond_sidecar_cf_listen_port' => $sidecarRequired && (int) ($forward['bond_sidecar_cf_listen_port'] ?? 0) > 0 ? (int) ($forward['bond_sidecar_cf_listen_port'] ?? 0) : null,
-            'bond_sidecar_cf_sni_host' => $sidecarRequired ? (string) ($pointConfig['cf_sni_host'] ?? $pointConfig['cf_sni'] ?? '') : '',
-            'bond_sidecar_approved_upstream_realizations' => $sidecarRequired ? $this->approvedCfUpstreamRealizations($pointConfig) : [],
-            'bond_sidecar_point_agent_config_json' => $sidecarRequired ? (string) ($forward['bond_sidecar_point_agent_config_json'] ?? '') : '',
+            'bond_sidecar_host' => $sidecarRequired && !$serverSideLeigodBond ? (string) ($forward['bond_sidecar_host'] ?? '') : '',
+            'bond_sidecar_port' => $sidecarRequired && !$serverSideLeigodBond && $effectiveBondSidecarPort > 0 ? $effectiveBondSidecarPort : null,
+            'mptcp_sidecar_port' => $sidecarRequired && !$serverSideLeigodBond && $effectiveMptcpSidecarPort > 0 ? $effectiveMptcpSidecarPort : null,
+            'bond_sidecar_cf_listen_port' => $sidecarRequired && !$serverSideLeigodBond && (int) ($forward['bond_sidecar_cf_listen_port'] ?? 0) > 0 ? (int) ($forward['bond_sidecar_cf_listen_port'] ?? 0) : null,
+            'bond_sidecar_cf_sni_host' => $sidecarRequired && !$serverSideLeigodBond ? (string) ($pointConfig['cf_sni_host'] ?? $pointConfig['cf_sni'] ?? '') : '',
+            'bond_sidecar_approved_upstream_realizations' => $sidecarRequired && !$serverSideLeigodBond ? $this->approvedCfUpstreamRealizations($pointConfig) : [],
+            'bond_sidecar_point_agent_config_json' => $sidecarRequired && !$serverSideLeigodBond ? (string) ($forward['bond_sidecar_point_agent_config_json'] ?? '') : '',
             'line_client_agent_config_json' => (string) ($forward['line_client_agent_config_json'] ?? ''),
-            'bond_remote_host' => (string) ($effectiveSidecarTarget['host'] ?? $forward['bond_remote_host'] ?? ''),
-            'bond_remote_port' => (int) ($effectiveSidecarTarget['port'] ?? $forward['bond_remote_port'] ?? 0) > 0 ? (int) ($effectiveSidecarTarget['port'] ?? $forward['bond_remote_port'] ?? 0) : null,
+            'bond_remote_host' => $serverSideLeigodBond ? '' : (string) ($effectiveSidecarTarget['host'] ?? $forward['bond_remote_host'] ?? ''),
+            'bond_remote_port' => !$serverSideLeigodBond && (int) ($effectiveSidecarTarget['port'] ?? $forward['bond_remote_port'] ?? 0) > 0 ? (int) ($effectiveSidecarTarget['port'] ?? $forward['bond_remote_port'] ?? 0) : null,
             'line_client_id' => $forward['line_client_id'] !== null ? (int) $forward['line_client_id'] : null,
             'line_client_name' => $forward['line_client_name'],
             'line_client_host' => $forward['line_client_host'],
@@ -4552,7 +4607,7 @@ final class ProvisioningService
                 'udp_fanout' => !in_array($clientMode, ['bond', 'mptcp'], true) && ((string) $forward['transport_mode']) === 'tcp+udp',
                 'dup_repeat' => 1,
             ],
-            'endpoints' => array_map(function (array $endpoint) use ($resolvedSniHost, $resolvedCdnHost, $ingressGroup, $clientMode, $bondIngressMode, $publishesBondRuntime, $dedicatedLeigod, $fixedEndpointLeigodBond, $forward): array {
+            'endpoints' => array_map(function (array $endpoint) use ($resolvedSniHost, $resolvedCdnHost, $ingressGroup, $clientMode, $bondIngressMode, $publishesBondRuntime, $dedicatedLeigod, $fixedEndpointLeigodBond, $serverSideLeigodBond, $forward): array {
                 $nodeConfig = is_string($endpoint['node_agent_config_json'] ?? null) ? json_decode((string) $endpoint['node_agent_config_json'], true) : [];
                 if (!is_array($nodeConfig)) {
                     $nodeConfig = [];
@@ -4576,7 +4631,7 @@ final class ProvisioningService
                     $item['ingress_protocol'] = 'plain_tcp_mux';
                     $item['ingress_auth_token'] = $this->bondIngressAuthToken($forward, (int) $endpoint['id'], (string) ($forward['path_prefix'] ?? ''));
                 }
-                if ($dedicatedLeigod || $fixedEndpointLeigodBond) {
+                if (($dedicatedLeigod || $fixedEndpointLeigodBond) && !$serverSideLeigodBond) {
                     $item['runtime_target'] = '127.0.0.1:' . $this->stableLeigodRelayPort(
                         (int) ($forward['id'] ?? 0),
                         (int) ($endpoint['id'] ?? 0)
@@ -7469,6 +7524,7 @@ final class ProvisioningService
             'selector_candidate_count' => is_array($selector['candidates'] ?? null) ? count($selector['candidates']) : 0,
             'selector_single_lane_monitor' => (bool) ($selector['single_lane_monitor'] ?? false),
             'leigod_forward' => $this->materialLeigodForwardFingerprint($payload['leigod_forward'] ?? null),
+            'server_side_bond' => $this->materialServerSideBondFingerprint($payload['server_side_bond'] ?? null),
         ];
         return sha1((string) json_encode($material, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
     }
@@ -7902,6 +7958,13 @@ final class ProvisioningService
             || $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
         $dedicatedLeigod = $backendMode === 'leigod_mode' && $clientMode === 'single' && !$sidecarRequired;
         $fixedEndpointLeigodBond = $this->usesFixedEndpointLeigodBond($forward);
+        $serverSideLeigodBond = $this->usesServerSideLeigodBond($forward);
+        if ($serverSideLeigodBond && strtolower(trim((string) ($forward['transport_mode'] ?? 'tcp'))) !== 'tcp') {
+            throw new ApiException('server_side_leigod_bond_requires_tcp', 409, [
+                'forward_id' => (int) ($forward['id'] ?? 0),
+                'transport_mode' => (string) ($forward['transport_mode'] ?? ''),
+            ]);
+        }
         $activeFamily = $sidecarFrontend
             ? 'sidecar_aggregation'
             : $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
@@ -7957,6 +8020,7 @@ final class ProvisioningService
             $publishTarget = (string) $staticSidecarUplink['relay_target'];
         }
         $leigodForward = null;
+        $serverSideBond = null;
         if ($dedicatedLeigod || $fixedEndpointLeigodBond) {
             $candidates = $this->leigodLineCatalog()->candidatesForForwardOnNode($forward, (int) ($node['id'] ?? 0));
             if ($candidates === []) {
@@ -8005,6 +8069,45 @@ final class ProvisioningService
             ];
             $leigodForward += $this->leigodRacePolicyPayload($leigodMode);
             $publishTarget = '127.0.0.1:' . $relayPort;
+            if ($serverSideLeigodBond) {
+                $frontendPort = $this->stableLeigodServerBondPort($endpointId);
+                $publicPort = (int) ($forward['public_port'] ?? 0);
+                if (in_array($frontendPort, [$relayPort, $publicPort], true) || $relayPort === $publicPort) {
+                    throw new ApiException('server_side_leigod_bond_port_collision', 500, [
+                        'frontend_port' => $frontendPort,
+                        'relay_port' => $relayPort,
+                        'public_port' => $publicPort,
+                    ]);
+                }
+                ['issued_at' => $issuedAt, 'expires_at' => $expiresAt] = $this->bondTokenTimestamps();
+                $serverSideBond = array_merge([
+                    'frontend_port' => $frontendPort,
+                    'leg_relay_target' => '127.0.0.1:' . $relayPort,
+                    'sidecar_target' => (string) ($leigodForward['target'] ?? ''),
+                    'session_token' => $this->buildBondSessionToken(
+                        $forward,
+                        $this->bondTokenSecret($forward),
+                        $issuedAt,
+                        $expiresAt,
+                        'tcp'
+                    ),
+                    'token_expires_at' => $expiresAt,
+                    'legs' => array_values(array_map(
+                        static fn(array $candidate): array => [
+                            'leg_route_id' => (int) ($candidate['leg_route_id'] ?? 0),
+                        ],
+                        $candidates
+                    )),
+                    'preferred_initial_legs' => count($candidates),
+                    'minimum_initial_legs' => min(2, count($candidates)),
+                    'initial_leg_wait_ms' => 3000,
+                    'leg_reconnect_backoff_ms' => 5000,
+                    'leg_reconnect_backoff_max_ms' => 60000,
+                    'warmup_leg_delay_ms' => max(1, $this->config->getInt('BOND_WARMUP_LEG_DELAY_MS', 20)),
+                    'leg_cooldown_ms' => max(1, $this->config->getInt('BOND_LEIGOD_LEG_COOLDOWN_MS', 20000)),
+                ], $this->serverSideLeigodBondPolicy());
+                $publishTarget = '127.0.0.1:' . $frontendPort;
+            }
         }
         return [
             'listen_port' => (int) ($forward['public_port'] ?? 0),
@@ -8034,6 +8137,7 @@ final class ProvisioningService
             'ingress_protocol' => $plainTcpIngress ? 'plain_tcp_mux' : 'wss_path_mux',
             'backend_protocol' => $backendProtocol,
             'leigod_forward' => $leigodForward,
+            'server_side_bond' => $serverSideBond,
             'sidecar_uplink' => $staticSidecarUplink ?? [],
             'sidecar_uplink_selector' => $staticSidecarSelector,
             'ingress_auth_token' => $plainTcpIngress
@@ -8055,6 +8159,14 @@ final class ProvisioningService
             throw new ApiException('invalid_leigod_relay_identity', 500);
         }
         return 48000 + ($endpointId % 10000);
+    }
+
+    private function stableLeigodServerBondPort(int $endpointId): int
+    {
+        if ($endpointId <= 0) {
+            throw new ApiException('invalid_server_side_leigod_bond_identity', 500);
+        }
+        return 58000 + ($endpointId % 7000);
     }
 
     private function isDedicatedLeigodRuntime(string $backendMode, string $clientMode, string $runtimePreference): bool
@@ -8125,6 +8237,30 @@ final class ProvisioningService
             'relay_port' => (int) ($payload['relay_port'] ?? 0),
             'target' => (string) ($payload['target'] ?? ''),
             'candidates' => $candidates,
+        ];
+    }
+
+    /** @return array<string, mixed>|null */
+    private function materialServerSideBondFingerprint(mixed $payload): ?array
+    {
+        if (!is_array($payload)) {
+            return null;
+        }
+        return [
+            'aggregation_placement' => (string) ($payload['aggregation_placement'] ?? ''),
+            'frontend_port' => (int) ($payload['frontend_port'] ?? 0),
+            'leg_relay_target' => (string) ($payload['leg_relay_target'] ?? ''),
+            'sidecar_target' => (string) ($payload['sidecar_target'] ?? ''),
+            'session_token_sha256' => hash('sha256', (string) ($payload['session_token'] ?? '')),
+            'legs' => array_values(array_map(
+                static fn(array $leg): int => (int) ($leg['leg_route_id'] ?? 0),
+                array_values(array_filter((array) ($payload['legs'] ?? []), 'is_array'))
+            )),
+            'adaptive_line_admission' => (bool) ($payload['adaptive_line_admission'] ?? false),
+            'throughput_min_mbps' => (float) ($payload['throughput_min_mbps'] ?? 0),
+            'throughput_relative_floor' => (float) ($payload['throughput_relative_floor'] ?? 0),
+            'throughput_bad_windows' => (int) ($payload['throughput_bad_windows'] ?? 0),
+            'throughput_recovery_windows' => (int) ($payload['throughput_recovery_windows'] ?? 0),
         ];
     }
 

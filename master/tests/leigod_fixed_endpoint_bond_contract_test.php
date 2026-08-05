@@ -329,5 +329,66 @@ namespace {
     assertSame([], $payload['sidecar_uplink'] ?? null, 'no competing static uplink');
     assertSame([], $payload['sidecar_uplink_selector'] ?? null, 'no competing static selector');
 
+    $serverSidePoint = [
+        'id' => 44,
+        'name' => 'Tencent HK Sidecar',
+        'sidecar_host' => '198.51.100.25',
+        'listen_port' => 18500,
+        'bond_listen_port' => 18501,
+        'mptcp_listen_port' => 18502,
+        'cf_listen_port' => 443,
+        'token_secret' => 'sidecar-token',
+        'agent_config_json' => json_encode([
+            'fixed_endpoint_leigod_bond' => true,
+            'server_side_leigod_bond' => true,
+        ]),
+    ];
+    $serverSideForward = array_merge($forward, ['transport_mode' => 'tcp']);
+    $db->seed('sidecar_points', [$serverSidePoint]);
+    $db->seed('forwards', [$serverSideForward]);
+
+    $serverConfig = $service->buildClientConfig(47);
+    assertSame(1, count($serverConfig['endpoints'] ?? []), 'server-side bond keeps one physical endpoint');
+    assertSame('203.0.113.15', $serverConfig['endpoints'][0]['host'] ?? null, 'public endpoint host is unchanged');
+    assertSame(7003, $serverConfig['endpoints'][0]['port'] ?? null, 'public endpoint port is unchanged');
+    assertSame('slave_sidecar', $serverConfig['bonding']['aggregation_placement'] ?? null, 'aggregation placement');
+    assertSame([], $serverConfig['bonding']['fixed_endpoint_legs'] ?? null, 'client receives no logical lines');
+    assertSame(false, array_key_exists('runtime_target', $serverConfig['endpoints'][0] ?? []), 'client receives no slave loopback target');
+    assertSame(false, array_key_exists('sidecar_host', $serverConfig['bonding'] ?? []), 'client receives no sidecar host');
+    assertSame(false, array_key_exists('session_token', $serverConfig['bonding'] ?? []), 'client receives no bond session token');
+    assertSame(true, $serverConfig['bonding']['adaptive_line_admission'] ?? null, 'adaptive admission marker');
+    assertSame(10.0, $serverConfig['bonding']['throughput_min_mbps'] ?? null, 'absolute throughput floor');
+
+    $serverPublishForward = array_merge($serverSideForward, [
+        'client_token' => 'service-token',
+        'forward_combination_runtime_preference' => 'single',
+        'bond_sidecar_host' => '198.51.100.25',
+        'bond_sidecar_port' => 18501,
+        'bond_sidecar_point_token_secret' => 'sidecar-token',
+        'bond_sidecar_point_agent_config_json' => $serverSidePoint['agent_config_json'],
+    ]);
+    $serverPayload = call_private($service, 'publishTaskPayloadForForward', $serverPublishForward, $node, 316);
+    assertSame('127.0.0.1:58316', $serverPayload['target'] ?? null, 'server-side bond frontend target');
+    assertSame('127.0.0.1:48316', $serverPayload['server_side_bond']['leg_relay_target'] ?? null, 'server-side bond relay target');
+    assertSame('198.51.100.25:18501', $serverPayload['server_side_bond']['sidecar_target'] ?? null, 'server-side bond sidecar target');
+    assertSame($lineIds, array_column($serverPayload['server_side_bond']['legs'] ?? [], 'leg_route_id'), 'server-only logical legs');
+    assertSame(true, ($serverPayload['server_side_bond']['session_token'] ?? '') !== '', 'server bond token exists');
+    assertSame('tcp', $serverPayload['transport_mode'] ?? null, 'server bond carrier is tcp');
+    assertSame('tcp_relay', $serverPayload['backend_protocol'] ?? null, 'server bond backend stays plain tcp');
+
+    $nonTcpRejected = false;
+    try {
+        call_private(
+            $service,
+            'publishTaskPayloadForForward',
+            array_merge($serverPublishForward, ['transport_mode' => 'tcp+udp']),
+            $node,
+            316
+        );
+    } catch (Throwable $exception) {
+        $nonTcpRejected = str_contains($exception->getMessage(), 'server_side_leigod_bond_requires_tcp');
+    }
+    assertSame(true, $nonTcpRejected, 'server-side bond rejects non-TCP carrier');
+
     echo "ok\n";
 }
