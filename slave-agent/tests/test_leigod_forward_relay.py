@@ -581,6 +581,23 @@ class LeigodForwardRelayTests(unittest.IsolatedAsyncioTestCase):
                 self.config("bond", ("127.0.0.1", 80), [base_row, second_row | {"leg_route_id": 0}])
             )
 
+    def test_linux_hybrid_bond_config_allows_one_flat_route(self) -> None:
+        row = {
+            "combination_id": 1,
+            "line_id": 451,
+            "leg_route_id": 451,
+            "socks_host": "127.0.0.1",
+            "socks_port": 20451,
+            "sort_order": 10,
+        }
+        payload = self.config("bond", ("127.0.0.1", 80), [row])
+        payload["placement"] = "linux_hybrid"
+
+        config = relay_module.parse_config(payload)
+
+        self.assertEqual("linux_hybrid", config.placement)
+        self.assertEqual(451, config.candidates[0].leg_route_id)
+
     def test_bond_config_allows_parallel_lanes_on_one_physical_line(self) -> None:
         first_lane = {
             "combination_id": 1,

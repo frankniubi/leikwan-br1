@@ -12,6 +12,7 @@ namespace Leikwan\Master\Database {
         public ?array $egressProfile = null;
         /** @var array<int, array<string, mixed>> */
         public array $endpoints = [];
+        public bool $failOnSidecarQuery = false;
 
         public function fetchAll(string $sql, array $params = []): array
         {
@@ -26,6 +27,9 @@ namespace Leikwan\Master\Database {
 
         public function fetchOne(string $sql, array $params = []): ?array
         {
+            if ($this->failOnSidecarQuery && str_contains($sql, 'sidecar_points')) {
+                throw new \RuntimeException('sidecar query forbidden in linux_hybrid test');
+            }
             if (str_contains($sql, 'leigod_egress_profiles')) {
                 return $this->egressProfile;
             }

@@ -688,7 +688,7 @@ final class LeigodLineCatalogService
 
     /**
      * @param array<string, mixed> $row
-     * @return array{lease_id:string,lease_generation:int,lease_state:string,max_parallel_lanes:int,ready_deadline_at:string,expires_at:string}
+     * @return array{lease_id:string,lease_generation:int,lease_state:string,lease_owner_type:string,lease_owner_id:int,max_parallel_lanes:int,ready_deadline_at:string,expires_at:string}
      */
     private function leaseProjection(array $row): array
     {
@@ -696,6 +696,8 @@ final class LeigodLineCatalogService
             'lease_id' => strtolower(trim((string) ($row['lease_id'] ?? ''))),
             'lease_generation' => (int) ($row['lease_generation'] ?? 0),
             'lease_state' => strtolower(trim((string) ($row['lease_state'] ?? ''))),
+            'lease_owner_type' => strtolower(trim((string) ($row['lease_owner_type'] ?? ''))),
+            'lease_owner_id' => (int) ($row['lease_owner_id'] ?? 0),
             'max_parallel_lanes' => max(1, min(4, (int) ($row['max_parallel_lanes'] ?? 2))),
             'ready_deadline_at' => (string) ($row['lease_ready_deadline_at'] ?? ''),
             'expires_at' => (string) ($row['lease_expires_at'] ?? ''),

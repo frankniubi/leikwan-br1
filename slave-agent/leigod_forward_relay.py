@@ -238,6 +238,7 @@ class RelayConfig:
     def __init__(self, payload: dict[str, Any]) -> None:
         allowed = {
             "mode",
+            "placement",
             "listen_host",
             "listen_port",
             "target_host",
@@ -249,6 +250,7 @@ class RelayConfig:
         if set(payload) - allowed:
             raise ValueError("config contains unsupported keys")
         self.mode = str(payload.get("mode", "")).strip().lower()
+        self.placement = str(payload.get("placement", "") or "").strip().lower()
         self.listen_host = str(payload.get("listen_host", "")).strip()
         self.listen_port = int(payload.get("listen_port", 0))
         self.target_host = str(payload.get("target_host", "")).strip()
@@ -256,6 +258,10 @@ class RelayConfig:
         self.transport = str(payload.get("transport", "")).strip().lower()
         if self.mode not in {"single", "race", "bond"}:
             raise ValueError("mode must be single, race, or bond")
+        if self.placement not in {"", "linux_hybrid"}:
+            raise ValueError("invalid relay placement")
+        if self.placement == "linux_hybrid" and self.mode != "bond":
+            raise ValueError("linux_hybrid placement requires bond mode")
         try:
             if not ipaddress.ip_address(self.listen_host).is_loopback:
                 raise ValueError("listen_host must be loopback")
@@ -277,7 +283,7 @@ class RelayConfig:
         self.candidates = [CandidateConfig(row) for row in raw_candidates if isinstance(row, dict)]
         if len(self.candidates) != len(raw_candidates):
             raise ValueError("candidate rows must be objects")
-        if self.mode == "bond" and len(self.candidates) < 2:
+        if self.mode == "bond" and self.placement != "linux_hybrid" and len(self.candidates) < 2:
             raise ValueError("bond mode requires between two and eight candidates")
         keys = [candidate.key for candidate in self.candidates]
         line_ids = [candidate.line_id for candidate in self.candidates]

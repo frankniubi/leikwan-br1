@@ -19,6 +19,7 @@ import re
 import shutil
 import socket
 import ssl
+import stat
 import struct
 import subprocess
 import sys
@@ -2359,18 +2360,35 @@ class SlaveAgent:
             "udp_probe_port": int(line.get("udp_probe_port", 0) or 0) or None,
             "udp_probe_method": str(line.get("udp_probe_method", "") or "").strip().lower() or None,
         }
-        if any(key in line for key in ("lease_id", "lease_generation", "lease_state", "max_parallel_lanes")):
+        if any(
+            key in line
+            for key in (
+                "lease_id",
+                "lease_generation",
+                "lease_state",
+                "max_parallel_lanes",
+                "lease_owner_type",
+                "lease_owner_id",
+            )
+        ):
             normalized.update(SlaveAgent.leigod_line_lease_fields(line))
         return normalized
 
     @staticmethod
     def leigod_line_lease_fields(line: dict[str, Any]) -> dict[str, Any]:
-        return {
+        fields = {
             "lease_id": str(line.get("lease_id", "") or "").strip().lower(),
             "lease_generation": int(line.get("lease_generation", 0) or 0),
             "lease_state": str(line.get("lease_state", "") or "").strip().lower(),
             "max_parallel_lanes": int(line.get("max_parallel_lanes", 0) or 0),
         }
+        if "lease_owner_type" in line:
+            fields["lease_owner_type"] = str(
+                line.get("lease_owner_type", "") or ""
+            ).strip().lower()
+        if "lease_owner_id" in line:
+            fields["lease_owner_id"] = int(line.get("lease_owner_id", 0) or 0)
+        return fields
 
     def load_leigod_desired_lines(self) -> list[dict[str, Any]]:
         path = self.leigod_desired_state_path()
@@ -2440,7 +2458,17 @@ class SlaveAgent:
                     "last_error": str(row.get("last_error", "") or "")[:500],
                     "checked_at": str(row.get("checked_at", "") or ""),
                 }
-            if any(key in row for key in ("lease_id", "lease_generation", "lease_state", "max_parallel_lanes")):
+            if any(
+                key in row
+                for key in (
+                    "lease_id",
+                    "lease_generation",
+                    "lease_state",
+                    "max_parallel_lanes",
+                    "lease_owner_type",
+                    "lease_owner_id",
+                )
+            ):
                 saved.update(self.leigod_line_lease_fields(row))
             rows.append(saved)
         self.write_json(self.leigod_line_health_state_path(), {"version": 1, "lines": rows})
@@ -2472,6 +2500,37 @@ class SlaveAgent:
                 logging.warning("cannot prove leigod relay references from %s", path)
                 return referenced, False
         return referenced, True
+
+    def remove_hybrid_relays_referencing_lines(self, line_ids: set[int]) -> set[str]:
+        if not line_ids:
+            return set()
+        removed: set[str] = set()
+        for metadata in self.load_all_service_metadata():
+            hybrid = metadata.get("hybrid_relay", {})
+            detail = metadata.get("leigod_forward", {})
+            if (
+                not isinstance(hybrid, dict)
+                or hybrid.get("placement") != "linux_hybrid"
+                or not isinstance(detail, dict)
+            ):
+                continue
+            candidates = detail.get("candidates", [])
+            if not isinstance(candidates, list) or not any(
+                isinstance(candidate, dict)
+                and int(candidate.get("line_id", 0) or 0) in line_ids
+                for candidate in candidates
+            ):
+                continue
+            service_name = str(metadata.get("service_name", "") or "").strip()
+            if service_name == "":
+                continue
+            self.remove_leigod_forward_runtime(service_name, metadata)
+            metadata["leigod_forward"] = {}
+            metadata["hybrid_relay"] = {}
+            metadata["status"] = "degraded"
+            self.write_json(self.metadata_path(service_name), metadata)
+            removed.add(service_name)
+        return removed
 
     def remove_managed_leigod_line(self, line_id: int) -> None:
         if line_id < 1 or line_id > 45535:
@@ -2624,6 +2683,22 @@ class SlaveAgent:
                 for key in lease_keys:
                     health[line_id].pop(key, None)
 
+        removed_line_ids = set(previous) - set(desired)
+        relay_fence_keys = (
+            "config_sha256",
+            "lease_id",
+            "lease_generation",
+            "lease_state",
+            "lease_owner_type",
+            "lease_owner_id",
+            "max_parallel_lanes",
+        )
+        changed_line_ids = {
+            line_id
+            for line_id in set(previous) & set(desired)
+            if any(previous[line_id].get(key) != desired[line_id].get(key) for key in relay_fence_keys)
+        }
+        self.remove_hybrid_relays_referencing_lines(removed_line_ids | changed_line_ids)
         referenced, reference_proven = self.active_leigod_relay_line_ids()
         for line_id, previous_line in previous.items():
             if line_id in desired:
@@ -3922,6 +3997,8 @@ WantedBy=multi-user.target
         raw = payload.get("server_side_bond")
         if raw is None:
             return None
+        if payload.get("hybrid_relay") is not None:
+            raise RuntimeError("linux_hybrid cannot include server_side_bond")
         if not isinstance(raw, dict):
             raise RuntimeError("server_side_bond must be an object")
         if str(raw.get("aggregation_placement", "") or "").strip() != "slave_sidecar":
@@ -4100,6 +4177,18 @@ WantedBy=multi-user.target
         mode = str(raw.get("mode", "") or "").strip().lower()
         if mode not in {"single", "race", "bond"}:
             raise RuntimeError("invalid leigod relay mode")
+        hybrid_raw = payload.get("hybrid_relay")
+        placement = ""
+        if hybrid_raw is not None:
+            if not isinstance(hybrid_raw, dict):
+                raise RuntimeError("hybrid_relay must be an object")
+            if set(hybrid_raw) - {"placement", "target"}:
+                raise RuntimeError("hybrid_relay contains unsupported fields")
+            placement = str(hybrid_raw.get("placement", "") or "").strip().lower()
+            if placement != "linux_hybrid" or mode != "bond":
+                raise RuntimeError("invalid linux_hybrid relay placement")
+            if payload.get("server_side_bond") is not None:
+                raise RuntimeError("linux_hybrid cannot include server_side_bond")
         relay_port = int(raw.get("relay_port", 0) or 0)
         if relay_port < 1 or relay_port > 65535:
             raise RuntimeError("invalid leigod relay port")
@@ -4118,10 +4207,22 @@ WantedBy=multi-user.target
         transport = str(payload.get("transport_mode", "tcp") or "tcp").strip().lower()
         if transport not in {"tcp", "udp", "tcp+udp"}:
             raise RuntimeError("invalid leigod relay transport")
+        if placement == "linux_hybrid":
+            if transport != "tcp":
+                raise RuntimeError("linux_hybrid relay requires a TCP carrier")
+            if str(payload.get("ingress_protocol", "") or "").strip() != "plain_tcp_mux":
+                raise RuntimeError("linux_hybrid relay requires plain_tcp_mux ingress")
+            if str(payload.get("backend_protocol", "") or "").strip() != "tcp_relay":
+                raise RuntimeError("linux_hybrid relay requires tcp_relay backend")
+            public_port = int(payload.get("listen_port", 0) or 0)
+            if public_port < 7000 or public_port > 9000:
+                raise RuntimeError("linux_hybrid public ingress must use port 7000-9000")
+            if str(hybrid_raw.get("target", "") or "").strip() != real_target:
+                raise RuntimeError("linux_hybrid relay target mismatch")
         raw_candidates = raw.get("candidates")
         if not isinstance(raw_candidates, list) or len(raw_candidates) < 1 or len(raw_candidates) > 8:
             raise RuntimeError("leigod relay requires between one and eight candidates")
-        if mode == "bond" and len(raw_candidates) < 2:
+        if mode == "bond" and placement != "linux_hybrid" and len(raw_candidates) < 2:
             raise RuntimeError("bond leigod relay requires at least two routes")
 
         desired = {int(row.get("line_id", 0) or 0): row for row in self.load_leigod_desired_lines()}
@@ -4156,6 +4257,48 @@ WantedBy=multi-user.target
                 raise RuntimeError(f"leigod candidate {line_id} SOCKS port mismatch")
             desired_line = desired.get(line_id)
             local_health = health.get(line_id)
+            candidate_lease_id = str(candidate.get("lease_id", "") or "").strip().lower()
+            candidate_lease_generation = int(candidate.get("lease_generation", 0) or 0)
+            lease_fence_healthy = True
+            if placement == "linux_hybrid":
+                desired_lease_id = str((desired_line or {}).get("lease_id", "") or "").strip().lower()
+                desired_lease_generation = int(
+                    (desired_line or {}).get("lease_generation", 0) or 0
+                )
+                desired_owner_type = str(
+                    (desired_line or {}).get("lease_owner_type", "") or ""
+                ).strip().lower()
+                desired_owner_id = int((desired_line or {}).get("lease_owner_id", 0) or 0)
+                health_lease_id = str((local_health or {}).get("lease_id", "") or "").strip().lower()
+                health_lease_generation = int(
+                    (local_health or {}).get("lease_generation", 0) or 0
+                )
+                health_owner_type = str(
+                    (local_health or {}).get("lease_owner_type", "") or ""
+                ).strip().lower()
+                health_owner_id = int((local_health or {}).get("lease_owner_id", 0) or 0)
+                configured_node_id = int(self.config.get("node_id", 0) or 0)
+                lease_fence_healthy = (
+                    re.fullmatch(
+                        r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}",
+                        candidate_lease_id,
+                    )
+                    is not None
+                    and candidate_lease_generation > 0
+                    and configured_node_id > 0
+                    and desired_owner_type == "node"
+                    and health_owner_type == "node"
+                    and desired_owner_id == configured_node_id
+                    and health_owner_id == configured_node_id
+                    and str((desired_line or {}).get("lease_state", "") or "").strip().lower()
+                    == "active"
+                    and str((local_health or {}).get("lease_state", "") or "").strip().lower()
+                    == "active"
+                    and hmac.compare_digest(desired_lease_id, candidate_lease_id)
+                    and hmac.compare_digest(health_lease_id, candidate_lease_id)
+                    and desired_lease_generation == candidate_lease_generation
+                    and health_lease_generation == candidate_lease_generation
+                )
             checked_at = self._parse_utc_timestamp((local_health or {}).get("checked_at"))
             udp_status = str((local_health or {}).get("udp_status", "") or "")
             udp_probe_configured = bool(str((desired_line or {}).get("udp_probe_method", "") or "").strip())
@@ -4172,8 +4315,13 @@ WantedBy=multi-user.target
                 and checked_at is not None
                 and checked_at >= now - health_max_age
                 and checked_at <= now + 300
+                and lease_fence_healthy
             )
             if not required_statuses_healthy:
+                if placement == "linux_hybrid" and not lease_fence_healthy:
+                    raise RuntimeError(
+                        f"linux_hybrid candidate {line_id} does not match its active node lease fence"
+                    )
                 raise RuntimeError(f"leigod candidate {line_id} is not healthy for {transport}")
             seen_lines.add(line_id)
             seen_keys.add((combination_id, line_id))
@@ -4196,6 +4344,11 @@ WantedBy=multi-user.target
             if mode == "bond":
                 runtime_candidate["leg_route_id"] = leg_route_id
                 metadata_candidate["leg_route_id"] = leg_route_id
+            if placement == "linux_hybrid":
+                metadata_candidate["lease_id_sha256"] = hashlib.sha256(
+                    candidate_lease_id.encode("ascii")
+                ).hexdigest()
+                metadata_candidate["lease_generation"] = candidate_lease_generation
             candidates.append(runtime_candidate)
             metadata_candidates.append(metadata_candidate)
         if mode == "race" and len(combinations) < 2:
@@ -4295,9 +4448,12 @@ WantedBy=multi-user.target
             "candidates": candidates,
             "policy": runtime_policy,
         }
+        if placement:
+            runtime_config["placement"] = placement
         return {
             "service_name": self.leigod_forward_service_name(service_name),
             "mode": mode,
+            "placement": placement,
             "relay_port": relay_port,
             "target": real_target,
             "transport": transport,
@@ -4637,6 +4793,15 @@ WantedBy=multi-user.target
             payload,
             leigod_runtime_target,
         )
+        hybrid_relay = (
+            {
+                "placement": "linux_hybrid",
+                "target": str(leigod_forward.get("target", "") or ""),
+            }
+            if isinstance(leigod_forward, dict)
+            and leigod_forward.get("placement") == "linux_hybrid"
+            else {}
+        )
 
         self.cleanup_superseded_services_for_forward(int(task["forward_id"]), service_name)
         existing = self.load_service_metadata(service_name) or {}
@@ -4825,6 +4990,7 @@ WantedBy=multi-user.target
             "sidecar_uplink": sidecar_uplink,
             "sidecar_uplink_selector": sidecar_uplink_selector,
             "leigod_forward": leigod_forward or {},
+            "hybrid_relay": hybrid_relay,
             "server_side_bond": (
                 self.server_side_bond_metadata(server_side_bond)
                 if server_side_bond is not None
@@ -4833,7 +4999,7 @@ WantedBy=multi-user.target
             "filter_profile": str(payload.get("filter_profile", "off")),
             "status": "active",
         }
-        self.write_json(metadata_path, metadata)
+        self.write_json(metadata_path, metadata, mode=0o600 if hybrid_relay else None)
 
         if (not use_plain_tcp_backend) and backend_mode == "cf_mode" and cf_mode != {} and "udp" in transport_mode.lower():
             shadow_service = udp_uot_shadow_service_name(service_name)
@@ -7155,10 +7321,15 @@ WantedBy=multi-user.target
         tmp_path.replace(path)
         return True
 
-    def write_json(self, path: Path, payload: dict[str, Any]) -> None:
+    def write_json(self, path: Path, payload: dict[str, Any], mode: int | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_name(path.name + ".tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        desired_mode = mode
+        if desired_mode is None and path.exists():
+            desired_mode = stat.S_IMODE(path.stat().st_mode)
+        if desired_mode is not None:
+            os.chmod(tmp_path, desired_mode)
         tmp_path.replace(path)
 
     def ensure_nft_table(self) -> None:
