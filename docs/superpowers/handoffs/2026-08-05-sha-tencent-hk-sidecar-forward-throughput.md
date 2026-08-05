@@ -2,15 +2,15 @@
 
 Date: 2026-08-05 (Asia/Taipei)
 
-Last updated: 2026-08-05 09:55 (Asia/Taipei)
+Last updated: 2026-08-05 17:00 (Asia/Taipei)
 
-Status: completed. The throughput and sustained-backpressure fixes are implemented, tested, deployed, benchmarked, and cleaned up as version 0.1.30.
+Status: completed for release 0.1.31. Fixed-endpoint route demultiplexing, bond readiness/retry telemetry, and throughput-aware race selection are implemented, tested, deployed, benchmarked, and cleaned up. Five-leg bond meets the throughput-median gate but not the stability gate; measured three-route admission is the current operational optimization.
 
 This handoff intentionally contains no passwords, private keys, tokens, or raw credential values. Use the project-local `leikwan-v3.txt`, `cantons.txt`, and `shanghais.txt` files for access. Keep those values local only.
 
 ## 0. Completion record
 
-This section is the current source of truth and supersedes the historical recommendation and remaining-work sections below. Sections 1-8 retain the original diagnosis and execution plan because they explain why the release sequence was necessary. Section 9 contains the current resume procedure.
+Section 12 is now the current source of truth for release 0.1.31 and the fixed-endpoint LeiGod follow-up. This section records the preceding 0.1.30 backpressure milestone. Sections 1-8 retain the original diagnosis and execution plan because they explain why the release sequence was necessary. Section 9 contains the historical resume procedure.
 
 ### 0.1 Final release
 
@@ -622,3 +622,321 @@ If production behavior is revisited later, fresh-verify the panel public artifac
 ## 10. Bottom line
 
 The deterministic 24-28 Mbps transport-window regression and the subsequent backpressure/cooldown failures are fixed in 0.1.30. The committed static artifact is deployed on the panel, Hong Kong sidecar, and Linux client. Formal tests completed 30/30 forward runs and 12/12 direct controls without service restarts; repeated `race` and `bond` reverse runs sustained approximately 400 Mbps. Temporary forwards, listeners, processes, target services, and upload archives were cleaned up while the shared sidecar WireGuard topology remained healthy. The authoritative topic branch and local `master` are fast-forward aligned; the separate slave SSH `MaxStartups` observation remains documented as an operator follow-up.
+
+## 11. LeiGod `leigod_forward`: fixed-endpoint single / race / bond throughput
+
+This section supersedes the earlier analysis-only draft. A live benchmark was run on 2026-08-05 from approximately `03:42Z` to `04:14Z` (`11:42` to `12:14` Asia/Taipei). All three modes used the same customer-facing slave endpoint and the same target endpoint:
+
+```text
+client:                 sh36.ctyun.mcbar.cc
+fixed slave endpoint:   101.133.142.65:7003 (node 15, private 172.24.61.32)
+target endpoint:        v4-hkt-b.mcbar.cc:5201
+LeiGod lines:           447, 451, 453, 455, 456
+relay version:          2026.07.27.1
+bond artifact:          0.1.30
+bond artifact SHA256:   513b0ad9e496c4e71a225fd381453acb45a1413b6766bf5dcfb91d7babfefb7b
+```
+
+The panel had zero enabled forwards before the run. The benchmark therefore used isolated transient units instead of creating partial database records or changing service permissions. Production agents, LeiGod line services, and persisted forwards were not changed.
+
+### 11.1 Fixed endpoint topology used by each mode
+
+| Mode | Public client transport | Slave behavior | Overseas behavior |
+| --- | --- | --- | --- |
+| `single` | Raw TCP to `101.133.142.65:7003` | Fixed front door forwarded to one `leigod_forward` relay on loopback. The primary candidate was line `451`. | Relay connected through LeiGod SOCKS to `v4-hkt-b.mcbar.cc:5201`. |
+| `race` | Raw TCP to the same `101.133.142.65:7003` | The same front door forwarded to one `leigod_forward` relay containing all five candidates. The relay selected one line by TCP connect latency; it did not stripe traffic. | Same target `:5201`. |
+| `bond` | Five persistent `leikwan-bond` TCP legs, every one connected to the same `101.133.142.65:7003` tuple | The fixed front door round-robin assigned those connections to five line-specific loopback relays (`48010-48014`), one for each LeiGod line. | A transient 0.1.30 bond server listened on the same target `:5201` and forwarded reassembled streams to inner iperf on `127.0.0.1:5210`. |
+
+This proves that the externally visible slave `ip:port` can remain unchanged for a fixed-front-door implementation. It does **not** mean the current persisted control plane already exposes this topology: the existing product bond contract still normally publishes multiple `service_endpoints`. Productizing the measured topology requires a supported fixed-endpoint demultiplexer and in-place mode reconciliation.
+
+### 11.2 Local and harness gates
+
+The focused local relay suite passed before live work:
+
+```text
+python -m unittest slave-agent/tests/test_leigod_forward_relay.py -v
+Ran 8 tests: OK
+```
+
+Two harness issues were found and excluded from the authoritative result set:
+
+1. `leigod_forward_relay.py` probes every candidate by opening a SOCKS CONNECT to the configured target. Repeating that every five seconds against a single-session iperf server caused empty probe connections to occupy `:5201`. For `single` and `race`, a transient cookie-aware front on the same target `:5201` discarded empty/short probes and forwarded valid iperf cookies to `127.0.0.1:5210`. The relay still performed its initial real five-line probe; the follow-up interval was raised to 3600 seconds for the bounded benchmark.
+2. The first custom fixed front door waited indefinitely for both copy directions and accumulated large `FIN-WAIT-2` send queues after a client closed. Its close path was corrected to cancel the peer copy when either direction completed, then all transient units were restarted. A later exact client socket cleanup found no active test socket, and a fresh five-second fixed-endpoint smoke still received only `1.203 Mbps`; the low `single`/`race` state was therefore not attributed to a leftover gateway queue.
+
+The directories `20260805T033348Z` and `20260805T034638Z` contain those rejected pre-runs and are not used below. They are retained only as root-cause evidence.
+
+### 11.3 Formal commands and result integrity
+
+Each mode completed five normal runs of both shapes, for `30/30` authoritative JSON results:
+
+```bash
+# Current P4 shape
+iperf3 -4 -c <mode-listen> -p <mode-port> -P 4 -O 2 -t 30 --json
+
+# Historical reverse comparison shape
+iperf3 -4 -c <mode-listen> -p <mode-port> -R -b 400M -t 10 --json
+```
+
+For `single` and `race`, `<mode-listen>:<mode-port>` was the fixed public endpoint `101.133.142.65:7003`. For `bond`, iperf connected to the local bond listener `127.0.0.1:11061`; all five underlying bond legs still used only `101.133.142.65:7003`.
+
+```text
+authoritative result directory:
+  /root/codex-benchmarks/leigod-forward-fixed-endpoint-20260805T035115Z
+
+summary file:
+  /root/codex-benchmarks/leigod-forward-fixed-endpoint-20260805T035115Z/summary.json
+
+summary SHA256:
+  ffe33fb0b38c5a54a4d1ed8b4b60dfcebf1fe059f12332b8c57b8cf67b5d390e
+```
+
+Receiver throughput is the primary comparison metric. Sender throughput is retained because large sender/receiver divergence reveals queued or lost data rather than completed delivery.
+
+### 11.4 Results
+
+| Mode | Shape | Normal runs | Receiver median Mbps | Receiver min-max Mbps | Sender median Mbps | Total retransmits | Zero-throughput intervals |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `single` | P4 | 5/5 | 0.904 | 0.757-0.931 | 1.021 | 6,989 | 79 |
+| `single` | reverse | 5/5 | 1.048 | 0.925-1.083 | 16.739 | 26 | 2 |
+| `race` | P4 | 5/5 | 0.940 | 0.932-0.995 | 0.994 | 10,590 | 85 |
+| `race` | reverse | 5/5 | 1.071 | 1.029-1.092 | 20.864 | 23 | 1 |
+| `bond` | P4 | 5/5 | 172.858 | 81.225-202.433 | 171.267 | 2,370 | 0 |
+| `bond` | reverse | 5/5 | 118.803 | 0.629-211.811 | 135.345 | 487 | 6 |
+
+The individual bond P4 receiver results were `202.433`, `81.225`, `165.784`, `187.252`, and `172.858 Mbps`; none contained a zero-throughput interval. The bond reverse receiver results were `0.629`, `118.803`, `211.811`, `140.716`, and `118.803 Mbps`. The first reverse run was a real low outlier with six zero-throughput intervals; it was not discarded.
+
+### 11.5 Runtime evidence
+
+`race` selected line `451` because its startup connect latency was `123.77 ms`, narrowly below line `447` at `136.42 ms`; lines `453`, `456`, and `455` measured approximately `398`, `432`, and `638 ms`. The selected line remained `451`, so the result demonstrates a key limitation: current race policy optimizes connect latency, not sustained throughput. It therefore followed the same degraded line as `single` and delivered nearly identical throughput.
+
+The correct-token bond generation had:
+
+```text
+client unit restarts:              0
+server unit restarts:              0
+client transport establishments:  1
+client transport reconnects:      0
+initial bond-leg failures:         0
+cooldown events:                   0
+server transport starts:           1 (started with 3 legs)
+server add-leg events:             2 (five total established legs)
+server invalid-token events:       0
+```
+
+The first bond reverse outlier therefore was not caused by a bond transport rebuild, client/server restart, initial leg failure, or cooldown. It is retained as observed path variance. This run does not support a claim of stable 400 Mbps reverse throughput.
+
+Against the same fixed public endpoint, the bond median was approximately `191x` the single P4 median and `184x` the race P4 median. Reverse medians were approximately `113x` and `111x`, respectively. The reason is not endpoint identity: all modes used the same tuple. Bond used five independent LeiGod sessions, while single and race both stayed on the currently degraded line `451`.
+
+### 11.6 Cleanup proof
+
+Independent final verification at `04:14Z-04:16Z` showed:
+
+```text
+sh36:
+  leikwan-client-agent active
+  codex-leigod-speed units 0
+  listener 11061 count 0
+  sockets to 101.133.142.65:7003 count 0
+
+node 15:
+  leikwan-slave-agent active
+  codex-leigod-speed units 0
+  benchmark listeners 7003/48003-48014 count 0
+  original LeiGod SOCKS listeners 20447/20451/20453/20455/20456 count 5
+
+target:
+  iperf3.service inactive and disabled
+  codex-leigod-speed units 0
+  listeners 5201/5210 count 0
+  temporary bond binary absent
+
+panel:
+  enabled forwards 0
+  live endpoints for enabled forwards 0
+  pending/running provision tasks 0
+```
+
+### 11.7 Bottom line
+
+The fixed public endpoint can be preserved across `single`, `race`, and a server-demultiplexed `bond` implementation. The live throughput result is unambiguous for this test window: `single` and `race` were both pinned by latency selection to degraded line `451` and delivered about `1 Mbps`, while five-line bond on the same public tuple delivered a `172.858 Mbps` P4 median and `118.803 Mbps` reverse median. Bond was materially faster but still variable; the reverse outlier prevents a blanket stability or 400 Mbps claim.
+
+No production runtime or database synchronization is required from this benchmark alone. The only durable repository change is this handoff. A future product change should add a supported fixed-endpoint demultiplexer, pin endpoint identity during mode changes, and add throughput-aware race health if race is expected to avoid low-bandwidth lines.
+
+## 12. Release 0.1.31 fixed-endpoint optimization, live benchmark, and deployment
+
+This section supersedes the no-sync conclusion in section 11.7. The fixed-endpoint product work was implemented after that benchmark, tested locally, exercised with isolated server canaries, then synchronized to the panel, selected slave, Linux client, and Hong Kong sidecar.
+
+### 12.1 Committed release
+
+```text
+branch:                         codex/sidecar-shared-wg-peers
+release source commit:          f9f21ac07bb8c14f5978d91aa5b5acd84ccc68c4
+leikwan-bond version:           0.1.31
+bond artifact SHA256:           ff568c8bfe0d393476f878df39bf21b2910648b912e7b13f917d483050280e0c
+bond artifact size:             8610768 bytes
+leigod relay version:           2026.08.05.1
+leigod relay SHA256:            40ce291792891381d2b61c6a0c4dea478115c8fb7b9309986f753c140bfdda7c
+slave agent version:            2026.08.05.1
+slave agent SHA256:             f4ae3ca682ff481336c7e8ecc4070e440278314e6f75a38a309b13135518a5d1
+install-forward-runtime version: 2026.08.05.1
+install-forward-runtime SHA256: c6bce8f1c2653187c0099799cb724b4c7cce0a89fb801d56976e360c86d5e9e9
+```
+
+The fixed public tuple remains `101.133.142.65:7003`. The durable implementation adds:
+
+1. An LBND hello route identifier, so every logical bond leg can use the same physical endpoint while the slave deterministically maps it to one LeiGod candidate.
+2. Per-route bond counters and connection/error state in the relay state file.
+3. Initial bond-leg readiness (`preferred`, `minimum`, bounded wait) and bounded background reconnects.
+4. Linux fixed-endpoint expansion from one physical endpoint to logical `leg_route_id` URIs.
+5. Race sustained-throughput EWMA, bidirectional samples, stall penalties, exploration, and target/candidate-scoped state restore. The default remains `connect_latency`; `throughput_ewma` is opt-in.
+
+Relevant commits are:
+
+```text
+010abe6 feat(bond): expose fixed leg bootstrap and route counters
+2a9d63c feat(bond): wait for fixed leg readiness and retry boundedly
+f5ee738 feat(client): expand fixed endpoint into logical bond legs
+1580608 feat(panel): publish fixed-endpoint leigod bond contracts
+a7e9894 feat(race): learn sustained throughput for leigod routes
+c2b3b62 release: publish fixed-endpoint leigod throughput runtime
+123e7ad test: cover fixed bond process integration
+f9f21ac test(bond): expect release version 0.1.31
+```
+
+### 12.2 Local release gates
+
+```text
+Rust:                         91 / 91 passed
+Python release suite:         47 / 47 passed
+broader Linux client suite:   59 / 59 passed
+fixed bond process tests:      2 / 2 passed
+PHP focused release tests:    11 / 11 passed
+git diff --check:             passed
+```
+
+The process integration test runs the real Python relay and the real static Linux 0.1.31 binary. It proves normal and reversed arrival order, exact line `451`/`453` demultiplexing, rejection of route `0` and unknown route `999`, and route counters. Two unrelated legacy MPTCP regression tests remain outside this release and were not treated as release gates.
+
+### 12.3 Live method
+
+The authoritative test ran from approximately `07:42Z` to `08:35Z` on 2026-08-05. All modes used:
+
+```text
+client:                sh36.ctyun.mcbar.cc
+fixed slave endpoint:  101.133.142.65:7003
+target:                v4-hkt-b.mcbar.cc:5201
+LeiGod lines:          447, 451, 453, 455, 456
+relay:                 2026.08.05.1 from committed source
+bond client/server:    0.1.31, exact committed static artifact
+```
+
+The panel had zero enabled forwards and zero pending/running tasks. The test used isolated `codex-leigod-canary-*` transient units and `/root/codex-leigod-canary-*` uploads. It did not modify production forward records. A cookie-aware target front discarded short relay health probes and passed valid iperf sessions to `127.0.0.1:5210`.
+
+Each row below contains five normal runs of both shapes:
+
+```bash
+iperf3 -4 -c <listen-host> -p <listen-port> -P 4 -O 2 -t 30 --json
+iperf3 -4 -c <listen-host> -p <listen-port> -R -b 400M -t 10 --json
+```
+
+The result directory and immutable summary are:
+
+```text
+/root/codex-benchmarks/leigod-fixed-031-throughput-20260805T074142Z
+summary SHA256: 264107a20ad060a3a1d5b52ff0e75cf2bf3a34c4c5122c54e16d4f594335a7ac
+authoritative JSON runs: 80 / 80 normal
+```
+
+### 12.4 Individual-line controls
+
+| Line | Shape | Receiver median Mbps | Receiver min-max Mbps | Zero intervals |
+| ---: | --- | ---: | ---: | ---: |
+| 447 | P4 | 201.567 | 201.386-201.795 | 0 |
+| 447 | reverse | 165.459 | 127.222-210.755 | 0 |
+| 451 | P4 | 158.515 | 102.835-201.851 | 7 |
+| 451 | reverse | 194.476 | 118.351-205.024 | 0 |
+| 453 | P4 | 184.732 | 62.505-203.043 | 1 |
+| 453 | reverse | 201.455 | 178.385-209.441 | 0 |
+| 455 | P4 | 42.548 | 35.277-52.176 | 34 |
+| 455 | reverse | 39.467 | 0.072-44.492 | 1 |
+| 456 | P4 | 159.015 | 107.479-204.567 | 1 |
+| 456 | reverse | 61.234 | 60.795-62.501 | 0 |
+
+Line `455` was consistently degraded in both directions. Line `456` had usable forward throughput but a hard reverse ceiling near `61 Mbps`. The best stable P4 control was line `447`; the strongest reverse control was line `453`.
+
+### 12.5 Race and bond results
+
+Before formal race runs, five concurrent bidirectional warm connections were opened through the same public endpoint. Relay state proved all five candidates had `qualifying_samples=1` and no `sampling_in_flight` residue. After formal runs, every candidate had multiple fresh samples; the selected line converged to `447`, and line `455` carried the largest stall penalty.
+
+| Mode | Routes | Shape | Receiver median Mbps | Receiver min-max Mbps | Zero intervals |
+| --- | --- | --- | ---: | ---: | ---: |
+| `race` throughput EWMA | 5 candidates | P4 | 126.373 | 88.692-178.954 | 5 |
+| `race` throughput EWMA | 5 candidates | reverse | 185.995 | 45.760-195.063 | 0 |
+| `bond` | 447/451/453/455/456 | P4 | 172.252 | 64.992-186.784 | 6 |
+| `bond` | 447/451/453/455/456 | reverse | 128.554 | 0.105-205.414 | 15 |
+| `bond3` admission control | 447/451/453 | P4 | 196.436 | 121.199-201.098 | 0 |
+| `bond3` admission control | 447/451/453 | reverse | 185.334 | 76.545-213.908 | 0 |
+
+Race no longer remains pinned to the old approximately `1 Mbps` degraded result. Its reverse median is strong, but P4 multi-connection sampling still exposes traffic to weak candidates, so it did not meet the planned `80%` of best-control P4 threshold.
+
+Five-leg bond met the `>=150 Mbps` P4-median threshold, and the fixed route header worked: every route reported `accepted=1`, `active=1`, and `connect_successes=1`. It did not meet the no-stall or all-reverse-runs-above-100 thresholds. The target formed one transport from three initial legs and added the remaining two without a restart.
+
+The measured operational optimization is admission control: keeping the same public endpoint and using healthy routes `447/451/453` raised the P4 median from `172.252` to `196.436 Mbps`, raised reverse median from `128.554` to `185.334 Mbps`, and reduced zero intervals from `21` to `0` across ten formal runs. One reverse result was still `76.545 Mbps`, so this is not a blanket per-run floor guarantee. Do not hard-code these line IDs globally; refresh controls and admit currently healthy routes.
+
+### 12.6 Cleanup proof
+
+Independent checks at `08:35Z` showed:
+
+```text
+sh36 client agent:                 active, 0 restarts
+sh36 canary units/listener 11061:  0 / absent
+node15 slave agent:                active, 0 restarts
+node15 canary units/7003/48003:    0 / absent / absent
+node15 LeiGod line services:       5 active
+target iperf3.service:             inactive and disabled
+target canary units/5201/5210:     0 / absent / absent
+panel enabled forwards/endpoints:  0 / 0
+panel pending/running tasks:       0
+```
+
+No benchmark binary or relay upload remained on the three benchmark hosts. The authoritative result directory remains on sh36.
+
+### 12.7 Production synchronization
+
+The committed `f9f21ac` archive contained `1216` tracked files, was `123675501` bytes, and had SHA256 `bfc34c282086753c291406176629fef08161b7e60dc957922a48ea8f78fbec4c`. The panel compared every staged tracked file with the live artifact tree after overlay.
+
+Panel deployment evidence:
+
+```text
+backup:                    /root/codex-backups/leigod-fixed-031-20260805T084503Z
+application backup SHA256: 9a200bcf2cf9f149fea09f233c42a488c696ef695be0bcb2a9fab648cbe3a461
+database backup SHA256:    a58f45bb4a8c3ddfa8137ab7aad77f9a81405c1beb327fecb56291b3065bd254
+migrations:                71 applied, 0 pending before and after
+runtime .env:              hash unchanged
+tracked equality:          1216 / 1216
+origin login:              HTTP 200
+public login:              HTTP 200
+origin versions manifest:  HTTP 200
+```
+
+The first deployment attempt stopped before database backup, overlay, or migration because that PHP CLI did not accept `php -`; the validated application backup was reused with the compatible stdin invocation. The successful resume performed the database backup, overlay, migration status checks, equality proof, and HTTP checks.
+
+Runtime backups and final state:
+
+```text
+node15: /root/codex-backups/leigod-fixed-031-slave-20260805T085843Z
+  leikwan-bond 0.1.31, relay 2026.08.05.1, slave agent 2026.08.05.1
+  slave agent active, 0 restarts; five original LeiGod services active
+
+sh36:  /root/codex-backups/leigod-fixed-031-client-20260805T085843Z
+  leikwan-bond 0.1.31; client agent active; disable_auto_update=true
+
+HK sidecar: /root/codex-backups/leigod-fixed-031-sidecar-20260805T085854Z
+  leikwan-bond 0.1.31; sidecar and agent active, 0 restarts
+  shared WG UDP 18502, 4 peers, TCP frontend 18501, no port 443 listener, no CLOSE_WAIT
+```
+
+The current sidecar was reached only through an authorized slave hop. The canonical older hop timed out to sidecar port 22 during this window; `47.116.134.3 -> 103.153.5.172` was reachable and was used for the verified update. No direct client-to-sidecar path was introduced.
+
+### 12.8 Final conclusion
+
+The externally visible endpoint can remain unchanged for `single`, `race`, and bond. Version 0.1.31 supplies the missing deterministic route identity and lifecycle controls. Throughput-aware race fixes the catastrophic latency-only lock-in, but parallel workloads still need conservative exploration/admission policy. Five-leg bond is throughput-capable but unstable when current weak routes are forced in. The best measured configuration in this window was the same fixed endpoint with routes `447/451/453`, at `196.436 Mbps` P4 median and `185.334 Mbps` reverse median with no zero intervals.
