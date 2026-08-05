@@ -2,15 +2,15 @@
 
 Date: 2026-08-05 (Asia/Taipei)
 
-Last updated: 2026-08-05 17:00 (Asia/Taipei)
+Last updated: 2026-08-05 23:46 (Asia/Taipei)
 
-Status: completed for release 0.1.31. Fixed-endpoint route demultiplexing, bond readiness/retry telemetry, and throughput-aware race selection are implemented, tested, deployed, benchmarked, and cleaned up. Five-leg bond meets the throughput-median gate but not the stability gate; measured three-route admission is the current operational optimization.
+Status: completed for release 0.1.34. LeiGod line-native P1/P2 controls, slave-side adaptive parallel lanes, automatic bulk-line exclusion, a user-P1 Reverse canary, panel/slave deployment, and cleanup are complete. The path has demonstrated greater than 200 Mbps, but the latest clean three-run product median was 198.372 Mbps, so greater than 200 Mbps is a capability rather than a per-run guarantee.
 
 This handoff intentionally contains no passwords, private keys, tokens, or raw credential values. Use the project-local `leikwan-v3.txt`, `cantons.txt`, and `shanghais.txt` files for access. Keep those values local only.
 
 ## 0. Completion record
 
-Section 12 is now the current source of truth for release 0.1.31 and the fixed-endpoint LeiGod follow-up. This section records the preceding 0.1.30 backpressure milestone. Sections 1-8 retain the original diagnosis and execution plan because they explain why the release sequence was necessary. Section 9 contains the historical resume procedure.
+Section 13 is now the current source of truth for release 0.1.34 and the LeiGod line-native/adaptive-parallel follow-up. Section 12 records the preceding 0.1.31 fixed-endpoint release, while this section records the preceding 0.1.30 backpressure milestone. Sections 1-8 retain the original diagnosis and execution plan because they explain why the release sequence was necessary. Section 9 contains the historical resume procedure.
 
 ### 0.1 Final release
 
@@ -940,3 +940,236 @@ The current sidecar was reached only through an authorized slave hop. The canoni
 ### 12.8 Final conclusion
 
 The externally visible endpoint can remain unchanged for `single`, `race`, and bond. Version 0.1.31 supplies the missing deterministic route identity and lifecycle controls. Throughput-aware race fixes the catastrophic latency-only lock-in, but parallel workloads still need conservative exploration/admission policy. Five-leg bond is throughput-capable but unstable when current weak routes are forced in. The best measured configuration in this window was the same fixed endpoint with routes `447/451/453`, at `196.436 Mbps` P4 median and `185.334 Mbps` reverse median with no zero intervals.
+
+## 13. Release 0.1.34 LeiGod line-native controls and adaptive internal parallelism
+
+This section supersedes section 12 for the LeiGod follow-up. The critical topology correction is that `hk-bgp-b` and its sidecar domain are independent of LeiGod mode. No sidecar was used, modified, or deployed for this work.
+
+### 13.1 Scope and authoritative topology
+
+The supported benchmark path was:
+
+```text
+sh36
+  -> 101.133.142.65:7003              fixed slave ingress
+  -> slave-local bond and LeiGod relay
+  -> line-specific LeiGod SOCKS
+  -> v4-hkt-b.mcbar.cc:5201            unchanged forwarded target
+```
+
+`v4-hkt-b.mcbar.cc:5201` is the relay target, not the sh36 client address during a forward benchmark. One accidental direct-target invocation reached the bond listener without an LBND header and correctly failed with `invalid bond frame magic`; it is marked `INVALID-DIRECT-TARGET.txt` and excluded from every throughput conclusion.
+
+The required product shape is:
+
+- the user opens one normal TCP stream;
+- the user's test is Reverse `-P 1`, not P4;
+- the slave creates internal parallel LeiGod connections;
+- aggregation occurs on the slave/server side;
+- no client-side bond process is required;
+- Point 10 rollout gates remain off.
+
+### 13.2 Fresh individual-line P1/P2 controls
+
+Each physical LeiGod line was tested independently through the same fixed slave ingress and forwarded target. Every row is a 10-second Reverse test. Receiver throughput is the authoritative comparison.
+
+| Line | P1 receiver Mbps | P1 sender Mbps | P1 retransmits | P2 receiver Mbps | P2 sender Mbps | P2 retransmits | Zero intervals |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 447 | 15.715 | 33.931 | 13 | 204.013 | 246.940 | 35 | 0 |
+| 451 | 185.770 | 199.407 | 111 | 191.315 | 237.212 | 45 | 0 |
+| 453 | 90.732 | 100.609 | 4 | 209.631 | 250.205 | 7 | 0 |
+| 455 | 41.619 | 59.887 | 23 | 76.574 | 114.589 | 25 | 0 |
+| 456 | 60.517 | 78.673 | 4 | 116.179 | 151.937 | 8 | 0 |
+
+The immutable line-control summary is:
+
+```text
+/root/codex-benchmarks/leigod-line-current-20260805T140500Z/summary.json
+SHA256: 23ee16d1415235006f71fd0d2bc3e2a0ae5bf58ca0bb20f0a479efa249ab2dd4
+```
+
+The result answers the line-native question directly: lines `447` and `453` each exceeded 200 Mbps with P2, while the same line could be much slower with P1. LeiGod appears to have connection-level variability or allocation behavior that an internal second connection can sometimes escape.
+
+This is not deterministic. A paired line `453` retest produced P1 `90.851 Mbps`, followed immediately by P2 `50.137 Mbps` with one zero interval. P2 improves the probability of obtaining a good allocation; it does not create guaranteed physical capacity.
+
+### 13.3 Durable adaptive-parallel implementation
+
+The committed release is:
+
+```text
+branch:               codex/sidecar-shared-wg-peers
+release source:       a2b60a2300a4be0c89e38b2fd047b86b5559610b
+leikwan-bond:          0.1.34
+bond bytes:           9044440
+bond SHA256:          c196984ea90011e0fa03053b4499a7f4ef4ec6f3cdb7560449b0f20c42bbc655
+LeiGod relay:         2026.08.05.2
+relay bytes:          59161
+relay SHA256:         64b64b6ac1464c220e82e2582c6a2d3845d29ee969d07a961de81260916ef700
+slave agent:          2026.08.05.3
+slave agent bytes:    355778
+slave agent SHA256:   543f4f0818d1db10f06988e3ad20278a966432c6d41f02fba2b0d5f4a80dd430
+```
+
+Relevant commits are:
+
+```text
+c789556 fix(bond): attribute throughput by route delivery
+da90336 fix(bond): calibrate per-session line capacity
+a2b60a2 feat(leigod): add adaptive parallel bond lanes
+```
+
+The implementation expands five physical candidates into at most eight logical legs. Physical lines are attempted first; a second connection is then added for the first three current candidates. Defaults are configurable and bounded:
+
+```text
+BOND_LEIGOD_PARALLEL_LANES_PER_LINE=2   # clamped to 1..4
+BOND_LEIGOD_PARALLEL_LEG_LIMIT=8        # clamped to 2..8
+```
+
+The base route IDs are `447/451/453/455/456`. Additional lanes use unique synthetic route IDs, for example `1004472`, `1004512`, and `1004532`, while still resolving to their physical line. The relay shares physical-line health/configuration but exposes every logical route ID. Duplicate physical lines remain rejected for `single` and `race`; they are allowed only in `bond` when route IDs are unique.
+
+Capacity sampling begins at first real delivery rather than connection creation. Calibration temporarily saturates one logical lane, records delivered throughput, and freezes that capacity estimate instead of overwriting it with the scheduler's later weighted share. A degraded lane at or above 10 Mbps continues exclusive calibration until admitted or quarantined. A lane below 10 Mbps remains available only for interactive/control traffic and probes; it is excluded from bulk scheduling. Interactive chunks retain the latency-oriented selector, while bulk chunks use measured capacity and admission state.
+
+### 13.4 Automatic exclusion observed live
+
+After the clean product canary, the target snapshot contained eight active logical legs and one transport. Final TCP admission state was:
+
+| Logical route | Measured Mbps | Bulk admission |
+| ---: | ---: | --- |
+| 447 | 81.959 | admitted |
+| 1004472 | 45.983 | admitted |
+| 1004512 | 41.572 | admitted |
+| 453 | 16.968 | quarantined |
+| 451 | 5.563 | quarantined |
+| 1004532 | 4.412 | probation |
+| 455 | 14.440 | quarantined |
+| 456 | 3.684 | quarantined |
+
+The relative floor can quarantine a route above the absolute 10 Mbps floor when it is still materially worse than the current best capacity. Bulk bytes converged onto the three admitted connections. This proves that exclusion is based on observed connection delivery rather than a hard-coded physical line list; a good and bad connection belonging to the same physical line can receive different admission decisions.
+
+### 13.5 User-P1 Reverse results
+
+An initial manually split internal-P2 prototype used the same single user stream and produced five 20-second Reverse P1 receiver results:
+
+```text
+201.169, 194.877, 210.291, 164.337, 208.141 Mbps
+median: 201.169 Mbps
+min-max: 164.337-210.291 Mbps
+zero intervals: 0
+```
+
+Evidence:
+
+```text
+/root/codex-benchmarks/leigod-internal-p2-20260805T142500Z/formal/summary.json
+SHA256: 79189e2778edb5c80ccdbb7de789518033310e47bf66e6c5d8775629075873ba
+```
+
+The final 0.1.34 product-shaped canary used one relay, eight logical legs, exactly one target transport, and no sh36 bond process. Its 45-second warmup was `187.640 Mbps`. Three formal 20-second Reverse P1 runs were:
+
+| Run | Receiver Mbps | Sender Mbps | Retransmits | Zero intervals |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 187.520 | 197.549 | 323 | 0 |
+| 2 | 199.841 | 209.785 | 320 | 0 |
+| 3 | 198.372 | 208.335 | 423 | 0 |
+
+```text
+receiver median: 198.372 Mbps
+receiver min-max: 187.520-199.841 Mbps
+/root/codex-benchmarks/leigod-product-p2-034-valid-20260805T150500Z/formal/summary.json
+SHA256: 4cbdd7e1e7140a2c3fe22390d2c47a2f1e5939158f1bdeede0dcd67447163562
+```
+
+The correct conclusion is therefore precise:
+
+1. Greater than 200 Mbps aggregation is possible and was demonstrated with one user stream in the prototype window.
+2. The latest clean release window was just below 200 Mbps, so current LeiGod variability prevents a strict greater-than-200 guarantee.
+3. Internal parallelism improves user experience without asking the user to open P2 or run client-side bond.
+4. Additional lanes beyond two per physical line are not justified by this evidence and remain bounded/configurable.
+
+### 13.6 Verification gates
+
+Local release validation completed before deployment:
+
+```text
+Rust tests:                         116 / 116 passed
+real release integration:            1 / 1 passed
+focused and broad Python tests:     68 / 68 passed
+focused PHP contract/artifact:       8 / 8 scripts passed
+tracked PHP deployment lint:       388 / 388 passed
+git diff --check:                  passed
+```
+
+Regression coverage includes route-delivery attribution, calibration start/freeze semantics, degraded-lane resolution, duplicate physical lines with unique bond route IDs, synthetic route validation, relay state sharing, and server-side payload expansion.
+
+### 13.7 Production synchronization
+
+The panel was deployed from committed source `a2b60a2` through a validated archive:
+
+```text
+archive files:        1220
+archive bytes:        123736030
+archive SHA256:       529fd7ff5eedfb2687cd4edb9123e41968c7028da95550fb99a68543e780e7cb
+changed live files:   13
+tracked equality:     1220 / 1220
+runtime .env SHA256:  unchanged
+migrations:           71 applied, 0 pending before and after
+enabled forwards:     0
+outstanding tasks:    0
+Point 10 gates:       fixed_endpoint_leigod_bond=false
+                      server_side_leigod_bond=false
+origin/public login:  HTTP 200 / HTTP 200
+versions manifest:    HTTP 200
+artifact range:       HTTP 206
+public artifact SHA:  c196984ea90011e0fa03053b4499a7f4ef4ec6f3cdb7560449b0f20c42bbc655
+```
+
+Panel rollback material:
+
+```text
+/root/codex-backups/leigod-adaptive-034-20260805T152619Z
+application SHA256: 9b3b74b15adbf0164ba462262143d08e76b204044217dbf6d915d054c5675099
+database SHA256:    1f4693ca4e34a184455c6b948cf3f4d53de3ea0b928e282ebad1f504240a7ff0
+```
+
+The selected slave was updated atomically and only its agent was restarted:
+
+```text
+backup:             /root/codex-backups/leigod-adaptive-034-slave-20260805T153913Z
+production bond:    0.1.34
+production relay:   2026.08.05.2
+production agent:   2026.08.05.3
+agent:              active, 0 restarts, no post-deploy warnings
+LeiGod line units:  5 active
+```
+
+The sh36 user client was not changed because aggregation is slave-side. The `hk-bgp-b` sidecar was intentionally untouched because it is not part of LeiGod mode.
+
+### 13.8 Cleanup and final state
+
+The isolated canary was removed while retaining compact JSON evidence:
+
+```text
+sh36:
+  canary units/processes/listeners: 0
+  evidence summaries retained
+
+selected slave:
+  canary units/processes: 0
+  ports 7003/48003-48005/58003-58005: no listeners
+  production agent: active, 0 restarts
+  original LeiGod services: 5 active
+
+target v4-hkt-b:
+  bond processes/canary units: 0
+  port 5210: no listener
+  iperf3.service: active and disabled
+  port 5201: one official iperf3 listener
+
+panel:
+  enabled forwards: 0
+  pending/running provision tasks: 0
+  Point 10 gates: both false
+  slave node 15: active, agent 2026.08.05.3, current load 0
+  temporary release upload/staging: removed
+```
+
+The operational recommendation is to keep the rollout gates off until a longer observation window shows that the clean product median has adequate margin above 200 Mbps. The release is deployable now for adaptive exclusion and transparent internal parallelism; it should not be marketed as a guaranteed greater-than-200 Mbps service on the current LeiGod lines.
