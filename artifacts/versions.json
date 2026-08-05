@@ -69,12 +69,12 @@
     "install_url": "/artifacts/uninstall-bond-sidecar.sh"
   },
   "client_agent": {
-    "version": "2026.08.06.1",
+    "version": "2026.08.06.2",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "db0fbc4cb1dc00be35157dafe6e12c3c5bb4d66ebc53a55b8f377ab22f6a1f38",
-    "size_bytes": 286656,
-    "size": 286656
+    "sha256": "7f049e562bfd55d038fc56a9b69192b430fd96132ab45be9e7b596c2c9cda49b",
+    "size_bytes": 286653,
+    "size": 286653
   },
   "client_agent_installer": {
     "version": "2026.08.06.1",
@@ -127,18 +127,18 @@
     "artifact_url": "/artifacts/leikwan-udp-uot-merge.py"
   },
   "leikwan_bond_linux_amd64": {
-    "version": "0.1.35",
+    "version": "0.1.36",
     "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64",
-    "sha256": "c1f5c223e7ec27b98e73399a356d377b9ba97b073fc39e8d5c01d5b9df3f5e84",
-    "size_bytes": 9884720
+    "sha256": "f607b5be0c60ddf16fda404b8ff304f4099987f11053a974614845e0d773a7f8",
+    "size_bytes": 9884440
   },
   "leikwan_pathd_linux_amd64": {
-    "version": "0.1.35",
+    "version": "0.1.36",
     "path": "artifacts/wstunnel/leikwan-pathd_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-pathd_linux_amd64",
-    "sha256": "caddcf20082e9b6bcb47a2522fbad5864c82056766a8d8b10a84967af1ac405b",
-    "size_bytes": 9357360
+    "sha256": "2b93ed788114ab2cedcc6ab73deb3b3c0a88716fec8ef73995ff558384293db4",
+    "size_bytes": 9356896
   },
   "wstunnel_linux_amd64": {
     "version": "10.5.2",

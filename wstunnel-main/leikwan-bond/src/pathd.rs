@@ -879,6 +879,16 @@ impl PathDaemon {
             .collect::<HashSet<_>>();
         let mut configs = self.active_configs.clone();
         configs.retain(|forward_id, _| wanted_forwards.contains(forward_id));
+        for forward in &degraded.forwards {
+            if let Some(config) = configs.get_mut(&forward.forward_id) {
+                let remaining_legs = forward.legs.len().max(1);
+                config.minimum_initial_legs = config.minimum_initial_legs.min(remaining_legs);
+                config.preferred_initial_legs = config
+                    .preferred_initial_legs
+                    .min(remaining_legs)
+                    .max(config.minimum_initial_legs);
+            }
+        }
 
         if let Err(error) = self.reconcile_runtime(&degraded, &configs).await {
             self.fail_closed().await;
@@ -2071,6 +2081,8 @@ mod tests {
         let mut value = valid_json();
         server.attach(&mut value);
         value["forwards"][0]["listen"] = listen.to_string().into();
+        value["forwards"][0]["policy"]["preferred_initial_legs"] = 2.into();
+        value["forwards"][0]["policy"]["minimum_initial_legs"] = 2.into();
         let mut daemon = test_daemon(&status_path);
         daemon
             .apply(serde_json::from_value(value).unwrap())
@@ -2084,6 +2096,8 @@ mod tests {
         let running = daemon.forwards.get(&17).unwrap();
         assert_eq!(1, running.spec.legs.len());
         assert!(running.spec.legs[0].execution_group.starts_with("node:"));
+        assert_eq!(1, daemon.active_configs[&17].preferred_initial_legs);
+        assert_eq!(1, daemon.active_configs[&17].minimum_initial_legs);
         assert!(daemon.lines.is_empty());
         tokio::net::TcpStream::connect(listen).await.unwrap();
         let status: serde_json::Value =

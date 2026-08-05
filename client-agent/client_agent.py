@@ -32,7 +32,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.08.06.1"
+AGENT_VERSION = "2026.08.06.2"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -1522,7 +1522,7 @@ class ClientAgent:
             "throughput_probe_bytes": 1048576,
             "latency_first": bool(policy.get("latency_first", True)),
             "udp_primary_only": True,
-            "default_strategy": "latency_best",
+            "default_strategy": "speed_max",
         }
 
     def build_pathd_desired(self, payload: dict) -> dict:

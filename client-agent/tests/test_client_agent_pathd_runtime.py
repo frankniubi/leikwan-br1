@@ -163,6 +163,7 @@ class ClientAgentPathdRuntimeTests(unittest.TestCase):
         self.assertEqual(["endpoint-311", "endpoint-312"], sorted(desired["auth_refs"]))
         self.assertEqual(3, len(desired["forwards"][0]["legs"]))
         self.assertEqual("0.0.0.0:11041", desired["forwards"][0]["listen"])
+        self.assertEqual("speed_max", desired["forwards"][0]["policy"]["default_strategy"])
         self.assertNotIn("auth-311", json.dumps(desired["forwards"][0], sort_keys=True))
 
     def test_pending_lease_starts_provider_generation_without_forwards(self):

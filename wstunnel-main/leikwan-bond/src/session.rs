@@ -3656,13 +3656,7 @@ fn flush_tcp_stream_backlogs(
                     state.striping_stage,
                     next_stage
                 );
-                state.striping_stage = next_stage;
-                state.bulk_mode = next_stage == TcpStripingStage::Bulk;
-                if next_stage != TcpStripingStage::Warmup {
-                    state.warmup_stage_started_at = None;
-                    state.warmup_leg_bytes = 0;
-                    state.warmup_leg_count = 1;
-                }
+                transition_tcp_striping_stage(state, next_stage);
             }
 
             let now = Instant::now();
@@ -3767,6 +3761,24 @@ fn flush_tcp_stream_backlogs(
     }
 
     recompute_transport_inflight(legs, streams);
+}
+
+fn transition_tcp_striping_stage(state: &mut TcpStreamState, next_stage: TcpStripingStage) {
+    state.striping_stage = next_stage;
+    state.bulk_mode = next_stage == TcpStripingStage::Bulk;
+    match next_stage {
+        TcpStripingStage::Sticky => {
+            state.warmup_stage_started_at = None;
+            state.warmup_leg_bytes = 0;
+            state.warmup_leg_count = 1;
+        }
+        TcpStripingStage::Warmup => {}
+        TcpStripingStage::Bulk => {
+            state.warmup_stage_started_at = None;
+            state.warmup_leg_bytes = 0;
+            state.warmup_leg_count = state.warmup_leg_count.max(2);
+        }
+    }
 }
 
 fn retransmit_transport_pending(
@@ -7295,6 +7307,26 @@ mod tests {
     #[test]
     fn bulk_stage_allows_all_healthy_legs_for_large_streams() {
         assert_eq!(allowed_leg_count(TcpStripingStage::Bulk, 5), 5);
+    }
+
+    #[test]
+    fn bulk_transition_preserves_completed_warmup_quorum() {
+        let (local_write_tx, _local_write_rx) = mpsc::channel(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let mut state = TcpStreamState::new(local_write_tx, close_tx, true);
+        state.striping_stage = TcpStripingStage::Warmup;
+        state.warmup_leg_count = 2;
+        state.warmup_leg_bytes = 64 * 1024;
+
+        transition_tcp_striping_stage(&mut state, TcpStripingStage::Bulk);
+
+        assert_eq!(state.striping_stage, TcpStripingStage::Bulk);
+        assert!(state.bulk_mode);
+        assert_eq!(state.warmup_leg_count, 2);
+        assert_eq!(
+            decide_striping_stage(512 * 1024, 0, state.warmup_leg_count, 2, &test_config()),
+            TcpStripingStage::Bulk
+        );
     }
 
     #[test]
