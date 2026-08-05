@@ -455,6 +455,10 @@ def leigod_forward_service_name(service_name: str) -> str:
     return f"{safe_service_basename(service_name)}-leigod-forward"
 
 
+def server_side_bond_service_name(service_name: str) -> str:
+    return f"{safe_service_basename(service_name)}-server-bond"
+
+
 def normalize_path_prefix(path_prefix: str) -> str:
     normalized = str(path_prefix).strip().strip("/")
     if normalized == "":
@@ -2318,6 +2322,18 @@ class SlaveAgent:
     def leigod_forward_service_name(service_name: str) -> str:
         return leigod_forward_service_name(service_name)
 
+    def server_side_bonds_dir(self) -> Path:
+        path = self.state_dir / "server-side-bonds"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def server_side_bond_credential_path(self, service_name: str) -> Path:
+        return self.server_side_bonds_dir() / f"{safe_service_basename(service_name)}.env"
+
+    @staticmethod
+    def server_side_bond_service_name(service_name: str) -> str:
+        return server_side_bond_service_name(service_name)
+
     @staticmethod
     def desired_leigod_line_without_toml(line: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -3816,6 +3832,172 @@ WantedBy=multi-user.target
             parsed = parsed.replace(tzinfo=datetime.timezone.utc)
         return parsed.timestamp()
 
+    def validate_server_side_bond_payload(
+        self,
+        service_name: str,
+        payload: dict[str, Any],
+        target: str,
+    ) -> dict[str, Any] | None:
+        raw = payload.get("server_side_bond")
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise RuntimeError("server_side_bond must be an object")
+        if str(raw.get("aggregation_placement", "") or "").strip() != "slave_sidecar":
+            raise RuntimeError("invalid server-side bond aggregation placement")
+        if str(payload.get("transport_mode", "tcp") or "tcp").strip().lower() != "tcp":
+            raise RuntimeError("server-side bond requires a TCP carrier")
+        if str(payload.get("ingress_protocol", "") or "").strip() != "plain_tcp_mux":
+            raise RuntimeError("server-side bond requires plain_tcp_mux ingress")
+        if str(payload.get("backend_protocol", "") or "").strip() != "tcp_relay":
+            raise RuntimeError("server-side bond requires tcp_relay backend")
+
+        relay = payload.get("leigod_forward")
+        if not isinstance(relay, dict) or str(relay.get("mode", "") or "").strip().lower() != "bond":
+            raise RuntimeError("server-side bond requires a LeiGod bond relay")
+        relay_port = int(relay.get("relay_port", 0) or 0)
+        if relay_port < 1 or relay_port > 65535:
+            raise RuntimeError("invalid server-side bond relay port")
+
+        frontend_port = int(raw.get("frontend_port", 0) or 0)
+        public_port = int(payload.get("listen_port", 0) or 0)
+        if frontend_port < 1 or frontend_port > 65535:
+            raise RuntimeError("invalid server-side bond frontend port")
+        expected_target = f"127.0.0.1:{frontend_port}"
+        if target != expected_target:
+            raise RuntimeError(f"server-side bond frontend target mismatch: expected {expected_target}, got {target}")
+        if public_port < 7000 or public_port > 9000:
+            raise RuntimeError("server-side bond public ingress must use port 7000-9000")
+        if frontend_port in {public_port, relay_port} or relay_port == public_port:
+            raise RuntimeError("server-side bond public/local port collision")
+        occupied = self.used_backend_ports(exclude_service_name=service_name)
+        if frontend_port in occupied:
+            raise RuntimeError(f"server-side bond frontend port collision: {frontend_port}")
+
+        leg_relay_target = str(raw.get("leg_relay_target", "") or "").strip()
+        relay_host, configured_relay_port = split_host_port(leg_relay_target)
+        if relay_host != "127.0.0.1" or configured_relay_port != relay_port:
+            raise RuntimeError("server-side bond relay target mismatch")
+        sidecar_target = str(raw.get("sidecar_target", "") or "").strip()
+        if sidecar_target == "" or sidecar_target != str(relay.get("target", "") or "").strip():
+            raise RuntimeError("server-side bond sidecar target mismatch")
+
+        session_token = str(raw.get("session_token", "") or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9._~=-]{16,8192}", session_token) is None:
+            raise RuntimeError("invalid or missing server-side bond session token")
+        raw_legs = raw.get("legs")
+        if not isinstance(raw_legs, list) or len(raw_legs) < 2 or len(raw_legs) > 8:
+            raise RuntimeError("server-side bond requires at least two and at most eight legs")
+        leg_route_ids: list[int] = []
+        for row in raw_legs:
+            if not isinstance(row, dict):
+                raise RuntimeError("server-side bond leg must be an object")
+            route_id = int(row.get("leg_route_id", 0) or 0)
+            if route_id < 1 or route_id > 45535:
+                raise RuntimeError("invalid server-side bond leg route")
+            if route_id in leg_route_ids:
+                raise RuntimeError("duplicate server-side bond leg route")
+            leg_route_ids.append(route_id)
+        relay_route_ids = [
+            int(row.get("leg_route_id", 0) or 0)
+            for row in relay.get("candidates", [])
+            if isinstance(row, dict)
+        ]
+        if relay_route_ids != leg_route_ids:
+            raise RuntimeError("server-side bond leg routes do not match the LeiGod bond relay")
+        if raw.get("adaptive_line_admission") is not True:
+            raise RuntimeError("server-side bond adaptive line admission must be enabled")
+
+        def bounded_number(
+            name: str,
+            default: int | float,
+            minimum: int | float,
+            maximum: int | float,
+            *,
+            integer: bool = False,
+        ) -> int | float:
+            value = raw.get(name, default)
+            if isinstance(value, bool):
+                raise RuntimeError(f"invalid server-side bond setting: {name}")
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"invalid server-side bond setting: {name}") from exc
+            if not math.isfinite(numeric) or numeric < minimum or numeric > maximum:
+                raise RuntimeError(f"server-side bond setting out of range: {name}")
+            if integer:
+                if not numeric.is_integer():
+                    raise RuntimeError(f"server-side bond setting must be an integer: {name}")
+                return int(numeric)
+            return numeric
+
+        preferred_initial_legs = int(
+            bounded_number("preferred_initial_legs", len(leg_route_ids), 2, len(leg_route_ids), integer=True)
+        )
+        minimum_initial_legs = int(
+            bounded_number("minimum_initial_legs", min(2, preferred_initial_legs), 1, preferred_initial_legs, integer=True)
+        )
+        reconnect_backoff_ms = int(
+            bounded_number("leg_reconnect_backoff_ms", 5000, 100, 3_600_000, integer=True)
+        )
+        reconnect_backoff_max_ms = int(
+            bounded_number(
+                "leg_reconnect_backoff_max_ms",
+                60_000,
+                reconnect_backoff_ms,
+                3_600_000,
+                integer=True,
+            )
+        )
+        settings = {
+            "throughput_min_mbps": bounded_number("throughput_min_mbps", 10.0, 0.001, 10_000.0),
+            "throughput_relative_floor": bounded_number("throughput_relative_floor", 0.35, 0.001, 1.0),
+            "throughput_min_sample_bytes": bounded_number(
+                "throughput_min_sample_bytes", 1_048_576, 1, 64 * 1024 * 1024, integer=True
+            ),
+            "throughput_min_sample_ms": bounded_number(
+                "throughput_min_sample_ms", 1000, 1, 300_000, integer=True
+            ),
+            "throughput_bad_windows": bounded_number("throughput_bad_windows", 3, 1, 100, integer=True),
+            "throughput_recovery_windows": bounded_number(
+                "throughput_recovery_windows", 2, 1, 100, integer=True
+            ),
+            "throughput_quarantine_ms": bounded_number(
+                "throughput_quarantine_ms", 60_000, 1, 86_400_000, integer=True
+            ),
+            "throughput_probe_interval_ms": bounded_number(
+                "throughput_probe_interval_ms", 30_000, 1, 86_400_000, integer=True
+            ),
+            "throughput_probe_bytes": bounded_number(
+                "throughput_probe_bytes", 1_048_576, 1, 64 * 1024 * 1024, integer=True
+            ),
+        }
+        return {
+            "service_name": self.server_side_bond_service_name(service_name),
+            "frontend_port": frontend_port,
+            "relay_port": relay_port,
+            "leg_relay_target": leg_relay_target,
+            "sidecar_target": sidecar_target,
+            "leg_route_ids": leg_route_ids,
+            "session_token": session_token,
+            "session_token_sha256": hashlib.sha256(session_token.encode()).hexdigest(),
+            "adaptive_line_admission": True,
+            "preferred_initial_legs": preferred_initial_legs,
+            "minimum_initial_legs": minimum_initial_legs,
+            "initial_leg_wait_ms": int(
+                bounded_number("initial_leg_wait_ms", 3000, 1, 60_000, integer=True)
+            ),
+            "leg_reconnect_backoff_ms": reconnect_backoff_ms,
+            "leg_reconnect_backoff_max_ms": reconnect_backoff_max_ms,
+            "warmup_leg_delay_ms": int(
+                bounded_number("warmup_leg_delay_ms", 20, 1, 10_000, integer=True)
+            ),
+            "leg_cooldown_ms": int(
+                bounded_number("leg_cooldown_ms", 20_000, 1, 86_400_000, integer=True)
+            ),
+            **settings,
+        }
+
     def validate_leigod_forward_payload(
         self,
         service_name: str,
@@ -4140,6 +4322,115 @@ WantedBy=multi-user.target
         if changed and shutil.which("systemctl"):
             run_command("systemctl daemon-reload", check=False)
 
+    @staticmethod
+    def server_side_bond_metadata(runtime: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "service_name": str(runtime.get("service_name", "") or ""),
+            "aggregation_placement": "slave_sidecar",
+            "frontend_port": int(runtime.get("frontend_port", 0) or 0),
+            "relay_port": int(runtime.get("relay_port", 0) or 0),
+            "leg_relay_target": str(runtime.get("leg_relay_target", "") or ""),
+            "sidecar_target": str(runtime.get("sidecar_target", "") or ""),
+            "leg_route_ids": [int(value) for value in runtime.get("leg_route_ids", [])],
+            "session_token_present": bool(str(runtime.get("session_token", "") or "")),
+            "session_token_sha256": str(runtime.get("session_token_sha256", "") or ""),
+            "adaptive_line_admission": bool(runtime.get("adaptive_line_admission", False)),
+            "throughput_min_mbps": float(runtime.get("throughput_min_mbps", 0) or 0),
+            "throughput_relative_floor": float(runtime.get("throughput_relative_floor", 0) or 0),
+            "throughput_min_sample_bytes": int(runtime.get("throughput_min_sample_bytes", 0) or 0),
+            "throughput_min_sample_ms": int(runtime.get("throughput_min_sample_ms", 0) or 0),
+            "throughput_bad_windows": int(runtime.get("throughput_bad_windows", 0) or 0),
+            "throughput_recovery_windows": int(runtime.get("throughput_recovery_windows", 0) or 0),
+            "throughput_quarantine_ms": int(runtime.get("throughput_quarantine_ms", 0) or 0),
+            "throughput_probe_interval_ms": int(runtime.get("throughput_probe_interval_ms", 0) or 0),
+            "throughput_probe_bytes": int(runtime.get("throughput_probe_bytes", 0) or 0),
+        }
+
+    def render_server_side_bond_unit(self, service_name: str, runtime: dict[str, Any]) -> str:
+        bond_service = self.server_side_bond_service_name(service_name)
+        relay_service = self.leigod_forward_service_name(service_name)
+        bond_bin = str(self.config.get("bond_bin", "/usr/local/bin/leikwan-bond") or "/usr/local/bin/leikwan-bond")
+        credential_path = self.server_side_bond_credential_path(service_name)
+        relay_port = int(runtime["relay_port"])
+        legs = ",".join(
+            f"tcp://127.0.0.1:{relay_port}?leg_route_id={int(route_id)}"
+            for route_id in runtime["leg_route_ids"]
+        )
+        return f"""[Unit]
+Description=Leikwan Server-Side LeiGod Bond {bond_service}
+After=network-online.target {relay_service}.service
+Requires={relay_service}.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile={credential_path}
+ExecStart={bond_bin} client --protocol tcp --listen 127.0.0.1:{int(runtime['frontend_port'])} --legs {shell_arg(legs)} --session-token ${{BOND_SESSION_TOKEN}} --default-strategy speed_max --preferred-initial-legs {int(runtime['preferred_initial_legs'])} --minimum-initial-legs {int(runtime['minimum_initial_legs'])} --initial-leg-wait-ms {int(runtime['initial_leg_wait_ms'])} --leg-reconnect-backoff-ms {int(runtime['leg_reconnect_backoff_ms'])} --leg-reconnect-backoff-max-ms {int(runtime['leg_reconnect_backoff_max_ms'])} --warmup-leg-delay-ms {int(runtime['warmup_leg_delay_ms'])} --leg-cooldown-ms {int(runtime['leg_cooldown_ms'])} --adaptive-line-admission --throughput-min-mbps {float(runtime['throughput_min_mbps'])} --throughput-relative-floor {float(runtime['throughput_relative_floor'])} --throughput-min-sample-bytes {int(runtime['throughput_min_sample_bytes'])} --throughput-min-sample-ms {int(runtime['throughput_min_sample_ms'])} --throughput-bad-windows {int(runtime['throughput_bad_windows'])} --throughput-recovery-windows {int(runtime['throughput_recovery_windows'])} --throughput-quarantine-ms {int(runtime['throughput_quarantine_ms'])} --throughput-probe-interval-ms {int(runtime['throughput_probe_interval_ms'])} --throughput-probe-bytes {int(runtime['throughput_probe_bytes'])}
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    def ensure_server_side_bond_runtime(self, service_name: str, runtime: dict[str, Any]) -> None:
+        bond_bin = Path(
+            str(self.config.get("bond_bin", "/usr/local/bin/leikwan-bond") or "/usr/local/bin/leikwan-bond")
+        )
+        if not bond_bin.is_file() or not os.access(bond_bin, os.X_OK):
+            raise RuntimeError(f"server-side bond binary is missing or not executable: {bond_bin}")
+        credential_path = self.server_side_bond_credential_path(service_name)
+        credential_changed = self.write_text_if_changed(
+            credential_path,
+            f"BOND_SESSION_TOKEN={runtime['session_token']}\n",
+        )
+        try:
+            os.chmod(credential_path, 0o600)
+        except OSError as exc:
+            raise RuntimeError(f"failed to secure server-side bond credentials: {credential_path}") from exc
+        bond_service = self.server_side_bond_service_name(service_name)
+        unit_path = self.service_unit_path(bond_service)
+        unit_changed = self.write_text_if_changed(
+            unit_path,
+            self.render_server_side_bond_unit(service_name, runtime),
+        )
+        self.ensure_backend_service(
+            bond_service,
+            unit_changed or credential_changed,
+            expected_exec_substring="leikwan-bond client",
+        )
+
+    def remove_server_side_bond_runtime(
+        self,
+        service_name: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        detail = (metadata or {}).get("server_side_bond", {}) if isinstance(metadata, dict) else {}
+        bond_service = str((detail if isinstance(detail, dict) else {}).get("service_name", "") or "")
+        if bond_service == "":
+            bond_service = self.server_side_bond_service_name(service_name)
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop {bond_service}.service", check=False)
+            run_command(f"systemctl disable {bond_service}.service", check=False)
+            run_command(f"systemctl reset-failed {bond_service}.service", check=False)
+        changed = False
+        for path in (
+            self.service_unit_path(bond_service),
+            self.server_side_bond_credential_path(service_name),
+        ):
+            if path.exists():
+                with contextlib.suppress(OSError):
+                    path.unlink()
+                    changed = True
+        if changed and shutil.which("systemctl"):
+            run_command("systemctl daemon-reload", check=False)
+
     def collect_leigod_forward_selections(self) -> list[dict[str, Any]]:
         selections: list[dict[str, Any]] = []
         for metadata in sorted(
@@ -4228,13 +4519,34 @@ WantedBy=multi-user.target
             target = f"127.0.0.1:{int(sidecar_uplink_selector.get('selector_port', 0) or 0)}"
         publish_bond_runtime = bool(payload.get("publish_bond_runtime", False)) or ingress_protocol == "plain_tcp_mux"
         metadata_path = self.metadata_path(service_name)
-        leigod_forward = self.validate_leigod_forward_payload(service_name, task, payload, target)
+        server_side_bond = self.validate_server_side_bond_payload(service_name, payload, target)
+        leigod_runtime_target = (
+            str(server_side_bond["leg_relay_target"])
+            if server_side_bond is not None
+            else target
+        )
+        leigod_forward = self.validate_leigod_forward_payload(
+            service_name,
+            task,
+            payload,
+            leigod_runtime_target,
+        )
 
         self.cleanup_superseded_services_for_forward(int(task["forward_id"]), service_name)
+        existing = self.load_service_metadata(service_name) or {}
+        previous_public_port = int(existing.get("listen_port", 0) or 0)
+        if server_side_bond is not None and existing:
+            provisioning = dict(existing)
+            provisioning["status"] = "provisioning"
+            self.write_json(metadata_path, provisioning)
+            if shutil.which("systemctl"):
+                run_command(f"systemctl stop {service_name}.service", check=False)
+            if previous_public_port > 0:
+                self.sync_listener(previous_public_port)
 
         if mptcp_underlay and mptcp_underlay.get("enabled") and not publish_bond_runtime:
-            if leigod_forward is not None:
-                raise RuntimeError("leigod_forward is incompatible with underlay-only publish")
+            if leigod_forward is not None or server_side_bond is not None:
+                raise RuntimeError("leigod forwarding is incompatible with underlay-only publish")
             metadata = {
                 "service_name": service_name,
                 "service_id": int(task["service_id"]),
@@ -4291,14 +4603,16 @@ WantedBy=multi-user.target
         relay_client_unit_path = self.service_unit_path(relay_client_name)
         metadata_path = self.metadata_path(service_name)
 
-        existing = self.load_service_metadata(service_name) or {}
-        previous_public_port = int(existing.get("listen_port", 0) or 0)
         backend_port = int(existing.get("backend_port", 0) or 0)
         relay_client_port = int(existing.get("relay_client_port", 0) or 0)
         if leigod_forward is not None:
             self.ensure_leigod_forward_runtime(service_name, leigod_forward)
         elif isinstance(existing.get("leigod_forward"), dict) and existing.get("leigod_forward"):
             self.remove_leigod_forward_runtime(service_name, existing)
+        if server_side_bond is not None:
+            self.ensure_server_side_bond_runtime(service_name, server_side_bond)
+        elif isinstance(existing.get("server_side_bond"), dict) and existing.get("server_side_bond"):
+            self.remove_server_side_bond_runtime(service_name, existing)
 
         self.ensure_listener_route_available(public_port, path_prefix, service_name)
         if self.backend_port_needs_reallocation(service_name, backend_port):
@@ -4405,6 +4719,11 @@ WantedBy=multi-user.target
             "sidecar_uplink": sidecar_uplink,
             "sidecar_uplink_selector": sidecar_uplink_selector,
             "leigod_forward": leigod_forward or {},
+            "server_side_bond": (
+                self.server_side_bond_metadata(server_side_bond)
+                if server_side_bond is not None
+                else {}
+            ),
             "filter_profile": str(payload.get("filter_profile", "off")),
             "status": "active",
         }
@@ -4511,6 +4830,9 @@ WantedBy=multi-user.target
             "leigod_forward_service_name": (
                 str(leigod_forward.get("service_name", "")) if leigod_forward is not None else None
             ),
+            "server_side_bond_service_name": (
+                str(server_side_bond.get("service_name", "")) if server_side_bond is not None else None
+            ),
         }
 
     def stop_service(self, task: dict[str, Any], keep_files: bool) -> dict[str, Any]:
@@ -4532,6 +4854,7 @@ WantedBy=multi-user.target
                 metadata["status"] = "suspended"
                 if service_name == base_service_name:
                     metadata["leigod_forward"] = {}
+                    metadata["server_side_bond"] = {}
                 self.write_json(self.metadata_path(service_name), metadata)
 
         base_targeted = base_service_name in service_names
@@ -4545,6 +4868,7 @@ WantedBy=multi-user.target
                 run_command(f"systemctl stop {relay_client_name}.service", check=False)
                 run_command(f"systemctl disable {relay_client_name}.service", check=False)
         if base_targeted:
+            self.remove_server_side_bond_runtime(base_service_name, base_metadata)
             self.remove_leigod_forward_runtime(base_service_name, base_metadata)
             self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
             self.remove_published_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
@@ -4605,6 +4929,7 @@ WantedBy=multi-user.target
                 run_command(f"systemctl stop {relay_client_name}.service", check=False)
                 run_command(f"systemctl disable {relay_client_name}.service", check=False)
         if base_targeted:
+            self.remove_server_side_bond_runtime(base_service_name, base_metadata)
             self.remove_leigod_forward_runtime(base_service_name, base_metadata)
             self.remove_sidecar_uplink_selector(base_service_name)
             self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
@@ -4930,6 +5255,11 @@ WantedBy=multi-user.target
                 relay_port = int(leigod_forward.get("relay_port", 0) or 0)
                 if relay_port > 0:
                     ports.add(relay_port)
+            server_side_bond = metadata.get("server_side_bond", {})
+            if isinstance(server_side_bond, dict):
+                frontend_port = int(server_side_bond.get("frontend_port", 0) or 0)
+                if frontend_port > 0:
+                    ports.add(frontend_port)
         return ports
 
     @staticmethod
