@@ -7,7 +7,7 @@ use crate::session::{
     ClientTransportRuntime, SessionConfig,
 };
 use crate::strategy::ClientStrategy;
-use crate::transport::{LegDial, LegSpec, parse_leg_spec};
+use crate::transport::{parse_leg_spec, LegDial, LegSpec};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -32,6 +32,8 @@ const MAX_TOTAL_LEGS: usize = 256;
 const MAX_AUTH_REFS: usize = 256;
 const MAX_WINDOW_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TOTAL_WINDOW_BYTES: usize = 128 * 1024 * 1024;
+const DEFAULT_LOCAL_SOCKS_PORT_MIN: u16 = 20_000;
+const DEFAULT_LOCAL_SOCKS_PORT_MAX: u16 = 29_999;
 #[cfg(not(test))]
 const LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
@@ -86,6 +88,31 @@ pub struct ProviderSpec {
     pub binary: PathBuf,
     pub session_json: SecretString,
     pub session_sha256: String,
+    #[serde(default = "default_local_socks_port_min")]
+    pub local_socks_port_min: u16,
+    #[serde(default = "default_local_socks_port_max")]
+    pub local_socks_port_max: u16,
+}
+
+fn default_local_socks_port_min() -> u16 {
+    DEFAULT_LOCAL_SOCKS_PORT_MIN
+}
+
+fn default_local_socks_port_max() -> u16 {
+    DEFAULT_LOCAL_SOCKS_PORT_MAX
+}
+
+impl ProviderSpec {
+    pub(crate) fn validate_local_socks_range(&self) -> Result<()> {
+        if self.local_socks_port_min == 0 || self.local_socks_port_min > self.local_socks_port_max {
+            bail!("local SOCKS port range is invalid");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn allows_local_socks_port(&self, port: u16) -> bool {
+        (self.local_socks_port_min..=self.local_socks_port_max).contains(&port)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -168,7 +195,10 @@ impl DesiredLegSpec {
         let runtime_uri = self.runtime_uri()?;
         let spec = parse_leg_spec(&runtime_uri)?;
         if spec.leg_route_id != Some(self.leg_route_id) {
-            bail!("leg route metadata does not match route {}", self.leg_route_id);
+            bail!(
+                "leg route metadata does not match route {}",
+                self.leg_route_id
+            );
         }
         match spec.dial.clone() {
             LegDial::Socks5 {
@@ -405,6 +435,7 @@ impl DesiredState {
             bail!("provider runtime material is incomplete");
         }
         validate_sha256("provider session", &self.provider.session_sha256)?;
+        self.provider.validate_local_socks_range()?;
 
         if self.local_leases.len() > MAX_LOCAL_LEASES || self.forwards.len() > MAX_FORWARDS {
             bail!("desired state exceeds managed object limits");
@@ -424,6 +455,7 @@ impl DesiredState {
 
         let mut local_lines = HashSet::new();
         let mut local_fences = HashMap::new();
+        let mut local_sockets = Vec::new();
         for lease in &self.local_leases {
             if lease.line_id == 0 || !local_lines.insert(lease.line_id) {
                 bail!("local physical line must be positive and unique");
@@ -436,9 +468,21 @@ impl DesiredState {
             if lease.config_toml.is_empty() || lease.expires_at_unix <= now_unix {
                 bail!("local line material is empty or expired");
             }
-            if !lease.socks_addr.ip().is_loopback() || lease.socks_addr.port() == 0 {
+            if !lease.socks_addr.ip().is_loopback()
+                || !self
+                    .provider
+                    .allows_local_socks_port(lease.socks_addr.port())
+            {
                 bail!("local line endpoint must be a loopback socket");
             }
+            if local_sockets
+                .iter()
+                .copied()
+                .any(|active| listeners_conflict(active, lease.socks_addr))
+            {
+                bail!("local line endpoints conflict");
+            }
+            local_sockets.push(lease.socks_addr);
             local_fences.insert(
                 lease.line_id,
                 (
@@ -465,8 +509,12 @@ impl DesiredState {
                     .iter()
                     .copied()
                     .any(|active| listeners_conflict(active, forward.listen))
+                || local_sockets
+                    .iter()
+                    .copied()
+                    .any(|active| listeners_conflict(active, forward.listen))
             {
-                bail!("forward listeners must be nonzero and unique");
+                bail!("forward listeners must be nonzero, unique, and separate from local lines");
             }
             listeners.push(forward.listen);
             if forward.egress.port() == 0 || forward.egress.ip().is_unspecified() {
@@ -496,6 +544,11 @@ impl DesiredState {
                 validate_fence(&leg.lease_id, leg.lease_generation)?;
                 if leg.execution_group.trim().is_empty() {
                     bail!("leg execution group is empty");
+                }
+                if local_fences.contains_key(&leg.line_id)
+                    && !leg.execution_group.starts_with("client:")
+                {
+                    bail!("local physical line cannot use node execution authority");
                 }
                 execution_groups.insert(leg.execution_group.as_str());
                 let authority = (
@@ -581,6 +634,37 @@ fn valid_auth_ref(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+
+fn desired_line_fences(desired: &DesiredState) -> Result<HashMap<u32, (String, u64)>> {
+    let mut fences = HashMap::new();
+    for (line_id, lease_id, generation) in desired
+        .local_leases
+        .iter()
+        .map(|lease| {
+            (
+                lease.line_id,
+                lease.lease_id.as_str(),
+                lease.lease_generation,
+            )
+        })
+        .chain(desired.forwards.iter().flat_map(|forward| {
+            forward
+                .legs
+                .iter()
+                .map(|leg| (leg.line_id, leg.lease_id.as_str(), leg.lease_generation))
+        }))
+    {
+        let fence = (lease_id.to_ascii_lowercase(), generation);
+        if let Some(existing) = fences.get(&line_id) {
+            if existing != &fence {
+                bail!("physical line contains conflicting lease fences");
+            }
+        } else {
+            fences.insert(line_id, fence);
+        }
+    }
+    Ok(fences)
 }
 
 fn listeners_conflict(left: SocketAddr, right: SocketAddr) -> bool {
@@ -728,6 +812,7 @@ pub struct PathDaemon {
     line_paths: LineRuntimePaths,
     lines: HashMap<u32, LineRuntime>,
     line_restart_failures: HashMap<String, (u32, Instant)>,
+    line_fence_watermarks: HashMap<u32, (String, u64)>,
 }
 
 impl PathDaemon {
@@ -753,6 +838,7 @@ impl PathDaemon {
             line_paths: LineRuntimePaths::new(runtime_root),
             lines: HashMap::new(),
             line_restart_failures: HashMap::new(),
+            line_fence_watermarks: HashMap::new(),
         }
     }
 
@@ -761,11 +847,11 @@ impl PathDaemon {
     }
 
     pub async fn enforce_expiry(&mut self) -> Result<bool> {
-        let Some(desired) = self.desired.as_ref() else {
+        let Some(active_desired) = self.desired.as_ref() else {
             return Ok(false);
         };
         let now = unix_now_i64()?;
-        let expired_lines: HashSet<u32> = desired
+        let expired_lines: HashSet<u32> = active_desired
             .local_leases
             .iter()
             .filter(|lease| lease.expires_at_unix <= now)
@@ -775,37 +861,42 @@ impl PathDaemon {
             return Ok(false);
         }
 
-        let expired_forwards: Vec<u64> = desired
+        let mut degraded = active_desired.clone();
+        degraded
+            .local_leases
+            .retain(|lease| !expired_lines.contains(&lease.line_id));
+        for forward in &mut degraded.forwards {
+            forward.legs.retain(|leg| {
+                !(leg.execution_group.starts_with("client:")
+                    && expired_lines.contains(&leg.line_id))
+            });
+        }
+        degraded.forwards.retain(|forward| !forward.legs.is_empty());
+        let wanted_forwards = degraded
             .forwards
             .iter()
-            .filter(|forward| {
-                forward.legs.iter().any(|leg| {
-                    leg.execution_group.starts_with("client:")
-                        && expired_lines.contains(&leg.line_id)
-                })
-            })
             .map(|forward| forward.forward_id)
-            .collect();
-        let expired_forwards = expired_forwards
-            .into_iter()
-            .filter_map(|forward_id| self.forwards.remove(&forward_id))
-            .collect();
-        stop_forwards(expired_forwards).await;
-        let expired_runtimes = expired_lines
-            .into_iter()
-            .filter_map(|line_id| self.lines.remove(&line_id))
-            .collect();
-        stop_lines(expired_runtimes).await;
-        if self.lines.is_empty() {
-            let _ = self.line_paths.cleanup_secrets();
+            .collect::<HashSet<_>>();
+        let mut configs = self.active_configs.clone();
+        configs.retain(|forward_id, _| wanted_forwards.contains(forward_id));
+
+        if let Err(error) = self.reconcile_runtime(&degraded, &configs).await {
+            self.fail_closed().await;
+            let _ = self.write_status_for(0, "degraded").await;
+            return Err(error).context("failed to remove expired local lanes from active forwards");
         }
+        self.prune_lines(&degraded).await;
         self.write_status_for(self.generation, "degraded").await?;
+        self.desired = Some(degraded);
+        self.active_configs = configs;
         Ok(true)
     }
 
     pub async fn apply(&mut self, desired: DesiredState) -> Result<()> {
         let now = unix_now_i64()?;
         let validated = desired.validate_at(now)?;
+        let desired_fences = desired_line_fences(&validated.desired)?;
+        self.reject_stale_line_fences(&desired_fences)?;
         if validated.desired.generation < self.generation {
             bail!("desired generation is older than the active generation");
         }
@@ -817,6 +908,8 @@ impl PathDaemon {
 
         let previous_desired = self.desired.clone();
         let previous_configs = self.active_configs.clone();
+        let changed_lines = self.changed_line_ids(&validated.desired);
+        self.drain_forwards_referencing_lines(&changed_lines).await;
         if let Err(line_error) = self.reconcile_lines_start(&validated.desired).await {
             self.restore_or_fail_closed(previous_desired.as_ref(), &previous_configs)
                 .await
@@ -824,6 +917,16 @@ impl PathDaemon {
                     format!("line reconcile failed and previous generation could not be restored: {line_error:#}")
                 })?;
             return Err(line_error);
+        }
+        if let Err(readiness_error) = self.verify_required_local_lines(&validated.desired).await {
+            self.restore_or_fail_closed(previous_desired.as_ref(), &previous_configs)
+                .await
+                .with_context(|| {
+                    format!(
+                        "local line readiness failed and previous generation could not be restored: {readiness_error:#}"
+                    )
+                })?;
+            return Err(readiness_error);
         }
         if let Err(reconcile_error) = self
             .reconcile_runtime(&validated.desired, &validated.session_configs)
@@ -851,9 +954,62 @@ impl PathDaemon {
         }
 
         self.generation = validated.desired.generation;
+        self.line_fence_watermarks.extend(desired_fences);
         self.desired = Some(validated.desired);
         self.active_configs = validated.session_configs;
         Ok(())
+    }
+
+    fn reject_stale_line_fences(&self, desired_fences: &HashMap<u32, (String, u64)>) -> Result<()> {
+        for (line_id, (lease_id, generation)) in desired_fences {
+            if let Some((observed_lease_id, observed_generation)) =
+                self.line_fence_watermarks.get(line_id)
+            {
+                if *generation < *observed_generation
+                    || (*generation == *observed_generation
+                        && !lease_id.eq_ignore_ascii_case(observed_lease_id))
+                {
+                    bail!("physical line lease fence is older than the observed watermark");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn changed_line_ids(&mut self, desired: &DesiredState) -> HashSet<u32> {
+        desired
+            .local_leases
+            .iter()
+            .filter_map(|lease| {
+                let unchanged = self
+                    .lines
+                    .get_mut(&lease.line_id)
+                    .map(|runtime| runtime.matches(lease, &desired.provider))
+                    .unwrap_or(false);
+                (!unchanged).then_some(lease.line_id)
+            })
+            .collect()
+    }
+
+    async fn drain_forwards_referencing_lines(&mut self, line_ids: &HashSet<u32>) {
+        if line_ids.is_empty() {
+            return;
+        }
+        let affected = self
+            .forwards
+            .iter()
+            .filter(|(_, running)| {
+                running.spec.legs.iter().any(|leg| {
+                    leg.execution_group.starts_with("client:") && line_ids.contains(&leg.line_id)
+                })
+            })
+            .map(|(forward_id, _)| *forward_id)
+            .collect::<Vec<_>>();
+        let affected = affected
+            .into_iter()
+            .filter_map(|forward_id| self.forwards.remove(&forward_id))
+            .collect();
+        stop_forwards(affected).await;
     }
 
     async fn reconcile_runtime(
@@ -872,9 +1028,7 @@ impl PathDaemon {
                 .forwards
                 .get(&spec.forward_id)
                 .map(|running| {
-                    auth_refs_unchanged
-                        && &running.spec == spec
-                        && !running.handle.is_finished()
+                    auth_refs_unchanged && &running.spec == spec && !running.handle.is_finished()
                 })
                 .unwrap_or(false)
             {
@@ -964,6 +1118,8 @@ impl PathDaemon {
                 binary: PathBuf::from("/disabled"),
                 session_json: SecretString(String::from("disabled")),
                 session_sha256: String::new(),
+                local_socks_port_min: DEFAULT_LOCAL_SOCKS_PORT_MIN,
+                local_socks_port_max: DEFAULT_LOCAL_SOCKS_PORT_MAX,
             },
             auth_refs: HashMap::new(),
             local_leases: Vec::new(),
@@ -991,6 +1147,51 @@ impl PathDaemon {
         self.generation = 0;
         self.desired = None;
         self.active_configs.clear();
+    }
+
+    async fn verify_required_local_lines(&mut self, desired: &DesiredState) -> Result<()> {
+        let required = desired
+            .forwards
+            .iter()
+            .flat_map(|forward| forward.legs.iter())
+            .filter(|leg| leg.execution_group.starts_with("client:"))
+            .map(|leg| leg.line_id)
+            .collect::<HashSet<_>>();
+        if required.is_empty() {
+            return Ok(());
+        }
+
+        let deadline = tokio::time::Instant::now() + LISTENER_READY_TIMEOUT;
+        let mut probes = tokio::task::JoinSet::new();
+        for line_id in &required {
+            let runtime = self
+                .lines
+                .get_mut(line_id)
+                .ok_or_else(|| anyhow!("required local line runtime is missing"))?;
+            if !runtime.is_alive() {
+                bail!("required local line provider process exited before readiness");
+            }
+            let line_id = *line_id;
+            let socks_addr = runtime.socks_addr();
+            probes.spawn(async move {
+                wait_for_tcp_ready(socks_addr, deadline)
+                    .await
+                    .map(|()| line_id)
+            });
+        }
+        while let Some(joined) = probes.join_next().await {
+            joined.context("local line readiness probe task failed")??;
+        }
+        for line_id in required {
+            if !self
+                .lines
+                .get_mut(&line_id)
+                .is_some_and(LineRuntime::is_alive)
+            {
+                bail!("required local line provider process exited during readiness");
+            }
+        }
+        Ok(())
     }
 
     async fn reconcile_lines_start(&mut self, desired: &DesiredState) -> Result<()> {
@@ -1124,6 +1325,15 @@ impl PathDaemon {
             local_lines.push(joined.context("local line status probe task failed")?.1);
         }
         local_lines.sort_by_key(|line| line.line_id);
+        let status = if status == "ready"
+            && local_lines
+                .iter()
+                .any(|line| line.service_state != "active" || line.tcp_status != "ok")
+        {
+            "degraded"
+        } else {
+            status
+        };
         let forwards = self
             .forwards
             .iter()
@@ -1272,6 +1482,23 @@ async fn stop_lines(lines: Vec<LineRuntime>) {
     }
 }
 
+async fn wait_for_tcp_ready(address: SocketAddr, deadline: tokio::time::Instant) -> Result<()> {
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            bail!("local line SOCKS endpoint did not become reachable");
+        }
+        let attempt_timeout = (deadline - now).min(Duration::from_millis(100));
+        if matches!(
+            timeout(attempt_timeout, tokio::net::TcpStream::connect(address)).await,
+            Ok(Ok(_))
+        ) {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 async fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
     write_private_atomic(path, contents)
 }
@@ -1343,7 +1570,7 @@ mod tests {
         }
 
         async fn start_with_ack_delay(ack_delay: Duration) -> Self {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let listener = bind_local_socks_listener().await;
             let provider = FakeProvider::start();
             let addr = listener.local_addr().unwrap();
             let cancel = CancellationToken::new();
@@ -1410,6 +1637,15 @@ mod tests {
     fn free_loopback_addr() -> SocketAddr {
         let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
         listener.local_addr().unwrap()
+    }
+
+    async fn bind_local_socks_listener() -> tokio::net::TcpListener {
+        for port in DEFAULT_LOCAL_SOCKS_PORT_MIN..=DEFAULT_LOCAL_SOCKS_PORT_MAX {
+            if let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                return listener;
+            }
+        }
+        panic!("no free local SOCKS test port");
     }
 
     fn temp_status_path() -> PathBuf {
@@ -1534,22 +1770,18 @@ mod tests {
         desired.validate_at(1_900_000_000).unwrap();
 
         value["auth_refs"] = serde_json::json!({});
-        assert!(
-            serde_json::from_value::<DesiredState>(value.clone())
-                .unwrap()
-                .validate_at(1_900_000_000)
-                .is_err()
-        );
+        assert!(serde_json::from_value::<DesiredState>(value.clone())
+            .unwrap()
+            .validate_at(1_900_000_000)
+            .is_err());
 
         value["auth_refs"] = serde_json::json!({"slave-316": "opaque-ingress-secret"});
         value["forwards"][0]["legs"][0]["uri"] =
             "socks5://127.0.0.1:20451?leg_route_id=451&line_id=999&lease_generation=7".into();
-        assert!(
-            serde_json::from_value::<DesiredState>(value)
-                .unwrap()
-                .validate_at(1_900_000_000)
-                .is_err()
-        );
+        assert!(serde_json::from_value::<DesiredState>(value)
+            .unwrap()
+            .validate_at(1_900_000_000)
+            .is_err());
     }
 
     #[test]
@@ -1677,11 +1909,60 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn configured_local_socks_range_and_socket_collisions_are_rejected() {
+        let mut outside_range = valid_json();
+        outside_range["provider"]["local_socks_port_min"] = 24_000.into();
+        outside_range["provider"]["local_socks_port_max"] = 24_999.into();
+        outside_range["local_leases"][0]["socks_addr"] = "127.0.0.1:20451".into();
+        let desired: DesiredState = serde_json::from_value(outside_range).unwrap();
+        assert!(desired.validate_at(1_900_000_000).is_err());
+
+        let mut duplicate_socket = valid_json();
+        let mut second = duplicate_socket["local_leases"][0].clone();
+        second["line_id"] = 999.into();
+        second["lease_id"] = "00000000-0000-4000-8000-000000000999".into();
+        duplicate_socket["local_leases"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        assert!(serde_json::from_value::<DesiredState>(duplicate_socket)
+            .unwrap()
+            .validate_at(1_900_000_000)
+            .is_err());
+
+        let mut listener_collision = valid_json();
+        listener_collision["forwards"][0]["listen"] = "127.0.0.1:20451".into();
+        assert!(serde_json::from_value::<DesiredState>(listener_collision)
+            .unwrap()
+            .validate_at(1_900_000_000)
+            .is_err());
+    }
+
+    #[test]
+    fn unused_local_lease_still_blocks_node_authority_for_the_same_line() {
+        let mut value = valid_json();
+        let mut unused_local = value["local_leases"][0].clone();
+        unused_local["line_id"] = 999.into();
+        unused_local["lease_id"] = "00000000-0000-4000-8000-000000000999".into();
+        unused_local["socks_addr"] = "127.0.0.1:20999".into();
+        value["local_leases"]
+            .as_array_mut()
+            .unwrap()
+            .push(unused_local);
+        value["forwards"][0]["legs"][1]["line_id"] = 999.into();
+
+        assert!(serde_json::from_value::<DesiredState>(value)
+            .unwrap()
+            .validate_at(1_900_000_000)
+            .is_err());
+    }
+
     #[tokio::test]
     async fn daemon_does_not_report_ready_without_initial_leg_quorum() {
         let provider = FakeProvider::start();
         let listen = free_loopback_addr();
-        let unreachable = free_loopback_addr();
+        let unreachable: SocketAddr = "127.0.0.2:29998".parse().unwrap();
         let status_path = temp_status_path();
         let mut value = valid_json();
         provider.attach(&mut value);
@@ -1700,6 +1981,63 @@ mod tests {
         assert_eq!(0, daemon.generation());
         assert!(!status_path.exists());
         provider.stop();
+    }
+
+    #[tokio::test]
+    async fn referenced_local_line_must_be_reachable_before_forward_ready() {
+        let server = FakeLegServer::start().await;
+        let listen = free_loopback_addr();
+        let unreachable_socks: SocketAddr = "127.0.0.2:29999".parse().unwrap();
+        let status_path = temp_status_path();
+        let mut value = valid_json();
+        server.attach(&mut value);
+        value["forwards"][0]["listen"] = listen.to_string().into();
+        value["local_leases"][0]["socks_addr"] = unreachable_socks.to_string().into();
+        value["forwards"][0]["legs"][0]["uri"] =
+            format!("socks5://{unreachable_socks}?leg_route_id=451&line_id=451&lease_generation=7")
+                .into();
+        value["forwards"][0]["policy"]["preferred_initial_legs"] = 1.into();
+        value["forwards"][0]["policy"]["minimum_initial_legs"] = 1.into();
+        let mut daemon = test_daemon(&status_path);
+
+        assert!(daemon
+            .apply(serde_json::from_value(value).unwrap())
+            .await
+            .is_err());
+        assert_eq!(0, daemon.generation());
+        assert!(tokio::net::TcpStream::connect(listen).await.is_err());
+
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn higher_desired_generation_cannot_roll_back_a_line_fence() {
+        let server = FakeLegServer::start().await;
+        let listen = free_loopback_addr();
+        let status_path = temp_status_path();
+        let mut initial = valid_json();
+        server.attach(&mut initial);
+        initial["forwards"][0]["listen"] = listen.to_string().into();
+        let mut daemon = test_daemon(&status_path);
+        daemon
+            .apply(serde_json::from_value(initial.clone()).unwrap())
+            .await
+            .unwrap();
+
+        initial["generation"] = 43.into();
+        initial["local_leases"][0]["lease_generation"] = 6.into();
+        initial["forwards"][0]["legs"][0]["lease_generation"] = 6.into();
+        assert!(daemon
+            .apply(serde_json::from_value(initial).unwrap())
+            .await
+            .is_err());
+        assert_eq!(42, daemon.generation());
+        assert_eq!(7, daemon.lines.get(&451).unwrap().lease_generation());
+        tokio::net::TcpStream::connect(listen).await.unwrap();
+
+        daemon.shutdown().await.unwrap();
+        let _ = tokio::fs::remove_file(status_path).await;
+        server.stop().await;
     }
 
     #[tokio::test]
@@ -1726,7 +2064,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_lease_stops_new_sessions_before_line_cleanup() {
+    async fn expired_local_lease_keeps_the_slave_forward_listener_available() {
         let server = FakeLegServer::start().await;
         let listen = free_loopback_addr();
         let status_path = temp_status_path();
@@ -1742,9 +2080,12 @@ mod tests {
             unix_now_i64().unwrap() - 1;
 
         assert!(daemon.enforce_expiry().await.unwrap());
-        assert!(daemon.forwards.is_empty());
+        assert_eq!(1, daemon.forwards.len());
+        let running = daemon.forwards.get(&17).unwrap();
+        assert_eq!(1, running.spec.legs.len());
+        assert!(running.spec.legs[0].execution_group.starts_with("node:"));
         assert!(daemon.lines.is_empty());
-        assert!(tokio::net::TcpStream::connect(listen).await.is_err());
+        tokio::net::TcpStream::connect(listen).await.unwrap();
         let status: serde_json::Value =
             serde_json::from_slice(&tokio::fs::read(&status_path).await.unwrap()).unwrap();
         assert_eq!(
@@ -1795,16 +2136,15 @@ mod tests {
         let mut initial = valid_json();
         old_server.attach(&mut initial);
         initial["forwards"][0]["listen"] = listen.to_string().into();
+        let mut replacement = initial.clone();
+        replacement["generation"] = 43.into();
+        replacement["forwards"][0]["legs"][1]["uri"] = format!("tcp://{}", new_server.addr).into();
         let mut daemon = test_daemon(&status_path);
         daemon
             .apply(serde_json::from_value(initial).unwrap())
             .await
             .unwrap();
 
-        let mut replacement = valid_json();
-        new_server.attach(&mut replacement);
-        replacement["generation"] = 43.into();
-        replacement["forwards"][0]["listen"] = listen.to_string().into();
         let update = tokio::spawn(async move {
             let result = daemon
                 .apply(serde_json::from_value(replacement).unwrap())
@@ -1817,6 +2157,54 @@ mod tests {
         let (result, mut daemon) = update.await.unwrap();
         result.unwrap();
         assert_eq!(43, daemon.generation());
+        daemon.shutdown().await.unwrap();
+        let _ = tokio::fs::remove_file(status_path).await;
+        old_server.stop().await;
+        new_server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn changed_line_drains_its_old_forward_before_stopping_the_child() {
+        let old_server = FakeLegServer::start().await;
+        let new_server = FakeLegServer::start().await;
+        let listen = free_loopback_addr();
+        let status_path = temp_status_path();
+        let mut initial = valid_json();
+        old_server.attach(&mut initial);
+        initial["forwards"][0]["listen"] = listen.to_string().into();
+        let mut daemon = test_daemon(&status_path);
+        daemon
+            .apply(serde_json::from_value(initial).unwrap())
+            .await
+            .unwrap();
+        let old_pid = daemon.lines.get(&451).unwrap().pid();
+        assert!(old_server.active.load(Ordering::SeqCst) > 0);
+
+        let mut replacement = valid_json();
+        new_server.attach(&mut replacement);
+        replacement["generation"] = 43.into();
+        replacement["forwards"][0]["listen"] = listen.to_string().into();
+        let old_active = old_server.active.clone();
+        let stopped_observer = tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if !process_is_alive(old_pid) {
+                    return old_active.load(Ordering::SeqCst);
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "old child did not stop"
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+
+        daemon
+            .apply(serde_json::from_value(replacement).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(0, stopped_observer.await.unwrap());
+
         daemon.shutdown().await.unwrap();
         let _ = tokio::fs::remove_file(status_path).await;
         old_server.stop().await;

@@ -267,10 +267,15 @@ pub(crate) fn validate_line_material(
     clock: &dyn LineClock,
 ) -> Result<()> {
     validate_provider(provider)?;
-    validate_lease(lease, clock.unix_now())
+    validate_lease(lease, clock.unix_now())?;
+    if !provider.allows_local_socks_port(lease.socks_addr.port()) {
+        bail!("local lease endpoint is outside the configured SOCKS port range");
+    }
+    Ok(())
 }
 
 fn validate_provider(provider: &ProviderSpec) -> Result<()> {
+    provider.validate_local_socks_range()?;
     if !provider.binary.is_absolute() || provider.session_json.expose_secret().trim().is_empty() {
         bail!("provider runtime material is incomplete");
     }
@@ -487,6 +492,8 @@ mod tests {
             binary,
             session_json: SecretString::new_for_test(session),
             session_sha256: sha256_bytes(session.as_bytes()),
+            local_socks_port_min: 20_000,
+            local_socks_port_max: 29_999,
         }
     }
 

@@ -135,7 +135,14 @@ async fn read_socks_target(stream: &mut TcpStream) -> anyhow::Result<SocketAddr>
 async fn start_socks_relay(
     route_tx: mpsc::UnboundedSender<u32>,
 ) -> anyhow::Result<(SocketAddr, JoinHandle<()>)> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let mut listener = None;
+    for port in 20_000..=29_999 {
+        if let Ok(bound) = TcpListener::bind(("127.0.0.1", port)).await {
+            listener = Some(bound);
+            break;
+        }
+    }
+    let listener = listener.ok_or_else(|| anyhow::anyhow!("no free local SOCKS test port"))?;
     let addr = listener.local_addr()?;
     let task = tokio::spawn(async move {
         while let Ok((mut inbound, _)) = listener.accept().await {
