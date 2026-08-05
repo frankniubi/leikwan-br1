@@ -720,6 +720,23 @@ final class ProvisioningService
         ];
     }
 
+    /** @return array<string, int|float|bool|string> */
+    public function serverSideLeigodBondPolicyForPoint(int $pointId): array
+    {
+        $point = $pointId > 0 ? $this->sidecarPointById($pointId) : null;
+        if (!is_array($point)) {
+            return [];
+        }
+        $pointConfig = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
+        if (
+            !$this->configValueEnabled($pointConfig['fixed_endpoint_leigod_bond'] ?? false)
+            || !$this->configValueEnabled($pointConfig['server_side_leigod_bond'] ?? false)
+        ) {
+            return [];
+        }
+        return $this->serverSideLeigodBondPolicy();
+    }
+
     private function activeFamilyForRuntime(string $backendMode, string $clientMode, string $runtimePreference): string
     {
         if ($this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference)) {

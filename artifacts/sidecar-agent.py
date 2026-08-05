@@ -6,6 +6,7 @@ import email.utils
 import hashlib
 import json
 import logging
+import math
 import os
 import pathlib
 import re
@@ -18,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.08.04.1"
+AGENT_VERSION = "2026.08.05.1"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -46,6 +47,62 @@ def file_sha256(path: pathlib.Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def adaptive_bond_server_args(runtime: dict[str, object]) -> list[str]:
+    if runtime.get("adaptive_line_admission") is not True:
+        return []
+
+    def bounded(
+        name: str,
+        default: int | float,
+        minimum: int | float,
+        maximum: int | float,
+        *,
+        integer: bool = False,
+    ) -> int | float:
+        value = runtime.get(name, default)
+        if isinstance(value, bool):
+            raise RuntimeError(f"invalid adaptive bond setting: {name}")
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"invalid adaptive bond setting: {name}") from exc
+        if not math.isfinite(numeric) or numeric < minimum or numeric > maximum:
+            raise RuntimeError(f"adaptive bond setting out of range: {name}")
+        if integer:
+            if not numeric.is_integer():
+                raise RuntimeError(f"adaptive bond setting must be an integer: {name}")
+            return int(numeric)
+        return numeric
+
+    values = {
+        "throughput_min_mbps": bounded("throughput_min_mbps", 10.0, 0.001, 10_000.0),
+        "throughput_relative_floor": bounded("throughput_relative_floor", 0.35, 0.001, 1.0),
+        "throughput_min_sample_bytes": bounded(
+            "throughput_min_sample_bytes", 1_048_576, 1, 64 * 1024 * 1024, integer=True
+        ),
+        "throughput_min_sample_ms": bounded(
+            "throughput_min_sample_ms", 1000, 1, 300_000, integer=True
+        ),
+        "throughput_bad_windows": bounded("throughput_bad_windows", 3, 1, 100, integer=True),
+        "throughput_recovery_windows": bounded(
+            "throughput_recovery_windows", 2, 1, 100, integer=True
+        ),
+        "throughput_quarantine_ms": bounded(
+            "throughput_quarantine_ms", 60_000, 1, 86_400_000, integer=True
+        ),
+        "throughput_probe_interval_ms": bounded(
+            "throughput_probe_interval_ms", 30_000, 1, 86_400_000, integer=True
+        ),
+        "throughput_probe_bytes": bounded(
+            "throughput_probe_bytes", 1_048_576, 1, 64 * 1024 * 1024, integer=True
+        ),
+    }
+    args = ["--adaptive-line-admission"]
+    for name, value in values.items():
+        args.extend(["--" + name.replace("_", "-"), str(value)])
+    return args
 
 
 def shared_wireguard_interface_name(value: object, prefixes: tuple[str, ...]) -> str:
@@ -2071,6 +2128,7 @@ WantedBy=multi-user.target
                 if str(value).strip().isdigit()
             ] if isinstance(bond_runtime.get("forward_ids", []), list) else []
             runtime_forward_id = bond_forward_ids[0] if len(bond_forward_ids) == 1 else 0
+            adaptive_server_args = adaptive_bond_server_args(bond_runtime)
             runtime_config = {
                 "listen_host": str(bond_runtime.get("bind_host", "0.0.0.0") or "0.0.0.0"),
                 "listen_port": int(bond_runtime.get("listen_port", 0) or 0),
@@ -2078,6 +2136,7 @@ WantedBy=multi-user.target
                 "stats_path": str(self.runtime_stats_path),
                 "log_level": str(self.config.get("log_level", "INFO")),
                 "allow_tcp_fallback": True,
+                "adaptive_line_admission": adaptive_server_args != [],
             }
             runtime_changed = write_text_if_changed(primary_runtime_path, json.dumps(runtime_config, ensure_ascii=False, indent=2) + "\n", mode=0o600)
             start_script_lines = [
@@ -2091,7 +2150,8 @@ WantedBy=multi-user.target
                 f'BOND_SERVER="{self.bond_binary_path().as_posix()}"',
                 f'LISTEN="{runtime_config["listen_host"]}:{runtime_config["listen_port"]}"',
                 f'TOKEN_SECRET="{runtime_config["token_secret"]}"',
-                'exec "$BOND_SERVER" server --listen "$LISTEN" --token-secret "$TOKEN_SECRET"',
+                'exec "$BOND_SERVER" server --listen "$LISTEN" --token-secret "$TOKEN_SECRET"'
+                + ((" " + " ".join(adaptive_server_args)) if adaptive_server_args else ""),
             ]
             start_script_changed = write_text_if_changed(primary_start_script, "\n".join(start_script_lines) + "\n", mode=0o755)
             unit_body = f"""[Unit]

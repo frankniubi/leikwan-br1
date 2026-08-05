@@ -375,6 +375,19 @@ namespace {
     assertSame(true, ($serverPayload['server_side_bond']['session_token'] ?? '') !== '', 'server bond token exists');
     assertSame('tcp', $serverPayload['transport_mode'] ?? null, 'server bond carrier is tcp');
     assertSame('tcp_relay', $serverPayload['backend_protocol'] ?? null, 'server bond backend stays plain tcp');
+    assertSame(
+        'slave_sidecar',
+        $service->serverSideLeigodBondPolicyForPoint(44)['aggregation_placement'] ?? null,
+        'sidecar management receives server-side policy'
+    );
+    $sidecarControllerSource = file_get_contents(__DIR__ . '/../src/Controllers/SidecarAgentController.php');
+    assertSame(
+        true,
+        is_string($sidecarControllerSource)
+            && str_contains($sidecarControllerSource, 'serverSideLeigodBondPolicyForPoint')
+            && str_contains($sidecarControllerSource, 'array_merge(['),
+        'sidecar heartbeat wires adaptive policy into bond runtime'
+    );
 
     $nonTcpRejected = false;
     try {
