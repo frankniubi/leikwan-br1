@@ -119,6 +119,14 @@ pub struct SessionConfig {
     pub leg_cooldown: Duration,
     pub throughput_min_sample_bytes: u64,
     pub throughput_min_sample: Duration,
+    pub adaptive_line_admission: bool,
+    pub throughput_min_mbps: f64,
+    pub throughput_relative_floor: f64,
+    pub throughput_bad_windows: u32,
+    pub throughput_recovery_windows: u32,
+    pub throughput_quarantine: Duration,
+    pub throughput_probe_interval: Duration,
+    pub throughput_probe_bytes: u64,
     pub latency_first: bool,
     pub udp_primary_only: bool,
     pub strategy_file: Option<PathBuf>,
@@ -146,6 +154,15 @@ enum TcpStripingStage {
 #[serde(rename_all = "lowercase")]
 enum LegHealthState {
     Healthy,
+    Degraded,
+    Probation,
+    Quarantined,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum BulkAdmissionState {
+    Admitted,
     Degraded,
     Probation,
     Quarantined,
@@ -245,6 +262,15 @@ struct ProtocolLegHealth {
     delivered_bytes_ewma: f64,
     throughput_mbps_ewma: f64,
     throughput_window: ThroughputWindow,
+    throughput_qualifying_samples: u64,
+    last_throughput_sample_at: Option<Instant>,
+    bulk_admission: BulkAdmissionState,
+    bulk_weight: f64,
+    consecutive_bad_windows: u32,
+    consecutive_good_windows: u32,
+    quarantine_until: Option<Instant>,
+    next_probe_at: Option<Instant>,
+    probe_remaining_bytes: u64,
     penalty_ewma: f64,
     last_reason: Option<String>,
     last_good_at: Option<SystemTime>,
@@ -313,6 +339,15 @@ impl ProtocolLegHealth {
             delivered_bytes_ewma: 0.0,
             throughput_mbps_ewma: 0.0,
             throughput_window: ThroughputWindow::new(Instant::now()),
+            throughput_qualifying_samples: 0,
+            last_throughput_sample_at: None,
+            bulk_admission: BulkAdmissionState::Admitted,
+            bulk_weight: 1.0,
+            consecutive_bad_windows: 0,
+            consecutive_good_windows: 0,
+            quarantine_until: None,
+            next_probe_at: None,
+            probe_remaining_bytes: 0,
             penalty_ewma: 0.0,
             last_reason: None,
             last_good_at: Some(SystemTime::now()),
@@ -3251,14 +3286,20 @@ fn flush_tcp_stream_backlogs(
                     config,
                     now,
                 ),
-                TcpStripingStage::Bulk => select_stream_leg(
-                    legs,
-                    round_robin_cursor,
-                    None,
-                    payload.len(),
-                    outstanding_bytes,
-                    config,
-                ),
+                TcpStripingStage::Bulk => {
+                    if config.adaptive_line_admission {
+                        select_adaptive_bulk_leg(legs, payload.len(), now, config)
+                    } else {
+                        select_stream_leg(
+                            legs,
+                            round_robin_cursor,
+                            None,
+                            payload.len(),
+                            outstanding_bytes,
+                            config,
+                        )
+                    }
+                }
             }) else {
                 state.local_backlog.push_front(payload);
                 break;
@@ -4452,6 +4493,15 @@ struct SnapshotProtocolView {
     score: f64,
     effective_weight: f64,
     delivered_bytes_ewma: f64,
+    throughput_mbps_ewma: f64,
+    qualifying_samples: u64,
+    bulk_admission: BulkAdmissionState,
+    bulk_weight: f64,
+    consecutive_bad_windows: u32,
+    consecutive_good_windows: u32,
+    quarantine_until: Option<String>,
+    next_probe_at: Option<String>,
+    probe_remaining_bytes: u64,
     penalty_ewma: f64,
     last_reason: Option<String>,
     last_good_at: Option<String>,
@@ -4498,12 +4548,32 @@ fn iso8601(time: SystemTime) -> String {
     chrono::DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+fn instant_deadline_iso8601(deadline: Option<Instant>) -> Option<String> {
+    let deadline = deadline?;
+    let now = Instant::now();
+    let wall = if deadline > now {
+        SystemTime::now() + deadline.duration_since(now)
+    } else {
+        SystemTime::now()
+    };
+    Some(iso8601(wall))
+}
+
 fn snapshot_protocol_view(health: &ProtocolLegHealth) -> SnapshotProtocolView {
     SnapshotProtocolView {
         state: health.state,
         score: (health.score * 10_000.0).round() / 10_000.0,
         effective_weight: (health.effective_weight * 10_000.0).round() / 10_000.0,
         delivered_bytes_ewma: (health.delivered_bytes_ewma * 10.0).round() / 10.0,
+        throughput_mbps_ewma: (health.throughput_mbps_ewma * 1000.0).round() / 1000.0,
+        qualifying_samples: health.throughput_qualifying_samples,
+        bulk_admission: health.bulk_admission,
+        bulk_weight: (health.bulk_weight * 10_000.0).round() / 10_000.0,
+        consecutive_bad_windows: health.consecutive_bad_windows,
+        consecutive_good_windows: health.consecutive_good_windows,
+        quarantine_until: instant_deadline_iso8601(health.quarantine_until),
+        next_probe_at: instant_deadline_iso8601(health.next_probe_at),
+        probe_remaining_bytes: health.probe_remaining_bytes,
         penalty_ewma: (health.penalty_ewma * 10_000.0).round() / 10_000.0,
         last_reason: health.last_reason.clone(),
         last_good_at: health.last_good_at.map(iso8601),
@@ -4640,24 +4710,209 @@ fn apply_ack_inner(
             credit_tcp_delivery(legs, chunk.last_leg_id, chunk.payload.len());
             if first_transmission {
                 if let Some((qualifies, observed_at, config)) = throughput_observation {
-                    if let Some(leg) = legs.get_mut(chunk.last_leg_id) {
-                        if let Some(sample) = leg.tcp_health.throughput_window.credit(
+                    let sample = legs.get_mut(chunk.last_leg_id).and_then(|leg| {
+                        leg.tcp_health.throughput_window.credit(
                             chunk.payload.len(),
                             observed_at,
                             qualifies,
                             config,
-                        ) {
-                            leg.tcp_health.throughput_mbps_ewma = ewma(
-                                leg.tcp_health.throughput_mbps_ewma,
-                                sample.mbps,
-                            );
-                        }
+                        )
+                    });
+                    if let Some(sample) = sample {
+                        apply_tcp_throughput_sample(
+                            legs,
+                            chunk.last_leg_id,
+                            sample.mbps,
+                            observed_at,
+                            config,
+                        );
                     }
                 }
             }
         }
     }
     completed_count
+}
+
+fn apply_tcp_throughput_sample(
+    legs: &mut [LegState],
+    leg_id: usize,
+    sample_mbps: f64,
+    observed_at: Instant,
+    config: &SessionConfig,
+) {
+    if !sample_mbps.is_finite() || sample_mbps < 0.0 {
+        return;
+    }
+    let Some(leg) = legs.get_mut(leg_id) else {
+        return;
+    };
+    let health = &mut leg.tcp_health;
+    health.throughput_mbps_ewma = ewma(health.throughput_mbps_ewma, sample_mbps);
+    health.throughput_qualifying_samples = health.throughput_qualifying_samples.saturating_add(1);
+    health.last_throughput_sample_at = Some(observed_at);
+
+    if !config.adaptive_line_admission {
+        return;
+    }
+
+    let best_mbps = legs
+        .iter()
+        .filter(|candidate| candidate.active && candidate.tcp_health.throughput_qualifying_samples > 0)
+        .map(|candidate| candidate.tcp_health.throughput_mbps_ewma)
+        .fold(0.0_f64, f64::max);
+    if best_mbps <= 0.0 {
+        return;
+    }
+    let floor = config
+        .throughput_min_mbps
+        .max(best_mbps * config.throughput_relative_floor);
+    let Some(leg) = legs.get_mut(leg_id) else {
+        return;
+    };
+    let health = &mut leg.tcp_health;
+    health.bulk_weight = (health.throughput_mbps_ewma / best_mbps).clamp(0.05, 1.0);
+    if health.throughput_mbps_ewma < floor {
+        health.consecutive_bad_windows = health.consecutive_bad_windows.saturating_add(1);
+        health.consecutive_good_windows = 0;
+        if health.consecutive_bad_windows >= config.throughput_bad_windows.max(1) {
+            health.bulk_admission = BulkAdmissionState::Quarantined;
+            health.bulk_weight = 0.0;
+            let deadline = observed_at + config.throughput_quarantine;
+            health.quarantine_until = Some(deadline);
+            health.next_probe_at = Some(deadline);
+        } else {
+            health.bulk_admission = BulkAdmissionState::Degraded;
+        }
+    } else {
+        health.consecutive_bad_windows = 0;
+        health.consecutive_good_windows = health.consecutive_good_windows.saturating_add(1);
+        if health.bulk_admission == BulkAdmissionState::Probation
+            && health.consecutive_good_windows < config.throughput_recovery_windows.max(1)
+        {
+            health.bulk_admission = BulkAdmissionState::Probation;
+        } else {
+            health.bulk_admission = BulkAdmissionState::Admitted;
+            health.quarantine_until = None;
+            health.probe_remaining_bytes = 0;
+        }
+    }
+}
+
+fn begin_tcp_probe_if_due(leg: &mut LegState, now: Instant, config: &SessionConfig) {
+    let health = &mut leg.tcp_health;
+    if !matches!(
+        health.bulk_admission,
+        BulkAdmissionState::Quarantined | BulkAdmissionState::Probation
+    )
+        || (health.bulk_admission == BulkAdmissionState::Probation
+            && health.probe_remaining_bytes > 0)
+        || health.quarantine_until.is_some_and(|deadline| deadline > now)
+        || health.next_probe_at.is_some_and(|deadline| deadline > now)
+    {
+        return;
+    }
+    let starting_probation = health.bulk_admission == BulkAdmissionState::Quarantined;
+    health.bulk_admission = BulkAdmissionState::Probation;
+    health.probe_remaining_bytes = config.throughput_probe_bytes;
+    health.next_probe_at = Some(now + config.throughput_probe_interval);
+    if starting_probation {
+        health.consecutive_good_windows = 0;
+    }
+}
+
+fn consume_tcp_probe_budget(
+    leg: &mut LegState,
+    bytes: usize,
+    _now: Instant,
+    _config: &SessionConfig,
+) {
+    if leg.tcp_health.bulk_admission != BulkAdmissionState::Probation {
+        return;
+    }
+    leg.tcp_health.probe_remaining_bytes = leg
+        .tcp_health
+        .probe_remaining_bytes
+        .saturating_sub(bytes as u64);
+}
+
+fn tcp_leg_bulk_eligible(leg: &LegState, now: Instant, config: &SessionConfig) -> bool {
+    if !leg.active || !leg_available_for_new_data(leg, now) {
+        return false;
+    }
+    if !config.adaptive_line_admission {
+        return true;
+    }
+    match leg.tcp_health.bulk_admission {
+        BulkAdmissionState::Admitted => true,
+        BulkAdmissionState::Degraded => {
+            leg.tcp_health.throughput_mbps_ewma >= config.throughput_min_mbps
+        }
+        BulkAdmissionState::Probation => leg.tcp_health.probe_remaining_bytes > 0,
+        BulkAdmissionState::Quarantined => false,
+    }
+}
+
+fn select_weighted_bulk_leg(
+    legs: &[LegState],
+    payload_len: usize,
+    now: Instant,
+    config: &SessionConfig,
+) -> Option<usize> {
+    let mut candidates: Vec<&LegState> = legs
+        .iter()
+        .filter(|leg| tcp_leg_bulk_eligible(leg, now, config))
+        .collect();
+    if let Some(unsampled) = candidates
+        .iter()
+        .copied()
+        .filter(|leg| leg.tcp_health.throughput_qualifying_samples == 0)
+        .min_by_key(|leg| (leg.scheduled_bytes, leg.inflight_bytes, leg.id))
+    {
+        return Some(unsampled.id);
+    }
+    if candidates.is_empty() {
+        return legs
+            .iter()
+            .filter(|leg| leg.active && leg_writer_has_capacity(leg))
+            .max_by(|left, right| {
+                left.tcp_health
+                    .throughput_mbps_ewma
+                    .total_cmp(&right.tcp_health.throughput_mbps_ewma)
+                    .then_with(|| right.smoothed_rtt.cmp(&left.smoothed_rtt))
+                    .then_with(|| right.id.cmp(&left.id))
+            })
+            .map(|leg| leg.id);
+    }
+    candidates
+        .into_iter()
+        .min_by(|left, right| {
+            let left_rate = left.tcp_health.throughput_mbps_ewma.max(1.0);
+            let right_rate = right.tcp_health.throughput_mbps_ewma.max(1.0);
+            let left_load = (left.inflight_bytes.saturating_add(payload_len) as f64) / left_rate;
+            let right_load = (right.inflight_bytes.saturating_add(payload_len) as f64) / right_rate;
+            left_load
+                .total_cmp(&right_load)
+                .then_with(|| left.smoothed_rtt.cmp(&right.smoothed_rtt))
+                .then_with(|| left.id.cmp(&right.id))
+        })
+        .map(|leg| leg.id)
+}
+
+fn select_adaptive_bulk_leg(
+    legs: &mut [LegState],
+    payload_len: usize,
+    now: Instant,
+    config: &SessionConfig,
+) -> Option<usize> {
+    for leg in legs.iter_mut() {
+        begin_tcp_probe_if_due(leg, now, config);
+    }
+    let selected = select_weighted_bulk_leg(legs, payload_len, now, config)?;
+    if let Some(leg) = legs.get_mut(selected) {
+        consume_tcp_probe_budget(leg, payload_len, now, config);
+    }
+    Some(selected)
 }
 
 #[allow(dead_code)]
@@ -5883,11 +6138,32 @@ mod tests {
             leg_cooldown: Duration::from_millis(1800000),
             throughput_min_sample_bytes: 1024 * 1024,
             throughput_min_sample: Duration::from_secs(1),
+            adaptive_line_admission: false,
+            throughput_min_mbps: 10.0,
+            throughput_relative_floor: 0.35,
+            throughput_bad_windows: 3,
+            throughput_recovery_windows: 2,
+            throughput_quarantine: Duration::from_secs(60),
+            throughput_probe_interval: Duration::from_secs(30),
+            throughput_probe_bytes: 1024 * 1024,
             latency_first: false,
             udp_primary_only: false,
             strategy_file: None,
             default_strategy: ClientStrategy::LatencyBest,
         }
+    }
+
+    fn adaptive_test_config() -> SessionConfig {
+        let mut config = test_config();
+        config.adaptive_line_admission = true;
+        config.throughput_min_mbps = 10.0;
+        config.throughput_relative_floor = 0.35;
+        config.throughput_bad_windows = 3;
+        config.throughput_recovery_windows = 2;
+        config.throughput_quarantine = Duration::from_secs(60);
+        config.throughput_probe_interval = Duration::from_secs(30);
+        config.throughput_probe_bytes = 1024 * 1024;
+        config
     }
 
     #[test]
@@ -5992,6 +6268,240 @@ mod tests {
         );
 
         assert_eq!(legs[0].tcp_health.throughput_mbps_ewma, first_sample);
+    }
+
+    #[test]
+    fn consecutive_slow_samples_quarantine_leg_relative_to_best() {
+        let mut config = test_config();
+        config.adaptive_line_admission = true;
+        config.throughput_min_mbps = 10.0;
+        config.throughput_relative_floor = 0.35;
+        config.throughput_bad_windows = 3;
+        config.throughput_quarantine = Duration::from_secs(60);
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+
+        apply_tcp_throughput_sample(&mut legs, 0, 200.0, now, &config);
+        for offset in 1..=3 {
+            apply_tcp_throughput_sample(
+                &mut legs,
+                1,
+                40.0,
+                now + Duration::from_secs(offset),
+                &config,
+            );
+        }
+
+        assert_eq!(
+            legs[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined
+        );
+        assert_eq!(legs[1].tcp_health.consecutive_bad_windows, 3);
+        assert!(legs[1]
+            .tcp_health
+            .quarantine_until
+            .is_some_and(|deadline| deadline >= now + Duration::from_secs(63)));
+        assert_eq!(
+            legs[0].tcp_health.bulk_admission,
+            BulkAdmissionState::Admitted
+        );
+    }
+
+    #[test]
+    fn upload_and_reverse_observers_make_independent_decisions() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut upload = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        let mut reverse = upload.clone();
+        apply_tcp_throughput_sample(&mut upload, 0, 160.0, now, &config);
+        apply_tcp_throughput_sample(&mut upload, 1, 150.0, now, &config);
+        apply_tcp_throughput_sample(&mut reverse, 0, 200.0, now, &config);
+        for offset in 1..=config.throughput_bad_windows {
+            apply_tcp_throughput_sample(
+                &mut reverse,
+                1,
+                5.0,
+                now + Duration::from_secs(offset as u64),
+                &config,
+            );
+        }
+        assert_ne!(
+            upload[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined
+        );
+        assert_eq!(
+            reverse[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined
+        );
+    }
+
+    #[test]
+    fn quarantined_leg_gets_only_bounded_due_probe_budget() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut leg = fake_leg(0, 10, 0, 20);
+        leg.tcp_health.bulk_admission = BulkAdmissionState::Quarantined;
+        leg.tcp_health.quarantine_until = Some(now - Duration::from_secs(1));
+        leg.tcp_health.next_probe_at = Some(now - Duration::from_secs(1));
+        begin_tcp_probe_if_due(&mut leg, now, &config);
+        assert!(tcp_leg_bulk_eligible(&leg, now, &config));
+        consume_tcp_probe_budget(&mut leg, config.throughput_probe_bytes as usize, now, &config);
+        assert!(!tcp_leg_bulk_eligible(&leg, now, &config));
+        assert_eq!(leg.tcp_health.bulk_admission, BulkAdmissionState::Probation);
+        assert_eq!(leg.tcp_health.probe_remaining_bytes, 0);
+    }
+
+    #[test]
+    fn two_good_probe_windows_restore_leg() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        legs[1].tcp_health.bulk_admission = BulkAdmissionState::Probation;
+        legs[1].tcp_health.consecutive_bad_windows = config.throughput_bad_windows;
+        apply_tcp_throughput_sample(&mut legs, 0, 200.0, now, &config);
+        apply_tcp_throughput_sample(&mut legs, 1, 170.0, now, &config);
+        assert_eq!(legs[1].tcp_health.bulk_admission, BulkAdmissionState::Probation);
+        apply_tcp_throughput_sample(&mut legs, 1, 180.0, now + Duration::from_secs(1), &config);
+        assert_eq!(legs[1].tcp_health.bulk_admission, BulkAdmissionState::Admitted);
+    }
+
+    #[test]
+    fn all_quarantined_falls_back_to_best_writable_leg() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 10), fake_leg(1, 10, 0, 50)];
+        for leg in &mut legs {
+            leg.tcp_health.bulk_admission = BulkAdmissionState::Quarantined;
+            leg.tcp_health.quarantine_until = Some(now + Duration::from_secs(60));
+        }
+        legs[0].tcp_health.throughput_mbps_ewma = 20.0;
+        legs[1].tcp_health.throughput_mbps_ewma = 40.0;
+        assert_eq!(select_weighted_bulk_leg(&legs, 0, now, &config), Some(1));
+    }
+
+    #[test]
+    fn quarantined_leg_waits_for_deadline_before_probe() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        apply_tcp_throughput_sample(&mut legs, 0, 200.0, now, &config);
+        for offset in 1..=config.throughput_bad_windows {
+            apply_tcp_throughput_sample(
+                &mut legs,
+                1,
+                5.0,
+                now + Duration::from_secs(offset as u64),
+                &config,
+            );
+        }
+        let quarantine_at = now + Duration::from_secs(config.throughput_bad_windows as u64);
+        begin_tcp_probe_if_due(&mut legs[1], quarantine_at + Duration::from_secs(10), &config);
+        assert_eq!(
+            legs[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined
+        );
+        begin_tcp_probe_if_due(
+            &mut legs[1],
+            quarantine_at + config.throughput_quarantine + Duration::from_millis(1),
+            &config,
+        );
+        assert_eq!(legs[1].tcp_health.bulk_admission, BulkAdmissionState::Probation);
+    }
+
+    #[test]
+    fn unsampled_bulk_leg_gets_controlled_exploration() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut sampled = fake_leg(0, 10, 0, 10);
+        sampled.tcp_health.throughput_mbps_ewma = 200.0;
+        sampled.tcp_health.throughput_qualifying_samples = 2;
+        let unsampled = fake_leg(1, 10, 0, 50);
+
+        assert_eq!(
+            select_weighted_bulk_leg(&[sampled, unsampled], 128 * 1024, now, &config),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn weighted_bulk_prefers_normalized_inflight_load() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut fast = fake_leg(0, 10, 400_000, 20);
+        let mut slow = fake_leg(1, 10, 150_000, 25);
+        fast.tcp_health.throughput_mbps_ewma = 200.0;
+        fast.tcp_health.throughput_qualifying_samples = 1;
+        slow.tcp_health.throughput_mbps_ewma = 50.0;
+        slow.tcp_health.throughput_qualifying_samples = 1;
+        assert_eq!(select_weighted_bulk_leg(&[fast, slow], 0, now, &config), Some(0));
+    }
+
+    #[test]
+    fn sub_ten_mbps_low_rtt_leg_is_interactive_only() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut low_latency = fake_leg(0, 10, 0, 10);
+        let mut bulk = fake_leg(1, 10, 0, 35);
+        low_latency.tcp_health.throughput_mbps_ewma = 8.0;
+        low_latency.tcp_health.throughput_qualifying_samples = 1;
+        low_latency.tcp_health.bulk_admission = BulkAdmissionState::Degraded;
+        bulk.tcp_health.throughput_mbps_ewma = 180.0;
+        bulk.tcp_health.throughput_qualifying_samples = 1;
+        assert_eq!(select_latency_best_leg(&[low_latency.clone(), bulk.clone()]), Some(0));
+        assert_eq!(select_weighted_bulk_leg(&[low_latency, bulk], 0, now, &config), Some(1));
+    }
+
+    #[test]
+    fn adaptive_bulk_scheduler_excludes_latency_only_leg() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut low_latency = fake_leg(0, 10, 0, 10);
+        let mut bulk = fake_leg(1, 10, 0, 35);
+        low_latency.tcp_health.throughput_mbps_ewma = 8.0;
+        low_latency.tcp_health.throughput_qualifying_samples = 1;
+        low_latency.tcp_health.bulk_admission = BulkAdmissionState::Degraded;
+        bulk.tcp_health.throughput_mbps_ewma = 180.0;
+        bulk.tcp_health.throughput_qualifying_samples = 1;
+        let mut legs = vec![low_latency, bulk];
+
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now, &config),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn adaptive_bulk_scheduler_consumes_one_due_probe_budget() {
+        let mut config = adaptive_test_config();
+        config.throughput_probe_bytes = 128 * 1024;
+        let now = Instant::now();
+        let mut healthy = fake_leg(0, 10, 64 * 1024 * 1024, 20);
+        healthy.tcp_health.throughput_mbps_ewma = 200.0;
+        healthy.tcp_health.throughput_qualifying_samples = 1;
+        let mut probe = fake_leg(1, 10, 0, 25);
+        probe.tcp_health.throughput_mbps_ewma = 40.0;
+        probe.tcp_health.throughput_qualifying_samples = 3;
+        probe.tcp_health.bulk_admission = BulkAdmissionState::Quarantined;
+        probe.tcp_health.next_probe_at = Some(now - Duration::from_secs(1));
+        let mut legs = vec![healthy, probe];
+
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now, &config),
+            Some(1)
+        );
+        assert_eq!(
+            legs[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Probation
+        );
+        assert_eq!(
+            select_adaptive_bulk_leg(
+                &mut legs,
+                128 * 1024,
+                now + Duration::from_millis(1),
+                &config,
+            ),
+            Some(0)
+        );
     }
 
     #[test]
@@ -7004,6 +7514,10 @@ mod tests {
         penalize_tcp_leg(&mut legs, 0, TcpPenalty::RetransmitBurst);
         penalize_udp_leg(&mut legs, 0, UdpPenalty::HighLossRatio);
         penalize_udp_leg(&mut legs, 0, UdpPenalty::RetransmitBurst);
+        let mut config = adaptive_test_config();
+        config.throughput_min_sample_bytes = 1;
+        config.throughput_min_sample = Duration::from_millis(1);
+        apply_tcp_throughput_sample(&mut legs, 0, 42.0, Instant::now(), &config);
 
         let snapshot = build_leg_health_snapshot_json("client", 123, 26, &legs).expect("snapshot json");
         let value: serde_json::Value = serde_json::from_str(&snapshot).expect("valid json");
@@ -7021,6 +7535,10 @@ mod tests {
         assert_eq!(value["legs"][0]["reconnect_count"], 0);
         assert_eq!(value["legs"][0]["scheduled_bytes"], 0);
         assert_eq!(value["legs"][0]["cooldown_count"], 0);
+        assert_eq!(value["legs"][0]["tcp"]["throughput_mbps_ewma"], 42.0);
+        assert_eq!(value["legs"][0]["tcp"]["qualifying_samples"], 1);
+        assert_eq!(value["legs"][0]["tcp"]["bulk_admission"], "admitted");
+        assert!(value["legs"][0]["tcp"]["quarantine_until"].is_null());
         assert!(value["legs"][0]["tcp"]["effective_weight"].as_f64().unwrap_or(1.0) < 1.0);
         assert!(value["legs"][0]["udp"]["effective_weight"].as_f64().unwrap_or(1.0) < 1.0);
         assert!(value["legs"][0]["recent_events"].as_array().is_some_and(|items| !items.is_empty()));
