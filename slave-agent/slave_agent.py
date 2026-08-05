@@ -2347,7 +2347,7 @@ class SlaveAgent:
 
     @staticmethod
     def desired_leigod_line_without_toml(line: dict[str, Any]) -> dict[str, Any]:
-        return {
+        normalized = {
             "line_id": int(line.get("line_id", 0) or 0),
             "label": str(line.get("label", "") or "")[:191],
             "config_sha256": str(line.get("config_sha256", "") or "").strip().lower(),
@@ -2358,6 +2358,18 @@ class SlaveAgent:
             "udp_probe_host": str(line.get("udp_probe_host", "") or "").strip() or None,
             "udp_probe_port": int(line.get("udp_probe_port", 0) or 0) or None,
             "udp_probe_method": str(line.get("udp_probe_method", "") or "").strip().lower() or None,
+        }
+        if any(key in line for key in ("lease_id", "lease_generation", "lease_state", "max_parallel_lanes")):
+            normalized.update(SlaveAgent.leigod_line_lease_fields(line))
+        return normalized
+
+    @staticmethod
+    def leigod_line_lease_fields(line: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "lease_id": str(line.get("lease_id", "") or "").strip().lower(),
+            "lease_generation": int(line.get("lease_generation", 0) or 0),
+            "lease_state": str(line.get("lease_state", "") or "").strip().lower(),
+            "max_parallel_lanes": int(line.get("max_parallel_lanes", 0) or 0),
         }
 
     def load_leigod_desired_lines(self) -> list[dict[str, Any]]:
@@ -2416,8 +2428,7 @@ class SlaveAgent:
             row = health[line_id]
             if not isinstance(row, dict) or line_id < 1 or line_id > 45535:
                 continue
-            rows.append(
-                {
+            saved = {
                     "line_id": line_id,
                     "config_sha256": str(row.get("config_sha256", "") or "").strip().lower(),
                     "service_state": str(row.get("service_state", "failed") or "failed")[:16],
@@ -2429,7 +2440,9 @@ class SlaveAgent:
                     "last_error": str(row.get("last_error", "") or "")[:500],
                     "checked_at": str(row.get("checked_at", "") or ""),
                 }
-            )
+            if any(key in row for key in ("lease_id", "lease_generation", "lease_state", "max_parallel_lanes")):
+                saved.update(self.leigod_line_lease_fields(row))
+            rows.append(saved)
         self.write_json(self.leigod_line_health_state_path(), {"version": 1, "lines": rows})
 
     @staticmethod
@@ -2499,6 +2512,23 @@ class SlaveAgent:
                 raise RuntimeError(f"invalid leigod line id: {line_id}")
             if line_id in desired:
                 raise RuntimeError(f"duplicate leigod line id: {line_id}")
+            lease_keys = ("lease_id", "lease_generation", "lease_state", "max_parallel_lanes")
+            lease_managed = any(key in raw for key in lease_keys)
+            if lease_managed and not all(key in raw for key in lease_keys):
+                raise RuntimeError(f"incomplete leigod line lease fence for line {line_id}")
+            if lease_managed:
+                lease_id = str(normalized.get("lease_id", "") or "")
+                lease_generation = int(normalized.get("lease_generation", 0) or 0)
+                lease_state = str(normalized.get("lease_state", "") or "")
+                max_parallel_lanes = int(normalized.get("max_parallel_lanes", 0) or 0)
+                if (
+                    re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}", lease_id) is None
+                    or lease_generation <= 0
+                    or lease_state not in {"pending", "active"}
+                    or max_parallel_lanes < 1
+                    or max_parallel_lanes > 4
+                ):
+                    raise RuntimeError(f"invalid leigod line lease fence for line {line_id}")
             if normalized["socks_host"] != "127.0.0.1" or int(normalized["socks_port"] or 0) != 20000 + line_id:
                 raise RuntimeError(f"invalid leigod SOCKS endpoint for line {line_id}")
             desired[line_id] = normalized
@@ -2555,8 +2585,12 @@ class SlaveAgent:
                     "consecutive_failures": max(1, int(existing.get("consecutive_failures", 0) or 0) + 1),
                     "last_error": error,
                     "checked_at": self.utc_timestamp(),
+                    **(self.leigod_line_lease_fields(normalized) if lease_managed else {}),
                 }
-            elif str(existing.get("config_sha256", "")) != expected_hash:
+            elif str(existing.get("config_sha256", "")) != expected_hash or (
+                lease_managed
+                and any(existing.get(key) != normalized.get(key) for key in lease_keys)
+            ):
                 health[line_id] = {
                     "line_id": line_id,
                     "config_sha256": expected_hash,
@@ -2568,6 +2602,7 @@ class SlaveAgent:
                     "consecutive_failures": 0,
                     "last_error": "",
                     "checked_at": self.utc_timestamp(),
+                    **(self.leigod_line_lease_fields(normalized) if lease_managed else {}),
                 }
             elif not existing:
                 health[line_id] = {
@@ -2581,14 +2616,28 @@ class SlaveAgent:
                     "consecutive_failures": 0,
                     "last_error": "",
                     "checked_at": self.utc_timestamp(),
+                    **(self.leigod_line_lease_fields(normalized) if lease_managed else {}),
                 }
+            elif lease_managed:
+                health[line_id].update(self.leigod_line_lease_fields(normalized))
+            elif existing:
+                for key in lease_keys:
+                    health[line_id].pop(key, None)
 
         referenced, reference_proven = self.active_leigod_relay_line_ids()
         for line_id, previous_line in previous.items():
             if line_id in desired:
                 continue
             if not reference_proven or line_id in referenced:
-                desired[line_id] = previous_line
+                retained = dict(previous_line)
+                if str(retained.get("lease_id", "") or ""):
+                    retained["lease_state"] = "revoking"
+                    existing = dict(health.get(line_id, {}))
+                    existing.update(self.leigod_line_lease_fields(retained))
+                    existing["service_state"] = "revoking"
+                    existing["checked_at"] = self.utc_timestamp()
+                    health[line_id] = existing
+                desired[line_id] = retained
                 continue
             self.remove_managed_leigod_line(line_id)
             health.pop(line_id, None)
@@ -2733,6 +2782,19 @@ class SlaveAgent:
         line_id = int(line.get("line_id", 0) or 0)
         expected_hash = str(line.get("config_sha256", "") or "").lower()
         previous = self.load_leigod_line_health().get(line_id, {})
+        lease_managed = any(key in line for key in ("lease_id", "lease_generation", "lease_state", "max_parallel_lanes"))
+        if lease_managed and str(line.get("lease_state", "") or "") == "revoking":
+            result = dict(previous)
+            result.update(self.leigod_line_lease_fields(line))
+            result.update(
+                {
+                    "line_id": line_id,
+                    "config_sha256": expected_hash,
+                    "service_state": "revoking",
+                    "checked_at": self.utc_timestamp(),
+                }
+            )
+            return result
         root = Path(str(self.config.get("leigod_root", "/opt/leigod") or "/opt/leigod"))
         binary = str(self.config.get("leigod_bin", "/usr/local/bin/leigod-linux-amd64") or "")
         toml_path = root / "lines" / f"{line_id}.toml"
@@ -2775,7 +2837,7 @@ class SlaveAgent:
             errors.append(error)
 
         success = tcp_status == "healthy" and udp_status in {"unknown", "healthy"}
-        return {
+        result = {
             "line_id": line_id,
             "config_sha256": expected_hash,
             "service_state": "active" if error == "" else "failed",
@@ -2787,6 +2849,9 @@ class SlaveAgent:
             "last_error": "; ".join(errors)[:500],
             "checked_at": self.utc_timestamp(),
         }
+        if lease_managed:
+            result.update(self.leigod_line_lease_fields(line))
+        return result
 
     def probe_managed_leigod_lines(self, force: bool = False) -> None:
         now = time.monotonic()
@@ -2815,6 +2880,11 @@ class SlaveAgent:
                     "consecutive_failures": int(health.get(line_id, {}).get("consecutive_failures", 0) or 0) + 1,
                     "last_error": str(exc)[:500],
                     "checked_at": self.utc_timestamp(),
+                    **(
+                        self.leigod_line_lease_fields(line)
+                        if any(key in line for key in ("lease_id", "lease_generation", "lease_state", "max_parallel_lanes"))
+                        else {}
+                    ),
                 }
         self.save_leigod_line_health(health)
 

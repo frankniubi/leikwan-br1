@@ -49,6 +49,9 @@ final class ClientAgentController extends BaseController
         if (in_array($runtimePlatformScope, ['all', 'linux'], true)) {
             $linuxProfileRuntime = $this->provisioning->linuxProfileRuntimeForClient($client, is_array($forwards) ? $forwards : []);
         }
+        $linuxPathLeases = in_array($runtimePlatformScope, ['all', 'linux'], true)
+            ? $this->provisioning->desiredLeigodLineManagementForClientDevice((int) $client['id'], $deviceId)
+            : ['lines' => []];
 
         return $this->json([
             'ok' => true,
@@ -78,6 +81,7 @@ final class ClientAgentController extends BaseController
             ],
             'forwards' => $forwards,
             'linux_profile_runtime' => $linuxProfileRuntime,
+            'linux_path_leases' => $linuxPathLeases,
         ]);
     }
 

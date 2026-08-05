@@ -81,6 +81,19 @@ final class ProvisioningService
         return ['lines' => $this->leigodLineCatalog()->desiredLinesForNode($nodeId)];
     }
 
+    /** @return array{lines:array<int, array<string, mixed>>,session_json?:string} */
+    public function desiredLeigodLineManagementForClientDevice(int $clientId, string $deviceId): array
+    {
+        $lines = $this->leigodLineCatalog()->desiredLinesForClientDevice($clientId, $deviceId);
+        if ($lines === []) {
+            return ['lines' => []];
+        }
+        return [
+            'lines' => $lines,
+            'session_json' => $this->leigodSharedSessionJson(),
+        ];
+    }
+
     /**
      * @param array<int|string, mixed> $payload
      * @return array{accepted:int,rejected:int}
