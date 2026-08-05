@@ -8,6 +8,8 @@ namespace Leikwan\Master\Database {
         public array $lines = [];
         /** @var array<int, array<string, mixed>> */
         public array $leases = [];
+        /** @var array<int, int> */
+        public array $revisions = [];
         /** @var array<int, array{0:string,1:string,2:array<string,mixed>}> */
         public array $calls = [];
         public bool $inTransaction = false;
@@ -30,6 +32,10 @@ namespace Leikwan\Master\Database {
         public function fetchOne(string $sql, array $params = []): ?array
         {
             $this->calls[] = ['fetchOne', $sql, $params];
+            if (str_contains($sql, 'FROM client_config_revisions')) {
+                $clientId = (int) ($params['client_id'] ?? 0);
+                return isset($this->revisions[$clientId]) ? ['revision' => $this->revisions[$clientId]] : null;
+            }
             if (str_contains($sql, 'FROM leigod_lines')) {
                 return $this->lines[(int) ($params['line_id'] ?? $params['id'] ?? 0)] ?? null;
             }
@@ -91,6 +97,11 @@ namespace Leikwan\Master\Database {
                 throw new \RuntimeException('lease write outside transaction');
             }
             $this->calls[] = ['execute', $sql, $params];
+            if (str_contains($sql, 'client_config_revisions')) {
+                $clientId = (int) ($params['client_id'] ?? 0);
+                $this->revisions[$clientId] = ($this->revisions[$clientId] ?? 0) + 1;
+                return 1;
+            }
             if (str_starts_with(ltrim($sql), 'DELETE FROM leigod_execution_leases')) {
                 $lineId = (int) ($params['line_id'] ?? 0);
                 if (isset($this->leases[$lineId])) {
@@ -216,12 +227,14 @@ namespace {
     assertLeaseSame(1, $lease['generation'], 'first generation');
     assertLeaseSame(4, $lease['max_parallel_lanes'], 'lane clamp');
     assertLeaseSame('pending', $lease['state'], 'new lease pending');
+    assertLeaseSame(1, $db->revisions[20] ?? 0, 'new client lease bumps config revision');
     assertLeaseTrue(preg_match('/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/', (string) $lease['lease_id']) === 1, 'lease UUID v4 shape');
     assertLeaseSame(gmdate('Y-m-d H:i:s', $now + 45), $lease['ready_deadline_at'], 'pending deadline');
 
     $same = $service->acquireForClientDevice(10, 20, 'linux-device-a');
     assertLeaseSame($lease['lease_id'], $same['lease_id'], 'sticky lease id');
     assertLeaseSame(1, $same['generation'], 'sticky generation');
+    assertLeaseSame(1, $db->revisions[20] ?? 0, 'sticky acquire does not bump config revision');
     expectLeaseApi(fn() => $service->acquireForNode(10, 15), 'leigod_line_lease_conflict');
 
     $active = $service->acceptHealth(10, (string) $lease['lease_id'], 1, [
@@ -233,6 +246,7 @@ namespace {
     ]);
     assertLeaseSame('active', $active['state'], 'healthy pending becomes active');
     assertLeaseSame(gmdate('Y-m-d H:i:s', $now + 90), $active['expires_at'], 'active ttl');
+    assertLeaseSame(2, $db->revisions[20] ?? 0, 'pending-to-active client lease bumps config revision');
     expectLeaseApi(
         fn() => $service->acceptHealth(10, (string) $lease['lease_id'], 0, [
             'owner_type' => 'client_device', 'owner_id' => 20, 'owner_device_id' => 'linux-device-a',
@@ -252,6 +266,7 @@ namespace {
     $renewed = $service->renew((string) $lease['lease_id'], 1, 'client_device', 20, 'linux-device-a');
     assertLeaseSame(gmdate('Y-m-d H:i:s', $now + 90), $renewed['expires_at'], 'renewed ttl');
     assertLeaseSame(1, $renewed['generation'], 'renew does not bump generation');
+    assertLeaseSame(2, $db->revisions[20] ?? 0, 'active renewal does not bump config revision');
 
     expectLeaseApi(fn() => $service->acquireForClientDevice(12, 20, 'linux-device-a'), 'leigod_line_client_execution_forbidden');
     expectLeaseApi(fn() => $service->acquireForNode(13, 15), 'leigod_line_node_execution_forbidden');
@@ -322,6 +337,7 @@ namespace {
         'consecutive_failures' => 3,
     ]);
     assertLeaseSame('revoking', $repeatedFailure['state'], 'repeated health failure revokes lease');
+    assertLeaseSame(2, $failureDb->revisions[43] ?? 0, 'client lease revocation bumps config revision once');
 
     $stickyDb = new Database();
     $stickyDb->lines = [
@@ -379,6 +395,7 @@ namespace {
     $taken = $service->acquireForNode(10, 15);
     assertLeaseSame('node', $taken['owner_type'], 'expired takeover owner');
     assertLeaseSame(2, $taken['generation'], 'expired takeover bumps generation');
+    assertLeaseSame(3, $db->revisions[20] ?? 0, 'client-to-node takeover bumps former client revision');
     assertLeaseTrue($taken['lease_id'] !== $lease['lease_id'], 'expired takeover rotates lease id');
     expectLeaseApi(
         fn() => $service->acceptHealth(10, (string) $lease['lease_id'], 1, [

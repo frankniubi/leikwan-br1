@@ -21,6 +21,7 @@ final class ProvisioningService
     private ?bool $nodeGroupIngressColumnsAvailable = null;
     private ?bool $nodeGroupDescriptionColumnAvailable = null;
     private ?LeigodLineCatalogService $leigodLineCatalogService = null;
+    private ?ClientConfigRevisionService $clientConfigRevisionService = null;
 
     /**
      * Per-(sidecar point) uniqueness-checked allocation registries. Keyed by point id,
@@ -56,6 +57,25 @@ final class ProvisioningService
     private function leigodLineCatalog(): LeigodLineCatalogService
     {
         return $this->leigodLineCatalogService ??= new LeigodLineCatalogService($this->config, $this->db);
+    }
+
+    private function clientConfigRevisions(): ClientConfigRevisionService
+    {
+        return $this->clientConfigRevisionService ??= new ClientConfigRevisionService($this->db);
+    }
+
+    public function bumpClientConfigRevision(int $clientId): int
+    {
+        return $this->clientConfigRevisions()->bump($clientId);
+    }
+
+    /**
+     * @param array<int, int|string> $clientIds
+     * @return array<int, int>
+     */
+    public function bumpClientConfigRevisions(array $clientIds): array
+    {
+        return $this->clientConfigRevisions()->bumpMany($clientIds);
     }
 
     /** @return array<int, array<string, mixed>> */
@@ -4251,6 +4271,9 @@ final class ProvisioningService
 
             $this->revokeForwardEndpoints($forwardId, 'update');
             $this->reconcileForwardEndpoints($forwardId);
+            if ((int) ($forward['line_client_id'] ?? 0) > 0) {
+                $this->bumpClientConfigRevision((int) $forward['line_client_id']);
+            }
 
             return $this->buildClientConfig($forwardId);
         });
@@ -4290,6 +4313,9 @@ final class ProvisioningService
                 'actor' => $actor,
                 'revision' => $nextRevision,
             ]);
+            if ((int) ($forward['line_client_id'] ?? 0) > 0) {
+                $this->bumpClientConfigRevision((int) $forward['line_client_id']);
+            }
         });
     }
 
@@ -4352,7 +4378,7 @@ final class ProvisioningService
                 }
 
                 $candidates = $this->db->fetchAll(
-                    'SELECT id
+                    'SELECT id, line_client_id
                      FROM forwards
                      WHERE service_id = :service_id
                        AND enabled = 0
@@ -4388,6 +4414,9 @@ final class ProvisioningService
                         'actor' => 'tenant:' . $userId,
                     ]);
                     $this->reconcileForwardEndpoints($forwardId);
+                    if ((int) ($candidate['line_client_id'] ?? 0) > 0) {
+                        $this->bumpClientConfigRevision((int) $candidate['line_client_id']);
+                    }
                     $reactivated++;
                 }
             }
@@ -5896,6 +5925,10 @@ final class ProvisioningService
             $priority += 10;
         }
 
+        $this->bumpClientConfigRevisions([
+            (int) ($existingForward['line_client_id'] ?? 0),
+            $lineClientId,
+        ]);
         return $this->buildClientConfig($forwardId);
     }
 

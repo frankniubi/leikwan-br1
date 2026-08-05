@@ -10,13 +10,16 @@ final class LeigodExecutionLeaseService
 {
     /** @var callable():int */
     private $clock;
+    private ClientConfigRevisionService $clientConfigRevisions;
 
     public function __construct(
         private Config $config,
         private Database $db,
         ?callable $clock = null,
+        ?ClientConfigRevisionService $clientConfigRevisions = null,
     ) {
         $this->clock = $clock ?? static fn(): int => time();
+        $this->clientConfigRevisions = $clientConfigRevisions ?? new ClientConfigRevisionService($db);
     }
 
     /** @return array<string, mixed> */
@@ -199,11 +202,15 @@ final class LeigodExecutionLeaseService
                 return $lease;
             }
 
+            $previousState = (string) ($lease['state'] ?? '');
             $lease['state'] = 'active';
             $lease['expires_at'] = $this->timestamp($now + $this->activeTtlSeconds());
             $lease['last_renewed_at'] = $this->timestamp($now);
             $lease['updated_at'] = $this->timestamp($now);
             $this->updateLease($catalogLineId, $lease);
+            if ($previousState !== 'active') {
+                $this->bumpClientLeaseOwners($lease);
+            }
             return $lease;
         });
     }
@@ -220,6 +227,10 @@ final class LeigodExecutionLeaseService
             $lease = $this->leaseForLineUpdate($lineId);
             $this->assertFence($lease, $leaseId, $generation);
             $now = $this->now();
+            if ((string) ($lease['state'] ?? '') === 'revoking') {
+                $lease['revocation_reason'] = $reason;
+                return $lease;
+            }
             $lease = $this->markRevoking($lineId, $lease, $now);
             $lease['revocation_reason'] = $reason;
             return $lease;
@@ -330,6 +341,7 @@ final class LeigodExecutionLeaseService
         } else {
             $this->updateLease($catalogLineId, $lease);
         }
+        $this->bumpClientLeaseOwners($existing, $lease);
         return $lease;
     }
 
@@ -408,7 +420,25 @@ final class LeigodExecutionLeaseService
         $lease['expires_at'] = $this->timestamp($now + $this->revokingGraceSeconds());
         $lease['updated_at'] = $this->timestamp($now);
         $this->updateLease($catalogLineId, $lease);
+        $this->bumpClientLeaseOwners($lease);
         return $lease;
+    }
+
+    /** @param array<string, mixed>|null ...$leases */
+    private function bumpClientLeaseOwners(?array ...$leases): void
+    {
+        $clientIds = [];
+        foreach ($leases as $lease) {
+            if (is_array($lease) && (string) ($lease['owner_type'] ?? '') === 'client_device') {
+                $clientId = (int) ($lease['owner_id'] ?? 0);
+                if ($clientId > 0) {
+                    $clientIds[] = $clientId;
+                }
+            }
+        }
+        if ($clientIds !== []) {
+            $this->clientConfigRevisions->bumpMany($clientIds);
+        }
     }
 
     /** @param array<string, mixed> $lease */

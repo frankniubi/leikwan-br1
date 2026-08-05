@@ -8,6 +8,7 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
+use Leikwan\Master\Support\ClientConfigRevisionService;
 use Leikwan\Master\Support\DesktopClientSessionService;
 use Leikwan\Master\Support\ProvisioningService;
 
@@ -27,6 +28,8 @@ final class ClientAgentController extends BaseController
         $deviceSessionService = new ClientOnlineSessionService($this->db);
         $deviceId = $deviceSessionService->enforceFromRequest($client, $request, 'pull');
         $deviceSession = $deviceSessionService->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
+        $revision = (new ClientConfigRevisionService($this->db))->current((int) $client['id']);
+        $etag = '"client-' . (int) $client['id'] . '-r' . $revision . '"';
         $forwards = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
         $clientAgent = $this->artifactMetadata('client_agent');
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
@@ -55,6 +58,7 @@ final class ClientAgentController extends BaseController
 
         return $this->json([
             'ok' => true,
+            'config_revision' => $revision,
             'client' => [
                 'id' => (int) $client['id'],
                 'name' => (string) $client['name'],
@@ -82,7 +86,34 @@ final class ClientAgentController extends BaseController
             'forwards' => $forwards,
             'linux_profile_runtime' => $linuxProfileRuntime,
             'linux_path_leases' => $linuxPathLeases,
-        ]);
+        ])->withHeaders(['ETag' => $etag]);
+    }
+
+    public function watchConfigs(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $deviceSessionService = new ClientOnlineSessionService($this->db);
+        $deviceId = $deviceSessionService->enforceFromRequest($client, $request, 'watch');
+        $deviceSession = $deviceSessionService->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
+        $platform = strtolower(trim((string) (
+            $request->header('x-device-platform')
+            ?? ($deviceSession['platform'] ?? '')
+        )));
+        if (!str_starts_with($platform, 'linux')) {
+            throw new \Leikwan\Master\Support\ApiException('unsupported_runtime_platform', 409);
+        }
+        if (!$this->config->getBool('CLIENT_CONFIG_LONG_POLL_ENABLED', false)) {
+            throw new \Leikwan\Master\Support\ApiException('client_config_long_poll_disabled', 404);
+        }
+
+        $knownRevision = max(0, (int) $request->input('revision', 0));
+        $waitSeconds = max(0, min(25, (int) $request->input('wait', 25)));
+        $result = (new ClientConfigRevisionService($this->db))->watch(
+            (int) $client['id'],
+            $knownRevision,
+            $waitSeconds
+        );
+        return $this->json($result);
     }
 
     public function heartbeat(Request $request, array $params): Response
