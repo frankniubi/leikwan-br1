@@ -1,11 +1,11 @@
 {
   "slave_agent": {
-    "version": "2026.08.05.3",
+    "version": "2026.08.06.1",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "543f4f0818d1db10f06988e3ad20278a966432c6d41f02fba2b0d5f4a80dd430",
-    "size_bytes": 355778,
-    "size": 355778
+    "sha256": "48ad5d414dae328980537778bd87d7a0bf46c3ddf44c0a38d40a9b691f3daf3c",
+    "size_bytes": 368067,
+    "size": 368067
   },
   "gost_linux_amd64": {
     "version": "3.2.6",
@@ -21,7 +21,7 @@
     "artifact_url": "/artifacts/leigod/leigod-linux-amd64",
     "sha256": "b15fc09c4c03df82ab5fda97962ae175c124b6f61ce3167e77a0fb3d14a33b86",
     "size_bytes": 10779919,
-    "note": "recovered LeiGod accelerator (slave only); runs leigod@<line> exposing SOCKS 127.0.0.1:20000+line. Fill sha256/size when published."
+    "note": "Recovered LeiGod provider for lease-managed Linux execution; exposes root-managed loopback SOCKS listeners."
   },
   "lguot_linux_amd64": {
     "version": "2026.06.03.2",
@@ -69,20 +69,20 @@
     "install_url": "/artifacts/uninstall-bond-sidecar.sh"
   },
   "client_agent": {
-    "version": "2026.08.04.1",
+    "version": "2026.08.06.1",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "4324a51b5c654c30449c8b5ff116beedce2eca1c5605d675b471a2e862dbfed5",
-    "size_bytes": 242762,
-    "size": 242762
+    "sha256": "db0fbc4cb1dc00be35157dafe6e12c3c5bb4d66ebc53a55b8f377ab22f6a1f38",
+    "size_bytes": 286656,
+    "size": 286656
   },
   "client_agent_installer": {
-    "version": "2026.07.28.2",
+    "version": "2026.08.06.1",
     "path": "install/install-client-agent.sh",
     "install_url": "/artifacts/install-client-agent.sh",
     "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "3e2a9a676b553d302bb8ea6454091b879d14c5bcd32a9a718aaf4afb07c62be8",
-    "size_bytes": 19535,
+    "sha256": "f780d1630c2ac0fda8edecf58b57669778c6be83a2affb63071f44edaa0efdd5",
+    "size_bytes": 20301,
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
@@ -127,11 +127,18 @@
     "artifact_url": "/artifacts/leikwan-udp-uot-merge.py"
   },
   "leikwan_bond_linux_amd64": {
-    "version": "0.1.34",
+    "version": "0.1.35",
     "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64",
-    "sha256": "c196984ea90011e0fa03053b4499a7f4ef4ec6f3cdb7560449b0f20c42bbc655",
-    "size_bytes": 9044440
+    "sha256": "c1f5c223e7ec27b98e73399a356d377b9ba97b073fc39e8d5c01d5b9df3f5e84",
+    "size_bytes": 9884720
+  },
+  "leikwan_pathd_linux_amd64": {
+    "version": "0.1.35",
+    "path": "artifacts/wstunnel/leikwan-pathd_linux_amd64",
+    "artifact_url": "/artifacts/wstunnel/leikwan-pathd_linux_amd64",
+    "sha256": "caddcf20082e9b6bcb47a2522fbad5864c82056766a8d8b10a84967af1ac405b",
+    "size_bytes": 9357360
   },
   "wstunnel_linux_amd64": {
     "version": "10.5.2",
@@ -186,12 +193,12 @@
     "size_bytes": 55652648
   },
   "install_forward_runtime": {
-    "version": "2026.08.05.1",
+    "version": "2026.08.06.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "797350c7d4a6d0d3231fac4cbdf73b443306e52ec4b3040b28768625670d2c83",
-    "size_bytes": 80332,
-    "size": 80332
+    "sha256": "88594240c92d6b340c2caba167d576836383020843c94f459809cde16e4e6e53",
+    "size_bytes": 80556,
+    "size": 80556
   },
   "tcp_race_runtime": {
     "version": "2026.07.27.1",

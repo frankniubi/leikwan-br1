@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.07.28.2"
+INSTALLER_VERSION="2026.08.06.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -493,18 +493,28 @@ except Exception:
 }
 
 download_manifest_artifact() {
-  local key="$1" url="$2" path="$3" expected_sha256
+  local key="$1" url="$2" path="$3" expected_sha256 tmp_path="${path}.new"
   expected_sha256="$(_vers_sha256 "$key")"
+  if [[ ! "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]; then
+    echo "missing or invalid artifact sha256: $key" >&2
+    return 1
+  fi
   if check_binary_current "$path" "$expected_sha256"; then
     echo "  $key up to date, skipping download"
     return 0
   fi
-  download_atomic "$url" "$path"
-  if [[ -n "$expected_sha256" ]] && ! check_binary_current "$path" "$expected_sha256"; then
-    rm -f "$path"
+  if ! leikwan_protected_download "$url" "$tmp_path" || [[ ! -s "$tmp_path" ]]; then
+    rm -f "$tmp_path"
+    echo "artifact download failed or was empty: $key" >&2
+    return 1
+  fi
+  chmod 0755 "$tmp_path"
+  if ! check_binary_current "$tmp_path" "$expected_sha256"; then
+    rm -f "$tmp_path"
     echo "downloaded artifact sha256 mismatch: $key" >&2
     return 1
   fi
+  mv "$tmp_path" "$path"
 }
 
 _VERSIONS_PATH="$STATE_DIR/versions.json.new"
@@ -539,6 +549,9 @@ download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
+download_manifest_artifact leikwan_pathd_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-pathd_linux_amd64" "$BIN_DIR/leikwan-pathd"
+download_manifest_artifact leigod_linux_amd64 "$ARTIFACT_BASE/artifacts/leigod/leigod-linux-amd64" "$BIN_DIR/leigod-linux-amd64"
+chmod 0755 "$BIN_DIR/leikwan-pathd" "$BIN_DIR/leigod-linux-amd64"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64" "$STATE_DIR/leikwan-mptcp-relay"
 
 cat > "$CONFIG_DIR/config.json" <<JSON
@@ -550,6 +563,8 @@ cat > "$CONFIG_DIR/config.json" <<JSON
   "state_dir": "$STATE_DIR",
   "bond_bin": "/usr/local/bin/leikwan-bond",
   "bond_ingress_bin": "/usr/local/bin/leikwan-ingress",
+  "pathd_bin": "/usr/local/bin/leikwan-pathd",
+  "leigod_bin": "/usr/local/bin/leigod-linux-amd64",
   "mptcp_client_bin": "$BIN_DIR/leikwan-mptcp-client.py",
   "log_level": "INFO",
   "installer_version": "$INSTALLER_VERSION",

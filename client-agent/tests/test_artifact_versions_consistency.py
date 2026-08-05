@@ -47,6 +47,34 @@ class ArtifactVersionsConsistencyTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(source_path.read_bytes()).hexdigest(), runtime["sha256"])
         self.assertEqual(source_path.stat().st_size, runtime["size_bytes"])
 
+    def test_pathd_artifact_matches_manifest_and_cargo_version(self) -> None:
+        artifact_path = REPO_ROOT / "artifacts" / "wstunnel" / "leikwan-pathd_linux_amd64"
+        versions = json.loads((REPO_ROOT / "artifacts" / "versions.json").read_text(encoding="utf-8"))
+        entry = versions["leikwan_pathd_linux_amd64"]
+        cargo_text = (REPO_ROOT / "wstunnel-main" / "leikwan-bond" / "Cargo.toml").read_text(encoding="utf-8")
+        cargo_version = re.search(r'^version\s*=\s*"([^"]+)"', cargo_text, re.MULTILINE)
+
+        self.assertIsNotNone(cargo_version)
+        self.assertEqual(cargo_version.group(1), entry["version"])
+        self.assertEqual("artifacts/wstunnel/leikwan-pathd_linux_amd64", entry["path"])
+        self.assertEqual("/artifacts/wstunnel/leikwan-pathd_linux_amd64", entry["artifact_url"])
+        self.assertTrue(artifact_path.is_file())
+
+        import hashlib
+        self.assertEqual(hashlib.sha256(artifact_path.read_bytes()).hexdigest(), entry["sha256"])
+        self.assertEqual(artifact_path.stat().st_size, entry["size_bytes"])
+
+    def test_slave_agent_artifact_mirror_matches_source_and_manifest(self) -> None:
+        source_path = REPO_ROOT / "slave-agent" / "slave_agent.py"
+        artifact_path = REPO_ROOT / "artifacts" / "slave-agent.py"
+        versions = json.loads((REPO_ROOT / "artifacts" / "versions.json").read_text(encoding="utf-8"))
+        source_text = source_path.read_text(encoding="utf-8")
+        declared_version = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', source_text)
+
+        self.assertIsNotNone(declared_version)
+        self.assertEqual(source_path.read_bytes(), artifact_path.read_bytes())
+        self.assertEqual(declared_version.group(1), versions["slave_agent"]["version"])
+
 
     def test_client_agent_installer_artifact_hash_is_current(self) -> None:
         installer_path = REPO_ROOT / "install" / "install-client-agent.sh"

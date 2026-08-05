@@ -52,6 +52,30 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
             source,
         )
 
+    def test_installer_downloads_and_pins_pathd_binary(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'download_manifest_artifact leikwan_pathd_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-pathd_linux_amd64" "$BIN_DIR/leikwan-pathd"',
+            source,
+        )
+        self.assertIn(
+            'download_manifest_artifact leigod_linux_amd64 "$ARTIFACT_BASE/artifacts/leigod/leigod-linux-amd64" "$BIN_DIR/leigod-linux-amd64"',
+            source,
+        )
+        self.assertIn("missing or invalid artifact sha256", source)
+        self.assertIn('chmod 0755 "$BIN_DIR/leikwan-pathd"', source)
+        self.assertIn('"pathd_bin": "/usr/local/bin/leikwan-pathd"', source)
+        self.assertIn('"leigod_bin": "/usr/local/bin/leigod-linux-amd64"', source)
+
+        helper = source[source.index("download_manifest_artifact() {") : source.index("_VERSIONS_PATH=")]
+        self.assertIn('tmp_path="${path}.new"', helper)
+        self.assertIn('check_binary_current "$tmp_path" "$expected_sha256"', helper)
+        self.assertLess(
+            helper.index('check_binary_current "$tmp_path" "$expected_sha256"'),
+            helper.index('mv "$tmp_path" "$path"'),
+        )
+
     def test_installer_uses_protected_downloader_for_artifact_urls(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 

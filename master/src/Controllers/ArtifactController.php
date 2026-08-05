@@ -352,6 +352,8 @@ final class ArtifactController extends BaseController
             'wstunnel_linux_amd64',
             'wstunnel_windows_amd64',
             'leikwan_bond_linux_amd64',
+            'leikwan_pathd_linux_amd64',
+            'leigod_linux_amd64',
             'leikwan_bond_windows_amd64',
             'leikwan_bond_android_arm64',
             'leikwan_mptcp_relay_linux_amd64'
