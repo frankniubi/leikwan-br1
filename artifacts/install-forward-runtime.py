@@ -769,7 +769,11 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     service_name = f"leikwan-client-{forward_id}"
     service_path = f"/etc/systemd/system/{service_name}.service"
     bond = bonding_config(forward)
-    fixed_legs = fixed_endpoint_legs(bond)
+    aggregation_placement = str(bond.get("aggregation_placement", "") or "").strip()
+    if aggregation_placement not in ("", "slave_sidecar"):
+        raise RuntimeError(f"unknown bond aggregation placement: {aggregation_placement}")
+    server_side_bond = aggregation_placement == "slave_sidecar"
+    fixed_legs = [] if server_side_bond else fixed_endpoint_legs(bond)
     mptcp = mptcp_config(forward)
     frontend_mode = sidecar_frontend_mode(forward, bond)
     bond_remote_target = str(bond.get("remote_target", "")).strip()
@@ -798,6 +802,62 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
         normalized["port"] = port
         usable_endpoints.append(normalized)
     endpoints = usable_endpoints
+
+    if server_side_bond:
+        if mode != "bond" or not truthy(bond.get("fixed_endpoint", False)):
+            raise RuntimeError("server-side bond requires fixed native bond mode")
+        if transport != "tcp":
+            raise RuntimeError("server-side bond requires TCP-only transport")
+        if bond.get("fixed_endpoint_legs") not in (None, []):
+            raise RuntimeError("server-side bond contract must not expose logical legs")
+        if len(endpoints) != 1:
+            raise RuntimeError("server-side bond requires exactly one physical endpoint")
+        if str(bond.get("ingress_mode", "") or "").strip() != "plain_tcp_mux":
+            raise RuntimeError("server-side bond requires plain_tcp_mux ingress")
+        for field in ("remote_target", "sidecar_host", "aggregator_host", "session_token", "udp_session_token"):
+            if str(bond.get(field, "") or "").strip() != "":
+                raise RuntimeError(f"server-side bond contract must not expose {field}")
+        endpoint = endpoints[0]
+        if str(endpoint.get("runtime_target", "") or "").strip() != "":
+            raise RuntimeError("server-side bond contract must not expose a slave loopback target")
+        ingress_auth_token = str(endpoint.get("ingress_auth_token", "") or "").strip()
+        if ingress_auth_token == "":
+            raise RuntimeError("server-side bond requires ingress_auth_token")
+        route_key = str(bond.get("route_key", path_prefix) or path_prefix).strip()
+        if route_key == "":
+            raise RuntimeError("server-side bond requires route_key")
+        lines = [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            "trap 'kill $(jobs -p) 2>/dev/null || true' EXIT",
+            f"{bond_ingress_bin} client --listen 0.0.0.0:{listen_port} "
+            f"--remote {endpoint['host']}:{endpoint['port']} --route-key {route_key} "
+            f"--auth-token {ingress_auth_token} &",
+        ]
+        append_wait_for_local_listener(lines, [listen_port])
+        lines.append("wait -n")
+        start_script_path = f"/usr/local/bin/leikwan-client-start-{forward_id}.sh"
+        service_unit = f"""[Unit]
+Description=Leikwan Client {forward_id}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash {start_script_path}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+        return {
+            "service_name": service_name,
+            "service_path": service_path,
+            "service_unit": service_unit,
+            "start_script_path": start_script_path,
+            "start_script": "\n".join(lines) + "\n",
+            "extra_units": [],
+        }
 
     if frontend_mode == "single":
         endpoints = endpoints[:1]

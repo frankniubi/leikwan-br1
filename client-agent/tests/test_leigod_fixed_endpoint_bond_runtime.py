@@ -65,7 +65,56 @@ def fixed_forward() -> dict:
     }
 
 
+def server_side_forward() -> dict:
+    forward = fixed_forward()
+    forward["transport"] = "tcp"
+    forward["bonding"] = {
+        "enabled": True,
+        "fixed_endpoint": True,
+        "fixed_endpoint_legs": [],
+        "aggregation_placement": "slave_sidecar",
+        "ingress_mode": "plain_tcp_mux",
+        "route_key": "fixed-bond-route",
+        "adaptive_line_admission": True,
+        "throughput_min_mbps": 10.0,
+    }
+    forward["endpoints"] = [dict(forward["endpoints"][0])]
+    forward["endpoints"][0].pop("runtime_target", None)
+    return forward
+
+
 class FixedEndpointBondRuntimeTests(unittest.TestCase):
+    def test_server_side_placement_renders_one_transparent_ingress_and_zero_bond_processes(self) -> None:
+        script = str(runtime.render_forward_runtime(server_side_forward(), {}).get("start_script") or "")
+
+        self.assertEqual(1, script.count("leikwan-ingress client --listen"))
+        self.assertIn("--listen 0.0.0.0:12022", script)
+        self.assertEqual(1, script.count("--remote 203.0.113.15:7003"))
+        self.assertIn("--route-key fixed-bond-route", script)
+        self.assertIn("--auth-token auth-316", script)
+        self.assertNotIn("leikwan-bond", script)
+        self.assertNotIn("leg_route_id=", script)
+        self.assertNotIn("198.51.100.25", script)
+
+    def test_server_side_placement_rejects_leaked_legs_udp_multiple_endpoints_and_unknown_values(self) -> None:
+        invalid: dict[str, dict] = {}
+        leaked = server_side_forward()
+        leaked["bonding"]["fixed_endpoint_legs"] = [{"leg_route_id": 451}, {"leg_route_id": 453}]
+        invalid["leaked legs"] = leaked
+        udp = server_side_forward()
+        udp["transport"] = "tcp+udp"
+        invalid["udp"] = udp
+        multiple = server_side_forward()
+        multiple["endpoints"] *= 2
+        invalid["multiple endpoints"] = multiple
+        unknown = server_side_forward()
+        unknown["bonding"]["aggregation_placement"] = "client_magic"
+        invalid["unknown placement"] = unknown
+
+        for label, forward in invalid.items():
+            with self.subTest(label=label), self.assertRaisesRegex(RuntimeError, "aggregation placement|server-side bond"):
+                runtime.render_forward_runtime(forward, {})
+
     def test_one_physical_helper_expands_into_route_tagged_tcp_and_udp_legs(self) -> None:
         rendered = runtime.render_forward_runtime(fixed_forward(), {})
         script = str(rendered.get("start_script") or "")
