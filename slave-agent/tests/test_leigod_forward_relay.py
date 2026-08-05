@@ -581,6 +581,59 @@ class LeigodForwardRelayTests(unittest.IsolatedAsyncioTestCase):
                 self.config("bond", ("127.0.0.1", 80), [base_row, second_row | {"leg_route_id": 0}])
             )
 
+    def test_bond_config_allows_parallel_lanes_on_one_physical_line(self) -> None:
+        first_lane = {
+            "combination_id": 1,
+            "line_id": 451,
+            "leg_route_id": 451,
+            "socks_host": "127.0.0.1",
+            "socks_port": 20451,
+            "sort_order": 10,
+        }
+        second_lane = first_lane | {"leg_route_id": 1_004_512, "sort_order": 20}
+
+        config = relay_module.parse_config(
+            self.config("bond", ("127.0.0.1", 80), [first_lane, second_lane])
+        )
+        runtime = relay_module.RelayRuntime(config)
+
+        self.assertEqual({451, 1_004_512}, set(runtime._bond_candidates_by_route))
+        self.assertEqual([451, 1_004_512], runtime.selector.state(451).snapshot()["leg_route_ids"])
+
+        duplicate_route = second_lane | {"leg_route_id": 451}
+        with self.assertRaisesRegex(ValueError, "duplicate bond leg routes"):
+            relay_module.parse_config(
+                self.config("bond", ("127.0.0.1", 80), [first_lane, duplicate_route])
+            )
+
+    async def test_bond_parallel_lanes_share_one_physical_socks_line(self) -> None:
+        async with TcpEchoServer() as target, FakeSocksServer(451) as physical_line:
+            first_lane = physical_line.candidate(1, 10) | {"leg_route_id": 451}
+            second_lane = physical_line.candidate(1, 20) | {"leg_route_id": 1_004_512}
+            runtime = await self.start_runtime(
+                self.config("bond", target.address, [first_lane, second_lane])
+            )
+
+            for route_id in (451, 1_004_512):
+                reader, writer = await asyncio.open_connection(*runtime.tcp_address)
+                header = bond_hello_header(route_id)
+                payload = bytes(20) + f"lane-{route_id}".encode()
+                try:
+                    writer.write(header + payload)
+                    await writer.drain()
+                    self.assertEqual(header + payload, await reader.readexactly(len(header) + len(payload)))
+                finally:
+                    writer.close()
+                    with contextlib.suppress(Exception):
+                        await writer.wait_closed()
+
+            await asyncio.sleep(0.05)
+            state = runtime.candidate_state(451)
+            self.assertEqual([451, 1_004_512], state["leg_route_ids"])
+            self.assertEqual(2, state["bond_route"]["accepted"])
+            self.assertEqual(2, state["bond_route"]["connect_successes"])
+            self.assertEqual([target.address, target.address], physical_line.connect_targets)
+
     async def test_race_selects_lowest_latency_after_hysteresis(self) -> None:
         async with TcpEchoServer() as target, FakeSocksServer(451, 30) as first, FakeSocksServer(453, 2) as second:
             runtime = await self.start_runtime(self.config("race", target.address, [first.candidate(1, 10), second.candidate(2, 20)], switch_improvement_ms=5))

@@ -4753,6 +4753,8 @@ fn apply_tcp_delivery_observed(
     };
     let needs_capacity_sample = legs.get(leg_id).is_some_and(|leg| {
         leg.tcp_health.bulk_admission == BulkAdmissionState::Probation
+            || (leg.tcp_health.bulk_admission == BulkAdmissionState::Degraded
+                && leg.tcp_health.throughput_mbps_ewma >= config.throughput_min_mbps)
             || leg.tcp_health.throughput_qualifying_samples
                 < config.throughput_bad_windows.max(1) as u64
     });
@@ -4955,8 +4957,6 @@ fn select_adaptive_bulk_leg(
                 BulkAdmissionState::Quarantined => false,
                 BulkAdmissionState::Degraded => {
                     leg.tcp_health.throughput_mbps_ewma >= config.throughput_min_mbps
-                        && leg.tcp_health.throughput_qualifying_samples
-                            < config.throughput_bad_windows.max(1) as u64
                 }
                 BulkAdmissionState::Admitted => {
                     leg.tcp_health.throughput_qualifying_samples
@@ -6643,6 +6643,36 @@ mod tests {
             config.throughput_bad_windows as u64
         );
         assert_eq!(legs[0].tcp_health.throughput_mbps_ewma, 200.0);
+    }
+
+    #[test]
+    fn sampled_degraded_leg_continues_calibration_until_quarantined() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut fast = fake_leg(0, 10, 0, 20);
+        fast.tcp_health.throughput_mbps_ewma = 100.0;
+        fast.tcp_health.throughput_qualifying_samples = config.throughput_bad_windows as u64;
+        fast.tcp_health.bulk_admission = BulkAdmissionState::Admitted;
+        let mut degraded = fake_leg(1, 10, 0, 25);
+        degraded.tcp_health.throughput_mbps_ewma = 30.0;
+        degraded.tcp_health.throughput_qualifying_samples = config.throughput_bad_windows as u64;
+        degraded.tcp_health.consecutive_bad_windows = config.throughput_bad_windows - 1;
+        degraded.tcp_health.bulk_admission = BulkAdmissionState::Degraded;
+        let mut legs = vec![fast, degraded];
+
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now, &config),
+            Some(1)
+        );
+        apply_tcp_throughput_sample(&mut legs, 1, 30.0, now + Duration::from_secs(1), &config);
+        assert_eq!(
+            legs[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined
+        );
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now + Duration::from_secs(1), &config),
+            Some(0)
+        );
     }
 
     #[test]

@@ -171,6 +171,35 @@ class LeigodServerSideBondRuntimeTests(unittest.TestCase):
         self.assertEqual("signed-session-token.payload", runtime["session_token"])
         self.assertTrue(runtime["adaptive_line_admission"])
 
+    def test_validation_accepts_parallel_lanes_for_one_physical_line(self):
+        agent, _root, _bond_bin = self.make_agent()
+        payload = self.payload()
+        second_lane = copy.deepcopy(payload["leigod_forward"]["candidates"][0])
+        second_lane["leg_route_id"] = 1_004_512
+        payload["leigod_forward"]["candidates"].append(second_lane)
+        payload["server_side_bond"]["legs"].append({"leg_route_id": 1_004_512})
+        self.seed_health(agent, payload["leigod_forward"]["candidates"])
+
+        relay = agent.validate_leigod_forward_payload(
+            "wstunnel-svc-2-316", self.task(), payload, "127.0.0.1:48316"
+        )
+        bond = agent.validate_server_side_bond_payload(
+            "wstunnel-svc-2-316", payload, payload["target"]
+        )
+
+        self.assertEqual([451, 453, 1_004_512], bond["leg_route_ids"])
+        self.assertEqual(
+            [451, 453, 1_004_512],
+            [row["leg_route_id"] for row in relay["runtime_config"]["candidates"]],
+        )
+
+        mismatched = copy.deepcopy(payload)
+        mismatched["leigod_forward"]["candidates"][2]["leg_route_id"] = 1_004_532
+        with self.assertRaisesRegex(RuntimeError, "route"):
+            agent.validate_leigod_forward_payload(
+                "wstunnel-svc-2-316", self.task(), mismatched, "127.0.0.1:48316"
+            )
+
     def test_validation_rejects_incomplete_or_unsafe_contracts(self):
         agent, _root, _bond_bin = self.make_agent()
         valid = self.payload()

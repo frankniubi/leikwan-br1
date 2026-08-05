@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.08.05.2"
+AGENT_VERSION = "2026.08.05.3"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -36,6 +36,17 @@ UPDATE_STALE_SECONDS = 900
 COMMAND_TIMEOUT_SECONDS = 30
 LEIGOD_LINE_CAP = 64
 LEIGOD_FORWARD_SELECTION_CAP = 128
+LEIGOD_PARALLEL_ROUTE_BASE = 1_000_000
+LEIGOD_PARALLEL_ROUTE_MULTIPLIER = 10
+
+
+def valid_leigod_bond_leg_route(line_id: int, leg_route_id: int) -> bool:
+    if line_id < 1 or line_id > 45535 or leg_route_id < 1 or leg_route_id > 0xFFFFFFFF:
+        return False
+    if leg_route_id == line_id:
+        return True
+    encoded = leg_route_id - LEIGOD_PARALLEL_ROUTE_BASE
+    return encoded // LEIGOD_PARALLEL_ROUTE_MULTIPLIER == line_id and 2 <= encoded % 10 <= 9
 
 # Shared restart ledger (cross-language byte contract). The on-disk format is
 # one append-only file per interface at <dir>/<iface>.log, where each restart
@@ -3893,7 +3904,7 @@ WantedBy=multi-user.target
             if not isinstance(row, dict):
                 raise RuntimeError("server-side bond leg must be an object")
             route_id = int(row.get("leg_route_id", 0) or 0)
-            if route_id < 1 or route_id > 45535:
+            if route_id < 1 or route_id > 0xFFFFFFFF:
                 raise RuntimeError("invalid server-side bond leg route")
             if route_id in leg_route_ids:
                 raise RuntimeError("duplicate server-side bond leg route")
@@ -3950,6 +3961,12 @@ WantedBy=multi-user.target
             )
         )
         settings = {
+            "parallel_lanes_per_line": bounded_number(
+                "parallel_lanes_per_line", 2, 1, 4, integer=True
+            ),
+            "parallel_leg_limit": bounded_number(
+                "parallel_leg_limit", 8, 2, 8, integer=True
+            ),
             "throughput_min_mbps": bounded_number("throughput_min_mbps", 10.0, 0.001, 10_000.0),
             "throughput_relative_floor": bounded_number("throughput_relative_floor", 0.35, 0.001, 1.0),
             "throughput_min_sample_bytes": bounded_number(
@@ -4044,6 +4061,7 @@ WantedBy=multi-user.target
         candidates: list[dict[str, Any]] = []
         seen_lines: set[int] = set()
         seen_keys: set[tuple[int, int]] = set()
+        seen_leg_routes: set[int] = set()
         combinations: set[int] = set()
         metadata_candidates: list[dict[str, Any]] = []
         for index, candidate in enumerate(raw_candidates):
@@ -4057,9 +4075,12 @@ WantedBy=multi-user.target
             socks_port = int(candidate.get("socks_port", 0) or 0)
             if combination_id <= 0 or line_id < 1 or line_id > 45535:
                 raise RuntimeError("invalid leigod relay candidate identity")
-            if mode == "bond" and leg_route_id != line_id:
-                raise RuntimeError(f"bond leigod candidate {line_id} route must equal line_id")
-            if line_id in seen_lines or (combination_id, line_id) in seen_keys:
+            if mode == "bond":
+                if not valid_leigod_bond_leg_route(line_id, leg_route_id):
+                    raise RuntimeError(f"invalid bond leigod candidate {line_id} route")
+                if leg_route_id in seen_leg_routes:
+                    raise RuntimeError("duplicate bond leigod leg route")
+            elif line_id in seen_lines or (combination_id, line_id) in seen_keys:
                 raise RuntimeError("duplicate leigod relay candidate")
             if socks_host != "127.0.0.1" or socks_port != 20000 + line_id:
                 raise RuntimeError(f"leigod candidate {line_id} SOCKS port mismatch")
@@ -4086,6 +4107,8 @@ WantedBy=multi-user.target
                 raise RuntimeError(f"leigod candidate {line_id} is not healthy for {transport}")
             seen_lines.add(line_id)
             seen_keys.add((combination_id, line_id))
+            if mode == "bond":
+                seen_leg_routes.add(leg_route_id)
             combinations.add(combination_id)
             runtime_candidate = {
                 "combination_id": combination_id,
@@ -4335,6 +4358,8 @@ WantedBy=multi-user.target
             "session_token_present": bool(str(runtime.get("session_token", "") or "")),
             "session_token_sha256": str(runtime.get("session_token_sha256", "") or ""),
             "adaptive_line_admission": bool(runtime.get("adaptive_line_admission", False)),
+            "parallel_lanes_per_line": int(runtime.get("parallel_lanes_per_line", 1) or 1),
+            "parallel_leg_limit": int(runtime.get("parallel_leg_limit", 0) or 0),
             "throughput_min_mbps": float(runtime.get("throughput_min_mbps", 0) or 0),
             "throughput_relative_floor": float(runtime.get("throughput_relative_floor", 0) or 0),
             "throughput_min_sample_bytes": int(runtime.get("throughput_min_sample_bytes", 0) or 0),

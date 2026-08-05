@@ -12,6 +12,8 @@ use Leikwan\Master\Support\ApiException;
 final class ProvisioningService
 {
     public const DEFAULT_MAX_LEGS_USED = 4;
+    private const LEIGOD_PARALLEL_ROUTE_BASE = 1000000;
+    private const LEIGOD_PARALLEL_ROUTE_MULTIPLIER = 10;
     // donation_qualify_gate_ratio
     public const DONATION_GATE_RATIO = 0.75;
 
@@ -708,6 +710,8 @@ final class ProvisioningService
         return [
             'aggregation_placement' => 'slave_sidecar',
             'adaptive_line_admission' => true,
+            'parallel_lanes_per_line' => max(1, min(4, $this->config->getInt('BOND_LEIGOD_PARALLEL_LANES_PER_LINE', 2))),
+            'parallel_leg_limit' => max(2, min(8, $this->config->getInt('BOND_LEIGOD_PARALLEL_LEG_LIMIT', 8))),
             'throughput_min_mbps' => $floatConfig('BOND_LEIGOD_THROUGHPUT_MIN_MBPS', 10.0, 0.001, 10000.0),
             'throughput_relative_floor' => $floatConfig('BOND_LEIGOD_THROUGHPUT_RELATIVE_FLOOR', 0.35, 0.001, 1.0),
             'throughput_min_sample_bytes' => max(1, min(64 * 1024 * 1024, $this->config->getInt('BOND_LEIGOD_THROUGHPUT_MIN_SAMPLE_BYTES', 1048576))),
@@ -718,6 +722,39 @@ final class ProvisioningService
             'throughput_probe_interval_ms' => max(1, min(86400000, $this->config->getInt('BOND_LEIGOD_THROUGHPUT_PROBE_INTERVAL_MS', 30000))),
             'throughput_probe_bytes' => max(1, min(64 * 1024 * 1024, $this->config->getInt('BOND_LEIGOD_THROUGHPUT_PROBE_BYTES', 1048576))),
         ];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $candidates
+     * @return array<int, array<string, mixed>>
+     */
+    private function serverSideLeigodParallelCandidates(array $candidates): array
+    {
+        $policy = $this->serverSideLeigodBondPolicy();
+        $lanesPerLine = (int) ($policy['parallel_lanes_per_line'] ?? 1);
+        $legLimit = (int) ($policy['parallel_leg_limit'] ?? 8);
+        $expanded = array_values($candidates);
+        if ($lanesPerLine <= 1 || count($expanded) >= $legLimit) {
+            return array_slice($expanded, 0, $legLimit);
+        }
+
+        for ($lane = 2; $lane <= $lanesPerLine; $lane++) {
+            foreach ($candidates as $candidate) {
+                if (count($expanded) >= $legLimit) {
+                    break 2;
+                }
+                $lineId = (int) ($candidate['line_id'] ?? 0);
+                if ($lineId <= 0) {
+                    continue;
+                }
+                $parallel = $candidate;
+                $parallel['leg_route_id'] = self::LEIGOD_PARALLEL_ROUTE_BASE
+                    + ($lineId * self::LEIGOD_PARALLEL_ROUTE_MULTIPLIER)
+                    + $lane;
+                $expanded[] = $parallel;
+            }
+        }
+        return $expanded;
     }
 
     /** @return array<string, int|float|bool|string> */
@@ -8058,6 +8095,9 @@ final class ProvisioningService
                     $candidate['leg_route_id'] = (int) ($candidate['line_id'] ?? 0);
                     return $candidate;
                 }, $candidates));
+                if ($serverSideLeigodBond) {
+                    $candidates = $this->serverSideLeigodParallelCandidates($candidates);
+                }
             }
             $relayPort = $this->stableLeigodRelayPort((int) ($forward['id'] ?? 0), $endpointId);
             $routeId = (int) ($forward['forward_route_id'] ?? 0);

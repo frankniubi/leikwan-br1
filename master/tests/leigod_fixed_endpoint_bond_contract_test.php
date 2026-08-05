@@ -368,10 +368,15 @@ namespace {
         'bond_sidecar_point_agent_config_json' => $serverSidePoint['agent_config_json'],
     ]);
     $serverPayload = call_private($service, 'publishTaskPayloadForForward', $serverPublishForward, $node, 316);
+    $parallelLegRouteIds = [447, 451, 453, 455, 456, 1004472, 1004512, 1004532];
     assertSame('127.0.0.1:58316', $serverPayload['target'] ?? null, 'server-side bond frontend target');
     assertSame('127.0.0.1:48316', $serverPayload['server_side_bond']['leg_relay_target'] ?? null, 'server-side bond relay target');
     assertSame('198.51.100.25:18501', $serverPayload['server_side_bond']['sidecar_target'] ?? null, 'server-side bond sidecar target');
-    assertSame($lineIds, array_column($serverPayload['server_side_bond']['legs'] ?? [], 'leg_route_id'), 'server-only logical legs');
+    assertSame($parallelLegRouteIds, array_column($serverPayload['leigod_forward']['candidates'] ?? [], 'leg_route_id'), 'relay parallel lanes');
+    assertSame($parallelLegRouteIds, array_column($serverPayload['server_side_bond']['legs'] ?? [], 'leg_route_id'), 'server-only logical legs');
+    assertSame(8, $serverPayload['server_side_bond']['preferred_initial_legs'] ?? null, 'parallel preferred legs');
+    assertSame(2, $serverPayload['server_side_bond']['parallel_lanes_per_line'] ?? null, 'parallel lanes per line');
+    assertSame(8, $serverPayload['server_side_bond']['parallel_leg_limit'] ?? null, 'parallel leg limit');
     assertSame(true, ($serverPayload['server_side_bond']['session_token'] ?? '') !== '', 'server bond token exists');
     assertSame('tcp', $serverPayload['transport_mode'] ?? null, 'server bond carrier is tcp');
     assertSame('tcp_relay', $serverPayload['backend_protocol'] ?? null, 'server bond backend stays plain tcp');

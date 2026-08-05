@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
-VERSION = "2026.08.05.1"
+VERSION = "2026.08.05.2"
 MAX_CANDIDATES = 8
 COPY_CHUNK = 256 * 1024
 IDLE_TIMEOUT_SECONDS = 300.0
@@ -282,7 +282,11 @@ class RelayConfig:
         keys = [candidate.key for candidate in self.candidates]
         line_ids = [candidate.line_id for candidate in self.candidates]
         socks_endpoints = [(candidate.socks_host, candidate.socks_port) for candidate in self.candidates]
-        if len(set(keys)) != len(keys) or len(set(line_ids)) != len(line_ids) or len(set(socks_endpoints)) != len(socks_endpoints):
+        if self.mode != "bond" and (
+            len(set(keys)) != len(keys)
+            or len(set(line_ids)) != len(line_ids)
+            or len(set(socks_endpoints)) != len(socks_endpoints)
+        ):
             raise ValueError("duplicate candidates are not allowed")
         if self.mode == "bond":
             leg_route_ids = [candidate.leg_route_id for candidate in self.candidates]
@@ -300,6 +304,8 @@ class RelayConfig:
 class CandidateState:
     def __init__(self, candidate: CandidateConfig) -> None:
         self.candidate = candidate
+        self.leg_route_ids: list[int] = []
+        self.add_leg_route(candidate.leg_route_id)
         self.tcp_healthy = False
         self.udp_healthy = False
         self.latency_ms: float | None = None
@@ -325,6 +331,10 @@ class CandidateState:
         self.sample_updated_at: float | None = None
         self.sampling_in_flight = False
 
+    def add_leg_route(self, leg_route_id: int) -> None:
+        if leg_route_id > 0 and leg_route_id not in self.leg_route_ids:
+            self.leg_route_ids.append(leg_route_id)
+
     def record_bond_error(self, error: Exception) -> None:
         self.bond_last_error = str(error)[:500]
 
@@ -344,6 +354,7 @@ class CandidateState:
             "combination_id": self.candidate.combination_id,
             "line_id": self.candidate.line_id,
             "leg_route_id": self.candidate.leg_route_id,
+            "leg_route_ids": list(self.leg_route_ids),
             "tcp_healthy": self.tcp_healthy,
             "udp_healthy": self.udp_healthy,
             "latency_ms": self.latency_ms,
@@ -530,7 +541,10 @@ async def socks_udp_round_trip(
 class CandidateSelector:
     def __init__(self, config: RelayConfig) -> None:
         self.config = config
-        self.states = {candidate.line_id: CandidateState(candidate) for candidate in config.candidates}
+        self.states: dict[int, CandidateState] = {}
+        for candidate in config.candidates:
+            state = self.states.setdefault(candidate.line_id, CandidateState(candidate))
+            state.add_leg_route(candidate.leg_route_id)
         self.selected_tcp_line_id: int | None = config.candidates[0].line_id if "tcp" in config.transport else None
         self.selected_udp_line_id: int | None = None
         self.last_switch_at = time.monotonic()
