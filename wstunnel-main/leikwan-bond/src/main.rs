@@ -42,6 +42,16 @@ enum Command {
         connect_timeout_ms: u64,
         #[arg(long, default_value = "400")]
         join_timeout_ms: u64,
+        #[arg(long, default_value = "2")]
+        preferred_initial_legs: usize,
+        #[arg(long, default_value = "1")]
+        minimum_initial_legs: usize,
+        #[arg(long, default_value = "600")]
+        initial_leg_wait_ms: u64,
+        #[arg(long, default_value = "1800000")]
+        leg_reconnect_backoff_ms: u64,
+        #[arg(long, default_value = "1800000")]
+        leg_reconnect_backoff_max_ms: u64,
         #[arg(long, default_value = "0")]
         active_leg_limit: usize,
         #[arg(long, default_value = "16384")]
@@ -78,6 +88,35 @@ enum Command {
     },
 }
 
+fn validate_leg_readiness_settings(
+    preferred_initial_legs: usize,
+    minimum_initial_legs: usize,
+    initial_leg_wait_ms: u64,
+    leg_reconnect_backoff_ms: u64,
+    leg_reconnect_backoff_max_ms: u64,
+) -> anyhow::Result<()> {
+    if preferred_initial_legs == 0 || minimum_initial_legs == 0 {
+        return Err(anyhow::anyhow!("initial bond leg counts must be positive"));
+    }
+    if minimum_initial_legs > preferred_initial_legs {
+        return Err(anyhow::anyhow!(
+            "minimum initial bond legs cannot exceed preferred initial legs"
+        ));
+    }
+    if initial_leg_wait_ms == 0 {
+        return Err(anyhow::anyhow!("initial bond leg wait must be positive"));
+    }
+    if leg_reconnect_backoff_ms == 0 || leg_reconnect_backoff_max_ms == 0 {
+        return Err(anyhow::anyhow!("bond leg reconnect backoff must be positive"));
+    }
+    if leg_reconnect_backoff_ms > leg_reconnect_backoff_max_ms {
+        return Err(anyhow::anyhow!(
+            "bond leg reconnect backoff cannot exceed its maximum"
+        ));
+    }
+    Ok(())
+}
+
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -93,6 +132,11 @@ fn main() {
             retransmit_ms,
             connect_timeout_ms,
             join_timeout_ms,
+            preferred_initial_legs,
+            minimum_initial_legs,
+            initial_leg_wait_ms,
+            leg_reconnect_backoff_ms,
+            leg_reconnect_backoff_max_ms,
             active_leg_limit,
             interactive_chunk_bytes,
             latency_guard_bytes,
@@ -114,6 +158,15 @@ fn main() {
             };
             let runtime = transport.and_then(|protocol_mode| {
                 ClientStrategy::parse(&default_strategy).map(|strategy| (protocol_mode, strategy))
+            }).and_then(|runtime| {
+                validate_leg_readiness_settings(
+                    preferred_initial_legs,
+                    minimum_initial_legs,
+                    initial_leg_wait_ms,
+                    leg_reconnect_backoff_ms,
+                    leg_reconnect_backoff_max_ms,
+                )?;
+                Ok(runtime)
             });
             match runtime {
                 Ok((protocol_mode, default_strategy)) => {
@@ -123,6 +176,11 @@ fn main() {
                         retransmit_after: Duration::from_millis(retransmit_ms),
                         join_timeout: Duration::from_millis(join_timeout_ms),
                         connect_timeout: Duration::from_millis(connect_timeout_ms),
+                        preferred_initial_legs,
+                        minimum_initial_legs,
+                        initial_leg_wait: Duration::from_millis(initial_leg_wait_ms),
+                        leg_reconnect_backoff: Duration::from_millis(leg_reconnect_backoff_ms),
+                        leg_reconnect_backoff_max: Duration::from_millis(leg_reconnect_backoff_max_ms),
                         interactive_chunk_bytes,
                         latency_guard_bytes,
                         interactive_rtt_slack: Duration::from_millis(interactive_rtt_slack_ms),
@@ -163,6 +221,11 @@ fn main() {
                 retransmit_after: Duration::from_millis(300),
                 join_timeout: Duration::from_millis(400),
                 connect_timeout: Duration::from_millis(3000),
+                preferred_initial_legs: 2,
+                minimum_initial_legs: 1,
+                initial_leg_wait: Duration::from_millis(600),
+                leg_reconnect_backoff: Duration::from_secs(30 * 60),
+                leg_reconnect_backoff_max: Duration::from_secs(30 * 60),
                 interactive_chunk_bytes: 16384,
                 latency_guard_bytes: 262144,
                 interactive_rtt_slack: Duration::from_millis(30),
@@ -230,6 +293,110 @@ mod tests {
         match cli.command {
             Command::Client { join_timeout_ms, .. } => assert_eq!(join_timeout_ms, 400),
             _ => panic!("expected client command"),
+        }
+    }
+
+    #[test]
+    fn client_cli_accepts_fixed_leg_readiness_and_retry_flags() {
+        let cli = Cli::try_parse_from([
+            "leikwan-bond",
+            "client",
+            "--protocol",
+            "tcp",
+            "--listen",
+            "0.0.0.0:11024",
+            "--legs",
+            "tcp://127.0.0.1:20962?leg_route_id=451,tcp://127.0.0.1:20962?leg_route_id=453",
+            "--session-token",
+            "token",
+            "--preferred-initial-legs",
+            "5",
+            "--minimum-initial-legs",
+            "2",
+            "--initial-leg-wait-ms",
+            "3000",
+            "--leg-reconnect-backoff-ms",
+            "5000",
+            "--leg-reconnect-backoff-max-ms",
+            "60000",
+        ])
+        .expect("client cli should parse fixed leg readiness and retry settings");
+
+        match cli.command {
+            Command::Client {
+                preferred_initial_legs,
+                minimum_initial_legs,
+                initial_leg_wait_ms,
+                leg_reconnect_backoff_ms,
+                leg_reconnect_backoff_max_ms,
+                ..
+            } => {
+                assert_eq!(preferred_initial_legs, 5);
+                assert_eq!(minimum_initial_legs, 2);
+                assert_eq!(initial_leg_wait_ms, 3000);
+                assert_eq!(leg_reconnect_backoff_ms, 5000);
+                assert_eq!(leg_reconnect_backoff_max_ms, 60000);
+            }
+            _ => panic!("expected client command"),
+        }
+    }
+
+    #[test]
+    fn client_cli_keeps_legacy_leg_readiness_and_retry_defaults() {
+        let cli = Cli::try_parse_from([
+            "leikwan-bond",
+            "client",
+            "--protocol",
+            "tcp",
+            "--listen",
+            "0.0.0.0:11024",
+            "--legs",
+            "tcp://127.0.0.1:20962?priority=10",
+            "--session-token",
+            "token",
+        ])
+        .expect("client cli should retain legacy defaults");
+
+        match cli.command {
+            Command::Client {
+                preferred_initial_legs,
+                minimum_initial_legs,
+                initial_leg_wait_ms,
+                leg_reconnect_backoff_ms,
+                leg_reconnect_backoff_max_ms,
+                ..
+            } => {
+                assert_eq!(preferred_initial_legs, 2);
+                assert_eq!(minimum_initial_legs, 1);
+                assert_eq!(initial_leg_wait_ms, 600);
+                assert_eq!(leg_reconnect_backoff_ms, 30 * 60 * 1000);
+                assert_eq!(leg_reconnect_backoff_max_ms, 30 * 60 * 1000);
+            }
+            _ => panic!("expected client command"),
+        }
+    }
+
+    #[test]
+    fn leg_readiness_settings_reject_invalid_bounds() {
+        for settings in [
+            (0, 1, 600, 1_800_000, 1_800_000),
+            (2, 0, 600, 1_800_000, 1_800_000),
+            (1, 2, 600, 1_800_000, 1_800_000),
+            (2, 1, 0, 1_800_000, 1_800_000),
+            (2, 1, 600, 0, 1_800_000),
+            (2, 1, 600, 60_000, 5_000),
+        ] {
+            assert!(
+                validate_leg_readiness_settings(
+                    settings.0,
+                    settings.1,
+                    settings.2,
+                    settings.3,
+                    settings.4,
+                )
+                .is_err(),
+                "settings should be rejected: {settings:?}"
+            );
         }
     }
 

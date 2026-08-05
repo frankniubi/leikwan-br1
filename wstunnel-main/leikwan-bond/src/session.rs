@@ -50,6 +50,53 @@ fn read_credit_chunks(config: &SessionConfig) -> usize {
     window.saturating_add(chunk_size - 1) / chunk_size
 }
 
+fn initial_leg_quorum_met(ready: usize, preferred: usize, minimum: usize) -> bool {
+    preferred > 0 && minimum > 0 && minimum <= preferred && ready >= minimum
+}
+
+fn effective_initial_leg_counts(
+    spec_count: usize,
+    preferred: usize,
+    minimum: usize,
+) -> anyhow::Result<(usize, usize)> {
+    if spec_count == 0 || preferred == 0 || minimum == 0 || minimum > preferred {
+        return Err(anyhow!("invalid initial bond leg readiness configuration"));
+    }
+    if minimum > spec_count {
+        return Err(anyhow!(
+            "initial bond leg quorum requires {} legs but only {} were configured",
+            minimum,
+            spec_count
+        ));
+    }
+    Ok((preferred.min(spec_count), minimum))
+}
+
+fn bounded_retry_backoff(initial: Duration, maximum: Duration, attempt: usize) -> Duration {
+    let mut delay = initial.min(maximum);
+    for _ in 0..attempt {
+        delay = delay.saturating_mul(2).min(maximum);
+        if delay == maximum {
+            break;
+        }
+    }
+    delay
+}
+
+fn retry_backoff_with_jitter(
+    initial: Duration,
+    maximum: Duration,
+    attempt: usize,
+    spec_index: usize,
+) -> Duration {
+    let base = bounded_retry_backoff(initial, maximum, attempt);
+    if base >= maximum {
+        return maximum;
+    }
+    let jitter_percent = ((spec_index.saturating_mul(17) + attempt.saturating_mul(7)) % 21) as u32;
+    base.saturating_add((base / 100).saturating_mul(jitter_percent)).min(maximum)
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     pub chunk_size: usize,
@@ -57,6 +104,11 @@ pub struct SessionConfig {
     pub retransmit_after: Duration,
     pub join_timeout: Duration,
     pub connect_timeout: Duration,
+    pub preferred_initial_legs: usize,
+    pub minimum_initial_legs: usize,
+    pub initial_leg_wait: Duration,
+    pub leg_reconnect_backoff: Duration,
+    pub leg_reconnect_backoff_max: Duration,
     pub interactive_chunk_bytes: usize,
     pub latency_guard_bytes: usize,
     pub interactive_rtt_slack: Duration,
@@ -1450,7 +1502,7 @@ async fn open_client_tcp_transport_session(
     session_token: String,
     config: SessionConfig,
 ) -> anyhow::Result<mpsc::UnboundedSender<ClientTransportCommand>> {
-    let bootstrap = connect_client_tcp_transport_legs(leg_targets, session_token, config.connect_timeout).await?;
+    let bootstrap = connect_client_tcp_transport_legs(leg_targets, session_token, &config).await?;
     let session_id = bootstrap.session_id;
     let connector_shutdown_tx = bootstrap.connector_shutdown_tx.clone();
     let active_specs_tx = bootstrap.active_specs_tx.clone();
@@ -1480,13 +1532,27 @@ async fn open_client_tcp_transport_session(
 async fn connect_client_tcp_transport_legs(
     leg_targets: Vec<String>,
     session_token: String,
-    connect_timeout: Duration,
+    config: &SessionConfig,
 ) -> anyhow::Result<ClientTransportBootstrap> {
     let mut specs = parse_leg_specs(leg_targets)?;
     specs.sort_by_key(|spec| (spec.priority, transport_bias(spec.transport), spec.original.clone()));
     if specs.is_empty() {
         return Err(anyhow!("at least one bond leg target is required"));
     }
+    if config.preferred_initial_legs == 0
+        || config.minimum_initial_legs == 0
+        || config.minimum_initial_legs > config.preferred_initial_legs
+        || config.initial_leg_wait.is_zero()
+        || config.leg_reconnect_backoff.is_zero()
+        || config.leg_reconnect_backoff > config.leg_reconnect_backoff_max
+    {
+        return Err(anyhow!("invalid initial bond leg readiness configuration"));
+    }
+    let (preferred_initial_legs, minimum_initial_legs) = effective_initial_leg_counts(
+        specs.len(),
+        config.preferred_initial_legs,
+        config.minimum_initial_legs,
+    )?;
 
     let session_id = Uuid::now_v7();
     let expected_links = specs.len().min(u16::MAX as usize) as u16;
@@ -1495,6 +1561,7 @@ async fn connect_client_tcp_transport_legs(
     let mut initial_legs = Vec::new();
     let mut active_specs = HashSet::new();
     let mut initial_connects = JoinSet::new();
+    let connect_timeout = config.connect_timeout;
     for (spec_index, spec) in specs.iter().cloned().enumerate() {
         let session_token = Arc::clone(&session_token);
         initial_connects.spawn(async move {
@@ -1504,7 +1571,7 @@ async fn connect_client_tcp_transport_legs(
         });
     }
 
-    let first_leg_deadline = Instant::now() + connect_timeout;
+    let first_leg_deadline = Instant::now() + config.connect_timeout;
     let mut join_deadline = None::<Instant>;
     while !initial_connects.is_empty() {
         let deadline = join_deadline.unwrap_or(first_leg_deadline);
@@ -1527,7 +1594,10 @@ async fn connect_client_tcp_transport_legs(
                 initial_legs.push(leg.with_spec_index(spec_index));
                 active_specs.insert(spec_index);
                 if join_deadline.is_none() {
-                    join_deadline = Some(Instant::now() + CLIENT_TCP_LEG_JOIN_GRACE.min(connect_timeout));
+                    join_deadline = Some(Instant::now() + config.initial_leg_wait);
+                }
+                if initial_legs.len() >= preferred_initial_legs {
+                    break;
                 }
             }
             Ok((_spec_index, spec_original, Err(err))) => {
@@ -1538,40 +1608,35 @@ async fn connect_client_tcp_transport_legs(
     }
     initial_connects.abort_all();
 
-    if initial_legs.is_empty() {
-        return Err(anyhow!("no bond legs acknowledged the TCP transport"));
+    if !initial_leg_quorum_met(
+        initial_legs.len(),
+        preferred_initial_legs,
+        minimum_initial_legs,
+    ) {
+        return Err(anyhow!(
+            "initial bond leg quorum not met: ready={}, preferred={}, minimum={}",
+            initial_legs.len(),
+            preferred_initial_legs,
+            minimum_initial_legs
+        ));
     }
 
     let (active_specs_tx, active_specs_rx) = watch::channel(active_specs);
     let (connector_shutdown_tx, connector_shutdown_rx) = watch::channel(false);
     let (add_leg_tx, add_leg_rx) = mpsc::unbounded_channel::<OpenLeg>();
     let specs = Arc::new(specs);
-    let desired_active_specs = specs.len().min(2);
     tokio::spawn(run_client_leg_connector(
         specs,
         session_id,
         expected_links,
         session_token,
-        connect_timeout,
+        config.connect_timeout,
+        config.leg_reconnect_backoff,
+        config.leg_reconnect_backoff_max,
         active_specs_rx,
         connector_shutdown_rx,
         add_leg_tx,
     ));
-
-    if desired_active_specs > 1 {
-        let mut wait_rx = active_specs_tx.subscribe();
-        let deadline = Instant::now() + CLIENT_TCP_LEG_JOIN_GRACE.min(connect_timeout);
-        while wait_rx.borrow().len() < desired_active_specs {
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-            let sleep_for = deadline.saturating_duration_since(now);
-            if timeout(sleep_for, wait_rx.changed()).await.is_err() {
-                break;
-            }
-        }
-    }
 
     Ok(ClientTransportBootstrap {
         session_id,
@@ -1692,11 +1757,15 @@ async fn run_client_leg_connector(
     expected_links: u16,
     session_token: Arc<String>,
     connect_timeout: Duration,
+    reconnect_backoff: Duration,
+    reconnect_backoff_max: Duration,
     mut active_specs_rx: watch::Receiver<HashSet<usize>>,
     mut shutdown_rx: watch::Receiver<bool>,
     add_leg_tx: mpsc::UnboundedSender<OpenLeg>,
 ) {
     let mut next_retry_at = vec![Instant::now(); specs.len()];
+    let mut failure_attempts = vec![0usize; specs.len()];
+    let mut was_active = vec![false; specs.len()];
 
     loop {
         if *shutdown_rx.borrow() {
@@ -1705,11 +1774,23 @@ async fn run_client_leg_connector(
 
         let active_specs = active_specs_rx.borrow().clone();
         let now = Instant::now();
-        let mut next_deadline = now + CLIENT_LEG_RETRY_BACKOFF;
+        let mut next_deadline = now + reconnect_backoff_max;
 
         for (spec_index, spec) in specs.iter().enumerate() {
             if active_specs.contains(&spec_index) {
+                failure_attempts[spec_index] = 0;
+                was_active[spec_index] = true;
                 continue;
+            }
+            if was_active[spec_index] {
+                was_active[spec_index] = false;
+                next_retry_at[spec_index] = now
+                    + retry_backoff_with_jitter(
+                        reconnect_backoff,
+                        reconnect_backoff_max,
+                        0,
+                        spec_index,
+                    );
             }
 
             let retry_at = next_retry_at[spec_index];
@@ -1723,14 +1804,29 @@ async fn run_client_leg_connector(
             let hello = hello_for_spec(spec, session_id, expected_links, session_token.as_str());
             match connect_and_ack_leg(spec, &hello, connect_timeout).await {
                 Ok(leg) => {
-                    next_retry_at[spec_index] = Instant::now() + CLIENT_LEG_RETRY_BACKOFF;
+                    failure_attempts[spec_index] = 0;
+                    next_retry_at[spec_index] = Instant::now()
+                        + retry_backoff_with_jitter(
+                            reconnect_backoff,
+                            reconnect_backoff_max,
+                            0,
+                            spec_index,
+                        );
                     if add_leg_tx.send(leg.with_spec_index(spec_index)).is_err() {
                         return;
                     }
                 }
                 Err(err) => {
                     debug!("failed to reconnect bond leg {}: {:?}", spec.original, err);
-                    next_retry_at[spec_index] = Instant::now() + CLIENT_LEG_RETRY_BACKOFF;
+                    let attempt = failure_attempts[spec_index];
+                    next_retry_at[spec_index] = Instant::now()
+                        + retry_backoff_with_jitter(
+                            reconnect_backoff,
+                            reconnect_backoff_max,
+                            attempt,
+                            spec_index,
+                        );
+                    failure_attempts[spec_index] = attempt.saturating_add(1);
                 }
             }
 
@@ -5539,6 +5635,11 @@ mod tests {
             retransmit_after: Duration::from_millis(300),
             join_timeout: Duration::from_millis(400),
             connect_timeout: Duration::from_millis(3000),
+            preferred_initial_legs: 2,
+            minimum_initial_legs: 1,
+            initial_leg_wait: CLIENT_TCP_LEG_JOIN_GRACE,
+            leg_reconnect_backoff: CLIENT_LEG_RETRY_BACKOFF,
+            leg_reconnect_backoff_max: CLIENT_LEG_RETRY_BACKOFF,
             interactive_chunk_bytes: 16384,
             latency_guard_bytes: 262144,
             interactive_rtt_slack: Duration::from_millis(30),
@@ -5557,6 +5658,47 @@ mod tests {
     #[test]
     fn client_leg_retry_backoff_is_extended_beyond_subsecond_thrashing() {
         assert_eq!(CLIENT_LEG_RETRY_BACKOFF, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn fixed_initial_leg_quorum_requires_configured_minimum() {
+        assert!(initial_leg_quorum_met(2, 5, 2));
+        assert!(!initial_leg_quorum_met(1, 5, 2));
+    }
+
+    #[test]
+    fn effective_initial_leg_counts_clamp_preferred_but_not_minimum() {
+        assert_eq!(effective_initial_leg_counts(1, 2, 1).unwrap(), (1, 1));
+        assert!(effective_initial_leg_counts(1, 5, 2).is_err());
+    }
+
+    #[test]
+    fn reconnect_backoff_is_exponential_and_bounded() {
+        assert_eq!(
+            bounded_retry_backoff(Duration::from_secs(5), Duration::from_secs(60), 0),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            bounded_retry_backoff(Duration::from_secs(5), Duration::from_secs(60), 4),
+            Duration::from_secs(60)
+        );
+        let jittered = retry_backoff_with_jitter(
+            Duration::from_secs(5),
+            Duration::from_secs(60),
+            1,
+            3,
+        );
+        assert!(jittered >= Duration::from_secs(10));
+        assert!(jittered <= Duration::from_secs(12));
+        assert_eq!(
+            jittered,
+            retry_backoff_with_jitter(
+                Duration::from_secs(5),
+                Duration::from_secs(60),
+                1,
+                3,
+            )
+        );
     }
 
     #[test]
