@@ -139,7 +139,8 @@ final class LeigodExecutionLeaseService
         $generation = $this->generation($generation);
 
         return $this->db->transaction(function () use ($leaseId, $generation, $ownerType, $ownerId, $deviceId): array {
-            $lease = $this->leaseByIdForUpdate($leaseId);
+            $lineId = $this->leaseLineId($leaseId);
+            $lease = $this->leaseForLineUpdate($lineId);
             $this->assertFence($lease, $leaseId, $generation);
             $this->assertOwner($lease, $ownerType, $ownerId, $deviceId);
             $now = $this->now();
@@ -183,14 +184,18 @@ final class LeigodExecutionLeaseService
             $lease = $this->leaseForLineUpdate($catalogLineId);
             $this->assertFence($lease, $leaseId, $generation);
             $this->assertOwner($lease, $ownerType, $ownerId, $deviceId);
-            if (!hash_equals((string) ($line['config_sha256'] ?? ''), strtolower(trim((string) ($report['config_sha256'] ?? ''))))) {
-                throw new ApiException('leigod_line_lease_config_mismatch', 409);
-            }
             $now = $this->now();
             if ($this->expired($lease, $now) || (string) ($lease['state'] ?? '') === 'revoking') {
                 throw new ApiException('leigod_line_lease_expired', 409);
             }
+            if (!hash_equals((string) ($line['config_sha256'] ?? ''), strtolower(trim((string) ($report['config_sha256'] ?? ''))))) {
+                return $this->markRevoking($catalogLineId, $lease, $now);
+            }
             if (($report['healthy'] ?? false) !== true) {
+                $failures = max(0, (int) ($report['consecutive_failures'] ?? 0));
+                if ($failures >= $this->maxConsecutiveFailures()) {
+                    return $this->markRevoking($catalogLineId, $lease, $now);
+                }
                 return $lease;
             }
 
@@ -211,13 +216,11 @@ final class LeigodExecutionLeaseService
         $reason = substr(trim($reason), 0, 191);
 
         return $this->db->transaction(function () use ($leaseId, $generation, $reason): array {
-            $lease = $this->leaseByIdForUpdate($leaseId);
+            $lineId = $this->leaseLineId($leaseId);
+            $lease = $this->leaseForLineUpdate($lineId);
             $this->assertFence($lease, $leaseId, $generation);
             $now = $this->now();
-            $lease['state'] = 'revoking';
-            $lease['expires_at'] = $this->timestamp($now + $this->revokingGraceSeconds());
-            $lease['updated_at'] = $this->timestamp($now);
-            $this->updateLease((int) $lease['leigod_line_id'], $lease);
+            $lease = $this->markRevoking($lineId, $lease, $now);
             $lease['revocation_reason'] = $reason;
             return $lease;
         });
@@ -244,7 +247,7 @@ final class LeigodExecutionLeaseService
              ORDER BY leigod_line_id ASC',
             ['now' => $this->timestamp($now), 'pending' => 'pending']
         );
-        $removed = 0;
+        $transitioned = 0;
         foreach ($rows as $row) {
             if (!$this->expired($row, $now)) {
                 continue;
@@ -253,18 +256,19 @@ final class LeigodExecutionLeaseService
             if ($lineId <= 0) {
                 continue;
             }
-            $removed += $this->db->transaction(function () use ($lineId, $now): int {
+            $transitioned += $this->db->transaction(function () use ($lineId, $now): int {
                 $current = $this->leaseForLineUpdate($lineId);
                 if (!$this->expired($current, $now)) {
                     return 0;
                 }
-                return $this->db->execute(
-                    'DELETE FROM leigod_execution_leases WHERE leigod_line_id = :line_id',
-                    ['line_id' => $lineId]
-                );
+                if ((string) ($current['state'] ?? '') === 'revoking') {
+                    return 0;
+                }
+                $this->markRevoking($lineId, $current, $now);
+                return 1;
             });
         }
-        return $removed;
+        return $transitioned;
     }
 
     /** @return array<string, mixed> */
@@ -381,16 +385,29 @@ final class LeigodExecutionLeaseService
         return $lease;
     }
 
-    /** @return array<string, mixed> */
-    private function leaseByIdForUpdate(string $leaseId): array
+    private function leaseLineId(string $leaseId): int
     {
         $lease = $this->db->fetchOne(
-            'SELECT * FROM leigod_execution_leases WHERE lease_id = :lease_id LIMIT 1 FOR UPDATE',
+            'SELECT leigod_line_id FROM leigod_execution_leases WHERE lease_id = :lease_id LIMIT 1',
             ['lease_id' => $leaseId]
         );
-        if (!is_array($lease)) {
+        $lineId = is_array($lease) ? (int) ($lease['leigod_line_id'] ?? 0) : 0;
+        if ($lineId <= 0) {
             throw new ApiException('leigod_line_lease_not_found', 404);
         }
+        return $lineId;
+    }
+
+    /**
+     * @param array<string, mixed> $lease
+     * @return array<string, mixed>
+     */
+    private function markRevoking(int $catalogLineId, array $lease, int $now): array
+    {
+        $lease['state'] = 'revoking';
+        $lease['expires_at'] = $this->timestamp($now + $this->revokingGraceSeconds());
+        $lease['updated_at'] = $this->timestamp($now);
+        $this->updateLease($catalogLineId, $lease);
         return $lease;
     }
 
@@ -568,6 +585,11 @@ final class LeigodExecutionLeaseService
     private function revokingGraceSeconds(): int
     {
         return max(1, min(300, $this->config->getInt('LEIGOD_EXECUTION_LEASE_REVOKING_GRACE_SECONDS', 15)));
+    }
+
+    private function maxConsecutiveFailures(): int
+    {
+        return max(1, min(100, $this->config->getInt('LEIGOD_EXECUTION_LEASE_MAX_CONSECUTIVE_FAILURES', 3)));
     }
 
     private function uuidV4(): string

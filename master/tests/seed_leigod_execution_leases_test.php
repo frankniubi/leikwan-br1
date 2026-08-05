@@ -227,6 +227,15 @@ assertLeaseSeedSame(1, count(array_filter(
     $applyDb->calls,
     static fn(array $call): bool => $call['method'] === 'transaction'
 )), 'apply uses one outer transaction');
+$desiredApplyReads = array_values(array_filter(
+    $applyDb->calls,
+    static fn(array $call): bool => $call['method'] === 'fetchAll'
+        && str_contains($call['sql'], 'FROM nodes')
+));
+assertLeaseSeedSame(1, count($desiredApplyReads), 'apply audits desired mapping once');
+if (!str_contains($desiredApplyReads[0]['sql'], 'FOR UPDATE')) {
+    failLeaseSeed('apply must lock the desired mapping rows');
+}
 
 $duplicateDb = new LeaseSeedFakeDatabase();
 $duplicateDb->catalog = leaseSeedCatalog();

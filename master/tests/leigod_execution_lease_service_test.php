@@ -191,6 +191,7 @@ namespace {
         'LEIGOD_EXECUTION_LEASE_PENDING_READY_SECONDS=45',
         'LEIGOD_EXECUTION_LEASE_ACTIVE_TTL_SECONDS=90',
         'LEIGOD_EXECUTION_LEASE_REVOKING_GRACE_SECONDS=15',
+        'LEIGOD_EXECUTION_LEASE_MAX_CONSECUTIVE_FAILURES=3',
         '',
     ]));
     $config = new Config($envPath);
@@ -201,6 +202,8 @@ namespace {
         11 => testLine(11, 10),
         12 => testLine(12, 30, allowClient: false),
         13 => testLine(13, 40, allowNode: false),
+        18 => testLine(18, 50),
+        19 => testLine(19, 60),
     ];
     $service = new LeigodExecutionLeaseService($config, $db, static function () use (&$now): int {
         return $now;
@@ -264,6 +267,62 @@ namespace {
     ]);
     assertLeaseSame('active', $allocatedActive['state'], 'allocated lease becomes active');
 
+    $mismatchNow = 1_786_050_000;
+    $mismatchDb = new Database();
+    $mismatchDb->lines = [18 => testLine(18, 50)];
+    $mismatchService = new LeigodExecutionLeaseService($config, $mismatchDb, static function () use (&$mismatchNow): int {
+        return $mismatchNow;
+    });
+    $mismatchLease = $mismatchService->acquireForNode(18, 42);
+    $mismatchService->acceptHealth(18, (string) $mismatchLease['lease_id'], 1, [
+        'owner_type' => 'node',
+        'owner_id' => 42,
+        'config_sha256' => $mismatchDb->lines[18]['config_sha256'],
+        'healthy' => true,
+    ]);
+    $mismatchRevoking = $mismatchService->acceptHealth(18, (string) $mismatchLease['lease_id'], 1, [
+        'owner_type' => 'node',
+        'owner_id' => 42,
+        'config_sha256' => str_repeat('f', 64),
+        'healthy' => true,
+    ]);
+    assertLeaseSame('revoking', $mismatchRevoking['state'], 'config mismatch revokes active lease');
+    assertLeaseSame(
+        gmdate('Y-m-d H:i:s', $mismatchNow + 15),
+        $mismatchRevoking['expires_at'],
+        'config mismatch uses revocation grace'
+    );
+    expectLeaseApi(
+        fn() => $mismatchService->renew((string) $mismatchLease['lease_id'], 1, 'node', 42, null),
+        'leigod_line_lease_expired'
+    );
+
+    $failureNow = 1_786_060_000;
+    $failureDb = new Database();
+    $failureDb->lines = [19 => testLine(19, 60)];
+    $failureService = new LeigodExecutionLeaseService($config, $failureDb, static function () use (&$failureNow): int {
+        return $failureNow;
+    });
+    $failureLease = $failureService->acquireForClientDevice(19, 43, 'linux-device-failure');
+    $transientFailure = $failureService->acceptHealth(19, (string) $failureLease['lease_id'], 1, [
+        'owner_type' => 'client_device',
+        'owner_id' => 43,
+        'owner_device_id' => 'linux-device-failure',
+        'config_sha256' => $failureDb->lines[19]['config_sha256'],
+        'healthy' => false,
+        'consecutive_failures' => 2,
+    ]);
+    assertLeaseSame('pending', $transientFailure['state'], 'transient health failure keeps lease pending');
+    $repeatedFailure = $failureService->acceptHealth(19, (string) $failureLease['lease_id'], 1, [
+        'owner_type' => 'client_device',
+        'owner_id' => 43,
+        'owner_device_id' => 'linux-device-failure',
+        'config_sha256' => $failureDb->lines[19]['config_sha256'],
+        'healthy' => false,
+        'consecutive_failures' => 3,
+    ]);
+    assertLeaseSame('revoking', $repeatedFailure['state'], 'repeated health failure revokes lease');
+
     $stickyDb = new Database();
     $stickyDb->lines = [
         14 => testLine(14, 60),
@@ -294,6 +353,11 @@ namespace {
         'leigod_line_lease_expired'
     );
     assertLeaseSame(1, $timeoutService->reapExpired(), 'pending lease is reaped after ready deadline');
+    assertLeaseSame('revoking', $timeoutDb->leases[16]['state'], 'reap preserves a fencing tombstone');
+    assertLeaseSame(1, $timeoutDb->leases[16]['generation'], 'reap preserves fencing generation');
+    $timeoutNow = strtotime((string) $timeoutDb->leases[16]['expires_at']) + 1;
+    $postReap = $timeoutService->acquireForClientDevice(16, 44, 'linux-device-post-reap');
+    assertLeaseSame(2, $postReap['generation'], 'post-reap allocation increments generation');
 
     $timezoneNow = 1_786_200_000;
     $timezoneDb = new Database();
@@ -340,8 +404,9 @@ namespace {
     assertLeaseSame('revoking', $revoking['state'], 'revoke state');
     assertLeaseSame('test_cleanup', $revoking['revocation_reason'], 'revoke reason is returned');
     $now = strtotime((string) $revoking['expires_at']) + 1;
-    assertLeaseSame(1, $service->reapExpired(), 'reap removes expired row');
-    assertLeaseTrue(!isset($db->leases[10]), 'reaped row removed');
+    assertLeaseSame(0, $service->reapExpired(), 'expired revoking tombstone needs no second transition');
+    assertLeaseSame('revoking', $db->leases[10]['state'], 'expired revoking tombstone is retained');
+    assertLeaseSame(2, $db->leases[10]['generation'], 'expired tombstone retains generation');
 
     $clientRows = $service->activeForClientDevice(21, 'linux-device-b');
     assertLeaseSame([11], array_column($clientRows, 'leigod_line_id'), 'active client projection');
@@ -349,6 +414,19 @@ namespace {
 
     $joinedCalls = json_encode($db->calls, JSON_UNESCAPED_SLASHES);
     assertLeaseTrue(is_string($joinedCalls) && str_contains($joinedCalls, 'FOR UPDATE'), 'mutations lock lease rows');
+    $leaseLocks = array_values(array_filter(
+        array_merge($db->calls, $mismatchDb->calls, $failureDb->calls, $timeoutDb->calls),
+        static fn(array $call): bool => $call[0] === 'fetchOne'
+            && str_contains($call[1], 'FROM leigod_execution_leases')
+            && str_contains($call[1], 'FOR UPDATE')
+    ));
+    assertLeaseTrue($leaseLocks !== [], 'lease mutators issue locking reads');
+    foreach ($leaseLocks as $call) {
+        assertLeaseTrue(
+            str_contains($call[1], 'leigod_line_id = :line_id'),
+            'every lease locking read is keyed by leigod_line_id'
+        );
+    }
     assertLeaseTrue(count(array_filter($db->calls, static fn(array $call): bool => $call[0] === 'transaction')) >= 8, 'mutations use transactions');
 
     @unlink($envPath);

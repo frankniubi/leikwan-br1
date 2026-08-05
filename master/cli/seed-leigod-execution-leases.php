@@ -107,13 +107,16 @@ function leigodExecutionLeaseSeedRun(
 function leigodExecutionLeaseSeedAudit(mixed $db, bool $forUpdate, int $now): array
 {
     $lockSql = $forUpdate ? "\nFOR UPDATE" : '';
+    $desiredSelect = $forUpdate
+        ? 'SELECT ll.id AS leigod_line_id, n.id AS node_id, ll.sort_order AS line_sort_order'
+        : 'SELECT DISTINCT ll.id AS leigod_line_id, n.id AS node_id, ll.sort_order AS line_sort_order';
     $catalogRows = $db->fetchAll(
         'SELECT id, allow_node_execution, sort_order
          FROM leigod_lines
          ORDER BY sort_order ASC, id ASC' . $lockSql
     );
     $desiredRows = $db->fetchAll(
-        'SELECT DISTINCT ll.id AS leigod_line_id, n.id AS node_id, ll.sort_order AS line_sort_order
+        $desiredSelect . '
          FROM nodes n
          INNER JOIN node_groups ng ON ng.id = n.group_id
          INNER JOIN forward_combinations fc ON fc.node_group_key = ng.group_key
@@ -125,7 +128,7 @@ function leigodExecutionLeaseSeedAudit(mixed $db, bool $forUpdate, int $now): ar
            AND fc.sidecar_point_id IS NULL
            AND fcll.enabled = 1
            AND ll.is_active = 1
-         ORDER BY ll.sort_order ASC, ll.id ASC, n.id ASC',
+         ORDER BY ll.sort_order ASC, ll.id ASC, n.id ASC' . $lockSql,
         ['backend_mode' => 'leigod_mode', 'client_mode' => 'single']
     );
     $leaseRows = $db->fetchAll(
