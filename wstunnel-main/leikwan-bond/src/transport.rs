@@ -56,6 +56,7 @@ pub struct LegSpec {
     pub priority: u16,
     pub role: LegRole,
     pub endpoint_id: Option<u64>,
+    pub leg_route_id: Option<u32>,
     pub node_id: Option<u64>,
     pub display_host: Option<String>,
     pub original: String,
@@ -72,6 +73,7 @@ impl fmt::Debug for LegSpec {
             .field("priority", &self.priority)
             .field("role", &self.role)
             .field("endpoint_id", &self.endpoint_id)
+            .field("leg_route_id", &self.leg_route_id)
             .field("node_id", &self.node_id)
             .field("display_host", &self.display_host)
             .finish()
@@ -100,6 +102,7 @@ pub fn parse_leg_spec(raw: &str) -> anyhow::Result<LegSpec> {
             priority: LegTransport::Tcp.default_priority(),
             role: LegRole::Primary,
             endpoint_id: None,
+            leg_route_id: None,
             node_id: None,
             display_host: None,
             original: trimmed.to_string(),
@@ -128,6 +131,7 @@ pub fn parse_leg_spec(raw: &str) -> anyhow::Result<LegSpec> {
     let mut priority = transport.default_priority();
     let mut role = LegRole::Primary;
     let mut endpoint_id = None;
+    let mut leg_route_id = None;
     let mut node_id = None;
     let mut display_host = None;
     for (key, value) in url.query_pairs() {
@@ -157,6 +161,14 @@ pub fn parse_leg_spec(raw: &str) -> anyhow::Result<LegSpec> {
                     endpoint_id = Some(parsed);
                 }
             }
+            "leg_route_id" => {
+                let parsed = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|candidate| *candidate > 0)
+                    .ok_or_else(|| anyhow!("invalid leg_route_id in bond leg URI: {trimmed}"))?;
+                leg_route_id = Some(parsed);
+            }
             "node_id" => {
                 if let Ok(parsed) = value.parse::<u64>() {
                     node_id = Some(parsed);
@@ -180,6 +192,7 @@ pub fn parse_leg_spec(raw: &str) -> anyhow::Result<LegSpec> {
         priority,
         role,
         endpoint_id,
+        leg_route_id,
         node_id,
         display_host,
         original: trimmed.to_string(),
@@ -562,5 +575,22 @@ mod tests {
 
         let helper = parse_leg_spec("tcp://127.0.0.1:20963?priority=10&endpoint_id=185&role=helper").expect("parse");
         assert_eq!(helper.role, LegRole::Helper);
+    }
+
+    #[test]
+    fn parse_leg_spec_keeps_endpoint_and_leg_route_identity_separate() {
+        let spec = parse_leg_spec(
+            "tcp://127.0.0.1:20962?priority=10&endpoint_id=184&leg_route_id=453",
+        )
+        .expect("parse");
+        assert_eq!(spec.endpoint_id, Some(184));
+        assert_eq!(spec.leg_route_id, Some(453));
+    }
+
+    #[test]
+    fn parse_leg_spec_rejects_zero_leg_route_id() {
+        let error = parse_leg_spec("tcp://127.0.0.1:20962?leg_route_id=0")
+            .expect_err("zero route must fail");
+        assert!(error.to_string().contains("leg_route_id"));
     }
 }

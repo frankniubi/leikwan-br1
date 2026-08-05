@@ -55,6 +55,7 @@ impl FrameKind {
 pub struct HelloFrame {
     pub session_id: Uuid,
     pub expected_links: u16,
+    pub route_id: u32,
     pub token: String,
 }
 
@@ -100,7 +101,7 @@ impl WireFrame {
         match self {
             Self::Hello(hello) => {
                 let payload_len = 16usize + 2usize + 2usize + hello.token.len();
-                (FrameKind::Hello, 0, 0, 0, 0, payload_len as u32)
+                (FrameKind::Hello, 0, 0, 0, hello.route_id, payload_len as u32)
             }
             Self::HelloAck => (FrameKind::HelloAck, 0, 0, 0, 0, 0),
             Self::StreamOpen { stream_id } => (FrameKind::StreamOpen, 0, 0, 0, *stream_id, 0),
@@ -258,7 +259,7 @@ where
     }
 
     match kind {
-        FrameKind::Hello => decode_hello(payload),
+        FrameKind::Hello => decode_hello(payload, stream_id),
         FrameKind::HelloAck => Ok(WireFrame::HelloAck),
         FrameKind::StreamOpen => Ok(WireFrame::StreamOpen { stream_id }),
         FrameKind::StreamOpenAck => Ok(WireFrame::StreamOpenAck { stream_id }),
@@ -287,7 +288,7 @@ where
     }
 }
 
-fn decode_hello(payload: Vec<u8>) -> anyhow::Result<WireFrame> {
+fn decode_hello(payload: Vec<u8>, route_id: u32) -> anyhow::Result<WireFrame> {
     if payload.len() < 20 {
         bail!("invalid hello payload length {}", payload.len());
     }
@@ -303,6 +304,7 @@ fn decode_hello(payload: Vec<u8>) -> anyhow::Result<WireFrame> {
     Ok(WireFrame::Hello(HelloFrame {
         session_id,
         expected_links,
+        route_id,
         token,
     }))
 }
@@ -407,6 +409,29 @@ mod tests {
             WireFrame::Reset { stream_id, reason } => {
                 assert_eq!(stream_id, 0);
                 assert_eq!(reason, "transport_reset");
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn hello_route_id_roundtrips_in_header_without_changing_payload() {
+        let (mut left, mut right) = duplex(4096);
+        let frame = WireFrame::Hello(HelloFrame {
+            session_id: Uuid::nil(),
+            expected_links: 5,
+            route_id: 453,
+            token: String::from("token"),
+        });
+
+        write_frame(&mut left, &frame).await.unwrap();
+        let decoded = read_frame(&mut right).await.unwrap();
+
+        match decoded {
+            WireFrame::Hello(hello) => {
+                assert_eq!(hello.route_id, 453);
+                assert_eq!(hello.expected_links, 5);
+                assert_eq!(hello.token, "token");
             }
             other => panic!("unexpected frame: {other:?}"),
         }

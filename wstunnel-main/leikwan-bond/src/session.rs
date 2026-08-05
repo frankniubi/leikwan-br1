@@ -1482,6 +1482,7 @@ async fn connect_client_tcp_transport_legs(
     let hello = WireFrame::Hello(HelloFrame {
         session_id,
         expected_links: expected_links.max(1),
+        route_id: 0,
         token: session_token,
     });
 
@@ -1598,6 +1599,7 @@ async fn connect_client_udp_legs(
     let hello = WireFrame::Hello(HelloFrame {
         session_id,
         expected_links: connected.len() as u16,
+        route_id: 0,
         token: session_token,
     });
 
