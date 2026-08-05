@@ -19,6 +19,9 @@ namespace Leikwan\Master\Database {
             'audit_logs' => 1100,
         ];
 
+        /** @var array<int, array<string, mixed>> */
+        public array $availabilityRows = [];
+
         public function __construct(\Leikwan\Master\Config $config) {}
 
         public function seed(string $table, array $rows): void
@@ -76,6 +79,10 @@ namespace Leikwan\Master\Database {
 
             if (str_contains($n, 'SELECT * FROM services WHERE id = :id LIMIT 1')) {
                 return $this->findById('services', (int) ($params['id'] ?? 0));
+            }
+
+            if (str_contains($n, 'FROM sidecar_points sp') && str_contains($n, 'WHERE sp.id = :id')) {
+                return $this->findById('sidecar_points', (int) ($params['id'] ?? 0));
             }
 
             if (str_contains($n, 'SELECT id FROM service_plan_forward_combinations WHERE plan_id = :plan_id LIMIT 1')) {
@@ -180,6 +187,10 @@ namespace Leikwan\Master\Database {
                     ]);
                 }
                 return $rows;
+            }
+
+            if (str_contains($n, 'node_leigod_line_health')) {
+                return $this->availabilityRows;
             }
 
             if (str_contains($n, 'FROM service_endpoints WHERE forward_id = :forward_id')) {
@@ -544,7 +555,16 @@ namespace {
     }
 
     $envPath = tempnam(sys_get_temp_dir(), 'lw-specific-node-env-');
-    file_put_contents($envPath, "NODE_SELECTION_MAX_HEARTBEAT_AGE_SECONDS=0\nDEFAULT_TLS_CERT_REF=default-edge-cert\nDEFAULT_CDN_HOST=edge.example.com\n");
+    $line451 = "line = 451\n";
+    $line453 = "line = 453\n";
+    file_put_contents(
+        $envPath,
+        "NODE_SELECTION_MAX_HEARTBEAT_AGE_SECONDS=0\n"
+        . "DEFAULT_TLS_CERT_REF=default-edge-cert\n"
+        . "DEFAULT_CDN_HOST=edge.example.com\n"
+        . 'LEIGOD_LINE_TOML_451=' . base64_encode($line451) . "\n"
+        . 'LEIGOD_LINE_TOML_453=' . base64_encode($line453) . "\n"
+    );
 
     $db = new Database(new Config($envPath));
     $db->seed('services', [[
@@ -712,27 +732,55 @@ namespace {
         fail('custom specific_node_id parser must accept digit-only strings');
     }
 
-    $db->seed('sidecar_points', [[
-        'id' => 1,
-        'name' => 'sidecar',
-        'sidecar_host' => 'sidecar.example.com',
-        'listen_port' => 1443,
-        'bond_listen_port' => 2443,
-        'mptcp_listen_port' => 3443,
-        'cf_listen_port' => 4443,
-    ]]);
-    $db->seed('forward_combinations', [[
-        'id' => 77,
-        'name' => 'combo',
-        'is_active' => 1,
-        'backend_mode' => 'current_mode',
-        'client_mode' => 'single',
-        'node_group_key' => 'shanghai-tencent',
-        'sidecar_point_id' => 1,
-        'bond_ingress_mode' => 'plain_tcp_mux',
-        'cf_location_group_id' => null,
-        'sort_order' => 1,
-    ]]);
+    $db->seed('sidecar_points', [
+        [
+            'id' => 1,
+            'name' => 'sidecar',
+            'sidecar_host' => 'sidecar.example.com',
+            'listen_port' => 1443,
+            'bond_listen_port' => 2443,
+            'mptcp_listen_port' => 3443,
+            'cf_listen_port' => 4443,
+            'is_active' => 1,
+        ],
+        [
+            'id' => 2,
+            'name' => 'fixed-bond-sidecar',
+            'sidecar_host' => '198.51.100.25',
+            'listen_port' => 18500,
+            'bond_listen_port' => 18501,
+            'mptcp_listen_port' => 18502,
+            'cf_listen_port' => 443,
+            'is_active' => 1,
+            'agent_config_json' => json_encode(['fixed_endpoint_leigod_bond' => true]),
+        ],
+    ]);
+    $db->seed('forward_combinations', [
+        [
+            'id' => 77,
+            'name' => 'combo',
+            'is_active' => 1,
+            'backend_mode' => 'current_mode',
+            'client_mode' => 'single',
+            'node_group_key' => 'shanghai-tencent',
+            'sidecar_point_id' => 1,
+            'bond_ingress_mode' => 'plain_tcp_mux',
+            'cf_location_group_id' => null,
+            'sort_order' => 1,
+        ],
+        [
+            'id' => 78,
+            'name' => 'fixed bond combo',
+            'is_active' => 1,
+            'backend_mode' => 'leigod_mode',
+            'client_mode' => 'bond',
+            'node_group_key' => 'shanghai-tencent',
+            'sidecar_point_id' => 2,
+            'bond_ingress_mode' => 'plain_tcp_mux',
+            'cf_location_group_id' => null,
+            'sort_order' => 2,
+        ],
+    ]);
     $service->createForward(2, [
         'listen_port' => 12182,
         'target_host' => '162.245.221.78',
@@ -751,6 +799,46 @@ namespace {
         fail('combination-owned placement must clear specific_node_id metadata');
     }
 
+    $hash451 = hash('sha256', $line451);
+    $hash453 = hash('sha256', $line453);
+    $db->availabilityRows = array_map(static fn(array $row): array => array_merge([
+        'route_id' => 0,
+        'node_id' => 19,
+        'node_name' => 'requested-node',
+        'node_public_ip' => '203.0.113.19',
+        'node_status' => 'active',
+        'combination_id' => 78,
+        'combination_sort_order' => 20,
+        'line_is_active' => 1,
+        'service_state' => 'active',
+        'tcp_status' => 'healthy',
+        'tcp_connect_ms' => 10,
+        'udp_status' => 'healthy',
+        'checked_at' => gmdate('Y-m-d H:i:s'),
+    ], $row), [
+        ['line_id' => 451, 'membership_sort_order' => 10, 'config_sha256' => $hash451, 'health_config_sha256' => $hash451],
+        ['line_id' => 453, 'membership_sort_order' => 20, 'config_sha256' => $hash453, 'health_config_sha256' => $hash453],
+    ]);
+    $service->createForward(2, [
+        'listen_port' => 12185,
+        'target_host' => '162.245.221.78',
+        'target_port' => 80,
+        'transport_mode' => 'tcp',
+        'client_mode' => 'bond',
+        'forward_combination_id' => 78,
+        'custom_endpoint_ids_json' => ['specific_node_id' => 19],
+        'public_port' => 7003,
+    ], 'test');
+    $fixedBondForward = $db->table('forwards')[2] ?? [];
+    $fixedBondCustom = json_decode((string) ($fixedBondForward['custom_endpoint_ids_json'] ?? ''), true);
+    if ((int) ($fixedBondForward['forward_combination_id'] ?? 0) !== 78 || (int) ($fixedBondCustom['specific_node_id'] ?? 0) !== 19) {
+        fail('gated fixed-endpoint LeiGod bond must retain specific_node_id metadata');
+    }
+    $fixedBondEndpoints = rows_for_forward($db, 'service_endpoints', (int) ($fixedBondForward['id'] ?? 0));
+    if (count($fixedBondEndpoints) !== 1 || (int) ($fixedBondEndpoints[0]['node_id'] ?? 0) !== 19) {
+        fail('gated fixed-endpoint LeiGod bond must publish only to pinned node 19');
+    }
+
     $service->createForward(2, [
         'listen_port' => 13080,
         'target_host' => '162.245.221.78',
@@ -759,7 +847,7 @@ namespace {
         'client_mode' => 'single',
         'node_group' => '_user_node_30',
     ], 'test');
-    $seoulForward = $db->table('forwards')[2] ?? [];
+    $seoulForward = $db->table('forwards')[3] ?? [];
     if ((string) ($seoulForward['node_group_key'] ?? '') !== 'seoul-edge') {
         fail('specific-node ingress must use the pinned node real group before defaulting ingress settings');
     }

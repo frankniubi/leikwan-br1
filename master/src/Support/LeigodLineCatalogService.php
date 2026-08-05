@@ -655,8 +655,10 @@ final class LeigodLineCatalogService
              WHERE fr.id = :route_id
                AND fr.is_active = 1
                AND fc.backend_mode = :backend_mode
-               AND fc.client_mode = :client_mode
-               AND fc.sidecar_point_id IS NULL
+               AND (
+                    (fc.client_mode = :client_mode AND fc.sidecar_point_id IS NULL)
+                    OR (fc.client_mode = :bond_client_mode AND fc.sidecar_point_id IS NOT NULL)
+               )
              ORDER BY n.id ASC, frc.sort_order ASC, fcll.sort_order ASC, ll.line_id ASC',
             [
                 'route_id' => $routeId,
@@ -664,6 +666,7 @@ final class LeigodLineCatalogService
                 'node_degraded' => 'degraded',
                 'backend_mode' => 'leigod_mode',
                 'client_mode' => 'single',
+                'bond_client_mode' => 'bond',
             ]
         );
     }
@@ -710,8 +713,10 @@ final class LeigodLineCatalogService
              WHERE fc.id = :combination_id
                AND fc.is_active = 1
                AND fc.backend_mode = :backend_mode
-               AND fc.client_mode = :client_mode
-               AND fc.sidecar_point_id IS NULL
+               AND (
+                    (fc.client_mode = :client_mode AND fc.sidecar_point_id IS NULL)
+                    OR (fc.client_mode = :bond_client_mode AND fc.sidecar_point_id IS NOT NULL)
+               )
              ORDER BY n.id ASC, fcll.sort_order ASC, ll.line_id ASC',
             [
                 'combination_id' => $combinationId,
@@ -719,6 +724,7 @@ final class LeigodLineCatalogService
                 'node_degraded' => 'degraded',
                 'backend_mode' => 'leigod_mode',
                 'client_mode' => 'single',
+                'bond_client_mode' => 'bond',
             ]
         );
     }
