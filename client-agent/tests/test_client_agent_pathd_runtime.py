@@ -435,16 +435,22 @@ class ClientAgentPathdRuntimeTests(unittest.TestCase):
         malformed = self.path_runtime(41, 11041, 311)
         malformed["path_runtime"]["engine"] = "unknown-engine"
         payload = self.payload(pathd_bin, forwards=[malformed], lines=[])
+        previous_desired = self.payload(pathd_bin, revision=10)
+        previous_desired = agent.build_pathd_desired(previous_desired)
+        agent.pathd_desired_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.pathd_desired_path().write_text(json.dumps(previous_desired), encoding="utf-8")
         previous_applied = {
             "41": {
-                "runtime_mode": "single",
-                "service_name": "leikwan-client-41",
+                "runtime_mode": "linux_pathd",
+                "service_name": "leikwan-pathd",
                 "contract_signature": "previous-good",
             }
         }
         agent.applied_path.write_text(json.dumps(previous_applied), encoding="utf-8")
+        pathd_reconciles = []
         agent.apply_management_state = lambda _meta: None
         agent.consume_local_refresh_requests = lambda: set()
+        agent.reconcile_pathd = lambda _payload: pathd_reconciles.append(True) or False
         agent.apply_forward = lambda *_args, **_kwargs: self.fail("unknown engine reached renderer")
         agent.stop_forward = lambda *_args, **_kwargs: self.fail("existing listener was stopped")
         agent.reconcile_global_mptcp_state = lambda _forwards: None
@@ -460,7 +466,9 @@ class ClientAgentPathdRuntimeTests(unittest.TestCase):
                 agent.sync_once()
 
         applied = json.loads(agent.applied_path.read_text(encoding="utf-8"))
+        self.assertEqual([], pathd_reconciles)
         self.assertEqual(previous_applied, applied)
+        self.assertEqual(previous_desired, json.loads(agent.pathd_desired_path().read_text(encoding="utf-8")))
 
     def test_legacy_health_and_watchdog_ignore_pathd_forwards(self):
         agent, _root, _pathd_bin = self.make_agent()

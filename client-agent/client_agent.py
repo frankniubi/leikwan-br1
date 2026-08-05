@@ -2115,6 +2115,19 @@ class ClientAgent:
         token = self.config["agent_token"]
         desired_ids = set()
         force_runtime_refresh_ids = self.consume_local_refresh_requests()
+        malformed_path_runtime_ids = set()
+        for forward in forwards:
+            if not isinstance(forward, dict):
+                continue
+            raw_path_runtime = forward.get("path_runtime")
+            path_runtime = raw_path_runtime if isinstance(raw_path_runtime, dict) else {}
+            path_engine = str(path_runtime.get("engine", "") or "").strip()
+            if raw_path_runtime is not None and (
+                not isinstance(raw_path_runtime, dict)
+                or (path_runtime != {} and path_engine == "")
+                or path_engine not in {"", "linux_pathd"}
+            ):
+                malformed_path_runtime_ids.add(int(forward.get("forward_id", 0) or 0))
         active_pathd_ids = {
             int(forward.get("forward_id", 0) or 0)
             for forward in forwards
@@ -2125,7 +2138,15 @@ class ClientAgent:
         }
         pathd_requested = bool(active_pathd_ids) or bool(self.latest_linux_path_leases.get("lines")) or self.pathd_desired_path().exists()
         pathd_ready = True
-        if pathd_requested:
+        active_malformed_path_runtime = any(
+            int(forward.get("forward_id", 0) or 0) in malformed_path_runtime_ids
+            and str(forward.get("service_status", "active")) == "active"
+            for forward in forwards
+            if isinstance(forward, dict)
+        )
+        if pathd_requested and active_malformed_path_runtime:
+            pathd_ready = False
+        elif pathd_requested:
             try:
                 pathd_ready = self.reconcile_pathd(payload)
             except Exception as exc:  # noqa: BLE001
@@ -2136,12 +2157,7 @@ class ClientAgent:
             forward_id = int(forward["forward_id"])
             raw_path_runtime = forward.get("path_runtime")
             path_runtime = raw_path_runtime if isinstance(raw_path_runtime, dict) else {}
-            path_engine = str(path_runtime.get("engine", "") or "").strip()
-            malformed_path_runtime = raw_path_runtime is not None and (
-                not isinstance(raw_path_runtime, dict)
-                or (path_runtime != {} and path_engine == "")
-                or path_engine not in {"", "linux_pathd"}
-            )
+            malformed_path_runtime = forward_id in malformed_path_runtime_ids
             if malformed_path_runtime:
                 if str(forward.get("service_status", "active")) != "active":
                     inactive_forward_ids.append(forward_id)
