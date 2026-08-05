@@ -1,0 +1,211 @@
+<?php
+declare(strict_types=1);
+
+namespace Leikwan\Master\Database {
+    final class Database
+    {
+        /** @var array<int, array<string, mixed>> */
+        public array $localLeases = [];
+        /** @var array<int, array<string, mixed>> */
+        public array $candidateRows = [];
+        /** @var array<string, mixed>|null */
+        public ?array $egressProfile = null;
+        /** @var array<int, array<string, mixed>> */
+        public array $endpoints = [];
+
+        public function fetchAll(string $sql, array $params = []): array
+        {
+            if (str_contains($sql, 'hybrid_local_leases')) {
+                return $this->localLeases;
+            }
+            if (str_contains($sql, 'node_leigod_line_health')) {
+                return $this->candidateRows;
+            }
+            return [];
+        }
+
+        public function fetchOne(string $sql, array $params = []): ?array
+        {
+            if (str_contains($sql, 'leigod_egress_profiles')) {
+                return $this->egressProfile;
+            }
+            if (str_contains($sql, 'FROM forward_routes')) {
+                return ['id' => (int) ($params['id'] ?? 80), 'is_active' => 1, 'race_enabled' => 0];
+            }
+            if (str_contains($sql, 'service_endpoints')) {
+                return $this->endpoints[(int) ($params['endpoint_id'] ?? $params['id'] ?? 0)] ?? null;
+            }
+            return null;
+        }
+
+        public function execute(string $sql, array $params = []): int { return 0; }
+        public function insert(string $table, array $row): int { return 1; }
+        public function transaction(callable $callback): mixed { return $callback($this); }
+    }
+}
+
+namespace {
+    spl_autoload_register(static function (string $class): void {
+        $prefix = 'Leikwan\\Master\\';
+        if (!str_starts_with($class, $prefix) || $class === 'Leikwan\\Master\\Database\\Database') {
+            return;
+        }
+        $path = __DIR__ . '/../src/' . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+        if (is_file($path)) {
+            require_once $path;
+        }
+    });
+
+    use Leikwan\Master\Config;
+    use Leikwan\Master\Database\Database;
+    use Leikwan\Master\Support\LeigodHybridRuntimeService;
+    use Leikwan\Master\Support\LeigodLineCatalogService;
+
+    /** @return string */
+    function hybridBase64Url(string $value): string
+    {
+        return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+    }
+
+    /**
+     * @param array<string, mixed> $overrides
+     * @return array{service:LeigodHybridRuntimeService,forward:array<string,mixed>,client:array<string,mixed>,session:array<string,mixed>,endpoints:array<int,array<string,mixed>>,db:Database,config:Config,env:string}
+     */
+    function hybridFixture(array $overrides = []): array
+    {
+        $localToml = "line = 451\n";
+        $nodeTomlA = "line = 452\n";
+        $nodeTomlB = "line = 453\n";
+        $secretRef = (string) ($overrides['secret_ref'] ?? 'LEIGOD_EGRESS_TEST_SECRET');
+        $envPath = tempnam(sys_get_temp_dir(), 'lw-hybrid-');
+        if ($envPath === false) {
+            throw new RuntimeException('unable to create hybrid env');
+        }
+        $env = [
+            'LEIGOD_LINUX_HYBRID_ENABLED=' . (($overrides['hybrid_gate'] ?? true) ? '1' : '0'),
+            'LEIGOD_EXECUTION_LEASES_ENABLED=' . (($overrides['lease_gate'] ?? true) ? '1' : '0'),
+            'LEIGOD_LINE_TOML_451=' . base64_encode($localToml),
+            'LEIGOD_LINE_TOML_452=' . base64_encode($nodeTomlA),
+            'LEIGOD_LINE_TOML_453=' . base64_encode($nodeTomlB),
+        ];
+        if (($overrides['secret_present'] ?? true) === true) {
+            $env[] = $secretRef . '=egress-secret';
+        }
+        file_put_contents($envPath, implode("\n", $env) . "\n");
+        $config = new Config($envPath);
+        $db = new Database();
+        $now = time();
+        $db->localLeases = ($overrides['local_leases'] ?? true) ? [[
+            'catalog_id' => 11,
+            'physical_line_id' => 451,
+            'catalog_sort_order' => 10,
+            'config_sha256' => hash('sha256', $localToml),
+            'lease_id' => '00000000-0000-4000-8000-000000000020',
+            'lease_generation' => 7,
+            'lease_state' => 'active',
+            'max_parallel_lanes' => 2,
+            'lease_expires_at' => gmdate('Y-m-d H:i:s', $now + 90),
+        ]] : [];
+        $candidate = static function (int $nodeId, int $lineId, string $toml, string $leaseId) use ($now): array {
+            return [
+                'route_id' => 0,
+                'combination_sort_order' => 10,
+                'combination_id' => 100,
+                'membership_sort_order' => 10,
+                'catalog_sort_order' => $lineId,
+                'catalog_id' => $lineId - 440,
+                'line_id' => $lineId,
+                'config_sha256' => hash('sha256', $toml),
+                'line_is_active' => 1,
+                'node_id' => $nodeId,
+                'node_name' => 'node-' . $nodeId,
+                'node_public_ip' => '192.0.2.' . ($nodeId - 100),
+                'node_private_ip' => '10.0.0.' . ($nodeId - 100),
+                'node_status' => 'active',
+                'node_group_key' => 'group-a',
+                'health_config_sha256' => hash('sha256', $toml),
+                'service_state' => 'active',
+                'tcp_status' => 'healthy',
+                'udp_status' => 'unknown',
+                'checked_at' => gmdate('Y-m-d H:i:s'),
+                'lease_id' => $leaseId,
+                'lease_generation' => 3,
+                'lease_state' => 'active',
+                'lease_owner_type' => 'node',
+                'lease_owner_id' => $nodeId,
+                'max_parallel_lanes' => 1,
+                'lease_expires_at' => gmdate('Y-m-d H:i:s', $now + 90),
+                'health_lease_id' => $leaseId,
+                'health_lease_generation' => 3,
+            ];
+        };
+        $db->candidateRows = [
+            $candidate(101, 452, $nodeTomlA, '00000000-0000-4000-8000-000000000101'),
+            $candidate(102, 453, $nodeTomlB, '00000000-0000-4000-8000-000000000102'),
+        ];
+        if (($overrides['single_execution_group'] ?? false) === true) {
+            $db->candidateRows = [];
+        }
+        $db->egressProfile = ($overrides['profile_present'] ?? true) ? [
+            'id' => 5,
+            'profile_key' => 'hk-egress',
+            'region' => 'hk',
+            'host' => '198.51.100.50',
+            'tcp_port' => 7443,
+            'secret_ref' => $secretRef,
+            'is_enabled' => ($overrides['profile_enabled'] ?? true) ? 1 : 0,
+        ] : null;
+        $db->endpoints = [
+            1 => ['id' => 1, 'node_id' => 101],
+            2 => ['id' => 2, 'node_id' => 102],
+        ];
+        $forward = array_replace([
+            'id' => 70,
+            'forward_id' => 70,
+            'service_id' => 9,
+            'backend_mode' => 'leigod_mode',
+            'client_mode' => 'bond',
+            'mode' => 'bond',
+            'transport_mode' => 'tcp',
+            'target_host' => 'v4-hkt-b.mcbar.cc',
+            'target_port' => 5201,
+            'forward_route_id' => 80,
+            'forward_combination_id' => 100,
+            'bond_sidecar_point_id' => 99,
+        ], is_array($overrides['forward'] ?? null) ? $overrides['forward'] : []);
+        $client = ['id' => 20, 'runtime_platform_scope' => 'linux'];
+        $artifact = ['version' => '0.2.0', 'sha256' => str_repeat('b', 64)];
+        $session = array_replace([
+            'id' => 30,
+            'client_id' => 20,
+            'device_id' => 'linux-device-a',
+            'platform' => (string) ($overrides['platform'] ?? 'linux-amd64'),
+            'pathd_capability' => [
+                'version' => '0.2.0',
+                'sha256' => (string) ($overrides['capability_sha'] ?? str_repeat('b', 64)),
+            ],
+        ], is_array($overrides['session'] ?? null) ? $overrides['session'] : []);
+        $endpoints = [
+            ['endpoint_id' => 1, 'node_id' => 101, 'host' => '192.0.2.1', 'port' => 8001, 'ingress_auth_token' => 'auth-1'],
+            ['endpoint_id' => 2, 'node_id' => 102, 'host' => '192.0.2.2', 'port' => 8002, 'ingress_auth_token' => 'auth-2'],
+        ];
+        if (($overrides['single_execution_group'] ?? false) === true) {
+            $endpoints = [];
+        }
+        $tokenBuilder = static function (array $tokenForward, string $secret, string $protocol): string {
+            $payload = json_encode([
+                'target_host' => (string) ($tokenForward['target_host'] ?? ''),
+                'target_port' => (int) ($tokenForward['target_port'] ?? 0),
+                'target_protocol' => $protocol,
+                'service_id' => (int) ($tokenForward['service_id'] ?? 0),
+                'forward_id' => (int) ($tokenForward['id'] ?? $tokenForward['forward_id'] ?? 0),
+                'issued_at' => 1_786_000_000,
+                'expires_at' => 1_786_003_600,
+            ], JSON_UNESCAPED_SLASHES);
+            return hybridBase64Url((string) $payload) . '.' . hybridBase64Url(hash_hmac('sha256', (string) $payload, $secret, true));
+        };
+        $catalog = new LeigodLineCatalogService($config, $db);
+        $service = new LeigodHybridRuntimeService($config, $db, $tokenBuilder, $artifact, $catalog);
+        return compact('service', 'forward', 'client', 'session', 'endpoints', 'db', 'config') + ['env' => $envPath];
+    }
+}

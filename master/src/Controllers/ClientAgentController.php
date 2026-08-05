@@ -36,6 +36,7 @@ final class ClientAgentController extends BaseController
         $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
         $mptcpRuntime = $this->artifactMetadata('mptcp_client_runtime');
         $cfwgLatencyWatchdog = $this->artifactMetadata('cfwg_latency_watchdog');
+        $pathdArtifact = $this->artifactMetadata('leikwan_pathd_linux_amd64');
         $desiredBondSha256 = (string) ($bondBinary['binary_sha256'] ?? $bondBinary['sha256'] ?? '');
         $updateRequestToken = trim((string) ($client['agent_update_request_token'] ?? ''));
         if ($updateRequestToken === '') {
@@ -79,6 +80,10 @@ final class ClientAgentController extends BaseController
                 'desired_mptcp_runtime_sha256' => (string) ($mptcpRuntime['sha256'] ?? ''),
                 'desired_cfwg_watchdog_version' => (string) ($cfwgLatencyWatchdog['version'] ?? ''),
                 'desired_cfwg_watchdog_sha256' => (string) ($cfwgLatencyWatchdog['sha256'] ?? ''),
+                ...($pathdArtifact !== [] ? [
+                    'desired_pathd_version' => (string) ($pathdArtifact['version'] ?? ''),
+                    'desired_pathd_sha256' => (string) ($pathdArtifact['binary_sha256'] ?? $pathdArtifact['sha256'] ?? ''),
+                ] : []),
                 'online_device_limit' => max(1, (int) ($client['online_device_limit'] ?? 1)),
                 'active_online_devices' => $deviceSessionService->activeCountForClient((int) $client['id']),
                 'current_device_id' => $deviceId,

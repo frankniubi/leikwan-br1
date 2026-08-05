@@ -22,6 +22,7 @@ final class ProvisioningService
     private ?bool $nodeGroupDescriptionColumnAvailable = null;
     private ?LeigodLineCatalogService $leigodLineCatalogService = null;
     private ?ClientConfigRevisionService $clientConfigRevisionService = null;
+    private LeigodHybridRuntimeService $leigodHybridRuntimeService;
 
     /**
      * Per-(sidecar point) uniqueness-checked allocation registries. Keyed by point id,
@@ -51,7 +52,22 @@ final class ProvisioningService
     public function __construct(
         private Config $config,
         private Database $db,
+        ?LeigodHybridRuntimeService $leigodHybridRuntimeService = null,
     ) {
+        $this->leigodHybridRuntimeService = $leigodHybridRuntimeService ?? new LeigodHybridRuntimeService(
+            $config,
+            $db,
+            function (array $forward, string $secret, string $protocol): string {
+                $timestamps = $this->bondTokenTimestamps();
+                return $this->buildBondSessionToken(
+                    $forward,
+                    $secret,
+                    $timestamps['issued_at'],
+                    $timestamps['expires_at'],
+                    $protocol
+                );
+            }
+        );
     }
 
     private function leigodLineCatalog(): LeigodLineCatalogService
@@ -76,6 +92,22 @@ final class ProvisioningService
     public function bumpClientConfigRevisions(array $clientIds): array
     {
         return $this->clientConfigRevisions()->bumpMany($clientIds);
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @param array<string, mixed> $client
+     * @param array<string, mixed> $deviceSession
+     * @param array<int, array<string, mixed>> $endpoints
+     * @return array<string, mixed>|null
+     */
+    public function linuxHybridRuntimeForForward(
+        array $forward,
+        array $client,
+        array $deviceSession,
+        array $endpoints,
+    ): ?array {
+        return $this->leigodHybridRuntimeService->forForward($forward, $client, $deviceSession, $endpoints);
     }
 
     /** @return array<int, array<string, mixed>> */
@@ -3600,6 +3632,13 @@ final class ProvisioningService
             ));
             if ($config['endpoints'] === []) {
                 continue;
+            }
+            if (is_array($deviceSession)) {
+                $pathRuntime = $this->linuxHybridRuntimeForForward($row, $client, $deviceSession, $config['endpoints']);
+                if (is_array($pathRuntime)) {
+                    $config['mode'] = 'bond';
+                    $config['path_runtime'] = $pathRuntime;
+                }
             }
             $matched[] = $config;
         }
