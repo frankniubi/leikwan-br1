@@ -141,7 +141,9 @@ final class ClientAgentController extends BaseController
             'cfwg_watchdog_sha256' => $request->input('cfwg_watchdog_sha256'),
             'wireguard_listen_port' => $request->input('wireguard_listen_port'),
             'wireguard_fallback_tcp_port' => $request->input('wireguard_fallback_tcp_port'),
+            'leikwan_pathd' => $request->input('leikwan_pathd'),
         ]);
+        $pathdCapability = is_array($runtimeState['leikwan_pathd'] ?? null) ? $runtimeState['leikwan_pathd'] : [];
 
         // Regression sentinel: client_heartbeat_republish_on_wireguard_identity_change
         // Client heartbeats are frequent, so only republish assigned forwards when the
@@ -153,6 +155,8 @@ final class ClientAgentController extends BaseController
             (string) ($runtimeState['wireguard_public_key'] ?? ''),
             (string) ((int) ($runtimeState['wireguard_listen_port'] ?? 0)),
             (string) ((int) ($runtimeState['wireguard_fallback_tcp_port'] ?? 0)),
+            (string) ($pathdCapability['version'] ?? ''),
+            (string) ($pathdCapability['sha256'] ?? ''),
         ];
         $wgFingerprint = sha1(implode(':', $wgFingerprintInputs));
         $now = time();
@@ -188,9 +192,15 @@ final class ClientAgentController extends BaseController
                 is_array($reputation['forwards'] ?? null) ? $reputation['forwards'] : []
             );
         }
+        $clientLineHealth = $request->input('linux_path_line_health', []);
+        if (is_array($clientLineHealth) && $clientLineHealth !== []) {
+            (new \Leikwan\Master\Support\LeigodLineCatalogService($this->config, $this->db))
+                ->ingestClientHealth((int) $client['id'], $deviceId, $clientLineHealth);
+        }
         $this->provisioning->recordAgentUsage('client', (int) $client['id'], $usageBytesIn, $usageBytesOut);
         if ($shouldRepublish) {
             $this->provisioning->republishActiveForwardsForClient((int) $client['id']);
+            $this->provisioning->bumpClientConfigRevision((int) $client['id']);
         }
 
         return $this->json(['ok' => true]);
@@ -439,6 +449,16 @@ final class ClientAgentController extends BaseController
         foreach (['wireguard_listen_port', 'wireguard_fallback_tcp_port'] as $intKey) {
             if (array_key_exists($intKey, $input) && $input[$intKey] !== null && $input[$intKey] !== '') {
                 $merged[$intKey] = max(0, (int) $input[$intKey]);
+            }
+        }
+        if (array_key_exists('leikwan_pathd', $input)) {
+            $pathd = is_array($input['leikwan_pathd']) ? $input['leikwan_pathd'] : [];
+            $version = substr(trim((string) ($pathd['version'] ?? '')), 0, 64);
+            $sha256 = strtolower(trim((string) ($pathd['sha256'] ?? '')));
+            if ($version !== '' && preg_match('/^[a-f0-9]{64}$/', $sha256) === 1) {
+                $merged['leikwan_pathd'] = ['version' => $version, 'sha256' => $sha256];
+            } else {
+                unset($merged['leikwan_pathd']);
             }
         }
         return $merged;

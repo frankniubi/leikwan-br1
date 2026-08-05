@@ -119,8 +119,12 @@ namespace {
         ->desiredLeigodLineManagementForClientDevice(20, 'linux-device-a');
     assertClientLeaseSame([451], array_column($projection['lines'] ?? [], 'line_id'), 'device lease projection');
     $line = $projection['lines'][0] ?? [];
+    assertClientLeaseSame(11, $line['catalog_id'] ?? null, 'catalog id for fenced health');
     assertClientLeaseSame($leaseId, $line['lease_id'] ?? null, 'lease id');
     assertClientLeaseSame(7, $line['lease_generation'] ?? null, 'lease generation');
+    assertClientLeaseSame('client_device', $line['lease_owner_type'] ?? null, 'lease owner type');
+    assertClientLeaseSame(20, $line['lease_owner_id'] ?? null, 'lease owner id');
+    assertClientLeaseSame('linux-device-a', $line['lease_owner_device_id'] ?? null, 'lease owner device id');
     assertClientLeaseSame(hash('sha256', $toml), $line['config_sha256'] ?? null, 'config hash');
     assertClientLeaseSame($toml, $line['toml'] ?? null, 'root-only TOML');
     assertClientLeaseSame(false, isset($line['label']), 'provider label is not projected');

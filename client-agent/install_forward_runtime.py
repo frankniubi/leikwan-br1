@@ -756,6 +756,9 @@ def endpoint_path_prefix(endpoint: dict, default_path_prefix: str) -> str:
 def endpoint_sni(endpoint: dict, default_sni: str) -> str:
     return str(endpoint.get("cf_sni_host", "") or endpoint.get("sni_host", "") or endpoint.get("cdn_host", "") or default_sni or endpoint.get("host", "") or "").strip()
 def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
+    path_runtime = forward.get("path_runtime", {})
+    if isinstance(path_runtime, dict) and path_runtime.get("engine") == "linux_pathd":
+        raise RuntimeError("linux_pathd forwards must be reconciled by client-agent")
     forward = canonicalize_forward_runtime_contract(forward)
     forward_id = int(forward["forward_id"])
     listen_port = int(forward["listen_port"])

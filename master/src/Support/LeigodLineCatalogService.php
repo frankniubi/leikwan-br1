@@ -279,6 +279,7 @@ final class LeigodLineCatalogService
                 continue;
             }
             $desired[] = [
+                'catalog_id' => (int) ($row['catalog_id'] ?? 0),
                 'line_id' => $lineId,
                 'config_sha256' => (string) ($row['config_sha256'] ?? ''),
                 'toml' => (string) ($configuration['toml'] ?? ''),
@@ -441,6 +442,58 @@ final class LeigodLineCatalogService
             $accepted++;
         }
 
+        return ['accepted' => $accepted, 'rejected' => $rejected];
+    }
+
+    /**
+     * @param array<int|string, mixed> $payload
+     * @return array{accepted:int,rejected:int}
+     */
+    public function ingestClientHealth(int $clientId, string $deviceId, array $payload): array
+    {
+        $deviceId = trim($deviceId);
+        $accepted = 0;
+        $rejected = 0;
+        $cap = max(1, min(64, $this->config->getInt('LEIGOD_CLIENT_LINE_HEARTBEAT_CAP', 16)));
+        if (!$this->leasesEnabled() || $clientId <= 0 || $deviceId === '') {
+            return ['accepted' => 0, 'rejected' => min(count($payload), $cap)];
+        }
+        foreach (array_slice(array_values($payload), 0, $cap) as $row) {
+            if (!is_array($row)) {
+                $rejected++;
+                continue;
+            }
+            $catalogId = (int) ($row['catalog_id'] ?? 0);
+            $physicalLineId = (int) ($row['line_id'] ?? 0);
+            $line = $catalogId > 0 ? $this->lineById($catalogId) : null;
+            if (!is_array($line)
+                || (int) ($line['line_id'] ?? 0) !== $physicalLineId
+                || trim((string) ($row['lease_id'] ?? '')) === ''
+                || (int) ($row['lease_generation'] ?? 0) <= 0) {
+                $rejected++;
+                continue;
+            }
+            try {
+                $this->executionLeases->acceptHealth(
+                    $catalogId,
+                    (string) $row['lease_id'],
+                    (int) $row['lease_generation'],
+                    [
+                        'owner_type' => 'client_device',
+                        'owner_id' => $clientId,
+                        'owner_device_id' => $deviceId,
+                        'config_sha256' => strtolower(trim((string) ($row['config_sha256'] ?? ''))),
+                        'healthy' => (string) ($row['service_state'] ?? '') === 'active'
+                            && in_array((string) ($row['tcp_status'] ?? ''), ['ok', 'healthy'], true),
+                        'consecutive_failures' => (string) ($row['service_state'] ?? '') === 'active' ? 0 : 1,
+                    ]
+                );
+                $accepted++;
+            } catch (ApiException) {
+                $rejected++;
+            }
+        }
+        $rejected += max(0, count($payload) - $cap);
         return ['accepted' => $accepted, 'rejected' => $rejected];
     }
 
@@ -688,7 +741,7 @@ final class LeigodLineCatalogService
 
     /**
      * @param array<string, mixed> $row
-     * @return array{lease_id:string,lease_generation:int,lease_state:string,lease_owner_type:string,lease_owner_id:int,max_parallel_lanes:int,ready_deadline_at:string,expires_at:string}
+     * @return array{lease_id:string,lease_generation:int,lease_state:string,lease_owner_type:string,lease_owner_id:int,lease_owner_device_id:?string,max_parallel_lanes:int,ready_deadline_at:string,expires_at:string}
      */
     private function leaseProjection(array $row): array
     {
@@ -698,6 +751,9 @@ final class LeigodLineCatalogService
             'lease_state' => strtolower(trim((string) ($row['lease_state'] ?? ''))),
             'lease_owner_type' => strtolower(trim((string) ($row['lease_owner_type'] ?? ''))),
             'lease_owner_id' => (int) ($row['lease_owner_id'] ?? 0),
+            'lease_owner_device_id' => isset($row['lease_owner_device_id'])
+                ? (string) $row['lease_owner_device_id']
+                : null,
             'max_parallel_lanes' => max(1, min(4, (int) ($row['max_parallel_lanes'] ?? 2))),
             'ready_deadline_at' => (string) ($row['lease_ready_deadline_at'] ?? ''),
             'expires_at' => (string) ($row['lease_expires_at'] ?? ''),

@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import email.message
 import email.utils
 import contextlib
 import hashlib
+import hmac
 import http.client
 import importlib.util
 import io
@@ -15,6 +17,7 @@ import logging
 import os
 import pathlib
 import platform
+import random
 import re
 import shutil
 import socket
@@ -23,6 +26,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -373,38 +377,58 @@ def _urlopen_for_request(req: urllib.request.Request, timeout: float = 30):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
-def http_json(method: str, url: str, token: str, payload: dict | None = None) -> dict:
+def http_json(
+    method: str,
+    url: str,
+    token: str,
+    payload: dict | None = None,
+    *,
+    extra_headers: dict[str, str] | None = None,
+    timeout: float = 30,
+) -> dict:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
         "User-Agent": f"Leikwan-Client-Agent/{AGENT_VERSION}",
     }
+    if extra_headers:
+        headers.update(extra_headers)
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
     try:
-        with _urlopen_for_request(req, timeout=30) as resp:
+        with _urlopen_for_request(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"http {exc.code} {url}: {body}") from exc
 
 
-def http_json_with_headers(method: str, url: str, token: str, payload: dict | None = None) -> tuple[dict, dict[str, str]]:
+def http_json_with_headers(
+    method: str,
+    url: str,
+    token: str,
+    payload: dict | None = None,
+    *,
+    extra_headers: dict[str, str] | None = None,
+    timeout: float = 30,
+) -> tuple[dict, dict[str, str]]:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
         "User-Agent": f"Leikwan-Client-Agent/{AGENT_VERSION}",
     }
+    if extra_headers:
+        headers.update(extra_headers)
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
     try:
-        with _urlopen_for_request(req, timeout=30) as resp:
+        with _urlopen_for_request(req, timeout=timeout) as resp:
             content = resp.read().decode("utf-8")
             response_headers = {key.lower(): value for key, value in resp.headers.items()}
     except urllib.error.HTTPError as exc:
@@ -429,7 +453,17 @@ def file_sha256(path: pathlib.Path) -> str:
 
 
 class ClientAgent:
-    def __init__(self, config_path: pathlib.Path):
+    def __init__(
+        self,
+        config_path: pathlib.Path,
+        *,
+        http_client=None,
+        clock=None,
+        jitter=None,
+        stop_event=None,
+        config_changed_event=None,
+        command_runner=None,
+    ):
         self.config_path = config_path
         self.config = json.loads(config_path.read_text(encoding="utf-8-sig"))
         self.state_dir = pathlib.Path(self.config.get("state_dir", "/var/lib/leikwan-client-agent"))
@@ -443,6 +477,16 @@ class ClientAgent:
         self.invalid_forward_log_after: dict[int, float] = {}
         self.self_leg_probe_cache: dict[str, dict] = {}
         self._cfwg_latency_watchdog = None
+        self._http_client = http_client
+        self._clock = clock or time.time
+        self._jitter = jitter or random.uniform
+        self.stop_event = stop_event or threading.Event()
+        self.config_changed_event = config_changed_event or threading.Event()
+        self.command_runner = command_runner
+        self.observed_config_revision = 0
+        self.config_watch_thread = None
+        self.latest_linux_path_leases: dict = {"lines": []}
+        self.latest_pathd_metadata: dict[str, str] = {}
         logging.basicConfig(
             level=getattr(logging, str(self.config.get("log_level", "INFO")).upper(), logging.INFO),
             format="%(asctime)s %(levelname)s %(message)s",
@@ -1221,12 +1265,717 @@ class ClientAgent:
 
         return True
 
+    def device_id(self) -> str:
+        configured = str(self.config.get("device_id", "") or "").strip()
+        if configured:
+            return configured[:191]
+        machine_id_path = pathlib.Path(str(self.config.get("machine_id_path", "/etc/machine-id") or "/etc/machine-id"))
+        try:
+            machine_id = machine_id_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            machine_id = f"{platform.node()}|{self.config.get('client_id', 0)}"
+        return "linux-" + hashlib.sha256(machine_id.encode("utf-8")).hexdigest()[:32]
+
+    @staticmethod
+    def device_platform() -> str:
+        machine = platform.machine().strip().lower()
+        architecture = {
+            "x86_64": "amd64",
+            "amd64": "amd64",
+            "aarch64": "arm64",
+            "arm64": "arm64",
+        }.get(machine, machine or "unknown")
+        return f"linux-{architecture}"
+
+    def device_headers(self) -> dict[str, str]:
+        return {
+            "X-Device-Id": self.device_id(),
+            "X-Device-Platform": self.device_platform(),
+            "X-Device-Name": str(self.config.get("device_name", platform.node()) or platform.node())[:191],
+        }
+
+    @staticmethod
+    def has_internal_path_runtime(forward: dict) -> bool:
+        path_runtime = forward.get("path_runtime")
+        return path_runtime is not None and (not isinstance(path_runtime, dict) or path_runtime != {})
+
+    def config_watch_once(self) -> None:
+        query = urllib.parse.urlencode({"revision": self.observed_config_revision, "wait": 25})
+        master = str(self.config["master_url"]).rstrip("/")
+        http_client = self._http_client or http_json_with_headers
+        response, _headers = http_client(
+            "GET",
+            f"{master}/api/client/configs/watch?{query}",
+            str(self.config["agent_token"]),
+            extra_headers=self.device_headers(),
+            timeout=28,
+        )
+        revision = max(0, int(response.get("revision", 0) or 0))
+        changed = bool(response.get("changed", False)) or revision > self.observed_config_revision
+        self.observed_config_revision = max(self.observed_config_revision, revision)
+        if changed:
+            self.config_changed_event.set()
+
+    def run_config_watch_loop(self) -> None:
+        backoff = 1
+        while not self.stop_event.is_set():
+            try:
+                self.config_watch_once()
+                backoff = 1
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("config watch failed: %s", exc)
+                if self.stop_event.wait(backoff):
+                    return
+                backoff = min(30, backoff * 2)
+
+    def start_config_watch(self) -> None:
+        if self.config_watch_thread is not None and self.config_watch_thread.is_alive():
+            return
+        self.config_watch_thread = threading.Thread(
+            target=self.run_config_watch_loop,
+            name="leikwan-config-watch",
+            daemon=True,
+        )
+        self.config_watch_thread.start()
+
+    def next_full_sync_deadline(self, now: float) -> float:
+        interval = max(5, int(self.config.get("poll_interval_seconds", 30) or 30))
+        jitter_cap = min(1.0, interval * 0.1)
+        return now + interval + float(self._jitter(0.0, jitter_cap))
+
+    def pathd_runtime_dir(self) -> pathlib.Path:
+        return pathlib.Path(str(self.config.get("pathd_runtime_dir", "/run/leikwan-pathd") or "/run/leikwan-pathd"))
+
+    def pathd_desired_path(self) -> pathlib.Path:
+        return self.pathd_runtime_dir() / "desired.json"
+
+    def pathd_status_path(self) -> pathlib.Path:
+        return self.pathd_runtime_dir() / "status.json"
+
+    def pathd_unit_path(self) -> pathlib.Path:
+        systemd_dir = pathlib.Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system"))
+        return systemd_dir / "leikwan-pathd.service"
+
+    def pathd_binary_path(self) -> pathlib.Path:
+        return pathlib.Path(str(self.config.get("pathd_bin", "/usr/local/bin/leikwan-pathd") or "/usr/local/bin/leikwan-pathd"))
+
+    def leigod_binary_path(self) -> pathlib.Path:
+        return pathlib.Path(str(self.config.get("leigod_bin", "/usr/local/bin/leigod-linux-amd64") or "/usr/local/bin/leigod-linux-amd64"))
+
+    @staticmethod
+    def _pathd_socket(host: object, port: object, *, require_ip: bool = False) -> str:
+        normalized_host = str(host or "").strip().strip("[]")
+        try:
+            normalized_port = int(port or 0)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("invalid pathd socket port") from exc
+        if normalized_host == "" or any(character.isspace() for character in normalized_host):
+            raise RuntimeError("invalid pathd socket host")
+        if normalized_port < 1 or normalized_port > 65535:
+            raise RuntimeError("invalid pathd socket port")
+        try:
+            address = ipaddress.ip_address(normalized_host)
+        except ValueError as exc:
+            if require_ip:
+                raise RuntimeError("pathd egress must be an IP address") from exc
+            return f"{normalized_host}:{normalized_port}"
+        return f"[{address}]:{normalized_port}" if address.version == 6 else f"{address}:{normalized_port}"
+
+    def _pathd_expiry(self, value: object) -> int:
+        raw = str(value or "").strip()
+        if raw == "":
+            raise RuntimeError("pathd lease expiry is missing")
+        try:
+            parsed = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RuntimeError("pathd lease expiry is invalid") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        expiry = int(parsed.timestamp())
+        if expiry <= int(self._clock()):
+            raise RuntimeError("pathd lease is expired")
+        return expiry
+
+    @staticmethod
+    def _valid_pathd_lease_id(value: object) -> bool:
+        return re.fullmatch(
+            r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}",
+            str(value or "").strip().lower(),
+        ) is not None
+
+    def _pathd_local_leases(self, payload: dict) -> tuple[dict, dict[int, dict]]:
+        raw_projection = payload.get("linux_path_leases", {})
+        if not isinstance(raw_projection, dict):
+            raise RuntimeError("linux_path_leases must be an object")
+        session_json = raw_projection.get("session_json", "")
+        raw_lines = raw_projection.get("lines", [])
+        if not isinstance(raw_lines, list) or len(raw_lines) > 16:
+            raise RuntimeError("pathd local lease count is invalid")
+        if session_json == "" and raw_lines == []:
+            session_json = "{}"
+        if not isinstance(session_json, str) or session_json == "" or len(session_json.encode("utf-8")) > 1024 * 1024:
+            raise RuntimeError("pathd provider session is invalid")
+        client_id = int(self.config.get("client_id", 0) or 0)
+        client_device_id = self.device_id()
+        normalized: list[dict] = []
+        by_line: dict[int, dict] = {}
+        for raw in raw_lines:
+            if not isinstance(raw, dict):
+                raise RuntimeError("pathd local lease must be an object")
+            line_id = int(raw.get("line_id", 0) or 0)
+            lease_id = str(raw.get("lease_id", "") or "").strip().lower()
+            lease_generation = int(raw.get("lease_generation", 0) or 0)
+            state = str(raw.get("lease_state", "") or "").strip().lower()
+            max_lanes = int(raw.get("max_parallel_lanes", 0) or 0)
+            config_sha256 = str(raw.get("config_sha256", "") or "").strip().lower()
+            config_toml = raw.get("toml", "")
+            socks_host = str(raw.get("socks_host", "") or "").strip()
+            socks_port = int(raw.get("socks_port", 0) or 0)
+            if line_id < 1 or line_id > 45535 or line_id in by_line:
+                raise RuntimeError("pathd local lease line is invalid or duplicate")
+            if not self._valid_pathd_lease_id(lease_id) or lease_generation <= 0:
+                raise RuntimeError("pathd local lease fence is invalid")
+            if state not in {"pending", "active"} or max_lanes < 1 or max_lanes > 4:
+                raise RuntimeError("pathd local lease state is invalid")
+            try:
+                owner_id = int(raw.get("lease_owner_id", 0) or 0)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("pathd local lease owner id is invalid") from exc
+            owner_type = str(raw.get("lease_owner_type", "") or "").strip()
+            owner_device_id = str(raw.get("lease_owner_device_id", "") or "").strip()
+            if owner_type != "client_device":
+                raise RuntimeError("pathd local lease owner type is invalid")
+            if client_id <= 0 or owner_id != client_id:
+                raise RuntimeError("pathd local lease owner id is invalid")
+            if owner_device_id == "" or not hmac.compare_digest(owner_device_id, client_device_id):
+                raise RuntimeError("pathd local lease owner device is invalid")
+            if re.fullmatch(r"[a-f0-9]{64}", config_sha256) is None or not isinstance(config_toml, str) or config_toml == "":
+                raise RuntimeError("pathd local provider config is invalid")
+            if not hmac.compare_digest(hashlib.sha256(config_toml.encode("utf-8")).hexdigest(), config_sha256):
+                raise RuntimeError("pathd local provider config hash mismatch")
+            if socks_host != "127.0.0.1" or socks_port < 20000 or socks_port > 29999:
+                raise RuntimeError("pathd local SOCKS endpoint is invalid")
+            expires_at_unix = self._pathd_expiry(raw.get("expires_at"))
+            if state == "pending":
+                try:
+                    ready_deadline_unix = self._pathd_expiry(raw.get("ready_deadline_at"))
+                except RuntimeError as exc:
+                    raise RuntimeError("pathd pending lease ready deadline is invalid or expired") from exc
+                if ready_deadline_unix > expires_at_unix:
+                    raise RuntimeError("pathd pending lease ready deadline exceeds expiry")
+            line = {
+                "line_id": line_id,
+                "lease_id": lease_id,
+                "lease_generation": lease_generation,
+                "max_lanes": max_lanes,
+                "config_sha256": config_sha256,
+                "config_toml": config_toml,
+                "expires_at_unix": expires_at_unix,
+                "socks_addr": f"127.0.0.1:{socks_port}",
+            }
+            normalized.append(line)
+            by_line[line_id] = dict(raw) | {"_normalized": line}
+        normalized.sort(key=lambda row: row["line_id"])
+        provider = {
+            "binary": str(self.leigod_binary_path()),
+            "session_json": session_json,
+            "session_sha256": hashlib.sha256(session_json.encode("utf-8")).hexdigest(),
+            "local_socks_port_min": 20000,
+            "local_socks_port_max": 29999,
+        }
+        return {"provider": provider, "local_leases": normalized}, by_line
+
+    @staticmethod
+    def _pathd_policy(raw: object, leg_count: int) -> dict:
+        policy = raw if isinstance(raw, dict) else {}
+        throughput_min = float(policy.get("throughput_min_mbps", 10.0) or 10.0)
+        if not 0.001 <= throughput_min <= 10000.0:
+            raise RuntimeError("pathd throughput floor is invalid")
+        return {
+            "chunk_size": 65536,
+            "max_window_bytes": 8 * 1024 * 1024,
+            "retransmit_ms": 700,
+            "join_timeout_ms": 3000,
+            "connect_timeout_ms": 3000,
+            "preferred_initial_legs": leg_count,
+            "minimum_initial_legs": 1,
+            "initial_leg_wait_ms": 3000,
+            "leg_reconnect_backoff_ms": 5000,
+            "leg_reconnect_backoff_max_ms": 60000,
+            "interactive_chunk_bytes": 16384,
+            "latency_guard_bytes": max(65536, min(1048576, int(policy.get("interactive_max_bytes", 65536) or 65536))),
+            "interactive_rtt_slack_ms": 30,
+            "warmup_trigger_bytes": 65536,
+            "warmup_slice_bytes": 65536,
+            "warmup_leg_delay_ms": 20,
+            "bulk_promote_bytes": 262144,
+            "leg_cooldown_ms": 60000,
+            "throughput_min_sample_bytes": 1048576,
+            "throughput_min_sample_ms": 1000,
+            "adaptive_line_admission": bool(policy.get("adaptive_line_admission", True)),
+            "throughput_min_mbps": throughput_min,
+            "throughput_relative_floor": 0.35,
+            "throughput_bad_windows": 3,
+            "throughput_recovery_windows": 2,
+            "throughput_quarantine_ms": 60000,
+            "throughput_probe_interval_ms": 30000,
+            "throughput_probe_bytes": 1048576,
+            "latency_first": bool(policy.get("latency_first", True)),
+            "udp_primary_only": True,
+            "default_strategy": "latency_best",
+        }
+
+    def build_pathd_desired(self, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise RuntimeError("pathd pull payload must be an object")
+        generation = max(1, int(payload.get("config_revision", 0) or 0))
+        lease_projection, local_by_line = self._pathd_local_leases(payload)
+        raw_forwards = payload.get("forwards", [])
+        if not isinstance(raw_forwards, list):
+            raise RuntimeError("pathd forwards must be a list")
+        hybrid_forwards = []
+        for forward in raw_forwards:
+            if not isinstance(forward, dict):
+                continue
+            runtime = forward.get("path_runtime", {})
+            if (
+                isinstance(runtime, dict)
+                and runtime.get("engine") == "linux_pathd"
+                and str(forward.get("service_status", "active")) == "active"
+            ):
+                hybrid_forwards.append(forward)
+        if len(hybrid_forwards) > 64:
+            raise RuntimeError("pathd forward count exceeds limit")
+        auth_refs: dict[str, str] = {}
+        forwards: list[dict] = []
+        listeners: set[str] = set()
+        for forward in sorted(hybrid_forwards, key=lambda row: int(row.get("forward_id", 0) or 0)):
+            runtime = forward.get("path_runtime", {})
+            if set(runtime) - {"engine", "placement", "protocol", "target", "egress", "local_leases", "slave_legs", "policy", "contract_hash"}:
+                raise RuntimeError("pathd runtime contains unsupported fields")
+            if runtime.get("placement") != "linux_hybrid" or runtime.get("protocol") != "tcp":
+                raise RuntimeError("pathd runtime placement or protocol is invalid")
+            forward_id = int(forward.get("forward_id", 0) or 0)
+            listen = self._pathd_socket("0.0.0.0", forward.get("listen_port"))
+            if forward_id <= 0 or listen in listeners:
+                raise RuntimeError("pathd forward listener is invalid or duplicate")
+            listeners.add(listen)
+            egress = runtime.get("egress", {})
+            if not isinstance(egress, dict):
+                raise RuntimeError("pathd egress is invalid")
+            egress_socket = self._pathd_socket(egress.get("host"), egress.get("port"), require_ip=True)
+            session_token = str(egress.get("session_token", "") or "").strip()
+            if session_token == "" or len(session_token) > 4096 or any(character.isspace() for character in session_token):
+                raise RuntimeError("pathd session token is invalid")
+            legs: list[dict] = []
+            route_ids: set[int] = set()
+            raw_local = runtime.get("local_leases", [])
+            raw_slave = runtime.get("slave_legs", [])
+            if not isinstance(raw_local, list) or not isinstance(raw_slave, list):
+                raise RuntimeError("pathd runtime legs must be lists")
+            for local in raw_local:
+                if not isinstance(local, dict):
+                    raise RuntimeError("pathd local runtime lease is invalid")
+                line_id = int(local.get("physical_line_id", 0) or 0)
+                authority = local_by_line.get(line_id)
+                normalized = (authority or {}).get("_normalized", {})
+                if not authority or str(authority.get("lease_state", "")) != "active":
+                    raise RuntimeError("pathd forward references a non-active local lease")
+                lease_id = str(local.get("lease_id", "") or "").lower()
+                lease_generation = int(local.get("lease_generation", 0) or 0)
+                if lease_id != normalized.get("lease_id") or lease_generation != normalized.get("lease_generation"):
+                    raise RuntimeError("pathd local lease fence is stale")
+                execution_group = str(local.get("execution_group", "") or "").strip()
+                expected_execution_group = (
+                    f"client:{int(authority['lease_owner_id'])}:{str(authority['lease_owner_device_id'])}"
+                )
+                if execution_group != expected_execution_group:
+                    raise RuntimeError("pathd local execution group does not match lease owner")
+                routes = local.get("routes", [])
+                if not isinstance(routes, list) or not routes or len(routes) > int(normalized["max_lanes"]):
+                    raise RuntimeError("pathd local route count is invalid")
+                for route in routes:
+                    route_id = int((route or {}).get("route_id", 0) or 0) if isinstance(route, dict) else 0
+                    if route_id <= 0 or route_id in route_ids:
+                        raise RuntimeError("pathd leg route is invalid or duplicate")
+                    route_ids.add(route_id)
+                    query = urllib.parse.urlencode(
+                        {"line_id": line_id, "lease_generation": lease_generation, "leg_route_id": route_id}
+                    )
+                    legs.append(
+                        {
+                            "uri": f"socks5://127.0.0.1:{authority['socks_port']}?{query}",
+                            "execution_group": execution_group,
+                            "line_id": line_id,
+                            "lease_id": lease_id,
+                            "lease_generation": lease_generation,
+                            "leg_route_id": route_id,
+                        }
+                    )
+            local_line_ids = set(local_by_line)
+            route_key = str(forward.get("path_prefix", "") or "").strip()
+            if route_key == "" or len(route_key) > 256:
+                raise RuntimeError("pathd ingress route key is invalid")
+            for slave in raw_slave:
+                if not isinstance(slave, dict):
+                    raise RuntimeError("pathd slave leg is invalid")
+                line_id = int(slave.get("physical_line_id", 0) or 0)
+                route_id = int(slave.get("route_id", 0) or 0)
+                endpoint_id = int(slave.get("endpoint_id", 0) or 0)
+                node_id = int(slave.get("node_id", 0) or 0)
+                execution_group = str(slave.get("execution_group", "") or "").strip()
+                lease_id = str(slave.get("lease_id", "") or "").strip().lower()
+                lease_generation = int(slave.get("lease_generation", 0) or 0)
+                token = str(slave.get("ingress_auth_token", "") or "").strip()
+                if line_id in local_line_ids or line_id < 1 or line_id > 45535:
+                    raise RuntimeError("pathd slave line conflicts with local authority")
+                if route_id <= 0 or route_id in route_ids or endpoint_id <= 0 or node_id <= 0:
+                    raise RuntimeError("pathd slave route identity is invalid or duplicate")
+                if execution_group != f"node:{node_id}":
+                    raise RuntimeError("pathd slave execution group does not match lease owner")
+                if not self._valid_pathd_lease_id(lease_id) or lease_generation <= 0:
+                    raise RuntimeError("pathd slave lease fence is invalid")
+                if token == "" or len(token) > 2048 or any(character.isspace() for character in token):
+                    raise RuntimeError("pathd ingress auth token is invalid")
+                endpoint = self._pathd_socket(slave.get("host"), slave.get("port"))
+                if int(slave.get("port", 0) or 0) < 7000 or int(slave.get("port", 0) or 0) > 9000:
+                    raise RuntimeError("pathd ingress port must be in 7000-9000")
+                auth_ref = f"endpoint-{endpoint_id}"
+                if auth_ref in auth_refs and not hmac.compare_digest(auth_refs[auth_ref], token):
+                    raise RuntimeError("pathd ingress auth reference conflicts")
+                auth_refs[auth_ref] = token
+                route_ids.add(route_id)
+                query = urllib.parse.urlencode(
+                    {
+                        "route_key": route_key,
+                        "auth_ref": auth_ref,
+                        "endpoint_id": endpoint_id,
+                        "node_id": node_id,
+                        "leg_route_id": route_id,
+                    }
+                )
+                legs.append(
+                    {
+                        "uri": f"ingress+tcp://{endpoint}?{query}",
+                        "execution_group": execution_group,
+                        "line_id": line_id,
+                        "lease_id": lease_id,
+                        "lease_generation": lease_generation,
+                        "leg_route_id": route_id,
+                    }
+                )
+            legs.sort(key=lambda row: row["leg_route_id"])
+            if not legs or len(legs) > 16:
+                raise RuntimeError("pathd forward leg count is invalid")
+            forwards.append(
+                {
+                    "forward_id": forward_id,
+                    "listen": listen,
+                    "egress": egress_socket,
+                    "session_token": session_token,
+                    "legs": legs,
+                    "policy": self._pathd_policy(runtime.get("policy"), len(legs)),
+                }
+            )
+        return {
+            "generation": generation,
+            **lease_projection,
+            "auth_refs": dict(sorted(auth_refs.items())),
+            "forwards": forwards,
+        }
+
+    def _atomic_write_pathd_bytes(self, path: pathlib.Path, content: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            path.parent.chmod(0o700)
+        tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(tmp_path, flags, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if os.name != "nt":
+                os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, path)
+            if os.name != "nt":
+                directory_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+
+    def atomic_write_pathd_desired(self, desired: dict) -> None:
+        encoded = json.dumps(desired, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        self._atomic_write_pathd_bytes(self.pathd_desired_path(), encoded)
+
+    def render_pathd_unit(self) -> str:
+        binary = str(self.pathd_binary_path())
+        runtime_dir = str(self.pathd_runtime_dir())
+        if any(character.isspace() for character in binary + runtime_dir):
+            raise RuntimeError("pathd paths cannot contain whitespace")
+        return "\n".join(
+            [
+                "[Unit]",
+                "Description=Leikwan path aggregation daemon",
+                "After=network-online.target",
+                "Wants=network-online.target",
+                "",
+                "[Service]",
+                "Type=simple",
+                f"ExecStart={binary} --config {runtime_dir}/desired.json --status {runtime_dir}/status.json",
+                "Restart=on-failure",
+                "RestartSec=3",
+                "KillMode=control-group",
+                "NoNewPrivileges=true",
+                "ProtectHome=true",
+                "ProtectSystem=strict",
+                f"ReadWritePaths={runtime_dir}",
+                "PrivateTmp=true",
+                "",
+                "[Install]",
+                "WantedBy=multi-user.target",
+                "",
+            ]
+        )
+
+    def _run_pathd_command(self, parts: list[str]) -> int:
+        if self.command_runner is not None:
+            result = self.command_runner(parts)
+            return int(getattr(result, "returncode", result) or 0)
+        result = subprocess.run(parts, text=True, capture_output=True, check=False)
+        if result.returncode != 0:
+            logging.warning("pathd command failed command=%s stderr=%s", parts, result.stderr.strip())
+        return int(result.returncode)
+
+    def load_pathd_status(self) -> dict:
+        path = self.pathd_status_path()
+        try:
+            if not path.is_file() or path.stat().st_size > 256 * 1024:
+                return {}
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _pathd_status_accepts(self, desired: dict) -> bool:
+        status = self.load_pathd_status()
+        try:
+            status_generation = int(status.get("generation", 0) or 0)
+            desired_generation = int(desired["generation"])
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if status_generation != desired_generation:
+            return False
+        if str(status.get("status", "") or "") not in {"ready", "degraded"}:
+            return False
+        forwards = status.get("forwards", {})
+        if not isinstance(forwards, dict):
+            return False
+        return all(
+            isinstance(forwards.get(str(row["forward_id"])), dict)
+            and forwards[str(row["forward_id"])].get("listener") == "ready"
+            for row in desired["forwards"]
+        )
+
+    def wait_for_pathd_generation(self, desired: dict) -> bool:
+        timeout_seconds = max(0.0, min(30.0, float(self.config.get("pathd_status_timeout_seconds", 8) or 0)))
+        deadline = self._clock() + timeout_seconds
+        while True:
+            if self._pathd_status_accepts(desired):
+                return True
+            if self._clock() >= deadline:
+                return False
+            self.stop_event.wait(min(0.1, max(0.0, deadline - self._clock())))
+
+    def validate_pathd_artifact(self, client_meta: dict) -> bool:
+        self.latest_pathd_metadata = {}
+        expected_version = str(client_meta.get("desired_pathd_version", "") or "").strip()
+        expected_sha256 = str(client_meta.get("desired_pathd_sha256", "") or "").strip().lower()
+        binary = self.pathd_binary_path()
+        if expected_version == "" or re.fullmatch(r"[a-f0-9]{64}", expected_sha256) is None:
+            return False
+        if not binary.is_file() or (os.name != "nt" and not os.access(binary, os.X_OK)):
+            return False
+        if not hmac.compare_digest(file_sha256(binary).lower(), expected_sha256):
+            return False
+        provider = self.leigod_binary_path()
+        if not provider.is_file() or (os.name != "nt" and not os.access(provider, os.X_OK)):
+            return False
+        self.latest_pathd_metadata = {"version": expected_version, "sha256": expected_sha256}
+        return True
+
+    def reconcile_pathd(self, payload: dict) -> bool:
+        try:
+            desired = self.build_pathd_desired(payload)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("pathd desired state rejected before write: %s", exc)
+            raise
+        client_meta = payload.get("client", {})
+        if not isinstance(client_meta, dict) or not self.validate_pathd_artifact(client_meta):
+            logging.warning("pathd artifact is missing or hash-mismatched")
+            return False
+        desired_path = self.pathd_desired_path()
+        previous_bytes = desired_path.read_bytes() if desired_path.is_file() else None
+        previous = None
+        if previous_bytes is not None:
+            with contextlib.suppress(ValueError, TypeError, json.JSONDecodeError):
+                decoded = json.loads(previous_bytes.decode("utf-8"))
+                previous = decoded if isinstance(decoded, dict) else None
+        if previous is not None:
+            previous_generation = int(previous.get("generation", 0) or 0)
+            desired_generation = int(desired["generation"])
+            if desired_generation < previous_generation:
+                logging.warning("pathd generation rollback rejected desired=%s current=%s", desired_generation, previous_generation)
+                return False
+            if desired_generation == previous_generation and previous != desired:
+                logging.warning("pathd same-generation content change rejected generation=%s", desired_generation)
+                return False
+            if previous == desired and self._pathd_status_accepts(desired):
+                return True
+        unit_changed = self.write_text_if_changed(self.pathd_unit_path(), self.render_pathd_unit(), mode=0o644)
+        try:
+            self.atomic_write_pathd_desired(desired)
+            if unit_changed and self._run_pathd_command(["systemctl", "daemon-reload"]) != 0:
+                return self._restore_pathd_desired(previous_bytes)
+            command = (
+                ["systemctl", "enable", "--now", "leikwan-pathd.service"]
+                if previous_bytes is None
+                else ["systemctl", "kill", "-s", "HUP", "leikwan-pathd.service"]
+            )
+            if self._run_pathd_command(command) == 0 and self.wait_for_pathd_generation(desired):
+                return True
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("pathd generation apply failed generation=%s error=%s", desired["generation"], exc)
+        logging.warning("pathd rejected desired generation=%s", desired["generation"])
+        return self._restore_pathd_desired(previous_bytes)
+
+    def _restore_pathd_desired(self, previous_bytes: bytes | None) -> bool:
+        if previous_bytes is None:
+            with contextlib.suppress(OSError):
+                self.pathd_desired_path().unlink()
+            self._run_pathd_command(["systemctl", "stop", "leikwan-pathd.service"])
+            return False
+        self._atomic_write_pathd_bytes(self.pathd_desired_path(), previous_bytes)
+        self._run_pathd_command(["systemctl", "kill", "-s", "HUP", "leikwan-pathd.service"])
+        return False
+
+    def pathd_heartbeat(self, client_meta: dict) -> dict:
+        capability = (
+            dict(self.latest_pathd_metadata)
+            if isinstance(client_meta, dict) and self.validate_pathd_artifact(client_meta)
+            else {}
+        )
+        capability_version = str(capability.get("version", "") or "").strip()
+        capability_sha256 = str(capability.get("sha256", "") or "").strip().lower()
+        capability = (
+            {"version": capability_version[:64], "sha256": capability_sha256}
+            if capability_version != "" and re.fullmatch(r"[a-f0-9]{64}", capability_sha256) is not None
+            else {}
+        )
+
+        def bounded_int(value: object, maximum: int) -> int:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError, OverflowError):
+                return 0
+            return max(0, min(maximum, parsed))
+
+        def enum_value(value: object, allowed: set[str]) -> str:
+            normalized = str(value or "").strip().lower()
+            return normalized if normalized in allowed else "unknown"
+
+        status = self.load_pathd_status()
+        forwards = status.get("forwards", {}) if isinstance(status.get("forwards"), dict) else {}
+        sanitized_forwards = {}
+        forward_rows = []
+        for key, row in forwards.items():
+            forward_id = bounded_int(key, (1 << 63) - 1)
+            if forward_id > 0 and isinstance(row, dict):
+                forward_rows.append((forward_id, row))
+        for forward_id, row in sorted(forward_rows, key=lambda item: item[0])[:64]:
+            sanitized_forwards[str(forward_id)] = {
+                "listener": enum_value(row.get("listener"), {"ready", "failed"}),
+                "sessions": bounded_int(row.get("sessions"), (1 << 31) - 1),
+            }
+        desired_lines = {}
+        desired_rows = self.latest_linux_path_leases.get("lines", [])
+        if isinstance(desired_rows, list):
+            for row in desired_rows[:16]:
+                if not isinstance(row, dict):
+                    continue
+                line_id = bounded_int(row.get("line_id"), 45535)
+                if line_id > 0:
+                    desired_lines[line_id] = row
+        local_lines = []
+        for row in status.get("local_lines", []) if isinstance(status.get("local_lines"), list) else []:
+            if not isinstance(row, dict) or len(local_lines) >= 16:
+                continue
+            line_id = bounded_int(row.get("line_id"), 45535)
+            desired = desired_lines.get(line_id)
+            if not isinstance(desired, dict):
+                continue
+            lease_id = str(row.get("lease_id", "") or "").strip().lower()
+            lease_generation = bounded_int(row.get("lease_generation"), (1 << 63) - 1)
+            config_sha256 = str(row.get("config_sha256", "") or "").strip().lower()
+            expected_lease_id = str(desired.get("lease_id", "") or "").strip().lower()
+            expected_generation = bounded_int(desired.get("lease_generation"), (1 << 63) - 1)
+            expected_sha256 = str(desired.get("config_sha256", "") or "").strip().lower()
+            if (
+                not self._valid_pathd_lease_id(lease_id)
+                or lease_generation <= 0
+                or re.fullmatch(r"[a-f0-9]{64}", config_sha256) is None
+                or not hmac.compare_digest(lease_id, expected_lease_id)
+                or lease_generation != expected_generation
+                or not hmac.compare_digest(config_sha256, expected_sha256)
+            ):
+                continue
+            tcp_connect_ms = bounded_int(row.get("tcp_connect_ms"), 60_000)
+            last_error_code = enum_value(
+                row.get("last_error_code"),
+                {"provider_process_exited", "tcp_connect_failed"},
+            )
+            local_lines.append(
+                {
+                    "catalog_id": bounded_int(desired.get("catalog_id"), (1 << 63) - 1),
+                    "line_id": line_id,
+                    "lease_id": lease_id,
+                    "lease_generation": lease_generation,
+                    "config_sha256": config_sha256,
+                    "service_state": enum_value(row.get("service_state"), {"active", "failed"}),
+                    "tcp_status": enum_value(row.get("tcp_status"), {"ok", "unreachable", "unknown"}),
+                    "tcp_connect_ms": tcp_connect_ms,
+                    "last_error_code": "" if last_error_code == "unknown" else last_error_code,
+                }
+            )
+        return {
+            "capability": capability,
+            "status": {
+                "generation": bounded_int(status.get("generation"), (1 << 63) - 1),
+                "status": enum_value(status.get("status"), {"ready", "degraded", "stopped"}),
+                "forwards": sanitized_forwards,
+            },
+            "local_lines": local_lines,
+        }
+
     def run(self) -> None:
+        self.start_config_watch()
         next_sync = 0.0
         next_health = 0.0
-        while True:
-            now = time.time()
-            if now >= next_sync:
+        while not self.stop_event.is_set():
+            now = self._clock()
+            config_changed = self.config_changed_event.is_set()
+            if config_changed or now >= next_sync:
+                if config_changed:
+                    self.config_changed_event.clear()
                 try:
                     self.sync_once()
                 except Exception as exc:  # noqa: BLE001
@@ -1239,7 +1988,7 @@ class ClientAgent:
                         }
                     )
                     logging.exception("sync failed: %s", exc)
-                next_sync = now + int(self.config.get("poll_interval_seconds", 30))
+                next_sync = self.next_full_sync_deadline(now)
 
             if now >= next_health:
                 try:
@@ -1253,13 +2002,25 @@ class ClientAgent:
             except Exception as exc:  # noqa: BLE001
                 logging.exception("cfwg latency watchdog failed: %s", exc)
 
-            time.sleep(5)
+            if self.stop_event.wait(1.0):
+                break
 
     def run_cfwg_latency_watchdog(self, forwards: list[dict]) -> None:
         watchdog_config = self.config.get("cfwg_latency_watchdog", {})
         if not isinstance(watchdog_config, dict):
             watchdog_config = {}
         if not bool(watchdog_config.get("enabled", False)):
+            return
+        internal_path_runtime_present = any(
+            isinstance(forward, dict) and self.has_internal_path_runtime(forward)
+            for forward in forwards
+        )
+        legacy_forwards = [
+            forward
+            for forward in forwards
+            if isinstance(forward, dict) and not self.has_internal_path_runtime(forward)
+        ]
+        if internal_path_runtime_present and legacy_forwards == []:
             return
         try:
             from cfwg_latency_watchdog import CfwgLatencyWatchdog
@@ -1283,7 +2044,7 @@ class ClientAgent:
             )
         else:
             self._cfwg_latency_watchdog.update_config(watchdog_config)
-        self._cfwg_latency_watchdog.tick(forwards)
+        self._cfwg_latency_watchdog.tick(legacy_forwards if internal_path_runtime_present else forwards)
 
     def local_refresh_request_token_path(self) -> pathlib.Path:
         return self.state_dir / "runtime-refresh-request.json"
@@ -1321,10 +2082,27 @@ class ClientAgent:
     def sync_once(self) -> None:
         master = self.config["master_url"].rstrip("/")
         token = self.config["agent_token"]
-        payload, response_headers = http_json_with_headers("GET", f"{master}/api/client/configs/pull", token)
+        pull_query = urllib.parse.urlencode(
+            {
+                "device_id": self.device_id(),
+                "platform": self.device_platform(),
+                "device_name": str(self.config.get("device_name", platform.node()) or platform.node())[:191],
+            }
+        )
+        payload, response_headers = http_json_with_headers(
+            "GET", f"{master}/api/client/configs/pull?{pull_query}", token
+        )
         forwards = payload.get("forwards", [])
+        if not isinstance(forwards, list):
+            raise RuntimeError("client config forwards must be a list")
         self.latest_forwards = [forward for forward in forwards if isinstance(forward, dict)]
-        client_meta = payload.get("client", {})
+        client_meta = payload.get("client", {}) if isinstance(payload.get("client"), dict) else {}
+        self.observed_config_revision = max(
+            self.observed_config_revision,
+            max(0, int(payload.get("config_revision", 0) or 0)),
+        )
+        linux_path_leases = payload.get("linux_path_leases", {"lines": []})
+        self.latest_linux_path_leases = linux_path_leases if isinstance(linux_path_leases, dict) else {"lines": []}
         applied_forward_ids: list[int] = []
         noop_forward_ids: list[int] = []
         skipped_invalid_forward_ids: list[int] = []
@@ -1337,8 +2115,61 @@ class ClientAgent:
         token = self.config["agent_token"]
         desired_ids = set()
         force_runtime_refresh_ids = self.consume_local_refresh_requests()
+        active_pathd_ids = {
+            int(forward.get("forward_id", 0) or 0)
+            for forward in forwards
+            if isinstance(forward, dict)
+            and str(forward.get("service_status", "active")) == "active"
+            and isinstance(forward.get("path_runtime"), dict)
+            and forward["path_runtime"].get("engine") == "linux_pathd"
+        }
+        pathd_requested = bool(active_pathd_ids) or bool(self.latest_linux_path_leases.get("lines")) or self.pathd_desired_path().exists()
+        pathd_ready = True
+        if pathd_requested:
+            try:
+                pathd_ready = self.reconcile_pathd(payload)
+            except Exception as exc:  # noqa: BLE001
+                pathd_ready = False
+                logging.exception("pathd reconcile failed: %s", exc)
+        prior_applied = self.load_applied()
         for forward in forwards:
             forward_id = int(forward["forward_id"])
+            raw_path_runtime = forward.get("path_runtime")
+            path_runtime = raw_path_runtime if isinstance(raw_path_runtime, dict) else {}
+            path_engine = str(path_runtime.get("engine", "") or "").strip()
+            malformed_path_runtime = raw_path_runtime is not None and (
+                not isinstance(raw_path_runtime, dict)
+                or (path_runtime != {} and path_engine == "")
+                or path_engine not in {"", "linux_pathd"}
+            )
+            if malformed_path_runtime:
+                if str(forward.get("service_status", "active")) != "active":
+                    inactive_forward_ids.append(forward_id)
+                    self.stop_forward(forward_id)
+                    continue
+                desired_ids.add(forward_id)
+                skipped_invalid_forward_ids.append(forward_id)
+                self.log_invalid_forward(forward_id, "skipping forward with unsupported path runtime engine")
+                continue
+            is_pathd_forward = isinstance(path_runtime, dict) and path_runtime.get("engine") == "linux_pathd"
+            if is_pathd_forward:
+                if str(forward.get("service_status", "active")) != "active":
+                    inactive_forward_ids.append(forward_id)
+                    continue
+                desired_ids.add(forward_id)
+                if not pathd_ready:
+                    skipped_invalid_forward_ids.append(forward_id)
+                    continue
+                previous = prior_applied.get(str(forward_id), {})
+                if isinstance(previous, dict) and previous and previous.get("runtime_mode") != "linux_pathd":
+                    self.stop_forward(forward_id, delete_files=True)
+                applied_forward_ids.append(forward_id)
+                continue
+            previous = prior_applied.get(str(forward_id), {})
+            if isinstance(previous, dict) and previous.get("runtime_mode") == "linux_pathd":
+                current = self.load_applied()
+                current.pop(str(forward_id), None)
+                self.applied_path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
             validation_forward = dict(forward)
             candidate_pool = self.select_forward_candidates(validation_forward)
             if candidate_pool:
@@ -1424,6 +2255,19 @@ class ClientAgent:
                 continue
 
         applied = self.load_applied()
+        if pathd_ready:
+            for forward in forwards:
+                if not isinstance(forward, dict):
+                    continue
+                forward_id = int(forward.get("forward_id", 0) or 0)
+                if forward_id not in active_pathd_ids:
+                    continue
+                applied[str(forward_id)] = {
+                    "runtime_mode": "linux_pathd",
+                    "service_name": "leikwan-pathd",
+                    "contract_signature": self.effective_forward_contract_signature(forward),
+                    "rendered_signature": str(forward.get("path_runtime", {}).get("contract_hash", "") or ""),
+                }
         for forward_key in list(applied.keys()):
             try:
                 forward_id = int(forward_key)
@@ -1439,6 +2283,7 @@ class ClientAgent:
         usage_totals = self.collect_usage_totals()
         wireguard_public_key = self.ensure_wireguard_identity()
         local_clock = self.time_sync_state()
+        pathd_report = self.pathd_heartbeat(client_meta)
         cfwg_watchdog_path = pathlib.Path(__file__).with_name("cfwg_latency_watchdog.py")
         http_json(
             "POST",
@@ -1451,6 +2296,9 @@ class ClientAgent:
                 "supports_mptcp": self.running_kernel_supports_mptcp(),
                 "mptcp_capability": self.mptcp_capability(),
                 "kernel_release": platform.release(),
+                "device_id": self.device_id(),
+                "device_name": str(self.config.get("device_name", platform.node()) or platform.node())[:191],
+                "platform": self.device_platform(),
                 "installer_version": str(self.config.get("installer_version", "") or ""),
                 "installer_sha256": str(self.config.get("installer_sha256", "") or ""),
                 "install_forward_runtime_sha256": file_sha256(self.install_forward_runtime_path()),
@@ -1460,6 +2308,9 @@ class ClientAgent:
                 "wireguard_listen_port": self.wireguard_listen_port(),
                 "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
                 "clock_sync": local_clock,
+                "leikwan_pathd": pathd_report["capability"],
+                "pathd_status": pathd_report["status"],
+                "linux_path_line_health": pathd_report["local_lines"],
                 "bond_leg_reputation": {
                     "forwards": self.load_bond_leg_reputation_snapshots(),
                 },
@@ -2051,6 +2902,8 @@ class ClientAgent:
 
         for forward in forwards:
             if str(forward.get("service_status", "active")) != "active":
+                continue
+            if self.has_internal_path_runtime(forward):
                 continue
 
             forward_id = int(forward.get("forward_id", 0) or 0)

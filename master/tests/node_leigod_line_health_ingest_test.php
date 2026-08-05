@@ -241,6 +241,37 @@ namespace {
     );
     assertHealthSame($storedFencedHealth, $leaseDb->health['12:11'], 'rejected fence cannot update stored health');
 
+    $clientLeaseId = '00000000-0000-4000-8000-000000000020';
+    $leaseDb->leases[11] = array_replace($leaseDb->leases[11], [
+        'lease_id' => $clientLeaseId,
+        'owner_type' => 'client_device',
+        'owner_id' => 20,
+        'owner_device_id' => 'linux-device-a',
+        'generation' => 4,
+        'state' => 'pending',
+    ]);
+    $clientHealth = [[
+        'catalog_id' => 11,
+        'line_id' => 451,
+        'lease_id' => $clientLeaseId,
+        'lease_generation' => 4,
+        'config_sha256' => $hash451,
+        'service_state' => 'active',
+        'tcp_status' => 'ok',
+    ]];
+    assertHealthSame(
+        ['accepted' => 1, 'rejected' => 0],
+        $leaseCatalog->ingestClientHealth(20, 'linux-device-a', $clientHealth),
+        'matching client pathd health accepted'
+    );
+    assertHealthSame('active', $leaseDb->leases[11]['state'] ?? null, 'client pathd health activates pending lease');
+    $clientHealth[0]['lease_generation'] = 3;
+    assertHealthSame(
+        ['accepted' => 0, 'rejected' => 1],
+        $leaseCatalog->ingestClientHealth(20, 'linux-device-a', $clientHealth),
+        'stale client pathd health rejected'
+    );
+
     $nodeController = file_get_contents(__DIR__ . '/../src/Controllers/NodeController.php') ?: '';
     $adminController = file_get_contents(__DIR__ . '/../src/Controllers/AdminController.php') ?: '';
     foreach (['leigod_line_health', 'leigod_forward_selections'] as $dynamicKey) {
@@ -249,6 +280,12 @@ namespace {
         }
         if (!str_contains($adminController, "'" . $dynamicKey . "'")) {
             failHealth('node management does not preserve ' . $dynamicKey);
+        }
+    }
+    $clientController = file_get_contents(__DIR__ . '/../src/Controllers/ClientAgentController.php') ?: '';
+    foreach (['linux_path_line_health', 'ingestClientHealth', 'leikwan_pathd'] as $needle) {
+        if (!str_contains($clientController, $needle)) {
+            failHealth('client heartbeat missing ' . $needle);
         }
     }
 

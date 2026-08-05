@@ -21,6 +21,30 @@ install_runtime = load_module("install_forward_runtime_leigod_only_contract_unde
 
 
 class LeiGodOnlyRuntimeContractTests(unittest.TestCase):
+    def test_linux_pathd_contract_cannot_render_a_per_forward_service(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "linux_pathd"):
+            install_runtime.render_forward_runtime(
+                {
+                    "forward_id": 49,
+                    "listen_port": 11037,
+                    "target": "v4-hkt-b.mcbar.cc:5201",
+                    "sni": "edge.example.test",
+                    "path_prefix": "hybrid-route",
+                    "transport": "tcp",
+                    "mode": "bond",
+                    "endpoints": [
+                        {"endpoint_id": 1, "host": "192.0.2.1", "port": 7001},
+                        {"endpoint_id": 2, "host": "192.0.2.2", "port": 7002},
+                    ],
+                    "bonding": {
+                        "session_token": "legacy-must-not-run",
+                        "remote_target": "198.51.100.50:7443",
+                    },
+                    "path_runtime": {"engine": "linux_pathd", "placement": "linux_hybrid"},
+                },
+                {},
+            )
+
     def test_dedicated_leigod_ignores_legacy_mptcp_and_renders_single_direct_forward(self) -> None:
         rendered = install_runtime.render_forward_runtime(
             {
