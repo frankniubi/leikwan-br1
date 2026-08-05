@@ -482,6 +482,13 @@ struct LegState {
     leg_route_id: Option<u32>,
     node_id: Option<u64>,
     host: String,
+    initial_connect_ms: u64,
+    hello_ack_ms: u64,
+    initial_ready: bool,
+    added_late: bool,
+    reconnect_count: u64,
+    scheduled_bytes: u64,
+    cooldown_count: u64,
     cooldown_until: Option<Instant>,
     penalty_count: u8,
     tcp_health: ProtocolLegHealth,
@@ -620,6 +627,11 @@ struct OpenLeg {
     leg_route_id: Option<u32>,
     node_id: Option<u64>,
     host: String,
+    initial_connect_ms: u64,
+    hello_ack_ms: u64,
+    initial_ready: bool,
+    added_late: bool,
+    reconnect_count: u64,
 }
 
 impl OpenLeg {
@@ -636,6 +648,11 @@ impl OpenLeg {
             endpoint_id: None,
             leg_route_id: None,
             node_id: None,
+            initial_connect_ms: 0,
+            hello_ack_ms: 0,
+            initial_ready: false,
+            added_late: false,
+            reconnect_count: 0,
         }
     }
 
@@ -657,6 +674,19 @@ impl OpenLeg {
         if !host.is_empty() {
             self.host = host;
         }
+        self
+    }
+
+    fn with_handshake_timings(mut self, initial_connect_ms: u64, hello_ack_ms: u64) -> Self {
+        self.initial_connect_ms = initial_connect_ms;
+        self.hello_ack_ms = hello_ack_ms;
+        self
+    }
+
+    fn with_bootstrap_state(mut self, initial_ready: bool, added_late: bool, reconnect_count: u64) -> Self {
+        self.initial_ready = initial_ready;
+        self.added_late = added_late;
+        self.reconnect_count = reconnect_count;
         self
     }
 }
@@ -1465,7 +1495,7 @@ async fn acknowledge_pending_legs(session_id: Uuid, pending_legs: Vec<OpenLeg>) 
             warn!("failed to send hello-ack for session {}: {:?}", session_id, err);
             continue;
         }
-        legs.push(leg);
+        legs.push(leg.with_bootstrap_state(true, false, 0));
     }
 
     if legs.is_empty() {
@@ -1476,10 +1506,11 @@ async fn acknowledge_pending_legs(session_id: Uuid, pending_legs: Vec<OpenLeg>) 
 }
 
 async fn acknowledge_late_leg(session_id: Uuid, mut leg: OpenLeg) -> anyhow::Result<OpenLeg> {
+    let reconnect_count = leg.reconnect_count.saturating_add(1);
     write_frame(&mut leg.stream, &WireFrame::HelloAck)
         .await
         .with_context(|| format!("failed to send hello-ack for late leg in session {}", session_id))?;
-    Ok(leg)
+    Ok(leg.with_bootstrap_state(false, true, reconnect_count))
 }
 
 async fn read_hello_and_queue(leg: OpenLeg, collector_tx: mpsc::UnboundedSender<PreparedLeg>) -> anyhow::Result<()> {
@@ -1591,7 +1622,10 @@ async fn connect_client_tcp_transport_legs(
 
         match joined {
             Ok((spec_index, _spec_original, Ok(leg))) => {
-                initial_legs.push(leg.with_spec_index(spec_index));
+                initial_legs.push(
+                    leg.with_spec_index(spec_index)
+                        .with_bootstrap_state(true, false, 0),
+                );
                 active_specs.insert(spec_index);
                 if join_deadline.is_none() {
                     join_deadline = Some(Instant::now() + config.initial_leg_wait);
@@ -1658,10 +1692,11 @@ async fn connect_client_udp_legs(
         return Err(anyhow!("at least one bond leg target is required"));
     }
 
-    let mut connected = Vec::<(usize, LegSpec, LegIo)>::new();
+    let mut connected = Vec::<(usize, LegSpec, LegIo, u64)>::new();
     for (spec_index, spec) in specs.iter().enumerate() {
+        let connect_started = Instant::now();
         match connect_leg(spec, config.connect_timeout).await {
-            Ok(stream) => connected.push((spec_index, spec.clone(), stream)),
+            Ok(stream) => connected.push((spec_index, spec.clone(), stream, duration_millis(connect_started.elapsed()))),
             Err(err) => warn!("failed to connect UDP bond leg {}: {:?}", spec.original, err),
         }
     }
@@ -1673,16 +1708,17 @@ async fn connect_client_udp_legs(
     let expected_links = connected.len() as u16;
 
     let mut hello_sent = Vec::new();
-    for (spec_index, spec, mut stream) in connected {
+    for (spec_index, spec, mut stream, initial_connect_ms) in connected {
         let hello = hello_for_spec(&spec, session_id, expected_links, &session_token);
         write_frame(&mut stream, &hello)
             .await
             .with_context(|| format!("failed to send bond hello to leg {}", spec.original))?;
-        hello_sent.push((spec_index, spec, stream));
+        hello_sent.push((spec_index, spec, stream, initial_connect_ms));
     }
 
     let mut ready_legs = Vec::new();
-    for (spec_index, spec, mut stream) in hello_sent {
+    for (spec_index, spec, mut stream, initial_connect_ms) in hello_sent {
+        let ack_started = Instant::now();
         let ack = timeout(Duration::from_secs(5), read_frame(&mut stream))
             .await
             .with_context(|| format!("timed out waiting for bond hello-ack from {}", spec.original))??;
@@ -1695,7 +1731,9 @@ async fn connect_client_udp_legs(
                         spec.node_id,
                         spec.display_host.clone().unwrap_or_else(|| spec.host.clone()),
                     )
-                    .with_spec_index(spec_index),
+                    .with_spec_index(spec_index)
+                    .with_handshake_timings(initial_connect_ms, duration_millis(ack_started.elapsed()))
+                    .with_bootstrap_state(true, false, 0),
             );
             continue;
         }
@@ -1719,9 +1757,12 @@ async fn connect_and_ack_leg(
     hello: &WireFrame,
     connect_timeout: Duration,
 ) -> anyhow::Result<OpenLeg> {
+    let connect_started = Instant::now();
     let mut stream = connect_leg(spec, connect_timeout)
         .await
         .with_context(|| format!("failed to connect bond leg {}", spec.original))?;
+    let initial_connect_ms = duration_millis(connect_started.elapsed());
+    let ack_started = Instant::now();
     write_frame(&mut stream, hello)
         .await
         .with_context(|| format!("failed to send bond hello to leg {}", spec.original))?;
@@ -1730,12 +1771,14 @@ async fn connect_and_ack_leg(
         .with_context(|| format!("timed out waiting for bond hello-ack from {}", spec.original))??;
     if matches!(ack, WireFrame::HelloAck) {
         return Ok(
-            OpenLeg::new(stream, spec.priority, spec.role, spec.original.clone()).with_metadata(
-                spec.endpoint_id,
-                spec.leg_route_id,
-                spec.node_id,
-                spec.display_host.clone().unwrap_or_else(|| spec.host.clone()),
-            ),
+            OpenLeg::new(stream, spec.priority, spec.role, spec.original.clone())
+                .with_metadata(
+                    spec.endpoint_id,
+                    spec.leg_route_id,
+                    spec.node_id,
+                    spec.display_host.clone().unwrap_or_else(|| spec.host.clone()),
+                )
+                .with_handshake_timings(initial_connect_ms, duration_millis(ack_started.elapsed())),
         );
     }
     if let WireFrame::Reset { reason, .. } = ack {
@@ -1765,6 +1808,7 @@ async fn run_client_leg_connector(
 ) {
     let mut next_retry_at = vec![Instant::now(); specs.len()];
     let mut failure_attempts = vec![0usize; specs.len()];
+    let mut reconnect_counts = vec![0u64; specs.len()];
     let mut was_active = vec![false; specs.len()];
 
     loop {
@@ -1805,6 +1849,7 @@ async fn run_client_leg_connector(
             match connect_and_ack_leg(spec, &hello, connect_timeout).await {
                 Ok(leg) => {
                     failure_attempts[spec_index] = 0;
+                    reconnect_counts[spec_index] = reconnect_counts[spec_index].saturating_add(1);
                     next_retry_at[spec_index] = Instant::now()
                         + retry_backoff_with_jitter(
                             reconnect_backoff,
@@ -1812,7 +1857,16 @@ async fn run_client_leg_connector(
                             0,
                             spec_index,
                         );
-                    if add_leg_tx.send(leg.with_spec_index(spec_index)).is_err() {
+                    if add_leg_tx
+                        .send(
+                            leg.with_spec_index(spec_index).with_bootstrap_state(
+                                false,
+                                true,
+                                reconnect_counts[spec_index],
+                            ),
+                        )
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -2844,6 +2898,11 @@ fn spawn_tcp_leg_task(
     let leg_route_id = leg.leg_route_id;
     let node_id = leg.node_id;
     let host = leg.host;
+    let initial_connect_ms = leg.initial_connect_ms;
+    let hello_ack_ms = leg.hello_ack_ms;
+    let initial_ready = leg.initial_ready;
+    let added_late = leg.added_late;
+    let reconnect_count = leg.reconnect_count;
     let (reader, writer) = tokio::io::split(leg.stream);
     let (tx, rx) = leg_write_channel();
     spawn_tcp_leg_io_tasks(leg_id, reader, writer, rx, event_tx, write_timeout);
@@ -2862,6 +2921,13 @@ fn spawn_tcp_leg_task(
         leg_route_id,
         node_id,
         host,
+        initial_connect_ms,
+        hello_ack_ms,
+        initial_ready,
+        added_late,
+        reconnect_count,
+        scheduled_bytes: 0,
+        cooldown_count: 0,
         cooldown_until: None,
         penalty_count: 0,
         tcp_health: ProtocolLegHealth::new(),
@@ -3899,6 +3965,11 @@ fn spawn_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<S
     let leg_route_id = leg.leg_route_id;
     let node_id = leg.node_id;
     let host = leg.host;
+    let initial_connect_ms = leg.initial_connect_ms;
+    let hello_ack_ms = leg.hello_ack_ms;
+    let initial_ready = leg.initial_ready;
+    let added_late = leg.added_late;
+    let reconnect_count = leg.reconnect_count;
     let (reader, writer) = tokio::io::split(leg.stream);
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(run_leg_writer(leg_id, writer, rx, event_tx.clone()));
@@ -3918,6 +3989,13 @@ fn spawn_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<S
         leg_route_id,
         node_id,
         host,
+        initial_connect_ms,
+        hello_ack_ms,
+        initial_ready,
+        added_late,
+        reconnect_count,
+        scheduled_bytes: 0,
+        cooldown_count: 0,
         cooldown_until: None,
         penalty_count: 0,
         tcp_health: ProtocolLegHealth::new(),
@@ -4325,8 +4403,17 @@ struct SnapshotEventView {
 #[derive(Serialize)]
 struct SnapshotLegView {
     endpoint_id: u64,
+    leg_route_id: u32,
     node_id: u64,
     host: String,
+    active: bool,
+    initial_connect_ms: u64,
+    hello_ack_ms: u64,
+    initial_ready: bool,
+    added_late: bool,
+    reconnect_count: u64,
+    scheduled_bytes: u64,
+    cooldown_count: u64,
     tcp: SnapshotProtocolView,
     udp: SnapshotProtocolView,
     recent_events: Vec<SnapshotEventView>,
@@ -4372,8 +4459,17 @@ fn build_leg_health_snapshot_json(
             .iter()
             .map(|leg| SnapshotLegView {
                 endpoint_id: leg.endpoint_id.unwrap_or(0),
+                leg_route_id: leg.leg_route_id.unwrap_or(0),
                 node_id: leg.node_id.unwrap_or(0),
                 host: leg.host.clone(),
+                active: leg.active,
+                initial_connect_ms: leg.initial_connect_ms,
+                hello_ack_ms: leg.hello_ack_ms,
+                initial_ready: leg.initial_ready,
+                added_late: leg.added_late,
+                reconnect_count: leg.reconnect_count,
+                scheduled_bytes: leg.scheduled_bytes,
+                cooldown_count: leg.cooldown_count,
                 tcp: snapshot_protocol_view(&leg.tcp_health),
                 udp: snapshot_protocol_view(&leg.udp_health),
                 recent_events: leg
@@ -5425,6 +5521,7 @@ fn apply_leg_cooldown(legs: &mut [LegState], leg_id: usize, cooldown: Duration) 
     if let Some(leg) = legs.get_mut(leg_id) {
         leg.cooldown_until = Some(Instant::now() + cooldown);
         leg.penalty_count = leg.penalty_count.saturating_add(1);
+        leg.cooldown_count = leg.cooldown_count.saturating_add(1);
         warn!("bond leg {} entering cooldown for {:?}", leg.label, cooldown);
     }
     penalize_tcp_leg(legs, leg_id, TcpPenalty::SelectedButUnproductive);
@@ -5519,6 +5616,16 @@ fn select_stream_leg_warmup(
     Some(chosen)
 }
 
+fn wire_frame_payload_len(frame: &WireFrame) -> usize {
+    match frame {
+        WireFrame::DataC2S { payload, .. }
+        | WireFrame::DataS2C { payload, .. }
+        | WireFrame::UdpFragC2S { payload, .. }
+        | WireFrame::UdpFragS2C { payload, .. } => payload.len(),
+        _ => 0,
+    }
+}
+
 fn send_to_leg(legs: &mut [LegState], leg_index: usize, frame: WireFrame) -> bool {
     let Some(leg) = legs.get_mut(leg_index) else {
         return false;
@@ -5529,8 +5636,12 @@ fn send_to_leg(legs: &mut [LegState], leg_index: usize, frame: WireFrame) -> boo
     let Some(sender) = leg.sender.as_ref() else {
         return false;
     };
+    let payload_len = wire_frame_payload_len(&frame) as u64;
     match sender.try_send(frame) {
-        LegSendResult::Queued => true,
+        LegSendResult::Queued => {
+            leg.scheduled_bytes = leg.scheduled_bytes.saturating_add(payload_len);
+            true
+        }
         LegSendResult::Full => false,
         LegSendResult::Closed => {
             leg.active = false;
@@ -5600,6 +5711,10 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+fn duration_millis(duration: Duration) -> u64 {
+    duration.as_millis().min(u64::MAX as u128) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5620,6 +5735,13 @@ mod tests {
             leg_route_id: Some((400 + id) as u32),
             node_id: Some((id + 1) as u64),
             host: format!("host-{id}.example"),
+            initial_connect_ms: 0,
+            hello_ack_ms: 0,
+            initial_ready: true,
+            added_late: false,
+            reconnect_count: 0,
+            scheduled_bytes: 0,
+            cooldown_count: 0,
             cooldown_until: None,
             penalty_count: 0,
             tcp_health: ProtocolLegHealth::new(),
@@ -6657,6 +6779,7 @@ mod tests {
     fn local_snapshot_serialization_shape_includes_protocol_health_and_events() {
         let mut legs = vec![fake_leg(0, 10, 0, 20)];
         legs[0].endpoint_id = Some(185);
+        legs[0].leg_route_id = Some(453);
         legs[0].node_id = Some(5);
         legs[0].host = String::from("8.163.90.235");
 
@@ -6672,11 +6795,36 @@ mod tests {
         assert_eq!(value["observer_id"], 123);
         assert_eq!(value["forward_id"], 26);
         assert_eq!(value["legs"][0]["endpoint_id"], 185);
+        assert_eq!(value["legs"][0]["leg_route_id"], 453);
         assert_eq!(value["legs"][0]["node_id"], 5);
         assert_eq!(value["legs"][0]["host"], "8.163.90.235");
+        assert_eq!(value["legs"][0]["active"], true);
+        assert_eq!(value["legs"][0]["initial_ready"], true);
+        assert_eq!(value["legs"][0]["added_late"], false);
+        assert_eq!(value["legs"][0]["reconnect_count"], 0);
+        assert_eq!(value["legs"][0]["scheduled_bytes"], 0);
+        assert_eq!(value["legs"][0]["cooldown_count"], 0);
         assert!(value["legs"][0]["tcp"]["effective_weight"].as_f64().unwrap_or(1.0) < 1.0);
         assert!(value["legs"][0]["udp"]["effective_weight"].as_f64().unwrap_or(1.0) < 1.0);
         assert!(value["legs"][0]["recent_events"].as_array().is_some_and(|items| !items.is_empty()));
+    }
+
+    #[test]
+    fn route_observability_counts_scheduled_payload_and_cooldowns() {
+        let mut legs = vec![fake_leg(0, 10, 0, 20)];
+        assert!(send_to_leg(
+            &mut legs,
+            0,
+            WireFrame::DataC2S {
+                stream_id: 7,
+                seq: 0,
+                payload: Bytes::from_static(b"payload"),
+            },
+        ));
+        apply_leg_cooldown(&mut legs, 0, Duration::from_secs(1));
+
+        assert_eq!(legs[0].scheduled_bytes, 7);
+        assert_eq!(legs[0].cooldown_count, 1);
     }
 
     #[test]
@@ -6716,6 +6864,13 @@ mod tests {
             leg_route_id: None,
             node_id: Some(0),
             host: String::from("127.0.0.1"),
+            initial_connect_ms: 0,
+            hello_ack_ms: 0,
+            initial_ready: true,
+            added_late: false,
+            reconnect_count: 0,
+            scheduled_bytes: 0,
+            cooldown_count: 0,
             cooldown_until: None,
             penalty_count: 0,
             tcp_health: ProtocolLegHealth::new(),

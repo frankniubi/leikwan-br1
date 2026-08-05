@@ -8,6 +8,8 @@ import socket
 import struct
 import unittest
 from unittest import mock
+import json
+import tempfile
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -51,6 +53,20 @@ def free_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def free_dual_protocol_loopback_port() -> int:
+    for _ in range(50):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_sock:
+            tcp_sock.bind(("127.0.0.1", 0))
+            port = int(tcp_sock.getsockname()[1])
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_sock:
+                try:
+                    udp_sock.bind(("127.0.0.1", port))
+                except OSError:
+                    continue
+                return port
+    raise RuntimeError("failed to allocate a TCP/UDP loopback port")
 
 
 def bond_hello_header(leg_route_id: int, payload_len: int = 20) -> bytes:
@@ -306,7 +322,11 @@ class LeigodForwardRelayTests(unittest.IsolatedAsyncioTestCase):
         return {
             "mode": mode,
             "listen_host": "127.0.0.1",
-            "listen_port": free_loopback_port(),
+            "listen_port": (
+                free_dual_protocol_loopback_port()
+                if "udp" in transport
+                else free_loopback_port()
+            ),
             "target_host": target[0],
             "target_port": target[1],
             "transport": transport,
@@ -378,6 +398,14 @@ class LeigodForwardRelayTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual([], first.connect_targets)
             self.assertEqual([target.address], second.connect_targets)
+            await asyncio.sleep(0.05)
+            second_state = runtime.candidate_state(453)
+            self.assertEqual(453, second_state["leg_route_id"])
+            self.assertEqual(1, second_state["bond_route"]["accepted"])
+            self.assertEqual(1, second_state["bond_route"]["connect_successes"])
+            self.assertGreaterEqual(second_state["bond_route"]["bytes_up"], 27)
+            self.assertGreaterEqual(second_state["bond_route"]["bytes_down"], 59)
+            self.assertEqual(0, second_state["bond_route"]["active"])
 
     async def test_bond_rejects_unroutable_or_invalid_hello_without_socks_connect(self) -> None:
         async with TcpEchoServer() as target, FakeSocksServer(451) as first, FakeSocksServer(453) as second:
@@ -453,6 +481,41 @@ class LeigodForwardRelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([target.address], first.connect_targets)
             self.assertEqual([], second.connect_targets)
             self.assertEqual(1, runtime.candidate_state(451)["tcp_consecutive_failures"])
+            failed_state = runtime.candidate_state(451)
+            self.assertEqual(1, failed_state["bond_route"]["accepted"])
+            self.assertEqual(1, failed_state["bond_route"]["connect_failures"])
+            self.assertIn("SOCKS command failed", failed_state["bond_route"]["last_error"])
+
+    async def test_bond_state_file_contains_route_counters_without_runtime_secrets(self) -> None:
+        async with TcpEchoServer() as target, FakeSocksServer(451) as first, FakeSocksServer(453) as second:
+            rows = [
+                first.candidate(1, 10) | {"leg_route_id": 451},
+                second.candidate(2, 20) | {"leg_route_id": 453},
+            ]
+            with tempfile.TemporaryDirectory() as temp_dir:
+                state_file = pathlib.Path(temp_dir) / "relay-state.json"
+                runtime = relay_module.RelayRuntime(
+                    relay_module.parse_config(self.config("bond", target.address, rows)),
+                    state_file=state_file,
+                )
+                await runtime.start()
+                self.runtimes.append(runtime)
+                reader, writer = await asyncio.open_connection(*runtime.tcp_address)
+                header = bond_hello_header(453)
+                try:
+                    writer.write(header + bytes(20) + b"payload")
+                    await writer.drain()
+                    await reader.readexactly(len(header) + 27)
+                finally:
+                    writer.close()
+                    with contextlib.suppress(Exception):
+                        await writer.wait_closed()
+                payload = json.loads(state_file.read_text(encoding="utf-8"))
+                route = next(row for row in payload["candidates"] if row["leg_route_id"] == 453)
+                self.assertEqual(1, route["bond_route"]["accepted"])
+                self.assertNotIn("target_host", json.dumps(payload))
+                self.assertNotIn("session_token", json.dumps(payload))
+                self.assertNotIn("policy", json.dumps(payload))
 
     def test_bond_config_requires_multiple_unique_tcp_routes(self) -> None:
         base_row = {

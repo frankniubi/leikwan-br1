@@ -14,7 +14,7 @@ import signal
 import socket
 import struct
 import time
-from typing import Any
+from typing import Any, Callable
 
 
 VERSION = "2026.07.27.1"
@@ -159,11 +159,33 @@ class CandidateState:
         self.tcp_quarantined = False
         self.udp_quarantined = False
         self.last_error = ""
+        self.bond_accepted = 0
+        self.bond_active = 0
+        self.bond_connect_successes = 0
+        self.bond_connect_failures = 0
+        self.bond_bytes_up = 0
+        self.bond_bytes_down = 0
+        self.bond_last_error = ""
+
+    def record_bond_error(self, error: Exception) -> None:
+        self.bond_last_error = str(error)[:500]
+
+    def bond_snapshot(self) -> dict[str, Any]:
+        return {
+            "accepted": self.bond_accepted,
+            "active": self.bond_active,
+            "connect_successes": self.bond_connect_successes,
+            "connect_failures": self.bond_connect_failures,
+            "bytes_up": self.bond_bytes_up,
+            "bytes_down": self.bond_bytes_down,
+            "last_error": self.bond_last_error,
+        }
 
     def snapshot(self) -> dict[str, Any]:
         return {
             "combination_id": self.candidate.combination_id,
             "line_id": self.candidate.line_id,
+            "leg_route_id": self.candidate.leg_route_id,
             "tcp_healthy": self.tcp_healthy,
             "udp_healthy": self.udp_healthy,
             "latency_ms": self.latency_ms,
@@ -177,6 +199,7 @@ class CandidateState:
             "tcp_quarantined": self.tcp_quarantined,
             "udp_quarantined": self.udp_quarantined,
             "last_error": self.last_error,
+            "bond_route": self.bond_snapshot(),
         }
 
 
@@ -516,12 +539,18 @@ class CandidateSelector:
         raise RuntimeError(f"no UDP candidate returned a target reply: {last_error}")
 
 
-async def pipe_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def pipe_stream(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    on_bytes: Callable[[int], None] | None = None,
+) -> None:
     try:
         while True:
             data = await asyncio.wait_for(reader.read(COPY_CHUNK), timeout=IDLE_TIMEOUT_SECONDS)
             if not data:
                 break
+            if on_bytes is not None:
+                on_bytes(len(data))
             writer.write(data)
             await writer.drain()
     except (asyncio.TimeoutError, ConnectionError, asyncio.IncompleteReadError):
@@ -682,12 +711,16 @@ class RelayRuntime:
         client_writer: asyncio.StreamWriter,
     ) -> None:
         upstream_writer: asyncio.StreamWriter | None = None
+        candidate_state: CandidateState | None = None
+        bond_active = False
         try:
             leg_route_id, hello_header = await read_bond_hello_route_id(client_reader)
             candidate = self._bond_candidates_by_route.get(leg_route_id)
             if candidate is None:
                 raise RuntimeError(f"unknown LBND leg route {leg_route_id}")
             candidate_state = self.selector.state(candidate.line_id)
+            candidate_state.bond_accepted += 1
+            self._write_state()
             try:
                 upstream_reader, upstream_writer, latency = await open_socks_connect(
                     candidate,
@@ -697,14 +730,28 @@ class RelayRuntime:
                 )
             except Exception as exc:
                 self.selector._record_failure(candidate_state, exc, "tcp")
+                candidate_state.bond_connect_failures += 1
+                candidate_state.record_bond_error(exc)
                 raise
             self.selector._record_success(candidate_state, latency, "tcp")
+            candidate_state.bond_connect_successes += 1
+            candidate_state.bond_active += 1
+            bond_active = True
+            candidate_state.bond_last_error = ""
             upstream_writer.write(hello_header)
             await upstream_writer.drain()
             self._write_state()
             await asyncio.gather(
-                pipe_stream(client_reader, upstream_writer),
-                pipe_stream(upstream_reader, client_writer),
+                pipe_stream(
+                    client_reader,
+                    upstream_writer,
+                    lambda count: setattr(candidate_state, "bond_bytes_up", candidate_state.bond_bytes_up + count),
+                ),
+                pipe_stream(
+                    upstream_reader,
+                    client_writer,
+                    lambda count: setattr(candidate_state, "bond_bytes_down", candidate_state.bond_bytes_down + count),
+                ),
             )
         except Exception as exc:
             logging.warning("bond relay connection failed: %s", exc)
@@ -714,6 +761,9 @@ class RelayRuntime:
                 upstream_writer.close()
                 with contextlib.suppress(Exception):
                     await upstream_writer.wait_closed()
+            if bond_active and candidate_state is not None:
+                candidate_state.bond_active = max(0, candidate_state.bond_active - 1)
+                self._write_state()
             client_writer.close()
             with contextlib.suppress(Exception):
                 await client_writer.wait_closed()
