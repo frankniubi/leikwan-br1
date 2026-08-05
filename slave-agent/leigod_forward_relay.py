@@ -22,15 +22,23 @@ MAX_CANDIDATES = 8
 COPY_CHUNK = 256 * 1024
 IDLE_TIMEOUT_SECONDS = 300.0
 UDP_FLOW_TIMEOUT_SECONDS = 60.0
+LBND_MAGIC = b"LBND"
+LBND_VERSION = 2
+LBND_HELLO_KIND = 1
+LBND_HEADER_LEN = 32
+LBND_MIN_HELLO_PAYLOAD = 20
+LBND_MAX_HELLO_PAYLOAD = 8192
+BOND_HEADER_TIMEOUT_SECONDS = 3.0
 
 
 class CandidateConfig:
     def __init__(self, payload: dict[str, Any]) -> None:
-        allowed = {"combination_id", "line_id", "socks_host", "socks_port", "sort_order"}
+        allowed = {"combination_id", "line_id", "leg_route_id", "socks_host", "socks_port", "sort_order"}
         if set(payload) - allowed:
             raise ValueError("candidate contains unsupported keys")
         self.combination_id = int(payload.get("combination_id", 0))
         self.line_id = int(payload.get("line_id", 0))
+        self.leg_route_id = int(payload.get("leg_route_id", 0))
         self.socks_host = str(payload.get("socks_host", "")).strip()
         self.socks_port = int(payload.get("socks_port", 0))
         self.sort_order = int(payload.get("sort_order", 100))
@@ -95,8 +103,8 @@ class RelayConfig:
         self.target_host = str(payload.get("target_host", "")).strip()
         self.target_port = int(payload.get("target_port", 0))
         self.transport = str(payload.get("transport", "")).strip().lower()
-        if self.mode not in {"single", "race"}:
-            raise ValueError("mode must be single or race")
+        if self.mode not in {"single", "race", "bond"}:
+            raise ValueError("mode must be single, race, or bond")
         try:
             if not ipaddress.ip_address(self.listen_host).is_loopback:
                 raise ValueError("listen_host must be loopback")
@@ -110,17 +118,27 @@ class RelayConfig:
             raise ValueError("invalid target_port")
         if self.transport not in {"tcp", "udp", "tcp+udp"}:
             raise ValueError("invalid transport")
+        if self.mode == "bond" and self.transport != "tcp":
+            raise ValueError("bond mode requires TCP carrier transport")
         raw_candidates = payload.get("candidates")
         if not isinstance(raw_candidates, list) or not raw_candidates or len(raw_candidates) > MAX_CANDIDATES:
             raise ValueError("candidates must contain between one and eight rows")
         self.candidates = [CandidateConfig(row) for row in raw_candidates if isinstance(row, dict)]
         if len(self.candidates) != len(raw_candidates):
             raise ValueError("candidate rows must be objects")
+        if self.mode == "bond" and len(self.candidates) < 2:
+            raise ValueError("bond mode requires between two and eight candidates")
         keys = [candidate.key for candidate in self.candidates]
         line_ids = [candidate.line_id for candidate in self.candidates]
         socks_endpoints = [(candidate.socks_host, candidate.socks_port) for candidate in self.candidates]
         if len(set(keys)) != len(keys) or len(set(line_ids)) != len(line_ids) or len(set(socks_endpoints)) != len(socks_endpoints):
             raise ValueError("duplicate candidates are not allowed")
+        if self.mode == "bond":
+            leg_route_ids = [candidate.leg_route_id for candidate in self.candidates]
+            if any(leg_route_id <= 0 for leg_route_id in leg_route_ids):
+                raise ValueError("bond candidates require positive leg_route_id")
+            if len(set(leg_route_ids)) != len(leg_route_ids):
+                raise ValueError("duplicate bond leg routes are not allowed")
         self.candidates.sort(key=lambda row: (row.sort_order, row.combination_id, row.line_id))
         raw_policy = payload.get("policy", {})
         if not isinstance(raw_policy, dict):
@@ -514,6 +532,19 @@ async def pipe_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 writer.write_eof()
 
 
+async def read_bond_hello_route_id(reader: asyncio.StreamReader) -> tuple[int, bytes]:
+    header = await asyncio.wait_for(reader.readexactly(LBND_HEADER_LEN), timeout=BOND_HEADER_TIMEOUT_SECONDS)
+    if header[:4] != LBND_MAGIC or header[4] != LBND_VERSION or header[5] != LBND_HELLO_KIND:
+        raise RuntimeError("invalid LBND hello header")
+    leg_route_id = struct.unpack(">I", header[24:28])[0]
+    payload_len = struct.unpack(">I", header[28:32])[0]
+    if leg_route_id == 0:
+        raise RuntimeError("LBND hello leg route is missing")
+    if not LBND_MIN_HELLO_PAYLOAD <= payload_len <= LBND_MAX_HELLO_PAYLOAD:
+        raise RuntimeError("LBND hello payload length is invalid")
+    return leg_route_id, header
+
+
 class RelayUdpProtocol(asyncio.DatagramProtocol):
     def __init__(self, runtime: "RelayRuntime") -> None:
         self.runtime = runtime
@@ -534,6 +565,11 @@ class RelayRuntime:
         self._udp_transport: asyncio.DatagramTransport | None = None
         self._probe_task: asyncio.Task[None] | None = None
         self._udp_flows: dict[tuple[str, int], tuple[int, float]] = {}
+        self._bond_candidates_by_route = {
+            candidate.leg_route_id: candidate
+            for candidate in config.candidates
+            if candidate.leg_route_id > 0
+        }
 
     @property
     def tcp_address(self) -> tuple[str, int]:
@@ -551,7 +587,8 @@ class RelayRuntime:
 
     async def start(self) -> None:
         if "tcp" in self.config.transport:
-            await self.selector.probe_once()
+            if self.config.mode != "bond":
+                await self.selector.probe_once()
             self._tcp_server = await asyncio.start_server(
                 self.handle_tcp,
                 self.config.listen_host,
@@ -563,7 +600,8 @@ class RelayRuntime:
                 lambda: RelayUdpProtocol(self),
                 local_addr=(self.config.listen_host, self.config.listen_port),
             )
-        self._probe_task = asyncio.create_task(self.probe_loop())
+        if self.config.mode != "bond":
+            self._probe_task = asyncio.create_task(self.probe_loop())
         self._write_state()
 
     async def close(self) -> None:
@@ -596,10 +634,15 @@ class RelayRuntime:
         ):
             raise ValueError("reload cannot change listener identity or transport")
         selector = CandidateSelector(config)
-        if "tcp" in config.transport:
+        if "tcp" in config.transport and config.mode != "bond":
             await selector.probe_once()
         self.config = config
         self.selector = selector
+        self._bond_candidates_by_route = {
+            candidate.leg_route_id: candidate
+            for candidate in config.candidates
+            if candidate.leg_route_id > 0
+        }
         self._udp_flows.clear()
         self._write_state()
 
@@ -610,6 +653,9 @@ class RelayRuntime:
         return self.selector.state(line_id).snapshot()
 
     async def handle_tcp(self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
+        if self.config.mode == "bond":
+            await self.handle_bond_tcp(client_reader, client_writer)
+            return
         upstream_writer: asyncio.StreamWriter | None = None
         try:
             upstream_reader, upstream_writer = await self.selector.connect_for_client()
@@ -620,6 +666,48 @@ class RelayRuntime:
             )
         except Exception as exc:
             logging.warning("TCP relay connection failed: %s", exc)
+            self._write_state()
+        finally:
+            if upstream_writer is not None:
+                upstream_writer.close()
+                with contextlib.suppress(Exception):
+                    await upstream_writer.wait_closed()
+            client_writer.close()
+            with contextlib.suppress(Exception):
+                await client_writer.wait_closed()
+
+    async def handle_bond_tcp(
+        self,
+        client_reader: asyncio.StreamReader,
+        client_writer: asyncio.StreamWriter,
+    ) -> None:
+        upstream_writer: asyncio.StreamWriter | None = None
+        try:
+            leg_route_id, hello_header = await read_bond_hello_route_id(client_reader)
+            candidate = self._bond_candidates_by_route.get(leg_route_id)
+            if candidate is None:
+                raise RuntimeError(f"unknown LBND leg route {leg_route_id}")
+            candidate_state = self.selector.state(candidate.line_id)
+            try:
+                upstream_reader, upstream_writer, latency = await open_socks_connect(
+                    candidate,
+                    self.config.target_host,
+                    self.config.target_port,
+                    self.config.policy.connect_timeout_seconds,
+                )
+            except Exception as exc:
+                self.selector._record_failure(candidate_state, exc, "tcp")
+                raise
+            self.selector._record_success(candidate_state, latency, "tcp")
+            upstream_writer.write(hello_header)
+            await upstream_writer.drain()
+            self._write_state()
+            await asyncio.gather(
+                pipe_stream(client_reader, upstream_writer),
+                pipe_stream(upstream_reader, client_writer),
+            )
+        except Exception as exc:
+            logging.warning("bond relay connection failed: %s", exc)
             self._write_state()
         finally:
             if upstream_writer is not None:

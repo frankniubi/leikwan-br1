@@ -7,6 +7,7 @@ import pathlib
 import socket
 import struct
 import unittest
+from unittest import mock
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -50,6 +51,15 @@ def free_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def bond_hello_header(leg_route_id: int, payload_len: int = 20) -> bytes:
+    return (
+        b"LBND"
+        + bytes([2, 1])
+        + b"\x00\x00"
+        + struct.pack(">QQII", 0, 0, leg_route_id, payload_len)
+    )
 
 
 async def read_socks_address(reader: asyncio.StreamReader, atyp: int) -> tuple[str, int]:
@@ -155,6 +165,7 @@ class FakeSocksServer:
         self.delay_ms = delay_ms
         self.udp_reply = udp_reply
         self.fail_connect = False
+        self.connect_targets: list[tuple[str, int]] = []
         self.server: asyncio.AbstractServer | None = None
         self.udp_transport: asyncio.DatagramTransport | None = None
         self.udp_protocol: FakeSocksUdpProtocol | None = None
@@ -206,6 +217,7 @@ class FakeSocksServer:
             if version != 5:
                 return
             if command == 1:
+                self.connect_targets.append((host, port))
                 if self.delay_ms:
                     await asyncio.sleep(self.delay_ms / 1000)
                 if self.fail_connect:
@@ -340,6 +352,138 @@ class LeigodForwardRelayTests(unittest.IsolatedAsyncioTestCase):
                 await self.tcp_round_trip(runtime, b"fail")
             self.assertEqual(b"two", await self.tcp_round_trip(runtime, b"two"))
             self.assertEqual(453, runtime.selected_line_id())
+
+    async def test_bond_routes_fragmented_hello_to_exact_candidate(self) -> None:
+        async with TcpEchoServer() as target, FakeSocksServer(451) as first, FakeSocksServer(453) as second:
+            first_row = first.candidate(1, 10) | {"leg_route_id": 451}
+            second_row = second.candidate(2, 20) | {"leg_route_id": 453}
+            runtime = await self.start_runtime(self.config("bond", target.address, [first_row, second_row]))
+
+            reader, writer = await asyncio.open_connection(*runtime.tcp_address)
+            header = bond_hello_header(453)
+            hello_payload = bytes(20)
+            try:
+                writer.write(header[:7])
+                await writer.drain()
+                writer.write(header[7:] + hello_payload + b"payload")
+                await writer.drain()
+                self.assertEqual(
+                    header + hello_payload + b"payload",
+                    await reader.readexactly(len(header) + len(hello_payload) + 7),
+                )
+            finally:
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+
+            self.assertEqual([], first.connect_targets)
+            self.assertEqual([target.address], second.connect_targets)
+
+    async def test_bond_rejects_unroutable_or_invalid_hello_without_socks_connect(self) -> None:
+        async with TcpEchoServer() as target, FakeSocksServer(451) as first, FakeSocksServer(453) as second:
+            rows = [
+                first.candidate(1, 10) | {"leg_route_id": 451},
+                second.candidate(2, 20) | {"leg_route_id": 453},
+            ]
+            runtime = await self.start_runtime(self.config("bond", target.address, rows))
+            invalid_headers = {
+                "zero route": bond_hello_header(0),
+                "unknown route": bond_hello_header(999),
+                "wrong magic": b"NOPE" + bond_hello_header(451)[4:],
+                "wrong version": bond_hello_header(451)[:4] + b"\x03" + bond_hello_header(451)[5:],
+                "wrong kind": bond_hello_header(451)[:5] + b"\x02" + bond_hello_header(451)[6:],
+                "short payload": bond_hello_header(451, payload_len=19),
+                "oversized payload": bond_hello_header(451, payload_len=relay_module.LBND_MAX_HELLO_PAYLOAD + 1),
+            }
+
+            for label, header in invalid_headers.items():
+                with self.subTest(label=label):
+                    reader, writer = await asyncio.open_connection(*runtime.tcp_address)
+                    try:
+                        writer.write(header)
+                        await writer.drain()
+                        self.assertEqual(b"", await asyncio.wait_for(reader.read(), timeout=0.5))
+                    finally:
+                        writer.close()
+                        with contextlib.suppress(Exception):
+                            await writer.wait_closed()
+
+            self.assertEqual([], first.connect_targets)
+            self.assertEqual([], second.connect_targets)
+
+    async def test_bond_header_timeout_does_not_connect_socks(self) -> None:
+        async with TcpEchoServer() as target, FakeSocksServer(451) as first, FakeSocksServer(453) as second:
+            rows = [
+                first.candidate(1, 10) | {"leg_route_id": 451},
+                second.candidate(2, 20) | {"leg_route_id": 453},
+            ]
+            runtime = await self.start_runtime(self.config("bond", target.address, rows))
+            with mock.patch.object(relay_module, "BOND_HEADER_TIMEOUT_SECONDS", 0.05):
+                reader, writer = await asyncio.open_connection(*runtime.tcp_address)
+                try:
+                    writer.write(b"LBND")
+                    await writer.drain()
+                    self.assertEqual(b"", await asyncio.wait_for(reader.read(), timeout=0.5))
+                finally:
+                    writer.close()
+                    with contextlib.suppress(Exception):
+                        await writer.wait_closed()
+
+            self.assertEqual([], first.connect_targets)
+            self.assertEqual([], second.connect_targets)
+
+    async def test_bond_exact_route_failure_is_recorded_without_fallback(self) -> None:
+        async with TcpEchoServer() as target, FakeSocksServer(451) as first, FakeSocksServer(453) as second:
+            first.fail_connect = True
+            rows = [
+                first.candidate(1, 10) | {"leg_route_id": 451},
+                second.candidate(2, 20) | {"leg_route_id": 453},
+            ]
+            runtime = await self.start_runtime(self.config("bond", target.address, rows))
+            reader, writer = await asyncio.open_connection(*runtime.tcp_address)
+            try:
+                writer.write(bond_hello_header(451) + bytes(20))
+                await writer.drain()
+                self.assertEqual(b"", await asyncio.wait_for(reader.read(), timeout=0.5))
+            finally:
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+
+            self.assertEqual([target.address], first.connect_targets)
+            self.assertEqual([], second.connect_targets)
+            self.assertEqual(1, runtime.candidate_state(451)["tcp_consecutive_failures"])
+
+    def test_bond_config_requires_multiple_unique_tcp_routes(self) -> None:
+        base_row = {
+            "combination_id": 1,
+            "line_id": 451,
+            "leg_route_id": 451,
+            "socks_host": "127.0.0.1",
+            "socks_port": 20451,
+            "sort_order": 10,
+        }
+        second_row = base_row | {
+            "combination_id": 2,
+            "line_id": 453,
+            "leg_route_id": 453,
+            "socks_port": 20453,
+        }
+        with self.assertRaises(ValueError):
+            relay_module.parse_config(self.config("bond", ("127.0.0.1", 80), [base_row]))
+        for transport in ("udp", "tcp+udp"):
+            with self.subTest(transport=transport), self.assertRaises(ValueError):
+                relay_module.parse_config(
+                    self.config("bond", ("127.0.0.1", 80), [base_row, second_row], transport=transport)
+                )
+        with self.assertRaises(ValueError):
+            relay_module.parse_config(
+                self.config("bond", ("127.0.0.1", 80), [base_row, second_row | {"leg_route_id": 451}])
+            )
+        with self.assertRaises(ValueError):
+            relay_module.parse_config(
+                self.config("bond", ("127.0.0.1", 80), [base_row, second_row | {"leg_route_id": 0}])
+            )
 
     async def test_race_selects_lowest_latency_after_hysteresis(self) -> None:
         async with TcpEchoServer() as target, FakeSocksServer(451, 30) as first, FakeSocksServer(453, 2) as second:
