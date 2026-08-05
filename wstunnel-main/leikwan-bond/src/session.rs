@@ -427,6 +427,7 @@ struct LegState {
     label: String,
     spec_index: Option<usize>,
     endpoint_id: Option<u64>,
+    leg_route_id: Option<u32>,
     node_id: Option<u64>,
     host: String,
     cooldown_until: Option<Instant>,
@@ -564,6 +565,7 @@ struct OpenLeg {
     label: String,
     spec_index: Option<usize>,
     endpoint_id: Option<u64>,
+    leg_route_id: Option<u32>,
     node_id: Option<u64>,
     host: String,
 }
@@ -580,6 +582,7 @@ impl OpenLeg {
             label,
             spec_index: None,
             endpoint_id: None,
+            leg_route_id: None,
             node_id: None,
         }
     }
@@ -589,8 +592,15 @@ impl OpenLeg {
         self
     }
 
-    fn with_metadata(mut self, endpoint_id: Option<u64>, node_id: Option<u64>, host: String) -> Self {
+    fn with_metadata(
+        mut self,
+        endpoint_id: Option<u64>,
+        leg_route_id: Option<u32>,
+        node_id: Option<u64>,
+        host: String,
+    ) -> Self {
         self.endpoint_id = endpoint_id;
+        self.leg_route_id = leg_route_id;
         self.node_id = node_id;
         if !host.is_empty() {
             self.host = host;
@@ -827,6 +837,7 @@ pub async fn run_server_listener(
                 active_tcp_sessions.remove(&done_session_id);
             }
             Some(mut prepared) = collector_rx.recv() => {
+                prepared.leg.leg_route_id = Some(prepared.hello.route_id).filter(|route_id| *route_id > 0);
                 let now = Instant::now();
                 let claims = match verify_session_token(&prepared.hello.token, &token_secret, unix_now()) {
                     Ok(claims) => claims,
@@ -1479,19 +1490,15 @@ async fn connect_client_tcp_transport_legs(
 
     let session_id = Uuid::now_v7();
     let expected_links = specs.len().min(u16::MAX as usize) as u16;
-    let hello = WireFrame::Hello(HelloFrame {
-        session_id,
-        expected_links: expected_links.max(1),
-        route_id: 0,
-        token: session_token,
-    });
+    let session_token = Arc::new(session_token);
 
     let mut initial_legs = Vec::new();
     let mut active_specs = HashSet::new();
     let mut initial_connects = JoinSet::new();
     for (spec_index, spec) in specs.iter().cloned().enumerate() {
-        let hello = hello.clone();
+        let session_token = Arc::clone(&session_token);
         initial_connects.spawn(async move {
+            let hello = hello_for_spec(&spec, session_id, expected_links, session_token.as_str());
             let result = connect_and_ack_leg(&spec, &hello, connect_timeout).await;
             (spec_index, spec.original, result)
         });
@@ -1542,7 +1549,9 @@ async fn connect_client_tcp_transport_legs(
     let desired_active_specs = specs.len().min(2);
     tokio::spawn(run_client_leg_connector(
         specs,
-        hello,
+        session_id,
+        expected_links,
+        session_token,
         connect_timeout,
         active_specs_rx,
         connector_shutdown_rx,
@@ -1596,15 +1605,11 @@ async fn connect_client_udp_legs(
     }
 
     let session_id = Uuid::now_v7();
-    let hello = WireFrame::Hello(HelloFrame {
-        session_id,
-        expected_links: connected.len() as u16,
-        route_id: 0,
-        token: session_token,
-    });
+    let expected_links = connected.len() as u16;
 
     let mut hello_sent = Vec::new();
     for (spec_index, spec, mut stream) in connected {
+        let hello = hello_for_spec(&spec, session_id, expected_links, &session_token);
         write_frame(&mut stream, &hello)
             .await
             .with_context(|| format!("failed to send bond hello to leg {}", spec.original))?;
@@ -1621,6 +1626,7 @@ async fn connect_client_udp_legs(
                 OpenLeg::new(stream, spec.priority, spec.role, spec.original.clone())
                     .with_metadata(
                         spec.endpoint_id,
+                        spec.leg_route_id,
                         spec.node_id,
                         spec.display_host.clone().unwrap_or_else(|| spec.host.clone()),
                     )
@@ -1661,6 +1667,7 @@ async fn connect_and_ack_leg(
         return Ok(
             OpenLeg::new(stream, spec.priority, spec.role, spec.original.clone()).with_metadata(
                 spec.endpoint_id,
+                spec.leg_route_id,
                 spec.node_id,
                 spec.display_host.clone().unwrap_or_else(|| spec.host.clone()),
             ),
@@ -1681,7 +1688,9 @@ async fn connect_and_ack_leg(
 
 async fn run_client_leg_connector(
     specs: Arc<Vec<LegSpec>>,
-    hello: WireFrame,
+    session_id: Uuid,
+    expected_links: u16,
+    session_token: Arc<String>,
     connect_timeout: Duration,
     mut active_specs_rx: watch::Receiver<HashSet<usize>>,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -1711,6 +1720,7 @@ async fn run_client_leg_connector(
                 continue;
             }
 
+            let hello = hello_for_spec(spec, session_id, expected_links, session_token.as_str());
             match connect_and_ack_leg(spec, &hello, connect_timeout).await {
                 Ok(leg) => {
                     next_retry_at[spec_index] = Instant::now() + CLIENT_LEG_RETRY_BACKOFF;
@@ -1743,6 +1753,20 @@ async fn run_client_leg_connector(
             _ = tokio::time::sleep_until(next_deadline) => {}
         }
     }
+}
+
+fn hello_for_spec(
+    spec: &LegSpec,
+    session_id: Uuid,
+    expected_links: u16,
+    token: &str,
+) -> WireFrame {
+    WireFrame::Hello(HelloFrame {
+        session_id,
+        expected_links: expected_links.max(1),
+        route_id: spec.leg_route_id.unwrap_or(0),
+        token: token.to_string(),
+    })
 }
 
 async fn run_tcp_transport_session(
@@ -2721,6 +2745,7 @@ fn spawn_tcp_leg_task(
     let label = leg.label;
     let spec_index = leg.spec_index;
     let endpoint_id = leg.endpoint_id;
+    let leg_route_id = leg.leg_route_id;
     let node_id = leg.node_id;
     let host = leg.host;
     let (reader, writer) = tokio::io::split(leg.stream);
@@ -2738,6 +2763,7 @@ fn spawn_tcp_leg_task(
         label,
         spec_index,
         endpoint_id,
+        leg_route_id,
         node_id,
         host,
         cooldown_until: None,
@@ -3774,6 +3800,7 @@ fn spawn_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<S
     let label = leg.label;
     let spec_index = leg.spec_index;
     let endpoint_id = leg.endpoint_id;
+    let leg_route_id = leg.leg_route_id;
     let node_id = leg.node_id;
     let host = leg.host;
     let (reader, writer) = tokio::io::split(leg.stream);
@@ -3792,6 +3819,7 @@ fn spawn_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<S
         label,
         spec_index,
         endpoint_id,
+        leg_route_id,
         node_id,
         host,
         cooldown_until: None,
@@ -5493,6 +5521,7 @@ mod tests {
             label: format!("leg-{id}"),
             spec_index: Some(id),
             endpoint_id: Some(id as u64),
+            leg_route_id: Some((400 + id) as u32),
             node_id: Some((id + 1) as u64),
             host: format!("host-{id}.example"),
             cooldown_until: None,
@@ -5528,6 +5557,26 @@ mod tests {
     #[test]
     fn client_leg_retry_backoff_is_extended_beyond_subsecond_thrashing() {
         assert_eq!(CLIENT_LEG_RETRY_BACKOFF, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn hello_for_spec_uses_leg_route_id_and_shared_session_fields() {
+        let spec = crate::transport::parse_leg_spec(
+            "tcp://127.0.0.1:20962?endpoint_id=184&leg_route_id=455",
+        )
+        .unwrap();
+        let session_id = Uuid::nil();
+        let frame = hello_for_spec(&spec, session_id, 5, "secret");
+
+        match frame {
+            WireFrame::Hello(hello) => {
+                assert_eq!(hello.session_id, session_id);
+                assert_eq!(hello.expected_links, 5);
+                assert_eq!(hello.route_id, 455);
+                assert_eq!(hello.token, "secret");
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
     }
 
     #[test]
@@ -6522,6 +6571,7 @@ mod tests {
             label: String::from("leg-0"),
             spec_index: Some(0),
             endpoint_id: Some(0),
+            leg_route_id: None,
             node_id: Some(0),
             host: String::from("127.0.0.1"),
             cooldown_until: None,
