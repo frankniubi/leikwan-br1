@@ -11,17 +11,20 @@ use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket, lookup_host};
-use tokio::sync::{mpsc, watch, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, interval, sleep, timeout};
 use log::{debug, info, warn};
+use tokio_util::task::TaskTracker;
 use uuid::Uuid;
+use tokio_util::sync::CancellationToken;
 
 const UDP_FRAGMENT_MIN_SIZE: usize = 1200;
 const UDP_FRAGMENT_MAX_SIZE: usize = 16 * 1024;
@@ -131,6 +134,49 @@ pub struct SessionConfig {
     pub udp_primary_only: bool,
     pub strategy_file: Option<PathBuf>,
     pub default_strategy: ClientStrategy,
+}
+
+impl SessionConfig {
+    pub fn client_defaults() -> Self {
+        Self {
+            chunk_size: 131072,
+            max_window_bytes: 16777216,
+            retransmit_after: Duration::from_millis(300),
+            join_timeout: Duration::from_millis(400),
+            connect_timeout: Duration::from_millis(3000),
+            preferred_initial_legs: 2,
+            minimum_initial_legs: 1,
+            initial_leg_wait: Duration::from_millis(600),
+            leg_reconnect_backoff: Duration::from_secs(30 * 60),
+            leg_reconnect_backoff_max: Duration::from_secs(30 * 60),
+            interactive_chunk_bytes: 16384,
+            latency_guard_bytes: 262144,
+            interactive_rtt_slack: Duration::from_millis(30),
+            warmup_trigger_bytes: 65536,
+            warmup_slice_bytes: 65536,
+            warmup_leg_delay: Duration::from_millis(80),
+            bulk_promote_bytes: 262144,
+            leg_cooldown: Duration::from_secs(30 * 60),
+            throughput_min_sample_bytes: 1024 * 1024,
+            throughput_min_sample: Duration::from_secs(1),
+            adaptive_line_admission: false,
+            throughput_min_mbps: 10.0,
+            throughput_relative_floor: 0.35,
+            throughput_bad_windows: 3,
+            throughput_recovery_windows: 2,
+            throughput_quarantine: Duration::from_secs(60),
+            throughput_probe_interval: Duration::from_secs(30),
+            throughput_probe_bytes: 1024 * 1024,
+            latency_first: false,
+            udp_primary_only: false,
+            strategy_file: None,
+            default_strategy: ClientStrategy::LatencyBest,
+        }
+    }
+
+    pub fn server_defaults() -> Self {
+        Self::client_defaults()
+    }
 }
 
 fn transport_leg_write_timeout(config: &SessionConfig) -> Duration {
@@ -821,9 +867,65 @@ pub async fn run_client_listener(
     protocol: TransportProtocol,
     config: SessionConfig,
 ) -> anyhow::Result<()> {
+    run_client_listener_with_cancel(
+        bind,
+        leg_targets,
+        session_token,
+        protocol,
+        config,
+        CancellationToken::new(),
+    )
+    .await
+}
+
+pub async fn run_client_listener_with_cancel(
+    bind: String,
+    leg_targets: Vec<String>,
+    session_token: String,
+    protocol: TransportProtocol,
+    config: SessionConfig,
+    cancel: CancellationToken,
+) -> anyhow::Result<()> {
+    run_client_listener_managed(
+        bind,
+        leg_targets,
+        session_token,
+        protocol,
+        config,
+        cancel,
+        None,
+    )
+    .await
+}
+
+pub async fn run_client_listener_managed(
+    bind: String,
+    leg_targets: Vec<String>,
+    session_token: String,
+    protocol: TransportProtocol,
+    config: SessionConfig,
+    cancel: CancellationToken,
+    ready: Option<oneshot::Sender<Result<(), String>>>,
+) -> anyhow::Result<()> {
     match protocol {
-        TransportProtocol::Tcp => run_client_tcp_listener(bind, leg_targets, session_token, config).await,
-        TransportProtocol::Udp => run_client_udp_listener(bind, leg_targets, session_token, config).await,
+        TransportProtocol::Tcp => run_client_tcp_listener(
+            bind,
+            leg_targets,
+            session_token,
+            config,
+            cancel,
+            ready,
+        )
+        .await,
+        TransportProtocol::Udp => run_client_udp_listener(
+            bind,
+            leg_targets,
+            session_token,
+            config,
+            cancel,
+            ready,
+        )
+        .await,
     }
 }
 
@@ -832,20 +934,56 @@ async fn run_client_tcp_listener(
     leg_targets: Vec<String>,
     session_token: String,
     config: SessionConfig,
+    cancel: CancellationToken,
+    mut ready: Option<oneshot::Sender<Result<(), String>>>,
 ) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(&bind)
-        .await
-        .with_context(|| format!("cannot bind bond client listener on {bind}"))?;
+    let listener = match TcpListener::bind(&bind).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            if let Some(sender) = ready.take() {
+                let _ = sender.send(Err(err.to_string()));
+            }
+            return Err(err).with_context(|| format!("cannot bind bond client listener on {bind}"));
+        }
+    };
     info!("bond client listening on {}", bind);
-    let mut transport_tx = connect_client_tcp_transport_session(
+    let transport = connect_client_tcp_transport_session(
         leg_targets.clone(),
         session_token.clone(),
         config.clone(),
+        cancel.clone(),
     )
-    .await;
+    .await?;
+    if let Some(sender) = ready.take() {
+        let _ = sender.send(Ok(()));
+    }
+    run_client_tcp_accept_loop(
+        listener,
+        leg_targets,
+        session_token,
+        config,
+        cancel,
+        transport,
+    )
+    .await
+}
 
+async fn run_client_tcp_accept_loop(
+    listener: TcpListener,
+    leg_targets: Vec<String>,
+    session_token: String,
+    config: SessionConfig,
+    cancel: CancellationToken,
+    mut transport: ClientTransportRuntime,
+) -> anyhow::Result<()> {
     loop {
-        let (accepted_stream, peer) = listener.accept().await?;
+        let (accepted_stream, peer) = tokio::select! {
+            _ = cancel.cancelled() => {
+                stop_client_tcp_transport(transport).await;
+                return Ok(());
+            }
+            accepted = listener.accept() => accepted?,
+        };
         let mut pending_stream = Some(accepted_stream);
         let strategy = config
             .strategy_file
@@ -854,7 +992,7 @@ async fn run_client_tcp_listener(
             .unwrap_or(config.default_strategy);
 
         while let Some(local_stream) = pending_stream.take() {
-            match transport_tx.send(ClientTransportCommand::AttachLocalStream {
+            match transport.command_tx.send(ClientTransportCommand::AttachLocalStream {
                 local_stream,
                 strategy,
             }) {
@@ -865,18 +1003,23 @@ async fn run_client_tcp_listener(
                     );
                 }
                 Err(err) => {
-                    let ClientTransportCommand::AttachLocalStream { local_stream, .. } = err.0;
+                    let local_stream = match err.0 {
+                        ClientTransportCommand::AttachLocalStream { local_stream, .. } => local_stream,
+                        ClientTransportCommand::Shutdown => unreachable!("attach send returned shutdown"),
+                    };
                     warn!(
                         "bond tcp transport closed before accepting {}; reconnecting persistent session",
                         peer
                     );
                     pending_stream = Some(local_stream);
-                    transport_tx = connect_client_tcp_transport_session(
+                    stop_client_tcp_transport(transport).await;
+                    transport = connect_client_tcp_transport_session(
                         leg_targets.clone(),
                         session_token.clone(),
                         config.clone(),
+                        cancel.clone(),
                     )
-                    .await;
+                    .await?;
                     continue;
                 }
             }
@@ -884,29 +1027,91 @@ async fn run_client_tcp_listener(
     }
 }
 
+pub(crate) async fn prepare_client_tcp_transport(
+    leg_targets: Vec<String>,
+    session_token: String,
+    config: SessionConfig,
+    cancel: CancellationToken,
+) -> anyhow::Result<ClientTransportRuntime> {
+    connect_client_tcp_transport_session(leg_targets, session_token, config, cancel).await
+}
+
+pub(crate) async fn run_prepared_client_tcp_listener(
+    bind: String,
+    leg_targets: Vec<String>,
+    session_token: String,
+    config: SessionConfig,
+    cancel: CancellationToken,
+    mut ready: Option<oneshot::Sender<Result<(), String>>>,
+    transport: ClientTransportRuntime,
+) -> anyhow::Result<()> {
+    let listener = match TcpListener::bind(&bind).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            if let Some(sender) = ready.take() {
+                let _ = sender.send(Err(err.to_string()));
+            }
+            stop_client_tcp_transport(transport).await;
+            return Err(err).with_context(|| format!("cannot bind bond client listener on {bind}"));
+        }
+    };
+    if let Some(sender) = ready.take() {
+        let _ = sender.send(Ok(()));
+    }
+    info!("bond client listening on {} with prepared transport", bind);
+    run_client_tcp_accept_loop(
+        listener,
+        leg_targets,
+        session_token,
+        config,
+        cancel,
+        transport,
+    )
+    .await
+}
+
 async fn connect_client_tcp_transport_session(
     leg_targets: Vec<String>,
     session_token: String,
     config: SessionConfig,
-) -> mpsc::UnboundedSender<ClientTransportCommand> {
+    cancel: CancellationToken,
+) -> anyhow::Result<ClientTransportRuntime> {
     loop {
-        match open_client_tcp_transport_session(
-            leg_targets.clone(),
-            session_token.clone(),
-            config.clone(),
-        )
-        .await
-        {
-            Ok(transport_tx) => {
+        let connected = tokio::select! {
+            _ = cancel.cancelled() => return Err(anyhow!("bond client listener cancelled")),
+            connected = open_client_tcp_transport_session(
+                leg_targets.clone(),
+                session_token.clone(),
+                config.clone(),
+            ) => connected,
+        };
+        match connected {
+            Ok(transport) => {
                 info!("bond client TCP transport session established");
-                return transport_tx;
+                return Ok(transport);
             }
             Err(err) => {
                 warn!("failed to establish persistent bond TCP transport: {:?}; retrying", err);
-                sleep(Duration::from_secs(1)).await;
+                tokio::select! {
+                    _ = cancel.cancelled() => return Err(anyhow!("bond client listener cancelled")),
+                    _ = sleep(Duration::from_secs(1)) => {}
+                }
             }
         }
     }
+}
+
+pub(crate) async fn stop_client_tcp_transport(mut transport: ClientTransportRuntime) {
+    let _ = transport.command_tx.send(ClientTransportCommand::Shutdown);
+    if timeout(TRANSPORT_STREAM_CLOSE_GRACE, &mut transport.task)
+        .await
+        .is_err()
+    {
+        transport.tasks.shutdown().await;
+        transport.task.abort();
+        let _ = transport.task.await;
+    }
+    transport.tasks.shutdown().await;
 }
 
 async fn run_client_udp_listener(
@@ -914,34 +1119,55 @@ async fn run_client_udp_listener(
     leg_targets: Vec<String>,
     session_token: String,
     config: SessionConfig,
+    cancel: CancellationToken,
+    mut ready: Option<oneshot::Sender<Result<(), String>>>,
 ) -> anyhow::Result<()> {
-    let socket = Arc::new(
-        UdpSocket::bind(&bind)
-            .await
-            .with_context(|| format!("cannot bind bond client UDP listener on {bind}"))?,
-    );
+    let socket = match UdpSocket::bind(&bind).await {
+        Ok(socket) => Arc::new(socket),
+        Err(err) => {
+            if let Some(sender) = ready.take() {
+                let _ = sender.send(Err(err.to_string()));
+            }
+            return Err(err).with_context(|| format!("cannot bind bond client UDP listener on {bind}"));
+        }
+    };
     info!("bond client UDP listening on {}", bind);
 
     loop {
-        match connect_client_udp_legs(leg_targets.clone(), session_token.clone(), config.clone()).await {
+        let connected = tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            connected = connect_client_udp_legs(
+                leg_targets.clone(),
+                session_token.clone(),
+                config.clone(),
+            ) => connected,
+        };
+        match connected {
             Ok((session_id, legs, _add_leg_rx)) => {
+                if let Some(sender) = ready.take() {
+                    let _ = sender.send(Ok(()));
+                }
                 info!("bond client UDP session {} opened with {} leg(s)", session_id, legs.len());
-                if let Err(err) = run_bonded_udp_client(
-                    socket.clone(),
-                    legs,
-                    snapshot_context(SessionRole::Client, None),
-                    config.clone(),
-                )
-                .await
-                {
+                let result = tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    result = run_bonded_udp_client(
+                        socket.clone(),
+                        legs,
+                        snapshot_context(SessionRole::Client, None),
+                        config.clone(),
+                    ) => result,
+                };
+                if let Err(err) = result {
                     warn!("bond client UDP session {} failed: {:?}", session_id, err);
-                    sleep(Duration::from_secs(1)).await;
                 }
             }
             Err(err) => {
                 warn!("failed to open UDP bond session: {:?}", err);
-                sleep(Duration::from_secs(1)).await;
             }
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            _ = sleep(Duration::from_secs(1)) => {}
         }
     }
 }
@@ -1242,11 +1468,52 @@ struct ClientTransportBootstrap {
     connector_shutdown_tx: watch::Sender<bool>,
 }
 
+#[derive(Clone)]
+struct SessionTaskGroup {
+    tracker: TaskTracker,
+    cancel: CancellationToken,
+}
+
+impl SessionTaskGroup {
+    fn new() -> Self {
+        Self {
+            tracker: TaskTracker::new(),
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    fn spawn<F>(&self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let cancel = self.cancel.clone();
+        self.tracker.spawn(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => {}
+                _ = future => {}
+            }
+        });
+    }
+
+    async fn shutdown(&self) {
+        self.cancel.cancel();
+        self.tracker.close();
+        self.tracker.wait().await;
+    }
+}
+
+pub(crate) struct ClientTransportRuntime {
+    command_tx: mpsc::UnboundedSender<ClientTransportCommand>,
+    task: tokio::task::JoinHandle<()>,
+    tasks: SessionTaskGroup,
+}
+
 enum ClientTransportCommand {
     AttachLocalStream {
         local_stream: TcpStream,
         strategy: ClientStrategy,
     },
+    Shutdown,
 }
 
 enum TcpTransportEvent {
@@ -1571,8 +1838,21 @@ async fn start_active_tcp_session(
         claims.target_host,
         claims.target_port
     );
-    run_tcp_transport_session(session_id, SessionRole::Aggregator, Some(claims), legs, add_leg_rx, None, None, config)
-        .await
+    let tasks = SessionTaskGroup::new();
+    let result = run_tcp_transport_session(
+        session_id,
+        SessionRole::Aggregator,
+        Some(claims),
+        legs,
+        add_leg_rx,
+        None,
+        None,
+        config,
+        tasks.clone(),
+    )
+    .await;
+    tasks.shutdown().await;
+    result
 }
 
 async fn start_pending_udp_session(
@@ -1642,14 +1922,22 @@ async fn open_client_tcp_transport_session(
     leg_targets: Vec<String>,
     session_token: String,
     config: SessionConfig,
-) -> anyhow::Result<mpsc::UnboundedSender<ClientTransportCommand>> {
-    let bootstrap = connect_client_tcp_transport_legs(leg_targets, session_token, &config).await?;
+) -> anyhow::Result<ClientTransportRuntime> {
+    let tasks = SessionTaskGroup::new();
+    let bootstrap = connect_client_tcp_transport_legs(
+        leg_targets,
+        session_token,
+        &config,
+        &tasks,
+    )
+    .await?;
     let session_id = bootstrap.session_id;
     let connector_shutdown_tx = bootstrap.connector_shutdown_tx.clone();
     let active_specs_tx = bootstrap.active_specs_tx.clone();
     let (command_tx, command_rx) = mpsc::unbounded_channel::<ClientTransportCommand>();
 
-    tokio::spawn(async move {
+    let outer_tasks = tasks.clone();
+    let task = tokio::spawn(async move {
         let result = run_tcp_transport_session(
             session_id,
             SessionRole::Client,
@@ -1659,21 +1947,28 @@ async fn open_client_tcp_transport_session(
             Some(command_rx),
             Some(active_specs_tx),
             config,
+            outer_tasks.clone(),
         )
         .await;
         let _ = connector_shutdown_tx.send(true);
+        outer_tasks.shutdown().await;
         if let Err(err) = result {
             warn!("bond client TCP transport {} failed: {:?}", session_id, err);
         }
     });
 
-    Ok(command_tx)
+    Ok(ClientTransportRuntime {
+        command_tx,
+        task,
+        tasks,
+    })
 }
 
 async fn connect_client_tcp_transport_legs(
     leg_targets: Vec<String>,
     session_token: String,
     config: &SessionConfig,
+    tasks: &SessionTaskGroup,
 ) -> anyhow::Result<ClientTransportBootstrap> {
     let mut specs = parse_leg_specs(leg_targets)?;
     specs.sort_by_key(|spec| (spec.priority, transport_bias(spec.transport), spec.original.clone()));
@@ -1769,7 +2064,7 @@ async fn connect_client_tcp_transport_legs(
     let (connector_shutdown_tx, connector_shutdown_rx) = watch::channel(false);
     let (add_leg_tx, add_leg_rx) = mpsc::unbounded_channel::<OpenLeg>();
     let specs = Arc::new(specs);
-    tokio::spawn(run_client_leg_connector(
+    tasks.spawn(run_client_leg_connector(
         specs,
         session_id,
         expected_links,
@@ -2038,10 +2333,16 @@ async fn run_tcp_transport_session(
     mut command_rx: Option<mpsc::UnboundedReceiver<ClientTransportCommand>>,
     active_specs_tx: Option<watch::Sender<HashSet<usize>>>,
     config: SessionConfig,
+    tasks: SessionTaskGroup,
 ) -> anyhow::Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<TcpTransportEvent>();
     let leg_write_timeout = transport_leg_write_timeout(&config);
-    let mut legs = spawn_tcp_leg_tasks(initial_legs, event_tx.clone(), leg_write_timeout);
+    let mut legs = spawn_tcp_leg_tasks(
+        initial_legs,
+        event_tx.clone(),
+        leg_write_timeout,
+        &tasks,
+    );
     let snapshot = snapshot_context(role, claims.as_ref());
     let mut last_snapshot_write = None::<Instant>;
     let mut streams = HashMap::<u32, TcpStreamState>::new();
@@ -2091,7 +2392,13 @@ async fn run_tcp_transport_session(
                     new_leg
                 };
                 let new_leg_id = legs.len();
-                let state = spawn_tcp_leg_task(new_leg_id, new_leg, event_tx.clone(), leg_write_timeout);
+                let state = spawn_tcp_leg_task(
+                    new_leg_id,
+                    new_leg,
+                    event_tx.clone(),
+                    leg_write_timeout,
+                    &tasks,
+                );
                 info!("bond tcp transport {} added leg {}", session_id, state.label);
                 legs.push(state);
                 refresh_active_spec_snapshot(&legs, active_specs_tx.as_ref());
@@ -2132,8 +2439,15 @@ async fn run_tcp_transport_session(
                             close_rx,
                             event_tx.clone(),
                             read_credit.clone(),
+                            Some(&tasks),
                         );
-                        spawn_transport_stream_writer(stream_id, local_write, local_write_rx, event_tx.clone());
+                        spawn_transport_stream_writer(
+                            stream_id,
+                            local_write,
+                            local_write_rx,
+                            event_tx.clone(),
+                            &tasks,
+                        );
                         if let Some(state) = streams.get_mut(&stream_id) {
                             if send_stream_control_frame(
                                 &mut legs,
@@ -2154,6 +2468,7 @@ async fn run_tcp_transport_session(
                         }
                         last_activity = Instant::now();
                     }
+                    Some(ClientTransportCommand::Shutdown) => break,
                     None => {
                         command_rx = None;
                     }
@@ -2371,6 +2686,7 @@ async fn run_tcp_transport_session(
                             &mut round_robin_cursor,
                             &event_tx,
                             &config,
+                            &tasks,
                         )
                         .await?;
                         recompute_transport_inflight(&mut legs, &streams);
@@ -2414,8 +2730,15 @@ async fn run_tcp_transport_session(
                             close_rx,
                             event_tx.clone(),
                             read_credit.clone(),
+                            Some(&tasks),
                         );
-                        spawn_transport_stream_writer(stream_id, upstream_write, local_write_rx, event_tx.clone());
+                        spawn_transport_stream_writer(
+                            stream_id,
+                            upstream_write,
+                            local_write_rx,
+                            event_tx.clone(),
+                            &tasks,
+                        );
                         let _ = send_control_frame(&mut legs, &mut round_robin_cursor, WireFrame::StreamOpenAck { stream_id });
                         debug!("transport {} sent stream-open-ack for stream {}", session_id, stream_id);
                         log_transport_lifecycle(
@@ -2573,6 +2896,7 @@ async fn handle_tcp_transport_frame(
     round_robin_cursor: &mut usize,
     event_tx: &mpsc::UnboundedSender<TcpTransportEvent>,
     config: &SessionConfig,
+    tasks: &SessionTaskGroup,
 ) -> anyhow::Result<()> {
     if let WireFrame::Reset { stream_id, reason } = &frame {
         if *stream_id == 0 {
@@ -2648,7 +2972,13 @@ async fn handle_tcp_transport_frame(
             );
             let claims = claims.ok_or_else(|| anyhow!("aggregator transport is missing target claims"))?;
             connecting_streams.insert(*stream_id);
-            spawn_upstream_connector(*stream_id, claims.clone(), config.connect_timeout, event_tx.clone());
+            spawn_upstream_connector(
+                *stream_id,
+                claims.clone(),
+                config.connect_timeout,
+                event_tx.clone(),
+                &tasks,
+            );
             return Ok(());
         }
         _ => {}
@@ -2886,8 +3216,9 @@ fn spawn_upstream_connector(
     claims: SessionClaims,
     connect_timeout: Duration,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
+    tasks: &SessionTaskGroup,
 ) {
-    tokio::spawn(async move {
+    tasks.spawn(async move {
         let target = format!("{}:{}", claims.target_host, claims.target_port);
         let result = timeout(connect_timeout, TcpStream::connect(&target)).await;
         match result {
@@ -2918,10 +3249,11 @@ fn spawn_transport_stream_reader<R>(
     mut close_rx: watch::Receiver<bool>,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
     read_credit: Arc<Semaphore>,
+    tasks: Option<&SessionTaskGroup>,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    let future = async move {
         let mut buf = vec![0u8; chunk_size.max(1024)];
         loop {
             // Idle streams must not consume shared backlog credit while waiting for data.
@@ -2971,7 +3303,12 @@ fn spawn_transport_stream_reader<R>(
                 }
             }
         }
-    });
+    };
+    if let Some(tasks) = tasks {
+        tasks.spawn(future);
+    } else {
+        tokio::spawn(future);
+    }
 }
 
 fn spawn_transport_stream_writer<W>(
@@ -2979,10 +3316,11 @@ fn spawn_transport_stream_writer<W>(
     mut writer: W,
     mut rx: mpsc::Receiver<LocalWriteCommand>,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
+    tasks: &SessionTaskGroup,
 ) where
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    tasks.spawn(async move {
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 LocalWriteCommand::Data(bytes) => {
@@ -3020,10 +3358,17 @@ fn spawn_tcp_leg_tasks(
     legs: Vec<OpenLeg>,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
     write_timeout: Duration,
+    tasks: &SessionTaskGroup,
 ) -> Vec<LegState> {
     let mut states = Vec::with_capacity(legs.len());
     for (leg_id, leg) in legs.into_iter().enumerate() {
-        states.push(spawn_tcp_leg_task(leg_id, leg, event_tx.clone(), write_timeout));
+        states.push(spawn_tcp_leg_task(
+            leg_id,
+            leg,
+            event_tx.clone(),
+            write_timeout,
+            tasks,
+        ));
     }
     states
 }
@@ -3033,6 +3378,7 @@ fn spawn_tcp_leg_task(
     leg: OpenLeg,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
     write_timeout: Duration,
+    tasks: &SessionTaskGroup,
 ) -> LegState {
     let transport = leg.transport;
     let priority = leg.priority;
@@ -3050,7 +3396,15 @@ fn spawn_tcp_leg_task(
     let reconnect_count = leg.reconnect_count;
     let (reader, writer) = tokio::io::split(leg.stream);
     let (tx, rx) = leg_write_channel();
-    spawn_tcp_leg_io_tasks(leg_id, reader, writer, rx, event_tx, write_timeout);
+    spawn_tcp_leg_io_tasks(
+        leg_id,
+        reader,
+        writer,
+        rx,
+        event_tx,
+        write_timeout,
+        tasks,
+    );
     LegState {
         id: leg_id,
         sender: Some(LegWriteSender::Bounded(tx)),
@@ -3088,12 +3442,13 @@ fn spawn_tcp_leg_io_tasks<R, W>(
     rx: mpsc::Receiver<QueuedLegFrame>,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
     write_timeout: Duration,
+    tasks: &SessionTaskGroup,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    tokio::spawn(run_tcp_leg_writer(
+    tasks.spawn(run_tcp_leg_writer(
         leg_id,
         writer,
         rx,
@@ -3102,7 +3457,7 @@ fn spawn_tcp_leg_io_tasks<R, W>(
         shutdown_rx.clone(),
         shutdown_tx.clone(),
     ));
-    tokio::spawn(run_tcp_leg_reader(
+    tasks.spawn(run_tcp_leg_reader(
         leg_id,
         reader,
         event_tx,
@@ -6952,6 +7307,7 @@ mod tests {
         let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
         let mut cursor = 0usize;
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let tasks = SessionTaskGroup::new();
 
         let result = tokio::runtime::Runtime::new()
             .expect("runtime")
@@ -6969,6 +7325,7 @@ mod tests {
                 &mut cursor,
                 &event_tx,
                 &test_config(),
+                &tasks,
             ));
 
         assert!(result.is_ok());
@@ -7420,7 +7777,16 @@ mod tests {
         let (reader, writer) = tokio::io::split(stream);
         let (frame_tx, frame_rx) = leg_write_channel();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-        spawn_tcp_leg_io_tasks(7, reader, writer, frame_rx, event_tx, Duration::from_millis(50));
+        let tasks = SessionTaskGroup::new();
+        spawn_tcp_leg_io_tasks(
+            7,
+            reader,
+            writer,
+            frame_rx,
+            event_tx,
+            Duration::from_millis(50),
+            &tasks,
+        );
 
         frame_tx
             .try_send(QueuedLegFrame::new(WireFrame::DataC2S {
@@ -7452,7 +7818,16 @@ mod tests {
         let (reader, writer) = tokio::io::split(stream);
         let (frame_tx, frame_rx) = leg_write_channel();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-        spawn_tcp_leg_io_tasks(7, reader, writer, frame_rx, event_tx, Duration::from_secs(1));
+        let tasks = SessionTaskGroup::new();
+        spawn_tcp_leg_io_tasks(
+            7,
+            reader,
+            writer,
+            frame_rx,
+            event_tx,
+            Duration::from_secs(1),
+            &tasks,
+        );
 
         drop(peer);
 
@@ -8145,6 +8520,7 @@ mod tests {
             close_rx,
             event_tx,
             read_credit.clone(),
+            None,
         );
         writer.write_all(&vec![b'x'; 2048]).await.unwrap();
 
@@ -8186,6 +8562,7 @@ mod tests {
             idle_close_rx,
             event_tx.clone(),
             read_credit.clone(),
+            None,
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
         spawn_transport_stream_reader(
@@ -8195,6 +8572,7 @@ mod tests {
             active_close_rx,
             event_tx,
             read_credit,
+            None,
         );
         active_writer.write_all(b"data").await.unwrap();
 

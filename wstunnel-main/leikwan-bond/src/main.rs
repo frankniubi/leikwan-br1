@@ -1,16 +1,8 @@
-mod client;
-mod frame;
-mod server;
-mod session;
-mod strategy;
-mod token;
-mod transport;
-
 use clap::{Args, Parser, Subcommand};
-use session::SessionConfig;
-use strategy::ClientStrategy;
+use leikwan_bond::session::{self, SessionConfig};
+use leikwan_bond::strategy::ClientStrategy;
+use leikwan_bond::token::TransportProtocol;
 use std::path::PathBuf;
-use token::TransportProtocol;
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -266,20 +258,11 @@ fn main() {
                         warmup_leg_delay: Duration::from_millis(warmup_leg_delay_ms),
                         bulk_promote_bytes,
                         leg_cooldown: Duration::from_millis(leg_cooldown_ms),
-                        throughput_min_sample_bytes: 1024 * 1024,
-                        throughput_min_sample: Duration::from_secs(1),
-                        adaptive_line_admission: false,
-                        throughput_min_mbps: 10.0,
-                        throughput_relative_floor: 0.35,
-                        throughput_bad_windows: 3,
-                        throughput_recovery_windows: 2,
-                        throughput_quarantine: Duration::from_secs(60),
-                        throughput_probe_interval: Duration::from_secs(30),
-                        throughput_probe_bytes: 1024 * 1024,
                         latency_first,
                         udp_primary_only,
                         strategy_file,
                         default_strategy,
+                        ..SessionConfig::client_defaults()
                     };
                     adaptive.apply_to(&mut config);
                     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -304,40 +287,7 @@ fn main() {
             token_secret,
             adaptive,
         } => {
-            let mut config = SessionConfig {
-                chunk_size: 131072,
-                max_window_bytes: 16777216,
-                retransmit_after: Duration::from_millis(300),
-                join_timeout: Duration::from_millis(400),
-                connect_timeout: Duration::from_millis(3000),
-                preferred_initial_legs: 2,
-                minimum_initial_legs: 1,
-                initial_leg_wait: Duration::from_millis(600),
-                leg_reconnect_backoff: Duration::from_secs(30 * 60),
-                leg_reconnect_backoff_max: Duration::from_secs(30 * 60),
-                interactive_chunk_bytes: 16384,
-                latency_guard_bytes: 262144,
-                interactive_rtt_slack: Duration::from_millis(30),
-                warmup_trigger_bytes: 65536,
-                warmup_slice_bytes: 65536,
-                warmup_leg_delay: Duration::from_millis(80),
-                bulk_promote_bytes: 262144,
-                leg_cooldown: Duration::from_millis(1800000),
-                throughput_min_sample_bytes: 1024 * 1024,
-                throughput_min_sample: Duration::from_secs(1),
-                adaptive_line_admission: false,
-                throughput_min_mbps: 10.0,
-                throughput_relative_floor: 0.35,
-                throughput_bad_windows: 3,
-                throughput_recovery_windows: 2,
-                throughput_quarantine: Duration::from_secs(60),
-                throughput_probe_interval: Duration::from_secs(30),
-                throughput_probe_bytes: 1024 * 1024,
-                latency_first: false,
-                udp_primary_only: false,
-                strategy_file: None,
-                default_strategy: ClientStrategy::LatencyBest,
-            };
+            let mut config = SessionConfig::server_defaults();
             adaptive.apply_to(&mut config);
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
