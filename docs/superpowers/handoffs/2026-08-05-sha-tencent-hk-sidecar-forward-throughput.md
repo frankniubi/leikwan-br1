@@ -2,13 +2,15 @@
 
 Date: 2026-08-05 (Asia/Taipei)
 
+Last updated: 2026-08-05 09:55 (Asia/Taipei)
+
 Status: completed. The throughput and sustained-backpressure fixes are implemented, tested, deployed, benchmarked, and cleaned up as version 0.1.30.
 
 This handoff intentionally contains no passwords, private keys, tokens, or raw credential values. Use the project-local `leikwan-v3.txt`, `cantons.txt`, and `shanghais.txt` files for access. Keep those values local only.
 
 ## 0. Completion record
 
-This section is the current source of truth and supersedes the historical recommendation and remaining-work sections below. Sections 1-6 retain the original diagnosis because they explain why the release sequence was necessary.
+This section is the current source of truth and supersedes the historical recommendation and remaining-work sections below. Sections 1-8 retain the original diagnosis and execution plan because they explain why the release sequence was necessary. Section 9 contains the current resume procedure.
 
 ### 0.1 Final release
 
@@ -143,6 +145,25 @@ outstanding test tasks:   0
 The four slave agents were active with fresh heartbeats and zero reported load. Direct socket checks passed on three slaves. The fourth slave's SSH daemon rejected management checks with `Exceeded MaxStartups`; its four destroy tasks nevertheless completed through the authenticated node agent, its four endpoints were marked deleted, and its heartbeat remained fresh. This is a separate SSH-management saturation observation, not a data-plane or provisioning failure. It should be handled through the host's normal SSH exposure/hardening workflow rather than by weakening host-key checks or restarting SSH during this release.
 
 The client reconciled all six units and listeners away. The official and transient target `iperf3` services are inactive, the official service remains disabled, and both target listeners are absent. Seven exact panel upload archives were removed; rollback backup directories were preserved. Local untracked deployment wrappers and tar archives are removed during final repository cleanup.
+
+### 0.7 Repository and production synchronization
+
+The production runtime sync is complete. The panel artifact store, public download, Hong Kong sidecar, and Linux client all use the committed 0.1.30 artifact from release source commit `988b6b6`, with the SHA256 and size recorded in section 0.1. Later commits in this branch are handoff-only and do not change the deployed runtime payload.
+
+Repository finalization rules and state:
+
+```text
+authoritative branch: codex/sidecar-shared-wg-peers
+master relationship:  fast-forward aligned with the authoritative branch
+release commit:       988b6b62e134cee9ce844300ef5ac49329e6c821
+worktree state:       clean after the handoff commit
+local temp helpers:   0
+local deploy tar files: 0
+```
+
+The dirty main checkout remains on `frontend-skin-v2`; its unrelated tracked and untracked user changes were not modified or cleaned. The `master` ref was updated only because it was not checked out by any worktree and the update was a strict fast-forward. Production-server synchronization here refers to the verified panel/sidecar/client deployment; no Git remote push is claimed by this handoff.
+
+There is no remaining throughput implementation, deployment, benchmark, or cleanup work for this run. The one separate operator follow-up is the slave SSH `Exceeded MaxStartups` condition described in section 0.6; do not conflate that management-plane saturation with the completed data-plane fix.
 
 ## 1. Objective and fixed constraints
 
@@ -584,19 +605,20 @@ After collecting results:
 - verify sidecar shared WG state is unchanged and healthy;
 - remove temporary upload archives/wrappers without touching unrelated files.
 
-## 9. Historical resume checklist
+## 9. Current resume checklist
 
-Before changing anything, run:
+Before doing follow-up work, run:
 
 ```powershell
 git -C C:\Users\frankniubi\Downloads\leikwan-br1\.worktrees\sidecar-shared-wg-peers status --short --branch
 git -C C:\Users\frankniubi\Downloads\leikwan-br1\.worktrees\sidecar-shared-wg-peers rev-parse HEAD master
+git -C C:\Users\frankniubi\Downloads\leikwan-br1\.worktrees\sidecar-shared-wg-peers merge-base --is-ancestor 988b6b62e134cee9ce844300ef5ac49329e6c821 HEAD
 ```
 
-Expected starting point, apart from this handoff file, is `cd5cbba` on `codex/sidecar-shared-wg-peers`, with `master` at the same commit.
+Expected state is a clean `codex/sidecar-shared-wg-peers` worktree, `HEAD` equal to `master`, and the release commit `988b6b6` present in the current history. The exact documentation commit may advance when this handoff is maintained; use ref equality and ancestry rather than a stale handoff-commit hash.
 
-Then fresh-verify production before deployment because the runtime snapshot in this document is from the end of the 0.1.23 test run, not a guarantee of future live state.
+If production behavior is revisited later, fresh-verify the panel public artifact, migration state, sidecar shared-WG state, client binary hash, and agent heartbeats before changing anything. Do not recreate forwards `104-109`; they are deleted historical benchmark resources. Use new supported `ProvisioningService` resources and fresh ports within `7000-9000` for any new benchmark.
 
 ## 10. Bottom line
 
-The deterministic 24-28 Mbps transport-window regression and the subsequent backpressure/cooldown failures are fixed in 0.1.30. The committed static artifact is deployed on the panel, Hong Kong sidecar, and Linux client. Formal tests completed 30/30 forward runs and 12/12 direct controls without service restarts; repeated `race` and `bond` reverse runs sustained approximately 400 Mbps. Temporary forwards, listeners, processes, target services, and upload archives were cleaned up while the shared sidecar WireGuard topology remained healthy.
+The deterministic 24-28 Mbps transport-window regression and the subsequent backpressure/cooldown failures are fixed in 0.1.30. The committed static artifact is deployed on the panel, Hong Kong sidecar, and Linux client. Formal tests completed 30/30 forward runs and 12/12 direct controls without service restarts; repeated `race` and `bond` reverse runs sustained approximately 400 Mbps. Temporary forwards, listeners, processes, target services, and upload archives were cleaned up while the shared sidecar WireGuard topology remained healthy. The authoritative topic branch and local `master` are fast-forward aligned; the separate slave SSH `MaxStartups` observation remains documented as an operator follow-up.
