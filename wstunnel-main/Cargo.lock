@@ -1905,6 +1905,7 @@ dependencies = [
  "clap",
  "env_logger",
  "hmac",
+ "leikwan-ingress",
  "libc",
  "log",
  "quinn",

@@ -937,6 +937,7 @@ async fn run_client_tcp_listener(
     cancel: CancellationToken,
     mut ready: Option<oneshot::Sender<Result<(), String>>>,
 ) -> anyhow::Result<()> {
+    let leg_specs = parse_leg_specs(leg_targets)?;
     let listener = match TcpListener::bind(&bind).await {
         Ok(listener) => listener,
         Err(err) => {
@@ -948,7 +949,7 @@ async fn run_client_tcp_listener(
     };
     info!("bond client listening on {}", bind);
     let transport = connect_client_tcp_transport_session(
-        leg_targets.clone(),
+        leg_specs.clone(),
         session_token.clone(),
         config.clone(),
         cancel.clone(),
@@ -959,7 +960,7 @@ async fn run_client_tcp_listener(
     }
     run_client_tcp_accept_loop(
         listener,
-        leg_targets,
+        leg_specs,
         session_token,
         config,
         cancel,
@@ -970,7 +971,7 @@ async fn run_client_tcp_listener(
 
 async fn run_client_tcp_accept_loop(
     listener: TcpListener,
-    leg_targets: Vec<String>,
+    leg_specs: Vec<LegSpec>,
     session_token: String,
     config: SessionConfig,
     cancel: CancellationToken,
@@ -1014,7 +1015,7 @@ async fn run_client_tcp_accept_loop(
                     pending_stream = Some(local_stream);
                     stop_client_tcp_transport(transport).await;
                     transport = connect_client_tcp_transport_session(
-                        leg_targets.clone(),
+                        leg_specs.clone(),
                         session_token.clone(),
                         config.clone(),
                         cancel.clone(),
@@ -1028,17 +1029,17 @@ async fn run_client_tcp_accept_loop(
 }
 
 pub(crate) async fn prepare_client_tcp_transport(
-    leg_targets: Vec<String>,
+    leg_specs: Vec<LegSpec>,
     session_token: String,
     config: SessionConfig,
     cancel: CancellationToken,
 ) -> anyhow::Result<ClientTransportRuntime> {
-    connect_client_tcp_transport_session(leg_targets, session_token, config, cancel).await
+    connect_client_tcp_transport_session(leg_specs, session_token, config, cancel).await
 }
 
 pub(crate) async fn run_prepared_client_tcp_listener(
     bind: String,
-    leg_targets: Vec<String>,
+    leg_specs: Vec<LegSpec>,
     session_token: String,
     config: SessionConfig,
     cancel: CancellationToken,
@@ -1061,7 +1062,7 @@ pub(crate) async fn run_prepared_client_tcp_listener(
     info!("bond client listening on {} with prepared transport", bind);
     run_client_tcp_accept_loop(
         listener,
-        leg_targets,
+        leg_specs,
         session_token,
         config,
         cancel,
@@ -1071,7 +1072,7 @@ pub(crate) async fn run_prepared_client_tcp_listener(
 }
 
 async fn connect_client_tcp_transport_session(
-    leg_targets: Vec<String>,
+    leg_specs: Vec<LegSpec>,
     session_token: String,
     config: SessionConfig,
     cancel: CancellationToken,
@@ -1080,7 +1081,7 @@ async fn connect_client_tcp_transport_session(
         let connected = tokio::select! {
             _ = cancel.cancelled() => return Err(anyhow!("bond client listener cancelled")),
             connected = open_client_tcp_transport_session(
-                leg_targets.clone(),
+                leg_specs.clone(),
                 session_token.clone(),
                 config.clone(),
             ) => connected,
@@ -1919,13 +1920,13 @@ async fn read_hello_and_queue(leg: OpenLeg, collector_tx: mpsc::UnboundedSender<
 }
 
 async fn open_client_tcp_transport_session(
-    leg_targets: Vec<String>,
+    leg_specs: Vec<LegSpec>,
     session_token: String,
     config: SessionConfig,
 ) -> anyhow::Result<ClientTransportRuntime> {
     let tasks = SessionTaskGroup::new();
     let bootstrap = connect_client_tcp_transport_legs(
-        leg_targets,
+        leg_specs,
         session_token,
         &config,
         &tasks,
@@ -1965,12 +1966,11 @@ async fn open_client_tcp_transport_session(
 }
 
 async fn connect_client_tcp_transport_legs(
-    leg_targets: Vec<String>,
+    mut specs: Vec<LegSpec>,
     session_token: String,
     config: &SessionConfig,
     tasks: &SessionTaskGroup,
 ) -> anyhow::Result<ClientTransportBootstrap> {
-    let mut specs = parse_leg_specs(leg_targets)?;
     specs.sort_by_key(|spec| (spec.priority, transport_bias(spec.transport), spec.original.clone()));
     if specs.is_empty() {
         return Err(anyhow!("at least one bond leg target is required"));
@@ -7043,6 +7043,86 @@ mod tests {
         bulk.tcp_health.throughput_qualifying_samples = 1;
         assert_eq!(select_latency_best_leg(&[low_latency.clone(), bulk.clone()]), Some(0));
         assert_eq!(select_weighted_bulk_leg(&[low_latency, bulk], 0, now, &config), Some(1));
+    }
+
+    #[test]
+    fn flat_hybrid_uses_directional_delivery_admission_for_local_and_slave_legs() {
+        let mut config = adaptive_test_config();
+        config.throughput_min_sample_bytes = 60_000;
+        config.throughput_min_sample = Duration::from_millis(100);
+        let started = Instant::now();
+        let local_route = 1_004_511;
+        let slave_route = 1_004_531;
+        let mut local = fake_leg(0, 10, 0, 5);
+        local.leg_route_id = Some(local_route);
+        let mut slave = fake_leg(1, 10, 0, 35);
+        slave.leg_route_id = Some(slave_route);
+        let mut reverse_legs = vec![local, slave];
+
+        let reverse_delivery = SessionRole::Client.outbound_delivery(7, slave_route, 1);
+        assert!(SessionRole::Aggregator.is_inbound_delivery(&reverse_delivery));
+        assert!(!SessionRole::Client.is_inbound_delivery(&reverse_delivery));
+
+        assert!(apply_tcp_delivery_observed(
+            &mut reverse_legs,
+            slave_route,
+            1,
+            true,
+            started,
+            &config,
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut reverse_legs,
+            slave_route,
+            1_874_999,
+            true,
+            started + Duration::from_millis(100),
+            &config,
+        ));
+
+        for window in 0..config.throughput_bad_windows {
+            let window_start = started + Duration::from_millis(200 + u64::from(window) * 200);
+            assert!(apply_tcp_delivery_observed(
+                &mut reverse_legs,
+                local_route,
+                1,
+                true,
+                window_start,
+                &config,
+            ));
+            assert!(apply_tcp_delivery_observed(
+                &mut reverse_legs,
+                local_route,
+                62_499,
+                true,
+                window_start + Duration::from_millis(100),
+                &config,
+            ));
+
+            if window == 0 {
+                assert_eq!(select_latency_best_leg(&reverse_legs), Some(0));
+                assert_eq!(
+                    select_weighted_bulk_leg(&reverse_legs, 128 * 1024, window_start, &config),
+                    Some(1),
+                );
+            }
+        }
+
+        assert!((reverse_legs[0].tcp_health.throughput_mbps_ewma - 5.0).abs() < 0.01);
+        assert!((reverse_legs[1].tcp_health.throughput_mbps_ewma - 150.0).abs() < 0.01);
+        assert_eq!(
+            reverse_legs[0].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined,
+        );
+        assert_eq!(
+            select_weighted_bulk_leg(
+                &reverse_legs,
+                128 * 1024,
+                started + Duration::from_secs(1),
+                &config,
+            ),
+            Some(1),
+        );
     }
 
     #[test]

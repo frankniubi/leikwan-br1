@@ -7,7 +7,7 @@ use crate::session::{
     ClientTransportRuntime, SessionConfig,
 };
 use crate::strategy::ClientStrategy;
-use crate::transport::parse_leg_spec;
+use crate::transport::{LegDial, LegSpec, parse_leg_spec};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -29,6 +29,7 @@ const MAX_LOCAL_LEASES: usize = 64;
 const MAX_FORWARDS: usize = 32;
 const MAX_LEGS_PER_FORWARD: usize = 16;
 const MAX_TOTAL_LEGS: usize = 256;
+const MAX_AUTH_REFS: usize = 256;
 const MAX_WINDOW_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TOTAL_WINDOW_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(not(test))]
@@ -73,6 +74,8 @@ impl fmt::Display for SecretString {
 pub struct DesiredState {
     pub generation: u64,
     pub provider: ProviderSpec,
+    #[serde(default)]
+    pub auth_refs: HashMap<String, SecretString>,
     pub local_leases: Vec<LocalLeaseSpec>,
     pub forwards: Vec<ForwardSpec>,
 }
@@ -98,7 +101,7 @@ pub struct LocalLeaseSpec {
     pub socks_addr: SocketAddr,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ForwardSpec {
     pub forward_id: u64,
@@ -107,6 +110,20 @@ pub struct ForwardSpec {
     pub session_token: String,
     pub legs: Vec<DesiredLegSpec>,
     pub policy: SessionConfigWire,
+}
+
+impl fmt::Debug for ForwardSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ForwardSpec")
+            .field("forward_id", &self.forward_id)
+            .field("listen", &self.listen)
+            .field("egress", &self.egress)
+            .field("session_token", &"[redacted]")
+            .field("legs", &self.legs)
+            .field("policy", &self.policy)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -125,6 +142,9 @@ impl DesiredLegSpec {
         let mut url = Url::parse(&self.uri)
             .with_context(|| format!("invalid leg URI for route {}", self.leg_route_id))?;
         let has_route = url.query_pairs().any(|(key, _)| key == "leg_route_id");
+        if !has_route && matches!(url.scheme(), "socks5" | "ingress+tcp") {
+            bail!("internal leg URI is missing route metadata");
+        }
         if has_route {
             let parsed = parse_leg_spec(&self.uri)?;
             if parsed.leg_route_id != Some(self.leg_route_id) {
@@ -138,6 +158,37 @@ impl DesiredLegSpec {
         url.query_pairs_mut()
             .append_pair("leg_route_id", &self.leg_route_id.to_string());
         Ok(url.into())
+    }
+
+    fn runtime_spec(
+        &self,
+        egress: SocketAddr,
+        auth_refs: &HashMap<String, SecretString>,
+    ) -> Result<LegSpec> {
+        let runtime_uri = self.runtime_uri()?;
+        let spec = parse_leg_spec(&runtime_uri)?;
+        if spec.leg_route_id != Some(self.leg_route_id) {
+            bail!("leg route metadata does not match route {}", self.leg_route_id);
+        }
+        match spec.dial.clone() {
+            LegDial::Socks5 {
+                line_id,
+                lease_generation,
+                ..
+            } => {
+                if line_id != self.line_id || lease_generation != self.lease_generation {
+                    bail!("SOCKS leg metadata does not match its lease authority");
+                }
+                spec.with_socks_connect_target(egress)
+            }
+            LegDial::IngressTcp { auth_ref, .. } => {
+                let auth_token = auth_refs
+                    .get(&auth_ref)
+                    .ok_or_else(|| anyhow!("ingress leg auth reference is missing"))?;
+                spec.with_ingress_auth_token(auth_token.expose_secret())
+            }
+            LegDial::Direct => Ok(spec),
+        }
     }
 }
 
@@ -358,6 +409,18 @@ impl DesiredState {
         if self.local_leases.len() > MAX_LOCAL_LEASES || self.forwards.len() > MAX_FORWARDS {
             bail!("desired state exceeds managed object limits");
         }
+        if self.auth_refs.len() > MAX_AUTH_REFS {
+            bail!("desired state exceeds ingress auth reference limit");
+        }
+        for (auth_ref, auth_token) in &self.auth_refs {
+            if !valid_auth_ref(auth_ref)
+                || auth_token.is_empty()
+                || auth_token.expose_secret().len() > 2048
+                || auth_token.expose_secret().chars().any(char::is_whitespace)
+            {
+                bail!("desired state contains an invalid ingress auth reference");
+            }
+        }
 
         let mut local_lines = HashSet::new();
         let mut local_fences = HashMap::new();
@@ -447,7 +510,7 @@ impl DesiredState {
                 } else {
                     line_authority.insert(leg.line_id, authority);
                 }
-                let parsed = validate_leg_uri(leg)?;
+                let parsed = validate_leg_uri(leg, forward.egress, &self.auth_refs)?;
                 if leg.execution_group.starts_with("client:") {
                     let expected = local_fences
                         .get(&leg.line_id)
@@ -487,8 +550,12 @@ impl DesiredState {
     }
 }
 
-fn validate_leg_uri(leg: &DesiredLegSpec) -> Result<crate::transport::LegSpec> {
-    let parsed = parse_leg_spec(&leg.uri)?;
+fn validate_leg_uri(
+    leg: &DesiredLegSpec,
+    egress: SocketAddr,
+    auth_refs: &HashMap<String, SecretString>,
+) -> Result<LegSpec> {
+    let parsed = leg.runtime_spec(egress, auth_refs)?;
     if parsed.host.trim().is_empty() || parsed.port == 0 {
         bail!("leg URI endpoint is incomplete");
     }
@@ -506,6 +573,14 @@ fn validate_leg_uri(leg: &DesiredLegSpec) -> Result<crate::transport::LegSpec> {
     }
     let _ = leg.runtime_uri()?;
     Ok(parsed)
+}
+
+fn valid_auth_ref(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 fn listeners_conflict(left: SocketAddr, right: SocketAddr) -> bool {
@@ -625,7 +700,7 @@ struct RunningForward {
 struct PreparedForward {
     spec: ForwardSpec,
     config: SessionConfig,
-    legs: Vec<String>,
+    legs: Vec<LegSpec>,
     cancel: CancellationToken,
     transport: ClientTransportRuntime,
 }
@@ -787,11 +862,20 @@ impl PathDaemon {
         configs: &HashMap<u64, SessionConfig>,
     ) -> Result<()> {
         let mut unchanged = HashSet::new();
+        let auth_refs_unchanged = self
+            .desired
+            .as_ref()
+            .map(|active| active.auth_refs == desired.auth_refs)
+            .unwrap_or(false);
         for spec in &desired.forwards {
             if self
                 .forwards
                 .get(&spec.forward_id)
-                .map(|running| &running.spec == spec && !running.handle.is_finished())
+                .map(|running| {
+                    auth_refs_unchanged
+                        && &running.spec == spec
+                        && !running.handle.is_finished()
+                })
                 .unwrap_or(false)
             {
                 unchanged.insert(spec.forward_id);
@@ -807,7 +891,7 @@ impl PathDaemon {
                 .get(&spec.forward_id)
                 .cloned()
                 .ok_or_else(|| anyhow!("validated forward policy disappeared"))?;
-            match prepare_forward(spec.clone(), config).await {
+            match prepare_forward(spec.clone(), config, &desired.auth_refs).await {
                 Ok(forward) => prepared.push_back(forward),
                 Err(err) => {
                     stop_prepared_forwards(prepared).await;
@@ -881,6 +965,7 @@ impl PathDaemon {
                 session_json: SecretString(String::from("disabled")),
                 session_sha256: String::new(),
             },
+            auth_refs: HashMap::new(),
             local_leases: Vec::new(),
             forwards: Vec::new(),
         };
@@ -1066,11 +1151,15 @@ impl PathDaemon {
     }
 }
 
-async fn prepare_forward(spec: ForwardSpec, config: SessionConfig) -> Result<PreparedForward> {
+async fn prepare_forward(
+    spec: ForwardSpec,
+    config: SessionConfig,
+    auth_refs: &HashMap<String, SecretString>,
+) -> Result<PreparedForward> {
     let legs = spec
         .legs
         .iter()
-        .map(DesiredLegSpec::runtime_uri)
+        .map(|leg| leg.runtime_spec(spec.egress, auth_refs))
         .collect::<Result<Vec<_>>>()?;
     let cancel = CancellationToken::new();
     let transport = timeout(
@@ -1410,11 +1499,57 @@ mod tests {
     }
 
     #[test]
+    fn desired_state_debug_redacts_ingress_auth_and_session_tokens() {
+        let mut value = valid_json();
+        value["auth_refs"] = serde_json::json!({"slave-316": "opaque-ingress-secret"});
+        let session_token = value["forwards"][0]["session_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let desired: DesiredState = serde_json::from_value(value).unwrap();
+
+        let debug = format!("{desired:?}");
+        assert!(!debug.contains("opaque-ingress-secret"));
+        assert!(!debug.contains(&session_token));
+        assert!(debug.contains("[redacted]"));
+    }
+
+    #[test]
     fn valid_desired_state_passes_checked_conversion() {
         let desired: DesiredState = serde_json::from_value(valid_json()).unwrap();
         let validated = desired.validate_at(1_900_000_000).unwrap();
         assert_eq!(42, validated.desired.generation);
         assert_eq!(2, validated.session_configs[&17].preferred_initial_legs);
+    }
+
+    #[test]
+    fn internal_legs_resolve_only_from_the_desired_auth_map_and_lease_metadata() {
+        let mut value = valid_json();
+        value["auth_refs"] = serde_json::json!({"slave-316": "opaque-ingress-secret"});
+        value["forwards"][0]["legs"][0]["uri"] =
+            "socks5://127.0.0.1:20451?leg_route_id=451&line_id=451&lease_generation=7".into();
+        value["forwards"][0]["legs"][1]["uri"] =
+            "ingress+tcp://slave.example:7003?leg_route_id=452&endpoint_id=316&route_key=fixed&auth_ref=slave-316".into();
+        let desired: DesiredState = serde_json::from_value(value.clone()).unwrap();
+        desired.validate_at(1_900_000_000).unwrap();
+
+        value["auth_refs"] = serde_json::json!({});
+        assert!(
+            serde_json::from_value::<DesiredState>(value.clone())
+                .unwrap()
+                .validate_at(1_900_000_000)
+                .is_err()
+        );
+
+        value["auth_refs"] = serde_json::json!({"slave-316": "opaque-ingress-secret"});
+        value["forwards"][0]["legs"][0]["uri"] =
+            "socks5://127.0.0.1:20451?leg_route_id=451&line_id=999&lease_generation=7".into();
+        assert!(
+            serde_json::from_value::<DesiredState>(value)
+                .unwrap()
+                .validate_at(1_900_000_000)
+                .is_err()
+        );
     }
 
     #[test]
