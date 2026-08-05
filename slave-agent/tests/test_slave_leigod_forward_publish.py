@@ -150,6 +150,8 @@ class SlaveLeigodForwardPublishTests(unittest.TestCase):
         config = json.loads(config_path.read_text(encoding="utf-8"))
         self.assertEqual("race", config["mode"])
         self.assertEqual([451, 453], [row["line_id"] for row in config["candidates"]])
+        self.assertEqual("connect_latency", config["policy"]["selection_signal"])
+        self.assertNotIn("throughput_min_bytes", config["policy"])
         self.assertEqual(
             {"combination_id", "line_id", "socks_host", "socks_port", "sort_order"},
             set(config["candidates"][0]),
@@ -178,6 +180,71 @@ class SlaveLeigodForwardPublishTests(unittest.TestCase):
         self.assertEqual(agent.leigod_forward_service_name(service_name), result["leigod_forward_service_name"])
         self.assertIn(48316, agent.used_backend_ports())
         self.assertIn(20451, agent.used_backend_ports())
+
+    def test_throughput_race_policy_is_strictly_passed_to_runtime(self):
+        agent, _root = self.make_agent()
+        candidates = [self.candidate(451, 10, 10), self.candidate(453, 11, 20)]
+        self.seed_health(agent, candidates)
+        payload = self.payload(candidates)
+        payload["leigod_forward"].update(
+            {
+                "selection_signal": "throughput_ewma",
+                "throughput_min_bytes": 1_048_576,
+                "throughput_min_seconds": 2.0,
+                "throughput_ewma_alpha": 0.25,
+                "throughput_explore_every_connections": 20,
+                "throughput_sample_ttl_seconds": 1800,
+                "throughput_stall_interval_seconds": 1.0,
+            }
+        )
+
+        self.publish(agent, payload)
+
+        config = json.loads(
+            agent.leigod_forward_config_path("wstunnel-svc-2-316").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            {
+                "selection_signal": "throughput_ewma",
+                "throughput_min_bytes": 1_048_576,
+                "throughput_min_seconds": 2.0,
+                "throughput_ewma_alpha": 0.25,
+                "throughput_explore_every_connections": 20,
+                "throughput_sample_ttl_seconds": 1800.0,
+                "throughput_stall_interval_seconds": 1.0,
+            },
+            {key: value for key, value in config["policy"].items() if key == "selection_signal" or key.startswith("throughput_")},
+        )
+
+    def test_throughput_race_policy_rejects_invalid_or_non_race_values(self):
+        agent, _root = self.make_agent()
+        candidates = [self.candidate(451, 10, 10), self.candidate(453, 11, 20)]
+        self.seed_health(agent, candidates)
+        invalid_cases = [
+            {"selection_signal": "unknown"},
+            {"selection_signal": "throughput_ewma", "throughput_min_bytes": 0},
+            {"selection_signal": "throughput_ewma", "throughput_min_seconds": 0},
+            {"selection_signal": "throughput_ewma", "throughput_ewma_alpha": 1.1},
+            {"selection_signal": "throughput_ewma", "throughput_explore_every_connections": 1},
+            {"selection_signal": "throughput_ewma", "throughput_sample_ttl_seconds": 29},
+            {"selection_signal": "throughput_ewma", "throughput_stall_interval_seconds": float("nan")},
+            {"selection_signal": "connect_latency", "throughput_min_bytes": 1024},
+        ]
+        for policy in invalid_cases:
+            with self.subTest(policy=policy):
+                payload = self.payload(candidates)
+                payload["leigod_forward"].update(policy)
+                with self.assertRaisesRegex(RuntimeError, "selection signal|policy|throughput"):
+                    agent.validate_leigod_forward_payload(
+                        "wstunnel-svc-2-316", self.task(), payload, "127.0.0.1:48316"
+                    )
+
+        single = self.payload(candidates, mode="single")
+        single["leigod_forward"]["selection_signal"] = "throughput_ewma"
+        with self.assertRaisesRegex(RuntimeError, "requires race"):
+            agent.validate_leigod_forward_payload(
+                "wstunnel-svc-2-316", self.task(), single, "127.0.0.1:48316"
+            )
 
     def test_bond_publish_emits_route_tagged_tcp_carrier_config(self):
         agent, _root = self.make_agent()

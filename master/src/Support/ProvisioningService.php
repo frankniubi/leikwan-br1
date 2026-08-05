@@ -7853,6 +7853,43 @@ final class ProvisioningService
         ];
     }
 
+    /**
+     * Publish the race learner policy from panel configuration. The default remains latency-first;
+     * throughput learning is deliberately opt-in and is never attached to single or bond relays.
+     *
+     * @return array<string, int|float|string>
+     */
+    private function leigodRacePolicyPayload(string $mode): array
+    {
+        if ($mode !== 'race') {
+            return [];
+        }
+        $selectionSignal = strtolower(trim((string) ($this->config->get('LEIGOD_RACE_SELECTION_SIGNAL', 'connect_latency') ?? 'connect_latency')));
+        if (!in_array($selectionSignal, ['connect_latency', 'throughput_ewma'], true)) {
+            $selectionSignal = 'connect_latency';
+        }
+        $policy = ['selection_signal' => $selectionSignal];
+        if ($selectionSignal !== 'throughput_ewma') {
+            return $policy;
+        }
+        $floatConfig = function (string $key, float $default, float $minimum, float $maximum): float {
+            $raw = $this->config->get($key);
+            $value = is_numeric($raw) ? (float) $raw : $default;
+            if (!is_finite($value)) {
+                $value = $default;
+            }
+            return max($minimum, min($maximum, $value));
+        };
+        return $policy + [
+            'throughput_min_bytes' => max(1, min(64 * 1024 * 1024, $this->config->getInt('LEIGOD_RACE_THROUGHPUT_MIN_BYTES', 1048576))),
+            'throughput_min_seconds' => $floatConfig('LEIGOD_RACE_THROUGHPUT_MIN_SECONDS', 2.0, 0.001, 300.0),
+            'throughput_ewma_alpha' => $floatConfig('LEIGOD_RACE_THROUGHPUT_EWMA_ALPHA', 0.25, 0.001, 1.0),
+            'throughput_explore_every_connections' => max(2, min(10000, $this->config->getInt('LEIGOD_RACE_THROUGHPUT_EXPLORE_EVERY_CONNECTIONS', 20))),
+            'throughput_sample_ttl_seconds' => $floatConfig('LEIGOD_RACE_THROUGHPUT_SAMPLE_TTL_SECONDS', 1800.0, 30.0, 86400.0),
+            'throughput_stall_interval_seconds' => $floatConfig('LEIGOD_RACE_THROUGHPUT_STALL_INTERVAL_SECONDS', 1.0, 0.001, 60.0),
+        ];
+    }
+
     private function publishTaskPayloadForForward(array $forward, array $node, int $endpointId): array
     {
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
@@ -7952,10 +7989,11 @@ final class ProvisioningService
                     'host' => (string) ($forward['target_host'] ?? ''),
                     'port' => (int) ($forward['target_port'] ?? 0),
                 ];
+            $leigodMode = $fixedEndpointLeigodBond
+                ? 'bond'
+                : (is_array($route) && (int) ($route['race_enabled'] ?? 0) === 1 ? 'race' : 'single');
             $leigodForward = [
-                'mode' => $fixedEndpointLeigodBond
-                    ? 'bond'
-                    : (is_array($route) && (int) ($route['race_enabled'] ?? 0) === 1 ? 'race' : 'single'),
+                'mode' => $leigodMode,
                 'relay_port' => $relayPort,
                 'target' => (string) $relayTarget['host'] . ':' . (int) $relayTarget['port'],
                 'candidates' => $candidates,
@@ -7965,6 +8003,7 @@ final class ProvisioningService
                 'failure_threshold' => max(1, min(100, $this->config->getInt('LEIGOD_FORWARD_FAILURE_THRESHOLD', 2))),
                 'recovery_success_threshold' => max(1, min(100, $this->config->getInt('LEIGOD_FORWARD_RECOVERY_SUCCESS_THRESHOLD', 2))),
             ];
+            $leigodForward += $this->leigodRacePolicyPayload($leigodMode);
             $publishTarget = '127.0.0.1:' . $relayPort;
         }
         return [

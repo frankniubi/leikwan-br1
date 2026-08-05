@@ -6,6 +6,8 @@ import importlib.util
 import pathlib
 import socket
 import struct
+import sys
+import time
 import unittest
 from unittest import mock
 import json
@@ -17,6 +19,7 @@ MODULE_PATH = REPO_ROOT / "slave-agent" / "leigod_forward_relay.py"
 SPEC = importlib.util.spec_from_file_location("leigod_forward_relay", MODULE_PATH)
 relay_module = importlib.util.module_from_spec(SPEC)
 assert SPEC is not None and SPEC.loader is not None
+sys.modules[SPEC.name] = relay_module
 SPEC.loader.exec_module(relay_module)
 
 
@@ -92,11 +95,19 @@ async def read_socks_address(reader: asyncio.StreamReader, atyp: int) -> tuple[s
     return host, port
 
 
-async def copy_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def copy_stream(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    *,
+    chunk_size: int = 65536,
+    delay_ms: int = 0,
+) -> None:
     try:
-        while data := await reader.read(65536):
+        while data := await reader.read(chunk_size):
             writer.write(data)
             await writer.drain()
+            if delay_ms:
+                await asyncio.sleep(delay_ms / 1000)
     except (ConnectionError, asyncio.IncompleteReadError):
         pass
     finally:
@@ -176,10 +187,19 @@ class UdpEchoServer:
 
 
 class FakeSocksServer:
-    def __init__(self, line_id: int, delay_ms: int = 0, udp_reply: bool = True) -> None:
+    def __init__(
+        self,
+        line_id: int,
+        delay_ms: int = 0,
+        udp_reply: bool = True,
+        stream_delay_ms: int = 0,
+        stream_chunk_size: int = 65536,
+    ) -> None:
         self.line_id = line_id
         self.delay_ms = delay_ms
         self.udp_reply = udp_reply
+        self.stream_delay_ms = stream_delay_ms
+        self.stream_chunk_size = stream_chunk_size
         self.fail_connect = False
         self.connect_targets: list[tuple[str, int]] = []
         self.server: asyncio.AbstractServer | None = None
@@ -243,7 +263,20 @@ class FakeSocksServer:
                 remote_reader, remote_writer = await asyncio.open_connection(host, port)
                 writer.write(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x00")
                 await writer.drain()
-                await asyncio.gather(copy_stream(reader, remote_writer), copy_stream(remote_reader, writer))
+                await asyncio.gather(
+                    copy_stream(
+                        reader,
+                        remote_writer,
+                        chunk_size=self.stream_chunk_size,
+                        delay_ms=self.stream_delay_ms,
+                    ),
+                    copy_stream(
+                        remote_reader,
+                        writer,
+                        chunk_size=self.stream_chunk_size,
+                        delay_ms=self.stream_delay_ms,
+                    ),
+                )
                 return
             if command == 3:
                 assert self.udp_transport is not None
@@ -565,6 +598,44 @@ class LeigodForwardRelayTests(unittest.IsolatedAsyncioTestCase):
             await runtime.probe_once()
             self.assertEqual(451, runtime.selected_line_id())
 
+    async def test_race_learns_delivered_throughput_from_real_connections(self) -> None:
+        async with (
+            TcpEchoServer() as target,
+            FakeSocksServer(451, 1, stream_delay_ms=35, stream_chunk_size=1024) as slow,
+            FakeSocksServer(453, 30, stream_delay_ms=10, stream_chunk_size=1024) as fast,
+        ):
+            runtime = await self.start_runtime(
+                self.config(
+                    "race",
+                    target.address,
+                    [slow.candidate(1, 10), fast.candidate(2, 20)],
+                    selection_signal="throughput_ewma",
+                    throughput_min_bytes=1024,
+                    throughput_min_seconds=0.05,
+                    throughput_ewma_alpha=1.0,
+                    throughput_explore_every_connections=20,
+                )
+            )
+            # Connect latency deliberately favors 451; the first two flows warm both routes.
+            self.assertEqual(451, runtime.selected_line_id())
+            payload = b"throughput" * 820
+            self.assertEqual(payload, await self.tcp_round_trip(runtime, payload))
+            await asyncio.sleep(0.05)
+            slow_state = runtime.candidate_state(451)["throughput"]
+            self.assertTrue(slow_state["qualifying_samples"] >= 1)
+
+            self.assertEqual(payload, await self.tcp_round_trip(runtime, payload))
+            await asyncio.sleep(0.05)
+            fast_state = runtime.candidate_state(453)["throughput"]
+            self.assertTrue(fast_state["qualifying_samples"] >= 1)
+            self.assertGreater(fast_state["upload_ewma_mbps"], slow_state["upload_ewma_mbps"])
+            self.assertGreater(fast_state["download_ewma_mbps"], slow_state["download_ewma_mbps"])
+
+            before = len(fast.connect_targets)
+            self.assertEqual(payload, await self.tcp_round_trip(runtime, payload))
+            self.assertGreater(len(fast.connect_targets), before)
+            self.assertEqual(453, runtime.selected_line_id())
+
     async def test_recovered_candidate_needs_success_threshold(self) -> None:
         async with TcpEchoServer() as target, FakeSocksServer(451, 1) as first, FakeSocksServer(453, 5) as second:
             runtime = await self.start_runtime(self.config("single", target.address, [first.candidate(1, 10), second.candidate(1, 20)]))
@@ -620,6 +691,256 @@ class LeigodForwardRelayTests(unittest.IsolatedAsyncioTestCase):
             await runtime.reload_payload(reloaded)
             self.assertEqual(b"reply", await self.udp_round_trip(runtime, b"reply", timeout=1))
             self.assertEqual(453, runtime.selected_line_id("udp"))
+
+    def test_race_throughput_policy_parses_exact_bounded_values(self) -> None:
+        candidate = {
+            "combination_id": 1,
+            "line_id": 451,
+            "socks_host": "127.0.0.1",
+            "socks_port": 20451,
+            "sort_order": 10,
+        }
+        payload = self.config(
+            "race",
+            ("198.51.100.8", 80),
+            [candidate],
+            selection_signal="throughput_ewma",
+            throughput_min_bytes=1_048_576,
+            throughput_min_seconds=2.0,
+            throughput_ewma_alpha=0.25,
+            throughput_explore_every_connections=20,
+            throughput_sample_ttl_seconds=1800,
+            throughput_stall_interval_seconds=1.0,
+        )
+        policy = relay_module.parse_config(payload).policy
+        self.assertEqual("throughput_ewma", policy.selection_signal)
+        self.assertEqual(1_048_576, policy.throughput_min_bytes)
+        self.assertEqual(2.0, policy.throughput_min_seconds)
+        self.assertEqual(0.25, policy.throughput_ewma_alpha)
+        self.assertEqual(20, policy.throughput_explore_every_connections)
+        self.assertEqual(1800.0, policy.throughput_sample_ttl_seconds)
+        self.assertEqual(1.0, policy.throughput_stall_interval_seconds)
+
+    def test_race_throughput_policy_rejects_invalid_bounds_and_modes(self) -> None:
+        candidate = {
+            "combination_id": 1,
+            "line_id": 451,
+            "socks_host": "127.0.0.1",
+            "socks_port": 20451,
+            "sort_order": 10,
+        }
+        invalid_policies = [
+            {"selection_signal": "unknown"},
+            {"selection_signal": "throughput_ewma", "throughput_min_bytes": 0},
+            {"selection_signal": "throughput_ewma", "throughput_min_seconds": 0},
+            {"selection_signal": "throughput_ewma", "throughput_ewma_alpha": 0},
+            {"selection_signal": "throughput_ewma", "throughput_ewma_alpha": 1.1},
+            {"selection_signal": "throughput_ewma", "throughput_explore_every_connections": 1},
+            {"selection_signal": "throughput_ewma", "throughput_explore_every_connections": 10001},
+            {"selection_signal": "throughput_ewma", "throughput_sample_ttl_seconds": 29},
+            {"selection_signal": "throughput_ewma", "throughput_sample_ttl_seconds": 86401},
+            {"selection_signal": "throughput_ewma", "throughput_stall_interval_seconds": 0},
+        ]
+        for policy in invalid_policies:
+            with self.subTest(policy=policy), self.assertRaises(ValueError):
+                relay_module.parse_config(self.config("race", ("198.51.100.8", 80), [candidate], **policy))
+        with self.assertRaises(ValueError):
+            relay_module.parse_config(
+                self.config(
+                    "single",
+                    ("198.51.100.8", 80),
+                    [candidate],
+                    selection_signal="throughput_ewma",
+                )
+            )
+
+    def test_connection_telemetry_qualifies_directional_flow_and_counts_stalls(self) -> None:
+        telemetry = relay_module.ConnectionTelemetry(started_at=100.0, stall_interval_seconds=1.0)
+        telemetry.record("upload", 524_288, now=100.2)
+        telemetry.record("upload", 524_288, now=101.2)
+        telemetry.record("upload", 524_288, now=103.2)
+        telemetry.record("download", 2_000_000, now=101.0)
+
+        sample = telemetry.finish(now=104.2, min_bytes=1_048_576, min_seconds=2.0)
+        self.assertEqual(1_572_864, sample.upload_bytes)
+        self.assertEqual(1, sample.upload_zero_intervals)
+        self.assertTrue(sample.upload_qualifies)
+        self.assertAlmostEqual(4.0, sample.upload_duration_seconds, delta=0.01)
+        self.assertGreater(sample.upload_mbps, 0)
+        self.assertTrue(sample.download_qualifies)
+        self.assertEqual(2_000_000, sample.download_bytes)
+
+    def test_connection_telemetry_rejects_short_and_incomplete_flows(self) -> None:
+        short = relay_module.ConnectionTelemetry(started_at=100.0, stall_interval_seconds=1.0)
+        short.record("upload", 1_000_000, now=100.1)
+        sample = short.finish(now=100.5, min_bytes=1_048_576, min_seconds=2.0)
+        self.assertFalse(sample.upload_qualifies)
+
+        incomplete = relay_module.ConnectionTelemetry(started_at=100.0, stall_interval_seconds=1.0)
+        incomplete.record("download", 1_100_000, now=100.1)
+        sample = incomplete.finish(now=103.0, min_bytes=1_048_576, min_seconds=2.0)
+        self.assertTrue(sample.download_qualifies)
+        self.assertFalse(sample.upload_qualifies)
+
+    def test_throughput_score_prefers_balanced_high_delivery_over_latency(self) -> None:
+        rows = [
+            {"combination_id": 1, "line_id": 451, "socks_host": "127.0.0.1", "socks_port": 20451, "sort_order": 10},
+            {"combination_id": 2, "line_id": 447, "socks_host": "127.0.0.1", "socks_port": 20447, "sort_order": 20},
+        ]
+        payload = self.config(
+            "race",
+            ("198.51.100.8", 80),
+            rows,
+            selection_signal="throughput_ewma",
+        )
+        selector = relay_module.RelayRuntime(relay_module.parse_config(payload)).selector
+        slow = selector.state(451)
+        fast = selector.state(447)
+        slow.tcp_healthy = fast.tcp_healthy = True
+        slow.latency_ms, fast.latency_ms = 2.0, 30.0
+        slow.upload_ewma_mbps = slow.download_ewma_mbps = 1.0
+        slow.upload_stall_ewma = 0.5
+        slow.download_stall_ewma = 0.5
+        slow.qualifying_samples = 1
+        now = time.monotonic()
+        slow.sample_updated_at = now
+        fast.upload_ewma_mbps = fast.download_ewma_mbps = 100.0
+        fast.qualifying_samples = 1
+        fast.sample_updated_at = now
+
+        selector._reselect_tcp(now=now)
+        self.assertEqual(447, selector.selected_line_id())
+        self.assertLess(selector.throughput_score(slow, now=now), selector.throughput_score(fast, now=now))
+
+        one_direction = selector.state(447)
+        one_direction.download_ewma_mbps = None
+        self.assertAlmostEqual(
+            50.0,
+            selector.throughput_score(one_direction, now=now),
+            delta=0.01,
+        )
+
+    def test_throughput_reservations_are_distinct_and_release_unsampled_candidates(self) -> None:
+        rows = [
+            {"combination_id": index, "line_id": line_id, "socks_host": "127.0.0.1", "socks_port": 20000 + line_id, "sort_order": index * 10}
+            for index, line_id in enumerate((447, 451, 453, 455), start=1)
+        ]
+        payload = self.config(
+            "race",
+            ("198.51.100.8", 80),
+            rows,
+            selection_signal="throughput_ewma",
+        )
+        selector = relay_module.RelayRuntime(relay_module.parse_config(payload)).selector
+        for state in selector.states.values():
+            state.tcp_healthy = True
+
+        reservations = [selector.reserve_tcp_candidate(now=100.0) for _ in range(4)]
+        self.assertEqual({447, 451, 453, 455}, {state.candidate.line_id for state in reservations if state})
+        self.assertIsNone(selector.reserve_tcp_candidate(now=100.0))
+        selector.release_tcp_candidate(reservations[0], qualifying=False, now=101.0)
+        self.assertEqual(447, selector.reserve_tcp_candidate(now=101.0).candidate.line_id)
+
+        for state in selector.states.values():
+            state.sampling_in_flight = False
+            state.qualifying_samples = 1
+            state.sample_updated_at = 102.0
+            state.upload_ewma_mbps = state.download_ewma_mbps = float(state.candidate.line_id)
+        selector.connection_count = 19
+        chosen = selector.reserve_tcp_candidate(now=102.0)
+        self.assertIsNotNone(chosen)
+
+    def test_throughput_state_restores_only_fresh_matching_scope(self) -> None:
+        rows = [
+            {"combination_id": 1, "line_id": 451, "socks_host": "127.0.0.1", "socks_port": 20451, "sort_order": 10},
+            {"combination_id": 2, "line_id": 453, "socks_host": "127.0.0.1", "socks_port": 20453, "sort_order": 20},
+        ]
+        config_payload = self.config(
+            "race",
+            ("198.51.100.8", 80),
+            rows,
+            selection_signal="throughput_ewma",
+            throughput_sample_ttl_seconds=300,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_file = pathlib.Path(temp_dir) / "relay-state.json"
+            original = relay_module.RelayRuntime(relay_module.parse_config(config_payload), state_file=state_file)
+            state = original.selector.state(451)
+            state.upload_ewma_mbps = 42.5
+            state.download_ewma_mbps = 38.0
+            state.upload_stall_ewma = 0.1
+            state.download_stall_ewma = 0.2
+            state.qualifying_samples = 3
+            state.sample_updated_at = time.monotonic() - 5
+            original._write_state()
+
+            restored = relay_module.RelayRuntime(relay_module.parse_config(config_payload), state_file=state_file)
+            restored_throughput = restored.candidate_state(451)["throughput"]
+            self.assertEqual(42.5, restored_throughput["upload_ewma_mbps"])
+            self.assertEqual(38.0, restored_throughput["download_ewma_mbps"])
+            self.assertEqual(3, restored_throughput["qualifying_samples"])
+
+            changed_target = dict(config_payload)
+            changed_target["target_host"] = "198.51.100.9"
+            different_target = relay_module.RelayRuntime(
+                relay_module.parse_config(changed_target), state_file=state_file
+            )
+            self.assertIsNone(different_target.candidate_state(451)["throughput"]["upload_ewma_mbps"])
+
+            changed_identity = dict(config_payload)
+            changed_identity["candidates"] = [dict(rows[0]) | {"combination_id": 99}, rows[1]]
+            different_identity = relay_module.RelayRuntime(
+                relay_module.parse_config(changed_identity), state_file=state_file
+            )
+            self.assertIsNone(different_identity.candidate_state(451)["throughput"]["upload_ewma_mbps"])
+
+            expired = json.loads(state_file.read_text(encoding="utf-8"))
+            expired_row = next(row for row in expired["candidates"] if row["line_id"] == 451)
+            expired_row["throughput"]["sample_updated_at"] = time.time() - 301
+            state_file.write_text(json.dumps(expired), encoding="utf-8")
+            expired_runtime = relay_module.RelayRuntime(
+                relay_module.parse_config(config_payload), state_file=state_file
+            )
+            self.assertIsNone(expired_runtime.candidate_state(451)["throughput"]["upload_ewma_mbps"])
+
+    def test_throughput_state_ignores_malformed_and_nonfinite_values(self) -> None:
+        rows = [
+            {"combination_id": 1, "line_id": 451, "socks_host": "127.0.0.1", "socks_port": 20451, "sort_order": 10},
+            {"combination_id": 2, "line_id": 453, "socks_host": "127.0.0.1", "socks_port": 20453, "sort_order": 20},
+        ]
+        config_payload = self.config(
+            "race",
+            ("198.51.100.8", 80),
+            rows,
+            selection_signal="throughput_ewma",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_file = pathlib.Path(temp_dir) / "relay-state.json"
+            state_file.write_text("{broken", encoding="utf-8")
+            malformed = relay_module.RelayRuntime(relay_module.parse_config(config_payload), state_file=state_file)
+            self.assertIsNone(malformed.candidate_state(451)["throughput"]["upload_ewma_mbps"])
+
+            state = {
+                "scope": {"mode": "race", "target_host": "198.51.100.8", "target_port": 80},
+                "candidates": [
+                    {
+                        "combination_id": 1,
+                        "line_id": 451,
+                        "leg_route_id": 0,
+                        "throughput": {
+                            "upload_ewma_mbps": float("nan"),
+                            "download_ewma_mbps": 20.0,
+                            "upload_stall_ewma": 0.0,
+                            "download_stall_ewma": 0.0,
+                            "qualifying_samples": 1,
+                            "sample_updated_at": time.time(),
+                        },
+                    }
+                ],
+            }
+            state_file.write_text(json.dumps(state), encoding="utf-8")
+            nonfinite = relay_module.RelayRuntime(relay_module.parse_config(config_payload), state_file=state_file)
+            self.assertIsNone(nonfinite.candidate_state(451)["throughput"]["upload_ewma_mbps"])
 
     async def test_empty_or_invalid_config_fails_closed(self) -> None:
         with self.assertRaises(ValueError):
