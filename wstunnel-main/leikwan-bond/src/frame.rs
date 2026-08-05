@@ -26,6 +26,8 @@ pub enum FrameKind {
     UdpFragS2C = 13,
     UdpAckC2S = 14,
     UdpAckS2C = 15,
+    DeliveryC2S = 16,
+    DeliveryS2C = 17,
 }
 
 impl FrameKind {
@@ -46,6 +48,8 @@ impl FrameKind {
             13 => Some(Self::UdpFragS2C),
             14 => Some(Self::UdpAckC2S),
             15 => Some(Self::UdpAckS2C),
+            16 => Some(Self::DeliveryC2S),
+            17 => Some(Self::DeliveryS2C),
             _ => None,
         }
     }
@@ -67,9 +71,11 @@ pub enum WireFrame {
     StreamOpenAck { stream_id: u32 },
     DataC2S { stream_id: u32, seq: u64, payload: Bytes },
     AckC2S { stream_id: u32, ack: u64 },
+    DeliveryC2S { stream_id: u32, route_id: u32, delivered_bytes: u64 },
     FinC2S { stream_id: u32, seq: u64 },
     DataS2C { stream_id: u32, seq: u64, payload: Bytes },
     AckS2C { stream_id: u32, ack: u64 },
+    DeliveryS2C { stream_id: u32, route_id: u32, delivered_bytes: u64 },
     FinS2C { stream_id: u32, seq: u64 },
     Reset { stream_id: u32, reason: String },
     UdpFragC2S {
@@ -119,6 +125,10 @@ impl WireFrame {
             Self::AckC2S { stream_id, ack } | Self::AckS2C { stream_id, ack } => {
                 (self.kind(), 0, 0, *ack, *stream_id, 0)
             }
+            Self::DeliveryC2S { stream_id, route_id, delivered_bytes }
+            | Self::DeliveryS2C { stream_id, route_id, delivered_bytes } => {
+                (self.kind(), 0, u64::from(*route_id), *delivered_bytes, *stream_id, 0)
+            }
             Self::FinC2S { stream_id, seq } | Self::FinS2C { stream_id, seq } => {
                 (self.kind(), 0, *seq, 0, *stream_id, 0)
             }
@@ -138,9 +148,11 @@ impl WireFrame {
             Self::StreamOpenAck { .. } => FrameKind::StreamOpenAck,
             Self::DataC2S { .. } => FrameKind::DataC2S,
             Self::AckC2S { .. } => FrameKind::AckC2S,
+            Self::DeliveryC2S { .. } => FrameKind::DeliveryC2S,
             Self::FinC2S { .. } => FrameKind::FinC2S,
             Self::DataS2C { .. } => FrameKind::DataS2C,
             Self::AckS2C { .. } => FrameKind::AckS2C,
+            Self::DeliveryS2C { .. } => FrameKind::DeliveryS2C,
             Self::FinS2C { .. } => FrameKind::FinS2C,
             Self::Reset { .. } => FrameKind::Reset,
             Self::UdpFragC2S { .. } => FrameKind::UdpFragC2S,
@@ -179,6 +191,8 @@ where
         | WireFrame::StreamOpenAck { .. }
         | WireFrame::AckC2S { .. }
         | WireFrame::AckS2C { .. }
+        | WireFrame::DeliveryC2S { .. }
+        | WireFrame::DeliveryS2C { .. }
         | WireFrame::FinC2S { .. }
         | WireFrame::FinS2C { .. } => {}
         WireFrame::DataC2S { payload, .. } | WireFrame::DataS2C { payload, .. } => {
@@ -269,6 +283,7 @@ where
             payload: Bytes::from(payload),
         }),
         FrameKind::AckC2S => Ok(WireFrame::AckC2S { stream_id, ack }),
+        FrameKind::DeliveryC2S => decode_tcp_delivery(stream_id, seq, ack, true),
         FrameKind::FinC2S => Ok(WireFrame::FinC2S { stream_id, seq }),
         FrameKind::DataS2C => Ok(WireFrame::DataS2C {
             stream_id,
@@ -276,6 +291,7 @@ where
             payload: Bytes::from(payload),
         }),
         FrameKind::AckS2C => Ok(WireFrame::AckS2C { stream_id, ack }),
+        FrameKind::DeliveryS2C => decode_tcp_delivery(stream_id, seq, ack, false),
         FrameKind::FinS2C => Ok(WireFrame::FinS2C { stream_id, seq }),
         FrameKind::Reset => Ok(WireFrame::Reset {
             stream_id,
@@ -285,6 +301,27 @@ where
         FrameKind::UdpFragS2C => decode_udp_fragment(payload, false),
         FrameKind::UdpAckC2S => decode_udp_ack(payload, true),
         FrameKind::UdpAckS2C => decode_udp_ack(payload, false),
+    }
+}
+
+fn decode_tcp_delivery(
+    stream_id: u32,
+    route_id: u64,
+    delivered_bytes: u64,
+    client_to_server: bool,
+) -> anyhow::Result<WireFrame> {
+    let route_id = u32::try_from(route_id).with_context(|| "tcp delivery route id exceeds u32")?;
+    if route_id == 0 {
+        bail!("tcp delivery route id must be non-zero");
+    }
+    if delivered_bytes == 0 || delivered_bytes > MAX_FRAME_LEN as u64 {
+        bail!("invalid tcp delivery byte count {}", delivered_bytes);
+    }
+
+    if client_to_server {
+        Ok(WireFrame::DeliveryC2S { stream_id, route_id, delivered_bytes })
+    } else {
+        Ok(WireFrame::DeliveryS2C { stream_id, route_id, delivered_bytes })
     }
 }
 
@@ -432,6 +469,28 @@ mod tests {
                 assert_eq!(hello.route_id, 453);
                 assert_eq!(hello.expected_links, 5);
                 assert_eq!(hello.token, "token");
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn roundtrips_per_route_tcp_delivery_feedback() {
+        let (mut left, mut right) = duplex(4096);
+        let frame = WireFrame::DeliveryC2S {
+            stream_id: 42,
+            route_id: 453,
+            delivered_bytes: 262_144,
+        };
+
+        write_frame(&mut left, &frame).await.unwrap();
+        let decoded = read_frame(&mut right).await.unwrap();
+
+        match decoded {
+            WireFrame::DeliveryC2S { stream_id, route_id, delivered_bytes } => {
+                assert_eq!(stream_id, 42);
+                assert_eq!(route_id, 453);
+                assert_eq!(delivered_bytes, 262_144);
             }
             other => panic!("unexpected frame: {other:?}"),
         }

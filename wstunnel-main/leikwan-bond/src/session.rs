@@ -435,6 +435,13 @@ impl SessionRole {
         }
     }
 
+    fn outbound_delivery(self, stream_id: u32, route_id: u32, delivered_bytes: u64) -> WireFrame {
+        match self {
+            Self::Client => WireFrame::DeliveryS2C { stream_id, route_id, delivered_bytes },
+            Self::Aggregator => WireFrame::DeliveryC2S { stream_id, route_id, delivered_bytes },
+        }
+    }
+
     fn outbound_fin(self, stream_id: u32, seq: u64) -> WireFrame {
         match self {
             Self::Client => WireFrame::FinC2S { stream_id, seq },
@@ -467,6 +474,14 @@ impl SessionRole {
         matches!(
             (self, frame),
             (Self::Client, WireFrame::AckC2S { .. }) | (Self::Aggregator, WireFrame::AckS2C { .. })
+        )
+    }
+
+    fn is_inbound_delivery(self, frame: &WireFrame) -> bool {
+        matches!(
+            (self, frame),
+            (Self::Client, WireFrame::DeliveryC2S { .. })
+                | (Self::Aggregator, WireFrame::DeliveryS2C { .. })
         )
     }
 
@@ -2638,6 +2653,30 @@ async fn handle_tcp_transport_frame(
         _ => {}
     }
 
+    if role.is_inbound_delivery(&frame) {
+        let (stream_id, route_id, delivered_bytes) = match frame {
+            WireFrame::DeliveryC2S { stream_id, route_id, delivered_bytes }
+            | WireFrame::DeliveryS2C { stream_id, route_id, delivered_bytes } => {
+                (stream_id, route_id, delivered_bytes)
+            }
+            _ => unreachable!(),
+        };
+        if config.adaptive_line_admission {
+            let qualifies_for_throughput = streams
+                .get(&stream_id)
+                .is_some_and(|state| state.striping_stage != TcpStripingStage::Sticky);
+            apply_tcp_delivery_observed(
+                legs,
+                route_id,
+                delivered_bytes,
+                qualifies_for_throughput,
+                Instant::now(),
+                config,
+            );
+        }
+        return Ok(());
+    }
+
     if role.is_inbound_ack(&frame) {
         let (stream_id, ack) = match frame {
             WireFrame::AckC2S { stream_id, ack } | WireFrame::AckS2C { stream_id, ack } => (stream_id, ack),
@@ -2651,14 +2690,7 @@ async fn handle_tcp_transport_frame(
             {
                 state.preferred_leg_id = Some(leg_id);
             }
-            let completed_chunks = apply_ack_observed(
-                &mut state.pending_chunks,
-                legs,
-                ack,
-                state.striping_stage != TcpStripingStage::Sticky,
-                Instant::now(),
-                config,
-            );
+            let completed_chunks = apply_ack(&mut state.pending_chunks, legs, ack);
             release_transport_read_credit(state, completed_chunks);
             if ack > state.last_ack_offset {
                 state.last_ack_offset = ack;
@@ -2724,7 +2756,18 @@ async fn handle_tcp_transport_frame(
             {
                 state.preferred_leg_id = Some(leg_id);
             }
-            let _queued_offset = handle_inbound_data(&mut state.inbound, seq, payload, &state.local_write_tx).await?;
+            let (_queued_offset, newly_received_bytes) =
+                handle_inbound_data(&mut state.inbound, seq, payload, &state.local_write_tx).await?;
+            if config.adaptive_line_admission && newly_received_bytes > 0 {
+                if let Some(route_id) = legs.get(leg_id).and_then(|leg| leg.leg_route_id) {
+                    let _ = send_stream_control_frame(
+                        legs,
+                        round_robin_cursor,
+                        state.preferred_leg_id,
+                        role.outbound_delivery(stream_id, route_id, newly_received_bytes as u64),
+                    );
+                }
+            }
         } else {
             let reason = reset_reasons
                 .get(&stream_id)
@@ -4154,9 +4197,9 @@ async fn handle_inbound_data(
     seq: u64,
     payload: Bytes,
     local_write_tx: &mpsc::Sender<LocalWriteCommand>,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<(u64, usize)> {
     if inbound.writer_shutdown {
-        return Ok(inbound.next_offset);
+        return Ok((inbound.next_offset, 0));
     }
 
     let mut seq = seq;
@@ -4165,18 +4208,22 @@ async fn handle_inbound_data(
     if seq < inbound.next_offset {
         let already_seen = (inbound.next_offset - seq) as usize;
         if already_seen >= payload.len() {
-            return Ok(inbound.next_offset);
+            return Ok((inbound.next_offset, 0));
         }
         payload = payload.slice(already_seen..);
         seq = inbound.next_offset;
     }
 
-    inbound.buffer.entry(seq).or_insert(payload);
+    if inbound.buffer.contains_key(&seq) {
+        return Ok((inbound.next_offset, 0));
+    }
+    let newly_received_bytes = payload.len();
+    inbound.buffer.insert(seq, payload);
     try_flush_inbound_data(inbound, local_write_tx)?;
 
     try_queue_inbound_shutdown(inbound, local_write_tx)?;
 
-    Ok(inbound.next_offset)
+    Ok((inbound.next_offset, newly_received_bytes))
 }
 
 fn try_flush_inbound_data(
@@ -4661,34 +4708,7 @@ fn maybe_write_leg_health_snapshot(
 }
 
 fn apply_ack(pending: &mut BTreeMap<u64, PendingChunk>, legs: &mut [LegState], ack: u64) -> usize {
-    apply_ack_inner(pending, legs, ack, None)
-}
-
-fn apply_ack_observed(
-    pending: &mut BTreeMap<u64, PendingChunk>,
-    legs: &mut [LegState],
-    ack: u64,
-    qualifies_for_throughput: bool,
-    observed_at: Instant,
-    config: &SessionConfig,
-) -> usize {
-    apply_ack_inner(
-        pending,
-        legs,
-        ack,
-        Some((qualifies_for_throughput, observed_at, config)),
-    )
-}
-
-fn apply_ack_inner(
-    pending: &mut BTreeMap<u64, PendingChunk>,
-    legs: &mut [LegState],
-    ack: u64,
-    throughput_observation: Option<(bool, Instant, &SessionConfig)>,
-) -> usize {
-    let now = throughput_observation
-        .map(|(_, observed_at, _)| observed_at)
-        .unwrap_or_else(Instant::now);
+    let now = Instant::now();
     let completed: Vec<u64> = pending
         .iter()
         .filter_map(|(seq, chunk)| {
@@ -4708,30 +4728,37 @@ fn apply_ack_inner(
                 update_leg_rtt(legs, chunk.last_leg_id, now.duration_since(chunk.last_sent_at));
             }
             credit_tcp_delivery(legs, chunk.last_leg_id, chunk.payload.len());
-            if first_transmission {
-                if let Some((qualifies, observed_at, config)) = throughput_observation {
-                    let sample = legs.get_mut(chunk.last_leg_id).and_then(|leg| {
-                        leg.tcp_health.throughput_window.credit(
-                            chunk.payload.len(),
-                            observed_at,
-                            qualifies,
-                            config,
-                        )
-                    });
-                    if let Some(sample) = sample {
-                        apply_tcp_throughput_sample(
-                            legs,
-                            chunk.last_leg_id,
-                            sample.mbps,
-                            observed_at,
-                            config,
-                        );
-                    }
-                }
-            }
         }
     }
     completed_count
+}
+
+fn apply_tcp_delivery_observed(
+    legs: &mut [LegState],
+    route_id: u32,
+    delivered_bytes: u64,
+    qualifies_for_throughput: bool,
+    observed_at: Instant,
+    config: &SessionConfig,
+) -> bool {
+    if !config.adaptive_line_admission || delivered_bytes == 0 {
+        return false;
+    }
+    let Ok(delivered_bytes) = usize::try_from(delivered_bytes) else {
+        return false;
+    };
+    let Some(leg_id) = legs.iter().position(|leg| leg.leg_route_id == Some(route_id)) else {
+        return false;
+    };
+    let sample = legs.get_mut(leg_id).and_then(|leg| {
+        leg.tcp_health
+            .throughput_window
+            .credit(delivered_bytes, observed_at, qualifies_for_throughput, config)
+    });
+    if let Some(sample) = sample {
+        apply_tcp_throughput_sample(legs, leg_id, sample.mbps, observed_at, config);
+    }
+    true
 }
 
 fn apply_tcp_throughput_sample(
@@ -6215,13 +6242,9 @@ mod tests {
     }
 
     #[test]
-    fn acked_bulk_bytes_update_throughput_but_retransmits_do_not() {
-        let mut config = test_config();
-        config.throughput_min_sample_bytes = 4;
-        config.throughput_min_sample = Duration::from_secs(1);
+    fn cumulative_ack_releases_data_without_scoring_all_legs_at_the_gap_rate() {
         let started = Instant::now();
         let mut legs = vec![fake_leg(0, 10, 0, 20)];
-        legs[0].tcp_health.throughput_window = ThroughputWindow::new(started);
         let mut pending = BTreeMap::from([(
             0,
             PendingChunk {
@@ -6233,41 +6256,86 @@ mod tests {
             },
         )]);
 
-        assert_eq!(
-            apply_ack_observed(
-                &mut pending,
-                &mut legs,
-                4,
-                true,
-                started + Duration::from_secs(1),
-                &config,
-            ),
-            1
-        );
-        let first_sample = legs[0].tcp_health.throughput_mbps_ewma;
-        assert!((first_sample - 0.000032).abs() < 0.000001);
+        assert_eq!(apply_ack(&mut pending, &mut legs, 4), 1);
+        assert_eq!(legs[0].tcp_health.throughput_mbps_ewma, 0.0);
+        assert_eq!(legs[0].tcp_health.throughput_qualifying_samples, 0);
+    }
 
-        legs[0].tcp_health.throughput_window = ThroughputWindow::new(started);
-        let mut retransmitted = BTreeMap::from([(
-            4,
-            PendingChunk {
-                payload: Bytes::from_static(b"more"),
-                last_sent_at: started,
-                last_leg_id: 0,
-                transmit_count: 2,
-                write_pending: false,
-            },
-        )]);
-        apply_ack_observed(
-            &mut retransmitted,
+    #[test]
+    fn per_route_delivery_feedback_is_not_blocked_by_a_slow_global_ack_gap() {
+        let mut config = test_config();
+        config.adaptive_line_admission = true;
+        config.throughput_min_sample_bytes = 1_000_000;
+        config.throughput_min_sample = Duration::from_secs(1);
+        let started = Instant::now();
+        let mut fast = fake_leg(0, 10, 0, 20);
+        fast.leg_route_id = Some(451);
+        fast.tcp_health.throughput_window = ThroughputWindow::new(started);
+        let mut slow = fake_leg(1, 10, 0, 25);
+        slow.leg_route_id = Some(455);
+        slow.tcp_health.throughput_window = ThroughputWindow::new(started);
+        let mut legs = vec![fast, slow];
+
+        assert!(apply_tcp_delivery_observed(
             &mut legs,
-            8,
+            451,
+            25_000_000,
             true,
             started + Duration::from_secs(1),
             &config,
-        );
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            455,
+            1_000_000,
+            true,
+            started + Duration::from_secs(1),
+            &config,
+        ));
 
-        assert_eq!(legs[0].tcp_health.throughput_mbps_ewma, first_sample);
+        assert!((legs[0].tcp_health.throughput_mbps_ewma - 200.0).abs() < 0.01);
+        assert!((legs[1].tcp_health.throughput_mbps_ewma - 8.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn interactive_delivery_feedback_resets_a_partial_bulk_window() {
+        let mut config = test_config();
+        config.adaptive_line_admission = true;
+        config.throughput_min_sample_bytes = 2;
+        config.throughput_min_sample = Duration::from_secs(1);
+        let started = Instant::now();
+        let mut leg = fake_leg(0, 10, 0, 20);
+        leg.leg_route_id = Some(451);
+        leg.tcp_health.throughput_window = ThroughputWindow::new(started);
+        let mut legs = vec![leg];
+
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            451,
+            1,
+            true,
+            started + Duration::from_millis(500),
+            &config,
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            451,
+            1,
+            false,
+            started + Duration::from_secs(10),
+            &config,
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            451,
+            1,
+            true,
+            started + Duration::from_millis(10_500),
+            &config,
+        ));
+
+        assert_eq!(legs[0].tcp_health.throughput_qualifying_samples, 0);
+        assert_eq!(legs[0].tcp_health.throughput_mbps_ewma, 0.0);
     }
 
     #[test]
@@ -7640,8 +7708,10 @@ mod tests {
         let mut inbound = InboundState::new();
         let payload = Bytes::from_static(b"abcd");
 
-        let queued = handle_inbound_data(&mut inbound, 0, payload, &tx).await.expect("queue inbound payload");
+        let (queued, received) =
+            handle_inbound_data(&mut inbound, 0, payload, &tx).await.expect("queue inbound payload");
         assert_eq!(queued, 4);
+        assert_eq!(received, 4);
         assert_eq!(inbound.next_offset, 4);
         assert_eq!(inbound.acked_offset, 0);
 
@@ -7653,6 +7723,24 @@ mod tests {
         let ack = record_inbound_write_commit(&mut inbound, 4);
         assert_eq!(ack, 4);
         assert_eq!(inbound.acked_offset, 4);
+    }
+
+    #[tokio::test]
+    async fn duplicate_inbound_data_has_no_second_delivery_credit() {
+        let (tx, mut rx) = mpsc::channel::<LocalWriteCommand>(8);
+        let mut inbound = InboundState::new();
+
+        let first = handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"data"), &tx)
+            .await
+            .unwrap();
+        let duplicate = handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"data"), &tx)
+            .await
+            .unwrap();
+
+        assert_eq!(first, (4, 4));
+        assert_eq!(duplicate, (4, 0));
+        assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -7670,7 +7758,8 @@ mod tests {
         .expect("a full local writer queue must not block the transport event loop")
         .unwrap();
 
-        assert_eq!(queued, 0);
+        assert_eq!(queued.0, 0);
+        assert_eq!(queued.1, 1);
         assert_eq!(inbound.next_offset, 0);
         assert_eq!(inbound.buffer.get(&0), Some(&Bytes::from_static(b"a")));
         assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
@@ -7700,7 +7789,8 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(queued, 1);
+        assert_eq!(queued.0, 1);
+        assert_eq!(queued.1, 1);
         assert_eq!(inbound.next_offset, 1);
         assert_eq!(inbound.buffer.get(&1), Some(&Bytes::from_static(b"b")));
         match rx.recv().await {
@@ -7804,7 +7894,7 @@ mod tests {
             .await
             .expect("late data after shutdown should not fail the whole transport");
 
-        assert_eq!(next_offset, 8);
+        assert_eq!(next_offset, (8, 0));
         assert_eq!(inbound.next_offset, 8);
     }
 
