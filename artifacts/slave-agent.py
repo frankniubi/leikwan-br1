@@ -13,6 +13,7 @@ import html
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -26,7 +27,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.08.04.2"
+AGENT_VERSION = "2026.08.05.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -3828,7 +3829,7 @@ WantedBy=multi-user.target
         if not isinstance(raw, dict):
             raise RuntimeError("leigod_forward must be an object")
         mode = str(raw.get("mode", "") or "").strip().lower()
-        if mode not in {"single", "race"}:
+        if mode not in {"single", "race", "bond"}:
             raise RuntimeError("invalid leigod relay mode")
         relay_port = int(raw.get("relay_port", 0) or 0)
         if relay_port < 1 or relay_port > 65535:
@@ -3851,6 +3852,8 @@ WantedBy=multi-user.target
         raw_candidates = raw.get("candidates")
         if not isinstance(raw_candidates, list) or len(raw_candidates) < 1 or len(raw_candidates) > 8:
             raise RuntimeError("leigod relay requires between one and eight candidates")
+        if mode == "bond" and len(raw_candidates) < 2:
+            raise RuntimeError("bond leigod relay requires at least two routes")
 
         desired = {int(row.get("line_id", 0) or 0): row for row in self.load_leigod_desired_lines()}
         health = self.load_leigod_line_health()
@@ -3866,11 +3869,14 @@ WantedBy=multi-user.target
                 raise RuntimeError("leigod relay candidate must be an object")
             combination_id = int(candidate.get("combination_id", 0) or 0)
             line_id = int(candidate.get("line_id", 0) or 0)
+            leg_route_id = int(candidate.get("leg_route_id", 0) or 0)
             expected_hash = str(candidate.get("config_sha256", "") or "").strip().lower()
             socks_host = str(candidate.get("socks_host", "") or "").strip()
             socks_port = int(candidate.get("socks_port", 0) or 0)
             if combination_id <= 0 or line_id < 1 or line_id > 45535:
                 raise RuntimeError("invalid leigod relay candidate identity")
+            if mode == "bond" and leg_route_id != line_id:
+                raise RuntimeError(f"bond leigod candidate {line_id} route must equal line_id")
             if line_id in seen_lines or (combination_id, line_id) in seen_keys:
                 raise RuntimeError("duplicate leigod relay candidate")
             if socks_host != "127.0.0.1" or socks_port != 20000 + line_id:
@@ -3899,25 +3905,110 @@ WantedBy=multi-user.target
             seen_lines.add(line_id)
             seen_keys.add((combination_id, line_id))
             combinations.add(combination_id)
-            candidates.append(
-                {
-                    "combination_id": combination_id,
-                    "line_id": line_id,
-                    "socks_host": socks_host,
-                    "socks_port": socks_port,
-                    "sort_order": (index + 1) * 10,
-                }
-            )
-            metadata_candidates.append(
-                {
-                    "combination_id": combination_id,
-                    "line_id": line_id,
-                    "config_sha256": expected_hash,
-                    "socks_port": socks_port,
-                }
-            )
+            runtime_candidate = {
+                "combination_id": combination_id,
+                "line_id": line_id,
+                "socks_host": socks_host,
+                "socks_port": socks_port,
+                "sort_order": (index + 1) * 10,
+            }
+            metadata_candidate = {
+                "combination_id": combination_id,
+                "line_id": line_id,
+                "config_sha256": expected_hash,
+                "socks_port": socks_port,
+            }
+            if mode == "bond":
+                runtime_candidate["leg_route_id"] = leg_route_id
+                metadata_candidate["leg_route_id"] = leg_route_id
+            candidates.append(runtime_candidate)
+            metadata_candidates.append(metadata_candidate)
         if mode == "race" and len(combinations) < 2:
             raise RuntimeError("race leigod relay requires two distinct combinations")
+
+        selection_signal = str(raw.get("selection_signal", "connect_latency") or "").strip().lower()
+        if selection_signal not in {"connect_latency", "throughput_ewma"}:
+            raise RuntimeError("invalid leigod race selection signal")
+        throughput_fields = {
+            "throughput_min_bytes",
+            "throughput_min_seconds",
+            "throughput_ewma_alpha",
+            "throughput_explore_every_connections",
+            "throughput_sample_ttl_seconds",
+            "throughput_stall_interval_seconds",
+        }
+        if selection_signal == "throughput_ewma" and (mode != "race" or "tcp" not in transport):
+            raise RuntimeError("throughput-aware leigod selection requires race mode with TCP")
+        if selection_signal != "throughput_ewma" and any(field in raw for field in throughput_fields):
+            raise RuntimeError("leigod throughput policy values require throughput_ewma")
+
+        def bounded_policy_number(
+            name: str,
+            default: int | float,
+            minimum: int | float,
+            maximum: int | float,
+            *,
+            integer: bool = False,
+        ) -> int | float:
+            value = raw.get(name, default)
+            if isinstance(value, bool):
+                raise RuntimeError(f"invalid leigod policy value: {name}")
+            try:
+                number = int(value) if integer else float(value)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"invalid leigod policy value: {name}") from exc
+            if not math.isfinite(float(number)) or number < minimum or number > maximum:
+                raise RuntimeError(f"leigod policy value out of range: {name}")
+            return number
+
+        runtime_policy = {
+            "probe_interval_seconds": max(
+                1,
+                min(3600, int(self.config.get("leigod_probe_interval_seconds", 15) or 15)),
+            ),
+            "connect_timeout_seconds": max(
+                0.1,
+                min(30.0, float(self.config.get("leigod_probe_connect_timeout_seconds", 2) or 2)),
+            ),
+            "failure_threshold": max(1, min(100, int(raw.get("failure_threshold", 2) or 2))),
+            "recovery_success_threshold": max(
+                1,
+                min(100, int(raw.get("recovery_success_threshold", 2) or 2)),
+            ),
+            "switch_improvement_ms": max(
+                0,
+                min(1000, int(raw.get("switch_improvement_ms", 15) or 15)),
+            ),
+            "minimum_hold_seconds": max(
+                0,
+                min(3600, int(raw.get("minimum_hold_seconds", 30) or 30)),
+            ),
+        }
+        if mode == "race":
+            runtime_policy["selection_signal"] = selection_signal
+        if selection_signal == "throughput_ewma":
+            runtime_policy.update(
+                {
+                    "throughput_min_bytes": bounded_policy_number(
+                        "throughput_min_bytes", 1_048_576, 1, 64 * 1024 * 1024, integer=True
+                    ),
+                    "throughput_min_seconds": bounded_policy_number(
+                        "throughput_min_seconds", 2.0, 0.001, 300.0
+                    ),
+                    "throughput_ewma_alpha": bounded_policy_number(
+                        "throughput_ewma_alpha", 0.25, 0.001, 1.0
+                    ),
+                    "throughput_explore_every_connections": bounded_policy_number(
+                        "throughput_explore_every_connections", 20, 2, 10000, integer=True
+                    ),
+                    "throughput_sample_ttl_seconds": bounded_policy_number(
+                        "throughput_sample_ttl_seconds", 1800.0, 30.0, 86400.0
+                    ),
+                    "throughput_stall_interval_seconds": bounded_policy_number(
+                        "throughput_stall_interval_seconds", 1.0, 0.001, 60.0
+                    ),
+                }
+            )
 
         runtime_config = {
             "mode": mode,
@@ -3925,31 +4016,9 @@ WantedBy=multi-user.target
             "listen_port": relay_port,
             "target_host": target_host,
             "target_port": target_port,
-            "transport": transport,
+            "transport": "tcp" if mode == "bond" else transport,
             "candidates": candidates,
-            "policy": {
-                "probe_interval_seconds": max(
-                    1,
-                    min(3600, int(self.config.get("leigod_probe_interval_seconds", 15) or 15)),
-                ),
-                "connect_timeout_seconds": max(
-                    0.1,
-                    min(30.0, float(self.config.get("leigod_probe_connect_timeout_seconds", 2) or 2)),
-                ),
-                "failure_threshold": max(1, min(100, int(raw.get("failure_threshold", 2) or 2))),
-                "recovery_success_threshold": max(
-                    1,
-                    min(100, int(raw.get("recovery_success_threshold", 2) or 2)),
-                ),
-                "switch_improvement_ms": max(
-                    0,
-                    min(1000, int(raw.get("switch_improvement_ms", 15) or 15)),
-                ),
-                "minimum_hold_seconds": max(
-                    0,
-                    min(3600, int(raw.get("minimum_hold_seconds", 30) or 30)),
-                ),
-            },
+            "policy": runtime_policy,
         }
         return {
             "service_name": self.leigod_forward_service_name(service_name),

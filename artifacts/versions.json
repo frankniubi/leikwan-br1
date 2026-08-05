@@ -1,11 +1,11 @@
 {
   "slave_agent": {
-    "version": "2026.08.04.2",
+    "version": "2026.08.05.1",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "b9d90425799004855dd39bf7928b8a03fae1d124e2bdd48edfb7047f8260ad65",
-    "size_bytes": 332504,
-    "size": 332504
+    "sha256": "f4ae3ca682ff481336c7e8ecc4070e440278314e6f75a38a309b13135518a5d1",
+    "size_bytes": 336049,
+    "size": 336049
   },
   "gost_linux_amd64": {
     "version": "3.2.6",
@@ -127,11 +127,11 @@
     "artifact_url": "/artifacts/leikwan-udp-uot-merge.py"
   },
   "leikwan_bond_linux_amd64": {
-    "version": "0.1.30",
+    "version": "0.1.31",
     "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64",
-    "sha256": "513b0ad9e496c4e71a225fd381453acb45a1413b6766bf5dcfb91d7babfefb7b",
-    "size_bytes": 8946736
+    "sha256": "ff568c8bfe0d393476f878df39bf21b2910648b912e7b13f917d483050280e0c",
+    "size_bytes": 8610768
   },
   "wstunnel_linux_amd64": {
     "version": "10.5.2",
@@ -186,12 +186,12 @@
     "size_bytes": 55652648
   },
   "install_forward_runtime": {
-    "version": "2026.08.04.2",
+    "version": "2026.08.05.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "95b9da49c3d52f35e0eb40962373307840bc5825e4870c31a152227eb8189684",
-    "size_bytes": 73001,
-    "size": 73001
+    "sha256": "c6bce8f1c2653187c0099799cb724b4c7cce0a89fb801d56976e360c86d5e9e9",
+    "size_bytes": 77361,
+    "size": 77361
   },
   "tcp_race_runtime": {
     "version": "2026.07.27.1",
@@ -238,10 +238,10 @@
     "size_bytes": 17387
   },
   "leigod_forward_relay": {
-    "version": "2026.07.27.1",
+    "version": "2026.08.05.1",
     "path": "slave-agent/leigod_forward_relay.py",
     "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
-    "sha256": "1b96fc73623a991aacb0a33f503d177088fa2975fe5cb6c02fc2a28677de9848",
-    "size_bytes": 30683
+    "sha256": "40ce291792891381d2b61c6a0c4dea478115c8fb7b9309986f753c140bfdda7c",
+    "size_bytes": 58622
   }
 }

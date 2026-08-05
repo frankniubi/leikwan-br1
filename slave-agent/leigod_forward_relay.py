@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
-VERSION = "2026.07.27.1"
+VERSION = "2026.08.05.1"
 MAX_CANDIDATES = 8
 COPY_CHUNK = 256 * 1024
 IDLE_TIMEOUT_SECONDS = 300.0
