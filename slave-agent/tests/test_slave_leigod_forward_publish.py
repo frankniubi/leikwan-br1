@@ -179,6 +179,48 @@ class SlaveLeigodForwardPublishTests(unittest.TestCase):
         self.assertIn(48316, agent.used_backend_ports())
         self.assertIn(20451, agent.used_backend_ports())
 
+    def test_bond_publish_emits_route_tagged_tcp_carrier_config(self):
+        agent, _root = self.make_agent()
+        candidates = [
+            self.candidate(451, 10, 10) | {"leg_route_id": 451},
+            self.candidate(453, 11, 20) | {"leg_route_id": 453},
+        ]
+        self.seed_health(agent, candidates)
+        payload = self.payload(candidates, mode="bond")
+        payload["transport_mode"] = "tcp+udp"
+
+        self.publish(agent, payload)
+
+        service_name = "wstunnel-svc-2-316"
+        config = json.loads(agent.leigod_forward_config_path(service_name).read_text(encoding="utf-8"))
+        self.assertEqual("bond", config["mode"])
+        self.assertEqual("tcp", config["transport"])
+        self.assertEqual([451, 453], [row["leg_route_id"] for row in config["candidates"]])
+        self.assertEqual(
+            {"combination_id", "line_id", "leg_route_id", "socks_host", "socks_port", "sort_order"},
+            set(config["candidates"][0]),
+        )
+        metadata = agent.load_service_metadata(service_name)["leigod_forward"]
+        self.assertEqual("tcp+udp", metadata["transport"])
+        self.assertEqual([451, 453], [row["leg_route_id"] for row in metadata["candidates"]])
+
+    def test_bond_publish_rejects_missing_mismatched_or_single_route(self):
+        agent, _root = self.make_agent()
+        valid = [
+            self.candidate(451, 10, 10) | {"leg_route_id": 451},
+            self.candidate(453, 11, 20) | {"leg_route_id": 453},
+        ]
+        self.seed_health(agent, valid)
+        invalid_cases = {
+            "single": valid[:1],
+            "missing": [dict(valid[0]), self.candidate(453, 11, 20)],
+            "mismatch": [dict(valid[0]), dict(valid[1], leg_route_id=454)],
+        }
+
+        for label, candidates in invalid_cases.items():
+            with self.subTest(label=label), self.assertRaisesRegex(RuntimeError, "bond.*route|route.*bond"):
+                self.publish(agent, self.payload(candidates, mode="bond"))
+
     def test_publish_rejects_target_port_and_unhealthy_hash_mismatches(self):
         agent, _root = self.make_agent()
         candidates = [self.candidate(451, 10, 10)]

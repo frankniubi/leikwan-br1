@@ -3828,7 +3828,7 @@ WantedBy=multi-user.target
         if not isinstance(raw, dict):
             raise RuntimeError("leigod_forward must be an object")
         mode = str(raw.get("mode", "") or "").strip().lower()
-        if mode not in {"single", "race"}:
+        if mode not in {"single", "race", "bond"}:
             raise RuntimeError("invalid leigod relay mode")
         relay_port = int(raw.get("relay_port", 0) or 0)
         if relay_port < 1 or relay_port > 65535:
@@ -3851,6 +3851,8 @@ WantedBy=multi-user.target
         raw_candidates = raw.get("candidates")
         if not isinstance(raw_candidates, list) or len(raw_candidates) < 1 or len(raw_candidates) > 8:
             raise RuntimeError("leigod relay requires between one and eight candidates")
+        if mode == "bond" and len(raw_candidates) < 2:
+            raise RuntimeError("bond leigod relay requires at least two routes")
 
         desired = {int(row.get("line_id", 0) or 0): row for row in self.load_leigod_desired_lines()}
         health = self.load_leigod_line_health()
@@ -3866,11 +3868,14 @@ WantedBy=multi-user.target
                 raise RuntimeError("leigod relay candidate must be an object")
             combination_id = int(candidate.get("combination_id", 0) or 0)
             line_id = int(candidate.get("line_id", 0) or 0)
+            leg_route_id = int(candidate.get("leg_route_id", 0) or 0)
             expected_hash = str(candidate.get("config_sha256", "") or "").strip().lower()
             socks_host = str(candidate.get("socks_host", "") or "").strip()
             socks_port = int(candidate.get("socks_port", 0) or 0)
             if combination_id <= 0 or line_id < 1 or line_id > 45535:
                 raise RuntimeError("invalid leigod relay candidate identity")
+            if mode == "bond" and leg_route_id != line_id:
+                raise RuntimeError(f"bond leigod candidate {line_id} route must equal line_id")
             if line_id in seen_lines or (combination_id, line_id) in seen_keys:
                 raise RuntimeError("duplicate leigod relay candidate")
             if socks_host != "127.0.0.1" or socks_port != 20000 + line_id:
@@ -3899,23 +3904,24 @@ WantedBy=multi-user.target
             seen_lines.add(line_id)
             seen_keys.add((combination_id, line_id))
             combinations.add(combination_id)
-            candidates.append(
-                {
-                    "combination_id": combination_id,
-                    "line_id": line_id,
-                    "socks_host": socks_host,
-                    "socks_port": socks_port,
-                    "sort_order": (index + 1) * 10,
-                }
-            )
-            metadata_candidates.append(
-                {
-                    "combination_id": combination_id,
-                    "line_id": line_id,
-                    "config_sha256": expected_hash,
-                    "socks_port": socks_port,
-                }
-            )
+            runtime_candidate = {
+                "combination_id": combination_id,
+                "line_id": line_id,
+                "socks_host": socks_host,
+                "socks_port": socks_port,
+                "sort_order": (index + 1) * 10,
+            }
+            metadata_candidate = {
+                "combination_id": combination_id,
+                "line_id": line_id,
+                "config_sha256": expected_hash,
+                "socks_port": socks_port,
+            }
+            if mode == "bond":
+                runtime_candidate["leg_route_id"] = leg_route_id
+                metadata_candidate["leg_route_id"] = leg_route_id
+            candidates.append(runtime_candidate)
+            metadata_candidates.append(metadata_candidate)
         if mode == "race" and len(combinations) < 2:
             raise RuntimeError("race leigod relay requires two distinct combinations")
 
@@ -3925,7 +3931,7 @@ WantedBy=multi-user.target
             "listen_port": relay_port,
             "target_host": target_host,
             "target_port": target_port,
-            "transport": transport,
+            "transport": "tcp" if mode == "bond" else transport,
             "candidates": candidates,
             "policy": {
                 "probe_interval_seconds": max(
