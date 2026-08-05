@@ -284,15 +284,15 @@ struct ThroughputSample {
 
 #[derive(Debug, Clone)]
 struct ThroughputWindow {
-    started_at: Instant,
+    started_at: Option<Instant>,
     delivered_bytes: u64,
     qualifying_samples: u64,
 }
 
 impl ThroughputWindow {
-    fn new(started_at: Instant) -> Self {
+    fn new(_started_at: Instant) -> Self {
         Self {
-            started_at,
+            started_at: None,
             delivered_bytes: 0,
             qualifying_samples: 0,
         }
@@ -306,13 +306,14 @@ impl ThroughputWindow {
         config: &SessionConfig,
     ) -> Option<ThroughputSample> {
         if !qualifies {
-            self.started_at = observed_at;
+            self.started_at = None;
             self.delivered_bytes = 0;
             return None;
         }
 
+        let started_at = *self.started_at.get_or_insert(observed_at);
         self.delivered_bytes = self.delivered_bytes.saturating_add(delivered_bytes as u64);
-        let elapsed = observed_at.saturating_duration_since(self.started_at);
+        let elapsed = observed_at.saturating_duration_since(started_at);
         if self.delivered_bytes < config.throughput_min_sample_bytes
             || elapsed < config.throughput_min_sample
         {
@@ -323,7 +324,7 @@ impl ThroughputWindow {
         let sample = ThroughputSample {
             mbps: (self.delivered_bytes as f64 * 8.0) / seconds / 1_000_000.0,
         };
-        self.started_at = observed_at;
+        self.started_at = None;
         self.delivered_bytes = 0;
         self.qualifying_samples = self.qualifying_samples.saturating_add(1);
         Some(sample)
@@ -4750,6 +4751,14 @@ fn apply_tcp_delivery_observed(
     let Some(leg_id) = legs.iter().position(|leg| leg.leg_route_id == Some(route_id)) else {
         return false;
     };
+    let needs_capacity_sample = legs.get(leg_id).is_some_and(|leg| {
+        leg.tcp_health.bulk_admission == BulkAdmissionState::Probation
+            || leg.tcp_health.throughput_qualifying_samples
+                < config.throughput_bad_windows.max(1) as u64
+    });
+    if !needs_capacity_sample {
+        return true;
+    }
     let sample = legs.get_mut(leg_id).and_then(|leg| {
         leg.tcp_health
             .throughput_window
@@ -4934,6 +4943,40 @@ fn select_adaptive_bulk_leg(
 ) -> Option<usize> {
     for leg in legs.iter_mut() {
         begin_tcp_probe_if_due(leg, now, config);
+    }
+    let calibration_target = legs
+        .iter()
+        .filter(|leg| {
+            if !leg_available_for_new_data(leg, now) {
+                return false;
+            }
+            match leg.tcp_health.bulk_admission {
+                BulkAdmissionState::Probation => leg.tcp_health.probe_remaining_bytes > 0,
+                BulkAdmissionState::Quarantined => false,
+                BulkAdmissionState::Degraded => {
+                    leg.tcp_health.throughput_mbps_ewma >= config.throughput_min_mbps
+                        && leg.tcp_health.throughput_qualifying_samples
+                            < config.throughput_bad_windows.max(1) as u64
+                }
+                BulkAdmissionState::Admitted => {
+                    leg.tcp_health.throughput_qualifying_samples
+                        < config.throughput_bad_windows.max(1) as u64
+                }
+            }
+        })
+        .min_by_key(|leg| {
+            (
+                leg.tcp_health.bulk_admission != BulkAdmissionState::Probation,
+                leg.tcp_health.throughput_qualifying_samples,
+                leg.id,
+            )
+        })
+        .map(|leg| leg.id);
+    if let Some(selected) = calibration_target {
+        if let Some(leg) = legs.get_mut(selected) {
+            consume_tcp_probe_budget(leg, payload_len, now, config);
+        }
+        return Some(selected);
     }
     let selected = select_weighted_bulk_leg(legs, payload_len, now, config)?;
     if let Some(leg) = legs.get_mut(selected) {
@@ -6204,7 +6247,7 @@ mod tests {
         assert_eq!(
             window.credit(
                 512 * 1024,
-                started + Duration::from_millis(1200),
+                started,
                 true,
                 &config,
             ),
@@ -6221,6 +6264,35 @@ mod tests {
 
         assert!((sample.mbps - 5.592).abs() < 0.01);
         assert_eq!(window.qualifying_samples, 1);
+    }
+
+    #[test]
+    fn capacity_window_starts_with_first_qualifying_delivery() {
+        let mut config = test_config();
+        config.throughput_min_sample_bytes = 1024 * 1024;
+        config.throughput_min_sample = Duration::from_secs(1);
+        let transport_started = Instant::now();
+        let mut window = ThroughputWindow::new(transport_started);
+
+        assert_eq!(
+            window.credit(
+                512 * 1024,
+                transport_started + Duration::from_secs(10),
+                true,
+                &config,
+            ),
+            None
+        );
+        let sample = window
+            .credit(
+                512 * 1024,
+                transport_started + Duration::from_secs(11),
+                true,
+                &config,
+            )
+            .expect("one MiB delivered over one active second must qualify");
+
+        assert!((sample.mbps - 8.388_608).abs() < 0.001);
     }
 
     #[test]
@@ -6279,7 +6351,23 @@ mod tests {
         assert!(apply_tcp_delivery_observed(
             &mut legs,
             451,
-            25_000_000,
+            1,
+            true,
+            started,
+            &config,
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            455,
+            1,
+            true,
+            started,
+            &config,
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            451,
+            24_999_999,
             true,
             started + Duration::from_secs(1),
             &config,
@@ -6287,7 +6375,7 @@ mod tests {
         assert!(apply_tcp_delivery_observed(
             &mut legs,
             455,
-            1_000_000,
+            999_999,
             true,
             started + Duration::from_secs(1),
             &config,
@@ -6502,6 +6590,59 @@ mod tests {
         slow.tcp_health.throughput_mbps_ewma = 50.0;
         slow.tcp_health.throughput_qualifying_samples = 1;
         assert_eq!(select_weighted_bulk_leg(&[fast, slow], 0, now, &config), Some(0));
+    }
+
+    #[test]
+    fn adaptive_capacity_calibration_saturates_one_leg_before_rotating() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+
+        assert_eq!(select_adaptive_bulk_leg(&mut legs, 128 * 1024, now, &config), Some(0));
+        legs[0].scheduled_bytes = 128 * 1024;
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now + Duration::from_millis(1), &config),
+            Some(0)
+        );
+
+        apply_tcp_throughput_sample(&mut legs, 0, 200.0, now + Duration::from_secs(1), &config);
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now + Duration::from_secs(1), &config),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn calibrated_capacity_is_not_replaced_by_weighted_share_samples() {
+        let mut config = adaptive_test_config();
+        config.throughput_min_sample_bytes = 1;
+        config.throughput_min_sample = Duration::from_millis(1);
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20)];
+        legs[0].leg_route_id = Some(447);
+        for offset in 0..config.throughput_bad_windows {
+            apply_tcp_throughput_sample(
+                &mut legs,
+                0,
+                200.0,
+                now + Duration::from_secs(offset as u64),
+                &config,
+            );
+        }
+
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            447,
+            1,
+            true,
+            now + Duration::from_secs(10),
+            &config,
+        ));
+        assert_eq!(
+            legs[0].tcp_health.throughput_qualifying_samples,
+            config.throughput_bad_windows as u64
+        );
+        assert_eq!(legs[0].tcp_health.throughput_mbps_ewma, 200.0);
     }
 
     #[test]
