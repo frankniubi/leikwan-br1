@@ -117,6 +117,8 @@ pub struct SessionConfig {
     pub warmup_leg_delay: Duration,
     pub bulk_promote_bytes: usize,
     pub leg_cooldown: Duration,
+    pub throughput_min_sample_bytes: u64,
+    pub throughput_min_sample: Duration,
     pub latency_first: bool,
     pub udp_primary_only: bool,
     pub strategy_file: Option<PathBuf>,
@@ -241,10 +243,65 @@ struct ProtocolLegHealth {
     score: f64,
     effective_weight: f64,
     delivered_bytes_ewma: f64,
+    throughput_mbps_ewma: f64,
+    throughput_window: ThroughputWindow,
     penalty_ewma: f64,
     last_reason: Option<String>,
     last_good_at: Option<SystemTime>,
     last_probe_at: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ThroughputSample {
+    mbps: f64,
+}
+
+#[derive(Debug, Clone)]
+struct ThroughputWindow {
+    started_at: Instant,
+    delivered_bytes: u64,
+    qualifying_samples: u64,
+}
+
+impl ThroughputWindow {
+    fn new(started_at: Instant) -> Self {
+        Self {
+            started_at,
+            delivered_bytes: 0,
+            qualifying_samples: 0,
+        }
+    }
+
+    fn credit(
+        &mut self,
+        delivered_bytes: usize,
+        observed_at: Instant,
+        qualifies: bool,
+        config: &SessionConfig,
+    ) -> Option<ThroughputSample> {
+        if !qualifies {
+            self.started_at = observed_at;
+            self.delivered_bytes = 0;
+            return None;
+        }
+
+        self.delivered_bytes = self.delivered_bytes.saturating_add(delivered_bytes as u64);
+        let elapsed = observed_at.saturating_duration_since(self.started_at);
+        if self.delivered_bytes < config.throughput_min_sample_bytes
+            || elapsed < config.throughput_min_sample
+        {
+            return None;
+        }
+
+        let seconds = elapsed.as_secs_f64().max(f64::EPSILON);
+        let sample = ThroughputSample {
+            mbps: (self.delivered_bytes as f64 * 8.0) / seconds / 1_000_000.0,
+        };
+        self.started_at = observed_at;
+        self.delivered_bytes = 0;
+        self.qualifying_samples = self.qualifying_samples.saturating_add(1);
+        Some(sample)
+    }
 }
 
 impl ProtocolLegHealth {
@@ -254,6 +311,8 @@ impl ProtocolLegHealth {
             score: 1.0,
             effective_weight: 1.0,
             delivered_bytes_ewma: 0.0,
+            throughput_mbps_ewma: 0.0,
+            throughput_window: ThroughputWindow::new(Instant::now()),
             penalty_ewma: 0.0,
             last_reason: None,
             last_good_at: Some(SystemTime::now()),
@@ -2557,7 +2616,14 @@ async fn handle_tcp_transport_frame(
             {
                 state.preferred_leg_id = Some(leg_id);
             }
-            let completed_chunks = apply_ack(&mut state.pending_chunks, legs, ack);
+            let completed_chunks = apply_ack_observed(
+                &mut state.pending_chunks,
+                legs,
+                ack,
+                state.striping_stage != TcpStripingStage::Sticky,
+                Instant::now(),
+                config,
+            );
             release_transport_read_credit(state, completed_chunks);
             if ack > state.last_ack_offset {
                 state.last_ack_offset = ack;
@@ -4525,7 +4591,34 @@ fn maybe_write_leg_health_snapshot(
 }
 
 fn apply_ack(pending: &mut BTreeMap<u64, PendingChunk>, legs: &mut [LegState], ack: u64) -> usize {
-    let now = Instant::now();
+    apply_ack_inner(pending, legs, ack, None)
+}
+
+fn apply_ack_observed(
+    pending: &mut BTreeMap<u64, PendingChunk>,
+    legs: &mut [LegState],
+    ack: u64,
+    qualifies_for_throughput: bool,
+    observed_at: Instant,
+    config: &SessionConfig,
+) -> usize {
+    apply_ack_inner(
+        pending,
+        legs,
+        ack,
+        Some((qualifies_for_throughput, observed_at, config)),
+    )
+}
+
+fn apply_ack_inner(
+    pending: &mut BTreeMap<u64, PendingChunk>,
+    legs: &mut [LegState],
+    ack: u64,
+    throughput_observation: Option<(bool, Instant, &SessionConfig)>,
+) -> usize {
+    let now = throughput_observation
+        .map(|(_, observed_at, _)| observed_at)
+        .unwrap_or_else(Instant::now);
     let completed: Vec<u64> = pending
         .iter()
         .filter_map(|(seq, chunk)| {
@@ -4540,10 +4633,28 @@ fn apply_ack(pending: &mut BTreeMap<u64, PendingChunk>, legs: &mut [LegState], a
     let completed_count = completed.len();
     for seq in completed {
         if let Some(chunk) = pending.remove(&seq) {
-            if !chunk.write_pending && chunk.transmit_count == 1 {
+            let first_transmission = !chunk.write_pending && chunk.transmit_count == 1;
+            if first_transmission {
                 update_leg_rtt(legs, chunk.last_leg_id, now.duration_since(chunk.last_sent_at));
             }
             credit_tcp_delivery(legs, chunk.last_leg_id, chunk.payload.len());
+            if first_transmission {
+                if let Some((qualifies, observed_at, config)) = throughput_observation {
+                    if let Some(leg) = legs.get_mut(chunk.last_leg_id) {
+                        if let Some(sample) = leg.tcp_health.throughput_window.credit(
+                            chunk.payload.len(),
+                            observed_at,
+                            qualifies,
+                            config,
+                        ) {
+                            leg.tcp_health.throughput_mbps_ewma = ewma(
+                                leg.tcp_health.throughput_mbps_ewma,
+                                sample.mbps,
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
     completed_count
@@ -5770,11 +5881,117 @@ mod tests {
             warmup_leg_delay: Duration::from_millis(80),
             bulk_promote_bytes: 262144,
             leg_cooldown: Duration::from_millis(1800000),
+            throughput_min_sample_bytes: 1024 * 1024,
+            throughput_min_sample: Duration::from_secs(1),
             latency_first: false,
             udp_primary_only: false,
             strategy_file: None,
             default_strategy: ClientStrategy::LatencyBest,
         }
+    }
+
+    #[test]
+    fn bulk_delivery_window_requires_bytes_and_duration() {
+        let mut config = test_config();
+        config.throughput_min_sample_bytes = 1024 * 1024;
+        config.throughput_min_sample = Duration::from_secs(1);
+        let started = Instant::now();
+        let mut window = ThroughputWindow::new(started);
+
+        assert_eq!(
+            window.credit(
+                512 * 1024,
+                started + Duration::from_millis(1200),
+                true,
+                &config,
+            ),
+            None
+        );
+        let sample = window
+            .credit(
+                512 * 1024,
+                started + Duration::from_millis(1500),
+                true,
+                &config,
+            )
+            .expect("one MiB over one second must qualify");
+
+        assert!((sample.mbps - 5.592).abs() < 0.01);
+        assert_eq!(window.qualifying_samples, 1);
+    }
+
+    #[test]
+    fn demand_limited_interactive_delivery_does_not_lower_throughput() {
+        let config = test_config();
+        let started = Instant::now();
+        let mut window = ThroughputWindow::new(started);
+
+        assert_eq!(
+            window.credit(
+                2 * 1024 * 1024,
+                started + Duration::from_secs(2),
+                false,
+                &config,
+            ),
+            None
+        );
+        assert_eq!(window.qualifying_samples, 0);
+    }
+
+    #[test]
+    fn acked_bulk_bytes_update_throughput_but_retransmits_do_not() {
+        let mut config = test_config();
+        config.throughput_min_sample_bytes = 4;
+        config.throughput_min_sample = Duration::from_secs(1);
+        let started = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20)];
+        legs[0].tcp_health.throughput_window = ThroughputWindow::new(started);
+        let mut pending = BTreeMap::from([(
+            0,
+            PendingChunk {
+                payload: Bytes::from_static(b"data"),
+                last_sent_at: started,
+                last_leg_id: 0,
+                transmit_count: 1,
+                write_pending: false,
+            },
+        )]);
+
+        assert_eq!(
+            apply_ack_observed(
+                &mut pending,
+                &mut legs,
+                4,
+                true,
+                started + Duration::from_secs(1),
+                &config,
+            ),
+            1
+        );
+        let first_sample = legs[0].tcp_health.throughput_mbps_ewma;
+        assert!((first_sample - 0.000032).abs() < 0.000001);
+
+        legs[0].tcp_health.throughput_window = ThroughputWindow::new(started);
+        let mut retransmitted = BTreeMap::from([(
+            4,
+            PendingChunk {
+                payload: Bytes::from_static(b"more"),
+                last_sent_at: started,
+                last_leg_id: 0,
+                transmit_count: 2,
+                write_pending: false,
+            },
+        )]);
+        apply_ack_observed(
+            &mut retransmitted,
+            &mut legs,
+            8,
+            true,
+            started + Duration::from_secs(1),
+            &config,
+        );
+
+        assert_eq!(legs[0].tcp_health.throughput_mbps_ewma, first_sample);
     }
 
     #[test]
