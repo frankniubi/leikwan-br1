@@ -2,7 +2,7 @@
 
 Date: 2026-08-05 (Asia/Taipei)
 
-Last updated: 2026-08-06 17:31 (Asia/Taipei)
+Last updated: 2026-08-06 18:32 (Asia/Taipei)
 
 Status: release 0.1.39 Linux hybrid correctness code, artifacts, schema, panel deployment, local soak, isolated live controls, and cleanup are complete. Production hybrid activation remains intentionally off: the candidate egress was on the wrong side of the LeiGod path and delivered 0 Mbps directly to the fixed target, so the required 400 Mbps Reverse-P1 gate was not validly exercised or passed.
 
@@ -1431,3 +1431,101 @@ force-upgraded because the live throughput gate failed before rollout.
    two execution groups, no duplicate physical lease, and zero restarts.
 5. Only after that gate, run live sub-10 Mbps exclusion and small-request p95-under-bulk checks,
    then enable one production canary. Until then, do not advertise 400 Mbps hybrid aggregation.
+
+## 15. Final operator handoff
+
+This section is the short resumption boundary for the next operator. Section 14 remains the detailed
+source of commands, hashes, benchmark evidence, and cleanup state.
+
+### 15.1 What is complete
+
+1. Linux release `0.1.39` is implemented and committed from release source `8d4f52a`. It includes
+   fenced execution leases, bounded config watching, a multi-forward `leikwan-pathd`, flat local and
+   slave execution groups, slave relay publication, adaptive admission and expiry, membership and
+   authorization guards, artifact pinning, and pathd validation/self-heal.
+2. The panel contains the committed client, bond, and pathd artifacts and migration 72. The feature
+   remains inert: lease enforcement, Linux hybrid execution, and config watching are all disabled.
+3. Local correctness gates passed after the final implementation fixes: 147 Rust library tests,
+   9 Rust CLI tests, the real flat-hybrid integration, 8/8 focused PHP scripts, 42 focused client
+   and installer checks, and the 10/10 full release gate. The 30-minute soak stayed within the
+   128 MiB incremental RSS limit and showed no strict tail growth.
+4. Fresh line controls used the unchanged target `v4-hkt-b.mcbar.cc:5201`, Reverse P1/P2, and no
+   P4. Line 453 proved that one slave-hosted LeiGod line can exceed 200 Mbps by delivering
+   208.068 Mbps with P1. Line 447 improved from 106.362 Mbps P1 to 168.610 Mbps P2.
+5. The isolated live canary proved provider lifecycle, route identity, flat execution groups,
+   relay demultiplexing, and bond transport establishment across sh36, node 15, and node 19.
+6. Every temporary provider, relay, listener, proxy, egress unit, upload, and local helper was
+   removed. Production agents remained active. `hk-bgp-b` was not used or modified.
+7. The user-facing mode remains `Aggregation`; the provider-specific implementation stays inside
+   the Linux runtime. Windows parity was explicitly deferred and is not part of this release.
+
+### 15.2 What remains uncompleted or unproved
+
+1. Transparent Reverse-P1 throughput of 400 Mbps or more has not been proved. The full hybrid smoke
+   delivered zero bytes because the selected egress was before the required LeiGod exit.
+2. No suitable independent target/Hong Kong egress currently exists. It must have direct
+   Reverse-P1 capacity comfortably above 500 Mbps to the fixed target before it is attached to a
+   hybrid profile. It must remain independent of `hk-bgp-b`.
+3. The lease seed dry-run still has two ownership conflicts. Global lease enforcement cannot be
+   enabled until a dry-run reports `conflicts=0`.
+4. Live automatic exclusion of lines below 10 Mbps and small-request latency under concurrent bulk
+   traffic are not yet production-proved. The runtime support exists, but these checks intentionally
+   come after the 400 Mbps placement gate.
+5. Existing client and slave agents were not force-upgraded to the new hybrid runtime after the
+   failed egress gate. Do not treat panel artifact publication as a completed production rollout.
+
+### 15.3 What the measurements proved false
+
+1. It is false that all low LeiGod results identify an architecture ceiling. Line 453 exceeded
+   200 Mbps with one P1 stream, while other lines were materially slower. Line and server behavior
+   must be measured separately from the aggregation design.
+2. It is false that P2 is a deterministic 2x multiplier. P2 improved line 447 by about 58.5 percent,
+   but line 453 changed from 208.068 Mbps P1 to 201.480 Mbps P2. Internal parallelism should be an
+   adaptive hedge, not a fixed capacity claim.
+3. It is false that a Shanghai slave or node 19 can act as a direct target egress in the tested
+   topology. Both direct Reverse-P1 controls delivered 0 Mbps; node 19 reached 141.838 Mbps only
+   after its line 447 SOCKS exit.
+4. It is false that placing one SOCKS connection after the aggregator transparently creates a
+   400 Mbps single user stream. That design serializes the aggregate through one physical line.
+   Transparent single-stream aggregation requires striping before the bottlenecks and reassembly
+   after them at a target-side egress.
+5. It is false that application-side `-P 2` alone proves a transparent single-flow product. A client
+   can aggregate multiple application connections locally, but an unaware single TCP application
+   still needs the internal multi-lane runtime and remote reassembly described above.
+6. It is false that latency-only race selection reliably avoids poor throughput. Earlier controls
+   selected a low-latency but approximately 1 Mbps line. Throughput admission and expiry remain
+   required.
+7. It is false that the current evidence supports advertising 400 Mbps hybrid service. The required
+   end-to-end gate was never validly exercised, so all production hybrid gates remain off.
+
+### 15.4 Recommended next execution order
+
+1. Provision and first benchmark an independent LeiGod-specific egress in the target/Hong Kong
+   region. Reject it unless five bounded direct Reverse-P1 samples show comfortable headroom above
+   500 Mbps to `v4-hkt-b.mcbar.cc:5201`.
+2. Correct the two catalog ownership conflicts. Repeat the read-only seed audit until
+   `conflicts=0`; only then apply seeds or consider lease enforcement.
+3. Attach the verified egress through `leigod_egress_profiles`. Keep the public client endpoint
+   unchanged and preserve the supported `client -> slave -> sidecar` rule for any sidecar access.
+4. Recreate one isolated Linux assignment using at least two execution groups. Run five 20-second
+   Reverse-P1 samples. Require median >=400 Mbps, every run >=350 Mbps, zero zero-throughput
+   intervals, no duplicated physical lease, and zero process restarts.
+5. After the throughput gate passes, inject a sub-10 Mbps line and prove automatic exclusion. Then
+   measure small-request p95 during bulk traffic. Prefer a low-latency line for small transfers only
+   when it also clears the 10 Mbps floor; send bulk traffic over the admitted high-capacity lanes.
+6. Enable one Linux production canary only after all gates pass. Keep the panel label unchanged,
+   monitor lease ownership, pathd/provider RSS, restarts, route counters, and user-visible latency,
+   and retain immediate rollback. Handle Windows in a later release.
+
+### 15.5 Operational cautions
+
+- Keep benchmarks serial and bounded to avoid loading the operator workstation. Use Reverse P1/P2,
+  not P4, unless a later test plan explicitly changes that constraint.
+- Do not enable global lease or hybrid gates while the current placement and seed blockers remain.
+- Do not reuse `hk-bgp-b` as the LeiGod egress; it is an independent sidecar domain and topology.
+- The configured primary panel jump password was rejected during the final documentation sync on
+  2026-08-06. The handoff sync completed through an authenticated node 15 SSH management tunnel.
+  Refresh the authoritative local credential entry before the next deployment; never copy its value
+  into this repository or a handoff.
+- At the end of every canary, verify zero temporary units, processes, listeners, uploads, forwards,
+  tasks, leases, and egress profiles before declaring cleanup complete.
