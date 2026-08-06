@@ -1217,7 +1217,7 @@ e456654            adaptive admission and expiry stabilization
 8d4f52a            bounded final runtime artifact publication
 ```
 
-The final serial local gate passed twice after the last review fixes:
+The final serial local gate passed after the last review fixes:
 
 ```text
 Rust library tests:                  147 passed
