@@ -1235,9 +1235,9 @@ pathd, and `256 KiB` for both provider totals and the slave relay, all below the
 
 Two independent `gpt-5.6-sol` xhigh reviews found lease membership leakage, listener-readiness
 recovery, node execution-policy gaps, transactional revalidation, missing endpoint `node_id`, and
-the legal maximum-line port boundary. Those findings were fixed before the final gates. There was
-no post-fix blanket reviewer approval, so the passing focused and full regression gates are the
-closure evidence rather than an unearned approval claim.
+the legal maximum-line port boundary. Those findings were fixed before the final gates. A final
+follow-up review returned `APPROVED` after the gate-count wording was corrected; the passing focused
+and full regression gates remain the primary closure evidence.
 
 ### 14.2 Panel deployment and inert production state
 
