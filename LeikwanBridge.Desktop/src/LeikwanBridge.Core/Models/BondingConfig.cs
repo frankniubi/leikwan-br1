@@ -43,6 +43,9 @@ public sealed class BondingConfig
     [JsonPropertyName("route_key")]
     public string RouteKey { get; set; } = "";
 
+    [JsonPropertyName("aggregation_placement")]
+    public string AggregationPlacement { get; set; } = "";
+
     [JsonPropertyName("session_token")]
     public string SessionToken { get; set; } = "";
 

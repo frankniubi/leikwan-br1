@@ -179,18 +179,18 @@
     "platform": "linux-amd64"
   },
   "windows_client_app": {
-    "version": "0.1.18.1",
+    "version": "0.1.18.2",
     "path": "artifacts/windows/leikwan-bridge-setup.exe",
     "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
-    "sha256": "e152f578e90f01b91d0bc0f8e8b3402c15037566edf6736424c1e7c895820977",
-    "size_bytes": 8609924
+    "sha256": "1ce5a28c8918078ddf316affce90262db6e1b82220bab58e9aa7af700082514e",
+    "size_bytes": 102990544
   },
   "android_client_apk": {
-    "version": "0.1.0",
+    "version": "0.1.1",
     "path": "artifacts/android/leikwan-android-client.apk",
     "artifact_url": "/artifacts/leikwan-android-client.apk",
-    "sha256": "41c06cb7534ee119cf86c728be8025fa390bba34bd4eb840939d311d9fcf85e7",
-    "size_bytes": 55652648
+    "sha256": "c3631737989debc9b98a9d75db5f7bc8add3a75d2e359beaa7b0262e4de89d9f",
+    "size_bytes": 65685909
   },
   "install_forward_runtime": {
     "version": "2026.08.06.1",

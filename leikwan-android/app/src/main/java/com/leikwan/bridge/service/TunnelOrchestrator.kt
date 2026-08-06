@@ -31,6 +31,7 @@ import com.leikwan.bridge.runtime.RuntimeBinaryInstaller
 import com.leikwan.bridge.runtime.RuntimeBinaryPaths
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.runtime.SingleForwardRunner
+import com.leikwan.bridge.runtime.SlaveSidecarIngressContract
 import com.leikwan.bridge.singbox.SingboxConfigBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -152,6 +153,7 @@ class TunnelOrchestrator internal constructor(
         }
 
         val catalog = panelRepo.pullCatalog(forwardId.takeIf { it > 0L } ?: prefs.selectedForwardId)
+        stop()
         val selectedForward = forwardId.takeIf { it > 0L }
             ?: catalog.selectedForwardId
             ?: catalog.visibleForwards.firstOrNull()?.forwardId
@@ -165,30 +167,33 @@ class TunnelOrchestrator internal constructor(
         val selectedEffective = panelRepo.getCachedEffectiveForward(selectedForward)
             ?: throw Exception("Forward $selectedForward is not supported on Android")
         val isDedicatedLeiGod = selectedEffective.isDedicatedLeiGod
+        val slaveSidecarIngress = SlaveSidecarIngressContract.resolve(selectedEffective.runtimeContract)
 
-        val selection = ProxySelectionPolicy.validate(
-            selectedProxyId = prefs.selectedProxyId,
-            forwardId = selectedForward,
-            connectionMode = connectionMode,
-            proxyNodes = proxyNodes,
-            proxyOptional = isDedicatedLeiGod,
-        )
-        if (selection is ProxySelectionResult.Error) {
-            throw Exception(selection.message)
+        val activeProxyNodes = if (slaveSidecarIngress != null) {
+            emptyList()
+        } else {
+            val selection = ProxySelectionPolicy.validate(
+                selectedProxyId = prefs.selectedProxyId,
+                forwardId = selectedForward,
+                connectionMode = connectionMode,
+                proxyNodes = proxyNodes,
+                proxyOptional = isDedicatedLeiGod,
+            )
+            if (selection is ProxySelectionResult.Error) {
+                throw Exception(selection.message)
+            }
+            (selection as ProxySelectionResult.Success).activeNodes
         }
-        selection as ProxySelectionResult.Success
-
-        stop()
 
         var unavailableNodeIds: Set<Long> = emptySet()
         val binaries = binaryInstaller.prepareBinaryPaths()
         val runtimeContext = run {
             val forward = selectedEffective.runtimeContract
             Log.i(TAG, "Starting LeiGod forward ${forward.forwardId}: ${forward.serviceName}")
-            val relayNodes = if (isDedicatedLeiGod) {
+            val relayNodes = if (isDedicatedLeiGod || slaveSidecarIngress != null) {
                 emptyList()
             } else {
-                selection.activeNodes.filter { it.type.lowercase() != "wireguard" }
+                activeProxyNodes.filter { it.type.lowercase() != "wireguard" }
             }
             val missingRelayNodeIds = mutableSetOf<Long>()
             val relayNodeForwards = relayNodes.mapNotNull { node ->
@@ -252,18 +257,22 @@ class TunnelOrchestrator internal constructor(
         val routingSnapshot = buildRoutingSnapshot(
             System.currentTimeMillis(),
             unavailableNodeIds = unavailableNodeIds,
-            ignoreProxyNodeTargets = isDedicatedLeiGod,
+            ignoreProxyNodeTargets = isDedicatedLeiGod || slaveSidecarIngress != null,
         )
         val compiled = SingboxConfigBuilder
             .fromPrefs(prefs, activeRulePackManifest)
             .build(
-                proxyNodes = if (isDedicatedLeiGod) emptyList() else selection.activeNodes,
+                proxyNodes = if (isDedicatedLeiGod || slaveSidecarIngress != null) {
+                    emptyList()
+                } else {
+                    activeProxyNodes
+                },
                 runtimeContext = singboxRuntimeContext,
                 routingPolicySnapshot = routingSnapshot,
                 connectionMode = connectionMode,
                 routeRuleSnapshot = routeRuleSnapshot,
                 routeRuleRuntimeBindings = routeRuleRuntimePlan.singboxBindings,
-                runtimeOnlyProxy = isDedicatedLeiGod,
+                runtimeOnlyProxy = isDedicatedLeiGod || slaveSidecarIngress != null,
             )
         recordExplainability(routingSnapshot)
         val configJson = compiled.configJson
@@ -301,6 +310,8 @@ class TunnelOrchestrator internal constructor(
 
     fun isRunning(): Boolean = LeikwanVpnService.isRunning
 
+    internal fun activeRuntimeForTest(): RuntimeContext? = activeRuntime
+
     private fun buildRuntimePlan(
         forward: ForwardContract,
         binaries: RuntimeBinaryPaths,
@@ -308,17 +319,21 @@ class TunnelOrchestrator internal constructor(
     ): RuntimeContext = when (forward.mode) {
         ForwardMode.SINGLE -> SingleForwardRunner.buildPlan(forward, binaries)
         ForwardMode.BOND -> {
-            val strategyFile = ForwardStrategyStore.ensureRuntimeFile(
-                context,
-                prefs.panelUrl,
-                prefs.clientId,
-                forward.forwardId,
-            )
+            val strategyFile = if (SlaveSidecarIngressContract.hasAggregationPlacement(forward.bonding)) {
+                null
+            } else {
+                ForwardStrategyStore.ensureRuntimeFile(
+                    context,
+                    prefs.panelUrl,
+                    prefs.clientId,
+                    forward.forwardId,
+                )
+            }
             BondForwardRunner.buildPlan(
                 forward,
                 binaries,
                 portSalt,
-                strategyFilePath = strategyFile.absolutePath,
+                strategyFilePath = strategyFile?.absolutePath,
             )
         }
         else -> throw Exception("Forward ${forward.forwardId} mode ${forward.mode.wireValue} is not supported on Android")

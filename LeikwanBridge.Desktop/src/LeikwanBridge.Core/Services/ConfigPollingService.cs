@@ -102,7 +102,7 @@ public sealed class ConfigPollingService
             {
                 try
                 {
-                    _runtimeManager.StopForward(fid);
+                    _runtimeManager.RemoveForward(fid);
                 }
                 catch (Exception ex)
                 {

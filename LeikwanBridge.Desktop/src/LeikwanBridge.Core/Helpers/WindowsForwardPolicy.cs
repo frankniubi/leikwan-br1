@@ -7,6 +7,8 @@ public static class WindowsForwardPolicy
     public static bool IsSupportedOnWindows(ForwardConfig forward)
     {
         var mode = NormalizeModeOrEmpty(FirstNonEmpty(forward.ClientMode, forward.Mode));
+        if (HasBondingAggregationPlacement(forward))
+            return UsesSlaveSidecarIngress(forward);
         if (GetSidecarFrontendMode(forward) != "")
             return true;
         if (mode is not ("single" or "bond" or "mptcp"))
@@ -34,8 +36,41 @@ public static class WindowsForwardPolicy
             .ToList();
     }
 
+    public static bool HasBondingAggregationPlacement(ForwardConfig forward)
+    {
+        return !string.IsNullOrWhiteSpace(forward.Bonding?.AggregationPlacement);
+    }
+
+    public static bool UsesSlaveSidecarIngress(ForwardConfig forward)
+    {
+        var bonding = forward.Bonding;
+        if (bonding is null
+            || !string.Equals((bonding.AggregationPlacement ?? "").Trim(), "slave_sidecar", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var mode = NormalizeModeOrEmpty(FirstNonEmpty(forward.ClientMode, forward.Mode));
+        if (mode != "bond"
+            || !string.Equals((forward.Transport ?? "").Trim(), "tcp", StringComparison.OrdinalIgnoreCase)
+            || forward.ListenPort is < 1 or > 65535
+            || !string.Equals((bonding.IngressMode ?? "").Trim(), "plain_tcp_mux", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(FirstNonEmpty(bonding.RouteKey, forward.PathPrefix)))
+            return false;
+
+        var endpoints = forward.Endpoints ?? [];
+        if (endpoints.Count != 1 || endpoints[0] is null)
+            return false;
+
+        var endpoint = endpoints[0];
+        return !string.IsNullOrWhiteSpace(endpoint.Host)
+            && endpoint.Port is > 0 and <= 65535
+            && !string.IsNullOrWhiteSpace(endpoint.IngressAuthToken);
+    }
+
     public static string GetSidecarFrontendMode(ForwardConfig forward)
     {
+        if (HasBondingAggregationPlacement(forward))
+            return "";
+
         var frontendMode = (forward.Bonding?.FrontendMode ?? "").Trim().ToLowerInvariant();
         if (frontendMode is not ("single" or "race"))
             return "";
@@ -53,6 +88,9 @@ public static class WindowsForwardPolicy
 
     public static bool UsesBondRuntime(ForwardConfig forward)
     {
+        if (HasBondingAggregationPlacement(forward))
+            return UsesSlaveSidecarIngress(forward);
+
         var mode = NormalizeModeOrEmpty(FirstNonEmpty(forward.ClientMode, forward.Mode));
         return mode == "bond" || GetSidecarFrontendMode(forward) != "";
     }
@@ -67,7 +105,8 @@ public static class WindowsForwardPolicy
             || !string.IsNullOrWhiteSpace(forward.TargetContract)
             || forward.AggregationEnabled
             || forward.SidecarRequired
-            || forward.BondSidecarPointId.HasValue;
+            || forward.BondSidecarPointId.HasValue
+            || HasBondingAggregationPlacement(forward);
     }
 
     private static bool IsSidecarAggregation(ForwardConfig forward)

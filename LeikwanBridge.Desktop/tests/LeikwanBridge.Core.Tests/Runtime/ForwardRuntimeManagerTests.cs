@@ -20,7 +20,7 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: _ => true);
+            portListeningProbe: _ => supervisor.IsRunning(0));
 
         var forward = CreatePlainTcpMuxBondForward();
         forward.Mode = mode;
@@ -53,13 +53,130 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: port => port is 20962 or 20963);
+            portListeningProbe: port => supervisor.IsRunning(0) && port is 20962 or 20963);
 
         manager.ApplyForward(CreatePlainTcpMuxBondForward());
 
         Assert.Equal(
             ["bond-ingress-leg-0", "bond-ingress-leg-1", "bond-runtime"],
             supervisor.StartedRoles);
+    }
+
+    [Fact]
+    public void ApplyForward_SlaveSidecarIngress_StartsOnlyOneIngressOnUserListenPort()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: port => supervisor.IsRunning(0) && port == 11061);
+
+        manager.ApplyForward(CreateSlaveSidecarForward());
+
+        Assert.Equal(["slave-sidecar-ingress"], supervisor.StartedRoles);
+        var ingress = Assert.Single(supervisor.StartedCommands);
+        Assert.Equal("slave-sidecar-ingress", ingress.role);
+        Assert.Contains("client --listen 0.0.0.0:11061", ingress.arguments);
+        Assert.Contains("--remote 8.163.90.132:7001", ingress.arguments);
+        Assert.Contains("--route-key slave-sidecar-61", ingress.arguments);
+        Assert.Contains("--auth-token token-a", ingress.arguments);
+        Assert.DoesNotContain("leikwan-bond", ingress.arguments, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("wstunnel", ingress.arguments, StringComparison.OrdinalIgnoreCase);
+
+        var applied = stateManager.LoadApplied()["61"];
+        Assert.Equal("bond", applied.Mode);
+        Assert.Equal("plain_tcp_mux", applied.IngressMode);
+        Assert.Equal([11061], applied.LegPorts);
+    }
+
+    [Fact]
+    public void ApplyForward_InvalidPlacement_StopsPreviousRuntimeAndClearsAppliedState()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => supervisor.IsRunning(0));
+
+        manager.ApplyForward(CreateSlaveSidecarForward());
+        Assert.Contains("slave-sidecar-ingress", supervisor.RunningRoles);
+        Assert.True(stateManager.LoadApplied().ContainsKey("61"));
+
+        var invalid = CreateSlaveSidecarForward();
+        invalid.Bonding!.AggregationPlacement = "client_magic";
+        manager.ApplyForward(invalid);
+
+        Assert.Empty(supervisor.RunningRoles);
+        Assert.False(stateManager.LoadApplied().ContainsKey("61"));
+    }
+
+    [Fact]
+    public void ApplyForward_SlaveSidecarIngress_MissingRequiredBinaryDoesNotAdoptOccupiedPort()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var probeCalls = 0;
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            stateManager,
+            binaryExists: _ => false,
+            portListeningProbe: _ => ++probeCalls > 1);
+
+        manager.ApplyForward(CreateSlaveSidecarForward());
+
+        Assert.Empty(supervisor.StartedRoles);
+        Assert.Empty(stateManager.LoadApplied());
+    }
+
+    [Fact]
+    public void ApplyForward_SlaveSidecarIngress_AbortsWhenUserPortCannotBeReleased()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+
+        manager.ApplyForward(CreateSlaveSidecarForward());
+
+        Assert.Empty(supervisor.StartedRoles);
+        Assert.Empty(stateManager.LoadApplied());
+    }
+
+    [Fact]
+    public void ApplyForward_SlaveSidecarIngress_DoesNotPersistWhenRequiredProcessExits()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        supervisor.ExitOnStartRoles.Add("slave-sidecar-ingress");
+        var stateManager = new StateManager(tempDir.Path);
+        var probeCalls = 0;
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => ++probeCalls > 1);
+
+        manager.ApplyForward(CreateSlaveSidecarForward());
+
+        Assert.Contains("slave-sidecar-ingress", supervisor.StartedRoles);
+        Assert.Empty(supervisor.RunningRoles);
+        Assert.Empty(stateManager.LoadApplied());
     }
 
     [Fact]
@@ -73,7 +190,7 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: _ => true);
+            portListeningProbe: _ => supervisor.IsRunning(0));
 
         manager.ApplyForward(CreatePlainTcpMuxBondForward());
 
@@ -97,7 +214,7 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: _ => true);
+            portListeningProbe: _ => supervisor.IsRunning(0));
 
         manager.ApplyForward(CreateCfPlainTcpMuxBondForward());
 
@@ -121,7 +238,7 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: port => port is 20962 or 20963);
+            portListeningProbe: port => supervisor.IsRunning(0) && port is 20962 or 20963);
 
         var ex = Record.Exception(() => manager.ApplyForward(CreatePlainTcpMuxBondForward()));
 
@@ -139,7 +256,7 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: _ => true);
+            portListeningProbe: _ => supervisor.IsRunning(0));
 
         manager.ApplyForward(CreatePlainTcpMuxBondForward());
 
@@ -167,7 +284,7 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: _ => true);
+            portListeningProbe: _ => supervisor.IsRunning(0));
 
         var forward = CreateMptcpForward();
         forward.Mptcp!.SidecarHost = "10.203.201.135";
@@ -200,7 +317,7 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: _ => true);
+            portListeningProbe: _ => supervisor.IsRunning(0));
 
         var forward = CreateMptcpForward();
         forward.Mptcp!.SlaveRelayHost = "10.203.201.178";
@@ -235,7 +352,7 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: _ => true);
+            portListeningProbe: _ => supervisor.IsRunning(0));
 
         var forward = CreateMptcpForward();
         forward.Transport = "tcp+udp";
@@ -269,7 +386,7 @@ public sealed class ForwardRuntimeManagerTests
             portListeningProbe: port =>
             {
                 probedPorts.Add(port);
-                return true;
+                return supervisor.IsRunning(0);
             });
 
         manager.ApplyForward(CreateMptcpForward());
@@ -292,7 +409,7 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: _ => true);
+            portListeningProbe: _ => supervisor.IsRunning(0));
 
         var forward = CreateMptcpForward();
         forward.Mptcp!.SlaveRelayHost = "127.0.0.1";
@@ -361,7 +478,7 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: _ => true);
+            portListeningProbe: _ => supervisor.IsRunning(0));
 
         manager.ApplyForward(CreateMptcpForward());
 
@@ -382,7 +499,7 @@ public sealed class ForwardRuntimeManagerTests
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: _ => true);
+            portListeningProbe: _ => supervisor.IsRunning(0));
 
         manager.ApplyForward(CreateMptcpForward());
 
@@ -416,12 +533,13 @@ public sealed class ForwardRuntimeManagerTests
         var config = CreateConfig();
         config.StateDir = tempDir.Path;
         config.MptcpRelayBin = @"C:\leikwan\bin\leikwan-mptcp-relay.exe";
+        var probeCalls = 0;
         var manager = new ForwardRuntimeManager(
             config,
             supervisor,
             stateManager,
             binaryExists: _ => true,
-            portListeningProbe: _ => true);
+            portListeningProbe: _ => ++probeCalls > 1);
 
         var forward = CreateMptcpForward();
         forward.Mptcp!.SlaveRelayHost = string.Empty;
@@ -509,6 +627,40 @@ public sealed class ForwardRuntimeManagerTests
         };
     }
 
+    private static ForwardConfig CreateSlaveSidecarForward()
+    {
+        return JsonSerializer.Deserialize<ForwardConfig>(
+            """
+            {
+              "forward_id": 61,
+              "mode": "single",
+              "client_mode": "bond",
+              "contract_version": 1,
+              "active_family": "sidecar_aggregation",
+              "aggregation_enabled": true,
+              "target_contract": "sidecar_aggregation",
+              "sidecar_required": true,
+              "bond_sidecar_point_id": 9,
+              "listen_port": 11061,
+              "path_prefix": "slave-sidecar-61",
+              "transport": "tcp",
+              "endpoints": [
+                {
+                  "endpoint_id": 184,
+                  "host": "8.163.90.132",
+                  "port": 7001,
+                  "ingress_auth_token": "token-a"
+                }
+              ],
+              "bonding": {
+                "aggregation_placement": "slave_sidecar",
+                "ingress_mode": "plain_tcp_mux",
+                "route_key": "slave-sidecar-61"
+              }
+            }
+            """)!;
+    }
+
     private static ForwardConfig CreateCfPlainTcpMuxBondForward()
     {
         var forward = CreatePlainTcpMuxBondForward();
@@ -573,6 +725,8 @@ public sealed class ForwardRuntimeManagerTests
         }
 
         public override bool IsRunning(int forwardId) => StartedRoles.Count > 0;
+
+        public override IReadOnlyList<string> GetRunningRoles(int forwardId) => StartedRoles.ToList();
     }
 
     private sealed class UnassociatedSnapshotProcessSupervisor : ProcessSupervisor
@@ -597,8 +751,16 @@ public sealed class ForwardRuntimeManagerTests
             return _processes.Where(process => process.ForwardId == forwardId).ToList();
         }
 
+        public override bool IsRunning(int forwardId) => _processes.Any(process => process.ForwardId == forwardId);
+
+        public override IReadOnlyList<string> GetRunningRoles(int forwardId) => _processes
+            .Where(process => process.ForwardId == forwardId)
+            .Select(process => process.Role)
+            .ToList();
+
         public override void StopAll(int forwardId)
         {
+            _processes.RemoveAll(process => process.ForwardId == forwardId);
         }
     }
 }

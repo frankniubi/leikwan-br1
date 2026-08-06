@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using Xunit;
@@ -97,6 +98,58 @@ public sealed class WindowsForwardPolicyTests
         Assert.True(WindowsForwardPolicy.IsSupportedOnWindows(withSidecar));
     }
 
+    [Fact]
+    public void IsSupportedOnWindows_AcceptsValidSlaveSidecarIngressWithoutSidecarRuntimeTarget()
+    {
+        var forward = CreateSlaveSidecarForward();
+
+        Assert.True(WindowsForwardPolicy.IsSupportedOnWindows(forward));
+
+        forward.Transport = "tcp+udp";
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(forward));
+
+        forward.Transport = "tcp";
+        forward.Endpoints.Add(new EndpointConfig
+        {
+            EndpointId = 185,
+            Host = "8.163.90.235",
+            Port = 7002,
+            IngressAuthToken = "token-b",
+        });
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(forward));
+
+        var nullTransport = CreateSlaveSidecarForward();
+        nullTransport.Transport = null!;
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(nullTransport));
+
+        var nullIngressMode = CreateSlaveSidecarForward();
+        nullIngressMode.Bonding!.IngressMode = null!;
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(nullIngressMode));
+
+        var unknownPlacement = CreateSlaveSidecarForward();
+        unknownPlacement.Bonding!.AggregationPlacement = "client_magic";
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(unknownPlacement));
+        Assert.False(WindowsForwardPolicy.UsesBondRuntime(unknownPlacement));
+
+        var nullEndpoint = CreateSlaveSidecarForward();
+        nullEndpoint.Endpoints.Insert(0, null!);
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(nullEndpoint));
+
+        var extraInvalidEndpoint = CreateSlaveSidecarForward();
+        extraInvalidEndpoint.Endpoints.Add(new EndpointConfig
+        {
+            EndpointId = 185,
+            Host = "",
+            Port = 0,
+            IngressAuthToken = "",
+        });
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(extraInvalidEndpoint));
+
+        var outOfRangeEndpoint = CreateSlaveSidecarForward();
+        outOfRangeEndpoint.Endpoints[0].Port = 65536;
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(outOfRangeEndpoint));
+    }
+
     private static ForwardConfig CreateForward(int forwardId, string mode)
     {
         return new ForwardConfig
@@ -115,5 +168,39 @@ public sealed class WindowsForwardPolicyTests
                 },
             ],
         };
+    }
+
+    private static ForwardConfig CreateSlaveSidecarForward()
+    {
+        return JsonSerializer.Deserialize<ForwardConfig>(
+            """
+            {
+              "forward_id": 61,
+              "mode": "single",
+              "client_mode": "bond",
+              "contract_version": 1,
+              "active_family": "sidecar_aggregation",
+              "aggregation_enabled": true,
+              "target_contract": "sidecar_aggregation",
+              "sidecar_required": true,
+              "bond_sidecar_point_id": 9,
+              "listen_port": 11061,
+              "path_prefix": "slave-sidecar-61",
+              "transport": "tcp",
+              "endpoints": [
+                {
+                  "endpoint_id": 184,
+                  "host": "8.163.90.132",
+                  "port": 7001,
+                  "ingress_auth_token": "token-a"
+                }
+              ],
+              "bonding": {
+                "aggregation_placement": "slave_sidecar",
+                "ingress_mode": "plain_tcp_mux",
+                "route_key": "slave-sidecar-61"
+              }
+            }
+            """)!;
     }
 }

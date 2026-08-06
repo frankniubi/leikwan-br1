@@ -150,6 +150,8 @@ class RouteRulePullModelsTest {
         assertEquals("android", request.clientPlatform)
         assertTrue(request.supportsRouteDirectionRules)
         assertTrue(request.supportsExactDestinationRules)
+        val requestJson = com.google.gson.JsonParser.parseString(com.google.gson.Gson().toJson(request)).asJsonObject
+        assertFalse(requestJson.has("supports_slave_sidecar_aggregation"))
     }
 
     @Test

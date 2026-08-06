@@ -57,14 +57,23 @@ public class ForwardRuntimeManager : IDisposable
     private void ApplyForwardCore(ForwardConfig forward, AppliedForwardState? previousState, string? contractSignature, string applyReason)
     {
         var selectedForward = forward;
+        var usesSlaveSidecarIngress = WindowsForwardPolicy.UsesSlaveSidecarIngress(selectedForward);
+        if (WindowsForwardPolicy.HasBondingAggregationPlacement(selectedForward) && !usesSlaveSidecarIngress)
+        {
+            Log.Error("forward {ForwardId}: invalid slave-sidecar ingress contract", selectedForward.ForwardId);
+            _supervisor.StopAll(selectedForward.ForwardId);
+            ClearAppliedState(selectedForward.ForwardId);
+            return;
+        }
+
         var forwardId = selectedForward.ForwardId;
-        var mode = ModeNormalizer.Normalize(selectedForward.Mode);
-        if (mode == "mptcp" && !HasUsableMptcpRelay(selectedForward))
+        var mode = usesSlaveSidecarIngress ? "bond" : ModeNormalizer.Normalize(selectedForward.Mode);
+        if (!usesSlaveSidecarIngress && mode == "mptcp" && !HasUsableMptcpRelay(selectedForward))
         {
             selectedForward = MptcpFallbackService.ConvertToBond(selectedForward);
             mode = ModeNormalizer.Normalize(selectedForward.Mode);
         }
-        var frontendMode = WindowsForwardPolicy.GetSidecarFrontendMode(selectedForward);
+        var frontendMode = usesSlaveSidecarIngress ? "" : WindowsForwardPolicy.GetSidecarFrontendMode(selectedForward);
 
 
         Log.Information("applying forward {ForwardId} mode={Mode} transport={Transport} endpoints={Count}",
@@ -72,12 +81,19 @@ public class ForwardRuntimeManager : IDisposable
 
         // Stop existing processes
         _supervisor.StopAll(forwardId);
-        WaitForPortsReleased(PortsForReleaseWait(previousState, selectedForward.ListenPort), TimeSpan.FromSeconds(3));
+        ClearAppliedState(forwardId);
+        if (!WaitForPortsReleased(PortsForReleaseWait(previousState, selectedForward.ListenPort), TimeSpan.FromSeconds(3)))
+        {
+            Log.Error("forward {ForwardId}: previous runtime ports were not released", forwardId);
+            return;
+        }
 
         BondRuntimeBuilder.RuntimeSpec spec;
         try
         {
-            spec = frontendMode != ""
+            spec = usesSlaveSidecarIngress
+                ? _bondBuilder.BuildSlaveSidecarIngress(selectedForward)
+                : frontendMode != ""
                 ? _bondBuilder.BuildFrontend(WithSelectedBondRuntimeEndpoints(selectedForward))
                 : mode switch
                 {
@@ -93,6 +109,13 @@ public class ForwardRuntimeManager : IDisposable
             return;
         }
 
+        var missingBinary = spec.Processes.FirstOrDefault(process => !_binaryExists(process.ExePath));
+        if (missingBinary is not null)
+        {
+            Log.Error("binary not found: {ExePath} for forward {ForwardId} [{Label}]", missingBinary.ExePath, forwardId, missingBinary.Label);
+            return;
+        }
+
         foreach (var file in spec.GeneratedFiles ?? [])
         {
             var directory = Path.GetDirectoryName(file.FilePath);
@@ -103,11 +126,6 @@ public class ForwardRuntimeManager : IDisposable
 
         foreach (var process in spec.Processes.Where(p => p.RequiredForReadiness))
         {
-            if (!_binaryExists(process.ExePath))
-            {
-                Log.Error("binary not found: {ExePath} for forward {ForwardId} [{Label}]", process.ExePath, forwardId, process.Label);
-                continue;
-            }
             _supervisor.StartProcess(forwardId, process.Role, process.Label, process.ExePath, process.Arguments);
         }
 
@@ -118,13 +136,19 @@ public class ForwardRuntimeManager : IDisposable
             return;
         }
 
+        var runningRoles = _supervisor.GetRunningRoles(forwardId);
+        var missingRequiredProcess = spec.Processes
+            .Where(process => process.RequiredForReadiness)
+            .FirstOrDefault(process => !runningRoles.Contains(process.Role, StringComparer.Ordinal));
+        if (missingRequiredProcess is not null)
+        {
+            Log.Error("forward {ForwardId}: required process exited before readiness [{Label}]", forwardId, missingRequiredProcess.Label);
+            _supervisor.StopAll(forwardId);
+            return;
+        }
+
         foreach (var process in spec.Processes.Where(p => !p.RequiredForReadiness))
         {
-            if (!_binaryExists(process.ExePath))
-            {
-                Log.Error("binary not found: {ExePath} for forward {ForwardId} [{Label}]", process.ExePath, forwardId, process.Label);
-                continue;
-            }
             _supervisor.StartProcess(forwardId, process.Role, process.Label, process.ExePath, process.Arguments);
         }
 
@@ -174,6 +198,13 @@ public class ForwardRuntimeManager : IDisposable
         _stateManager.SaveApplied(applied);
     }
 
+    public virtual void RemoveForward(int forwardId)
+    {
+        Log.Information("removing forward {ForwardId}", forwardId);
+        _supervisor.StopAll(forwardId);
+        ClearAppliedState(forwardId);
+    }
+
     public virtual void RestartForward(ForwardConfig forward)
     {
         RestartForward(forward, force: true, reason: "manual_apply");
@@ -221,20 +252,22 @@ public class ForwardRuntimeManager : IDisposable
         return ports.All(_portListeningProbe);
     }
 
-    private void WaitForPortsReleased(IEnumerable<int> ports, TimeSpan timeout)
+    private bool WaitForPortsReleased(IEnumerable<int> ports, TimeSpan timeout)
     {
         var requiredPorts = ports.Where(port => port > 0).Distinct().ToList();
         if (requiredPorts.Count == 0)
-            return;
+            return true;
 
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
             if (requiredPorts.All(port => !_portListeningProbe(port)))
-                return;
+                return true;
 
             Thread.Sleep(100);
         }
+
+        return requiredPorts.All(port => !_portListeningProbe(port));
     }
 
     private static IEnumerable<int> PortsForReleaseWait(AppliedForwardState? previousState, int listenPort)
@@ -244,6 +277,13 @@ public class ForwardRuntimeManager : IDisposable
             ports.AddRange(previousState.LegPorts);
 
         return ports;
+    }
+
+    private void ClearAppliedState(int forwardId)
+    {
+        var applied = _stateManager.LoadApplied();
+        if (applied.Remove(forwardId.ToString()))
+            _stateManager.SaveApplied(applied);
     }
 
     private static bool HasUsableMptcpRelay(ForwardConfig forward)

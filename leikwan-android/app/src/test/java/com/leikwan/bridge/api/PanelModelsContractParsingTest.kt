@@ -3,8 +3,11 @@ package com.leikwan.bridge.api
 import com.google.gson.JsonParser
 import com.leikwan.bridge.runtime.ForwardContractParser
 import com.leikwan.bridge.runtime.ForwardMode
+import com.leikwan.bridge.runtime.SlaveSidecarIngressContract
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PanelModelsContractParsingTest {
@@ -37,6 +40,7 @@ class PanelModelsContractParsingTest {
               "speed_limit_mbps": 500,
               "bonding": {
                 "route_key": "/route-key",
+                "aggregation_placement": "slave_sidecar",
                 "remote_target": "138.252.162.120:9000",
                 "session_token": "tcp-token",
                 "udp_session_token": "udp-token",
@@ -108,6 +112,10 @@ class PanelModelsContractParsingTest {
         assertEquals(9L, parsed.bondSidecarPointId)
         assertEquals("plain_tcp_mux", parsed.bonding?.ingressMode)
         assertEquals("/route-key", parsed.bonding?.routeKey)
+        val placementGetter = parsed.bonding?.javaClass?.methods
+            ?.singleOrNull { it.name == "getAggregationPlacement" }
+        assertNotNull(placementGetter)
+        assertEquals("slave_sidecar", placementGetter!!.invoke(parsed.bonding))
         assertEquals("138.252.162.120:9000", parsed.bonding?.remoteTarget)
         assertEquals("tcp-token", parsed.bonding?.sessionToken)
         assertEquals(131072, parsed.bonding?.chunkSize)
@@ -127,6 +135,45 @@ class PanelModelsContractParsingTest {
         assertEquals("auth-1", parsed.endpoints.single().ingressAuthToken)
         assertEquals("198.51.100.10", parsed.mptcp?.sidecarHost)
         assertEquals(14969, parsed.mptcp?.sidecarPort)
+        assertEquals(1, parsed.rawEndpointCount)
+        assertEquals(false, parsed.rawEndpointInvalid)
+    }
+
+    @Test
+    fun `slave sidecar rejects extra non-object endpoint even when one valid endpoint remains`() {
+        val parsed = ForwardContractParser.parse(
+            slaveSidecarRaw(
+                """
+                [
+                  {"endpoint_id":184,"host":"8.163.90.132","port":7001,"ingress_auth_token":"auth-1"},
+                  "not-an-endpoint"
+                ]
+                """.trimIndent()
+            )
+        )!!
+
+        assertEquals(2, parsed.rawEndpointCount)
+        assertTrue(parsed.rawEndpointInvalid)
+        assertEquals(1, parsed.endpoints.size)
+        assertNull(SlaveSidecarIngressContract.resolve(parsed))
+    }
+
+    @Test
+    fun `slave sidecar rejects an out-of-range endpoint port`() {
+        val parsed = ForwardContractParser.parse(
+            slaveSidecarRaw(
+                """
+                [
+                  {"endpoint_id":184,"host":"8.163.90.132","port":70000,"ingress_auth_token":"auth-1"}
+                ]
+                """.trimIndent()
+            )
+        )!!
+
+        assertEquals(1, parsed.rawEndpointCount)
+        assertTrue(parsed.rawEndpointInvalid)
+        assertEquals(70000, parsed.endpoints.single().port)
+        assertNull(SlaveSidecarIngressContract.resolve(parsed))
     }
 
     @Test
@@ -179,4 +226,32 @@ class PanelModelsContractParsingTest {
         val catalog = com.leikwan.bridge.runtime.ForwardFilter.buildCatalog(listOf(helperContract, visibleContract), selectedForwardId = null)
         assertEquals(listOf(78L), catalog.visibleForwards.map { it.forwardId })
     }
+
+    private fun slaveSidecarRaw(endpoints: String) = JsonParser.parseString(
+        """
+        {
+          "forward_id": 61,
+          "service_name": "slave-sidecar-61",
+          "listen_port": 11061,
+          "mode": "single",
+          "client_mode": "bond",
+          "contract_version": 1,
+          "active_family": "sidecar_aggregation",
+          "aggregation_enabled": true,
+          "target_contract": "sidecar_aggregation",
+          "sidecar_required": true,
+          "bond_sidecar_point_id": 9,
+          "transport": "tcp",
+          "service_status": "active",
+          "endpoint_mode": "manual",
+          "path_prefix": "slave-sidecar-61",
+          "bonding": {
+            "aggregation_placement": "slave_sidecar",
+            "ingress_mode": "plain_tcp_mux",
+            "route_key": "slave-sidecar-61"
+          },
+          "endpoints": $endpoints
+        }
+        """.trimIndent()
+    )
 }

@@ -144,6 +144,48 @@ public sealed class ConfigPollingServiceTests
         Assert.Equal([26], runtimeManager.AppliedForwardIds);
     }
 
+    [Fact]
+    public async Task SyncOnceAsync_RemovedUnsupportedSlaveSidecar_ClearsStateAndRecoversWhenValidAgain()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildSlaveSidecarPullResponseJson("slave_sidecar"));
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+            BondIngressBin = @"C:\leikwan\bin\leikwan-ingress.exe",
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var supervisor = new TestProcessSupervisor();
+        var runtimeManager = new ForwardRuntimeManager(
+            config,
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: port => supervisor.IsRunning(0) && port == 11061);
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+
+        Assert.False(stateManager.LoadApplied()["61"].UserStopped);
+        Assert.Equal(["slave-sidecar-ingress"], supervisor.StartedRoles);
+
+        server.SetPayload(BuildSlaveSidecarPullResponseJson("unsupported"));
+        await service.SyncOnceAsync();
+
+        Assert.False(stateManager.LoadApplied().ContainsKey("61"));
+        Assert.Empty(supervisor.RunningRoles);
+
+        server.SetPayload(BuildSlaveSidecarPullResponseJson("slave_sidecar"));
+        await service.SyncOnceAsync();
+
+        Assert.Equal(2, supervisor.StartedRoles.Count(role => role == "slave-sidecar-ingress"));
+        Assert.False(stateManager.LoadApplied()["61"].UserStopped);
+    }
+
     private static string BuildPullResponseJson()
     {
         return """
@@ -294,6 +336,52 @@ public sealed class ConfigPollingServiceTests
         };
     }
 
+    private static string BuildSlaveSidecarPullResponseJson(string placement)
+    {
+        return """
+        {
+          "ok": true,
+          "client": {
+            "id": 1,
+            "agent_config_json": null
+          },
+          "forwards": [
+            {
+              "forward_id": 61,
+              "service_status": "active",
+              "mode": "single",
+              "client_mode": "bond",
+              "contract_version": 1,
+              "active_family": "sidecar_aggregation",
+              "aggregation_enabled": true,
+              "target_contract": "sidecar_aggregation",
+              "sidecar_required": true,
+              "bond_sidecar_point_id": 9,
+              "listen_port": 11061,
+              "target": "193.227.109.82:5201",
+              "transport": "tcp",
+              "path_prefix": "slave-sidecar-61",
+              "bonding": {
+                "aggregation_placement": "__PLACEMENT__",
+                "ingress_mode": "plain_tcp_mux",
+                "route_key": "slave-sidecar-61"
+              },
+              "endpoints": [
+                {
+                  "endpoint_id": 184,
+                  "host": "8.163.90.132",
+                  "port": 7001,
+                  "health_status": "active",
+                  "ingress_protocol": "plain_tcp_mux",
+                  "ingress_auth_token": "token-a"
+                }
+              ]
+            }
+          ]
+        }
+        """.Replace("__PLACEMENT__", placement, StringComparison.Ordinal);
+    }
+
     private sealed class RecordingForwardRuntimeManager : ForwardRuntimeManager
     {
         public RecordingForwardRuntimeManager(AgentConfig config, StateManager stateManager, ProcessSupervisor supervisor)
@@ -326,7 +414,7 @@ public sealed class ConfigPollingServiceTests
         private readonly HttpListener _listener = new();
         private readonly CancellationTokenSource _cts = new();
         private readonly Task _serveTask;
-        private readonly string _payload;
+        private string _payload;
 
         public PullApiServer(string payload)
         {
@@ -339,6 +427,8 @@ public sealed class ConfigPollingServiceTests
         }
 
         public string BaseUrl { get; }
+
+        public void SetPayload(string payload) => Volatile.Write(ref _payload, payload);
 
         private async Task ServeLoopAsync()
         {
@@ -360,7 +450,7 @@ public sealed class ConfigPollingServiceTests
 
                 if (context.Request.Url?.AbsolutePath == "/api/client/configs/pull")
                 {
-                    var bytes = Encoding.UTF8.GetBytes(_payload);
+                    var bytes = Encoding.UTF8.GetBytes(Volatile.Read(ref _payload));
                     context.Response.StatusCode = 200;
                     context.Response.ContentType = "application/json";
                     context.Response.OutputStream.Write(bytes, 0, bytes.Length);

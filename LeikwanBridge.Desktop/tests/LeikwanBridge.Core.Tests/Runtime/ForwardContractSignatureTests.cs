@@ -149,6 +149,36 @@ public sealed class ForwardContractSignatureTests
     }
 
     [Fact]
+    public void Compute_ChangesWhenBondingAggregationPlacementChanges()
+    {
+        var forward = new ForwardConfig
+        {
+            ForwardId = 61,
+            Mode = "bond",
+            ListenPort = 11061,
+            Transport = "tcp",
+            Bonding = new BondingConfig
+            {
+                IngressMode = "plain_tcp_mux",
+                RouteKey = "slave-sidecar-61",
+            },
+            Endpoints =
+            [
+                new EndpointConfig { EndpointId = 184, Host = "8.163.90.132", Port = 7001, IngressAuthToken = "token-a" },
+            ],
+        };
+
+        var placementProperty = typeof(BondingConfig).GetProperty("AggregationPlacement");
+        Assert.NotNull(placementProperty);
+
+        var withoutPlacement = ForwardContractSignature.Compute(EffectiveForwardConfigBuilder.Build(forward));
+        placementProperty!.SetValue(forward.Bonding, "slave_sidecar");
+        var withPlacement = ForwardContractSignature.Compute(EffectiveForwardConfigBuilder.Build(forward));
+
+        Assert.NotEqual(withoutPlacement, withPlacement);
+    }
+
+    [Fact]
     public void AppliedForwardState_RoundTripsContractSignature_AndEndpointClonePreservesHealthStatus()
     {
         var endpoint = new EndpointConfig

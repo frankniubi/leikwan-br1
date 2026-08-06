@@ -7,6 +7,7 @@ internal sealed class TestProcessSupervisor : ProcessSupervisor
     public List<string> StartedRoles { get; } = [];
     public List<(string role, string arguments)> StartedCommands { get; } = [];
     public HashSet<string> RunningRoles { get; } = [];
+    public HashSet<string> ExitOnStartRoles { get; } = [];
 
     public TestProcessSupervisor() : base()
     {
@@ -23,6 +24,8 @@ internal sealed class TestProcessSupervisor : ProcessSupervisor
         StartedRoles.Add(role);
         StartedCommands.Add((role, arguments));
         RunningRoles.Add(role);
+        if (ExitOnStartRoles.Contains(role))
+            RunningRoles.Remove(role);
         return new System.Diagnostics.Process();
     }
 
