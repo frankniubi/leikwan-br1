@@ -2,15 +2,15 @@
 
 Date: 2026-08-05 (Asia/Taipei)
 
-Last updated: 2026-08-05 23:46 (Asia/Taipei)
+Last updated: 2026-08-06 17:31 (Asia/Taipei)
 
-Status: completed for release 0.1.34. LeiGod line-native P1/P2 controls, slave-side adaptive parallel lanes, automatic bulk-line exclusion, a user-P1 Reverse canary, panel/slave deployment, and cleanup are complete. The path has demonstrated greater than 200 Mbps, but the latest clean three-run product median was 198.372 Mbps, so greater than 200 Mbps is a capability rather than a per-run guarantee.
+Status: release 0.1.39 Linux hybrid correctness code, artifacts, schema, panel deployment, local soak, isolated live controls, and cleanup are complete. Production hybrid activation remains intentionally off: the candidate egress was on the wrong side of the LeiGod path and delivered 0 Mbps directly to the fixed target, so the required 400 Mbps Reverse-P1 gate was not validly exercised or passed.
 
 This handoff intentionally contains no passwords, private keys, tokens, or raw credential values. Use the project-local `leikwan-v3.txt`, `cantons.txt`, and `shanghais.txt` files for access. Keep those values local only.
 
 ## 0. Completion record
 
-Section 13 is now the current source of truth for release 0.1.34 and the LeiGod line-native/adaptive-parallel follow-up. Section 12 records the preceding 0.1.31 fixed-endpoint release, while this section records the preceding 0.1.30 backpressure milestone. Sections 1-8 retain the original diagnosis and execution plan because they explain why the release sequence was necessary. Section 9 contains the historical resume procedure.
+Section 14 is now the current source of truth for release 0.1.39 and the Linux hybrid follow-up. Section 13 records the preceding 0.1.34 LeiGod line-native/adaptive-parallel release, section 12 records the preceding 0.1.31 fixed-endpoint release, while this section records the preceding 0.1.30 backpressure milestone. Sections 1-8 retain the original diagnosis and execution plan because they explain why the release sequence was necessary. Section 9 contains the historical resume procedure.
 
 ### 0.1 Final release
 
@@ -1173,3 +1173,261 @@ panel:
 ```
 
 The operational recommendation is to keep the rollout gates off until a longer observation window shows that the clean product median has adequate margin above 200 Mbps. The release is deployable now for adaptive exclusion and transparent internal parallelism; it should not be marketed as a guaranteed greater-than-200 Mbps service on the current LeiGod lines.
+
+## 14. Release 0.1.39 Linux hybrid runtime, live placement canary, and rollout decision
+
+This section supersedes section 13 for the Linux hybrid follow-up. It records the approved flat
+client/slave runtime, the committed panel release, fresh LeiGod-only P1/P2 controls, the failed
+egress placement gate, and exact cleanup. It does not supersede the valid 0.1.34 line-capacity
+evidence in section 13.
+
+### 14.1 Committed release and local gates
+
+The release candidate is committed on the isolated worktree:
+
+```text
+branch:                  codex/sidecar-shared-wg-peers
+release source commit:   8d4f52af7c4829d42a39116d3626eab1cb4e859d
+client agent version:    2026.08.06.5
+client agent SHA256:     f5b0e2965a59905fc5886b31e5f3a2773ce40f15865081ed7be77cd2b754dc48
+leikwan-bond version:    0.1.39
+bond bytes:              9868592
+bond SHA256:             6f6cd4269c3fba2e1e9f4389302e56e8bd0c7c8e9532e4e77b3ab997f68aa794
+leikwan-pathd version:   0.1.39
+pathd bytes:             9385880
+pathd SHA256:            2a6ecc831967a101483acdece13a5ba3d307a531bef5f917363dcd8dec04c18a
+versions.json SHA256:    0c8ea6e08052f8f15f8370fc37538ff20cdb26e904f379170f52d95f0dfb30ca
+```
+
+The implementation sequence is:
+
+```text
+23f43db..1e7d282  fenced execution lease schema and preservation
+fba8817            fenced managed-line execution
+d1c7952            bounded client configuration watch
+9cd4d39            Linux hybrid runtime contract
+b9fc803..4e09152   multi-forward path daemon and leased local runtimes
+0a0bb7a            flat local/slave bond placement
+07a2edc            flat slave relay publication
+fdfd5fe..c77b69b  client pathd reconcile and malformed-generation retention
+0bde14c            pinned Linux artifacts
+e456654            adaptive admission and expiry stabilization
+31a9a2f            lease authorization and membership guardrails
+48284ae            pathd lease validation and self-heal
+8d4f52a            bounded final runtime artifact publication
+```
+
+The final serial local gate passed twice after the last review fixes:
+
+```text
+Rust library tests:                  147 passed
+Rust CLI tests:                        9 passed
+real flat-hybrid integration:          1 passed
+focused PHP hybrid scripts:            8 / 8 passed
+focused client/artifact/installer:     42 passed
+full release gate:                     10 / 10 passed in 285.7 seconds
+git diff --check:                      passed
+```
+
+The formal 30-minute bounded-resource soak completed 361 samples and 90 traffic sessions. No
+process showed strict tail growth. Incremental RSS was `0 KiB` for client-agent, `3052 KiB` for
+pathd, and `256 KiB` for both provider totals and the slave relay, all below the `128 MiB` limit.
+
+Two independent `gpt-5.6-sol` xhigh reviews found lease membership leakage, listener-readiness
+recovery, node execution-policy gaps, transactional revalidation, missing endpoint `node_id`, and
+the legal maximum-line port boundary. Those findings were fixed before the final gates. There was
+no post-fix blanket reviewer approval, so the passing focused and full regression gates are the
+closure evidence rather than an unearned approval claim.
+
+### 14.2 Panel deployment and inert production state
+
+Committed `8d4f52a` was deployed to the panel from a tracked `git archive`; dirty operational files
+were not packaged.
+
+```text
+archive bytes:          127760378
+archive SHA256:         fe938af5c3007f714cf1d844b61c697d18acb486501809dd121d0a1db17ab944
+rollback directory:     /root/codex-backups/leigod-hybrid-8d4f52a
+application backup:     retained with SHA256 sidecar file
+database backup:        retained with SHA256 sidecar file
+migrations before:      71 applied
+migrations after:       72 applied, 0 pending
+origin/public login:    HTTP 200 / HTTP 200
+versions manifest:      HTTP 200
+```
+
+The final live panel audit matched all three release artifact hashes above and reported:
+
+```text
+enabled forwards:                       0
+pending/running provision tasks:        0
+leigod_execution_leases rows:           0
+leigod_egress_profiles rows:             0
+LEIGOD_EXECUTION_LEASES_ENABLED:         false
+LEIGOD_LINUX_HYBRID_ENABLED:             false
+CLIENT_CONFIG_WATCH_ENABLED:             false
+selected nodes 15/16/19:                 active
+client 3:                                active
+```
+
+The mandatory read-only seed audit returned:
+
+```text
+catalog_lines=5 desired_pairs=4 seeded=0 conflicts=2 unchanged=0
+```
+
+The seed algorithm requires one unambiguous current node owner per managed physical line. The two
+conflicts make global lease enforcement unsafe: enabling it now could remove desired lines from
+existing nodes. No seed apply, egress profile, lease row, forward, or production gate was created.
+
+### 14.3 Fresh LeiGod-only line controls
+
+The valid fresh controls ran on node 15 through its existing line-specific loopback SOCKS and the
+unchanged target `v4-hkt-b.mcbar.cc:5201`. A temporary raw TCP proxy performed only the SOCKS5
+CONNECT; no sidecar or `hk-bgp-b` path participated.
+
+```bash
+iperf3 -4 -c 127.0.0.1 -p <temporary-line-proxy> -R -P 1 -O 2 -t 20 --json
+iperf3 -4 -c 127.0.0.1 -p <temporary-line-proxy> -R -P 2 -O 2 -t 20 --json
+```
+
+| Line | Shape | Receiver Mbps | Sender Mbps | Retransmits | Zero intervals |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 447 | Reverse P1 | 106.362 | 108.087 | 5,599 | 0 |
+| 447 | Reverse P2 | 168.610 | 169.336 | 28,132 | 0 |
+| 453 | Reverse P1 | 208.068 | 209.173 | 0 | 0 |
+| 453 | Reverse P2 | 201.480 | 200.695 | 1,501 | 0 |
+
+```text
+evidence directory:
+  /root/codex-benchmarks/leigod-hybrid-live-line-controls-20260806T085925Z
+
+line-447-p1.json SHA256: 32f9ee51f12d8ce5a21ca6eb885b3d7c7ff2e085fddfa4ffdc67564c1b336977
+line-447-p2.json SHA256: 91222ee6c030efa3a185a9602af1b0e021319e5e44bf8739b19f248d039cb503
+line-453-p1.json SHA256: dc02ef20e94feba8af156b049ef2b9bb0acd5dd5ebc7948f7f51e4d3506f600f
+line-453-p2.json SHA256: 49c57441f64cdeec233eb6db578414cb4df63ee4ad50f61f8aede0f8fac77dc5
+```
+
+This fresh window proves that one slave-hosted LeiGod line can exceed `200 Mbps`: line 453 reached
+`208.068 Mbps` with P1. P2 improved line 447 by approximately 58.5%, but did not improve line 453
+in this sample. Internal P2 is therefore a useful allocation hedge, not a deterministic multiplier.
+
+The first attempted control directory at `08:54:50Z` is invalid: a temporary Python callback had
+the wrong arity, so every JSON contained zero bytes. It is excluded from every conclusion; the
+corrected `08:59:25Z` directory above is authoritative.
+
+### 14.4 Flat-hybrid canary and failed egress placement gate
+
+The isolated canary used the committed binaries and no production assignments:
+
+```text
+sh36 user listener:             127.0.0.1:61017
+sh36 pathd:                     committed 0.1.39 artifact
+sh36 local execution group:     physical line 17, two logical lanes
+node 15 execution group:        lines 447/451/453/455/456
+node 15 public canary ingress:  TCP 8003 (inside the required 7000-9000 range)
+node 19 candidate egress:       TCP 8001, committed 0.1.39 bond server
+token target:                   v4-hkt-b.mcbar.cc:5201
+user test shape:                Reverse P1, never P4
+```
+
+Pathd accepted generation 1, started its leased local provider on loopback `21017`, published the
+single user listener, and reported `status=ready`. The node 15 relay accepted and connected all
+five routes with zero connect failures. Thus provider lifecycle, route identity, flat execution
+groups, relay demultiplexing, and bond transport establishment worked on real hosts.
+
+The application smoke nevertheless delivered zero bytes. Segment controls showed why:
+
+| Segment | Reverse-P1 receiver Mbps | Meaning |
+| --- | ---: | --- |
+| node 15 direct to fixed target | 0.000 | A Shanghai slave is before the required LeiGod exit. |
+| node 19 direct to fixed target | 0.000 | The chosen egress was also before the required LeiGod exit. |
+| node 19 line 447 SOCKS to fixed target | 141.838 | The fixed target is reachable after a LeiGod line. |
+| full pathd/node15/node19 smoke | 0.000 | The egress server opened the target directly from the wrong location. |
+
+```text
+sh36 smoke:
+  /root/codex-benchmarks/leigod-hybrid-live-8d4f52a-20260806T091055Z/smoke.json
+  SHA256 b5642bc3fad1d003692d3798369f56aa22fa4619a7846bee370c75e11b7eb678
+
+node 15 direct control:
+  /root/codex-benchmarks/leigod-hybrid-direct-target-20260806T091828Z/reverse-p1.json
+  SHA256 6968b66168bf8e55803dd2b11ec3ee86cef0cf8f2cc3d8aadab08236d2ceb765
+
+node 19 direct control:
+  /root/codex-benchmarks/leigod-hybrid-egress-control-20260806T091438Z/reverse-p1.json
+  SHA256 e5c3d180a7baf0a9265c4793d659f9bb8fab06a2c036f470c86cee89aa57d0c0
+
+node 19 LeiGod control:
+  /root/codex-benchmarks/leigod-hybrid-egress-socks-control-20260806T092430Z/reverse-p1.json
+  SHA256 7fb80f5753364733b8e47aeb9aedfc2ca4f1ed41875ce6545bb226681026124d
+```
+
+This is a topology failure, not a 0.1.39 throughput measurement. A valid egress must be after the
+LeiGod paths, in the target/Hong Kong region, and must have a high-capacity direct route to the
+fixed target. Putting the aggregator on another Shanghai slave merely adds an unaccelerated final
+hop; placing a single additional LeiGod SOCKS after the aggregator would cap one arbitrary TCP
+stream at that one line and cannot transparently create 400 Mbps without a corresponding
+target-side reassembly endpoint.
+
+Consequently the five-run `>=400 Mbps` / every-run `>=350 Mbps` formal gate was not run. Automatic
+bulk exclusion and the interactive-latency-under-bulk gate were also not claimed live because no
+valid hybrid bulk stream reached the candidate egress. Their deterministic integration coverage,
+the 30-minute RSS soak, and the real 0.1.34 exclusion evidence remain valid, but they are not a
+substitute for the missing target-side live gate.
+
+### 14.5 Cleanup and production decision
+
+All isolated canary state was removed after evidence collection:
+
+```text
+sh36:
+  pathd/provider canary processes: 0
+  listeners 21017/61017:           absent
+  original line 17 / port 20017:   active / present
+  client agent:                    active
+
+node 15:
+  relay/front canary processes:    0
+  listeners 48003/8003:            absent
+  lines 447/451/453/455/456:       all active
+  slave agent:                     active
+
+node 19:
+  egress canary unit:              inactive and removed
+  listener 8001:                   absent
+  temporary SOCKS proxy 5202:      absent
+  slave agent:                     active
+
+panel:
+  enabled forwards/tasks:          0 / 0
+  lease rows/egress profiles:      0 / 0
+  hybrid and lease gates:          false / false
+
+local worktree:
+  temporary scripts/secrets/archive: 0
+```
+
+The current `hk-bgp-b` host, domain, sidecar unit, WireGuard state, and data listener were not
+modified or used by this LeiGod canary. Read-only reachability attempts to both the older
+independent Hong Kong host and the current management endpoint through node 15 did not complete an
+SSH banner, so no sidecar login or mutation occurred.
+
+The production decision is **do not activate hybrid yet**. Release 0.1.39 remains deployed inert on
+the panel as correctness code and pinned artifacts; the existing client/slave agents were not
+force-upgraded because the live throughput gate failed before rollout.
+
+### 14.6 Exact prerequisites for the next run
+
+1. Provision a LeiGod-specific egress in the target/Hong Kong region, independent of
+   `hk-bgp-b`, with direct Reverse-P1 capacity comfortably above `500 Mbps` to
+   `v4-hkt-b.mcbar.cc:5201`.
+2. Associate it through `leigod_egress_profiles` only after its direct segment passes. Do not use
+   another Shanghai slave or a single post-aggregator SOCKS line as the egress substitute.
+3. Resolve the two seed conflicts so every managed physical line has exactly one intended node
+   owner; rerun dry-run until `conflicts=0` before applying or enabling lease enforcement.
+4. Recreate one isolated assignment, then run five 20-second Reverse-P1 samples. Activation still
+   requires median `>=400 Mbps`, every run `>=350 Mbps`, zero zero-throughput intervals, at least
+   two execution groups, no duplicate physical lease, and zero restarts.
+5. Only after that gate, run live sub-10 Mbps exclusion and small-request p95-under-bulk checks,
+   then enable one production canary. Until then, do not advertise 400 Mbps hybrid aggregation.
