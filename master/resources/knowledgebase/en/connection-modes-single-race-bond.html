@@ -21,6 +21,10 @@ D -- No --&gt; F{Plan explicitly supports Bond?}
 F -- Yes --&gt; G[Choose Bond and verify requirements]
 F -- No --&gt; H[Ask your administrator]</pre>
 <p>The safe default is Single. Race is for supported path selection or redundancy, not combined bandwidth. Bond is an advanced choice only when the published route contract says the package and platform support it.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="Forward result showing the user-facing route result instead of internal Single, Race, or Bond wiring">
+  <figcaption>Demo screenshot. The tenant checks the resulting route and status; internal topology stays managed by the plan.</figcaption>
+</figure>
 <ol>
   <li>Choose <strong>Single</strong> for the simplest stable setup.</li>
   <li>Choose <strong>Race</strong> when the contract offers multiple usable paths and you want redundancy without aggregation.</li>

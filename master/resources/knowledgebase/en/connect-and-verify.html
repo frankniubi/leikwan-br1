@@ -23,6 +23,10 @@ C --&gt; H[Test application protocol]
 F --&gt; H
 G --&gt; H</pre>
 <p>The deciding fact is where the application runs. Same-device traffic uses loopback. Cross-device traffic is possible only through a reachable Windows or Linux Client host and may need network access rules; Android remains loopback-only unless it is separately exposed by another supported setup.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="Forward result showing the local listen address, target, transport, and Running status">
+  <figcaption>Demo screenshot. Use the local listen value from your own Forward card, not the demonstration value.</figcaption>
+</figure>
 <ol>
   <li>If the application is on the Client device, enter <code>127.0.0.1</code> and the Forward's local port.</li>
   <li>If another device uses a Windows or Linux Client, enter a reachable Windows or Linux client-host address and the same local port.</li>

@@ -21,14 +21,18 @@ C --&gt; F[確認最近同步]
 D --&gt; F
 E --&gt; F</pre>
 <p>三個平台的安裝入口和畫面狀態不同，但完成條件一致：目標裝置上的用戶端已連線，面板也顯示最近同步。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients 的 Install 頁面顯示 Windows、Android 和 Linux 安裝入口">
+  <figcaption>示範截圖：按鈕和同步時間只用來說明位置，不代表你的裝置狀態。</figcaption>
+</figure>
 <ol>
-  <li><strong>Windows：</strong>開啟 <strong>Tenant → 線路</strong>，選擇<strong>下載 Windows App</strong>。</li>
+  <li><strong>Windows：</strong>開啟 <strong>Tenant → Clients → Install</strong>（租戶 → 線路 → Install），選擇 <strong>Download Windows App</strong>（下載 Windows App）。</li>
   <li>安裝並開啟 App，填入 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
   <li>選擇 <strong>Connect</strong>，確認出現 <strong>Connection successful!</strong>，整體狀態為 <strong>Connected</strong>，可用轉發顯示 <strong>Running</strong>。</li>
   <li><strong>Android：</strong>在 arm64、Android 8.0+ 裝置安裝 App 並登入。</li>
   <li>允許 Android 的 VPN 要求，只選擇 App 列出的支援的 LeiGod 服務。</li>
   <li>觀察狀態從 <strong>Ready to connect</strong>，經過 <strong>Connecting...</strong>，最後成為 <strong>Connected</strong>。不能因此承諾 Android 支援 Race 或 MPTCP。</li>
-  <li><strong>Linux：</strong>開啟 <strong>Tenant → 線路</strong>，展開<strong>Linux 安裝</strong>，選擇<strong>複製安裝指令</strong>。</li>
+  <li><strong>Linux：</strong>開啟 <strong>Tenant → Clients → Install</strong>（租戶 → 線路 → Install），展開 <strong>Linux Install</strong>（Linux 安裝），選擇 <strong>Copy Install Command</strong>（複製安裝指令）。</li>
   <li>以等同 root 的權限執行一次複製的指令；不要貼到聊天、工單、記錄或共用的 Shell 歷程。</li>
   <li>確認安裝程式輸出 <code>installed leikwan-client-agent</code>。</li>
   <li>回到面板查看最近同步；也可在主機確認 <code>config_pull_state.json</code> 的 <code>status</code> 為 <code>ok</code>。</li>

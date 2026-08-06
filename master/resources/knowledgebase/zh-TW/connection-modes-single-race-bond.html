@@ -21,6 +21,10 @@ D -- 否 --&gt; F{方案明確支援 Bond 嗎}
 F -- 是 --&gt; G[選擇 Bond 並核對要求]
 F -- 否 --&gt; H[詢問管理員]</pre>
 <p>安全的預設值是 Single。Race 用於支援的路徑選擇或容錯，不會合併頻寬；Bond 只有在線路約定明確支援該方案與平台時，才是合適的進階選項。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="轉發結果頁顯示使用者可見的線路結果，而不是內部 Single、Race 或 Bond 組合">
+  <figcaption>示範截圖：租戶檢查線路結果和狀態，內部拓撲由方案管理。</figcaption>
+</figure>
 <ol>
   <li>需要最簡單且穩定的連線時，選擇 <strong>Single</strong>。</li>
   <li>線路約定提供至少兩個可用端點，而且需要不聚合頻寬的容錯時，選擇 <strong>Race</strong>。</li>

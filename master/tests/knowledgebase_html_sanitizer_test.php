@@ -35,6 +35,7 @@ $dirty = '<h2 onclick="alert(1)">Title</h2>'
     . '<custom data-danger="yes">Unwrapped <em>content</em></custom>'
     . '<pre class="mermaid">flowchart TD' . "\n" . 'A[Start] --&gt; B[Done]</pre>'
     . '<pre class="mermaid other">mixed</pre><pre class=" MERMAID ">case</pre>'
+    . '<figure class="kb-screenshot-figure"><img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" alt="Guide" width="1440" height="960" onerror="alert(1)"><figcaption>Demo caption</figcaption></figure>'
     . '<img src="/uploads/knowledgebase/guide.png" alt="Guide" width="640" height="480" onerror="alert(1)">';
 $clean = $sanitizer->sanitize($dirty);
 
@@ -45,6 +46,7 @@ assertSanitizerContains('<pre class="mermaid">', $clean, 'exact Mermaid class');
 assertSanitizerContains('<pre>mixed</pre>', $clean, 'mixed Mermaid class loses class');
 assertSanitizerContains('<pre>case</pre>', $clean, 'class matching is case-sensitive after whitespace normalization');
 assertSanitizerContains('<img src="/uploads/knowledgebase/guide.png" alt="Guide" width="640" height="480">', $clean, 'local knowledgebase image');
+assertSanitizerContains('<figure><img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" alt="Guide" width="1440" height="960"><figcaption>Demo caption</figcaption></figure>', $clean, 'tenant screenshot figure');
 foreach (['onclick', '<script', 'alert(1)', '<style', 'display:none', '<iframe', 'frame text', '<object', 'object text', 'style=', 'javascript:', 'onerror', '<custom', 'data-danger', 'other'] as $forbidden) {
     assertSanitizerNotContains($forbidden, $clean, 'dangerous markup removal');
 }
@@ -71,6 +73,9 @@ $badUrls = [
     '/uploads/knowledgebase/%252e%252e/secret.png',
     '/uploads/knowledgebase\\evil.png',
     '/uploads/knowledgebase/%5cevil.png',
+    '/assets/knowledgebase/screenshots/tenant/../secret.png',
+    '/assets/knowledgebase/screenshots/tenant/%2e%2e/secret.png',
+    '/assets/knowledgebase/screenshots/tenant/%5cevil.png',
     'java&#x73;cript:alert(1)',
     'java%73cript:alert(1)',
     'data:text/html,&lt;script&gt;alert(1)&lt;/script&gt;',

@@ -145,6 +145,10 @@ D --&gt; E{Works?}
 E -- Yes --&gt; F[Setup complete]
 E -- No --&gt; G[Open troubleshooting]</pre>
 <p>The shortest safe path has one decision: if an application request succeeds through the local listener, setup is complete; if it fails, keep the saved Forward and troubleshoot the visible symptom.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="Tenant overview showing the three setup steps and the Create a forward action">
+  <figcaption>Demo screenshot. The package, counts, and IDs shown here are demonstration values.</figcaption>
+</figure>
 <ol>
   <li>Open the active service in the tenant panel.</li>
   <li>Select <strong>Create Forward</strong>.</li>
@@ -208,6 +212,10 @@ C --&gt; F[Confirm recent sync]
 D --&gt; F
 E --&gt; F</pre>
 <p>Each operating system has a different sign-in or installation path, but all three finish at the same observable result: the panel reports a recent client sync.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients Install view showing Windows, Android, and Linux installation choices">
+  <figcaption>Demo screenshot. The download buttons and sync time show where to check your own session.</figcaption>
+</figure>
 <ol>
   <li><strong>Windows:</strong> Open <strong>Tenant → Clients</strong> and select <strong>Download Windows App</strong>.</li>
   <li>Install and open the app.</li>
@@ -274,6 +282,10 @@ D --&gt; E[Save]
 E --&gt; F[Forward ready]
 F --&gt; G[Record assigned local port]</pre>
 <p>The form asks only for the route package, destination, local port preference, and transport. Saving starts setup; the assigned local port is the value you need for the next guide.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward form showing Forward Route, Target Host, Target Port, Local Listen Port, and Transport">
+  <figcaption>Demo screenshot. Leave Local Listen Port empty when the panel should allocate it.</figcaption>
+</figure>
 <ol>
   <li>Open the active service and select <strong>Create Forward</strong>.</li>
   <li>Choose the offered package under <strong>Forward Route</strong>.</li>
@@ -340,6 +352,10 @@ C --&gt; H[Test application protocol]
 F --&gt; H
 G --&gt; H</pre>
 <p>The deciding fact is where the application runs. Same-device traffic uses loopback. Cross-device traffic is possible only through a reachable Windows or Linux Client host and may need network access rules; Android remains loopback-only unless it is separately exposed by another supported setup.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="Forward result showing the local listen address, target, transport, and Running status">
+  <figcaption>Demo screenshot. Use the local listen value from your own Forward card, not the demonstration value.</figcaption>
+</figure>
 <ol>
   <li>If the application is on the Client device, enter <code>127.0.0.1</code> and the Forward''s local port.</li>
   <li>If another device uses a Windows or Linux Client, enter a reachable Windows or Linux client-host address and the same local port.</li>
@@ -402,6 +418,10 @@ D -- No --&gt; F{Plan explicitly supports Bond?}
 F -- Yes --&gt; G[Choose Bond and verify requirements]
 F -- No --&gt; H[Ask your administrator]</pre>
 <p>The safe default is Single. Race is for supported path selection or redundancy, not combined bandwidth. Bond is an advanced choice only when the published route contract says the package and platform support it.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="Forward result showing the user-facing route result instead of internal Single, Race, or Bond wiring">
+  <figcaption>Demo screenshot. The tenant checks the resulting route and status; internal topology stays managed by the plan.</figcaption>
+</figure>
 <ol>
   <li>Choose <strong>Single</strong> for the simplest stable setup.</li>
   <li>Choose <strong>Race</strong> when the contract offers multiple usable paths and you want redundancy without aggregation.</li>
@@ -462,6 +482,10 @@ A[Client] --&gt; B[Managed Slave path]
 B --&gt; C[Sidecar]
 C --&gt; D[Target service]</pre>
 <p>The Sidecar sits between the managed path and the target service. It must be online and able to reach the backend, but users still verify the target application separately.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/06-target-endpoint.png" width="1440" height="960" alt="Target Endpoints form showing the host and all three listen port fields">
+  <figcaption>Demo screenshot. Only create a tenant-owned endpoint when the published route contract requires it.</figcaption>
+</figure>
 <ol>
   <li>Open <strong>Target Endpoints</strong> under <strong>Advanced</strong>.</li>
   <li>Select the <strong>Create</strong> tab.</li>
@@ -534,6 +558,10 @@ G --&gt; K
 I --&gt; L[Diagnostics and support]
 J --&gt; L</pre>
 <p>The checks move from the Client toward the target. Fix the first failed boundary, retry once, and preserve evidence instead of making random topology changes.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="Client diagnostics view showing Run Diagnostics before View Diagnostics and a healthy result">
+  <figcaption>Demo screenshot. Run a fresh check first, then open View Diagnostics for the details.</figcaption>
+</figure>
 <ol>
   <li>Confirm a recent sync for the expected Client.</li>
   <li>Confirm the Forward shows <strong>Running</strong>.</li>
@@ -649,6 +677,10 @@ D --&gt; E{连接成功吗}
 E -- 是 --&gt; F[首次设置完成]
 E -- 否 --&gt; G[开始排查问题]</pre>
 <p>最短且安全的路径只有一次判断：真实应用请求通过本地监听端口并获得正确结果，就算完成；否则先保留现有转发，再从可见症状着手排查。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="租户概览页显示三步设置流程和 Create a forward 操作">
+  <figcaption>演示截图：套餐、数量和 ID 都是演示值，请以你自己的面板为准。</figcaption>
+</figure>
 <ol>
   <li>在租户面板中打开已生效的服务。</li>
   <li>选择 <strong>Create Forward</strong>。</li>
@@ -712,6 +744,10 @@ C --&gt; F[确认最近同步]
 D --&gt; F
 E --&gt; F</pre>
 <p>三个平台的安装入口和状态名称不同，但结束条件一致：目标设备上的客户端已连接，并且面板显示最近同步。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients 的 Install 页面显示 Windows、Android 和 Linux 安装入口">
+  <figcaption>演示截图：按钮和同步时间用于说明位置，不代表你的设备状态。</figcaption>
+</figure>
 <ol>
   <li><strong>Windows：</strong>打开 <strong>Tenant → Clients</strong>，选择 <strong>Download Windows App</strong>。</li>
   <li>安装并打开应用，填写 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
@@ -775,6 +811,10 @@ D --&gt; E[保存]
 E --&gt; F[等待转发可用]
 F --&gt; G[记下分配的本地端口]</pre>
 <p>第一张表单只需要线路方案、目标地址、目标端口、本地端口偏好和传输类型。保存会启动预配流程，系统分配的本地端口是下一步连接客户端时要使用的值。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表单显示 Forward Route、Target Host、Target Port、Local Listen Port 和 Transport">
+  <figcaption>演示截图：如果没有指定端口，把 Local Listen Port 留空，让面板分配。</figcaption>
+</figure>
 <ol>
   <li>打开已生效的服务，选择 <strong>Create Forward</strong>。</li>
   <li>在 <strong>Forward Route</strong> 中选择系统提供的线路方案。</li>
@@ -840,6 +880,10 @@ C --&gt; H[测试实际应用协议]
 F --&gt; H
 G --&gt; H</pre>
 <p>地址选择取决于应用在哪里运行。同机连接使用回环地址；跨设备只能通过网络可达的 Windows 或 Linux 客户端主机，并可能需要有限的网络放行；Android 的监听默认仅限回环，除非另有受支持的暴露方案。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发结果卡片显示本地监听地址、目标、传输类型和 Running 状态">
+  <figcaption>演示截图：连接应用时使用你自己的 Forward 卡片中的本地监听值。</figcaption>
+</figure>
 <ol>
   <li>应用与客户端同机时，填写 <code>127.0.0.1</code> 和转发的本地端口。</li>
   <li>另一台设备需要访问 Windows 或 Linux 客户端时，填写可访问的 Windows 或 Linux 客户端主机地址和相同端口。</li>
@@ -902,6 +946,10 @@ D -- 否 --&gt; F{方案明确支持 Bond 吗}
 F -- 是 --&gt; G[选择 Bond 并核对要求]
 F -- 否 --&gt; H[咨询管理员]</pre>
 <p>安全默认选项是 Single。Race 用于受支持的路径选择或容错，不会合并带宽；Bond 只适用于发布的线路约定明确支持该套餐和平台的情况。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发结果页显示用户可见的线路结果，而不是内部 Single、Race 或 Bond 组合">
+  <figcaption>演示截图：租户检查线路结果和状态，内部拓扑由方案管理。</figcaption>
+</figure>
 <ol>
   <li>需要最简单、稳定的连接时选择 <strong>Single</strong>。</li>
   <li>线路约定提供至少两个可用端点，且需要不聚合带宽的容错时选择 <strong>Race</strong>。</li>
@@ -962,6 +1010,10 @@ A[客户端] --&gt; B[托管 Slave 路径]
 B --&gt; C[Sidecar]
 C --&gt; D[目标服务]</pre>
 <p>Sidecar 位于托管路径与目标服务之间。它既要在线，也要能访问后端监听；但最终仍需通过真实应用请求单独验证目标服务。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/06-target-endpoint.png" width="1440" height="960" alt="Target Endpoints 表单显示主机和三个监听端口字段">
+  <figcaption>演示截图：只有已发布线路约定要求时，才创建租户自有 endpoint。</figcaption>
+</figure>
 <ol>
   <li>在 <strong>Advanced</strong> 下打开 <strong>Target Endpoints</strong>。</li>
   <li>选择 <strong>Create</strong> 标签页。</li>
@@ -1034,6 +1086,10 @@ G --&gt; K
 I --&gt; L[整理诊断并联系支持]
 J --&gt; L</pre>
 <p>排查顺序从客户端逐步走向目标端。发现第一个失败边界后只修复该处，再重试一次，同时保存错误证据，避免随机修改拓扑。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="客户端诊断页面显示先 Run Diagnostics 再 View Diagnostics，并显示健康结果">
+  <figcaption>演示截图：先运行一次新诊断，再打开 View Diagnostics 查看详情。</figcaption>
+</figure>
 <ol>
   <li>确认预期客户端有最近同步。</li>
   <li>确认转发显示 <strong>Running</strong>。</li>
@@ -1149,6 +1205,10 @@ D --&gt; E{連線成功嗎}
 E -- 是 --&gt; F[首次設定完成]
 E -- 否 --&gt; G[開始排查問題]</pre>
 <p>最短且安全的流程只有一個判斷點：應用程式要求成功，就代表首次設定完成；若失敗，保留已儲存的轉發，從看得見的症狀開始排查。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="租戶概覽頁顯示三步設定流程和 Create a forward 操作">
+  <figcaption>示範截圖：方案、數量和 ID 都是示範值，請以自己的面板為準。</figcaption>
+</figure>
 <ol>
   <li>在租戶面板開啟有效服務。</li>
   <li>選擇<strong>建立轉發</strong>。</li>
@@ -1212,14 +1272,18 @@ C --&gt; F[確認最近同步]
 D --&gt; F
 E --&gt; F</pre>
 <p>三個平台的安裝入口和畫面狀態不同，但完成條件一致：目標裝置上的用戶端已連線，面板也顯示最近同步。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients 的 Install 頁面顯示 Windows、Android 和 Linux 安裝入口">
+  <figcaption>示範截圖：按鈕和同步時間只用來說明位置，不代表你的裝置狀態。</figcaption>
+</figure>
 <ol>
-  <li><strong>Windows：</strong>開啟 <strong>Tenant → 線路</strong>，選擇<strong>下載 Windows App</strong>。</li>
+  <li><strong>Windows：</strong>開啟 <strong>Tenant → Clients → Install</strong>（租戶 → 線路 → Install），選擇 <strong>Download Windows App</strong>（下載 Windows App）。</li>
   <li>安裝並開啟 App，填入 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
   <li>選擇 <strong>Connect</strong>，確認出現 <strong>Connection successful!</strong>，整體狀態為 <strong>Connected</strong>，可用轉發顯示 <strong>Running</strong>。</li>
   <li><strong>Android：</strong>在 arm64、Android 8.0+ 裝置安裝 App 並登入。</li>
   <li>允許 Android 的 VPN 要求，只選擇 App 列出的支援的 LeiGod 服務。</li>
   <li>觀察狀態從 <strong>Ready to connect</strong>，經過 <strong>Connecting...</strong>，最後成為 <strong>Connected</strong>。不能因此承諾 Android 支援 Race 或 MPTCP。</li>
-  <li><strong>Linux：</strong>開啟 <strong>Tenant → 線路</strong>，展開<strong>Linux 安裝</strong>，選擇<strong>複製安裝指令</strong>。</li>
+  <li><strong>Linux：</strong>開啟 <strong>Tenant → Clients → Install</strong>（租戶 → 線路 → Install），展開 <strong>Linux Install</strong>（Linux 安裝），選擇 <strong>Copy Install Command</strong>（複製安裝指令）。</li>
   <li>以等同 root 的權限執行一次複製的指令；不要貼到聊天、工單、記錄或共用的 Shell 歷程。</li>
   <li>確認安裝程式輸出 <code>installed leikwan-client-agent</code>。</li>
   <li>回到面板查看最近同步；也可在主機確認 <code>config_pull_state.json</code> 的 <code>status</code> 為 <code>ok</code>。</li>
@@ -1275,16 +1339,20 @@ D --&gt; E[儲存]
 E --&gt; F[等待轉發可用]
 F --&gt; G[記下分配的本機連接埠]</pre>
 <p>表單只需要線路方案、目標、偏好的本地連接埠和傳輸方式。儲存後會開始佈建；下一篇指南真正需要的是分配的本機連接埠。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表單顯示 Forward Route、Target Host、Target Port、Local Listen Port 和 Transport">
+  <figcaption>示範截圖：沒有指定連接埠時，把 Local Listen Port 留空，讓面板分配。</figcaption>
+</figure>
 <ol>
   <li>開啟有效服務，選擇<strong>建立轉發</strong>。</li>
-  <li>在<strong>轉發路由</strong>選擇面板提供的線路方案。</li>
-  <li>在<strong>目標主機</strong>填入目標位址。</li>
-  <li>在<strong>目標連接埠</strong>填入服務連接埠。</li>
-  <li>除非已取得特定且安全的連接埠，否則將<strong>本地監聽連接埠</strong>留空，接受系統分配。</li>
-  <li>在<strong>傳輸</strong>選擇 <strong>TCP</strong>，供只使用 TCP 的應用程式使用。</li>
+  <li>在 <strong>Forward Route</strong>（轉發路由）選擇面板提供的線路方案。</li>
+  <li>在 <strong>Target Host</strong>（目標主機）填入目標位址。</li>
+  <li>在 <strong>Target Port</strong>（目標連接埠）填入服務連接埠。</li>
+  <li>除非已取得特定且安全的連接埠，否則將 <strong>Local Listen Port</strong>（本地監聽連接埠）留空，接受系統分配。</li>
+  <li>在 <strong>Transport</strong>（傳輸）選擇 <strong>TCP</strong>，供只使用 TCP 的應用程式使用。</li>
   <li>應用程式同時需要兩種協定時，選擇 <strong>TCP + UDP</strong>。</li>
   <li>只有完全使用 UDP 的應用程式才選擇 <strong>UDP</strong>。</li>
-  <li>選擇<strong>建立轉發</strong>以儲存。</li>
+  <li>選擇 <strong>Create Forward</strong>（建立轉發）以儲存。</li>
   <li>等待佈建完成，再從轉發卡片記下系統分配的本機連接埠。</li>
 </ol>
 
@@ -1341,6 +1409,10 @@ C --&gt; H[測試實際應用協定]
 F --&gt; H
 G --&gt; H</pre>
 <p>決定使用哪個位址的關鍵，是應用程式在哪裡執行。同一台裝置使用迴送位址；跨裝置只能透過可連到的 Windows 或 Linux 用戶端主機，且可能需要調整網路存取規則。Android 仍維持只監聽迴送位址，除非另有核准且支援的架構。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="轉發結果卡片顯示本機監聽位址、目標、傳輸方式和 Running 狀態">
+  <figcaption>示範截圖：連線應用程式時，使用自己 Forward 卡片上的本機監聽值。</figcaption>
+</figure>
 <ol>
   <li>應用程式在用戶端裝置時，填入 <code>127.0.0.1</code> 和轉發的本機連接埠。</li>
   <li>其他裝置要透過 Windows 或 Linux 用戶端連線時，填入可連到的 Windows 或 Linux 用戶端主機位址和相同連接埠。</li>
@@ -1403,6 +1475,10 @@ D -- 否 --&gt; F{方案明確支援 Bond 嗎}
 F -- 是 --&gt; G[選擇 Bond 並核對要求]
 F -- 否 --&gt; H[詢問管理員]</pre>
 <p>安全的預設值是 Single。Race 用於支援的路徑選擇或容錯，不會合併頻寬；Bond 只有在線路約定明確支援該方案與平台時，才是合適的進階選項。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="轉發結果頁顯示使用者可見的線路結果，而不是內部 Single、Race 或 Bond 組合">
+  <figcaption>示範截圖：租戶檢查線路結果和狀態，內部拓撲由方案管理。</figcaption>
+</figure>
 <ol>
   <li>需要最簡單且穩定的連線時，選擇 <strong>Single</strong>。</li>
   <li>線路約定提供至少兩個可用端點，而且需要不聚合頻寬的容錯時，選擇 <strong>Race</strong>。</li>
@@ -1463,6 +1539,10 @@ A[用戶端] --&gt; B[受管理的 Slave 路徑]
 B --&gt; C[Sidecar]
 C --&gt; D[目標服務]</pre>
 <p>Sidecar 位於受管理路徑與目標服務之間。它必須在線，也要能連到後端；但目標應用程式是否成功，仍需另外驗證。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/06-target-endpoint.png" width="1440" height="960" alt="Target Endpoints 表單顯示主機和三個監聽連接埠欄位">
+  <figcaption>示範截圖：只有已發佈線路約定要求時，才建立租戶自有 endpoint。</figcaption>
+</figure>
 <ol>
   <li>在<strong>進階</strong>下開啟<strong>目標端點</strong>。</li>
   <li>選擇<strong>建立</strong>分頁。</li>
@@ -1535,6 +1615,10 @@ G --&gt; K
 I --&gt; L[整理診斷後聯絡支援]
 J --&gt; L</pre>
 <p>檢查順序從用戶端一路走向目標。修正第一個失敗的邊界後重試一次，保留證據，不要隨意變更拓撲。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="用戶端診斷頁面顯示先 Run Diagnostics 再 View Diagnostics，並顯示健康結果">
+  <figcaption>示範截圖：先執行一次新的診斷，再開啟 View Diagnostics 查看詳情。</figcaption>
+</figure>
 <ol>
   <li>確認預期的用戶端有最近同步。</li>
   <li>確認轉發顯示 <strong>Running</strong>。</li>

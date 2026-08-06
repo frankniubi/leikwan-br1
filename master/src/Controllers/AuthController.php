@@ -1008,6 +1008,24 @@ final class AuthController extends BaseController
     gap: 14px;
     line-height: 1.72;
   }
+  .kb-article-body figure {
+    display: grid;
+    gap: 8px;
+    margin: 8px 0;
+    max-width: 100%;
+  }
+  .kb-article-body figure img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+    border: 1px solid #dfe5e1;
+    border-radius: 12px;
+  }
+  .kb-article-body figure figcaption {
+    color: var(--muted);
+    font-size: 0.875rem;
+  }
   .kb-article-body h2,
   .kb-article-body h3,
   .kb-article-body p,

@@ -21,6 +21,10 @@ D -- 否 --&gt; F{方案明确支持 Bond 吗}
 F -- 是 --&gt; G[选择 Bond 并核对要求]
 F -- 否 --&gt; H[咨询管理员]</pre>
 <p>安全默认选项是 Single。Race 用于受支持的路径选择或容错，不会合并带宽；Bond 只适用于发布的线路约定明确支持该套餐和平台的情况。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发结果页显示用户可见的线路结果，而不是内部 Single、Race 或 Bond 组合">
+  <figcaption>演示截图：租户检查线路结果和状态，内部拓扑由方案管理。</figcaption>
+</figure>
 <ol>
   <li>需要最简单、稳定的连接时选择 <strong>Single</strong>。</li>
   <li>线路约定提供至少两个可用端点，且需要不聚合带宽的容错时选择 <strong>Race</strong>。</li>

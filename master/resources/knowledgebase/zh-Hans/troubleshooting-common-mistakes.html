@@ -28,6 +28,10 @@ G --&gt; K
 I --&gt; L[整理诊断并联系支持]
 J --&gt; L</pre>
 <p>排查顺序从客户端逐步走向目标端。发现第一个失败边界后只修复该处，再重试一次，同时保存错误证据，避免随机修改拓扑。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="客户端诊断页面显示先 Run Diagnostics 再 View Diagnostics，并显示健康结果">
+  <figcaption>演示截图：先运行一次新诊断，再打开 View Diagnostics 查看详情。</figcaption>
+</figure>
 <ol>
   <li>确认预期客户端有最近同步。</li>
   <li>确认转发显示 <strong>Running</strong>。</li>

@@ -11,7 +11,7 @@ final class KnowledgebaseHtmlSanitizer
 {
     private const ALLOWED_TAGS = [
         'h2', 'h3', 'h4', 'p', 'ul', 'ol', 'li', 'strong', 'em', 'a', 'code', 'pre',
-        'blockquote', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'br', 'img',
+        'blockquote', 'figure', 'figcaption', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'br', 'img',
     ];
 
     private const ALLOWED_ATTRIBUTES = [
@@ -127,6 +127,7 @@ final class KnowledgebaseHtmlSanitizer
         }
 
         return str_starts_with($decoded, '/uploads/knowledgebase/')
+            || str_starts_with($decoded, '/assets/knowledgebase/screenshots/tenant/')
             || str_starts_with($decoded, 'https://')
             || str_starts_with($decoded, 'http://');
     }
