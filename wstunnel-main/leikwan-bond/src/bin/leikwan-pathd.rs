@@ -54,6 +54,9 @@ async fn main() -> Result<()> {
                 if let Err(err) = daemon.enforce_expiry().await {
                     error!("lease expiry enforcement failed: {err:#}");
                 }
+                if let Err(err) = daemon.refresh_health().await {
+                    error!("runtime health refresh failed: {err:#}");
+                }
             }
         }
     }

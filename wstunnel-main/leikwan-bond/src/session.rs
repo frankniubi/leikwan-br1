@@ -15,6 +15,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket, lookup_host};
@@ -953,6 +954,7 @@ async fn run_client_tcp_listener(
         session_token.clone(),
         config.clone(),
         cancel.clone(),
+        None,
     )
     .await?;
     if let Some(sender) = ready.take() {
@@ -1013,12 +1015,14 @@ async fn run_client_tcp_accept_loop(
                         peer
                     );
                     pending_stream = Some(local_stream);
+                    let active_streams = transport.active_stream_counter();
                     stop_client_tcp_transport(transport).await;
                     transport = connect_client_tcp_transport_session(
                         leg_specs.clone(),
                         session_token.clone(),
                         config.clone(),
                         cancel.clone(),
+                        Some(active_streams),
                     )
                     .await?;
                     continue;
@@ -1034,7 +1038,7 @@ pub(crate) async fn prepare_client_tcp_transport(
     config: SessionConfig,
     cancel: CancellationToken,
 ) -> anyhow::Result<ClientTransportRuntime> {
-    connect_client_tcp_transport_session(leg_specs, session_token, config, cancel).await
+    connect_client_tcp_transport_session(leg_specs, session_token, config, cancel, None).await
 }
 
 pub(crate) async fn run_prepared_client_tcp_listener(
@@ -1076,7 +1080,9 @@ async fn connect_client_tcp_transport_session(
     session_token: String,
     config: SessionConfig,
     cancel: CancellationToken,
+    active_streams: Option<Arc<AtomicU64>>,
 ) -> anyhow::Result<ClientTransportRuntime> {
+    let active_streams = active_streams.unwrap_or_else(|| Arc::new(AtomicU64::new(0)));
     loop {
         let connected = tokio::select! {
             _ = cancel.cancelled() => return Err(anyhow!("bond client listener cancelled")),
@@ -1084,6 +1090,7 @@ async fn connect_client_tcp_transport_session(
                 leg_specs.clone(),
                 session_token.clone(),
                 config.clone(),
+                active_streams.clone(),
             ) => connected,
         };
         match connected {
@@ -1507,6 +1514,37 @@ pub(crate) struct ClientTransportRuntime {
     command_tx: mpsc::UnboundedSender<ClientTransportCommand>,
     task: tokio::task::JoinHandle<()>,
     tasks: SessionTaskGroup,
+    active_streams: Arc<AtomicU64>,
+}
+
+impl ClientTransportRuntime {
+    pub(crate) fn active_stream_counter(&self) -> Arc<AtomicU64> {
+        self.active_streams.clone()
+    }
+}
+
+struct ActiveStreamCount {
+    counter: Option<Arc<AtomicU64>>,
+}
+
+impl ActiveStreamCount {
+    fn new(counter: Option<Arc<AtomicU64>>) -> Self {
+        Self { counter }
+    }
+
+    fn update(&self, active: usize) {
+        if let Some(counter) = &self.counter {
+            counter.store(active.min(u64::MAX as usize) as u64, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Drop for ActiveStreamCount {
+    fn drop(&mut self) {
+        if let Some(counter) = &self.counter {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
 }
 
 enum ClientTransportCommand {
@@ -1848,6 +1886,7 @@ async fn start_active_tcp_session(
         add_leg_rx,
         None,
         None,
+        None,
         config,
         tasks.clone(),
     )
@@ -1923,6 +1962,7 @@ async fn open_client_tcp_transport_session(
     leg_specs: Vec<LegSpec>,
     session_token: String,
     config: SessionConfig,
+    active_streams: Arc<AtomicU64>,
 ) -> anyhow::Result<ClientTransportRuntime> {
     let tasks = SessionTaskGroup::new();
     let bootstrap = connect_client_tcp_transport_legs(
@@ -1938,6 +1978,7 @@ async fn open_client_tcp_transport_session(
     let (command_tx, command_rx) = mpsc::unbounded_channel::<ClientTransportCommand>();
 
     let outer_tasks = tasks.clone();
+    let task_active_streams = active_streams.clone();
     let task = tokio::spawn(async move {
         let result = run_tcp_transport_session(
             session_id,
@@ -1947,6 +1988,7 @@ async fn open_client_tcp_transport_session(
             bootstrap.add_leg_rx,
             Some(command_rx),
             Some(active_specs_tx),
+            Some(task_active_streams),
             config,
             outer_tasks.clone(),
         )
@@ -1962,6 +2004,7 @@ async fn open_client_tcp_transport_session(
         command_tx,
         task,
         tasks,
+        active_streams,
     })
 }
 
@@ -2332,6 +2375,7 @@ async fn run_tcp_transport_session(
     mut add_leg_rx: mpsc::UnboundedReceiver<OpenLeg>,
     mut command_rx: Option<mpsc::UnboundedReceiver<ClientTransportCommand>>,
     active_specs_tx: Option<watch::Sender<HashSet<usize>>>,
+    active_streams: Option<Arc<AtomicU64>>,
     config: SessionConfig,
     tasks: SessionTaskGroup,
 ) -> anyhow::Result<()> {
@@ -2346,6 +2390,7 @@ async fn run_tcp_transport_session(
     let snapshot = snapshot_context(role, claims.as_ref());
     let mut last_snapshot_write = None::<Instant>;
     let mut streams = HashMap::<u32, TcpStreamState>::new();
+    let active_stream_count = ActiveStreamCount::new(active_streams);
     let mut connecting_streams = HashSet::<u32>::new();
     let mut closed_streams = HashSet::<u32>::new();
     let mut reset_reasons = HashMap::<u32, String>::new();
@@ -2364,6 +2409,7 @@ async fn run_tcp_transport_session(
     loop {
         flush_tcp_stream_backlogs(session_id, &mut streams, &mut legs, &mut round_robin_cursor, role, &config);
         prune_finished_transport_streams(&mut streams, &mut closed_streams);
+        active_stream_count.update(streams.len());
 
         let has_live_streams = !streams.is_empty() || !connecting_streams.is_empty();
         if !has_active_leg(&legs) {
@@ -5734,11 +5780,13 @@ fn select_stream_leg(
         || outstanding_bytes < config.latency_guard_bytes;
 
     if config.latency_first && outstanding_bytes < config.bulk_promote_bytes {
-        if let Some(primary_leg) = legs
-            .iter()
-            .find(|leg| leg.active && leg.role == LegRole::Primary && leg_available_for_new_data(leg, Instant::now()))
-        {
-            return Some(primary_leg.id);
+        if let Some(leg_id) = preferred_leg_id {
+            if preferred_leg_allowed_for_interactive_tcp(legs, leg_id, Instant::now()) {
+                return Some(leg_id);
+            }
+        }
+        if let Some(leg_id) = select_latency_best_leg(legs) {
+            return Some(leg_id);
         }
     }
 
@@ -5939,43 +5987,6 @@ fn select_control_leg(legs: &[LegState], round_robin_cursor: &mut usize) -> Opti
     )
 }
 
-fn select_stream_affinity_leg(legs: &[LegState], round_robin_cursor: &mut usize) -> Option<usize> {
-    if let Some(primary_leg) = legs
-        .iter()
-        .find(|leg| leg.active && leg.role == LegRole::Primary && leg_writer_has_capacity(leg))
-    {
-        return Some(primary_leg.id);
-    }
-    let mut candidates: Vec<&LegState> = legs
-        .iter()
-        .filter(|leg| leg.active && leg_writer_has_capacity(leg))
-        .collect();
-    if candidates.is_empty() {
-        return None;
-    }
-
-    let primary_priority = candidates
-        .iter()
-        .map(|leg| leg.priority)
-        .min()
-        .unwrap_or(u16::MAX);
-    candidates.retain(|leg| leg.priority == primary_priority);
-    let active_count = candidates.len().max(1);
-
-    candidates.sort_by_key(|leg| {
-        let health = &leg.tcp_health;
-        (
-            leg_health_state_rank(health.state),
-            effective_weight_sort_rank(health.effective_weight),
-            (leg.id + *round_robin_cursor) % active_count,
-            leg.inflight_bytes,
-            leg.smoothed_rtt,
-        )
-    });
-    *round_robin_cursor = round_robin_cursor.wrapping_add(1);
-    candidates.first().map(|leg| leg.id)
-}
-
 fn select_strategy_affinity_leg(
     strategy: ClientStrategy,
     legs: &[LegState],
@@ -5983,7 +5994,7 @@ fn select_strategy_affinity_leg(
     random_state: &mut u64,
 ) -> Option<usize> {
     match strategy {
-        ClientStrategy::SpeedMax => select_stream_affinity_leg(legs, round_robin_cursor),
+        ClientStrategy::SpeedMax => select_latency_best_leg(legs),
         ClientStrategy::LatencyBest => select_latency_best_leg(legs),
         ClientStrategy::Random => select_random_healthy_leg(legs, random_state),
     }
@@ -7351,6 +7362,36 @@ mod tests {
             &mut random_state,
         );
 
+        assert_eq!(selected, Some(1));
+    }
+
+    #[test]
+    fn speed_max_sticky_uses_lowest_rtt_before_bulk_promotion() {
+        let mut legs = vec![fake_leg(0, 10, 0, 45), fake_leg(1, 10, 0, 12)];
+        legs[0].role = LegRole::Primary;
+        legs[1].role = LegRole::Primary;
+        let mut cursor = 0usize;
+        let mut random_state = 7u64;
+
+        let affinity = select_strategy_affinity_leg(
+            ClientStrategy::SpeedMax,
+            &legs,
+            &mut cursor,
+            &mut random_state,
+        );
+        assert_eq!(affinity, Some(1));
+
+        let mut config = test_config();
+        config.latency_first = true;
+        let selected = select_pinned_strategy_leg(
+            ClientStrategy::SpeedMax,
+            &legs,
+            &mut cursor,
+            affinity,
+            4096,
+            4096,
+            &config,
+        );
         assert_eq!(selected, Some(1));
     }
 
