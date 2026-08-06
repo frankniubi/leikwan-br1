@@ -15,7 +15,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket, lookup_host};
@@ -569,13 +569,34 @@ enum LocalWriteCommand {
 struct QueuedLegFrame {
     frame: WireFrame,
     enqueued_at: Instant,
+    outstanding_frames: Option<Arc<AtomicUsize>>,
 }
 
 impl QueuedLegFrame {
+    #[cfg(test)]
     fn new(frame: WireFrame) -> Self {
         Self {
             frame,
             enqueued_at: Instant::now(),
+            outstanding_frames: None,
+        }
+    }
+
+    fn tracked(frame: WireFrame, outstanding_frames: Arc<AtomicUsize>) -> Self {
+        outstanding_frames.fetch_add(1, Ordering::Relaxed);
+        Self {
+            frame,
+            enqueued_at: Instant::now(),
+            outstanding_frames: Some(outstanding_frames),
+        }
+    }
+}
+
+impl Drop for QueuedLegFrame {
+    fn drop(&mut self) {
+        if let Some(outstanding_frames) = &self.outstanding_frames {
+            let previous = outstanding_frames.fetch_sub(1, Ordering::Relaxed);
+            debug_assert!(previous > 0, "tracked leg frame count underflow");
         }
     }
 }
@@ -586,7 +607,10 @@ fn leg_write_channel() -> (mpsc::Sender<QueuedLegFrame>, mpsc::Receiver<QueuedLe
 
 #[derive(Clone)]
 enum LegWriteSender {
-    Bounded(mpsc::Sender<QueuedLegFrame>),
+    Bounded {
+        sender: mpsc::Sender<QueuedLegFrame>,
+        outstanding_frames: Arc<AtomicUsize>,
+    },
     Unbounded(mpsc::UnboundedSender<WireFrame>),
     #[cfg(test)]
     Stub,
@@ -600,9 +624,16 @@ enum LegSendResult {
 }
 
 impl LegWriteSender {
+    fn bounded(sender: mpsc::Sender<QueuedLegFrame>) -> Self {
+        Self::Bounded {
+            sender,
+            outstanding_frames: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
     fn has_capacity(&self) -> bool {
         match self {
-            Self::Bounded(sender) => !sender.is_closed() && sender.capacity() > 0,
+            Self::Bounded { sender, .. } => !sender.is_closed() && sender.capacity() > 0,
             Self::Unbounded(sender) => !sender.is_closed(),
             #[cfg(test)]
             Self::Stub => true,
@@ -611,7 +642,13 @@ impl LegWriteSender {
 
     fn try_send(&self, frame: WireFrame) -> LegSendResult {
         match self {
-            Self::Bounded(sender) => match sender.try_send(QueuedLegFrame::new(frame)) {
+            Self::Bounded {
+                sender,
+                outstanding_frames,
+            } => match sender.try_send(QueuedLegFrame::tracked(
+                frame,
+                outstanding_frames.clone(),
+            )) {
                 Ok(()) => LegSendResult::Queued,
                 Err(mpsc::error::TrySendError::Full(_)) => LegSendResult::Full,
                 Err(mpsc::error::TrySendError::Closed(_)) => LegSendResult::Closed,
@@ -627,7 +664,9 @@ impl LegWriteSender {
 
     fn pending_frames(&self) -> usize {
         match self {
-            Self::Bounded(sender) => sender.max_capacity().saturating_sub(sender.capacity()),
+            Self::Bounded {
+                outstanding_frames, ..
+            } => outstanding_frames.load(Ordering::Relaxed),
             Self::Unbounded(_) => 0,
             #[cfg(test)]
             Self::Stub => 0,
@@ -3496,7 +3535,7 @@ fn spawn_tcp_leg_task(
     );
     LegState {
         id: leg_id,
-        sender: Some(LegWriteSender::Bounded(tx)),
+        sender: Some(LegWriteSender::bounded(tx)),
         active: true,
         inflight_bytes: 0,
         transport,
@@ -3626,9 +3665,8 @@ async fn run_tcp_leg_writer<W>(
             notify_tcp_leg_closed(leg_id, &event_tx, &shutdown_tx);
             return;
         };
-        let QueuedLegFrame { frame, enqueued_at } = queued;
-        let queued_for = enqueued_at.elapsed();
-        let data_marker = match &frame {
+        let queued_for = queued.enqueued_at.elapsed();
+        let data_marker = match &queued.frame {
             WireFrame::DataC2S { stream_id, seq, .. } | WireFrame::DataS2C { stream_id, seq, .. } => {
                 Some((*stream_id, *seq))
             }
@@ -3637,7 +3675,7 @@ async fn run_tcp_leg_writer<W>(
         let result = tokio::select! {
             biased;
             _ = shutdown_rx.changed() => return,
-            result = tokio::time::timeout(write_timeout, write_frame(&mut writer, &frame)) => result,
+            result = tokio::time::timeout(write_timeout, write_frame(&mut writer, &queued.frame)) => result,
         };
         match result {
             Ok(Ok(())) => {}
@@ -5787,6 +5825,17 @@ fn send_control_frame(legs: &mut [LegState], round_robin_cursor: &mut usize, fra
     send_frame_via_any_leg(legs, round_robin_cursor, frame)
 }
 
+fn can_bypass_preferred_control_queue(frame: &WireFrame) -> bool {
+    matches!(
+        frame,
+        WireFrame::StreamOpenAck { .. }
+            | WireFrame::AckC2S { .. }
+            | WireFrame::AckS2C { .. }
+            | WireFrame::DeliveryC2S { .. }
+            | WireFrame::DeliveryS2C { .. }
+    )
+}
+
 fn send_stream_control_frame(
     legs: &mut [LegState],
     round_robin_cursor: &mut usize,
@@ -5794,10 +5843,12 @@ fn send_stream_control_frame(
     frame: WireFrame,
 ) -> bool {
     if let Some(leg_id) = preferred_leg_id {
-        if legs.get(leg_id).is_some_and(leg_writer_is_idle)
-            && send_to_leg(legs, leg_id, frame.clone())
+        if !can_bypass_preferred_control_queue(&frame)
+            || legs.get(leg_id).is_some_and(leg_writer_is_idle)
         {
-            return true;
+            if send_to_leg(legs, leg_id, frame.clone()) {
+                return true;
+            }
         }
     }
     send_frame_via_any_leg(legs, round_robin_cursor, frame)
@@ -7350,7 +7401,7 @@ mod tests {
     fn marking_leg_inactive_drops_writer_sender() {
         let (tx, mut rx) = leg_write_channel();
         let mut leg = fake_leg(0, 10, 0, 20);
-        leg.sender = Some(LegWriteSender::Bounded(tx));
+        leg.sender = Some(LegWriteSender::bounded(tx));
         let mut legs = vec![leg];
 
         mark_leg_inactive(&mut legs, 0);
@@ -7776,7 +7827,7 @@ mod tests {
     fn acked_chunks_cannot_expand_the_leg_writer_queue() {
         let (leg_tx, leg_rx) = leg_write_channel();
         let mut leg = fake_leg(0, 10, 0, 20);
-        leg.sender = Some(LegWriteSender::Bounded(leg_tx));
+        leg.sender = Some(LegWriteSender::bounded(leg_tx));
         let mut legs = vec![leg];
         let mut pending = BTreeMap::new();
 
@@ -7823,10 +7874,10 @@ mod tests {
         let (primary_tx, primary_rx) = leg_write_channel();
         let (helper_tx, helper_rx) = leg_write_channel();
         let mut primary = fake_leg(0, 10, 0, 20);
-        primary.sender = Some(LegWriteSender::Bounded(primary_tx));
+        primary.sender = Some(LegWriteSender::bounded(primary_tx));
         primary.role = LegRole::Primary;
         let mut helper = fake_leg(1, 20, 0, 30);
-        helper.sender = Some(LegWriteSender::Bounded(helper_tx));
+        helper.sender = Some(LegWriteSender::bounded(helper_tx));
         helper.role = LegRole::Helper;
         let mut legs = vec![primary, helper];
 
@@ -7853,10 +7904,10 @@ mod tests {
         let (preferred_tx, mut preferred_rx) = leg_write_channel();
         let (helper_tx, mut helper_rx) = leg_write_channel();
         let mut preferred = fake_leg(0, 10, 0, 20);
-        preferred.sender = Some(LegWriteSender::Bounded(preferred_tx));
+        preferred.sender = Some(LegWriteSender::bounded(preferred_tx));
         preferred.role = LegRole::Primary;
         let mut helper = fake_leg(1, 20, 0, 30);
-        helper.sender = Some(LegWriteSender::Bounded(helper_tx));
+        helper.sender = Some(LegWriteSender::bounded(helper_tx));
         helper.role = LegRole::Helper;
         let mut legs = vec![preferred, helper];
 
@@ -7896,14 +7947,96 @@ mod tests {
     }
 
     #[test]
+    fn stream_open_stays_on_preferred_leg_when_data_is_queued() {
+        let (preferred_tx, mut preferred_rx) = leg_write_channel();
+        let (helper_tx, mut helper_rx) = leg_write_channel();
+        let mut preferred = fake_leg(0, 10, 0, 20);
+        preferred.sender = Some(LegWriteSender::bounded(preferred_tx));
+        preferred.role = LegRole::Primary;
+        let mut helper = fake_leg(1, 20, 0, 30);
+        helper.sender = Some(LegWriteSender::bounded(helper_tx));
+        helper.role = LegRole::Helper;
+        let mut legs = vec![preferred, helper];
+
+        assert!(send_to_leg(
+            &mut legs,
+            0,
+            WireFrame::DataC2S {
+                stream_id: 9,
+                seq: 0,
+                payload: Bytes::from_static(b"queued-data"),
+            },
+        ));
+        let mut cursor = 0usize;
+
+        assert!(send_stream_control_frame(
+            &mut legs,
+            &mut cursor,
+            Some(0),
+            WireFrame::StreamOpen { stream_id: 10 },
+        ));
+        assert_eq!(preferred_rx.len(), 2);
+        assert_eq!(helper_rx.len(), 0, "stream-open tracking remains tied to preferred leg");
+        assert!(matches!(
+            preferred_rx.try_recv().unwrap().frame,
+            WireFrame::DataC2S { .. }
+        ));
+        assert!(matches!(
+            preferred_rx.try_recv().unwrap().frame,
+            WireFrame::StreamOpen { stream_id: 10 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn leg_writer_pending_frames_includes_socket_write_in_progress() {
+        let (writer, _reader) = tokio::io::duplex(64);
+        let (frame_tx, frame_rx) = leg_write_channel();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let writer_task = tokio::spawn(run_tcp_leg_writer(
+            7,
+            writer,
+            frame_rx,
+            event_tx,
+            Duration::from_secs(30),
+            shutdown_rx,
+            shutdown_tx,
+        ));
+        let sender = LegWriteSender::bounded(frame_tx.clone());
+
+        assert_eq!(
+            sender.try_send(WireFrame::DataC2S {
+                stream_id: 9,
+                seq: 0,
+                payload: Bytes::from(vec![0x5a; 4096]),
+            }),
+            LegSendResult::Queued
+        );
+        timeout(Duration::from_secs(1), async {
+            while frame_tx.capacity() != frame_tx.max_capacity() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("writer must take the frame from the channel");
+
+        assert_eq!(
+            sender.pending_frames(),
+            1,
+            "a frame blocked in socket write must keep the leg non-idle"
+        );
+        writer_task.abort();
+    }
+
+    #[test]
     fn tcp_data_selection_skips_a_full_primary_writer_queue() {
         let (primary_tx, _primary_rx) = leg_write_channel();
         let (helper_tx, _helper_rx) = leg_write_channel();
         let mut primary = fake_leg(0, 10, 0, 20);
-        primary.sender = Some(LegWriteSender::Bounded(primary_tx));
+        primary.sender = Some(LegWriteSender::bounded(primary_tx));
         primary.role = LegRole::Primary;
         let mut helper = fake_leg(1, 20, 0, 30);
-        helper.sender = Some(LegWriteSender::Bounded(helper_tx));
+        helper.sender = Some(LegWriteSender::bounded(helper_tx));
         helper.role = LegRole::Helper;
         let mut legs = vec![primary, helper];
 
@@ -7987,7 +8120,7 @@ mod tests {
         ));
 
         let mut leg = fake_leg(7, 10, 0, 20);
-        leg.sender = Some(LegWriteSender::Bounded(frame_tx));
+        leg.sender = Some(LegWriteSender::bounded(frame_tx));
         let mut legs = vec![leg];
         for seq in [0_u64, 4096] {
             assert!(send_to_leg(
@@ -8462,7 +8595,7 @@ mod tests {
         let (leg_tx, _leg_rx) = leg_write_channel();
         let mut legs = vec![LegState {
             id: 0,
-            sender: Some(LegWriteSender::Bounded(leg_tx)),
+            sender: Some(LegWriteSender::bounded(leg_tx)),
             active: true,
             inflight_bytes: 0,
             transport: LegTransport::Tcp,
@@ -8567,9 +8700,9 @@ mod tests {
         let (old_leg_tx, mut old_leg_rx) = leg_write_channel();
         let (arrival_leg_tx, mut arrival_leg_rx) = leg_write_channel();
         let mut old_leg = fake_leg(0, 10, 0, 20);
-        old_leg.sender = Some(LegWriteSender::Bounded(old_leg_tx));
+        old_leg.sender = Some(LegWriteSender::bounded(old_leg_tx));
         let mut arrival_leg = fake_leg(1, 10, 0, 25);
-        arrival_leg.sender = Some(LegWriteSender::Bounded(arrival_leg_tx));
+        arrival_leg.sender = Some(LegWriteSender::bounded(arrival_leg_tx));
         let mut legs = vec![old_leg, arrival_leg];
         let mut cursor = 0usize;
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
