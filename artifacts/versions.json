@@ -127,18 +127,18 @@
     "artifact_url": "/artifacts/leikwan-udp-uot-merge.py"
   },
   "leikwan_bond_linux_amd64": {
-    "version": "0.1.39",
+    "version": "0.1.40",
     "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64",
-    "sha256": "6f6cd4269c3fba2e1e9f4389302e56e8bd0c7c8e9532e4e77b3ab997f68aa794",
-    "size_bytes": 9868592
+    "sha256": "3abe2fd6954f670a6363c9196487b7837097d063997c31cf4422a6cc14804fca",
+    "size_bytes": 9880968
   },
   "leikwan_pathd_linux_amd64": {
-    "version": "0.1.39",
+    "version": "0.1.40",
     "path": "artifacts/wstunnel/leikwan-pathd_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-pathd_linux_amd64",
-    "sha256": "2a6ecc831967a101483acdece13a5ba3d307a531bef5f917363dcd8dec04c18a",
-    "size_bytes": 9385880
+    "sha256": "7ebcc941cbac8911233b4c1edc930781218dbf52a10695c6812da6d83ace530c",
+    "size_bytes": 9398024
   },
   "wstunnel_linux_amd64": {
     "version": "10.5.2",

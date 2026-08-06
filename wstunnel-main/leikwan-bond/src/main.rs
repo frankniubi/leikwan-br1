@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn cli_reports_refreshed_version() {
         let cmd = Cli::command();
-        assert_eq!(cmd.get_version(), Some("0.1.39"));
+        assert_eq!(cmd.get_version(), Some("0.1.40"));
     }
 
     #[test]
