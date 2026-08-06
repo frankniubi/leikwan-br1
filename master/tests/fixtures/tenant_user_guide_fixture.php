@@ -100,12 +100,12 @@ $body = match ($view) {
     :root { --fixture-line: #dfe5e1; --fixture-ink: #18211c; --fixture-muted: #5d6861; --fixture-bg: #f3f5f2; }
     body { margin: 0; background: var(--fixture-bg); color: var(--fixture-ink); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
     .fixture-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
-    .fixture-sidebar { padding: 24px 16px; background: #18211c; color: #fff; }
+    .fixture-sidebar { min-width: 0; padding: 24px 16px; background: #18211c; color: #fff; }
     .fixture-brand { display: block; margin: 0 8px 24px; font-weight: 800; letter-spacing: .04em; }
-    .fixture-sidebar nav { display: grid; gap: 6px; }
+    .fixture-sidebar nav { min-width: 0; display: grid; gap: 6px; }
     .fixture-sidebar a { color: #c9d6cd; border-radius: 8px; padding: 10px 12px; text-decoration: none; }
     .fixture-sidebar a:hover, .fixture-sidebar a.active { background: #2c4c3b; color: #fff; }
-    .fixture-main { min-width: 0; padding: 30px clamp(18px, 4vw, 56px) 60px; }
+    .fixture-main { min-width: 0; overflow: hidden; padding: 30px clamp(18px, 4vw, 56px) 60px; }
     .fixture-content { width: min(1120px, 100%); margin: 0 auto; }
     .demo-notice { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 18px; padding: 10px 14px; border: 1px solid #ddc47a; border-radius: 10px; background: #fff8df; color: #624b05; }
     .demo-notice strong { font-size: 12px; letter-spacing: .12em; }
