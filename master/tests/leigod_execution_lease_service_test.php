@@ -262,11 +262,53 @@ namespace {
         'leigod_line_lease_owner_mismatch'
     );
 
-    $now += 30;
+    $now += 10;
+    $healthRenewed = $service->acceptHealth(10, (string) $lease['lease_id'], 1, [
+        'owner_type' => 'client_device',
+        'owner_id' => 20,
+        'owner_device_id' => 'linux-device-a',
+        'config_sha256' => $db->lines[10]['config_sha256'],
+        'healthy' => true,
+    ]);
+    assertLeaseSame($active['expires_at'], $healthRenewed['expires_at'], 'sub-window health keeps projected ttl stable');
+    assertLeaseSame(2, $db->revisions[20] ?? 0, 'sub-window health does not feed config watch');
+
+    for ($attempt = 0; $attempt < 5; $attempt++) {
+        $now++;
+        $rapid = $service->acceptHealth(10, (string) $lease['lease_id'], 1, [
+            'owner_type' => 'client_device',
+            'owner_id' => 20,
+            'owner_device_id' => 'linux-device-a',
+            'config_sha256' => $db->lines[10]['config_sha256'],
+            'healthy' => true,
+        ]);
+        assertLeaseSame($active['expires_at'], $rapid['expires_at'], 'rapid feedback heartbeat keeps projected ttl stable');
+    }
+    assertLeaseSame(2, $db->revisions[20] ?? 0, 'rapid feedback heartbeats do not bump revision');
+
+    $now += 15;
     $renewed = $service->renew((string) $lease['lease_id'], 1, 'client_device', 20, 'linux-device-a');
     assertLeaseSame(gmdate('Y-m-d H:i:s', $now + 90), $renewed['expires_at'], 'renewed ttl');
     assertLeaseSame(1, $renewed['generation'], 'renew does not bump generation');
-    assertLeaseSame(2, $db->revisions[20] ?? 0, 'active renewal does not bump config revision');
+    assertLeaseSame(3, $db->revisions[20] ?? 0, 'windowed active renewal bumps config revision once');
+
+    $originalExpiry = strtotime((string) $active['expires_at']);
+    $now += 70;
+    assertLeaseTrue($now > $originalExpiry, 'second renewal occurs after the original active expiry');
+    $renewedPastOriginalExpiry = $service->renew(
+        (string) $lease['lease_id'],
+        1,
+        'client_device',
+        20,
+        'linux-device-a'
+    );
+    assertLeaseSame(1, $renewedPastOriginalExpiry['generation'], 'repeated renewal preserves generation');
+    assertLeaseSame(
+        gmdate('Y-m-d H:i:s', $now + 90),
+        $renewedPastOriginalExpiry['expires_at'],
+        'repeated renewal extends the projected expiry'
+    );
+    assertLeaseSame(4, $db->revisions[20] ?? 0, 'later active renewal bumps config revision once');
 
     expectLeaseApi(fn() => $service->acquireForClientDevice(12, 20, 'linux-device-a'), 'leigod_line_client_execution_forbidden');
     expectLeaseApi(fn() => $service->acquireForNode(13, 15), 'leigod_line_node_execution_forbidden');
@@ -281,6 +323,26 @@ namespace {
         'healthy' => true,
     ]);
     assertLeaseSame('active', $allocatedActive['state'], 'allocated lease becomes active');
+
+    $atomicDb = new Database();
+    $atomicDb->lines = [22 => testLine(22, 10), 23 => testLine(23, 20)];
+    $atomicService = new LeigodExecutionLeaseService($config, $atomicDb, static function () use (&$now): int {
+        return $now;
+    });
+    $authorizationRanInTransaction = false;
+    $atomicAllocated = $atomicService->allocateForClientDevice(
+        61,
+        'linux-device-atomic',
+        [22, 23],
+        2,
+        static function (array $lockedIds) use ($atomicDb, &$authorizationRanInTransaction): array {
+            $authorizationRanInTransaction = $atomicDb->inTransaction;
+            assertLeaseSame([22, 23], $lockedIds, 'authorization sees locked candidates');
+            return [23];
+        }
+    );
+    assertLeaseTrue($authorizationRanInTransaction, 'membership authorization runs inside allocation transaction');
+    assertLeaseSame([23], array_column($atomicAllocated, 'leigod_line_id'), 'locked authorization removes stale membership');
 
     $mismatchNow = 1_786_050_000;
     $mismatchDb = new Database();
@@ -311,6 +373,39 @@ namespace {
         fn() => $mismatchService->renew((string) $mismatchLease['lease_id'], 1, 'node', 42, null),
         'leigod_line_lease_expired'
     );
+
+    $policyNow = 1_786_055_000;
+    $policyDb = new Database();
+    $policyDb->lines = [20 => testLine(20, 10), 21 => testLine(21, 20)];
+    $policyService = new LeigodExecutionLeaseService($config, $policyDb, static function () use (&$policyNow): int {
+        return $policyNow;
+    });
+    $policyHealthLease = $policyService->acquireForNode(20, 52);
+    $policyService->acceptHealth(20, (string) $policyHealthLease['lease_id'], 1, [
+        'owner_type' => 'node',
+        'owner_id' => 52,
+        'config_sha256' => $policyDb->lines[20]['config_sha256'],
+        'healthy' => true,
+    ]);
+    $policyDb->lines[20]['allow_node_execution'] = 0;
+    $policyHealthRevoking = $policyService->acceptHealth(20, (string) $policyHealthLease['lease_id'], 1, [
+        'owner_type' => 'node',
+        'owner_id' => 52,
+        'config_sha256' => $policyDb->lines[20]['config_sha256'],
+        'healthy' => true,
+    ]);
+    assertLeaseSame('revoking', $policyHealthRevoking['state'], 'node policy toggle revokes health lease');
+
+    $policyRenewLease = $policyService->acquireForNode(21, 53);
+    $policyDb->lines[21]['allow_node_execution'] = 0;
+    $policyRenewRevoking = $policyService->renew(
+        (string) $policyRenewLease['lease_id'],
+        1,
+        'node',
+        53,
+        null
+    );
+    assertLeaseSame('revoking', $policyRenewRevoking['state'], 'node policy toggle revokes renewed lease');
 
     $failureNow = 1_786_060_000;
     $failureDb = new Database();
@@ -395,7 +490,7 @@ namespace {
     $taken = $service->acquireForNode(10, 15);
     assertLeaseSame('node', $taken['owner_type'], 'expired takeover owner');
     assertLeaseSame(2, $taken['generation'], 'expired takeover bumps generation');
-    assertLeaseSame(3, $db->revisions[20] ?? 0, 'client-to-node takeover bumps former client revision');
+    assertLeaseSame(5, $db->revisions[20] ?? 0, 'client-to-node takeover bumps former client revision');
     assertLeaseTrue($taken['lease_id'] !== $lease['lease_id'], 'expired takeover rotates lease id');
     expectLeaseApi(
         fn() => $service->acceptHealth(10, (string) $lease['lease_id'], 1, [

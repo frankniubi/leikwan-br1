@@ -47,7 +47,11 @@ final class LeigodHybridRuntimeService
         }
         $clientId = (int) ($client['id'] ?? 0);
         $deviceId = trim((string) ($deviceSession['device_id'] ?? ''));
-        $localLeases = $this->localLeases($clientId, $deviceId);
+        $approvedCatalogIds = $this->preflightClientCatalogIds($forward, $client, $deviceSession, $endpoints);
+        if ($approvedCatalogIds === []) {
+            return null;
+        }
+        $localLeases = $this->localLeases($clientId, $deviceId, $approvedCatalogIds);
         if ($localLeases === []) {
             return null;
         }
@@ -140,15 +144,8 @@ final class LeigodHybridRuntimeService
         ]);
 
         $profile = $this->egressProfile((int) ($forward['forward_route_id'] ?? 0));
-        if ($profile === null) {
-            return null;
-        }
-        $secretRef = trim((string) ($profile['secret_ref'] ?? ''));
-        if (preg_match('/^[A-Z][A-Z0-9_]{2,190}$/', $secretRef) !== 1) {
-            return null;
-        }
-        $secret = (string) ($this->config->get($secretRef, '') ?? '');
-        if ($secret === '') {
+        $secret = $this->egressSecret($profile);
+        if ($profile === null || $secret === null) {
             return null;
         }
         $token = ($this->tokenBuilder)($forward, $secret, 'tcp');
@@ -183,8 +180,66 @@ final class LeigodHybridRuntimeService
         return $runtime;
     }
 
-    /** @param array<string, mixed> $forward @param array<string, mixed> $client @param array<string, mixed> $session */
-    private function eligibleRequest(array $forward, array $client, array $session): bool
+    /**
+     * Performs the allocation preflight without requiring a local client lease.
+     *
+     * @param array<string, mixed> $forward
+     * @param array<string, mixed> $client
+     * @param array<string, mixed> $deviceSession
+     * @param array<int, array<string, mixed>> $endpoints
+     * @return array<int, int>
+     */
+    public function preflightClientCatalogIds(
+        array $forward,
+        array $client,
+        array $deviceSession,
+        array $endpoints,
+    ): array {
+        if (!$this->eligibleRequest($forward, $client, $deviceSession)) {
+            return [];
+        }
+        $profile = $this->egressProfile((int) ($forward['forward_route_id'] ?? 0));
+        if ($profile === null || $this->egressSecret($profile) === null) {
+            return [];
+        }
+        $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
+        $eligibleNodeIds = [];
+        foreach ($this->catalog->eligibleNodesForCombination($combinationId, 'tcp') as $node) {
+            $nodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
+            if ($nodeId > 0 && is_array($node['candidates'] ?? null) && $node['candidates'] !== []) {
+                $eligibleNodeIds[$nodeId] = true;
+            }
+        }
+        if ($eligibleNodeIds === []) {
+            return [];
+        }
+        $hasSlaveExecutionGroup = false;
+        foreach ($endpoints as $endpoint) {
+            if (!is_array($endpoint)) {
+                continue;
+            }
+            $nodeId = (int) ($endpoint['node_id'] ?? 0);
+            $host = trim((string) ($endpoint['host'] ?? $endpoint['public_host'] ?? ''));
+            $port = (int) ($endpoint['port'] ?? $endpoint['public_port'] ?? 0);
+            $ingressAuthToken = trim((string) ($endpoint['ingress_auth_token'] ?? ''));
+            if (isset($eligibleNodeIds[$nodeId])
+                && (int) ($endpoint['endpoint_id'] ?? $endpoint['id'] ?? 0) > 0
+                && $host !== ''
+                && $port >= 1
+                && $port <= 65535
+                && $ingressAuthToken !== '') {
+                $hasSlaveExecutionGroup = true;
+                break;
+            }
+        }
+        if (!$hasSlaveExecutionGroup) {
+            return [];
+        }
+        return $this->catalog->clientExecutionCatalogIdsForForward($forward);
+    }
+
+    /** @param array<string, mixed> $client @param array<string, mixed> $session */
+    public function supportsClientDevice(array $client, array $session): bool
     {
         if (!$this->config->getBool('LEIGOD_LINUX_HYBRID_ENABLED', false)
             || !$this->config->getBool('LEIGOD_EXECUTION_LEASES_ENABLED', false)
@@ -194,6 +249,21 @@ final class LeigodHybridRuntimeService
         }
         $platform = strtolower(trim((string) ($session['platform'] ?? '')));
         if (!str_starts_with($platform, 'linux')) {
+            return false;
+        }
+        $expectedVersion = trim((string) ($this->pathdArtifact['version'] ?? ''));
+        $expectedSha = strtolower(trim((string) ($this->pathdArtifact['sha256'] ?? $this->pathdArtifact['binary_sha256'] ?? '')));
+        $capability = $this->pathdCapability($session, $client);
+        return $expectedVersion !== ''
+            && preg_match('/^[a-f0-9]{64}$/', $expectedSha) === 1
+            && hash_equals($expectedVersion, (string) ($capability['version'] ?? ''))
+            && hash_equals($expectedSha, strtolower((string) ($capability['sha256'] ?? '')));
+    }
+
+    /** @param array<string, mixed> $forward @param array<string, mixed> $client @param array<string, mixed> $session */
+    private function eligibleRequest(array $forward, array $client, array $session): bool
+    {
+        if (!$this->supportsClientDevice($client, $session)) {
             return false;
         }
         $backend = strtolower(trim((string) ($forward['backend_mode'] ?? '')));
@@ -208,18 +278,26 @@ final class LeigodHybridRuntimeService
             || (int) ($forward['target_port'] ?? 0) > 65535) {
             return false;
         }
-        $expectedVersion = trim((string) ($this->pathdArtifact['version'] ?? ''));
-        $expectedSha = strtolower(trim((string) ($this->pathdArtifact['sha256'] ?? $this->pathdArtifact['binary_sha256'] ?? '')));
-        $capability = $this->pathdCapability($session, $client);
-        return $expectedVersion !== ''
-            && preg_match('/^[a-f0-9]{64}$/', $expectedSha) === 1
-            && hash_equals($expectedVersion, (string) ($capability['version'] ?? ''))
-            && hash_equals($expectedSha, strtolower((string) ($capability['sha256'] ?? '')));
+        return true;
     }
 
     /** @return array<int, array<string, mixed>> */
-    private function localLeases(int $clientId, string $deviceId): array
+    /** @param array<int, int> $approvedCatalogIds */
+    private function localLeases(int $clientId, string $deviceId, array $approvedCatalogIds): array
     {
+        $placeholders = [];
+        $catalogParams = [];
+        foreach (array_values(array_unique(array_map('intval', $approvedCatalogIds))) as $index => $catalogId) {
+            if ($catalogId <= 0) {
+                continue;
+            }
+            $key = 'hybrid_catalog_' . $index;
+            $placeholders[] = ':' . $key;
+            $catalogParams[$key] = $catalogId;
+        }
+        if ($placeholders === []) {
+            return [];
+        }
         $rows = $this->db->fetchAll(
             'SELECT /* hybrid_local_leases */
                     ll.id AS catalog_id,
@@ -240,13 +318,14 @@ final class LeigodHybridRuntimeService
                AND lel.expires_at > UTC_TIMESTAMP()
                AND ll.is_active = 1
                AND ll.allow_client_execution = 1
+               AND ll.id IN (' . implode(', ', $placeholders) . ')
              ORDER BY ll.sort_order ASC, ll.id ASC',
-            [
-                'owner_type' => 'client_device',
+             [
+                 'owner_type' => 'client_device',
                 'owner_id' => $clientId,
                 'owner_device_id' => $deviceId,
-                'active' => 'active',
-            ]
+                 'active' => 'active',
+             ] + $catalogParams
         );
         $leases = [];
         foreach ($rows as $row) {
@@ -309,6 +388,17 @@ final class LeigodHybridRuntimeService
             && $port <= 65535
             ? $profile
             : null;
+    }
+
+    /** @param array<string, mixed>|null $profile */
+    private function egressSecret(?array $profile): ?string
+    {
+        $secretRef = trim((string) ($profile['secret_ref'] ?? ''));
+        if (preg_match('/^[A-Z][A-Z0-9_]{2,190}$/', $secretRef) !== 1) {
+            return null;
+        }
+        $secret = (string) ($this->config->get($secretRef, '') ?? '');
+        return $secret !== '' ? $secret : null;
     }
 
     /** @param array<string, mixed> $session @param array<string, mixed> $client @return array<string, mixed> */

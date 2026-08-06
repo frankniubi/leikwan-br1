@@ -2505,6 +2505,8 @@ final class AdminController extends BaseController
         }
 
         $udpMethod = strtolower((string) ($editing['udp_probe_method'] ?? ''));
+        $allowNodeExecution = $editing === null || (int) ($editing['allow_node_execution'] ?? 1) === 1;
+        $allowClientExecution = $editing !== null && (int) ($editing['allow_client_execution'] ?? 0) === 1;
         $body = '<div class="grid two">'
             . '<section class="card"><h3>' . ($editing !== null ? 'Edit Managed TYO Line' : 'New Managed TYO Line') . '</h3>'
             . '<form method="post" action="/admin/leigod-lines">'
@@ -2523,6 +2525,9 @@ final class AdminController extends BaseController
             . '<option value="echo"' . ($udpMethod === 'echo' ? ' selected' : '') . '>echo</option></select></div>'
             . '<div class="field"><label>Config SHA-256</label><input type="text" name="config_sha256" maxlength="64" pattern="[A-Fa-f0-9]{64}" value="' . $this->escape((string) ($editing['config_sha256'] ?? '')) . '" required></div>'
             . '<div class="field"><label>Status</label><select name="is_active"><option value="1"' . ((int) ($editing['is_active'] ?? 0) === 1 ? ' selected' : '') . '>active</option><option value="0"' . ((int) ($editing['is_active'] ?? 0) !== 1 ? ' selected' : '') . '>inactive</option></select></div>'
+            . '<div class="field"><label><input type="hidden" name="allow_node_execution" value="0"><input type="checkbox" name="allow_node_execution" value="1"' . ($allowNodeExecution ? ' checked' : '') . '> Allow slave execution</label></div>'
+            . '<div class="field"><label><input type="hidden" name="allow_client_execution" value="0"><input type="checkbox" name="allow_client_execution" value="1"' . ($allowClientExecution ? ' checked' : '') . '> Allow Linux client execution</label></div>'
+            . '<div class="field"><label>Maximum Parallel Lanes</label><input type="number" name="max_parallel_lanes" min="1" max="4" value="' . (int) ($editing['max_parallel_lanes'] ?? 2) . '" required></div>'
             . '<div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . $this->escape((string) ($editing['sort_order'] ?? 100)) . '"></div>'
             . '</div>'
             . '<div class="field"><label>Notes</label><textarea name="notes">' . $this->escape((string) ($editing['notes'] ?? '')) . '</textarea></div>'

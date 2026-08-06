@@ -36,6 +36,7 @@ final class LeigodExecutionLeaseService
 
     /**
      * @param array<int, int|string> $candidateCatalogIds
+     * @param callable(array<int, int>):array<int, int>|null $lockedAuthorization
      * @return array<int, array<string, mixed>>
      */
     public function allocateForClientDevice(
@@ -43,6 +44,7 @@ final class LeigodExecutionLeaseService
         string $deviceId,
         array $candidateCatalogIds,
         int $desiredCount,
+        ?callable $lockedAuthorization = null,
     ): array {
         $this->positiveOwnerId($clientId);
         $deviceId = $this->deviceId($deviceId);
@@ -72,6 +74,7 @@ final class LeigodExecutionLeaseService
             $clientId,
             $deviceId,
             $desiredCount,
+            $lockedAuthorization,
         ): array {
             $lines = $this->db->fetchAll(
                 'SELECT * FROM leigod_lines
@@ -82,6 +85,20 @@ final class LeigodExecutionLeaseService
                  FOR UPDATE',
                 $params
             );
+            if ($lockedAuthorization !== null) {
+                $authorizedIds = array_values(array_unique(array_filter(array_map(
+                    'intval',
+                    $lockedAuthorization(array_map(
+                        static fn(array $line): int => (int) ($line['id'] ?? 0),
+                        $lines
+                    ))
+                ), static fn(int $value): bool => $value > 0)));
+                $authorized = array_fill_keys($authorizedIds, true);
+                $lines = array_values(array_filter(
+                    $lines,
+                    static fn(array $line): bool => isset($authorized[(int) ($line['id'] ?? 0)])
+                ));
+            }
             $eligible = array_values(array_filter($lines, static fn(array $line): bool =>
                 (int) ($line['id'] ?? 0) > 0
                 && (int) ($line['is_active'] ?? 0) === 1
@@ -143,6 +160,7 @@ final class LeigodExecutionLeaseService
 
         return $this->db->transaction(function () use ($leaseId, $generation, $ownerType, $ownerId, $deviceId): array {
             $lineId = $this->leaseLineId($leaseId);
+            $line = $this->lineForUpdate($lineId);
             $lease = $this->leaseForLineUpdate($lineId);
             $this->assertFence($lease, $leaseId, $generation);
             $this->assertOwner($lease, $ownerType, $ownerId, $deviceId);
@@ -150,13 +168,20 @@ final class LeigodExecutionLeaseService
             if ($this->expired($lease, $now) || (string) ($lease['state'] ?? '') === 'revoking') {
                 throw new ApiException('leigod_line_lease_expired', 409);
             }
+            if (!$this->lineAllowsOwner($line, $ownerType)) {
+                return $this->markRevoking($lineId, $lease, $now);
+            }
 
+            $expiryExtended = false;
             if ((string) ($lease['state'] ?? '') === 'active') {
-                $lease['expires_at'] = $this->timestamp($now + $this->activeTtlSeconds());
+                $expiryExtended = $this->extendActiveExpiryIfDue($lease, $now);
             }
             $lease['last_renewed_at'] = $this->timestamp($now);
             $lease['updated_at'] = $this->timestamp($now);
             $this->updateLease((int) $lease['leigod_line_id'], $lease);
+            if ((string) ($lease['state'] ?? '') === 'active' && $expiryExtended) {
+                $this->bumpClientLeaseOwners($lease);
+            }
             return $lease;
         });
     }
@@ -191,6 +216,9 @@ final class LeigodExecutionLeaseService
             if ($this->expired($lease, $now) || (string) ($lease['state'] ?? '') === 'revoking') {
                 throw new ApiException('leigod_line_lease_expired', 409);
             }
+            if (!$this->lineAllowsOwner($line, $ownerType)) {
+                return $this->markRevoking($catalogLineId, $lease, $now);
+            }
             if (!hash_equals((string) ($line['config_sha256'] ?? ''), strtolower(trim((string) ($report['config_sha256'] ?? ''))))) {
                 return $this->markRevoking($catalogLineId, $lease, $now);
             }
@@ -204,11 +232,15 @@ final class LeigodExecutionLeaseService
 
             $previousState = (string) ($lease['state'] ?? '');
             $lease['state'] = 'active';
-            $lease['expires_at'] = $this->timestamp($now + $this->activeTtlSeconds());
+            $expiryExtended = $previousState !== 'active'
+                || $this->extendActiveExpiryIfDue($lease, $now);
+            if ($previousState !== 'active') {
+                $lease['expires_at'] = $this->timestamp($now + $this->activeTtlSeconds());
+            }
             $lease['last_renewed_at'] = $this->timestamp($now);
             $lease['updated_at'] = $this->timestamp($now);
             $this->updateLease($catalogLineId, $lease);
-            if ($previousState !== 'active') {
+            if ($expiryExtended) {
                 $this->bumpClientLeaseOwners($lease);
             }
             return $lease;
@@ -480,12 +512,25 @@ final class LeigodExecutionLeaseService
     /** @param array<string, mixed> $line */
     private function assertLinePolicy(array $line, string $ownerType): void
     {
-        if ($ownerType === 'client_device' && (int) ($line['allow_client_execution'] ?? 0) !== 1) {
+        if ($this->lineAllowsOwner($line, $ownerType)) {
+            return;
+        }
+        if ($ownerType === 'client_device') {
             throw new ApiException('leigod_line_client_execution_forbidden', 409);
         }
-        if ($ownerType === 'node' && (int) ($line['allow_node_execution'] ?? 1) !== 1) {
+        if ($ownerType === 'node') {
             throw new ApiException('leigod_line_node_execution_forbidden', 409);
         }
+    }
+
+    /** @param array<string, mixed> $line */
+    private function lineAllowsOwner(array $line, string $ownerType): bool
+    {
+        return match ($ownerType) {
+            'client_device' => (int) ($line['allow_client_execution'] ?? 0) === 1,
+            'node' => (int) ($line['allow_node_execution'] ?? 1) === 1,
+            default => false,
+        };
     }
 
     /** @param array<string, mixed> $lease */
@@ -610,6 +655,28 @@ final class LeigodExecutionLeaseService
     private function activeTtlSeconds(): int
     {
         return max(30, min(3600, $this->config->getInt('LEIGOD_EXECUTION_LEASE_ACTIVE_TTL_SECONDS', 90)));
+    }
+
+    /** @param array<string, mixed> $lease */
+    private function extendActiveExpiryIfDue(array &$lease, int $now): bool
+    {
+        $currentExpiry = $this->parseTimestamp((string) ($lease['expires_at'] ?? ''));
+        $nextExpiry = $now + $this->activeTtlSeconds();
+        if ($currentExpiry !== null
+            && $nextExpiry - $currentExpiry < $this->activeProjectionRefreshSeconds()) {
+            return false;
+        }
+        $lease['expires_at'] = $this->timestamp($nextExpiry);
+        return true;
+    }
+
+    private function activeProjectionRefreshSeconds(): int
+    {
+        $maximum = max(5, $this->activeTtlSeconds() - 5);
+        return max(5, min(
+            $maximum,
+            $this->config->getInt('LEIGOD_EXECUTION_LEASE_PROJECTION_REFRESH_SECONDS', min(30, $maximum))
+        ));
     }
 
     private function revokingGraceSeconds(): int

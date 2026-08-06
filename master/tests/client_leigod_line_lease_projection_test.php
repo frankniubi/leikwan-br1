@@ -116,7 +116,7 @@ namespace {
     ];
 
     $projection = (new ProvisioningService(new Config($envPath), $db))
-        ->desiredLeigodLineManagementForClientDevice(20, 'linux-device-a');
+        ->desiredLeigodLineManagementForClientDevice(20, 'linux-device-a', [11]);
     assertClientLeaseSame([451], array_column($projection['lines'] ?? [], 'line_id'), 'device lease projection');
     $line = $projection['lines'][0] ?? [];
     assertClientLeaseSame(11, $line['catalog_id'] ?? null, 'catalog id for fenced health');
@@ -131,7 +131,7 @@ namespace {
     assertClientLeaseSame($session, $projection['session_json'] ?? null, 'root-only session payload');
 
     $offProjection = (new ProvisioningService(new Config($offEnvPath), $db))
-        ->desiredLeigodLineManagementForClientDevice(20, 'linux-device-a');
+        ->desiredLeigodLineManagementForClientDevice(20, 'linux-device-a', [11]);
     assertClientLeaseSame(['lines' => []], $offProjection, 'gate-off client projection');
 
     $clientController = file_get_contents(__DIR__ . '/../src/Controllers/ClientAgentController.php') ?: '';

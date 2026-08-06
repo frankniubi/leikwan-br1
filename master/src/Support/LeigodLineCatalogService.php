@@ -75,6 +75,13 @@ final class LeigodLineCatalogService
     public function saveLine(array $payload): array
     {
         $id = max(0, (int) ($payload['id'] ?? 0));
+        $existingLine = null;
+        if ($id > 0) {
+            $existingLine = $this->db->fetchOne('SELECT * FROM leigod_lines WHERE id = :id LIMIT 1', ['id' => $id]);
+            if (!is_array($existingLine)) {
+                throw new ApiException('leigod_line_not_found', 404, ['id' => $id]);
+            }
+        }
         $lineId = (int) ($payload['line_id'] ?? 0);
         if ($lineId < 1 || $lineId > self::MAX_LINE_ID) {
             throw new ApiException('invalid_leigod_line_id', 422, ['line_id' => $lineId]);
@@ -125,6 +132,24 @@ final class LeigodLineCatalogService
             'config_sha256' => $configSha256,
         ]);
         $requestedActive = $this->truthy($payload['is_active'] ?? false);
+        $allowNodeExecution = $this->executionPolicyFlag(
+            $payload,
+            'allow_node_execution',
+            (int) ($existingLine['allow_node_execution'] ?? 1) === 1
+        );
+        $allowClientExecution = $this->executionPolicyFlag(
+            $payload,
+            'allow_client_execution',
+            (int) ($existingLine['allow_client_execution'] ?? 0) === 1
+        );
+        $maxParallelLanes = filter_var(
+            $payload['max_parallel_lanes'] ?? ($existingLine['max_parallel_lanes'] ?? 2),
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1, 'max_range' => 4]]
+        );
+        if ($maxParallelLanes === false) {
+            throw new ApiException('invalid_leigod_line_max_parallel_lanes', 422);
+        }
         $normalized = [
             'line_id' => $lineId,
             'label' => $label,
@@ -136,14 +161,14 @@ final class LeigodLineCatalogService
             'udp_probe_method' => $udpProbeMethod !== '' ? $udpProbeMethod : null,
             'config_sha256' => $configSha256,
             'is_active' => $requestedActive && $configuration['state'] === 'ready' ? 1 : 0,
+            'allow_node_execution' => $allowNodeExecution,
+            'allow_client_execution' => $allowClientExecution,
+            'max_parallel_lanes' => $maxParallelLanes,
             'sort_order' => (int) ($payload['sort_order'] ?? 100),
             'updated_at' => $this->now(),
         ];
 
         if ($id > 0) {
-            if ($this->db->fetchOne('SELECT * FROM leigod_lines WHERE id = :id LIMIT 1', ['id' => $id]) === null) {
-                throw new ApiException('leigod_line_not_found', 404, ['id' => $id]);
-            }
             $this->db->execute(
                 'UPDATE leigod_lines
                  SET line_id = :line_id,
@@ -156,6 +181,9 @@ final class LeigodLineCatalogService
                      udp_probe_method = :udp_probe_method,
                      config_sha256 = :config_sha256,
                      is_active = :is_active,
+                     allow_node_execution = :allow_node_execution,
+                     allow_client_execution = :allow_client_execution,
+                     max_parallel_lanes = :max_parallel_lanes,
                      sort_order = :sort_order,
                      updated_at = :updated_at
                  WHERE id = :id',
@@ -227,12 +255,32 @@ final class LeigodLineCatalogService
     }
 
     /** @return array<int, array<string, mixed>> */
-    public function desiredLinesForClientDevice(int $clientId, string $deviceId): array
+    public function desiredLinesForClientDevice(
+        int $clientId,
+        string $deviceId,
+        array $approvedCatalogIds = [],
+        array $approvedForwardScopes = [],
+    ): array
     {
         $deviceId = trim($deviceId);
-        if (!$this->leasesEnabled() || $clientId <= 0 || $deviceId === '') {
+        $approvedCatalogIds = $this->normalizedCatalogIds($approvedCatalogIds);
+        if (!$this->leasesEnabled()
+            || $approvedCatalogIds === []
+            || $clientId <= 0
+            || $deviceId === '') {
             return [];
         }
+        $this->ensureClientDeviceExecutionLeases(
+            $clientId,
+            $deviceId,
+            $approvedCatalogIds,
+            $approvedForwardScopes
+        );
+        [$catalogWhere, $catalogParams] = $this->catalogIdConstraint(
+            $approvedCatalogIds,
+            'lel.leigod_line_id',
+            'candidate_'
+        );
         $rows = $this->db->fetchAll(
             'SELECT ll.id AS catalog_id,
                     ll.line_id,
@@ -255,6 +303,7 @@ final class LeigodLineCatalogService
                AND lel.owner_device_id = :owner_device_id
                AND lel.state IN (:pending, :active)
                AND lel.expires_at > UTC_TIMESTAMP()
+               AND ' . $catalogWhere . '
                AND ll.is_active = 1
                AND ll.allow_client_execution = 1
              ORDER BY ll.sort_order ASC, ll.id ASC',
@@ -264,7 +313,7 @@ final class LeigodLineCatalogService
                 'owner_device_id' => $deviceId,
                 'pending' => 'pending',
                 'active' => 'active',
-            ]
+            ] + $catalogParams
         );
         $cap = max(1, min(64, $this->config->getInt('LEIGOD_CLIENT_LINE_LEASE_CAP', 8)));
         $desired = [];
@@ -292,6 +341,92 @@ final class LeigodLineCatalogService
             }
         }
         return $desired;
+    }
+
+    /** @param array<int, int> $candidateIds */
+    private function ensureClientDeviceExecutionLeases(
+        int $clientId,
+        string $deviceId,
+        array $candidateIds,
+        array $approvedForwardScopes,
+    ): void
+    {
+        if (!$this->config->getBool('LEIGOD_LINUX_HYBRID_ENABLED', false)
+            || !$this->config->getBool('LEIGOD_CLIENT_EXECUTION_BROKER_ENABLED', false)) {
+            return;
+        }
+
+        $leaseCap = max(1, min(64, $this->config->getInt('LEIGOD_CLIENT_LINE_LEASE_CAP', 8)));
+        $desiredCount = max(1, min(
+            $leaseCap,
+            $this->config->getInt('LEIGOD_CLIENT_EXECUTION_DESIRED_LINES', 1)
+        ));
+        [$catalogWhere, $catalogParams] = $this->catalogIdConstraint(
+            $candidateIds,
+            'id',
+            'candidate_'
+        );
+        $readyCandidateIds = [];
+        foreach ($this->db->fetchAll(
+            'SELECT id, line_id, config_sha256
+             FROM leigod_lines
+             WHERE is_active = 1
+               AND allow_client_execution = 1
+               AND ' . $catalogWhere . '
+             ORDER BY sort_order ASC, id ASC',
+            $catalogParams
+        ) as $line) {
+            $catalogId = (int) ($line['id'] ?? 0);
+            if ($catalogId > 0 && $this->configurationForLine($line)['state'] === 'ready') {
+                $readyCandidateIds[] = $catalogId;
+            }
+        }
+        if ($readyCandidateIds === []) {
+            return;
+        }
+        $lockedAuthorization = $approvedForwardScopes === []
+            ? null
+            : fn(array $lockedCatalogIds): array => $this->lockedClientExecutionCatalogIds(
+                $lockedCatalogIds,
+                $approvedForwardScopes
+            );
+        $this->executionLeases->allocateForClientDevice(
+            $clientId,
+            $deviceId,
+            $readyCandidateIds,
+            $desiredCount,
+            $lockedAuthorization
+        );
+    }
+
+    /** @param array<int, mixed> $catalogIds @return array<int, int> */
+    private function normalizedCatalogIds(array $catalogIds): array
+    {
+        $normalized = [];
+        foreach ($catalogIds as $catalogId) {
+            $catalogId = (int) $catalogId;
+            if ($catalogId > 0) {
+                $normalized[$catalogId] = $catalogId;
+            }
+        }
+        ksort($normalized, SORT_NUMERIC);
+        return array_values($normalized);
+    }
+
+    /**
+     * @param array<int, int> $catalogIds
+     * @return array{0:string,1:array<string,int>}
+     */
+    private function catalogIdConstraint(array $catalogIds, string $column, string $prefix): array
+    {
+        $placeholders = [];
+        $params = [];
+        foreach ($catalogIds as $index => $catalogId) {
+            $key = $prefix . $index;
+            $placeholders[] = ':' . $key;
+            $params[$key] = $catalogId;
+        }
+        return [$column . ' IN (' . implode(', ', $placeholders) . ')', $params];
     }
 
     /**
@@ -473,6 +608,9 @@ final class LeigodLineCatalogService
                 $rejected++;
                 continue;
             }
+            $healthy = (string) ($row['service_state'] ?? '') === 'active'
+                && in_array((string) ($row['tcp_status'] ?? ''), ['ok', 'healthy'], true);
+            $consecutiveFailures = max(0, min(1000000, (int) ($row['consecutive_failures'] ?? 0)));
             try {
                 $this->executionLeases->acceptHealth(
                     $catalogId,
@@ -483,9 +621,8 @@ final class LeigodLineCatalogService
                         'owner_id' => $clientId,
                         'owner_device_id' => $deviceId,
                         'config_sha256' => strtolower(trim((string) ($row['config_sha256'] ?? ''))),
-                        'healthy' => (string) ($row['service_state'] ?? '') === 'active'
-                            && in_array((string) ($row['tcp_status'] ?? ''), ['ok', 'healthy'], true),
-                        'consecutive_failures' => (string) ($row['service_state'] ?? '') === 'active' ? 0 : 1,
+                        'healthy' => $healthy,
+                        'consecutive_failures' => $healthy ? 0 : max(1, $consecutiveFailures),
                     ]
                 );
                 $accepted++;
@@ -593,6 +730,144 @@ final class LeigodLineCatalogService
             }
         }
         return [];
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     * @return array<int, int>
+     */
+    public function clientExecutionCatalogIdsForForward(array $forward): array
+    {
+        $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
+        $routeId = (int) ($forward['forward_route_id'] ?? 0);
+        if ($combinationId <= 0 || $routeId <= 0) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT /* hybrid_client_catalog_ids */
+                    ll.id AS catalog_id,
+                    ll.line_id,
+                    ll.config_sha256,
+                    ll.is_active,
+                    ll.allow_client_execution,
+                    ll.sort_order AS catalog_sort_order
+             FROM forward_routes fr
+             INNER JOIN forward_route_combinations frc
+                ON frc.forward_route_id = fr.id
+               AND frc.forward_combination_id = :combination_id
+               AND frc.enabled = 1
+             INNER JOIN forward_combinations fc
+                ON fc.id = frc.forward_combination_id
+             INNER JOIN forward_combination_leigod_lines fcll
+                ON fcll.forward_combination_id = fc.id AND fcll.enabled = 1
+             INNER JOIN leigod_lines ll
+                ON ll.id = fcll.leigod_line_id
+               AND ll.is_active = 1
+               AND ll.allow_client_execution = 1
+             WHERE fr.id = :route_id
+               AND fr.is_active = 1
+               AND fc.is_active = 1
+               AND fc.backend_mode = :backend_mode
+               AND fc.client_mode = :client_mode
+               AND fc.sidecar_point_id IS NOT NULL
+             ORDER BY ll.sort_order ASC, ll.id ASC',
+            [
+                'combination_id' => $combinationId,
+                'route_id' => $routeId,
+                'backend_mode' => 'leigod_mode',
+                'client_mode' => 'bond',
+            ]
+        );
+        $catalogIds = [];
+        foreach ($rows as $row) {
+            $catalogId = (int) ($row['catalog_id'] ?? 0);
+            if ($catalogId > 0 && $this->configurationForLine($row)['state'] === 'ready') {
+                $catalogIds[$catalogId] = $catalogId;
+            }
+        }
+        return array_values($catalogIds);
+    }
+
+    /**
+     * Revalidates the exact forward memberships while the allocator holds the candidate line locks.
+     *
+     * @param array<int, int|string> $lockedCatalogIds
+     * @param array<int, array<string, mixed>> $approvedForwardScopes
+     * @return array<int, int>
+     */
+    private function lockedClientExecutionCatalogIds(
+        array $lockedCatalogIds,
+        array $approvedForwardScopes,
+    ): array {
+        $lockedCatalogIds = $this->normalizedCatalogIds($lockedCatalogIds);
+        if ($lockedCatalogIds === []) {
+            return [];
+        }
+        [$lockedWhere, $params] = $this->catalogIdConstraint(
+            $lockedCatalogIds,
+            'll.id',
+            'locked_catalog_'
+        );
+        $scopeClauses = [];
+        $scopeIndex = 0;
+        foreach ($approvedForwardScopes as $scope) {
+            if (!is_array($scope)) {
+                continue;
+            }
+            $routeId = (int) ($scope['route_id'] ?? 0);
+            $combinationId = (int) ($scope['combination_id'] ?? 0);
+            $scopeCatalogIds = array_values(array_intersect(
+                $lockedCatalogIds,
+                $this->normalizedCatalogIds(is_array($scope['catalog_ids'] ?? null) ? $scope['catalog_ids'] : [])
+            ));
+            if ($routeId <= 0 || $combinationId <= 0 || $scopeCatalogIds === []) {
+                continue;
+            }
+            [$scopeCatalogWhere, $scopeCatalogParams] = $this->catalogIdConstraint(
+                $scopeCatalogIds,
+                'll.id',
+                'scope_' . $scopeIndex . '_catalog_'
+            );
+            $routeKey = 'scope_route_' . $scopeIndex;
+            $combinationKey = 'scope_combination_' . $scopeIndex;
+            $scopeClauses[] = '(fr.id = :' . $routeKey
+                . ' AND fc.id = :' . $combinationKey
+                . ' AND ' . $scopeCatalogWhere . ')';
+            $params[$routeKey] = $routeId;
+            $params[$combinationKey] = $combinationId;
+            $params += $scopeCatalogParams;
+            $scopeIndex++;
+        }
+        if ($scopeClauses === []) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT /* hybrid_client_catalog_ids_locked */ ll.id AS catalog_id
+             FROM forward_routes fr
+             INNER JOIN forward_route_combinations frc
+                ON frc.forward_route_id = fr.id AND frc.enabled = 1
+             INNER JOIN forward_combinations fc
+                ON fc.id = frc.forward_combination_id
+             INNER JOIN forward_combination_leigod_lines fcll
+                ON fcll.forward_combination_id = fc.id AND fcll.enabled = 1
+             INNER JOIN leigod_lines ll
+                ON ll.id = fcll.leigod_line_id
+               AND ll.is_active = 1
+               AND ll.allow_client_execution = 1
+             WHERE ' . $lockedWhere . '
+               AND fr.is_active = 1
+               AND fc.is_active = 1
+               AND fc.backend_mode = :locked_backend_mode
+               AND fc.client_mode = :locked_client_mode
+               AND fc.sidecar_point_id IS NOT NULL
+               AND (' . implode(' OR ', $scopeClauses) . ')
+             FOR UPDATE',
+            $params + [
+                'locked_backend_mode' => 'leigod_mode',
+                'locked_client_mode' => 'bond',
+            ]
+        );
+        return $this->normalizedCatalogIds(array_column($rows, 'catalog_id'));
     }
 
     /** @return array<int, array<string, mixed>> */
@@ -907,7 +1182,8 @@ final class LeigodLineCatalogService
                AND fc.client_mode = :client_mode
                AND fc.sidecar_point_id IS NULL
                AND fcll.enabled = 1
-               AND ll.is_active = 1' . $leaseWhere . '
+               AND ll.is_active = 1
+               AND ll.allow_node_execution = 1' . $leaseWhere . '
              ORDER BY fcll.sort_order ASC, ll.sort_order ASC, ll.id ASC',
             $params
         );
@@ -972,7 +1248,9 @@ final class LeigodLineCatalogService
              INNER JOIN node_groups ng ON ng.group_key = fc.node_group_key
              INNER JOIN nodes n ON n.group_id = ng.id AND (n.status = :node_active OR n.status = :node_degraded)
              INNER JOIN forward_combination_leigod_lines fcll ON fcll.forward_combination_id = fc.id AND fcll.enabled = 1
-             INNER JOIN leigod_lines ll ON ll.id = fcll.leigod_line_id AND ll.is_active = 1' . $leaseJoin . '
+             INNER JOIN leigod_lines ll ON ll.id = fcll.leigod_line_id
+                AND ll.is_active = 1
+                AND ll.allow_node_execution = 1' . $leaseJoin . '
              INNER JOIN node_leigod_line_health nllh ON nllh.node_id = n.id AND nllh.leigod_line_id = ll.id
              WHERE fr.id = :route_id
                AND fr.is_active = 1
@@ -1031,7 +1309,9 @@ final class LeigodLineCatalogService
              INNER JOIN node_groups ng ON ng.group_key = fc.node_group_key
              INNER JOIN nodes n ON n.group_id = ng.id AND (n.status = :node_active OR n.status = :node_degraded)
              INNER JOIN forward_combination_leigod_lines fcll ON fcll.forward_combination_id = fc.id AND fcll.enabled = 1
-             INNER JOIN leigod_lines ll ON ll.id = fcll.leigod_line_id AND ll.is_active = 1' . $leaseJoin . '
+             INNER JOIN leigod_lines ll ON ll.id = fcll.leigod_line_id
+                AND ll.is_active = 1
+                AND ll.allow_node_execution = 1' . $leaseJoin . '
              INNER JOIN node_leigod_line_health nllh ON nllh.node_id = n.id AND nllh.leigod_line_id = ll.id
              WHERE fc.id = :combination_id
                AND fc.is_active = 1
@@ -1234,6 +1514,25 @@ final class LeigodLineCatalogService
             return $value;
         }
         return !in_array(strtolower(trim((string) $value)), ['', '0', 'false', 'no', 'off'], true);
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function executionPolicyFlag(array $payload, string $key, bool $default): int
+    {
+        if (!array_key_exists($key, $payload)) {
+            return $default ? 1 : 0;
+        }
+        $value = $payload[$key];
+        if (is_bool($value)) {
+            return $value ? 1 : 0;
+        }
+        if (is_int($value) && ($value === 0 || $value === 1)) {
+            return $value;
+        }
+        if (is_string($value) && in_array(trim($value), ['0', '1'], true)) {
+            return (int) trim($value);
+        }
+        throw new ApiException('invalid_leigod_line_execution_policy', 422, ['field' => $key]);
     }
 
     private function validProbeHost(string $host): bool

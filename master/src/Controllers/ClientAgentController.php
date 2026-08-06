@@ -28,8 +28,6 @@ final class ClientAgentController extends BaseController
         $deviceSessionService = new ClientOnlineSessionService($this->db);
         $deviceId = $deviceSessionService->enforceFromRequest($client, $request, 'pull');
         $deviceSession = $deviceSessionService->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
-        $revision = (new ClientConfigRevisionService($this->db))->current((int) $client['id']);
-        $etag = '"client-' . (int) $client['id'] . '-r' . $revision . '"';
         $forwards = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
         $clientAgent = $this->artifactMetadata('client_agent');
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
@@ -50,12 +48,28 @@ final class ClientAgentController extends BaseController
         );
         $linuxProfileRuntime = null;
         $runtimePlatformScope = (string) ($client['runtime_platform_scope'] ?? 'all');
+        $approvedLinuxHybridCatalogIds = [];
+        $approvedLinuxHybridScopes = [];
+        $this->provisioning->hasApprovedLinuxHybridAssignment(
+            $client,
+            $deviceSession,
+            is_array($forwards) ? $forwards : [],
+            $approvedLinuxHybridCatalogIds,
+            $approvedLinuxHybridScopes
+        );
         if (in_array($runtimePlatformScope, ['all', 'linux'], true)) {
             $linuxProfileRuntime = $this->provisioning->linuxProfileRuntimeForClient($client, is_array($forwards) ? $forwards : []);
         }
         $linuxPathLeases = in_array($runtimePlatformScope, ['all', 'linux'], true)
-            ? $this->provisioning->desiredLeigodLineManagementForClientDevice((int) $client['id'], $deviceId)
+            ? $this->provisioning->desiredLeigodLineManagementForClientDevice(
+                (int) $client['id'],
+                $deviceId,
+                $approvedLinuxHybridCatalogIds,
+                $approvedLinuxHybridScopes
+            )
             : ['lines' => []];
+        $revision = (new ClientConfigRevisionService($this->db))->current((int) $client['id']);
+        $etag = '"client-' . (int) $client['id'] . '-r' . $revision . '"';
 
         return $this->json([
             'ok' => true,

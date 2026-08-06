@@ -242,6 +242,10 @@ namespace {
             failManagement('NodeController.php missing ' . $needle);
         }
     }
+    $catalogSource = file_get_contents(__DIR__ . '/../src/Support/LeigodLineCatalogService.php') ?: '';
+    if (substr_count($catalogSource, 'AND ll.allow_node_execution = 1') < 3) {
+        failManagement('node projection and both candidate queries must enforce allow_node_execution');
+    }
 
     @unlink($envPath);
     @unlink($leaseEnvPath);

@@ -134,9 +134,19 @@ final class ProvisioningService
     }
 
     /** @return array{lines:array<int, array<string, mixed>>,session_json?:string} */
-    public function desiredLeigodLineManagementForClientDevice(int $clientId, string $deviceId): array
+    public function desiredLeigodLineManagementForClientDevice(
+        int $clientId,
+        string $deviceId,
+        array $approvedCatalogIds = [],
+        array $approvedForwardScopes = [],
+    ): array
     {
-        $lines = $this->leigodLineCatalog()->desiredLinesForClientDevice($clientId, $deviceId);
+        $lines = $this->leigodLineCatalog()->desiredLinesForClientDevice(
+            $clientId,
+            $deviceId,
+            $approvedCatalogIds,
+            $approvedForwardScopes
+        );
         if ($lines === []) {
             return ['lines' => []];
         }
@@ -144,6 +154,57 @@ final class ProvisioningService
             'lines' => $lines,
             'session_json' => $this->leigodSharedSessionJson(),
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $client
+     * @param array<string, mixed>|null $deviceSession
+     * @param array<int, array<string, mixed>> $forwards
+     */
+    public function hasApprovedLinuxHybridAssignment(
+        array $client,
+        ?array $deviceSession,
+        array $forwards,
+        ?array &$approvedCatalogIds = null,
+        ?array &$approvedForwardScopes = null,
+    ): bool {
+        $approvedCatalogIds = [];
+        $approvedForwardScopes = [];
+        if (!is_array($deviceSession)
+            || !$this->leigodHybridRuntimeService->supportsClientDevice($client, $deviceSession)) {
+            return false;
+        }
+        foreach ($forwards as $forward) {
+            if (!is_array($forward)) {
+                continue;
+            }
+            if ((string) ($forward['service_status'] ?? '') !== 'active') {
+                continue;
+            }
+            $endpoints = is_array($forward['endpoints'] ?? null) ? $forward['endpoints'] : [];
+            $forwardCatalogIds = $this->leigodHybridRuntimeService->preflightClientCatalogIds(
+                $forward,
+                $client,
+                $deviceSession,
+                $endpoints
+            );
+            foreach ($forwardCatalogIds as $catalogId) {
+                $catalogId = (int) $catalogId;
+                if ($catalogId > 0) {
+                    $approvedCatalogIds[$catalogId] = $catalogId;
+                }
+            }
+            if ($forwardCatalogIds !== []) {
+                $approvedForwardScopes[] = [
+                    'route_id' => (int) ($forward['forward_route_id'] ?? 0),
+                    'combination_id' => (int) ($forward['forward_combination_id'] ?? 0),
+                    'catalog_ids' => array_values(array_map('intval', $forwardCatalogIds)),
+                ];
+            }
+        }
+        ksort($approvedCatalogIds, SORT_NUMERIC);
+        $approvedCatalogIds = array_values($approvedCatalogIds);
+        return $approvedCatalogIds !== [];
     }
 
     /**
@@ -4753,9 +4814,12 @@ final class ProvisioningService
             'service_name' => (string) $forward['service_name'],
             'listen_port' => (int) $forward['listen_port'],
             'target' => $forward['target_host'] . ':' . $forward['target_port'],
+            'target_host' => $forward['target_host'],
+            'target_port' => $forward['target_port'],
             'bond_sidecar_point_id' => $sidecarRequired && $forward['bond_sidecar_point_id'] !== null ? (int) $forward['bond_sidecar_point_id'] : null,
             'bond_sidecar_point_name' => $sidecarRequired ? (string) ($forward['bond_sidecar_point_name'] ?? '') : '',
             'forward_combination_id' => $forward['forward_combination_id'] !== null ? (int) $forward['forward_combination_id'] : null,
+            'forward_route_id' => isset($forward['forward_route_id']) ? (int) $forward['forward_route_id'] : null,
             'forward_combination_name' => (string) ($forward['forward_combination_name'] ?? ''),
             'forward_combination_label' => (string) ($forward['forward_combination_label'] ?? ''),
             'forward_combination_runtime_preference' => $runtimePreference,
@@ -4826,6 +4890,7 @@ final class ProvisioningService
                 }
                 $item = [
                     'endpoint_id' => (int) $endpoint['id'],
+                    'node_id' => (int) ($endpoint['node_id'] ?? 0),
                     'node' => (string) $endpoint['node_name'],
                     'host' => $this->resolveEndpointPublicHost($endpoint),
                     'port' => (int) $endpoint['public_port'],

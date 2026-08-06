@@ -156,6 +156,26 @@ namespace {
     ]);
     assertCatalogSame(1, (int) ($savedReady['is_active'] ?? 0), 'ready row remains active');
     assertCatalogSame('ready', $savedReady['configuration_state'] ?? null, 'saved ready state');
+    assertCatalogSame(1, (int) ($savedReady['allow_node_execution'] ?? 0), 'node execution defaults on');
+    assertCatalogSame(0, (int) ($savedReady['allow_client_execution'] ?? 1), 'client execution defaults off');
+    assertCatalogSame(2, (int) ($savedReady['max_parallel_lanes'] ?? 0), 'parallel lanes default');
+
+    $savedPolicy = $service->saveLine([
+        'id' => (int) $savedReady['id'],
+        'line_id' => 9001,
+        'label' => 'Flexible A',
+        'tcp_probe_host' => '162.245.221.78',
+        'tcp_probe_port' => 80,
+        'config_sha256' => $hash,
+        'is_active' => 1,
+        'allow_node_execution' => '0',
+        'allow_client_execution' => '1',
+        'max_parallel_lanes' => '4',
+        'sort_order' => 10,
+    ]);
+    assertCatalogSame(0, (int) ($savedPolicy['allow_node_execution'] ?? 1), 'node execution policy persisted');
+    assertCatalogSame(1, (int) ($savedPolicy['allow_client_execution'] ?? 0), 'client execution policy persisted');
+    assertCatalogSame(4, (int) ($savedPolicy['max_parallel_lanes'] ?? 0), 'parallel lane policy persisted');
 
     $savedMismatch = $service->saveLine([
         'id' => (int) $savedReady['id'],
@@ -169,6 +189,9 @@ namespace {
     ]);
     assertCatalogSame(0, (int) ($savedMismatch['is_active'] ?? 1), 'hash mismatch forced inactive');
     assertCatalogSame('hash_mismatch', $savedMismatch['configuration_state'] ?? null, 'saved hash mismatch state');
+    assertCatalogSame(0, (int) ($savedMismatch['allow_node_execution'] ?? 1), 'omitted update preserves node execution policy');
+    assertCatalogSame(1, (int) ($savedMismatch['allow_client_execution'] ?? 0), 'omitted update preserves client execution policy');
+    assertCatalogSame(4, (int) ($savedMismatch['max_parallel_lanes'] ?? 0), 'omitted update preserves lane policy');
     $savedReady = $service->saveLine([
         'id' => (int) $savedReady['id'],
         'line_id' => 9001,
@@ -235,6 +258,24 @@ namespace {
         'udp_probe_port' => 53,
         'udp_probe_method' => 'guess',
         'config_sha256' => str_repeat('0', 64),
+    ]));
+    foreach ([0, 5, '2x'] as $invalidLanes) {
+        assertCatalogError('invalid_leigod_line_max_parallel_lanes', fn() => $service->saveLine([
+            'line_id' => 9004,
+            'label' => 'Bad lanes',
+            'tcp_probe_host' => '162.245.221.78',
+            'tcp_probe_port' => 80,
+            'config_sha256' => str_repeat('0', 64),
+            'max_parallel_lanes' => $invalidLanes,
+        ]));
+    }
+    assertCatalogError('invalid_leigod_line_execution_policy', fn() => $service->saveLine([
+        'line_id' => 9004,
+        'label' => 'Bad client policy',
+        'tcp_probe_host' => '162.245.221.78',
+        'tcp_probe_port' => 80,
+        'config_sha256' => str_repeat('0', 64),
+        'allow_client_execution' => 'yes',
     ]));
 
     $db->membershipCounts[(int) $savedReady['id']] = 1;

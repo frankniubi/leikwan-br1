@@ -8,6 +8,8 @@ namespace Leikwan\Master\Database {
         public array $localLeases = [];
         /** @var array<int, array<string, mixed>> */
         public array $candidateRows = [];
+        /** @var array<int, array<string, mixed>> */
+        public array $clientCatalogRows = [];
         /** @var array<string, mixed>|null */
         public ?array $egressProfile = null;
         /** @var array<int, array<string, mixed>> */
@@ -17,7 +19,48 @@ namespace Leikwan\Master\Database {
         public function fetchAll(string $sql, array $params = []): array
         {
             if (str_contains($sql, 'hybrid_local_leases')) {
-                return $this->localLeases;
+                $approvedIds = [];
+                foreach ($params as $key => $value) {
+                    if (str_starts_with((string) $key, 'hybrid_catalog_')) {
+                        $approvedIds[] = (int) $value;
+                    }
+                }
+                return array_values(array_filter(
+                    $this->localLeases,
+                    static fn(array $lease): bool => $approvedIds === []
+                        || in_array((int) ($lease['catalog_id'] ?? 0), $approvedIds, true)
+                ));
+            }
+            if (str_contains($sql, 'FROM leigod_execution_leases lel')) {
+                $candidateIds = [];
+                foreach ($params as $key => $value) {
+                    if (str_starts_with((string) $key, 'candidate_')) {
+                        $candidateIds[] = (int) $value;
+                    }
+                }
+                return array_map(static fn(array $lease): array => [
+                    'catalog_id' => (int) $lease['catalog_id'],
+                    'line_id' => (int) $lease['physical_line_id'],
+                    'config_sha256' => (string) $lease['config_sha256'],
+                    'is_active' => 1,
+                    'allow_client_execution' => 1,
+                    'lease_id' => (string) $lease['lease_id'],
+                    'lease_generation' => (int) $lease['lease_generation'],
+                    'lease_state' => (string) $lease['lease_state'],
+                    'lease_owner_type' => 'client_device',
+                    'lease_owner_id' => 20,
+                    'lease_owner_device_id' => 'linux-device-a',
+                    'max_parallel_lanes' => (int) $lease['max_parallel_lanes'],
+                    'lease_ready_deadline_at' => (string) $lease['lease_expires_at'],
+                    'lease_expires_at' => (string) $lease['lease_expires_at'],
+                ], array_values(array_filter(
+                    $this->localLeases,
+                    static fn(array $lease): bool => $candidateIds === []
+                        || in_array((int) ($lease['catalog_id'] ?? 0), $candidateIds, true)
+                )));
+            }
+            if (str_contains($sql, 'hybrid_client_catalog_ids')) {
+                return $this->clientCatalogRows;
             }
             if (str_contains($sql, 'node_leigod_line_health')) {
                 return $this->candidateRows;
@@ -91,6 +134,7 @@ namespace {
             'LEIGOD_LINE_TOML_451=' . base64_encode($localToml),
             'LEIGOD_LINE_TOML_452=' . base64_encode($nodeTomlA),
             'LEIGOD_LINE_TOML_453=' . base64_encode($nodeTomlB),
+            'LEIGOD_SESSION_JSON_B64=' . base64_encode('{"session":"hybrid-contract"}'),
         ];
         if (($overrides['secret_present'] ?? true) === true) {
             $env[] = $secretRef . '=egress-secret';
@@ -147,6 +191,16 @@ namespace {
             $candidate(101, 452, $nodeTomlA, '00000000-0000-4000-8000-000000000101'),
             $candidate(102, 453, $nodeTomlB, '00000000-0000-4000-8000-000000000102'),
         ];
+        $defaultClientCatalogRows = [[
+            'catalog_id' => 11,
+            'line_id' => 451,
+            'config_sha256' => hash('sha256', $localToml),
+            'is_active' => 1,
+            'allow_client_execution' => 1,
+        ]];
+        $db->clientCatalogRows = is_array($overrides['client_catalog_rows'] ?? null)
+            ? $overrides['client_catalog_rows']
+            : $defaultClientCatalogRows;
         if (($overrides['single_execution_group'] ?? false) === true) {
             $db->candidateRows = [];
         }
@@ -173,6 +227,7 @@ namespace {
             'transport_mode' => 'tcp',
             'target_host' => 'v4-hkt-b.mcbar.cc',
             'target_port' => 5201,
+            'path_prefix' => 'hybrid-70',
             'forward_route_id' => 80,
             'forward_combination_id' => 100,
             'bond_sidecar_point_id' => 99,
