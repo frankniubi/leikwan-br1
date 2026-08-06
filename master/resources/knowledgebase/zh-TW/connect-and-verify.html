@@ -23,6 +23,10 @@ C --&gt; H[測試實際應用協定]
 F --&gt; H
 G --&gt; H</pre>
 <p>決定使用哪個位址的關鍵，是應用程式在哪裡執行。同一台裝置使用迴送位址；跨裝置只能透過可連到的 Windows 或 Linux 用戶端主機，且可能需要調整網路存取規則。Android 仍維持只監聽迴送位址，除非另有核准且支援的架構。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="轉發結果卡片顯示本機監聽位址、目標、傳輸方式和 Running 狀態">
+  <figcaption>示範截圖：連線應用程式時，使用自己 Forward 卡片上的本機監聽值。</figcaption>
+</figure>
 <ol>
   <li>應用程式在用戶端裝置時，填入 <code>127.0.0.1</code> 和轉發的本機連接埠。</li>
   <li>其他裝置要透過 Windows 或 Linux 用戶端連線時，填入可連到的 Windows 或 Linux 用戶端主機位址和相同連接埠。</li>

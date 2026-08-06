@@ -20,16 +20,20 @@ D --&gt; E[儲存]
 E --&gt; F[等待轉發可用]
 F --&gt; G[記下分配的本機連接埠]</pre>
 <p>表單只需要線路方案、目標、偏好的本地連接埠和傳輸方式。儲存後會開始佈建；下一篇指南真正需要的是分配的本機連接埠。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表單顯示 Forward Route、Target Host、Target Port、Local Listen Port 和 Transport">
+  <figcaption>示範截圖：沒有指定連接埠時，把 Local Listen Port 留空，讓面板分配。</figcaption>
+</figure>
 <ol>
   <li>開啟有效服務，選擇<strong>建立轉發</strong>。</li>
-  <li>在<strong>轉發路由</strong>選擇面板提供的線路方案。</li>
-  <li>在<strong>目標主機</strong>填入目標位址。</li>
-  <li>在<strong>目標連接埠</strong>填入服務連接埠。</li>
-  <li>除非已取得特定且安全的連接埠，否則將<strong>本地監聽連接埠</strong>留空，接受系統分配。</li>
-  <li>在<strong>傳輸</strong>選擇 <strong>TCP</strong>，供只使用 TCP 的應用程式使用。</li>
+  <li>在 <strong>Forward Route</strong>（轉發路由）選擇面板提供的線路方案。</li>
+  <li>在 <strong>Target Host</strong>（目標主機）填入目標位址。</li>
+  <li>在 <strong>Target Port</strong>（目標連接埠）填入服務連接埠。</li>
+  <li>除非已取得特定且安全的連接埠，否則將 <strong>Local Listen Port</strong>（本地監聽連接埠）留空，接受系統分配。</li>
+  <li>在 <strong>Transport</strong>（傳輸）選擇 <strong>TCP</strong>，供只使用 TCP 的應用程式使用。</li>
   <li>應用程式同時需要兩種協定時，選擇 <strong>TCP + UDP</strong>。</li>
   <li>只有完全使用 UDP 的應用程式才選擇 <strong>UDP</strong>。</li>
-  <li>選擇<strong>建立轉發</strong>以儲存。</li>
+  <li>選擇 <strong>Create Forward</strong>（建立轉發）以儲存。</li>
   <li>等待佈建完成，再從轉發卡片記下系統分配的本機連接埠。</li>
 </ol>
 

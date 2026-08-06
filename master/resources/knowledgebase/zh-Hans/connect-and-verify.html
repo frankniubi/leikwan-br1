@@ -23,6 +23,10 @@ C --&gt; H[测试实际应用协议]
 F --&gt; H
 G --&gt; H</pre>
 <p>地址选择取决于应用在哪里运行。同机连接使用回环地址；跨设备只能通过网络可达的 Windows 或 Linux 客户端主机，并可能需要有限的网络放行；Android 的监听默认仅限回环，除非另有受支持的暴露方案。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发结果卡片显示本地监听地址、目标、传输类型和 Running 状态">
+  <figcaption>演示截图：连接应用时使用你自己的 Forward 卡片中的本地监听值。</figcaption>
+</figure>
 <ol>
   <li>应用与客户端同机时，填写 <code>127.0.0.1</code> 和转发的本地端口。</li>
   <li>另一台设备需要访问 Windows 或 Linux 客户端时，填写可访问的 Windows 或 Linux 客户端主机地址和相同端口。</li>

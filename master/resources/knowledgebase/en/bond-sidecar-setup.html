@@ -18,6 +18,10 @@ A[Client] --&gt; B[Managed Slave path]
 B --&gt; C[Sidecar]
 C --&gt; D[Target service]</pre>
 <p>The Sidecar sits between the managed path and the target service. It must be online and able to reach the backend, but users still verify the target application separately.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/06-target-endpoint.png" width="1440" height="960" alt="Target Endpoints form showing the host and all three listen port fields">
+  <figcaption>Demo screenshot. Only create a tenant-owned endpoint when the published route contract requires it.</figcaption>
+</figure>
 <ol>
   <li>Open <strong>Target Endpoints</strong> under <strong>Advanced</strong>.</li>
   <li>Select the <strong>Create</strong> tab.</li>

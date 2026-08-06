@@ -20,6 +20,10 @@ D --&gt; E{连接成功吗}
 E -- 是 --&gt; F[首次设置完成]
 E -- 否 --&gt; G[开始排查问题]</pre>
 <p>最短且安全的路径只有一次判断：真实应用请求通过本地监听端口并获得正确结果，就算完成；否则先保留现有转发，再从可见症状着手排查。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="租户概览页显示三步设置流程和 Create a forward 操作">
+  <figcaption>演示截图：套餐、数量和 ID 都是演示值，请以你自己的面板为准。</figcaption>
+</figure>
 <ol>
   <li>在租户面板中打开已生效的服务。</li>
   <li>选择 <strong>Create Forward</strong>。</li>

@@ -392,7 +392,7 @@ $requiredLocalizedArticleText = [
     ],
     'zh-TW' => [
         'getting-started-five-minute-overview' => ['有效方案', '建立轉發', '系統分配的本機連接埠', '實際應用協定', '應用程式要求成功', '儲存', '佈建', '最近同步', 'Running'],
-        'install-client' => ['下載 Windows App', 'Tenant → 線路', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '支援的 LeiGod 服務', 'Linux 安裝', '複製安裝指令', 'systemd', 'Python 3', '等同 root', '身分驗證權杖', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', '不能因此承諾 Android 支援 Race 或 MPTCP'],
+        'install-client' => ['下載 Windows App', '租戶 → 線路', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '支援的 LeiGod 服務', 'Linux 安裝', '複製安裝指令', 'systemd', 'Python 3', '等同 root', '身分驗證權杖', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', '不能因此承諾 Android 支援 Race 或 MPTCP'],
         'getting-started-first-forward-checklist' => ['有效', '建立轉發', '轉發路由', '目標主機', '目標連接埠', '本地監聽連接埠', '傳輸', 'TCP', 'TCP + UDP', 'UDP', '儲存', '佈建', '最近同步', 'Running', '應用程式成功'],
         'connect-and-verify' => ['127.0.0.1', '可連到的 Windows 或 Linux 用戶端主機位址', '防火牆', '安全群組', 'NAT', 'Android', '只監聽迴送位址', '實際應用協定', '目標服務記錄', '公用 IP'],
         'connection-modes-single-race-bond' => ['Single', 'Race', 'Bond', '不是頻寬聚合', '每條連線選出一條勝出路徑', '資料包送往多條可用路徑', '至少兩個可用端點', '依用戶端平台而異', 'Android 不承諾 Race 或 MPTCP', '已發布的線路約定', '僅在線路約定要求時使用 Sidecar', '速度加倍', '跑滿頻寬', '所有路徑'],
@@ -476,6 +476,21 @@ foreach ($topics as $topicKey => $topic) {
         assertCatalogSame($expectedSectionRoles, $normalizedRoles, $topicKey . ': ' . $locale . ' section roles must match every language');
 
         assertCatalog(str_contains($body, '<ol>'), $topicKey . ': actions must be presented as short ordered steps');
+        if ($topicKey !== 'glossary') {
+            $images = catalogElementsByTag($body, 'img');
+            assertCatalog($images !== [], $topicKey . ': operation screenshot is required');
+            foreach ($images as $image) {
+                $src = $image->getAttribute('src');
+                assertCatalog(
+                    preg_match('~^/assets/knowledgebase/screenshots/tenant/[0-9]{2}-[a-z-]+\.png$~D', $src) === 1,
+                    $topicKey . ': invalid screenshot path ' . $src
+                );
+                assertCatalog(trim($image->getAttribute('alt')) !== '', $topicKey . ': screenshot alt text is required');
+                assertCatalog($image->hasAttribute('width') && $image->hasAttribute('height'), $topicKey . ': screenshot dimensions are required');
+                $imagePath = __DIR__ . '/../public' . $src;
+                assertCatalog(is_file($imagePath) && filesize($imagePath) > 0, $topicKey . ': screenshot file is missing ' . $src);
+            }
+        }
         if ($locale === 'en') {
             assertCatalog(str_contains($body, '<strong>Stop'), $topicKey . ': failure guidance must include a safe stop');
             foreach ($requiredArticleText[$topicKey] as $requiredText) {
