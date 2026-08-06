@@ -175,7 +175,9 @@ git commit -m "docs: add tenant guide screenshots"
 - Modify: `master/resources/knowledgebase/zh-Hans/*.html`
 - Modify: `master/resources/knowledgebase/zh-TW/*.html`
 - Modify: `master/src/Controllers/AuthController.php:796-1030`
+- Modify: `master/src/Support/KnowledgebaseHtmlSanitizer.php`
 - Test: `master/tests/knowledgebase_content_catalog_test.php`
+- Test: `master/tests/knowledgebase_html_sanitizer_test.php`
 
 - [ ] **Step 1: Extend the content catalog test for screenshots and static tenant links**
 
@@ -228,6 +230,8 @@ Update titles and excerpts in `topics.php` to match the rewritten article headin
 
 Keep the existing Mermaid responsive rules and add a mobile rule that preserves readable captions and prevents image overflow.
 
+Before the reader can display the new markup, extend `KnowledgebaseHtmlSanitizer` with `figure` and `figcaption` tags and allow the exact published asset prefix `/assets/knowledgebase/screenshots/tenant/` in `isAllowedImage()`. Keep `src`, `alt`, `width`, and `height` as the only image attributes; add a sanitizer regression case proving external and traversal paths are still rejected.
+
 - [ ] **Step 6: Regenerate the multilingual seed and run the catalog test**
 
 Run:
@@ -250,7 +254,7 @@ git commit -m "docs: rewrite tenant knowledgebase as screenshot guide"
 
 **Files:**
 - Create: `master/migrations/20260806_refresh_tenant_user_guides.sql`
-- Modify: `master/tests/knowledgebase_migration_behavior_test.php`
+- Create: `master/scripts/build_knowledgebase_refresh.php`
 - Test: `master/tests/knowledgebase_refresh_migration_test.php`
 
 - [ ] **Step 1: Write the migration behavior test fixtures**
@@ -264,7 +268,7 @@ Expected: FAIL because `20260806_refresh_tenant_user_guides.sql` does not exist.
 
 - [ ] **Step 3: Generate the guarded update statements**
 
-For every updated topic and locale, generate an `UPDATE knowledgebase_articles AS article INNER JOIN knowledgebase_topics AS topic ...` statement that sets title, excerpt, body, status, published timestamp, and updated timestamp only when:
+Implement `master/scripts/build_knowledgebase_refresh.php` with the pre-release body hash map and emit one portable `UPDATE knowledgebase_articles` statement per updated topic and locale. Each statement sets title, excerpt, body, status, published timestamp, and updated timestamp only when:
 
 ```sql
 topic.topic_key = '<topic>'
@@ -272,7 +276,7 @@ AND article.locale = '<locale>'
 AND SHA2(article.body_html, 256) = '<old-resource-sha256>'
 ```
 
-Use the old resource hash from `git show refs/heads/master:<path>` and the new body from the versioned resource file. Do not use `UPDATE` without the topic, locale, and hash predicates. Keep the SQL valid for the project MySQL version and avoid `ON DUPLICATE KEY` or destructive deletes.
+Use the old resource hash from `git show refs/heads/master:<path>` and the new body from the versioned resource file. Use a correlated `topic_id IN (SELECT id ...)` predicate so the SQL works on the project MySQL version and the SQLite behavior fixture. Do not use `UPDATE` without the topic, locale, and hash predicates. Avoid `ON DUPLICATE KEY` or destructive deletes.
 
 - [ ] **Step 4: Run the migration behavior test**
 
@@ -283,7 +287,7 @@ php master/tests/knowledgebase_refresh_migration_test.php
 php master/tests/knowledgebase_migration_behavior_test.php
 ```
 
-Expected: the guarded update test passes, the existing 25-article migration behavior remains passing, and the edited fixture remains unchanged.
+Expected: the guarded update test passes, the existing 25-article migration behavior remains passing, and the edited fixture remains unchanged. The SQLite test registers a local `SHA2(..., 256)` function only for verification; production uses MySQL's built-in function.
 
 - [ ] **Step 5: Commit the refresh migration and tests**
 
