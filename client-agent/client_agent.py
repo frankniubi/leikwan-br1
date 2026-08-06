@@ -32,7 +32,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.08.06.2"
+AGENT_VERSION = "2026.08.06.5"
+PATHD_LOCAL_SOCKS_PORT_MIN = 20000
+PATHD_LOCAL_SOCKS_PORT_MAX = 65535
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -487,6 +489,7 @@ class ClientAgent:
         self.config_watch_thread = None
         self.latest_linux_path_leases: dict = {"lines": []}
         self.latest_pathd_metadata: dict[str, str] = {}
+        self.pathd_failure_counts: dict[str, int] = {}
         logging.basicConfig(
             level=getattr(logging, str(self.config.get("log_level", "INFO")).upper(), logging.INFO),
             format="%(asctime)s %(levelname)s %(message)s",
@@ -1453,7 +1456,11 @@ class ClientAgent:
                 raise RuntimeError("pathd local provider config is invalid")
             if not hmac.compare_digest(hashlib.sha256(config_toml.encode("utf-8")).hexdigest(), config_sha256):
                 raise RuntimeError("pathd local provider config hash mismatch")
-            if socks_host != "127.0.0.1" or socks_port < 20000 or socks_port > 29999:
+            if (
+                socks_host != "127.0.0.1"
+                or socks_port < PATHD_LOCAL_SOCKS_PORT_MIN
+                or socks_port > PATHD_LOCAL_SOCKS_PORT_MAX
+            ):
                 raise RuntimeError("pathd local SOCKS endpoint is invalid")
             expires_at_unix = self._pathd_expiry(raw.get("expires_at"))
             if state == "pending":
@@ -1480,8 +1487,8 @@ class ClientAgent:
             "binary": str(self.leigod_binary_path()),
             "session_json": session_json,
             "session_sha256": hashlib.sha256(session_json.encode("utf-8")).hexdigest(),
-            "local_socks_port_min": 20000,
-            "local_socks_port_max": 29999,
+            "local_socks_port_min": PATHD_LOCAL_SOCKS_PORT_MIN,
+            "local_socks_port_max": PATHD_LOCAL_SOCKS_PORT_MAX,
         }
         return {"provider": provider, "local_leases": normalized}, by_line
 
@@ -1764,7 +1771,17 @@ class ClientAgent:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return {}
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            return {}
+        try:
+            observed_at = int(payload.get("observed_at_unix", 0) or 0)
+            now = int(self._clock())
+            max_age = max(2, min(60, int(self.config.get("pathd_status_max_age_seconds", 10) or 10)))
+        except (TypeError, ValueError, OverflowError):
+            return {}
+        if observed_at <= 0 or observed_at > now + 5 or now - observed_at > max_age:
+            return {}
+        return payload
 
     def _pathd_status_accepts(self, desired: dict) -> bool:
         status = self.load_pathd_status()
@@ -1916,6 +1933,7 @@ class ClientAgent:
                 if line_id > 0:
                     desired_lines[line_id] = row
         local_lines = []
+        active_failure_fences = set()
         for row in status.get("local_lines", []) if isinstance(status.get("local_lines"), list) else []:
             if not isinstance(row, dict) or len(local_lines) >= 16:
                 continue
@@ -1943,6 +1961,17 @@ class ClientAgent:
                 row.get("last_error_code"),
                 {"provider_process_exited", "tcp_connect_failed"},
             )
+            service_state = enum_value(row.get("service_state"), {"active", "failed"})
+            tcp_status = enum_value(row.get("tcp_status"), {"ok", "unreachable", "unknown"})
+            healthy = service_state == "active" and tcp_status == "ok"
+            failure_fence = f"{line_id}:{lease_id}:{lease_generation}"
+            active_failure_fences.add(failure_fence)
+            if healthy:
+                consecutive_failures = 0
+                self.pathd_failure_counts.pop(failure_fence, None)
+            else:
+                consecutive_failures = min(1_000_000, self.pathd_failure_counts.get(failure_fence, 0) + 1)
+                self.pathd_failure_counts[failure_fence] = consecutive_failures
             local_lines.append(
                 {
                     "catalog_id": bounded_int(desired.get("catalog_id"), (1 << 63) - 1),
@@ -1950,16 +1979,21 @@ class ClientAgent:
                     "lease_id": lease_id,
                     "lease_generation": lease_generation,
                     "config_sha256": config_sha256,
-                    "service_state": enum_value(row.get("service_state"), {"active", "failed"}),
-                    "tcp_status": enum_value(row.get("tcp_status"), {"ok", "unreachable", "unknown"}),
+                    "service_state": service_state,
+                    "tcp_status": tcp_status,
                     "tcp_connect_ms": tcp_connect_ms,
                     "last_error_code": "" if last_error_code == "unknown" else last_error_code,
+                    "consecutive_failures": consecutive_failures,
                 }
             )
+        self.pathd_failure_counts = {
+            key: value for key, value in self.pathd_failure_counts.items() if key in active_failure_fences
+        }
         return {
             "capability": capability,
             "status": {
                 "generation": bounded_int(status.get("generation"), (1 << 63) - 1),
+                "observed_at_unix": bounded_int(status.get("observed_at_unix"), (1 << 63) - 1),
                 "status": enum_value(status.get("status"), {"ready", "degraded", "stopped"}),
                 "forwards": sanitized_forwards,
             },
@@ -2447,6 +2481,8 @@ class ClientAgent:
         desired_installer_version = str(client_meta.get("desired_installer_version", "") or "").strip()
         desired_installer_sha256 = str(client_meta.get("desired_installer_sha256", "") or "").strip().lower()
         desired_bond_sha256 = str(client_meta.get("desired_bond_sha256", "") or "").strip().lower()
+        desired_pathd_version = str(client_meta.get("desired_pathd_version", "") or "").strip()
+        desired_pathd_sha256 = str(client_meta.get("desired_pathd_sha256", "") or "").strip().lower()
         desired_mptcp_runtime_sha256 = str(client_meta.get("desired_mptcp_runtime_sha256", "") or "").strip().lower()
         desired_cfwg_watchdog_sha256 = str(client_meta.get("desired_cfwg_watchdog_sha256", "") or "").strip().lower()
         mismatches: list[str] = []
@@ -2471,6 +2507,11 @@ class ClientAgent:
             local_bond_sha256 = file_sha256(self.bond_binary_path()).lower()
             if local_bond_sha256 != desired_bond_sha256:
                 mismatches.append(f"bond={desired_bond_sha256}")
+
+        if desired_pathd_version and desired_pathd_sha256:
+            local_pathd_sha256 = file_sha256(self.pathd_binary_path()).lower()
+            if local_pathd_sha256 != desired_pathd_sha256:
+                mismatches.append(f"pathd={desired_pathd_version}:{desired_pathd_sha256}")
 
         if desired_mptcp_runtime_sha256:
             local_mptcp_runtime_sha256 = file_sha256(self.mptcp_client_path()).lower()

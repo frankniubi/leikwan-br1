@@ -166,6 +166,16 @@ class ClientAgentPathdRuntimeTests(unittest.TestCase):
         self.assertEqual("speed_max", desired["forwards"][0]["policy"]["default_strategy"])
         self.assertNotIn("auth-311", json.dumps(desired["forwards"][0], sort_keys=True))
 
+    def test_maximum_catalog_line_id_uses_the_maximum_valid_socks_port(self):
+        agent, _root, pathd_bin = self.make_agent()
+
+        desired = agent.build_pathd_desired(
+            self.payload(pathd_bin, forwards=[], lines=[self.leased_line(45535)])
+        )
+
+        self.assertEqual("127.0.0.1:65535", desired["local_leases"][0]["socks_addr"])
+        self.assertEqual(65535, desired["provider"]["local_socks_port_max"])
+
     def test_pending_lease_starts_provider_generation_without_forwards(self):
         commands = []
         holder = {}
@@ -177,6 +187,7 @@ class ClientAgentPathdRuntimeTests(unittest.TestCase):
                 holder["agent"].pathd_status_path().write_text(
                     json.dumps(
                         {
+                            "observed_at_unix": int(holder["agent"]._clock()),
                             "generation": desired["generation"],
                             "status": "degraded",
                             "forwards": {},
@@ -252,6 +263,7 @@ class ClientAgentPathdRuntimeTests(unittest.TestCase):
                 holder["agent"].pathd_status_path().write_text(
                     json.dumps(
                         {
+                            "observed_at_unix": int(holder["agent"]._clock()),
                             "generation": desired["generation"],
                             "status": "ready",
                             "forwards": {
@@ -506,6 +518,7 @@ class ClientAgentPathdRuntimeTests(unittest.TestCase):
         agent.pathd_status_path().write_text(
             json.dumps(
                 {
+                    "observed_at_unix": int(agent._clock()),
                     "generation": 12,
                     "status": "session-41",
                     "forwards": {
@@ -536,6 +549,49 @@ class ClientAgentPathdRuntimeTests(unittest.TestCase):
         self.assertNotIn("root-only", encoded)
         self.assertNotIn("line = 451", encoded)
         self.assertNotIn("session-41", encoded)
+
+    def test_stale_status_is_rejected_and_failed_line_count_accumulates_by_fence(self):
+        agent, _root, pathd_bin = self.make_agent()
+        payload = self.payload(pathd_bin)
+        agent.latest_linux_path_leases = payload["linux_path_leases"]
+        line = payload["linux_path_leases"]["lines"][0]
+        agent.pathd_status_path().parent.mkdir(parents=True, exist_ok=True)
+
+        def write_status(observed_at: int, service_state: str, tcp_status: str):
+            agent.pathd_status_path().write_text(
+                json.dumps(
+                    {
+                        "observed_at_unix": observed_at,
+                        "generation": 12,
+                        "status": "ready" if service_state == "active" else "degraded",
+                        "forwards": {"41": {"listener": "ready", "sessions": 0}},
+                        "local_lines": [
+                            {
+                                "line_id": 451,
+                                "lease_id": line["lease_id"],
+                                "lease_generation": 7,
+                                "config_sha256": line["config_sha256"],
+                                "service_state": service_state,
+                                "tcp_status": tcp_status,
+                                "tcp_connect_ms": 1,
+                                "last_error_code": "" if service_state == "active" else "provider_process_exited",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        now = int(agent._clock())
+        write_status(now, "failed", "unknown")
+        self.assertEqual(1, agent.pathd_heartbeat({})["local_lines"][0]["consecutive_failures"])
+        self.assertEqual(2, agent.pathd_heartbeat({})["local_lines"][0]["consecutive_failures"])
+
+        write_status(now, "active", "ok")
+        self.assertEqual(0, agent.pathd_heartbeat({})["local_lines"][0]["consecutive_failures"])
+
+        write_status(now - 30, "active", "ok")
+        self.assertEqual([], agent.pathd_heartbeat({})["local_lines"])
 
 
 if __name__ == "__main__":

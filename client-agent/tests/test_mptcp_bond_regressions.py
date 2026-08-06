@@ -9,6 +9,7 @@ import sys
 import tempfile
 import types
 import unittest
+import urllib.parse
 from types import SimpleNamespace
 from unittest import mock
 
@@ -88,7 +89,7 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
 
             def fake_pull(method: str, url: str, token: str, payload: dict | None = None):
                 self.assertEqual(method, "GET")
-                self.assertTrue(url.endswith("/api/client/configs/pull"))
+                self.assertEqual("/api/client/configs/pull", urllib.parse.urlparse(url).path)
                 return ({"forwards": [], "client": {"id": 123}}, {"date": "Sun, 19 Apr 2026 12:00:00 GMT"})
 
             def fake_post(method: str, url: str, token: str, payload: dict | None = None):

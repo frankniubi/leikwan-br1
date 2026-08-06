@@ -1,11 +1,88 @@
+import hashlib
+import importlib.util
+import json
 import pathlib
+import sys
+import tempfile
 import unittest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
+def load_client_agent_module():
+    path = REPO_ROOT / "client-agent" / "client_agent.py"
+    spec = importlib.util.spec_from_file_location("client_agent_installer_helper_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+client_agent = load_client_agent_module()
+
+
 class ClientAgentInstallerHelperTests(unittest.TestCase):
+    def make_agent_with_pathd(self, content: bytes | None):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        root = pathlib.Path(temp_dir.name)
+        pathd_bin = root / "bin" / "leikwan-pathd"
+        if content is not None:
+            pathd_bin.parent.mkdir(parents=True)
+            pathd_bin.write_bytes(content)
+        config_path = root / "config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "master_url": "https://panel.example.test",
+                    "agent_token": "agent-token",
+                    "client_id": 20,
+                    "state_dir": str(root / "state"),
+                    "pathd_bin": str(pathd_bin),
+                }
+            ),
+            encoding="utf-8",
+        )
+        return client_agent.ClientAgent(config_path)
+
+    @staticmethod
+    def pathd_metadata(content: bytes) -> dict[str, str]:
+        return {
+            "desired_pathd_version": "0.2.0",
+            "desired_pathd_sha256": hashlib.sha256(content).hexdigest(),
+        }
+
+    def test_auto_update_requests_installer_when_pathd_is_missing(self) -> None:
+        expected_content = b"current-pathd"
+        agent = self.make_agent_with_pathd(None)
+
+        token = agent.auto_update_request_token(self.pathd_metadata(expected_content))
+
+        self.assertIn("pathd=0.2.0", token)
+        self.assertIn(hashlib.sha256(expected_content).hexdigest(), token)
+
+    def test_auto_update_requests_installer_when_pathd_is_stale(self) -> None:
+        expected_content = b"current-pathd"
+        agent = self.make_agent_with_pathd(b"stale-pathd")
+
+        token = agent.auto_update_request_token(self.pathd_metadata(expected_content))
+
+        self.assertIn("pathd=0.2.0", token)
+        self.assertIn(hashlib.sha256(expected_content).hexdigest(), token)
+
+    def test_auto_update_skips_matching_pathd(self) -> None:
+        expected_content = b"current-pathd"
+        agent = self.make_agent_with_pathd(expected_content)
+
+        self.assertEqual("", agent.auto_update_request_token(self.pathd_metadata(expected_content)))
+
+    def test_auto_update_remains_compatible_without_pathd_metadata(self) -> None:
+        agent = self.make_agent_with_pathd(None)
+
+        self.assertEqual("", agent.auto_update_request_token({}))
+
     def test_installer_deploys_update_helper(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 
