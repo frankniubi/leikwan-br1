@@ -133,6 +133,10 @@ final class SidecarAgentController extends BaseController
         $sidecarUplinkManagement = $this->provisioning->slaveSidecarUplinkManagementForPoint((int) $point['id']);
         $pointId = (int) ($point['id'] ?? 0);
         $serverSideLeigodBondPolicy = $this->provisioning->serverSideLeigodBondPolicyForPoint($pointId);
+        $configuredStartupWarmupBytes = array_key_exists('bond_startup_warmup_bytes_per_leg', $runtimeState)
+            ? (int) $runtimeState['bond_startup_warmup_bytes_per_leg']
+            : $this->config->getInt('BOND_STARTUP_WARMUP_BYTES_PER_LEG', 0);
+        $startupWarmupBytesPerLeg = max(0, min(2 * 1024 * 1024, $configuredStartupWarmupBytes));
         $bondForwardIds = $this->bondRuntimeForwardIdsForPoint($pointId, $runtimeState);
         $cfRows = $this->db->fetchAll(
             'SELECT f.id, f.path_prefix, f.target_host, f.target_port, f.transport_mode,
@@ -266,6 +270,7 @@ final class SidecarAgentController extends BaseController
                     'token_secret' => (string) ($point['token_secret'] ?? ''),
                     'forward_ids' => $bondForwardIds,
                     'total_speed_limit_mbps' => ($point['total_speed_limit_mbps'] ?? null) !== null ? (int) $point['total_speed_limit_mbps'] : null,
+                    'startup_warmup_bytes_per_leg' => $startupWarmupBytesPerLeg,
                 ], $serverSideLeigodBondPolicy) : null,
                 'mptcp_runtime' => $hasMptcpRuntime ? [
                     'bind_host' => (string) ($point['bind_host'] ?? '0.0.0.0'),

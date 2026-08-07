@@ -19,9 +19,10 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.08.05.1"
+AGENT_VERSION = "2026.08.07.1"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
+MAX_BOND_STARTUP_WARMUP_BYTES_PER_LEG = 2 * 1024 * 1024
 DEFAULT_CONFIG = {
     "master_url": "",
     "agent_token": "",
@@ -103,6 +104,24 @@ def adaptive_bond_server_args(runtime: dict[str, object]) -> list[str]:
     for name, value in values.items():
         args.extend(["--" + name.replace("_", "-"), str(value)])
     return args
+
+
+def bond_startup_warmup_bytes_per_leg(runtime: dict[str, object]) -> int:
+    value = runtime.get("startup_warmup_bytes_per_leg", 0)
+    if isinstance(value, bool):
+        raise RuntimeError("invalid bond startup warmup bytes per leg")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("invalid bond startup warmup bytes per leg") from exc
+    if (
+        not math.isfinite(numeric)
+        or not numeric.is_integer()
+        or numeric < 0
+        or numeric > MAX_BOND_STARTUP_WARMUP_BYTES_PER_LEG
+    ):
+        raise RuntimeError("bond startup warmup bytes per leg must be an integer from 0 to 2097152")
+    return int(numeric)
 
 
 def shared_wireguard_interface_name(value: object, prefixes: tuple[str, ...]) -> str:
@@ -1721,6 +1740,11 @@ WantedBy=multi-user.target
                 mptcp_runtime = legacy_runtime
             else:
                 bond_runtime = legacy_runtime
+        startup_warmup_bytes_per_leg = (
+            bond_startup_warmup_bytes_per_leg(bond_runtime)
+            if isinstance(bond_runtime, dict)
+            else 0
+        )
 
         # Transit keep-set: the lw-sc-<point>-<idx> names the panel published THIS
         # cycle. Computed from the RAW published underlays (not the later L1677
@@ -2137,6 +2161,7 @@ WantedBy=multi-user.target
                 "log_level": str(self.config.get("log_level", "INFO")),
                 "allow_tcp_fallback": True,
                 "adaptive_line_admission": adaptive_server_args != [],
+                "startup_warmup_bytes_per_leg": startup_warmup_bytes_per_leg,
             }
             runtime_changed = write_text_if_changed(primary_runtime_path, json.dumps(runtime_config, ensure_ascii=False, indent=2) + "\n", mode=0o600)
             start_script_lines = [
@@ -2151,6 +2176,11 @@ WantedBy=multi-user.target
                 f'LISTEN="{runtime_config["listen_host"]}:{runtime_config["listen_port"]}"',
                 f'TOKEN_SECRET="{runtime_config["token_secret"]}"',
                 'exec "$BOND_SERVER" server --listen "$LISTEN" --token-secret "$TOKEN_SECRET"'
+                + (
+                    f" --startup-warmup-bytes-per-leg {startup_warmup_bytes_per_leg}"
+                    if startup_warmup_bytes_per_leg > 0
+                    else ""
+                )
                 + ((" " + " ".join(adaptive_server_args)) if adaptive_server_args else ""),
             ]
             start_script_changed = write_text_if_changed(primary_start_script, "\n".join(start_script_lines) + "\n", mode=0o755)

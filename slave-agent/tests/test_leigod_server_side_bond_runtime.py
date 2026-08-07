@@ -134,6 +134,7 @@ class LeigodServerSideBondRuntimeTests(unittest.TestCase):
                 "session_token": "signed-session-token.payload",
                 "legs": [{"leg_route_id": 451}, {"leg_route_id": 453}],
                 "adaptive_line_admission": True,
+                "initial_leg_wait_ms": 5_000,
                 "throughput_min_mbps": 10.0,
                 "throughput_relative_floor": 0.35,
                 "throughput_min_sample_bytes": 1_048_576,
@@ -170,6 +171,7 @@ class LeigodServerSideBondRuntimeTests(unittest.TestCase):
         self.assertEqual([451, 453], runtime["leg_route_ids"])
         self.assertEqual("signed-session-token.payload", runtime["session_token"])
         self.assertTrue(runtime["adaptive_line_admission"])
+        self.assertEqual(5_000, runtime["initial_leg_wait_ms"])
 
     def test_validation_accepts_parallel_lanes_for_one_physical_line(self):
         agent, _root, _bond_bin = self.make_agent()
@@ -268,6 +270,9 @@ class LeigodServerSideBondRuntimeTests(unittest.TestCase):
         self.assertIn("--listen 127.0.0.1:58316", unit)
         self.assertIn("leg_route_id=451", unit)
         self.assertIn("leg_route_id=453", unit)
+        self.assertIn("ExecStartPre=/bin/bash", unit)
+        self.assertIn("/dev/tcp/127.0.0.1/48316", unit)
+        self.assertIn("--initial-leg-wait-ms 5000", unit)
         self.assertIn("--adaptive-line-admission", unit)
         self.assertIn("--throughput-min-mbps 10.0", unit)
         self.assertNotIn("signed-session-token.payload", json.dumps(metadata))

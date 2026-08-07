@@ -166,7 +166,10 @@ namespace {
     if ($envPath === false) {
         fail('failed to create temp env file');
     }
-    $env = "DEFAULT_TLS_CERT_REF=default-edge-cert\nSIDECAR_DIRECT_TCP_POINT_IDS=44\n";
+    $env = "DEFAULT_TLS_CERT_REF=default-edge-cert\n"
+        . "SIDECAR_DIRECT_TCP_POINT_IDS=44\n"
+        . "BOND_LEIGOD_INITIAL_LEG_WAIT_MS=5000\n"
+        . "BOND_LEIGOD_STARTUP_WARMUP_BYTES_PER_LEG=1048576\n";
     foreach ($lineIds as $lineId) {
         $env .= 'LEIGOD_LINE_TOML_' . $lineId . '=' . base64_encode("line = {$lineId}\n") . "\n";
     }
@@ -375,6 +378,8 @@ namespace {
     assertSame($parallelLegRouteIds, array_column($serverPayload['leigod_forward']['candidates'] ?? [], 'leg_route_id'), 'relay parallel lanes');
     assertSame($parallelLegRouteIds, array_column($serverPayload['server_side_bond']['legs'] ?? [], 'leg_route_id'), 'server-only logical legs');
     assertSame(8, $serverPayload['server_side_bond']['preferred_initial_legs'] ?? null, 'parallel preferred legs');
+    assertSame(5000, $serverPayload['server_side_bond']['initial_leg_wait_ms'] ?? null, 'server bond initial readiness wait');
+    assertSame(1048576, $serverPayload['server_side_bond']['startup_warmup_bytes_per_leg'] ?? null, 'server receiver warmup policy');
     assertSame(2, $serverPayload['server_side_bond']['parallel_lanes_per_line'] ?? null, 'parallel lanes per line');
     assertSame(8, $serverPayload['server_side_bond']['parallel_leg_limit'] ?? null, 'parallel leg limit');
     assertSame(true, ($serverPayload['server_side_bond']['session_token'] ?? '') !== '', 'server bond token exists');
@@ -384,6 +389,11 @@ namespace {
         'slave_sidecar',
         $service->serverSideLeigodBondPolicyForPoint(44)['aggregation_placement'] ?? null,
         'sidecar management receives server-side policy'
+    );
+    assertSame(
+        1048576,
+        $service->serverSideLeigodBondPolicyForPoint(44)['startup_warmup_bytes_per_leg'] ?? null,
+        'sidecar management receives receiver warmup policy'
     );
     $sidecarControllerSource = file_get_contents(__DIR__ . '/../src/Controllers/SidecarAgentController.php');
     assertSame(

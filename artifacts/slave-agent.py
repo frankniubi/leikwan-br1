@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.08.06.1"
+AGENT_VERSION = "2026.08.07.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -4618,6 +4618,7 @@ StartLimitBurst=5
 Type=simple
 User=root
 EnvironmentFile={credential_path}
+ExecStartPre=/bin/bash -c 'for attempt in {{1..100}}; do if exec 9<>/dev/tcp/127.0.0.1/{relay_port} 2>/dev/null; then exec 9>&- 9<&-; exit 0; fi; sleep 0.05; done; echo "LeiGod bond relay 127.0.0.1:{relay_port} did not become ready" >&2; exit 1'
 ExecStart={bond_bin} client --protocol tcp --listen 127.0.0.1:{int(runtime['frontend_port'])} --legs {shell_arg(legs)} --session-token ${{BOND_SESSION_TOKEN}} --default-strategy speed_max --preferred-initial-legs {int(runtime['preferred_initial_legs'])} --minimum-initial-legs {int(runtime['minimum_initial_legs'])} --initial-leg-wait-ms {int(runtime['initial_leg_wait_ms'])} --leg-reconnect-backoff-ms {int(runtime['leg_reconnect_backoff_ms'])} --leg-reconnect-backoff-max-ms {int(runtime['leg_reconnect_backoff_max_ms'])} --warmup-leg-delay-ms {int(runtime['warmup_leg_delay_ms'])} --leg-cooldown-ms {int(runtime['leg_cooldown_ms'])} --adaptive-line-admission --throughput-min-mbps {float(runtime['throughput_min_mbps'])} --throughput-relative-floor {float(runtime['throughput_relative_floor'])} --throughput-min-sample-bytes {int(runtime['throughput_min_sample_bytes'])} --throughput-min-sample-ms {int(runtime['throughput_min_sample_ms'])} --throughput-bad-windows {int(runtime['throughput_bad_windows'])} --throughput-recovery-windows {int(runtime['throughput_recovery_windows'])} --throughput-quarantine-ms {int(runtime['throughput_quarantine_ms'])} --throughput-probe-interval-ms {int(runtime['throughput_probe_interval_ms'])} --throughput-probe-bytes {int(runtime['throughput_probe_bytes'])}
 Restart=on-failure
 RestartSec=3

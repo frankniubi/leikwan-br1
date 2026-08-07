@@ -1,11 +1,11 @@
 {
   "slave_agent": {
-    "version": "2026.08.06.1",
+    "version": "2026.08.07.1",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "48ad5d414dae328980537778bd87d7a0bf46c3ddf44c0a38d40a9b691f3daf3c",
-    "size_bytes": 368067,
-    "size": 368067
+    "sha256": "127990bff6e541fb517f6a5b7c3e3e1f32a6801e5a4f7343056cb600a3c1389e",
+    "size_bytes": 368313,
+    "size": 368313
   },
   "gost_linux_amd64": {
     "version": "3.2.6",
@@ -86,12 +86,12 @@
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
-    "version": "2026.08.05.1",
+    "version": "2026.08.07.1",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "3b8c0983ba4edb740ddaf987f26694bfc725b113fc81271fb930e911a76c3c57",
-    "size_bytes": 133730,
-    "size": 133730
+    "sha256": "455889d937371052937027bbe3fcda899cb87a489509eab8de20cf73b38b4fd3",
+    "size_bytes": 134945,
+    "size": 134945
   },
   "mptcp_client_runtime": {
     "version": "2026.06.06.1",
@@ -127,18 +127,18 @@
     "artifact_url": "/artifacts/leikwan-udp-uot-merge.py"
   },
   "leikwan_bond_linux_amd64": {
-    "version": "0.1.41",
+    "version": "0.1.43",
     "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64",
-    "sha256": "a7ec41102dfcb0c446b6d7c8fe412abb84270d34b26512b871a9aa2937ea62be",
-    "size_bytes": 9881608
+    "sha256": "12830adaa1ec5471c4fc5ec827650fab8a32d4ea0ab7c60232d8e6974e6f3209",
+    "size_bytes": 9927288
   },
   "leikwan_pathd_linux_amd64": {
-    "version": "0.1.41",
+    "version": "0.1.43",
     "path": "artifacts/wstunnel/leikwan-pathd_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-pathd_linux_amd64",
-    "sha256": "5d6f5f2ab8d514508793a95676afec775bb89b9d201aaf975c278ce3f2ef6a08",
-    "size_bytes": 9398488
+    "sha256": "687a68747b44a2f00185e2e936efc679bde70215ac295e38be8bacd13055a014",
+    "size_bytes": 9408552
   },
   "wstunnel_linux_amd64": {
     "version": "10.5.2",

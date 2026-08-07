@@ -910,9 +910,24 @@ final class ProvisioningService
             }
             return max($minimum, min($maximum, $value));
         };
+        $globalStartupWarmupBytes = max(
+            0,
+            min(2 * 1024 * 1024, $this->config->getInt('BOND_STARTUP_WARMUP_BYTES_PER_LEG', 0))
+        );
         return [
             'aggregation_placement' => 'slave_sidecar',
             'adaptive_line_admission' => true,
+            'initial_leg_wait_ms' => max(1, min(60000, $this->config->getInt('BOND_LEIGOD_INITIAL_LEG_WAIT_MS', 5000))),
+            'startup_warmup_bytes_per_leg' => max(
+                0,
+                min(
+                    2 * 1024 * 1024,
+                    $this->config->getInt(
+                        'BOND_LEIGOD_STARTUP_WARMUP_BYTES_PER_LEG',
+                        $globalStartupWarmupBytes
+                    )
+                )
+            ),
             'parallel_lanes_per_line' => max(1, min(4, $this->config->getInt('BOND_LEIGOD_PARALLEL_LANES_PER_LINE', 2))),
             'parallel_leg_limit' => max(2, min(8, $this->config->getInt('BOND_LEIGOD_PARALLEL_LEG_LIMIT', 8))),
             'throughput_min_mbps' => $floatConfig('BOND_LEIGOD_THROUGHPUT_MIN_MBPS', 10.0, 0.001, 10000.0),

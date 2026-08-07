@@ -1768,7 +1768,75 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             start_script = (state_dir / "start-sidecar.sh").read_text(encoding="utf-8")
             self.assertIn("/usr/local/bin/leikwan-bond", start_script)
             self.assertIn('exec "$BOND_SERVER" server --listen "$LISTEN" --token-secret "$TOKEN_SECRET"', start_script)
+            self.assertNotIn("--startup-warmup-bytes-per-leg", start_script)
             self.assertNotIn("leikwan-mptcp-relay\" server --config", start_script)
+
+    def test_sidecar_bond_runtime_renders_negotiated_startup_warmup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            state_dir = pathlib.Path(tmp_dir) / "sidecar-state"
+            runtime_path = pathlib.Path(tmp_dir) / "runtime.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                        "service_name": "leikwan-bond-sidecar-2",
+                        "runtime_config_path": str(runtime_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+            with mock.patch.object(agent, "ensure_relay_binary"):
+                with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                    with mock.patch.object(sidecar_agent_module.subprocess, "run"):
+                        agent.apply_management(
+                            {
+                                "bond_runtime": {
+                                    "bind_host": "0.0.0.0",
+                                    "listen_port": 14961,
+                                    "token_secret": "secret",
+                                    "forward_ids": [26],
+                                    "startup_warmup_bytes_per_leg": 1_048_576,
+                                }
+                            }
+                        )
+
+            start_script = (state_dir / "start-sidecar.sh").read_text(encoding="utf-8")
+            self.assertIn("--startup-warmup-bytes-per-leg 1048576", start_script)
+            self.assertEqual(
+                1_048_576,
+                json.loads(runtime_path.read_text(encoding="utf-8"))["startup_warmup_bytes_per_leg"],
+            )
+
+    def test_sidecar_bond_runtime_rejects_oversized_startup_warmup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "state_dir": str(pathlib.Path(tmp_dir) / "state"),
+                        "runtime_config_path": str(pathlib.Path(tmp_dir) / "runtime.json"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+
+            with self.assertRaisesRegex(RuntimeError, "startup warmup"):
+                agent.apply_management(
+                    {
+                        "bond_runtime": {
+                            "bind_host": "0.0.0.0",
+                            "listen_port": 14961,
+                            "token_secret": "secret",
+                            "startup_warmup_bytes_per_leg": 2_097_153,
+                        }
+                    }
+                )
 
     def test_sidecar_bond_runtime_exports_single_forward_id_when_unambiguous(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

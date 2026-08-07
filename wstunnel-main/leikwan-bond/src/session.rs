@@ -1,4 +1,6 @@
-use crate::frame::{HelloFrame, WireFrame, read_frame, write_frame};
+use crate::frame::{
+    HELLO_CAPABILITY_STARTUP_WARMUP, HelloFrame, WireFrame, read_frame, write_frame,
+};
 use crate::strategy::{ClientStrategy, load_strategy};
 use crate::token::{SessionClaims, TransportProtocol, verify_session_token};
 use crate::transport::{
@@ -46,6 +48,7 @@ const MAX_TCP_RETRANSMIT_BATCH: usize = 8;
 const MAX_RECENT_HEALTH_EVENTS: usize = 20;
 const SNAPSHOT_WRITE_INTERVAL: Duration = Duration::from_millis(250);
 const DEFAULT_READ_CREDIT_CHUNKS: usize = 128;
+pub const MAX_TCP_STARTUP_WARMUP_BYTES_PER_LEG: usize = 2 * 1024 * 1024;
 
 fn enable_tcp_nodelay(stream: &TcpStream) -> std::io::Result<()> {
     stream.set_nodelay(true)
@@ -116,6 +119,7 @@ pub struct SessionConfig {
     pub initial_leg_wait: Duration,
     pub leg_reconnect_backoff: Duration,
     pub leg_reconnect_backoff_max: Duration,
+    pub tcp_startup_warmup_bytes_per_leg: usize,
     pub interactive_chunk_bytes: usize,
     pub latency_guard_bytes: usize,
     pub interactive_rtt_slack: Duration,
@@ -153,6 +157,7 @@ impl SessionConfig {
             initial_leg_wait: Duration::from_millis(600),
             leg_reconnect_backoff: Duration::from_secs(30 * 60),
             leg_reconnect_backoff_max: Duration::from_secs(30 * 60),
+            tcp_startup_warmup_bytes_per_leg: 0,
             interactive_chunk_bytes: 16384,
             latency_guard_bytes: 262144,
             interactive_rtt_slack: Duration::from_millis(30),
@@ -840,6 +845,7 @@ struct OpenLeg {
     initial_ready: bool,
     added_late: bool,
     reconnect_count: u64,
+    hello_capabilities: u16,
 }
 
 impl OpenLeg {
@@ -861,6 +867,7 @@ impl OpenLeg {
             initial_ready: false,
             added_late: false,
             reconnect_count: 0,
+            hello_capabilities: 0,
         }
     }
 
@@ -897,6 +904,7 @@ impl OpenLeg {
         self.reconnect_count = reconnect_count;
         self
     }
+
 }
 
 fn extract_host_from_label(label: &str) -> String {
@@ -1323,6 +1331,7 @@ pub async fn run_server_listener(
             }
             Some(mut prepared) = collector_rx.recv() => {
                 prepared.leg.leg_route_id = Some(prepared.hello.route_id).filter(|route_id| *route_id > 0);
+                prepared.leg.hello_capabilities = prepared.hello.capabilities;
                 let now = Instant::now();
                 let claims = match verify_session_token(&prepared.hello.token, &token_secret, unix_now()) {
                     Ok(claims) => claims,
@@ -1934,7 +1943,12 @@ async fn start_active_tcp_session(
     add_leg_rx: mpsc::UnboundedReceiver<OpenLeg>,
     config: SessionConfig,
 ) -> anyhow::Result<()> {
-    let legs = acknowledge_pending_legs(session_id, initial_legs).await?;
+    let legs = acknowledge_pending_legs(
+        session_id,
+        initial_legs,
+        config.tcp_startup_warmup_bytes_per_leg,
+    )
+    .await?;
     info!(
         "bond TCP transport {} started with {} leg(s) toward {}:{}",
         session_id,
@@ -1967,7 +1981,7 @@ async fn start_pending_udp_session(
 ) -> anyhow::Result<()> {
     let target = format!("{}:{}", pending.claims.target_host, pending.claims.target_port);
     let target_addr = resolve_udp_target(&pending.claims).await?;
-    let legs = acknowledge_pending_legs(session_id, pending.legs).await?;
+    let legs = acknowledge_pending_legs(session_id, pending.legs, 0).await?;
     info!(
         "bond UDP session {} started with {} leg(s) toward {}",
         session_id,
@@ -1983,26 +1997,92 @@ async fn start_pending_udp_session(
     .await
 }
 
-async fn acknowledge_pending_legs(session_id: Uuid, pending_legs: Vec<OpenLeg>) -> anyhow::Result<Vec<OpenLeg>> {
-    let mut legs = Vec::new();
-    for mut leg in pending_legs {
-        if let Err(err) = write_frame(&mut leg.stream, &WireFrame::HelloAck).await {
-            warn!("failed to send hello-ack for session {}: {:?}", session_id, err);
-            continue;
+async fn write_startup_warmup_then_ack<W>(writer: &mut W, warmup_bytes: usize) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    if warmup_bytes > MAX_TCP_STARTUP_WARMUP_BYTES_PER_LEG {
+        return Err(anyhow!(
+            "startup warmup bytes per leg exceeds {}",
+            MAX_TCP_STARTUP_WARMUP_BYTES_PER_LEG
+        ));
+    }
+    if warmup_bytes > 0 {
+        write_frame(
+            writer,
+            &WireFrame::StartupWarmup {
+                payload: Bytes::from(vec![0; warmup_bytes]),
+            },
+        )
+        .await?;
+    }
+    write_frame(writer, &WireFrame::HelloAck).await
+}
+
+fn negotiated_startup_warmup_bytes(configured_bytes: usize, hello_capabilities: u16) -> usize {
+    if hello_capabilities & HELLO_CAPABILITY_STARTUP_WARMUP != 0 {
+        configured_bytes
+    } else {
+        0
+    }
+}
+
+async fn acknowledge_pending_legs(
+    session_id: Uuid,
+    pending_legs: Vec<OpenLeg>,
+    warmup_bytes: usize,
+) -> anyhow::Result<Vec<OpenLeg>> {
+    if warmup_bytes == 0 {
+        let mut legs = Vec::new();
+        for mut leg in pending_legs {
+            if let Err(err) = write_frame(&mut leg.stream, &WireFrame::HelloAck).await {
+                warn!("failed to send hello-ack for session {}: {:?}", session_id, err);
+                continue;
+            }
+            legs.push(leg.with_bootstrap_state(true, false, 0));
         }
-        legs.push(leg.with_bootstrap_state(true, false, 0));
+
+        if legs.is_empty() {
+            return Err(anyhow!("no live legs after hello-ack"));
+        }
+        return Ok(legs);
+    }
+
+    let mut warmups = JoinSet::new();
+    for mut leg in pending_legs {
+        let leg_warmup_bytes =
+            negotiated_startup_warmup_bytes(warmup_bytes, leg.hello_capabilities);
+        warmups.spawn(async move {
+            write_startup_warmup_then_ack(&mut leg.stream, leg_warmup_bytes).await?;
+            Ok::<OpenLeg, anyhow::Error>(leg.with_bootstrap_state(true, false, 0))
+        });
+    }
+
+    let mut legs = Vec::new();
+    while let Some(result) = warmups.join_next().await {
+        match result {
+            Ok(Ok(leg)) => legs.push(leg),
+            Ok(Err(err)) => warn!("failed to warm up bond leg for session {}: {:?}", session_id, err),
+            Err(err) => warn!("startup warmup task failed for session {}: {:?}", session_id, err),
+        }
     }
 
     if legs.is_empty() {
-        return Err(anyhow!("no live legs after hello-ack"));
+        return Err(anyhow!("no live legs after startup warmup"));
     }
 
     Ok(legs)
 }
 
-async fn acknowledge_late_leg(session_id: Uuid, mut leg: OpenLeg) -> anyhow::Result<OpenLeg> {
+async fn acknowledge_late_leg(
+    session_id: Uuid,
+    mut leg: OpenLeg,
+    warmup_bytes: usize,
+) -> anyhow::Result<OpenLeg> {
     let reconnect_count = leg.reconnect_count.saturating_add(1);
-    write_frame(&mut leg.stream, &WireFrame::HelloAck)
+    let leg_warmup_bytes =
+        negotiated_startup_warmup_bytes(warmup_bytes, leg.hello_capabilities);
+    write_startup_warmup_then_ack(&mut leg.stream, leg_warmup_bytes)
         .await
         .with_context(|| format!("failed to send hello-ack for late leg in session {}", session_id))?;
     Ok(leg.with_bootstrap_state(false, true, reconnect_count))
@@ -2279,9 +2359,20 @@ async fn connect_and_ack_leg(
     write_frame(&mut stream, hello)
         .await
         .with_context(|| format!("failed to send bond hello to leg {}", spec.original))?;
-    let ack = timeout(Duration::from_secs(5), read_frame(&mut stream))
+    let first_frame = timeout(Duration::from_secs(5), read_frame(&mut stream))
         .await
         .with_context(|| format!("timed out waiting for bond hello-ack from {}", spec.original))??;
+    let ack = match first_frame {
+        WireFrame::StartupWarmup { payload } => {
+            if payload.is_empty() {
+                return Err(anyhow!("bond leg {} sent an empty startup warmup", spec.original));
+            }
+            timeout(Duration::from_secs(5), read_frame(&mut stream))
+                .await
+                .with_context(|| format!("timed out waiting for bond hello-ack after startup warmup from {}", spec.original))??
+        }
+        frame => frame,
+    };
     if matches!(ack, WireFrame::HelloAck) {
         return Ok(
             OpenLeg::new(stream, spec.priority, spec.role, spec.original.clone())
@@ -2428,6 +2519,7 @@ fn hello_for_spec(
         session_id,
         expected_links: expected_links.max(1),
         route_id: spec.leg_route_id.unwrap_or(0),
+        capabilities: HELLO_CAPABILITY_STARTUP_WARMUP,
         token: token.to_string(),
     })
 }
@@ -2498,7 +2590,12 @@ async fn run_tcp_transport_session(
         tokio::select! {
             Some(new_leg) = add_leg_rx.recv() => {
                 let new_leg = if role == SessionRole::Aggregator {
-                    acknowledge_late_leg(session_id, new_leg).await?
+                    acknowledge_late_leg(
+                        session_id,
+                        new_leg,
+                        config.tcp_startup_warmup_bytes_per_leg,
+                    )
+                    .await?
                 } else {
                     new_leg
                 };
@@ -3325,6 +3422,7 @@ async fn handle_tcp_transport_frame(
     if matches!(
         frame,
         WireFrame::HelloAck
+            | WireFrame::StartupWarmup { .. }
             | WireFrame::Hello(_)
             | WireFrame::StreamOpen { .. }
             | WireFrame::StreamOpenAck { .. }
@@ -6645,6 +6743,7 @@ fn duration_millis(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::HELLO_CAPABILITY_STARTUP_WARMUP;
 
     fn fake_leg(id: usize, priority: u16, inflight_bytes: usize, smoothed_rtt_ms: u64) -> LegState {
         LegState {
@@ -6689,6 +6788,7 @@ mod tests {
             initial_leg_wait: CLIENT_TCP_LEG_JOIN_GRACE,
             leg_reconnect_backoff: CLIENT_LEG_RETRY_BACKOFF,
             leg_reconnect_backoff_max: CLIENT_LEG_RETRY_BACKOFF,
+            tcp_startup_warmup_bytes_per_leg: 0,
             interactive_chunk_bytes: 16384,
             latency_guard_bytes: 262144,
             interactive_rtt_slack: Duration::from_millis(30),
@@ -6712,6 +6812,111 @@ mod tests {
             strategy_file: None,
             default_strategy: ClientStrategy::LatencyBest,
         }
+    }
+
+    #[tokio::test]
+    async fn startup_warmup_is_written_before_hello_ack() {
+        let (mut writer, mut reader) = tokio::io::duplex(8192);
+        let task = tokio::spawn(async move {
+            write_startup_warmup_then_ack(&mut writer, 1024)
+                .await
+                .unwrap();
+        });
+
+        match read_frame(&mut reader).await.unwrap() {
+            WireFrame::StartupWarmup { payload } => assert_eq!(payload.len(), 1024),
+            other => panic!("expected startup warmup, got {other:?}"),
+        }
+        assert!(matches!(read_frame(&mut reader).await.unwrap(), WireFrame::HelloAck));
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn client_leg_handshake_consumes_startup_warmup_before_ack() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            match read_frame(&mut stream).await.unwrap() {
+                WireFrame::Hello(hello) => assert_ne!(
+                    hello.capabilities & HELLO_CAPABILITY_STARTUP_WARMUP,
+                    0
+                ),
+                other => panic!("expected hello, got {other:?}"),
+            }
+            write_startup_warmup_then_ack(&mut stream, 1024)
+                .await
+                .unwrap();
+        });
+
+        let mut specs = parse_leg_specs(vec![format!("tcp://{address}?priority=1")]).unwrap();
+        let spec = specs.pop().unwrap();
+        let hello = hello_for_spec(&spec, Uuid::nil(), 1, "token");
+        let _leg = connect_and_ack_leg(&spec, &hello, Duration::from_secs(1))
+            .await
+            .unwrap();
+        server.await.unwrap();
+    }
+
+    async fn tcp_open_leg_pair(capabilities: u16) -> (OpenLeg, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = tokio::spawn(async move { TcpStream::connect(address).await.unwrap() });
+        let (server, _) = listener.accept().await.unwrap();
+        let client = client.await.unwrap();
+        let mut leg = OpenLeg::new(
+            LegIo::Tcp(server),
+            LegTransport::Tcp.default_priority(),
+            LegRole::Primary,
+            format!("tcp://{address}"),
+        );
+        leg.hello_capabilities = capabilities;
+        (leg, client)
+    }
+
+    #[tokio::test]
+    async fn configured_server_negotiates_mixed_initial_legs_per_leg() {
+        let (legacy_leg, mut legacy_peer) = tcp_open_leg_pair(0).await;
+        let (capable_leg, mut capable_peer) =
+            tcp_open_leg_pair(HELLO_CAPABILITY_STARTUP_WARMUP).await;
+        let task = tokio::spawn(async move {
+            acknowledge_pending_legs(Uuid::nil(), vec![legacy_leg, capable_leg], 1024).await
+        });
+
+        assert!(matches!(read_frame(&mut legacy_peer).await.unwrap(), WireFrame::HelloAck));
+        match read_frame(&mut capable_peer).await.unwrap() {
+            WireFrame::StartupWarmup { payload } => assert_eq!(payload.len(), 1024),
+            other => panic!("expected startup warmup, got {other:?}"),
+        }
+        assert!(matches!(read_frame(&mut capable_peer).await.unwrap(), WireFrame::HelloAck));
+        assert_eq!(task.await.unwrap().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn configured_server_skips_warmup_for_late_legacy_leg() {
+        let (legacy_leg, mut legacy_peer) = tcp_open_leg_pair(0).await;
+        let task = tokio::spawn(async move {
+            acknowledge_late_leg(Uuid::nil(), legacy_leg, 1024).await
+        });
+
+        assert!(matches!(read_frame(&mut legacy_peer).await.unwrap(), WireFrame::HelloAck));
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn configured_server_warms_late_capable_leg_before_ack() {
+        let (capable_leg, mut capable_peer) =
+            tcp_open_leg_pair(HELLO_CAPABILITY_STARTUP_WARMUP).await;
+        let task = tokio::spawn(async move {
+            acknowledge_late_leg(Uuid::nil(), capable_leg, 1024).await
+        });
+
+        assert!(matches!(
+            read_frame(&mut capable_peer).await.unwrap(),
+            WireFrame::StartupWarmup { .. }
+        ));
+        assert!(matches!(read_frame(&mut capable_peer).await.unwrap(), WireFrame::HelloAck));
+        task.await.unwrap().unwrap();
     }
 
     fn adaptive_test_config() -> SessionConfig {
@@ -7374,6 +7579,7 @@ mod tests {
                 assert_eq!(hello.session_id, session_id);
                 assert_eq!(hello.expected_links, 5);
                 assert_eq!(hello.route_id, 455);
+                assert_ne!(hello.capabilities & HELLO_CAPABILITY_STARTUP_WARMUP, 0);
                 assert_eq!(hello.token, "secret");
             }
             other => panic!("unexpected frame: {other:?}"),

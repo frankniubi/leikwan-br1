@@ -7,6 +7,7 @@ const MAGIC: &[u8; 4] = b"LBND";
 const VERSION: u8 = 2;
 const HEADER_LEN: usize = 32;
 const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
+pub const HELLO_CAPABILITY_STARTUP_WARMUP: u16 = 0x0001;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -28,6 +29,7 @@ pub enum FrameKind {
     UdpAckS2C = 15,
     DeliveryC2S = 16,
     DeliveryS2C = 17,
+    StartupWarmup = 18,
 }
 
 impl FrameKind {
@@ -50,6 +52,7 @@ impl FrameKind {
             15 => Some(Self::UdpAckS2C),
             16 => Some(Self::DeliveryC2S),
             17 => Some(Self::DeliveryS2C),
+            18 => Some(Self::StartupWarmup),
             _ => None,
         }
     }
@@ -60,6 +63,7 @@ pub struct HelloFrame {
     pub session_id: Uuid,
     pub expected_links: u16,
     pub route_id: u32,
+    pub capabilities: u16,
     pub token: String,
 }
 
@@ -67,6 +71,7 @@ pub struct HelloFrame {
 pub enum WireFrame {
     Hello(HelloFrame),
     HelloAck,
+    StartupWarmup { payload: Bytes },
     StreamOpen { stream_id: u32 },
     StreamOpenAck { stream_id: u32 },
     DataC2S { stream_id: u32, seq: u64, payload: Bytes },
@@ -107,9 +112,19 @@ impl WireFrame {
         match self {
             Self::Hello(hello) => {
                 let payload_len = 16usize + 2usize + 2usize + hello.token.len();
-                (FrameKind::Hello, 0, 0, 0, hello.route_id, payload_len as u32)
+                (
+                    FrameKind::Hello,
+                    hello.capabilities,
+                    0,
+                    0,
+                    hello.route_id,
+                    payload_len as u32,
+                )
             }
             Self::HelloAck => (FrameKind::HelloAck, 0, 0, 0, 0, 0),
+            Self::StartupWarmup { payload } => {
+                (FrameKind::StartupWarmup, 0, 0, 0, 0, payload.len() as u32)
+            }
             Self::StreamOpen { stream_id } => (FrameKind::StreamOpen, 0, 0, 0, *stream_id, 0),
             Self::StreamOpenAck { stream_id } => (FrameKind::StreamOpenAck, 0, 0, 0, *stream_id, 0),
             Self::DataC2S {
@@ -144,6 +159,7 @@ impl WireFrame {
         match self {
             Self::Hello(_) => FrameKind::Hello,
             Self::HelloAck => FrameKind::HelloAck,
+            Self::StartupWarmup { .. } => FrameKind::StartupWarmup,
             Self::StreamOpen { .. } => FrameKind::StreamOpen,
             Self::StreamOpenAck { .. } => FrameKind::StreamOpenAck,
             Self::DataC2S { .. } => FrameKind::DataC2S,
@@ -195,7 +211,9 @@ where
         | WireFrame::DeliveryS2C { .. }
         | WireFrame::FinC2S { .. }
         | WireFrame::FinS2C { .. } => {}
-        WireFrame::DataC2S { payload, .. } | WireFrame::DataS2C { payload, .. } => {
+        WireFrame::StartupWarmup { payload }
+        | WireFrame::DataC2S { payload, .. }
+        | WireFrame::DataS2C { payload, .. } => {
             writer.write_all(payload.as_ref()).await?;
         }
         WireFrame::Reset { reason, .. } => {
@@ -256,6 +274,7 @@ where
     }
 
     let kind = FrameKind::from_u8(header[5]).ok_or_else(|| anyhow!("unknown bond frame kind {}", header[5]))?;
+    let flags = u16::from_be_bytes(header[6..8].try_into().unwrap());
     let seq = u64::from_be_bytes(header[8..16].try_into().unwrap());
     let ack = u64::from_be_bytes(header[16..24].try_into().unwrap());
     let stream_id = u32::from_be_bytes(header[24..28].try_into().unwrap());
@@ -273,8 +292,11 @@ where
     }
 
     match kind {
-        FrameKind::Hello => decode_hello(payload, stream_id),
+        FrameKind::Hello => decode_hello(payload, stream_id, flags),
         FrameKind::HelloAck => Ok(WireFrame::HelloAck),
+        FrameKind::StartupWarmup => Ok(WireFrame::StartupWarmup {
+            payload: Bytes::from(payload),
+        }),
         FrameKind::StreamOpen => Ok(WireFrame::StreamOpen { stream_id }),
         FrameKind::StreamOpenAck => Ok(WireFrame::StreamOpenAck { stream_id }),
         FrameKind::DataC2S => Ok(WireFrame::DataC2S {
@@ -325,7 +347,7 @@ fn decode_tcp_delivery(
     }
 }
 
-fn decode_hello(payload: Vec<u8>, route_id: u32) -> anyhow::Result<WireFrame> {
+fn decode_hello(payload: Vec<u8>, route_id: u32, capabilities: u16) -> anyhow::Result<WireFrame> {
     if payload.len() < 20 {
         bail!("invalid hello payload length {}", payload.len());
     }
@@ -342,6 +364,7 @@ fn decode_hello(payload: Vec<u8>, route_id: u32) -> anyhow::Result<WireFrame> {
         session_id,
         expected_links,
         route_id,
+        capabilities,
         token,
     }))
 }
@@ -458,6 +481,7 @@ mod tests {
             session_id: Uuid::nil(),
             expected_links: 5,
             route_id: 453,
+            capabilities: HELLO_CAPABILITY_STARTUP_WARMUP,
             token: String::from("token"),
         });
 
@@ -468,8 +492,50 @@ mod tests {
             WireFrame::Hello(hello) => {
                 assert_eq!(hello.route_id, 453);
                 assert_eq!(hello.expected_links, 5);
+                assert_eq!(hello.capabilities, HELLO_CAPABILITY_STARTUP_WARMUP);
                 assert_eq!(hello.token, "token");
             }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn hello_startup_warmup_capability_only_changes_header_flags() {
+        let (mut writer, mut reader) = duplex(4096);
+        let frame = WireFrame::Hello(HelloFrame {
+            session_id: Uuid::nil(),
+            expected_links: 3,
+            route_id: 693,
+            capabilities: HELLO_CAPABILITY_STARTUP_WARMUP,
+            token: String::from("token"),
+        });
+
+        write_frame(&mut writer, &frame).await.unwrap();
+        let mut encoded = vec![0u8; HEADER_LEN + 20 + 5];
+        reader.read_exact(&mut encoded).await.unwrap();
+
+        assert_eq!(&encoded[6..8], &HELLO_CAPABILITY_STARTUP_WARMUP.to_be_bytes());
+        assert_eq!(u32::from_be_bytes(encoded[28..32].try_into().unwrap()), 25);
+        assert_eq!(&encoded[HEADER_LEN..HEADER_LEN + 16], Uuid::nil().as_bytes());
+        assert_eq!(&encoded[HEADER_LEN + 16..HEADER_LEN + 18], &3u16.to_be_bytes());
+        assert_eq!(&encoded[HEADER_LEN + 18..HEADER_LEN + 20], &5u16.to_be_bytes());
+        assert_eq!(&encoded[HEADER_LEN + 20..], b"token");
+    }
+
+    #[tokio::test]
+    async fn legacy_hello_without_capabilities_roundtrips_as_unsupported() {
+        let (mut left, mut right) = duplex(4096);
+        let frame = WireFrame::Hello(HelloFrame {
+            session_id: Uuid::nil(),
+            expected_links: 1,
+            route_id: 0,
+            capabilities: 0,
+            token: String::from("legacy"),
+        });
+
+        write_frame(&mut left, &frame).await.unwrap();
+        match read_frame(&mut right).await.unwrap() {
+            WireFrame::Hello(hello) => assert_eq!(hello.capabilities, 0),
             other => panic!("unexpected frame: {other:?}"),
         }
     }
@@ -491,6 +557,24 @@ mod tests {
                 assert_eq!(stream_id, 42);
                 assert_eq!(route_id, 453);
                 assert_eq!(delivered_bytes, 262_144);
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn roundtrips_startup_warmup_payload() {
+        let (mut left, mut right) = duplex(8192);
+        let frame = WireFrame::StartupWarmup {
+            payload: Bytes::from(vec![0x5a; 1024]),
+        };
+
+        write_frame(&mut left, &frame).await.unwrap();
+        let decoded = read_frame(&mut right).await.unwrap();
+
+        match decoded {
+            WireFrame::StartupWarmup { payload } => {
+                assert_eq!(payload, Bytes::from(vec![0x5a; 1024]));
             }
             other => panic!("unexpected frame: {other:?}"),
         }

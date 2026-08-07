@@ -401,6 +401,7 @@ impl SessionConfigWire {
             initial_leg_wait: Duration::from_millis(self.initial_leg_wait_ms),
             leg_reconnect_backoff: Duration::from_millis(self.leg_reconnect_backoff_ms),
             leg_reconnect_backoff_max: Duration::from_millis(self.leg_reconnect_backoff_max_ms),
+            tcp_startup_warmup_bytes_per_leg: 0,
             interactive_chunk_bytes: self.interactive_chunk_bytes,
             latency_guard_bytes: self.latency_guard_bytes,
             interactive_rtt_slack: Duration::from_millis(self.interactive_rtt_slack_ms),

@@ -151,6 +151,8 @@ enum Command {
         listen: String,
         #[arg(long)]
         token_secret: String,
+        #[arg(long, default_value_t = 0)]
+        startup_warmup_bytes_per_leg: usize,
         #[command(flatten)]
         adaptive: AdaptiveLineArgs,
     },
@@ -285,22 +287,31 @@ fn main() {
         Command::Server {
             listen,
             token_secret,
+            startup_warmup_bytes_per_leg,
             adaptive,
         } => {
-            let mut config = SessionConfig::server_defaults();
-            adaptive.apply_to(&mut config);
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build();
-            match rt {
-                Ok(rt) => rt.block_on(session::run_server_listener(
-                    listen,
-                    None,
-                    false,
-                    token_secret,
-                    config,
-                )),
-                Err(err) => Err(anyhow::anyhow!("failed to build tokio runtime: {err}")),
+            if startup_warmup_bytes_per_leg > session::MAX_TCP_STARTUP_WARMUP_BYTES_PER_LEG {
+                Err(anyhow::anyhow!(
+                    "startup warmup bytes per leg cannot exceed {}",
+                    session::MAX_TCP_STARTUP_WARMUP_BYTES_PER_LEG
+                ))
+            } else {
+                let mut config = SessionConfig::server_defaults();
+                config.tcp_startup_warmup_bytes_per_leg = startup_warmup_bytes_per_leg;
+                adaptive.apply_to(&mut config);
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build();
+                match rt {
+                    Ok(rt) => rt.block_on(session::run_server_listener(
+                        listen,
+                        None,
+                        false,
+                        token_secret,
+                        config,
+                    )),
+                    Err(err) => Err(anyhow::anyhow!("failed to build tokio runtime: {err}")),
+                }
             }
         }
     };
@@ -319,7 +330,7 @@ mod tests {
     #[test]
     fn cli_reports_refreshed_version() {
         let cmd = Cli::command();
-        assert_eq!(cmd.get_version(), Some("0.1.41"));
+        assert_eq!(cmd.get_version(), Some("0.1.43"));
     }
 
     #[test]
@@ -423,6 +434,29 @@ mod tests {
                 assert_eq!(leg_reconnect_backoff_max_ms, 30 * 60 * 1000);
             }
             _ => panic!("expected client command"),
+        }
+    }
+
+    #[test]
+    fn server_cli_accepts_startup_warmup_bytes_per_leg() {
+        let cli = Cli::try_parse_from([
+            "leikwan-bond",
+            "server",
+            "--listen",
+            "0.0.0.0:29026",
+            "--token-secret",
+            "test-secret",
+            "--startup-warmup-bytes-per-leg",
+            "1048576",
+        ])
+        .expect("server cli should parse startup warmup bytes");
+
+        match cli.command {
+            Command::Server {
+                startup_warmup_bytes_per_leg,
+                ..
+            } => assert_eq!(startup_warmup_bytes_per_leg, 1_048_576),
+            _ => panic!("expected server command"),
         }
     }
 
