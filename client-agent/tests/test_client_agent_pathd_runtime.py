@@ -176,6 +176,35 @@ class ClientAgentPathdRuntimeTests(unittest.TestCase):
         self.assertEqual("127.0.0.1:65535", desired["local_leases"][0]["socks_addr"])
         self.assertEqual(65535, desired["provider"]["local_socks_port_max"])
 
+    def test_local_only_three_lane_runtime_preserves_three_unique_socks_legs(self):
+        agent, _root, pathd_bin = self.make_agent()
+        line = self.leased_line()
+        line["max_parallel_lanes"] = 3
+        forward = self.path_runtime(41, 11041, 311)
+        local = forward["path_runtime"]["local_leases"][0]
+        local["max_lanes"] = 3
+        local["routes"] = [
+            {"lane": 1, "route_id": 451},
+            {"lane": 2, "route_id": 1_004_512},
+            {"lane": 3, "route_id": 1_004_513},
+        ]
+        forward["path_runtime"]["slave_legs"] = []
+
+        desired = agent.build_pathd_desired(
+            self.payload(pathd_bin, forwards=[forward], lines=[line])
+        )
+
+        legs = desired["forwards"][0]["legs"]
+        self.assertEqual(
+            [451, 1_004_512, 1_004_513],
+            [leg["leg_route_id"] for leg in legs],
+        )
+        self.assertEqual([451, 451, 451], [leg["line_id"] for leg in legs])
+        self.assertEqual(1, len({leg["execution_group"] for leg in legs}))
+        self.assertTrue(
+            all(leg["uri"].startswith("socks5://127.0.0.1:20451?") for leg in legs)
+        )
+
     def test_pending_lease_starts_provider_generation_without_forwards(self):
         commands = []
         holder = {}

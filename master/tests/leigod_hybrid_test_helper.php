@@ -14,10 +14,26 @@ namespace Leikwan\Master\Database {
         public ?array $egressProfile = null;
         /** @var array<int, array<string, mixed>> */
         public array $endpoints = [];
+        /** @var array<string, mixed>|null */
+        public ?array $assignedClient = null;
+        /** @var array<string, mixed>|null */
+        public ?array $assignedForward = null;
+        /** @var array<string, mixed>|null */
+        public ?array $builtForward = null;
         public bool $failOnSidecarQuery = false;
 
         public function fetchAll(string $sql, array $params = []): array
         {
+            if (str_contains($sql, 'SELECT f.id, f.service_id, s.status AS service_status')) {
+                return is_array($this->assignedForward) ? [[
+                    'id' => (int) ($this->assignedForward['id'] ?? 0),
+                    'service_id' => (int) ($this->assignedForward['service_id'] ?? 0),
+                    'service_status' => 'active',
+                ]] : [];
+            }
+            if (str_contains($sql, 'FROM service_endpoints e')) {
+                return [];
+            }
             if (str_contains($sql, 'hybrid_local_leases')) {
                 $approvedIds = [];
                 foreach ($params as $key => $value) {
@@ -29,6 +45,18 @@ namespace Leikwan\Master\Database {
                     $this->localLeases,
                     static fn(array $lease): bool => $approvedIds === []
                         || in_array((int) ($lease['catalog_id'] ?? 0), $approvedIds, true)
+                ));
+            }
+            if (str_contains($sql, 'hybrid_local_parallel_catalog_ids')) {
+                $catalogIds = array_map('intval', array_values($params));
+                return array_values(array_map(
+                    static fn(array $row): array => ['catalog_id' => (int) $row['catalog_id']],
+                    array_filter(
+                        $this->clientCatalogRows,
+                        static fn(array $row): bool => in_array((int) ($row['catalog_id'] ?? 0), $catalogIds, true)
+                            && (int) ($row['max_parallel_lanes'] ?? 0) >= 2
+                            && (int) ($row['max_parallel_lanes'] ?? 0) <= 4
+                    )
                 ));
             }
             if (str_contains($sql, 'FROM leigod_execution_leases lel')) {
@@ -75,6 +103,15 @@ namespace Leikwan\Master\Database {
             }
             if (str_contains($sql, 'leigod_egress_profiles')) {
                 return $this->egressProfile;
+            }
+            if (str_contains($sql, 'SELECT * FROM clients WHERE id = :id LIMIT 1')) {
+                return $this->assignedClient;
+            }
+            if (str_contains($sql, 'SELECT * FROM forwards WHERE id = :id LIMIT 1')) {
+                return $this->assignedForward;
+            }
+            if (str_contains($sql, 'SELECT f.*, s.client_token')) {
+                return $this->builtForward;
             }
             if (str_contains($sql, 'FROM forward_routes')) {
                 return ['id' => (int) ($params['id'] ?? 80), 'is_active' => 1, 'race_enabled' => 0];
@@ -151,7 +188,7 @@ namespace {
             'lease_id' => '00000000-0000-4000-8000-000000000020',
             'lease_generation' => 7,
             'lease_state' => 'active',
-            'max_parallel_lanes' => 2,
+            'max_parallel_lanes' => (int) ($overrides['local_max_lanes'] ?? 2),
             'lease_expires_at' => gmdate('Y-m-d H:i:s', $now + 90),
         ]] : [];
         $candidate = static function (int $nodeId, int $lineId, string $toml, string $leaseId) use ($now): array {
@@ -197,6 +234,7 @@ namespace {
             'config_sha256' => hash('sha256', $localToml),
             'is_active' => 1,
             'allow_client_execution' => 1,
+            'max_parallel_lanes' => (int) ($overrides['local_max_lanes'] ?? 2),
         ]];
         $db->clientCatalogRows = is_array($overrides['client_catalog_rows'] ?? null)
             ? $overrides['client_catalog_rows']
@@ -251,6 +289,59 @@ namespace {
         if (($overrides['single_execution_group'] ?? false) === true) {
             $endpoints = [];
         }
+        $db->assignedClient = $client + ['group_id' => null];
+        $db->assignedForward = $forward + [
+            'enabled' => 1,
+            'line_client_id' => 20,
+            'line_client_group_id' => null,
+            'line_client_group_ids_json' => null,
+        ];
+        $db->builtForward = $db->assignedForward + [
+            'client_token' => 'client-token',
+            'service_status' => 'active',
+            'service_name' => 'hybrid-service',
+            'service_bandwidth_limit_mbps' => 0,
+            'listen_port' => 8070,
+            'public_port' => 8070,
+            'transport_mode' => 'tcp',
+            'bond_ingress_mode' => 'plain_tcp_mux',
+            'bond_remote_host' => '198.51.100.50',
+            'bond_remote_port' => 7443,
+            'bond_sidecar_point_name' => 'hybrid-sidecar',
+            'bond_sidecar_host' => '198.51.100.50',
+            'bond_sidecar_legacy_port' => 7443,
+            'bond_sidecar_port' => 7443,
+            'mptcp_sidecar_port' => 7444,
+            'bond_sidecar_cf_listen_port' => 0,
+            'bond_sidecar_point_token_secret' => 'bond-secret',
+            'bond_sidecar_point_agent_config_json' => '{}',
+            'line_client_name' => 'linux-client',
+            'line_client_host' => '127.0.0.1',
+            'line_client_agent_config_json' => '{}',
+            'line_client_group_name' => null,
+            'line_speed_limit_mbps' => 0,
+            'cf_location_group_id' => null,
+            'forward_combination_name' => 'local-only',
+            'forward_combination_label' => 'local-only',
+            'forward_combination_runtime_preference' => 'bond',
+            'forward_combination_allow_private_self_leg' => 0,
+            'forward_combination_self_leg_scope' => 'none',
+            'forward_combination_self_leg_role' => 'none',
+            'forward_combination_helper_group_cap' => 0,
+            'forward_combination_helper_escalation_policy' => 'disabled',
+            'forward_combination_self_leg_cf_transport' => 'cf_direct',
+            'forward_combination_desired_latency_ms' => 0,
+            'forward_combination_allow_public_self_leg_donation' => 0,
+            'forward_combination_donation_qualify_window_seconds' => 60,
+            'forward_combination_donation_revoke_window_seconds' => 30,
+            'forward_combination_donation_min_open_ports' => 1,
+            'node_group_key' => '',
+            'endpoint_mode' => 'slave_group',
+            'line_group_mode' => 'selected',
+            'forward_chain_id' => null,
+            'forward_chain_name' => null,
+            'custom_endpoint_ids_json' => null,
+        ];
         $tokenBuilder = static function (array $tokenForward, string $secret, string $protocol): string {
             $payload = json_encode([
                 'target_host' => (string) ($tokenForward['target_host'] ?? ''),

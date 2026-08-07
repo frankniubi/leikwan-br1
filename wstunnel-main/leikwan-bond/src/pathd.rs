@@ -542,6 +542,7 @@ impl DesiredState {
             let mut route_ids = HashSet::new();
             let mut execution_groups = HashSet::new();
             let mut local_lane_counts = HashMap::<u32, usize>::new();
+            let mut local_socks_lane_count = 0usize;
             for leg in &forward.legs {
                 if leg.line_id == 0 || leg.leg_route_id == 0 || !route_ids.insert(leg.leg_route_id)
                 {
@@ -586,6 +587,9 @@ impl DesiredState {
                     if parsed_ip != expected.3.ip() || parsed.port != expected.3.port() {
                         bail!("client leg endpoint does not match its local lease");
                     }
+                    if matches!(&parsed.dial, LegDial::Socks5 { .. }) {
+                        local_socks_lane_count = local_socks_lane_count.saturating_add(1);
+                    }
                     let count = local_lane_counts.entry(leg.line_id).or_default();
                     *count = count.saturating_add(1);
                     if *count > expected.2 {
@@ -593,7 +597,11 @@ impl DesiredState {
                     }
                 }
             }
-            if execution_groups.len() < 2 {
+            let local_only_parallel = execution_groups.len() == 1
+                && forward.legs.len() >= 2
+                && local_socks_lane_count == forward.legs.len()
+                && local_lane_counts.len() == 1;
+            if execution_groups.len() < 2 && !local_only_parallel {
                 bail!("hybrid bond requires at least two execution groups");
             }
             session_configs.insert(
@@ -2013,6 +2021,37 @@ mod tests {
     }
 
     #[test]
+    fn accepts_one_fenced_local_line_with_three_unique_socks_lanes() {
+        let mut value = valid_json();
+        value["local_leases"][0]["max_lanes"] = 3.into();
+        let base = serde_json::json!({
+            "uri":"socks5://127.0.0.1:20451?leg_route_id=451&line_id=451&lease_generation=7",
+            "execution_group":"client:20:dev",
+            "line_id":451,
+            "lease_id":"00000000-0000-4000-8000-000000000020",
+            "lease_generation":7,
+            "leg_route_id":451
+        });
+        let mut second = base.clone();
+        second["uri"] =
+            "socks5://127.0.0.1:20451?leg_route_id=1004512&line_id=451&lease_generation=7".into();
+        second["leg_route_id"] = 1_004_512.into();
+        let mut third = base.clone();
+        third["uri"] =
+            "socks5://127.0.0.1:20451?leg_route_id=1004513&line_id=451&lease_generation=7".into();
+        third["leg_route_id"] = 1_004_513.into();
+        value["forwards"][0]["legs"] = serde_json::json!([base, second, third]);
+        value["forwards"][0]["policy"]["preferred_initial_legs"] = 3.into();
+
+        let validated = serde_json::from_value::<DesiredState>(value)
+            .unwrap()
+            .validate_at(1_900_000_000)
+            .unwrap();
+
+        assert_eq!(3, validated.desired.forwards[0].legs.len());
+    }
+
+    #[test]
     fn internal_legs_resolve_only_from_the_desired_auth_map_and_lease_metadata() {
         let mut value = valid_json();
         value["auth_refs"] = serde_json::json!({"slave-316": "opaque-ingress-secret"});
@@ -2078,6 +2117,21 @@ mod tests {
         let mut public_socks = valid_json();
         public_socks["local_leases"][0]["socks_addr"] = "0.0.0.0:20451".into();
         assert!(serde_json::from_value::<DesiredState>(public_socks)
+            .unwrap()
+            .validate_at(1_900_000_000)
+            .is_err());
+
+        let mut local_direct_parallel = valid_json();
+        let mut first_local = local_direct_parallel["forwards"][0]["legs"][0].clone();
+        first_local["uri"] =
+            "tcp://127.0.0.1:20451?leg_route_id=451".into();
+        let mut extra_local = first_local.clone();
+        extra_local["uri"] =
+            "tcp://127.0.0.1:20451?leg_route_id=1004512".into();
+        extra_local["leg_route_id"] = 1_004_512.into();
+        local_direct_parallel["forwards"][0]["legs"] =
+            serde_json::json!([first_local, extra_local]);
+        assert!(serde_json::from_value::<DesiredState>(local_direct_parallel)
             .unwrap()
             .validate_at(1_900_000_000)
             .is_err());

@@ -56,6 +56,23 @@ if (count($physicalLines) !== count(array_unique($physicalLines))) {
     failHybridContract('local and slave physical lines must be distinct');
 }
 
+$authorityConflict = hybridFixture();
+$authorityConflict['db']->candidateRows[0]['line_id'] = 451;
+$authorityConflict['db']->candidateRows[0]['catalog_id'] = 11;
+$authorityConflict['db']->candidateRows[0]['config_sha256'] = hash('sha256', "line = 451\n");
+$authorityConflict['db']->candidateRows[0]['health_config_sha256'] = hash('sha256', "line = 451\n");
+assertHybridSame(
+    null,
+    $authorityConflict['service']->forForward(
+        $authorityConflict['forward'],
+        $authorityConflict['client'],
+        $authorityConflict['session'],
+        $authorityConflict['endpoints']
+    ),
+    'local and node authority conflict remains fail closed'
+);
+@unlink($authorityConflict['env']);
+
 $token = (string) ($runtime['egress']['session_token'] ?? '');
 $parts = explode('.', $token, 2);
 $payload = isset($parts[0]) ? base64_decode(strtr($parts[0], '-_', '+/') . str_repeat('=', (4 - strlen($parts[0]) % 4) % 4), true) : false;
@@ -192,30 +209,108 @@ assertHybridSame(
     'missing egress secret projects no client line'
 );
 @unlink($missingEgressSecret['env']);
-$zeroSlaveGroup = hybridFixture(['single_execution_group' => true]);
-$zeroSlaveIds = [];
+$localOnly = hybridFixture(['single_execution_group' => true, 'local_max_lanes' => 3]);
+$localOnlyIds = [];
+assertHybridSame(
+    true,
+    (new ProvisioningService($localOnly['config'], $localOnly['db'], $localOnly['service']))
+        ->hasApprovedLinuxHybridAssignment(
+            $localOnly['client'],
+            $localOnly['session'],
+            [array_replace($localOnly['forward'], [
+                'service_status' => 'active',
+                'endpoints' => $localOnly['endpoints'],
+            ])],
+            $localOnlyIds
+        ),
+    'parallel local-only execution is approved'
+);
+assertHybridSame([11], $localOnlyIds, 'parallel local-only execution approves its client line');
+$localOnlyProjection = (new ProvisioningService($localOnly['config'], $localOnly['db'], $localOnly['service']))
+    ->desiredLeigodLineManagementForClientDevice(20, 'linux-device-a', $localOnlyIds);
+assertHybridSame(3, $localOnlyProjection['lines'][0]['max_parallel_lanes'] ?? null, 'preexisting local-only lease retains three lanes');
+$localOnlyRuntime = $localOnly['service']->forForward(
+    $localOnly['forward'],
+    $localOnly['client'],
+    $localOnly['session'],
+    $localOnly['endpoints']
+);
+assertHybridSame(
+    [451, 1_004_512, 1_004_513],
+    array_column($localOnlyRuntime['local_leases'][0]['routes'] ?? [], 'route_id'),
+    'local-only execution publishes three unique logical routes'
+);
+assertHybridSame([], $localOnlyRuntime['slave_legs'] ?? null, 'local-only execution publishes no slave legs');
+$assignedLocalOnly = (new ProvisioningService($localOnly['config'], $localOnly['db'], $localOnly['service']))
+    ->assignedForwardConfigsForClient(20, $localOnly['session']);
+assertHybridSame(1, count($assignedLocalOnly), 'endpointless local-only forward survives the real assigned-config path');
+assertHybridSame(
+    [451, 1_004_512, 1_004_513],
+    array_column($assignedLocalOnly[0]['path_runtime']['local_leases'][0]['routes'] ?? [], 'route_id'),
+    'assigned endpointless local-only forward publishes all repeated routes'
+);
+@unlink($localOnly['env']);
+$singleLocalLane = hybridFixture(['single_execution_group' => true, 'local_max_lanes' => 1]);
+$singleLocalIds = [];
 assertHybridSame(
     false,
-    (new ProvisioningService($zeroSlaveGroup['config'], $zeroSlaveGroup['db'], $zeroSlaveGroup['service']))
+    (new ProvisioningService($singleLocalLane['config'], $singleLocalLane['db'], $singleLocalLane['service']))
         ->hasApprovedLinuxHybridAssignment(
-            $zeroSlaveGroup['client'],
-            $zeroSlaveGroup['session'],
-            [array_replace($zeroSlaveGroup['forward'], [
+            $singleLocalLane['client'],
+            $singleLocalLane['session'],
+            [array_replace($singleLocalLane['forward'], [
                 'service_status' => 'active',
-                'endpoints' => $zeroSlaveGroup['endpoints'],
+                'endpoints' => $singleLocalLane['endpoints'],
             ])],
-            $zeroSlaveIds
+            $singleLocalIds
         ),
-    'zero slave execution group is not approved'
+    'one local lane is not approved'
 );
-assertHybridSame([], $zeroSlaveIds, 'zero slave execution group cannot allocate client lines');
+assertHybridSame([], $singleLocalIds, 'one local lane is not allocated');
 assertHybridSame(
-    ['lines' => []],
-    (new ProvisioningService($zeroSlaveGroup['config'], $zeroSlaveGroup['db'], $zeroSlaveGroup['service']))
-        ->desiredLeigodLineManagementForClientDevice(20, 'linux-device-a', $zeroSlaveIds),
-    'zero slave execution group projects no client line'
+    null,
+    $singleLocalLane['service']->forForward(
+        $singleLocalLane['forward'],
+        $singleLocalLane['client'],
+        $singleLocalLane['session'],
+        $singleLocalLane['endpoints']
+    ),
+    'one local lane remains rejected'
 );
-@unlink($zeroSlaveGroup['env']);
+@unlink($singleLocalLane['env']);
+$singleLaneRuntimeGuard = hybridFixture([
+    'single_execution_group' => true,
+    'local_max_lanes' => 1,
+    'client_catalog_rows' => [[
+        'catalog_id' => 11,
+        'line_id' => 451,
+        'config_sha256' => hash('sha256', "line = 451\n"),
+        'is_active' => 1,
+        'allow_client_execution' => 1,
+        'max_parallel_lanes' => 2,
+    ]],
+]);
+assertHybridSame(
+    [11],
+    $singleLaneRuntimeGuard['service']->preflightClientCatalogIds(
+        $singleLaneRuntimeGuard['forward'],
+        $singleLaneRuntimeGuard['client'],
+        $singleLaneRuntimeGuard['session'],
+        []
+    ),
+    'runtime guard fixture passes allocation preflight'
+);
+assertHybridSame(
+    null,
+    $singleLaneRuntimeGuard['service']->forForward(
+        $singleLaneRuntimeGuard['forward'],
+        $singleLaneRuntimeGuard['client'],
+        $singleLaneRuntimeGuard['session'],
+        []
+    ),
+    'runtime guard rejects a lease that only materializes one lane'
+);
+@unlink($singleLaneRuntimeGuard['env']);
 $unrelatedMembership = hybridFixture(['client_catalog_rows' => []]);
 $unrelatedMembershipIds = [];
 assertHybridSame(

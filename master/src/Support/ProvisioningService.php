@@ -3768,7 +3768,15 @@ final class ProvisioningService
                         && (int) ($endpoint['port'] ?? 0) > 0;
                 }
             ));
-            if ($config['endpoints'] === []) {
+            $endpointlessLocalHybridCandidate = $config['endpoints'] === []
+                && is_array($deviceSession)
+                && $this->leigodHybridRuntimeService->preflightClientCatalogIds(
+                    $config,
+                    $client,
+                    $deviceSession,
+                    []
+                ) !== [];
+            if ($config['endpoints'] === [] && !$endpointlessLocalHybridCandidate) {
                 continue;
             }
             if (is_array($deviceSession)) {

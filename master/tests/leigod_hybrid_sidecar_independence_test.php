@@ -17,7 +17,7 @@ $fallbacks = [
     'unknown platform' => ['platform' => 'unknown'],
     'pathd hash mismatch' => ['capability_sha' => str_repeat('c', 64)],
     'missing local lease' => ['local_leases' => false],
-    'one execution group' => ['single_execution_group' => true],
+    'one local lane only' => ['single_execution_group' => true, 'local_max_lanes' => 1],
     'missing profile' => ['profile_present' => false],
     'disabled profile' => ['profile_enabled' => false],
     'missing secret' => ['secret_present' => false],

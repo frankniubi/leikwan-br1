@@ -12,6 +12,8 @@ namespace Leikwan\Master\Database {
         public array $revisions = [];
         /** @var array<int, int> */
         public array $lockedMembershipIds = [];
+        /** @var array<string, mixed>|null */
+        public ?array $egressProfile = null;
         public bool $lockedMembershipCheckedInTransaction = false;
         public bool $inTransaction = false;
 
@@ -38,6 +40,12 @@ namespace Leikwan\Master\Database {
             if (str_contains($sql, 'FROM leigod_lines')) {
                 return $this->lines[(int) ($params['line_id'] ?? $params['id'] ?? 0)] ?? null;
             }
+            if (str_contains($sql, 'leigod_egress_profiles')) {
+                return $this->egressProfile;
+            }
+            if (str_contains($sql, 'FROM forward_routes')) {
+                return ['id' => (int) ($params['id'] ?? 80), 'is_active' => 1, 'race_enabled' => 0];
+            }
             if (str_contains($sql, 'FROM leigod_execution_leases')) {
                 if (isset($params['line_id'])) {
                     return $this->leases[(int) $params['line_id']] ?? null;
@@ -54,6 +62,67 @@ namespace Leikwan\Master\Database {
         /** @return array<int, array<string, mixed>> */
         public function fetchAll(string $sql, array $params = []): array
         {
+            if (str_contains($sql, 'hybrid_local_leases')) {
+                $approvedIds = [];
+                foreach ($params as $key => $value) {
+                    if (str_starts_with((string) $key, 'hybrid_catalog_')) {
+                        $approvedIds[] = (int) $value;
+                    }
+                }
+                $rows = [];
+                foreach ($this->leases as $catalogId => $lease) {
+                    $line = $this->lines[$catalogId] ?? null;
+                    if (!is_array($line)
+                        || !in_array((int) $catalogId, $approvedIds, true)
+                        || (string) ($lease['state'] ?? '') !== 'active') {
+                        continue;
+                    }
+                    $rows[] = [
+                        'catalog_id' => (int) $catalogId,
+                        'physical_line_id' => (int) $line['line_id'],
+                        'catalog_sort_order' => (int) ($line['sort_order'] ?? 100),
+                        'config_sha256' => (string) $line['config_sha256'],
+                        'lease_id' => (string) $lease['lease_id'],
+                        'lease_generation' => (int) $lease['generation'],
+                        'lease_state' => (string) $lease['state'],
+                        'max_parallel_lanes' => (int) $lease['max_parallel_lanes'],
+                        'lease_expires_at' => (string) $lease['expires_at'],
+                    ];
+                }
+                return $rows;
+            }
+            if (str_contains($sql, 'hybrid_client_catalog_ids')
+                && !str_contains($sql, 'hybrid_client_catalog_ids_locked')) {
+                return array_values(array_map(
+                    static fn(array $line): array => [
+                        'catalog_id' => (int) $line['id'],
+                        'line_id' => (int) $line['line_id'],
+                        'config_sha256' => (string) $line['config_sha256'],
+                        'is_active' => (int) $line['is_active'],
+                        'allow_client_execution' => (int) $line['allow_client_execution'],
+                        'catalog_sort_order' => (int) ($line['sort_order'] ?? 100),
+                    ],
+                    array_filter(
+                        $this->lines,
+                        static fn(array $line): bool => (int) ($line['is_active'] ?? 0) === 1
+                            && (int) ($line['allow_client_execution'] ?? 0) === 1
+                    )
+                ));
+            }
+            if (str_contains($sql, 'hybrid_local_parallel_catalog_ids')) {
+                $ids = array_map('intval', array_values($params));
+                return array_values(array_map(
+                    static fn(array $line): array => ['catalog_id' => (int) $line['id']],
+                    array_filter(
+                        $this->lines,
+                        static fn(array $line): bool => in_array((int) $line['id'], $ids, true)
+                            && (int) ($line['is_active'] ?? 0) === 1
+                            && (int) ($line['allow_client_execution'] ?? 0) === 1
+                            && (int) ($line['max_parallel_lanes'] ?? 0) >= 2
+                            && (int) ($line['max_parallel_lanes'] ?? 0) <= 4
+                    )
+                ));
+            }
             if (str_contains($sql, 'hybrid_client_catalog_ids_locked')) {
                 $this->lockedMembershipCheckedInTransaction = $this->inTransaction;
                 $lockedIds = [];
@@ -215,6 +284,7 @@ namespace {
         'LEIGOD_LINUX_HYBRID_ENABLED=1',
         'LEIGOD_CLIENT_EXECUTION_BROKER_ENABLED=1',
         'LEIGOD_CLIENT_EXECUTION_DESIRED_LINES=1',
+        'LEIGOD_EGRESS_TEST_SECRET=egress-secret',
         'LEIGOD_LINE_TOML_510=' . base64_encode($toml10),
         'LEIGOD_LINE_TOML_511=' . base64_encode($toml11),
         'LEIGOD_LINE_TOML_512=' . base64_encode($toml12),
@@ -250,6 +320,118 @@ namespace {
     ];
     $config = new Config($envPath);
     $provisioning = new ProvisioningService($config, $db);
+
+    $db->egressProfile = [
+        'id' => 5,
+        'profile_key' => 'hk-egress',
+        'region' => 'hk',
+        'host' => '198.51.100.50',
+        'tcp_port' => 7443,
+        'secret_ref' => 'LEIGOD_EGRESS_TEST_SECRET',
+        'is_enabled' => 1,
+    ];
+    $db->lines[10]['allow_client_execution'] = 0;
+    $db->lockedMembershipIds = [12];
+    $catalog = new LeigodLineCatalogService($config, $db);
+    $hybrid = new \Leikwan\Master\Support\LeigodHybridRuntimeService(
+        $config,
+        $db,
+        static function (array $forward, string $secret, string $protocol): string {
+            $encode = static fn(string $value): string => rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+            $payload = (string) json_encode([
+                'target_host' => (string) ($forward['target_host'] ?? ''),
+                'target_port' => (int) ($forward['target_port'] ?? 0),
+                'target_protocol' => $protocol,
+                'forward_id' => (int) ($forward['id'] ?? $forward['forward_id'] ?? 0),
+            ], JSON_UNESCAPED_SLASHES);
+            return $encode($payload) . '.' . $encode(hash_hmac('sha256', $payload, $secret, true));
+        },
+        ['version' => '0.2.0', 'sha256' => str_repeat('b', 64)],
+        $catalog
+    );
+    $coldProvisioning = new ProvisioningService($config, $db, $hybrid);
+    $coldForward = [
+        'id' => 70,
+        'forward_id' => 70,
+        'service_id' => 9,
+        'service_status' => 'active',
+        'backend_mode' => 'leigod_mode',
+        'client_mode' => 'bond',
+        'mode' => 'bond',
+        'transport_mode' => 'tcp',
+        'transport' => 'tcp',
+        'target_host' => 'v4-hkt-b.mcbar.cc',
+        'target_port' => 5201,
+        'forward_route_id' => 80,
+        'forward_combination_id' => 100,
+        'bond_sidecar_point_id' => 99,
+        'endpoints' => [],
+    ];
+    $coldClient = ['id' => 20, 'runtime_platform_scope' => 'linux'];
+    $coldSession = [
+        'id' => 30,
+        'client_id' => 20,
+        'device_id' => 'linux-device-a',
+        'platform' => 'linux-amd64',
+        'pathd_capability' => ['version' => '0.2.0', 'sha256' => str_repeat('b', 64)],
+    ];
+    $coldCatalogIds = [];
+    $coldScopes = [];
+    assertClientLeaseBrokerSame([], $db->leases, 'cold local-only pull begins without a lease');
+    assertClientLeaseBrokerSame(
+        true,
+        $coldProvisioning->hasApprovedLinuxHybridAssignment(
+            $coldClient,
+            $coldSession,
+            [$coldForward],
+            $coldCatalogIds,
+            $coldScopes
+        ),
+        'endpointless local-only forward is eligible for cold allocation'
+    );
+    assertClientLeaseBrokerSame([12], $coldCatalogIds, 'cold allocation is scoped to the repeated-lane catalog');
+    assertClientLeaseBrokerSame([[
+        'route_id' => 80,
+        'combination_id' => 100,
+        'catalog_ids' => [12],
+    ]], $coldScopes, 'cold allocation carries its locked forward scope');
+    $coldProjection = $coldProvisioning->desiredLeigodLineManagementForClientDevice(
+        20,
+        'linux-device-a',
+        $coldCatalogIds,
+        $coldScopes
+    );
+    assertClientLeaseBrokerSame([512], array_column($coldProjection['lines'] ?? [], 'line_id'), 'cold pull allocates and projects the repeated line');
+    assertClientLeaseBrokerSame('pending', $coldProjection['lines'][0]['lease_state'] ?? null, 'cold pull issues a pending lease');
+    assertClientLeaseBrokerSame(true, $db->lockedMembershipCheckedInTransaction, 'cold pull revalidates membership under allocator locks');
+    $coldLeaseId = (string) ($coldProjection['lines'][0]['lease_id'] ?? '');
+    $coldGeneration = (int) ($coldProjection['lines'][0]['lease_generation'] ?? 0);
+    (new LeigodExecutionLeaseService($config, $db))->acceptHealth(12, $coldLeaseId, $coldGeneration, [
+        'owner_type' => 'client_device',
+        'owner_id' => 20,
+        'owner_device_id' => 'linux-device-a',
+        'config_sha256' => hash('sha256', $toml12),
+        'healthy' => true,
+    ]);
+    assertClientLeaseBrokerSame('active', $db->leases[12]['state'] ?? null, 'fenced health activates the cold lease');
+    assertClientLeaseBrokerSame(
+        [12],
+        $hybrid->preflightClientCatalogIds($coldForward, $coldClient, $coldSession, []),
+        'second pull retains local-only preflight authorization'
+    );
+    $secondPullRuntime = $hybrid->forForward($coldForward, $coldClient, $coldSession, []);
+    assertClientLeaseBrokerSame(true, is_array($secondPullRuntime), 'second pull builds a local-only runtime');
+    assertClientLeaseBrokerSame(
+        [512, 1_005_122, 1_005_123, 1_005_124],
+        array_column($secondPullRuntime['local_leases'][0]['routes'] ?? [], 'route_id'),
+        'second pull publishes every lane after the fenced lease becomes active'
+    );
+    assertClientLeaseBrokerSame([], $secondPullRuntime['slave_legs'] ?? null, 'second pull remains local-only');
+
+    $db->leases = [];
+    $db->revisions = [];
+    $db->lines[10]['allow_client_execution'] = 1;
+    $db->lockedMembershipCheckedInTransaction = false;
 
     $unapproved = $provisioning->desiredLeigodLineManagementForClientDevice(20, 'linux-device-a');
     assertClientLeaseBrokerSame(['lines' => []], $unapproved, 'unapproved pull receives no provider material');

@@ -128,7 +128,9 @@ final class LeigodHybridRuntimeService
                 }
             }
         }
-        if ($slaveLegs === [] || count($executionGroups) < 2) {
+        $localOnlyParallel = count($localLeases) === 1
+            && count($localLeases[0]['routes'] ?? []) >= 2;
+        if (($slaveLegs === [] || count($executionGroups) < 2) && !$localOnlyParallel) {
             return null;
         }
         usort($slaveLegs, static fn(array $left, array $right): int => [
@@ -202,6 +204,11 @@ final class LeigodHybridRuntimeService
         if ($profile === null || $this->egressSecret($profile) === null) {
             return [];
         }
+        $clientCatalogIds = $this->catalog->clientExecutionCatalogIdsForForward($forward);
+        if ($clientCatalogIds === []) {
+            return [];
+        }
+        $localParallelCatalogIds = $this->localParallelCatalogIds($clientCatalogIds);
         $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
         $eligibleNodeIds = [];
         foreach ($this->catalog->eligibleNodesForCombination($combinationId, 'tcp') as $node) {
@@ -210,8 +217,11 @@ final class LeigodHybridRuntimeService
                 $eligibleNodeIds[$nodeId] = true;
             }
         }
+        // A client-owned line may be the only execution authority. In that case
+        // there is no node candidate to advertise, but the client lane contract
+        // still needs to be allocated before the next pull can render pathd.
         if ($eligibleNodeIds === []) {
-            return [];
+            return $localParallelCatalogIds;
         }
         $hasSlaveExecutionGroup = false;
         foreach ($endpoints as $endpoint) {
@@ -233,9 +243,47 @@ final class LeigodHybridRuntimeService
             }
         }
         if (!$hasSlaveExecutionGroup) {
+            return $localParallelCatalogIds;
+        }
+        return $clientCatalogIds;
+    }
+
+    /** @param array<int, int> $catalogIds @return array<int, int> */
+    private function localParallelCatalogIds(array $catalogIds): array
+    {
+        $placeholders = [];
+        $params = [];
+        foreach (array_values(array_unique(array_map('intval', $catalogIds))) as $index => $catalogId) {
+            if ($catalogId <= 0) {
+                continue;
+            }
+            $key = 'local_parallel_catalog_' . $index;
+            $placeholders[] = ':' . $key;
+            $params[$key] = $catalogId;
+        }
+        if ($placeholders === []) {
             return [];
         }
-        return $this->catalog->clientExecutionCatalogIdsForForward($forward);
+        $rows = $this->db->fetchAll(
+            'SELECT /* hybrid_local_parallel_catalog_ids */ id AS catalog_id
+             FROM leigod_lines
+             WHERE id IN (' . implode(', ', $placeholders) . ')
+               AND is_active = 1
+               AND allow_client_execution = 1
+               AND max_parallel_lanes BETWEEN 2 AND 4',
+            $params
+        );
+        $eligible = [];
+        foreach ($rows as $row) {
+            $catalogId = (int) ($row['catalog_id'] ?? 0);
+            if ($catalogId > 0) {
+                $eligible[$catalogId] = true;
+            }
+        }
+        return array_values(array_filter(
+            $catalogIds,
+            static fn(int $catalogId): bool => isset($eligible[$catalogId])
+        ));
     }
 
     /** @param array<string, mixed> $client @param array<string, mixed> $session */
