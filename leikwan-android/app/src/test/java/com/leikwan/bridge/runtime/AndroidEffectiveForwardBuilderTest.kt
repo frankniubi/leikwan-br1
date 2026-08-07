@@ -1,5 +1,6 @@
 package com.leikwan.bridge.runtime
 
+import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -8,6 +9,26 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AndroidEffectiveForwardBuilderTest {
+
+    @Test
+    fun `slave sidecar aggregation requires one TCP plain ingress endpoint`() {
+        val valid = slaveSidecarForward()
+
+        assertEquals(ForwardMode.BOND, AndroidEffectiveForwardBuilder.build(valid)?.mode)
+        assertEquals(null, AndroidEffectiveForwardBuilder.build(valid.copy(transport = "tcp+udp")))
+        assertEquals(
+            null,
+            AndroidEffectiveForwardBuilder.build(
+                valid.copy(endpoints = valid.endpoints + valid.endpoints.single().copy(endpointId = 185)),
+            ),
+        )
+        assertEquals(
+            null,
+            AndroidEffectiveForwardBuilder.build(
+                valid.copy(endpoints = listOf(valid.endpoints.single().copy(ingressAuthToken = null))),
+            ),
+        )
+    }
 
     @Test
     fun `builder keeps single and bond but rejects unsupported legacy runtime modes`() {
@@ -304,4 +325,41 @@ class AndroidEffectiveForwardBuilderTest {
             quicServerName = quicServerName,
         )
     }
+
+    private fun slaveSidecarForward(): ForwardContract = ForwardContractParser.parse(
+        JsonParser.parseString(
+            """
+            {
+              "forward_id": 61,
+              "service_name": "slave-sidecar-61",
+              "listen_port": 11061,
+              "mode": "single",
+              "client_mode": "bond",
+              "contract_version": 1,
+              "active_family": "sidecar_aggregation",
+              "aggregation_enabled": true,
+              "target_contract": "sidecar_aggregation",
+              "sidecar_required": true,
+              "bond_sidecar_point_id": 9,
+              "transport": "tcp",
+              "service_status": "active",
+              "endpoint_mode": "manual",
+              "path_prefix": "slave-sidecar-61",
+              "bonding": {
+                "aggregation_placement": "slave_sidecar",
+                "ingress_mode": "plain_tcp_mux",
+                "route_key": "slave-sidecar-61"
+              },
+              "endpoints": [
+                {
+                  "endpoint_id": 184,
+                  "host": "8.163.90.132",
+                  "port": 7001,
+                  "ingress_auth_token": "token-a"
+                }
+              ]
+            }
+            """.trimIndent(),
+        ),
+    )!!
 }

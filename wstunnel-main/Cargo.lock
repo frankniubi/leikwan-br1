@@ -1896,7 +1896,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "leikwan-bond"
-version = "0.1.30"
+version = "0.1.41"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1905,6 +1905,8 @@ dependencies = [
  "clap",
  "env_logger",
  "hmac",
+ "leikwan-ingress",
+ "libc",
  "log",
  "quinn",
  "rcgen",
@@ -1913,6 +1915,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "tokio-util",
  "tracing",
  "url",
  "uuid",
@@ -4262,6 +4265,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

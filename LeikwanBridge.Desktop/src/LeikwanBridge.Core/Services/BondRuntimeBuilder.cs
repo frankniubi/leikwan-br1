@@ -36,6 +36,36 @@ public sealed class BondRuntimeBuilder
 
     public RuntimeSpec Build(ForwardConfig forward) => BuildBondRuntime(forward, "");
 
+    public RuntimeSpec BuildSlaveSidecarIngress(ForwardConfig forward)
+    {
+        if (!WindowsForwardPolicy.UsesSlaveSidecarIngress(forward))
+            throw new InvalidOperationException("invalid slave_sidecar ingress contract");
+
+        var bonding = forward.Bonding!;
+        var endpoint = forward.Endpoints.Single(endpoint =>
+            !string.IsNullOrWhiteSpace(endpoint.Host) && endpoint.Port is > 0 and <= 65535);
+        var routeKey = FirstNonEmpty(bonding.RouteKey, forward.PathPrefix);
+        var authToken = endpoint.IngressAuthToken.Trim();
+        var ingressBin = _config.GetEffectiveBondIngressBin();
+        var ingressArgs = $"client --listen 0.0.0.0:{forward.ListenPort} " +
+            $"--remote {endpoint.Host}:{endpoint.Port} --route-key {routeKey} --auth-token {authToken}";
+
+        return new RuntimeSpec(
+            "bond",
+            PlainTcpMux,
+            forward.ListenPort,
+            [forward.ListenPort],
+            [
+                new RuntimeProcess(
+                    "slave-sidecar-ingress",
+                    "slave-sidecar-ingress",
+                    ingressBin,
+                    ingressArgs,
+                    RequiredForReadiness: true,
+                    CriticalForForwardHealth: true),
+            ]);
+    }
+
     public RuntimeSpec BuildFrontend(ForwardConfig forward)
     {
         var frontendMode = (forward.Bonding?.FrontendMode ?? "").Trim().ToLowerInvariant();

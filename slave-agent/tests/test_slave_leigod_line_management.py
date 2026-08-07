@@ -124,6 +124,19 @@ class SlaveLeigodLineManagementTests(unittest.TestCase):
             "udp_probe_method": "dns" if udp else None,
         }
 
+    @classmethod
+    def leased_line(cls, line_id: int = 451, *, state: str = "pending") -> dict:
+        line = cls.line(line_id)
+        line.update(
+            {
+                "lease_id": "00000000-0000-4000-8000-000000000012",
+                "lease_generation": 3,
+                "lease_state": state,
+                "max_parallel_lanes": 2,
+            }
+        )
+        return line
+
     def test_management_writes_verified_toml_0600_after_session(self):
         agent, _root = self.make_agent()
         observed: list[tuple[int, bool, str]] = []
@@ -203,6 +216,69 @@ class SlaveLeigodLineManagementTests(unittest.TestCase):
         self.assertEqual("failed", health["service_state"])
         self.assertEqual("config_hash_mismatch", health["last_error"])
 
+    def test_lease_managed_rows_require_and_persist_complete_fence(self):
+        agent, _root = self.make_agent()
+        incomplete = self.line()
+        incomplete["lease_id"] = "00000000-0000-4000-8000-000000000012"
+        with self.assertRaisesRegex(RuntimeError, "incomplete leigod line lease fence"):
+            agent.apply_management_state(
+                {"leigod_session_json": "{}", "leigod_lines": [incomplete]},
+                schedule_updates=False,
+            )
+
+        leased = self.leased_line()
+        with mock.patch.object(agent, "ensure_leigod_line_service"):
+            with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                agent.apply_management_state(
+                    {"leigod_session_json": "{}", "leigod_lines": [leased]},
+                    schedule_updates=False,
+                )
+
+        desired = agent.load_leigod_desired_lines()[0]
+        self.assertEqual(leased["lease_id"], desired["lease_id"])
+        self.assertEqual(3, desired["lease_generation"])
+        self.assertEqual("pending", desired["lease_state"])
+        health = agent.load_leigod_line_health()[451]
+        self.assertEqual(leased["lease_id"], health["lease_id"])
+        self.assertEqual(3, health["lease_generation"])
+
+        with mock.patch.object(agent, "ensure_leigod_line_service"):
+            with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                agent.apply_management_state(
+                    {"leigod_session_json": "{}", "leigod_lines": [self.line()]},
+                    schedule_updates=False,
+                )
+        rolled_back = agent.load_leigod_line_health()[451]
+        self.assertNotIn("lease_id", rolled_back)
+        self.assertNotIn("lease_generation", rolled_back)
+
+    def test_revocation_holds_referenced_line_and_reports_revoking_until_cleanup(self):
+        agent, root = self.make_agent()
+        leased = self.leased_line(state="active")
+        with mock.patch.object(agent, "ensure_leigod_line_service"):
+            with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                agent.apply_management_state(
+                    {"leigod_session_json": "{}", "leigod_lines": [leased]},
+                    schedule_updates=False,
+                )
+
+        config_path = agent.leigod_forward_config_path("wstunnel-svc-2-316")
+        agent.write_json(config_path, {"candidates": [{"line_id": 451}]})
+        agent.apply_management_state({"leigod_lines": []}, schedule_updates=False)
+        desired = agent.load_leigod_desired_lines()[0]
+        health = agent.load_leigod_line_health()[451]
+        self.assertEqual("revoking", desired["lease_state"])
+        self.assertEqual("revoking", health["service_state"])
+        self.assertEqual(leased["lease_id"], health["lease_id"])
+        self.assertTrue((root / "leigod" / "lines" / "451.toml").exists())
+
+        config_path.unlink()
+        with mock.patch.object(slave_agent_module.shutil, "which", return_value="/usr/bin/systemctl"):
+            with mock.patch.object(slave_agent_module, "run_command", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")):
+                agent.apply_management_state({"leigod_lines": []}, schedule_updates=False)
+        self.assertEqual([], agent.load_leigod_desired_lines())
+        self.assertNotIn(451, agent.load_leigod_line_health())
+
     def test_line_template_uses_configured_systemd_directory(self):
         agent, root = self.make_agent()
         commands: list[str] = []
@@ -258,7 +334,7 @@ class SlaveLeigodLineManagementTests(unittest.TestCase):
 
     def test_heartbeat_contains_bounded_health_without_toml(self):
         agent, _root = self.make_agent()
-        line = self.line()
+        line = self.leased_line(state="active")
         agent.save_leigod_desired_lines([agent.desired_leigod_line_without_toml(line)])
         agent.save_leigod_line_health(
             {
@@ -273,6 +349,9 @@ class SlaveLeigodLineManagementTests(unittest.TestCase):
                     "consecutive_failures": 0,
                     "last_error": "",
                     "checked_at": "2026-07-27T00:00:00Z",
+                    "lease_id": line["lease_id"],
+                    "lease_generation": line["lease_generation"],
+                    "lease_state": line["lease_state"],
                 }
             }
         )
@@ -286,6 +365,8 @@ class SlaveLeigodLineManagementTests(unittest.TestCase):
                                     with mock.patch.object(agent, "disk_usage_percent", return_value=0):
                                         payload = agent.build_heartbeat_payload()
         self.assertEqual(451, payload["leigod_line_health"][0]["line_id"])
+        self.assertEqual(line["lease_id"], payload["leigod_line_health"][0]["lease_id"])
+        self.assertEqual(3, payload["leigod_line_health"][0]["lease_generation"])
         self.assertNotIn("toml", json.dumps(payload).lower())
 
     def test_task_cycle_probes_managed_lines_once_after_double_management_apply(self):

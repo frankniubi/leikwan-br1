@@ -11,18 +11,21 @@ use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket, lookup_host};
-use tokio::sync::{mpsc, watch, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, interval, sleep, timeout};
 use log::{debug, info, warn};
+use tokio_util::task::TaskTracker;
 use uuid::Uuid;
+use tokio_util::sync::CancellationToken;
 
 const UDP_FRAGMENT_MIN_SIZE: usize = 1200;
 const UDP_FRAGMENT_MAX_SIZE: usize = 16 * 1024;
@@ -54,6 +57,53 @@ fn read_credit_chunks(config: &SessionConfig) -> usize {
     window.saturating_add(chunk_size - 1) / chunk_size
 }
 
+fn initial_leg_quorum_met(ready: usize, preferred: usize, minimum: usize) -> bool {
+    preferred > 0 && minimum > 0 && minimum <= preferred && ready >= minimum
+}
+
+fn effective_initial_leg_counts(
+    spec_count: usize,
+    preferred: usize,
+    minimum: usize,
+) -> anyhow::Result<(usize, usize)> {
+    if spec_count == 0 || preferred == 0 || minimum == 0 || minimum > preferred {
+        return Err(anyhow!("invalid initial bond leg readiness configuration"));
+    }
+    if minimum > spec_count {
+        return Err(anyhow!(
+            "initial bond leg quorum requires {} legs but only {} were configured",
+            minimum,
+            spec_count
+        ));
+    }
+    Ok((preferred.min(spec_count), minimum))
+}
+
+fn bounded_retry_backoff(initial: Duration, maximum: Duration, attempt: usize) -> Duration {
+    let mut delay = initial.min(maximum);
+    for _ in 0..attempt {
+        delay = delay.saturating_mul(2).min(maximum);
+        if delay == maximum {
+            break;
+        }
+    }
+    delay
+}
+
+fn retry_backoff_with_jitter(
+    initial: Duration,
+    maximum: Duration,
+    attempt: usize,
+    spec_index: usize,
+) -> Duration {
+    let base = bounded_retry_backoff(initial, maximum, attempt);
+    if base >= maximum {
+        return maximum;
+    }
+    let jitter_percent = ((spec_index.saturating_mul(17) + attempt.saturating_mul(7)) % 21) as u32;
+    base.saturating_add((base / 100).saturating_mul(jitter_percent)).min(maximum)
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     pub chunk_size: usize,
@@ -61,6 +111,11 @@ pub struct SessionConfig {
     pub retransmit_after: Duration,
     pub join_timeout: Duration,
     pub connect_timeout: Duration,
+    pub preferred_initial_legs: usize,
+    pub minimum_initial_legs: usize,
+    pub initial_leg_wait: Duration,
+    pub leg_reconnect_backoff: Duration,
+    pub leg_reconnect_backoff_max: Duration,
     pub interactive_chunk_bytes: usize,
     pub latency_guard_bytes: usize,
     pub interactive_rtt_slack: Duration,
@@ -69,10 +124,63 @@ pub struct SessionConfig {
     pub warmup_leg_delay: Duration,
     pub bulk_promote_bytes: usize,
     pub leg_cooldown: Duration,
+    pub throughput_min_sample_bytes: u64,
+    pub throughput_min_sample: Duration,
+    pub adaptive_line_admission: bool,
+    pub throughput_min_mbps: f64,
+    pub throughput_relative_floor: f64,
+    pub throughput_bad_windows: u32,
+    pub throughput_recovery_windows: u32,
+    pub throughput_quarantine: Duration,
+    pub throughput_probe_interval: Duration,
+    pub throughput_probe_bytes: u64,
     pub latency_first: bool,
     pub udp_primary_only: bool,
     pub strategy_file: Option<PathBuf>,
     pub default_strategy: ClientStrategy,
+}
+
+impl SessionConfig {
+    pub fn client_defaults() -> Self {
+        Self {
+            chunk_size: 131072,
+            max_window_bytes: 16777216,
+            retransmit_after: Duration::from_millis(300),
+            join_timeout: Duration::from_millis(400),
+            connect_timeout: Duration::from_millis(3000),
+            preferred_initial_legs: 2,
+            minimum_initial_legs: 1,
+            initial_leg_wait: Duration::from_millis(600),
+            leg_reconnect_backoff: Duration::from_secs(30 * 60),
+            leg_reconnect_backoff_max: Duration::from_secs(30 * 60),
+            interactive_chunk_bytes: 16384,
+            latency_guard_bytes: 262144,
+            interactive_rtt_slack: Duration::from_millis(30),
+            warmup_trigger_bytes: 65536,
+            warmup_slice_bytes: 65536,
+            warmup_leg_delay: Duration::from_millis(80),
+            bulk_promote_bytes: 262144,
+            leg_cooldown: Duration::from_secs(30 * 60),
+            throughput_min_sample_bytes: 1024 * 1024,
+            throughput_min_sample: Duration::from_secs(1),
+            adaptive_line_admission: false,
+            throughput_min_mbps: 10.0,
+            throughput_relative_floor: 0.35,
+            throughput_bad_windows: 3,
+            throughput_recovery_windows: 2,
+            throughput_quarantine: Duration::from_secs(60),
+            throughput_probe_interval: Duration::from_secs(30),
+            throughput_probe_bytes: 1024 * 1024,
+            latency_first: false,
+            udp_primary_only: false,
+            strategy_file: None,
+            default_strategy: ClientStrategy::LatencyBest,
+        }
+    }
+
+    pub fn server_defaults() -> Self {
+        Self::client_defaults()
+    }
 }
 
 fn transport_leg_write_timeout(config: &SessionConfig) -> Duration {
@@ -96,6 +204,15 @@ enum TcpStripingStage {
 #[serde(rename_all = "lowercase")]
 enum LegHealthState {
     Healthy,
+    Degraded,
+    Probation,
+    Quarantined,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum BulkAdmissionState {
+    Admitted,
     Degraded,
     Probation,
     Quarantined,
@@ -193,10 +310,75 @@ struct ProtocolLegHealth {
     score: f64,
     effective_weight: f64,
     delivered_bytes_ewma: f64,
+    throughput_mbps_ewma: f64,
+    throughput_window: ThroughputWindow,
+    throughput_qualifying_samples: u64,
+    last_throughput_sample_at: Option<Instant>,
+    bulk_admission: BulkAdmissionState,
+    bulk_weight: f64,
+    consecutive_bad_windows: u32,
+    consecutive_good_windows: u32,
+    quarantine_until: Option<Instant>,
+    next_probe_at: Option<Instant>,
+    probe_remaining_bytes: u64,
     penalty_ewma: f64,
     last_reason: Option<String>,
     last_good_at: Option<SystemTime>,
     last_probe_at: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ThroughputSample {
+    mbps: f64,
+}
+
+#[derive(Debug, Clone)]
+struct ThroughputWindow {
+    started_at: Option<Instant>,
+    delivered_bytes: u64,
+    qualifying_samples: u64,
+}
+
+impl ThroughputWindow {
+    fn new(_started_at: Instant) -> Self {
+        Self {
+            started_at: None,
+            delivered_bytes: 0,
+            qualifying_samples: 0,
+        }
+    }
+
+    fn credit(
+        &mut self,
+        delivered_bytes: usize,
+        observed_at: Instant,
+        qualifies: bool,
+        config: &SessionConfig,
+    ) -> Option<ThroughputSample> {
+        if !qualifies {
+            self.started_at = None;
+            self.delivered_bytes = 0;
+            return None;
+        }
+
+        let started_at = *self.started_at.get_or_insert(observed_at);
+        self.delivered_bytes = self.delivered_bytes.saturating_add(delivered_bytes as u64);
+        let elapsed = observed_at.saturating_duration_since(started_at);
+        if self.delivered_bytes < config.throughput_min_sample_bytes
+            || elapsed < config.throughput_min_sample
+        {
+            return None;
+        }
+
+        let seconds = elapsed.as_secs_f64().max(f64::EPSILON);
+        let sample = ThroughputSample {
+            mbps: (self.delivered_bytes as f64 * 8.0) / seconds / 1_000_000.0,
+        };
+        self.started_at = None;
+        self.delivered_bytes = 0;
+        self.qualifying_samples = self.qualifying_samples.saturating_add(1);
+        Some(sample)
+    }
 }
 
 impl ProtocolLegHealth {
@@ -206,6 +388,17 @@ impl ProtocolLegHealth {
             score: 1.0,
             effective_weight: 1.0,
             delivered_bytes_ewma: 0.0,
+            throughput_mbps_ewma: 0.0,
+            throughput_window: ThroughputWindow::new(Instant::now()),
+            throughput_qualifying_samples: 0,
+            last_throughput_sample_at: None,
+            bulk_admission: BulkAdmissionState::Admitted,
+            bulk_weight: 1.0,
+            consecutive_bad_windows: 0,
+            consecutive_good_windows: 0,
+            quarantine_until: None,
+            next_probe_at: None,
+            probe_remaining_bytes: 0,
             penalty_ewma: 0.0,
             last_reason: None,
             last_good_at: Some(SystemTime::now()),
@@ -293,6 +486,13 @@ impl SessionRole {
         }
     }
 
+    fn outbound_delivery(self, stream_id: u32, route_id: u32, delivered_bytes: u64) -> WireFrame {
+        match self {
+            Self::Client => WireFrame::DeliveryS2C { stream_id, route_id, delivered_bytes },
+            Self::Aggregator => WireFrame::DeliveryC2S { stream_id, route_id, delivered_bytes },
+        }
+    }
+
     fn outbound_fin(self, stream_id: u32, seq: u64) -> WireFrame {
         match self {
             Self::Client => WireFrame::FinC2S { stream_id, seq },
@@ -325,6 +525,14 @@ impl SessionRole {
         matches!(
             (self, frame),
             (Self::Client, WireFrame::AckC2S { .. }) | (Self::Aggregator, WireFrame::AckS2C { .. })
+        )
+    }
+
+    fn is_inbound_delivery(self, frame: &WireFrame) -> bool {
+        matches!(
+            (self, frame),
+            (Self::Client, WireFrame::DeliveryC2S { .. })
+                | (Self::Aggregator, WireFrame::DeliveryS2C { .. })
         )
     }
 
@@ -479,8 +687,16 @@ struct LegState {
     label: String,
     spec_index: Option<usize>,
     endpoint_id: Option<u64>,
+    leg_route_id: Option<u32>,
     node_id: Option<u64>,
     host: String,
+    initial_connect_ms: u64,
+    hello_ack_ms: u64,
+    initial_ready: bool,
+    added_late: bool,
+    reconnect_count: u64,
+    scheduled_bytes: u64,
+    cooldown_count: u64,
     cooldown_until: Option<Instant>,
     penalty_count: u8,
     tcp_health: ProtocolLegHealth,
@@ -616,8 +832,14 @@ struct OpenLeg {
     label: String,
     spec_index: Option<usize>,
     endpoint_id: Option<u64>,
+    leg_route_id: Option<u32>,
     node_id: Option<u64>,
     host: String,
+    initial_connect_ms: u64,
+    hello_ack_ms: u64,
+    initial_ready: bool,
+    added_late: bool,
+    reconnect_count: u64,
 }
 
 impl OpenLeg {
@@ -632,7 +854,13 @@ impl OpenLeg {
             label,
             spec_index: None,
             endpoint_id: None,
+            leg_route_id: None,
             node_id: None,
+            initial_connect_ms: 0,
+            hello_ack_ms: 0,
+            initial_ready: false,
+            added_late: false,
+            reconnect_count: 0,
         }
     }
 
@@ -641,12 +869,32 @@ impl OpenLeg {
         self
     }
 
-    fn with_metadata(mut self, endpoint_id: Option<u64>, node_id: Option<u64>, host: String) -> Self {
+    fn with_metadata(
+        mut self,
+        endpoint_id: Option<u64>,
+        leg_route_id: Option<u32>,
+        node_id: Option<u64>,
+        host: String,
+    ) -> Self {
         self.endpoint_id = endpoint_id;
+        self.leg_route_id = leg_route_id;
         self.node_id = node_id;
         if !host.is_empty() {
             self.host = host;
         }
+        self
+    }
+
+    fn with_handshake_timings(mut self, initial_connect_ms: u64, hello_ack_ms: u64) -> Self {
+        self.initial_connect_ms = initial_connect_ms;
+        self.hello_ack_ms = hello_ack_ms;
+        self
+    }
+
+    fn with_bootstrap_state(mut self, initial_ready: bool, added_late: bool, reconnect_count: u64) -> Self {
+        self.initial_ready = initial_ready;
+        self.added_late = added_late;
+        self.reconnect_count = reconnect_count;
         self
     }
 }
@@ -671,9 +919,65 @@ pub async fn run_client_listener(
     protocol: TransportProtocol,
     config: SessionConfig,
 ) -> anyhow::Result<()> {
+    run_client_listener_with_cancel(
+        bind,
+        leg_targets,
+        session_token,
+        protocol,
+        config,
+        CancellationToken::new(),
+    )
+    .await
+}
+
+pub async fn run_client_listener_with_cancel(
+    bind: String,
+    leg_targets: Vec<String>,
+    session_token: String,
+    protocol: TransportProtocol,
+    config: SessionConfig,
+    cancel: CancellationToken,
+) -> anyhow::Result<()> {
+    run_client_listener_managed(
+        bind,
+        leg_targets,
+        session_token,
+        protocol,
+        config,
+        cancel,
+        None,
+    )
+    .await
+}
+
+pub async fn run_client_listener_managed(
+    bind: String,
+    leg_targets: Vec<String>,
+    session_token: String,
+    protocol: TransportProtocol,
+    config: SessionConfig,
+    cancel: CancellationToken,
+    ready: Option<oneshot::Sender<Result<(), String>>>,
+) -> anyhow::Result<()> {
     match protocol {
-        TransportProtocol::Tcp => run_client_tcp_listener(bind, leg_targets, session_token, config).await,
-        TransportProtocol::Udp => run_client_udp_listener(bind, leg_targets, session_token, config).await,
+        TransportProtocol::Tcp => run_client_tcp_listener(
+            bind,
+            leg_targets,
+            session_token,
+            config,
+            cancel,
+            ready,
+        )
+        .await,
+        TransportProtocol::Udp => run_client_udp_listener(
+            bind,
+            leg_targets,
+            session_token,
+            config,
+            cancel,
+            ready,
+        )
+        .await,
     }
 }
 
@@ -682,20 +986,58 @@ async fn run_client_tcp_listener(
     leg_targets: Vec<String>,
     session_token: String,
     config: SessionConfig,
+    cancel: CancellationToken,
+    mut ready: Option<oneshot::Sender<Result<(), String>>>,
 ) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(&bind)
-        .await
-        .with_context(|| format!("cannot bind bond client listener on {bind}"))?;
+    let leg_specs = parse_leg_specs(leg_targets)?;
+    let listener = match TcpListener::bind(&bind).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            if let Some(sender) = ready.take() {
+                let _ = sender.send(Err(err.to_string()));
+            }
+            return Err(err).with_context(|| format!("cannot bind bond client listener on {bind}"));
+        }
+    };
     info!("bond client listening on {}", bind);
-    let mut transport_tx = connect_client_tcp_transport_session(
-        leg_targets.clone(),
+    let transport = connect_client_tcp_transport_session(
+        leg_specs.clone(),
         session_token.clone(),
         config.clone(),
+        cancel.clone(),
+        None,
     )
-    .await;
+    .await?;
+    if let Some(sender) = ready.take() {
+        let _ = sender.send(Ok(()));
+    }
+    run_client_tcp_accept_loop(
+        listener,
+        leg_specs,
+        session_token,
+        config,
+        cancel,
+        transport,
+    )
+    .await
+}
 
+async fn run_client_tcp_accept_loop(
+    listener: TcpListener,
+    leg_specs: Vec<LegSpec>,
+    session_token: String,
+    config: SessionConfig,
+    cancel: CancellationToken,
+    mut transport: ClientTransportRuntime,
+) -> anyhow::Result<()> {
     loop {
-        let (accepted_stream, peer) = listener.accept().await?;
+        let (accepted_stream, peer) = tokio::select! {
+            _ = cancel.cancelled() => {
+                stop_client_tcp_transport(transport).await;
+                return Ok(());
+            }
+            accepted = listener.accept() => accepted?,
+        };
         if let Err(err) = enable_tcp_nodelay(&accepted_stream) {
             warn!("failed to enable TCP_NODELAY for local client {}: {}", peer, err);
             continue;
@@ -708,7 +1050,7 @@ async fn run_client_tcp_listener(
             .unwrap_or(config.default_strategy);
 
         while let Some(local_stream) = pending_stream.take() {
-            match transport_tx.send(ClientTransportCommand::AttachLocalStream {
+            match transport.command_tx.send(ClientTransportCommand::AttachLocalStream {
                 local_stream,
                 strategy,
             }) {
@@ -719,18 +1061,25 @@ async fn run_client_tcp_listener(
                     );
                 }
                 Err(err) => {
-                    let ClientTransportCommand::AttachLocalStream { local_stream, .. } = err.0;
+                    let local_stream = match err.0 {
+                        ClientTransportCommand::AttachLocalStream { local_stream, .. } => local_stream,
+                        ClientTransportCommand::Shutdown => unreachable!("attach send returned shutdown"),
+                    };
                     warn!(
                         "bond tcp transport closed before accepting {}; reconnecting persistent session",
                         peer
                     );
                     pending_stream = Some(local_stream);
-                    transport_tx = connect_client_tcp_transport_session(
-                        leg_targets.clone(),
+                    let active_streams = transport.active_stream_counter();
+                    stop_client_tcp_transport(transport).await;
+                    transport = connect_client_tcp_transport_session(
+                        leg_specs.clone(),
                         session_token.clone(),
                         config.clone(),
+                        cancel.clone(),
+                        Some(active_streams),
                     )
-                    .await;
+                    .await?;
                     continue;
                 }
             }
@@ -738,29 +1087,94 @@ async fn run_client_tcp_listener(
     }
 }
 
-async fn connect_client_tcp_transport_session(
-    leg_targets: Vec<String>,
+pub(crate) async fn prepare_client_tcp_transport(
+    leg_specs: Vec<LegSpec>,
     session_token: String,
     config: SessionConfig,
-) -> mpsc::UnboundedSender<ClientTransportCommand> {
+    cancel: CancellationToken,
+) -> anyhow::Result<ClientTransportRuntime> {
+    connect_client_tcp_transport_session(leg_specs, session_token, config, cancel, None).await
+}
+
+pub(crate) async fn run_prepared_client_tcp_listener(
+    bind: String,
+    leg_specs: Vec<LegSpec>,
+    session_token: String,
+    config: SessionConfig,
+    cancel: CancellationToken,
+    mut ready: Option<oneshot::Sender<Result<(), String>>>,
+    transport: ClientTransportRuntime,
+) -> anyhow::Result<()> {
+    let listener = match TcpListener::bind(&bind).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            if let Some(sender) = ready.take() {
+                let _ = sender.send(Err(err.to_string()));
+            }
+            stop_client_tcp_transport(transport).await;
+            return Err(err).with_context(|| format!("cannot bind bond client listener on {bind}"));
+        }
+    };
+    if let Some(sender) = ready.take() {
+        let _ = sender.send(Ok(()));
+    }
+    info!("bond client listening on {} with prepared transport", bind);
+    run_client_tcp_accept_loop(
+        listener,
+        leg_specs,
+        session_token,
+        config,
+        cancel,
+        transport,
+    )
+    .await
+}
+
+async fn connect_client_tcp_transport_session(
+    leg_specs: Vec<LegSpec>,
+    session_token: String,
+    config: SessionConfig,
+    cancel: CancellationToken,
+    active_streams: Option<Arc<AtomicU64>>,
+) -> anyhow::Result<ClientTransportRuntime> {
+    let active_streams = active_streams.unwrap_or_else(|| Arc::new(AtomicU64::new(0)));
     loop {
-        match open_client_tcp_transport_session(
-            leg_targets.clone(),
-            session_token.clone(),
-            config.clone(),
-        )
-        .await
-        {
-            Ok(transport_tx) => {
+        let connected = tokio::select! {
+            _ = cancel.cancelled() => return Err(anyhow!("bond client listener cancelled")),
+            connected = open_client_tcp_transport_session(
+                leg_specs.clone(),
+                session_token.clone(),
+                config.clone(),
+                active_streams.clone(),
+            ) => connected,
+        };
+        match connected {
+            Ok(transport) => {
                 info!("bond client TCP transport session established");
-                return transport_tx;
+                return Ok(transport);
             }
             Err(err) => {
                 warn!("failed to establish persistent bond TCP transport: {:?}; retrying", err);
-                sleep(Duration::from_secs(1)).await;
+                tokio::select! {
+                    _ = cancel.cancelled() => return Err(anyhow!("bond client listener cancelled")),
+                    _ = sleep(Duration::from_secs(1)) => {}
+                }
             }
         }
     }
+}
+
+pub(crate) async fn stop_client_tcp_transport(mut transport: ClientTransportRuntime) {
+    let _ = transport.command_tx.send(ClientTransportCommand::Shutdown);
+    if timeout(TRANSPORT_STREAM_CLOSE_GRACE, &mut transport.task)
+        .await
+        .is_err()
+    {
+        transport.tasks.shutdown().await;
+        transport.task.abort();
+        let _ = transport.task.await;
+    }
+    transport.tasks.shutdown().await;
 }
 
 async fn run_client_udp_listener(
@@ -768,34 +1182,55 @@ async fn run_client_udp_listener(
     leg_targets: Vec<String>,
     session_token: String,
     config: SessionConfig,
+    cancel: CancellationToken,
+    mut ready: Option<oneshot::Sender<Result<(), String>>>,
 ) -> anyhow::Result<()> {
-    let socket = Arc::new(
-        UdpSocket::bind(&bind)
-            .await
-            .with_context(|| format!("cannot bind bond client UDP listener on {bind}"))?,
-    );
+    let socket = match UdpSocket::bind(&bind).await {
+        Ok(socket) => Arc::new(socket),
+        Err(err) => {
+            if let Some(sender) = ready.take() {
+                let _ = sender.send(Err(err.to_string()));
+            }
+            return Err(err).with_context(|| format!("cannot bind bond client UDP listener on {bind}"));
+        }
+    };
     info!("bond client UDP listening on {}", bind);
 
     loop {
-        match connect_client_udp_legs(leg_targets.clone(), session_token.clone(), config.clone()).await {
+        let connected = tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            connected = connect_client_udp_legs(
+                leg_targets.clone(),
+                session_token.clone(),
+                config.clone(),
+            ) => connected,
+        };
+        match connected {
             Ok((session_id, legs, _add_leg_rx)) => {
+                if let Some(sender) = ready.take() {
+                    let _ = sender.send(Ok(()));
+                }
                 info!("bond client UDP session {} opened with {} leg(s)", session_id, legs.len());
-                if let Err(err) = run_bonded_udp_client(
-                    socket.clone(),
-                    legs,
-                    snapshot_context(SessionRole::Client, None),
-                    config.clone(),
-                )
-                .await
-                {
+                let result = tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    result = run_bonded_udp_client(
+                        socket.clone(),
+                        legs,
+                        snapshot_context(SessionRole::Client, None),
+                        config.clone(),
+                    ) => result,
+                };
+                if let Err(err) = result {
                     warn!("bond client UDP session {} failed: {:?}", session_id, err);
-                    sleep(Duration::from_secs(1)).await;
                 }
             }
             Err(err) => {
                 warn!("failed to open UDP bond session: {:?}", err);
-                sleep(Duration::from_secs(1)).await;
             }
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            _ = sleep(Duration::from_secs(1)) => {}
         }
     }
 }
@@ -887,6 +1322,7 @@ pub async fn run_server_listener(
                 active_tcp_sessions.remove(&done_session_id);
             }
             Some(mut prepared) = collector_rx.recv() => {
+                prepared.leg.leg_route_id = Some(prepared.hello.route_id).filter(|route_id| *route_id > 0);
                 let now = Instant::now();
                 let claims = match verify_session_token(&prepared.hello.token, &token_secret, unix_now()) {
                     Ok(claims) => claims,
@@ -1099,11 +1535,83 @@ struct ClientTransportBootstrap {
     connector_shutdown_tx: watch::Sender<bool>,
 }
 
+#[derive(Clone)]
+struct SessionTaskGroup {
+    tracker: TaskTracker,
+    cancel: CancellationToken,
+}
+
+impl SessionTaskGroup {
+    fn new() -> Self {
+        Self {
+            tracker: TaskTracker::new(),
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    fn spawn<F>(&self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let cancel = self.cancel.clone();
+        self.tracker.spawn(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => {}
+                _ = future => {}
+            }
+        });
+    }
+
+    async fn shutdown(&self) {
+        self.cancel.cancel();
+        self.tracker.close();
+        self.tracker.wait().await;
+    }
+}
+
+pub(crate) struct ClientTransportRuntime {
+    command_tx: mpsc::UnboundedSender<ClientTransportCommand>,
+    task: tokio::task::JoinHandle<()>,
+    tasks: SessionTaskGroup,
+    active_streams: Arc<AtomicU64>,
+}
+
+impl ClientTransportRuntime {
+    pub(crate) fn active_stream_counter(&self) -> Arc<AtomicU64> {
+        self.active_streams.clone()
+    }
+}
+
+struct ActiveStreamCount {
+    counter: Option<Arc<AtomicU64>>,
+}
+
+impl ActiveStreamCount {
+    fn new(counter: Option<Arc<AtomicU64>>) -> Self {
+        Self { counter }
+    }
+
+    fn update(&self, active: usize) {
+        if let Some(counter) = &self.counter {
+            counter.store(active.min(u64::MAX as usize) as u64, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Drop for ActiveStreamCount {
+    fn drop(&mut self) {
+        if let Some(counter) = &self.counter {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
 enum ClientTransportCommand {
     AttachLocalStream {
         local_stream: TcpStream,
         strategy: ClientStrategy,
     },
+    Shutdown,
 }
 
 enum TcpTransportEvent {
@@ -1434,8 +1942,22 @@ async fn start_active_tcp_session(
         claims.target_host,
         claims.target_port
     );
-    run_tcp_transport_session(session_id, SessionRole::Aggregator, Some(claims), legs, add_leg_rx, None, None, config)
-        .await
+    let tasks = SessionTaskGroup::new();
+    let result = run_tcp_transport_session(
+        session_id,
+        SessionRole::Aggregator,
+        Some(claims),
+        legs,
+        add_leg_rx,
+        None,
+        None,
+        None,
+        config,
+        tasks.clone(),
+    )
+    .await;
+    tasks.shutdown().await;
+    result
 }
 
 async fn start_pending_udp_session(
@@ -1468,7 +1990,7 @@ async fn acknowledge_pending_legs(session_id: Uuid, pending_legs: Vec<OpenLeg>) 
             warn!("failed to send hello-ack for session {}: {:?}", session_id, err);
             continue;
         }
-        legs.push(leg);
+        legs.push(leg.with_bootstrap_state(true, false, 0));
     }
 
     if legs.is_empty() {
@@ -1479,10 +2001,11 @@ async fn acknowledge_pending_legs(session_id: Uuid, pending_legs: Vec<OpenLeg>) 
 }
 
 async fn acknowledge_late_leg(session_id: Uuid, mut leg: OpenLeg) -> anyhow::Result<OpenLeg> {
+    let reconnect_count = leg.reconnect_count.saturating_add(1);
     write_frame(&mut leg.stream, &WireFrame::HelloAck)
         .await
         .with_context(|| format!("failed to send hello-ack for late leg in session {}", session_id))?;
-    Ok(leg)
+    Ok(leg.with_bootstrap_state(false, true, reconnect_count))
 }
 
 async fn read_hello_and_queue(leg: OpenLeg, collector_tx: mpsc::UnboundedSender<PreparedLeg>) -> anyhow::Result<()> {
@@ -1501,17 +2024,27 @@ async fn read_hello_and_queue(leg: OpenLeg, collector_tx: mpsc::UnboundedSender<
 }
 
 async fn open_client_tcp_transport_session(
-    leg_targets: Vec<String>,
+    leg_specs: Vec<LegSpec>,
     session_token: String,
     config: SessionConfig,
-) -> anyhow::Result<mpsc::UnboundedSender<ClientTransportCommand>> {
-    let bootstrap = connect_client_tcp_transport_legs(leg_targets, session_token, config.connect_timeout).await?;
+    active_streams: Arc<AtomicU64>,
+) -> anyhow::Result<ClientTransportRuntime> {
+    let tasks = SessionTaskGroup::new();
+    let bootstrap = connect_client_tcp_transport_legs(
+        leg_specs,
+        session_token,
+        &config,
+        &tasks,
+    )
+    .await?;
     let session_id = bootstrap.session_id;
     let connector_shutdown_tx = bootstrap.connector_shutdown_tx.clone();
     let active_specs_tx = bootstrap.active_specs_tx.clone();
     let (command_tx, command_rx) = mpsc::unbounded_channel::<ClientTransportCommand>();
 
-    tokio::spawn(async move {
+    let outer_tasks = tasks.clone();
+    let task_active_streams = active_streams.clone();
+    let task = tokio::spawn(async move {
         let result = run_tcp_transport_session(
             session_id,
             SessionRole::Client,
@@ -1520,49 +2053,69 @@ async fn open_client_tcp_transport_session(
             bootstrap.add_leg_rx,
             Some(command_rx),
             Some(active_specs_tx),
+            Some(task_active_streams),
             config,
+            outer_tasks.clone(),
         )
         .await;
         let _ = connector_shutdown_tx.send(true);
+        outer_tasks.shutdown().await;
         if let Err(err) = result {
             warn!("bond client TCP transport {} failed: {:?}", session_id, err);
         }
     });
 
-    Ok(command_tx)
+    Ok(ClientTransportRuntime {
+        command_tx,
+        task,
+        tasks,
+        active_streams,
+    })
 }
 
 async fn connect_client_tcp_transport_legs(
-    leg_targets: Vec<String>,
+    mut specs: Vec<LegSpec>,
     session_token: String,
-    connect_timeout: Duration,
+    config: &SessionConfig,
+    tasks: &SessionTaskGroup,
 ) -> anyhow::Result<ClientTransportBootstrap> {
-    let mut specs = parse_leg_specs(leg_targets)?;
     specs.sort_by_key(|spec| (spec.priority, transport_bias(spec.transport), spec.original.clone()));
     if specs.is_empty() {
         return Err(anyhow!("at least one bond leg target is required"));
     }
+    if config.preferred_initial_legs == 0
+        || config.minimum_initial_legs == 0
+        || config.minimum_initial_legs > config.preferred_initial_legs
+        || config.initial_leg_wait.is_zero()
+        || config.leg_reconnect_backoff.is_zero()
+        || config.leg_reconnect_backoff > config.leg_reconnect_backoff_max
+    {
+        return Err(anyhow!("invalid initial bond leg readiness configuration"));
+    }
+    let (preferred_initial_legs, minimum_initial_legs) = effective_initial_leg_counts(
+        specs.len(),
+        config.preferred_initial_legs,
+        config.minimum_initial_legs,
+    )?;
 
     let session_id = Uuid::now_v7();
     let expected_links = specs.len().min(u16::MAX as usize) as u16;
-    let hello = WireFrame::Hello(HelloFrame {
-        session_id,
-        expected_links: expected_links.max(1),
-        token: session_token,
-    });
+    let session_token = Arc::new(session_token);
 
     let mut initial_legs = Vec::new();
     let mut active_specs = HashSet::new();
     let mut initial_connects = JoinSet::new();
+    let connect_timeout = config.connect_timeout;
     for (spec_index, spec) in specs.iter().cloned().enumerate() {
-        let hello = hello.clone();
+        let session_token = Arc::clone(&session_token);
         initial_connects.spawn(async move {
+            let hello = hello_for_spec(&spec, session_id, expected_links, session_token.as_str());
             let result = connect_and_ack_leg(&spec, &hello, connect_timeout).await;
             (spec_index, spec.original, result)
         });
     }
 
-    let first_leg_deadline = Instant::now() + connect_timeout;
+    let first_leg_deadline = Instant::now() + config.connect_timeout;
     let mut join_deadline = None::<Instant>;
     while !initial_connects.is_empty() {
         let deadline = join_deadline.unwrap_or(first_leg_deadline);
@@ -1582,10 +2135,16 @@ async fn connect_client_tcp_transport_legs(
 
         match joined {
             Ok((spec_index, _spec_original, Ok(leg))) => {
-                initial_legs.push(leg.with_spec_index(spec_index));
+                initial_legs.push(
+                    leg.with_spec_index(spec_index)
+                        .with_bootstrap_state(true, false, 0),
+                );
                 active_specs.insert(spec_index);
                 if join_deadline.is_none() {
-                    join_deadline = Some(Instant::now() + CLIENT_TCP_LEG_JOIN_GRACE.min(connect_timeout));
+                    join_deadline = Some(Instant::now() + config.initial_leg_wait);
+                }
+                if initial_legs.len() >= preferred_initial_legs {
+                    break;
                 }
             }
             Ok((_spec_index, spec_original, Err(err))) => {
@@ -1596,38 +2155,35 @@ async fn connect_client_tcp_transport_legs(
     }
     initial_connects.abort_all();
 
-    if initial_legs.is_empty() {
-        return Err(anyhow!("no bond legs acknowledged the TCP transport"));
+    if !initial_leg_quorum_met(
+        initial_legs.len(),
+        preferred_initial_legs,
+        minimum_initial_legs,
+    ) {
+        return Err(anyhow!(
+            "initial bond leg quorum not met: ready={}, preferred={}, minimum={}",
+            initial_legs.len(),
+            preferred_initial_legs,
+            minimum_initial_legs
+        ));
     }
 
     let (active_specs_tx, active_specs_rx) = watch::channel(active_specs);
     let (connector_shutdown_tx, connector_shutdown_rx) = watch::channel(false);
     let (add_leg_tx, add_leg_rx) = mpsc::unbounded_channel::<OpenLeg>();
     let specs = Arc::new(specs);
-    let desired_active_specs = specs.len().min(2);
-    tokio::spawn(run_client_leg_connector(
+    tasks.spawn(run_client_leg_connector(
         specs,
-        hello,
-        connect_timeout,
+        session_id,
+        expected_links,
+        session_token,
+        config.connect_timeout,
+        config.leg_reconnect_backoff,
+        config.leg_reconnect_backoff_max,
         active_specs_rx,
         connector_shutdown_rx,
         add_leg_tx,
     ));
-
-    if desired_active_specs > 1 {
-        let mut wait_rx = active_specs_tx.subscribe();
-        let deadline = Instant::now() + CLIENT_TCP_LEG_JOIN_GRACE.min(connect_timeout);
-        while wait_rx.borrow().len() < desired_active_specs {
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-            let sleep_for = deadline.saturating_duration_since(now);
-            if timeout(sleep_for, wait_rx.changed()).await.is_err() {
-                break;
-            }
-        }
-    }
 
     Ok(ClientTransportBootstrap {
         session_id,
@@ -1649,10 +2205,11 @@ async fn connect_client_udp_legs(
         return Err(anyhow!("at least one bond leg target is required"));
     }
 
-    let mut connected = Vec::<(usize, LegSpec, LegIo)>::new();
+    let mut connected = Vec::<(usize, LegSpec, LegIo, u64)>::new();
     for (spec_index, spec) in specs.iter().enumerate() {
+        let connect_started = Instant::now();
         match connect_leg(spec, config.connect_timeout).await {
-            Ok(stream) => connected.push((spec_index, spec.clone(), stream)),
+            Ok(stream) => connected.push((spec_index, spec.clone(), stream, duration_millis(connect_started.elapsed()))),
             Err(err) => warn!("failed to connect UDP bond leg {}: {:?}", spec.original, err),
         }
     }
@@ -1661,22 +2218,20 @@ async fn connect_client_udp_legs(
     }
 
     let session_id = Uuid::now_v7();
-    let hello = WireFrame::Hello(HelloFrame {
-        session_id,
-        expected_links: connected.len() as u16,
-        token: session_token,
-    });
+    let expected_links = connected.len() as u16;
 
     let mut hello_sent = Vec::new();
-    for (spec_index, spec, mut stream) in connected {
+    for (spec_index, spec, mut stream, initial_connect_ms) in connected {
+        let hello = hello_for_spec(&spec, session_id, expected_links, &session_token);
         write_frame(&mut stream, &hello)
             .await
             .with_context(|| format!("failed to send bond hello to leg {}", spec.original))?;
-        hello_sent.push((spec_index, spec, stream));
+        hello_sent.push((spec_index, spec, stream, initial_connect_ms));
     }
 
     let mut ready_legs = Vec::new();
-    for (spec_index, spec, mut stream) in hello_sent {
+    for (spec_index, spec, mut stream, initial_connect_ms) in hello_sent {
+        let ack_started = Instant::now();
         let ack = timeout(Duration::from_secs(5), read_frame(&mut stream))
             .await
             .with_context(|| format!("timed out waiting for bond hello-ack from {}", spec.original))??;
@@ -1685,10 +2240,13 @@ async fn connect_client_udp_legs(
                 OpenLeg::new(stream, spec.priority, spec.role, spec.original.clone())
                     .with_metadata(
                         spec.endpoint_id,
+                        spec.leg_route_id,
                         spec.node_id,
                         spec.display_host.clone().unwrap_or_else(|| spec.host.clone()),
                     )
-                    .with_spec_index(spec_index),
+                    .with_spec_index(spec_index)
+                    .with_handshake_timings(initial_connect_ms, duration_millis(ack_started.elapsed()))
+                    .with_bootstrap_state(true, false, 0),
             );
             continue;
         }
@@ -1712,9 +2270,12 @@ async fn connect_and_ack_leg(
     hello: &WireFrame,
     connect_timeout: Duration,
 ) -> anyhow::Result<OpenLeg> {
+    let connect_started = Instant::now();
     let mut stream = connect_leg(spec, connect_timeout)
         .await
         .with_context(|| format!("failed to connect bond leg {}", spec.original))?;
+    let initial_connect_ms = duration_millis(connect_started.elapsed());
+    let ack_started = Instant::now();
     write_frame(&mut stream, hello)
         .await
         .with_context(|| format!("failed to send bond hello to leg {}", spec.original))?;
@@ -1723,11 +2284,14 @@ async fn connect_and_ack_leg(
         .with_context(|| format!("timed out waiting for bond hello-ack from {}", spec.original))??;
     if matches!(ack, WireFrame::HelloAck) {
         return Ok(
-            OpenLeg::new(stream, spec.priority, spec.role, spec.original.clone()).with_metadata(
-                spec.endpoint_id,
-                spec.node_id,
-                spec.display_host.clone().unwrap_or_else(|| spec.host.clone()),
-            ),
+            OpenLeg::new(stream, spec.priority, spec.role, spec.original.clone())
+                .with_metadata(
+                    spec.endpoint_id,
+                    spec.leg_route_id,
+                    spec.node_id,
+                    spec.display_host.clone().unwrap_or_else(|| spec.host.clone()),
+                )
+                .with_handshake_timings(initial_connect_ms, duration_millis(ack_started.elapsed())),
         );
     }
     if let WireFrame::Reset { reason, .. } = ack {
@@ -1745,13 +2309,20 @@ async fn connect_and_ack_leg(
 
 async fn run_client_leg_connector(
     specs: Arc<Vec<LegSpec>>,
-    hello: WireFrame,
+    session_id: Uuid,
+    expected_links: u16,
+    session_token: Arc<String>,
     connect_timeout: Duration,
+    reconnect_backoff: Duration,
+    reconnect_backoff_max: Duration,
     mut active_specs_rx: watch::Receiver<HashSet<usize>>,
     mut shutdown_rx: watch::Receiver<bool>,
     add_leg_tx: mpsc::UnboundedSender<OpenLeg>,
 ) {
     let mut next_retry_at = vec![Instant::now(); specs.len()];
+    let mut failure_attempts = vec![0usize; specs.len()];
+    let mut reconnect_counts = vec![0u64; specs.len()];
+    let mut was_active = vec![false; specs.len()];
 
     loop {
         if *shutdown_rx.borrow() {
@@ -1760,11 +2331,23 @@ async fn run_client_leg_connector(
 
         let active_specs = active_specs_rx.borrow().clone();
         let now = Instant::now();
-        let mut next_deadline = now + CLIENT_LEG_RETRY_BACKOFF;
+        let mut next_deadline = now + reconnect_backoff_max;
 
         for (spec_index, spec) in specs.iter().enumerate() {
             if active_specs.contains(&spec_index) {
+                failure_attempts[spec_index] = 0;
+                was_active[spec_index] = true;
                 continue;
+            }
+            if was_active[spec_index] {
+                was_active[spec_index] = false;
+                next_retry_at[spec_index] = now
+                    + retry_backoff_with_jitter(
+                        reconnect_backoff,
+                        reconnect_backoff_max,
+                        0,
+                        spec_index,
+                    );
             }
 
             let retry_at = next_retry_at[spec_index];
@@ -1775,16 +2358,42 @@ async fn run_client_leg_connector(
                 continue;
             }
 
+            let hello = hello_for_spec(spec, session_id, expected_links, session_token.as_str());
             match connect_and_ack_leg(spec, &hello, connect_timeout).await {
                 Ok(leg) => {
-                    next_retry_at[spec_index] = Instant::now() + CLIENT_LEG_RETRY_BACKOFF;
-                    if add_leg_tx.send(leg.with_spec_index(spec_index)).is_err() {
+                    failure_attempts[spec_index] = 0;
+                    reconnect_counts[spec_index] = reconnect_counts[spec_index].saturating_add(1);
+                    next_retry_at[spec_index] = Instant::now()
+                        + retry_backoff_with_jitter(
+                            reconnect_backoff,
+                            reconnect_backoff_max,
+                            0,
+                            spec_index,
+                        );
+                    if add_leg_tx
+                        .send(
+                            leg.with_spec_index(spec_index).with_bootstrap_state(
+                                false,
+                                true,
+                                reconnect_counts[spec_index],
+                            ),
+                        )
+                        .is_err()
+                    {
                         return;
                     }
                 }
                 Err(err) => {
                     debug!("failed to reconnect bond leg {}: {:?}", spec.original, err);
-                    next_retry_at[spec_index] = Instant::now() + CLIENT_LEG_RETRY_BACKOFF;
+                    let attempt = failure_attempts[spec_index];
+                    next_retry_at[spec_index] = Instant::now()
+                        + retry_backoff_with_jitter(
+                            reconnect_backoff,
+                            reconnect_backoff_max,
+                            attempt,
+                            spec_index,
+                        );
+                    failure_attempts[spec_index] = attempt.saturating_add(1);
                 }
             }
 
@@ -1809,6 +2418,20 @@ async fn run_client_leg_connector(
     }
 }
 
+fn hello_for_spec(
+    spec: &LegSpec,
+    session_id: Uuid,
+    expected_links: u16,
+    token: &str,
+) -> WireFrame {
+    WireFrame::Hello(HelloFrame {
+        session_id,
+        expected_links: expected_links.max(1),
+        route_id: spec.leg_route_id.unwrap_or(0),
+        token: token.to_string(),
+    })
+}
+
 async fn run_tcp_transport_session(
     session_id: Uuid,
     role: SessionRole,
@@ -1817,14 +2440,22 @@ async fn run_tcp_transport_session(
     mut add_leg_rx: mpsc::UnboundedReceiver<OpenLeg>,
     mut command_rx: Option<mpsc::UnboundedReceiver<ClientTransportCommand>>,
     active_specs_tx: Option<watch::Sender<HashSet<usize>>>,
+    active_streams: Option<Arc<AtomicU64>>,
     config: SessionConfig,
+    tasks: SessionTaskGroup,
 ) -> anyhow::Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<TcpTransportEvent>();
     let leg_write_timeout = transport_leg_write_timeout(&config);
-    let mut legs = spawn_tcp_leg_tasks(initial_legs, event_tx.clone(), leg_write_timeout);
+    let mut legs = spawn_tcp_leg_tasks(
+        initial_legs,
+        event_tx.clone(),
+        leg_write_timeout,
+        &tasks,
+    );
     let snapshot = snapshot_context(role, claims.as_ref());
     let mut last_snapshot_write = None::<Instant>;
     let mut streams = HashMap::<u32, TcpStreamState>::new();
+    let active_stream_count = ActiveStreamCount::new(active_streams);
     let mut connecting_streams = HashSet::<u32>::new();
     let mut closed_streams = HashSet::<u32>::new();
     let mut reset_reasons = HashMap::<u32, String>::new();
@@ -1843,6 +2474,7 @@ async fn run_tcp_transport_session(
     loop {
         flush_tcp_stream_backlogs(session_id, &mut streams, &mut legs, &mut round_robin_cursor, role, &config);
         prune_finished_transport_streams(&mut streams, &mut closed_streams);
+        active_stream_count.update(streams.len());
 
         let has_live_streams = !streams.is_empty() || !connecting_streams.is_empty();
         if !has_active_leg(&legs) {
@@ -1871,7 +2503,13 @@ async fn run_tcp_transport_session(
                     new_leg
                 };
                 let new_leg_id = legs.len();
-                let state = spawn_tcp_leg_task(new_leg_id, new_leg, event_tx.clone(), leg_write_timeout);
+                let state = spawn_tcp_leg_task(
+                    new_leg_id,
+                    new_leg,
+                    event_tx.clone(),
+                    leg_write_timeout,
+                    &tasks,
+                );
                 info!("bond tcp transport {} added leg {}", session_id, state.label);
                 legs.push(state);
                 refresh_active_spec_snapshot(&legs, active_specs_tx.as_ref());
@@ -1912,8 +2550,15 @@ async fn run_tcp_transport_session(
                             close_rx,
                             event_tx.clone(),
                             read_credit.clone(),
+                            Some(&tasks),
                         );
-                        spawn_transport_stream_writer(stream_id, local_write, local_write_rx, event_tx.clone());
+                        spawn_transport_stream_writer(
+                            stream_id,
+                            local_write,
+                            local_write_rx,
+                            event_tx.clone(),
+                            &tasks,
+                        );
                         if let Some(state) = streams.get_mut(&stream_id) {
                             if send_stream_control_frame(
                                 &mut legs,
@@ -1934,6 +2579,7 @@ async fn run_tcp_transport_session(
                         }
                         last_activity = Instant::now();
                     }
+                    Some(ClientTransportCommand::Shutdown) => break,
                     None => {
                         command_rx = None;
                     }
@@ -2153,6 +2799,7 @@ async fn run_tcp_transport_session(
                             &mut round_robin_cursor,
                             &event_tx,
                             &config,
+                            &tasks,
                         )
                         .await?;
                         recompute_transport_inflight(&mut legs, &streams);
@@ -2201,8 +2848,15 @@ async fn run_tcp_transport_session(
                             close_rx,
                             event_tx.clone(),
                             read_credit.clone(),
+                            Some(&tasks),
                         );
-                        spawn_transport_stream_writer(stream_id, upstream_write, local_write_rx, event_tx.clone());
+                        spawn_transport_stream_writer(
+                            stream_id,
+                            upstream_write,
+                            local_write_rx,
+                            event_tx.clone(),
+                            &tasks,
+                        );
                         let _ = send_control_frame(&mut legs, &mut round_robin_cursor, WireFrame::StreamOpenAck { stream_id });
                         debug!("transport {} sent stream-open-ack for stream {}", session_id, stream_id);
                         log_transport_lifecycle(
@@ -2360,6 +3014,7 @@ async fn handle_tcp_transport_frame(
     round_robin_cursor: &mut usize,
     event_tx: &mpsc::UnboundedSender<TcpTransportEvent>,
     config: &SessionConfig,
+    tasks: &SessionTaskGroup,
 ) -> anyhow::Result<()> {
     if let WireFrame::Reset { stream_id, reason } = &frame {
         if *stream_id == 0 {
@@ -2435,10 +3090,40 @@ async fn handle_tcp_transport_frame(
             );
             let claims = claims.ok_or_else(|| anyhow!("aggregator transport is missing target claims"))?;
             connecting_streams.insert(*stream_id);
-            spawn_upstream_connector(*stream_id, claims.clone(), config.connect_timeout, event_tx.clone());
+            spawn_upstream_connector(
+                *stream_id,
+                claims.clone(),
+                config.connect_timeout,
+                event_tx.clone(),
+                &tasks,
+            );
             return Ok(());
         }
         _ => {}
+    }
+
+    if role.is_inbound_delivery(&frame) {
+        let (stream_id, route_id, delivered_bytes) = match frame {
+            WireFrame::DeliveryC2S { stream_id, route_id, delivered_bytes }
+            | WireFrame::DeliveryS2C { stream_id, route_id, delivered_bytes } => {
+                (stream_id, route_id, delivered_bytes)
+            }
+            _ => unreachable!(),
+        };
+        if config.adaptive_line_admission {
+            let qualifies_for_throughput = streams
+                .get(&stream_id)
+                .is_some_and(|state| state.striping_stage != TcpStripingStage::Sticky);
+            apply_tcp_delivery_observed(
+                legs,
+                route_id,
+                delivered_bytes,
+                qualifies_for_throughput,
+                Instant::now(),
+                config,
+            );
+        }
+        return Ok(());
     }
 
     if role.is_inbound_ack(&frame) {
@@ -2530,6 +3215,16 @@ async fn handle_tcp_transport_frame(
                     Some(leg_id),
                     role.outbound_ack(stream_id, state.inbound.acked_offset),
                 );
+            }
+            if config.adaptive_line_admission && newly_received_bytes > 0 {
+                if let Some(route_id) = legs.get(leg_id).and_then(|leg| leg.leg_route_id) {
+                    let _ = send_stream_control_frame(
+                        legs,
+                        round_robin_cursor,
+                        state.preferred_leg_id,
+                        role.outbound_delivery(stream_id, route_id, newly_received_bytes as u64),
+                    );
+                }
             }
         } else {
             let reason = reset_reasons
@@ -2649,8 +3344,9 @@ fn spawn_upstream_connector(
     claims: SessionClaims,
     connect_timeout: Duration,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
+    tasks: &SessionTaskGroup,
 ) {
-    tokio::spawn(async move {
+    tasks.spawn(async move {
         let target = format!("{}:{}", claims.target_host, claims.target_port);
         let result = timeout(connect_timeout, TcpStream::connect(&target)).await;
         match result {
@@ -2681,10 +3377,11 @@ fn spawn_transport_stream_reader<R>(
     mut close_rx: watch::Receiver<bool>,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
     read_credit: Arc<Semaphore>,
+    tasks: Option<&SessionTaskGroup>,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    let future = async move {
         let mut buf = vec![0u8; chunk_size.max(1024)];
         loop {
             // Idle streams must not consume shared backlog credit while waiting for data.
@@ -2734,7 +3431,12 @@ fn spawn_transport_stream_reader<R>(
                 }
             }
         }
-    });
+    };
+    if let Some(tasks) = tasks {
+        tasks.spawn(future);
+    } else {
+        tokio::spawn(future);
+    }
 }
 
 fn spawn_transport_stream_writer<W>(
@@ -2742,10 +3444,11 @@ fn spawn_transport_stream_writer<W>(
     mut writer: W,
     mut rx: mpsc::Receiver<LocalWriteCommand>,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
+    tasks: &SessionTaskGroup,
 ) where
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    tasks.spawn(async move {
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 LocalWriteCommand::Data(bytes) => {
@@ -2783,10 +3486,17 @@ fn spawn_tcp_leg_tasks(
     legs: Vec<OpenLeg>,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
     write_timeout: Duration,
+    tasks: &SessionTaskGroup,
 ) -> Vec<LegState> {
     let mut states = Vec::with_capacity(legs.len());
     for (leg_id, leg) in legs.into_iter().enumerate() {
-        states.push(spawn_tcp_leg_task(leg_id, leg, event_tx.clone(), write_timeout));
+        states.push(spawn_tcp_leg_task(
+            leg_id,
+            leg,
+            event_tx.clone(),
+            write_timeout,
+            tasks,
+        ));
     }
     states
 }
@@ -2796,6 +3506,7 @@ fn spawn_tcp_leg_task(
     leg: OpenLeg,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
     write_timeout: Duration,
+    tasks: &SessionTaskGroup,
 ) -> LegState {
     let transport = leg.transport;
     let priority = leg.priority;
@@ -2803,11 +3514,25 @@ fn spawn_tcp_leg_task(
     let label = leg.label;
     let spec_index = leg.spec_index;
     let endpoint_id = leg.endpoint_id;
+    let leg_route_id = leg.leg_route_id;
     let node_id = leg.node_id;
     let host = leg.host;
+    let initial_connect_ms = leg.initial_connect_ms;
+    let hello_ack_ms = leg.hello_ack_ms;
+    let initial_ready = leg.initial_ready;
+    let added_late = leg.added_late;
+    let reconnect_count = leg.reconnect_count;
     let (reader, writer) = tokio::io::split(leg.stream);
     let (tx, rx) = leg_write_channel();
-    spawn_tcp_leg_io_tasks(leg_id, reader, writer, rx, event_tx, write_timeout);
+    spawn_tcp_leg_io_tasks(
+        leg_id,
+        reader,
+        writer,
+        rx,
+        event_tx,
+        write_timeout,
+        tasks,
+    );
     LegState {
         id: leg_id,
         sender: Some(LegWriteSender::bounded(tx)),
@@ -2820,8 +3545,16 @@ fn spawn_tcp_leg_task(
         label,
         spec_index,
         endpoint_id,
+        leg_route_id,
         node_id,
         host,
+        initial_connect_ms,
+        hello_ack_ms,
+        initial_ready,
+        added_late,
+        reconnect_count,
+        scheduled_bytes: 0,
+        cooldown_count: 0,
         cooldown_until: None,
         penalty_count: 0,
         tcp_health: ProtocolLegHealth::new(),
@@ -2837,12 +3570,13 @@ fn spawn_tcp_leg_io_tasks<R, W>(
     rx: mpsc::Receiver<QueuedLegFrame>,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
     write_timeout: Duration,
+    tasks: &SessionTaskGroup,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    tokio::spawn(run_tcp_leg_writer(
+    tasks.spawn(run_tcp_leg_writer(
         leg_id,
         writer,
         rx,
@@ -2851,7 +3585,7 @@ fn spawn_tcp_leg_io_tasks<R, W>(
         shutdown_rx.clone(),
         shutdown_tx.clone(),
     ));
-    tokio::spawn(run_tcp_leg_reader(
+    tasks.spawn(run_tcp_leg_reader(
         leg_id,
         reader,
         event_tx,
@@ -3049,13 +3783,7 @@ fn flush_tcp_stream_backlogs(
                     state.striping_stage,
                     next_stage
                 );
-                state.striping_stage = next_stage;
-                state.bulk_mode = next_stage == TcpStripingStage::Bulk;
-                if next_stage != TcpStripingStage::Warmup {
-                    state.warmup_stage_started_at = None;
-                    state.warmup_leg_bytes = 0;
-                    state.warmup_leg_count = 1;
-                }
+                transition_tcp_striping_stage(state, next_stage);
             }
 
             let now = Instant::now();
@@ -3078,14 +3806,20 @@ fn flush_tcp_stream_backlogs(
                     config,
                     now,
                 ),
-                TcpStripingStage::Bulk => select_stream_leg(
-                    legs,
-                    round_robin_cursor,
-                    None,
-                    payload.len(),
-                    outstanding_bytes,
-                    config,
-                ),
+                TcpStripingStage::Bulk => {
+                    if config.adaptive_line_admission {
+                        select_adaptive_bulk_leg(legs, payload.len(), now, config)
+                    } else {
+                        select_stream_leg(
+                            legs,
+                            round_robin_cursor,
+                            None,
+                            payload.len(),
+                            outstanding_bytes,
+                            config,
+                        )
+                    }
+                }
             }) else {
                 state.local_backlog.push_front(payload);
                 break;
@@ -3154,6 +3888,24 @@ fn flush_tcp_stream_backlogs(
     }
 
     recompute_transport_inflight(legs, streams);
+}
+
+fn transition_tcp_striping_stage(state: &mut TcpStreamState, next_stage: TcpStripingStage) {
+    state.striping_stage = next_stage;
+    state.bulk_mode = next_stage == TcpStripingStage::Bulk;
+    match next_stage {
+        TcpStripingStage::Sticky => {
+            state.warmup_stage_started_at = None;
+            state.warmup_leg_bytes = 0;
+            state.warmup_leg_count = 1;
+        }
+        TcpStripingStage::Warmup => {}
+        TcpStripingStage::Bulk => {
+            state.warmup_stage_started_at = None;
+            state.warmup_leg_bytes = 0;
+            state.warmup_leg_count = state.warmup_leg_count.max(2);
+        }
+    }
 }
 
 fn retransmit_transport_pending(
@@ -3855,8 +4607,14 @@ fn spawn_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<S
     let label = leg.label;
     let spec_index = leg.spec_index;
     let endpoint_id = leg.endpoint_id;
+    let leg_route_id = leg.leg_route_id;
     let node_id = leg.node_id;
     let host = leg.host;
+    let initial_connect_ms = leg.initial_connect_ms;
+    let hello_ack_ms = leg.hello_ack_ms;
+    let initial_ready = leg.initial_ready;
+    let added_late = leg.added_late;
+    let reconnect_count = leg.reconnect_count;
     let (reader, writer) = tokio::io::split(leg.stream);
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(run_leg_writer(leg_id, writer, rx, event_tx.clone()));
@@ -3873,8 +4631,16 @@ fn spawn_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<S
         label,
         spec_index,
         endpoint_id,
+        leg_route_id,
         node_id,
         host,
+        initial_connect_ms,
+        hello_ack_ms,
+        initial_ready,
+        added_late,
+        reconnect_count,
+        scheduled_bytes: 0,
+        cooldown_count: 0,
         cooldown_until: None,
         penalty_count: 0,
         tcp_health: ProtocolLegHealth::new(),
@@ -4269,6 +5035,15 @@ struct SnapshotProtocolView {
     score: f64,
     effective_weight: f64,
     delivered_bytes_ewma: f64,
+    throughput_mbps_ewma: f64,
+    qualifying_samples: u64,
+    bulk_admission: BulkAdmissionState,
+    bulk_weight: f64,
+    consecutive_bad_windows: u32,
+    consecutive_good_windows: u32,
+    quarantine_until: Option<String>,
+    next_probe_at: Option<String>,
+    probe_remaining_bytes: u64,
     penalty_ewma: f64,
     last_reason: Option<String>,
     last_good_at: Option<String>,
@@ -4286,8 +5061,17 @@ struct SnapshotEventView {
 #[derive(Serialize)]
 struct SnapshotLegView {
     endpoint_id: u64,
+    leg_route_id: u32,
     node_id: u64,
     host: String,
+    active: bool,
+    initial_connect_ms: u64,
+    hello_ack_ms: u64,
+    initial_ready: bool,
+    added_late: bool,
+    reconnect_count: u64,
+    scheduled_bytes: u64,
+    cooldown_count: u64,
     tcp: SnapshotProtocolView,
     udp: SnapshotProtocolView,
     recent_events: Vec<SnapshotEventView>,
@@ -4306,12 +5090,32 @@ fn iso8601(time: SystemTime) -> String {
     chrono::DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+fn instant_deadline_iso8601(deadline: Option<Instant>) -> Option<String> {
+    let deadline = deadline?;
+    let now = Instant::now();
+    let wall = if deadline > now {
+        SystemTime::now() + deadline.duration_since(now)
+    } else {
+        SystemTime::now()
+    };
+    Some(iso8601(wall))
+}
+
 fn snapshot_protocol_view(health: &ProtocolLegHealth) -> SnapshotProtocolView {
     SnapshotProtocolView {
         state: health.state,
         score: (health.score * 10_000.0).round() / 10_000.0,
         effective_weight: (health.effective_weight * 10_000.0).round() / 10_000.0,
         delivered_bytes_ewma: (health.delivered_bytes_ewma * 10.0).round() / 10.0,
+        throughput_mbps_ewma: (health.throughput_mbps_ewma * 1000.0).round() / 1000.0,
+        qualifying_samples: health.throughput_qualifying_samples,
+        bulk_admission: health.bulk_admission,
+        bulk_weight: (health.bulk_weight * 10_000.0).round() / 10_000.0,
+        consecutive_bad_windows: health.consecutive_bad_windows,
+        consecutive_good_windows: health.consecutive_good_windows,
+        quarantine_until: instant_deadline_iso8601(health.quarantine_until),
+        next_probe_at: instant_deadline_iso8601(health.next_probe_at),
+        probe_remaining_bytes: health.probe_remaining_bytes,
         penalty_ewma: (health.penalty_ewma * 10_000.0).round() / 10_000.0,
         last_reason: health.last_reason.clone(),
         last_good_at: health.last_good_at.map(iso8601),
@@ -4333,8 +5137,17 @@ fn build_leg_health_snapshot_json(
             .iter()
             .map(|leg| SnapshotLegView {
                 endpoint_id: leg.endpoint_id.unwrap_or(0),
+                leg_route_id: leg.leg_route_id.unwrap_or(0),
                 node_id: leg.node_id.unwrap_or(0),
                 host: leg.host.clone(),
+                active: leg.active,
+                initial_connect_ms: leg.initial_connect_ms,
+                hello_ack_ms: leg.hello_ack_ms,
+                initial_ready: leg.initial_ready,
+                added_late: leg.added_late,
+                reconnect_count: leg.reconnect_count,
+                scheduled_bytes: leg.scheduled_bytes,
+                cooldown_count: leg.cooldown_count,
                 tcp: snapshot_protocol_view(&leg.tcp_health),
                 udp: snapshot_protocol_view(&leg.udp_health),
                 recent_events: leg
@@ -4405,13 +5218,265 @@ fn apply_ack(pending: &mut BTreeMap<u64, PendingChunk>, legs: &mut [LegState], a
     let completed_count = completed.len();
     for seq in completed {
         if let Some(chunk) = pending.remove(&seq) {
-            if !chunk.write_pending && chunk.transmit_count == 1 {
+            let first_transmission = !chunk.write_pending && chunk.transmit_count == 1;
+            if first_transmission {
                 update_leg_rtt(legs, chunk.last_leg_id, now.duration_since(chunk.last_sent_at));
             }
             credit_tcp_delivery(legs, chunk.last_leg_id, chunk.payload.len());
         }
     }
     completed_count
+}
+
+fn apply_tcp_delivery_observed(
+    legs: &mut [LegState],
+    route_id: u32,
+    delivered_bytes: u64,
+    qualifies_for_throughput: bool,
+    observed_at: Instant,
+    config: &SessionConfig,
+) -> bool {
+    if !config.adaptive_line_admission || delivered_bytes == 0 {
+        return false;
+    }
+    let Ok(delivered_bytes) = usize::try_from(delivered_bytes) else {
+        return false;
+    };
+    let Some(leg_id) = legs.iter().position(|leg| leg.leg_route_id == Some(route_id)) else {
+        return false;
+    };
+    let needs_capacity_sample = legs.get(leg_id).is_some_and(|leg| {
+        leg.tcp_health.bulk_admission == BulkAdmissionState::Probation
+            || (leg.tcp_health.bulk_admission == BulkAdmissionState::Degraded
+                && leg.tcp_health.throughput_mbps_ewma >= config.throughput_min_mbps)
+            || leg.tcp_health.throughput_qualifying_samples
+                < config.throughput_bad_windows.max(1) as u64
+    });
+    if !needs_capacity_sample {
+        return true;
+    }
+    let sample = legs.get_mut(leg_id).and_then(|leg| {
+        leg.tcp_health
+            .throughput_window
+            .credit(delivered_bytes, observed_at, qualifies_for_throughput, config)
+    });
+    if let Some(sample) = sample {
+        apply_tcp_throughput_sample(legs, leg_id, sample.mbps, observed_at, config);
+    }
+    true
+}
+
+fn apply_tcp_throughput_sample(
+    legs: &mut [LegState],
+    leg_id: usize,
+    sample_mbps: f64,
+    observed_at: Instant,
+    config: &SessionConfig,
+) {
+    if !sample_mbps.is_finite() || sample_mbps < 0.0 {
+        return;
+    }
+    let Some(leg) = legs.get_mut(leg_id) else {
+        return;
+    };
+    let health = &mut leg.tcp_health;
+    health.throughput_mbps_ewma = ewma(health.throughput_mbps_ewma, sample_mbps);
+    health.throughput_qualifying_samples = health.throughput_qualifying_samples.saturating_add(1);
+    health.last_throughput_sample_at = Some(observed_at);
+
+    if !config.adaptive_line_admission {
+        return;
+    }
+
+    let best_mbps = legs
+        .iter()
+        .filter(|candidate| candidate.active && candidate.tcp_health.throughput_qualifying_samples > 0)
+        .map(|candidate| candidate.tcp_health.throughput_mbps_ewma)
+        .fold(0.0_f64, f64::max);
+    if best_mbps <= 0.0 {
+        return;
+    }
+    let floor = config
+        .throughput_min_mbps
+        .max(best_mbps * config.throughput_relative_floor);
+    let Some(leg) = legs.get_mut(leg_id) else {
+        return;
+    };
+    let health = &mut leg.tcp_health;
+    health.bulk_weight = (health.throughput_mbps_ewma / best_mbps).clamp(0.05, 1.0);
+    if health.throughput_mbps_ewma < floor {
+        health.consecutive_bad_windows = health.consecutive_bad_windows.saturating_add(1);
+        health.consecutive_good_windows = 0;
+        if health.consecutive_bad_windows >= config.throughput_bad_windows.max(1) {
+            health.bulk_admission = BulkAdmissionState::Quarantined;
+            health.bulk_weight = 0.0;
+            let deadline = observed_at + config.throughput_quarantine;
+            health.quarantine_until = Some(deadline);
+            health.next_probe_at = Some(deadline);
+        } else {
+            health.bulk_admission = BulkAdmissionState::Degraded;
+        }
+    } else {
+        health.consecutive_bad_windows = 0;
+        health.consecutive_good_windows = health.consecutive_good_windows.saturating_add(1);
+        if health.bulk_admission == BulkAdmissionState::Probation
+            && health.consecutive_good_windows < config.throughput_recovery_windows.max(1)
+        {
+            health.bulk_admission = BulkAdmissionState::Probation;
+        } else {
+            health.bulk_admission = BulkAdmissionState::Admitted;
+            health.quarantine_until = None;
+            health.probe_remaining_bytes = 0;
+        }
+    }
+}
+
+fn begin_tcp_probe_if_due(leg: &mut LegState, now: Instant, config: &SessionConfig) {
+    let health = &mut leg.tcp_health;
+    if !matches!(
+        health.bulk_admission,
+        BulkAdmissionState::Quarantined | BulkAdmissionState::Probation
+    )
+        || (health.bulk_admission == BulkAdmissionState::Probation
+            && health.probe_remaining_bytes > 0)
+        || health.quarantine_until.is_some_and(|deadline| deadline > now)
+        || health.next_probe_at.is_some_and(|deadline| deadline > now)
+    {
+        return;
+    }
+    let starting_probation = health.bulk_admission == BulkAdmissionState::Quarantined;
+    health.bulk_admission = BulkAdmissionState::Probation;
+    health.probe_remaining_bytes = config.throughput_probe_bytes;
+    health.next_probe_at = Some(now + config.throughput_probe_interval);
+    if starting_probation {
+        health.consecutive_good_windows = 0;
+    }
+}
+
+fn consume_tcp_probe_budget(
+    leg: &mut LegState,
+    bytes: usize,
+    _now: Instant,
+    _config: &SessionConfig,
+) {
+    if leg.tcp_health.bulk_admission != BulkAdmissionState::Probation {
+        return;
+    }
+    leg.tcp_health.probe_remaining_bytes = leg
+        .tcp_health
+        .probe_remaining_bytes
+        .saturating_sub(bytes as u64);
+}
+
+fn tcp_leg_bulk_eligible(leg: &LegState, now: Instant, config: &SessionConfig) -> bool {
+    if !leg.active || !leg_available_for_new_data(leg, now) {
+        return false;
+    }
+    if !config.adaptive_line_admission {
+        return true;
+    }
+    match leg.tcp_health.bulk_admission {
+        BulkAdmissionState::Admitted => true,
+        BulkAdmissionState::Degraded => {
+            leg.tcp_health.throughput_mbps_ewma >= config.throughput_min_mbps
+        }
+        BulkAdmissionState::Probation => leg.tcp_health.probe_remaining_bytes > 0,
+        BulkAdmissionState::Quarantined => false,
+    }
+}
+
+fn select_weighted_bulk_leg(
+    legs: &[LegState],
+    payload_len: usize,
+    now: Instant,
+    config: &SessionConfig,
+) -> Option<usize> {
+    let mut candidates: Vec<&LegState> = legs
+        .iter()
+        .filter(|leg| tcp_leg_bulk_eligible(leg, now, config))
+        .collect();
+    if let Some(unsampled) = candidates
+        .iter()
+        .copied()
+        .filter(|leg| leg.tcp_health.throughput_qualifying_samples == 0)
+        .min_by_key(|leg| (leg.scheduled_bytes, leg.inflight_bytes, leg.id))
+    {
+        return Some(unsampled.id);
+    }
+    if candidates.is_empty() {
+        return legs
+            .iter()
+            .filter(|leg| leg.active && leg_writer_has_capacity(leg))
+            .max_by(|left, right| {
+                left.tcp_health
+                    .throughput_mbps_ewma
+                    .total_cmp(&right.tcp_health.throughput_mbps_ewma)
+                    .then_with(|| right.smoothed_rtt.cmp(&left.smoothed_rtt))
+                    .then_with(|| right.id.cmp(&left.id))
+            })
+            .map(|leg| leg.id);
+    }
+    candidates
+        .into_iter()
+        .min_by(|left, right| {
+            let left_rate = left.tcp_health.throughput_mbps_ewma.max(1.0);
+            let right_rate = right.tcp_health.throughput_mbps_ewma.max(1.0);
+            let left_load = (left.inflight_bytes.saturating_add(payload_len) as f64) / left_rate;
+            let right_load = (right.inflight_bytes.saturating_add(payload_len) as f64) / right_rate;
+            left_load
+                .total_cmp(&right_load)
+                .then_with(|| left.smoothed_rtt.cmp(&right.smoothed_rtt))
+                .then_with(|| left.id.cmp(&right.id))
+        })
+        .map(|leg| leg.id)
+}
+
+fn select_adaptive_bulk_leg(
+    legs: &mut [LegState],
+    payload_len: usize,
+    now: Instant,
+    config: &SessionConfig,
+) -> Option<usize> {
+    for leg in legs.iter_mut() {
+        begin_tcp_probe_if_due(leg, now, config);
+    }
+    let calibration_target = legs
+        .iter()
+        .filter(|leg| {
+            if !leg_available_for_new_data(leg, now) {
+                return false;
+            }
+            match leg.tcp_health.bulk_admission {
+                BulkAdmissionState::Probation => leg.tcp_health.probe_remaining_bytes > 0,
+                BulkAdmissionState::Quarantined => false,
+                BulkAdmissionState::Degraded => {
+                    leg.tcp_health.throughput_mbps_ewma >= config.throughput_min_mbps
+                }
+                BulkAdmissionState::Admitted => {
+                    leg.tcp_health.throughput_qualifying_samples
+                        < config.throughput_bad_windows.max(1) as u64
+                }
+            }
+        })
+        .min_by_key(|leg| {
+            (
+                leg.tcp_health.bulk_admission != BulkAdmissionState::Probation,
+                leg.tcp_health.throughput_qualifying_samples,
+                leg.id,
+            )
+        })
+        .map(|leg| leg.id);
+    if let Some(selected) = calibration_target {
+        if let Some(leg) = legs.get_mut(selected) {
+            consume_tcp_probe_budget(leg, payload_len, now, config);
+        }
+        return Some(selected);
+    }
+    let selected = select_weighted_bulk_leg(legs, payload_len, now, config)?;
+    if let Some(leg) = legs.get_mut(selected) {
+        consume_tcp_probe_budget(leg, payload_len, now, config);
+    }
+    Some(selected)
 }
 
 #[allow(dead_code)]
@@ -4766,6 +5831,8 @@ fn can_bypass_preferred_control_queue(frame: &WireFrame) -> bool {
         WireFrame::StreamOpenAck { .. }
             | WireFrame::AckC2S { .. }
             | WireFrame::AckS2C { .. }
+            | WireFrame::DeliveryC2S { .. }
+            | WireFrame::DeliveryS2C { .. }
     )
 }
 
@@ -4809,11 +5876,13 @@ fn select_stream_leg(
         || outstanding_bytes < config.latency_guard_bytes;
 
     if config.latency_first && outstanding_bytes < config.bulk_promote_bytes {
-        if let Some(primary_leg) = legs
-            .iter()
-            .find(|leg| leg.active && leg.role == LegRole::Primary && leg_available_for_new_data(leg, Instant::now()))
-        {
-            return Some(primary_leg.id);
+        if let Some(leg_id) = preferred_leg_id {
+            if preferred_leg_allowed_for_interactive_tcp(legs, leg_id, Instant::now()) {
+                return Some(leg_id);
+            }
+        }
+        if let Some(leg_id) = select_latency_best_leg(legs) {
+            return Some(leg_id);
         }
     }
 
@@ -5020,43 +6089,6 @@ fn select_control_leg(legs: &[LegState], round_robin_cursor: &mut usize) -> Opti
     selected
 }
 
-fn select_stream_affinity_leg(legs: &[LegState], round_robin_cursor: &mut usize) -> Option<usize> {
-    if let Some(primary_leg) = legs
-        .iter()
-        .find(|leg| leg.active && leg.role == LegRole::Primary && leg_writer_has_capacity(leg))
-    {
-        return Some(primary_leg.id);
-    }
-    let mut candidates: Vec<&LegState> = legs
-        .iter()
-        .filter(|leg| leg.active && leg_writer_has_capacity(leg))
-        .collect();
-    if candidates.is_empty() {
-        return None;
-    }
-
-    let primary_priority = candidates
-        .iter()
-        .map(|leg| leg.priority)
-        .min()
-        .unwrap_or(u16::MAX);
-    candidates.retain(|leg| leg.priority == primary_priority);
-    let active_count = candidates.len().max(1);
-
-    candidates.sort_by_key(|leg| {
-        let health = &leg.tcp_health;
-        (
-            leg_health_state_rank(health.state),
-            effective_weight_sort_rank(health.effective_weight),
-            (leg.id + *round_robin_cursor) % active_count,
-            leg.inflight_bytes,
-            leg.smoothed_rtt,
-        )
-    });
-    *round_robin_cursor = round_robin_cursor.wrapping_add(1);
-    candidates.first().map(|leg| leg.id)
-}
-
 fn select_strategy_affinity_leg(
     strategy: ClientStrategy,
     legs: &[LegState],
@@ -5064,7 +6096,7 @@ fn select_strategy_affinity_leg(
     random_state: &mut u64,
 ) -> Option<usize> {
     match strategy {
-        ClientStrategy::SpeedMax => select_stream_affinity_leg(legs, round_robin_cursor),
+        ClientStrategy::SpeedMax => select_latency_best_leg(legs),
         ClientStrategy::LatencyBest => select_latency_best_leg(legs),
         ClientStrategy::Random => select_random_healthy_leg(legs, random_state),
     }
@@ -5416,6 +6448,7 @@ fn apply_leg_cooldown(legs: &mut [LegState], leg_id: usize, cooldown: Duration) 
     if let Some(leg) = legs.get_mut(leg_id) {
         leg.cooldown_until = Some(Instant::now() + cooldown);
         leg.penalty_count = leg.penalty_count.saturating_add(1);
+        leg.cooldown_count = leg.cooldown_count.saturating_add(1);
         warn!("bond leg {} entering cooldown for {:?}", leg.label, cooldown);
     }
     penalize_tcp_leg(legs, leg_id, TcpPenalty::SelectedButUnproductive);
@@ -5510,6 +6543,16 @@ fn select_stream_leg_warmup(
     Some(chosen)
 }
 
+fn wire_frame_payload_len(frame: &WireFrame) -> usize {
+    match frame {
+        WireFrame::DataC2S { payload, .. }
+        | WireFrame::DataS2C { payload, .. }
+        | WireFrame::UdpFragC2S { payload, .. }
+        | WireFrame::UdpFragS2C { payload, .. } => payload.len(),
+        _ => 0,
+    }
+}
+
 fn send_to_leg(legs: &mut [LegState], leg_index: usize, frame: WireFrame) -> bool {
     let Some(leg) = legs.get_mut(leg_index) else {
         return false;
@@ -5520,8 +6563,12 @@ fn send_to_leg(legs: &mut [LegState], leg_index: usize, frame: WireFrame) -> boo
     let Some(sender) = leg.sender.as_ref() else {
         return false;
     };
+    let payload_len = wire_frame_payload_len(&frame) as u64;
     match sender.try_send(frame) {
-        LegSendResult::Queued => true,
+        LegSendResult::Queued => {
+            leg.scheduled_bytes = leg.scheduled_bytes.saturating_add(payload_len);
+            true
+        }
         LegSendResult::Full => false,
         LegSendResult::Closed => {
             leg.active = false;
@@ -5591,6 +6638,10 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+fn duration_millis(duration: Duration) -> u64 {
+    duration.as_millis().min(u64::MAX as u128) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5608,8 +6659,16 @@ mod tests {
             label: format!("leg-{id}"),
             spec_index: Some(id),
             endpoint_id: Some(id as u64),
+            leg_route_id: Some((400 + id) as u32),
             node_id: Some((id + 1) as u64),
             host: format!("host-{id}.example"),
+            initial_connect_ms: 0,
+            hello_ack_ms: 0,
+            initial_ready: true,
+            added_late: false,
+            reconnect_count: 0,
+            scheduled_bytes: 0,
+            cooldown_count: 0,
             cooldown_until: None,
             penalty_count: 0,
             tcp_health: ProtocolLegHealth::new(),
@@ -5625,6 +6684,11 @@ mod tests {
             retransmit_after: Duration::from_millis(300),
             join_timeout: Duration::from_millis(400),
             connect_timeout: Duration::from_millis(3000),
+            preferred_initial_legs: 2,
+            minimum_initial_legs: 1,
+            initial_leg_wait: CLIENT_TCP_LEG_JOIN_GRACE,
+            leg_reconnect_backoff: CLIENT_LEG_RETRY_BACKOFF,
+            leg_reconnect_backoff_max: CLIENT_LEG_RETRY_BACKOFF,
             interactive_chunk_bytes: 16384,
             latency_guard_bytes: 262144,
             interactive_rtt_slack: Duration::from_millis(30),
@@ -5633,6 +6697,16 @@ mod tests {
             warmup_leg_delay: Duration::from_millis(80),
             bulk_promote_bytes: 262144,
             leg_cooldown: Duration::from_millis(1800000),
+            throughput_min_sample_bytes: 1024 * 1024,
+            throughput_min_sample: Duration::from_secs(1),
+            adaptive_line_admission: false,
+            throughput_min_mbps: 10.0,
+            throughput_relative_floor: 0.35,
+            throughput_bad_windows: 3,
+            throughput_recovery_windows: 2,
+            throughput_quarantine: Duration::from_secs(60),
+            throughput_probe_interval: Duration::from_secs(30),
+            throughput_probe_bytes: 1024 * 1024,
             latency_first: false,
             udp_primary_only: false,
             strategy_file: None,
@@ -5640,9 +6714,670 @@ mod tests {
         }
     }
 
+    fn adaptive_test_config() -> SessionConfig {
+        let mut config = test_config();
+        config.adaptive_line_admission = true;
+        config.throughput_min_mbps = 10.0;
+        config.throughput_relative_floor = 0.35;
+        config.throughput_bad_windows = 3;
+        config.throughput_recovery_windows = 2;
+        config.throughput_quarantine = Duration::from_secs(60);
+        config.throughput_probe_interval = Duration::from_secs(30);
+        config.throughput_probe_bytes = 1024 * 1024;
+        config
+    }
+
+    #[test]
+    fn bulk_delivery_window_requires_bytes_and_duration() {
+        let mut config = test_config();
+        config.throughput_min_sample_bytes = 1024 * 1024;
+        config.throughput_min_sample = Duration::from_secs(1);
+        let started = Instant::now();
+        let mut window = ThroughputWindow::new(started);
+
+        assert_eq!(
+            window.credit(
+                512 * 1024,
+                started,
+                true,
+                &config,
+            ),
+            None
+        );
+        let sample = window
+            .credit(
+                512 * 1024,
+                started + Duration::from_millis(1500),
+                true,
+                &config,
+            )
+            .expect("one MiB over one second must qualify");
+
+        assert!((sample.mbps - 5.592).abs() < 0.01);
+        assert_eq!(window.qualifying_samples, 1);
+    }
+
+    #[test]
+    fn capacity_window_starts_with_first_qualifying_delivery() {
+        let mut config = test_config();
+        config.throughput_min_sample_bytes = 1024 * 1024;
+        config.throughput_min_sample = Duration::from_secs(1);
+        let transport_started = Instant::now();
+        let mut window = ThroughputWindow::new(transport_started);
+
+        assert_eq!(
+            window.credit(
+                512 * 1024,
+                transport_started + Duration::from_secs(10),
+                true,
+                &config,
+            ),
+            None
+        );
+        let sample = window
+            .credit(
+                512 * 1024,
+                transport_started + Duration::from_secs(11),
+                true,
+                &config,
+            )
+            .expect("one MiB delivered over one active second must qualify");
+
+        assert!((sample.mbps - 8.388_608).abs() < 0.001);
+    }
+
+    #[test]
+    fn demand_limited_interactive_delivery_does_not_lower_throughput() {
+        let config = test_config();
+        let started = Instant::now();
+        let mut window = ThroughputWindow::new(started);
+
+        assert_eq!(
+            window.credit(
+                2 * 1024 * 1024,
+                started + Duration::from_secs(2),
+                false,
+                &config,
+            ),
+            None
+        );
+        assert_eq!(window.qualifying_samples, 0);
+    }
+
+    #[test]
+    fn cumulative_ack_releases_data_without_scoring_all_legs_at_the_gap_rate() {
+        let started = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20)];
+        let mut pending = BTreeMap::from([(
+            0,
+            PendingChunk {
+                payload: Bytes::from_static(b"data"),
+                last_sent_at: started,
+                last_leg_id: 0,
+                transmit_count: 1,
+                write_pending: false,
+            },
+        )]);
+
+        assert_eq!(apply_ack(&mut pending, &mut legs, 4), 1);
+        assert_eq!(legs[0].tcp_health.throughput_mbps_ewma, 0.0);
+        assert_eq!(legs[0].tcp_health.throughput_qualifying_samples, 0);
+    }
+
+    #[test]
+    fn per_route_delivery_feedback_is_not_blocked_by_a_slow_global_ack_gap() {
+        let mut config = test_config();
+        config.adaptive_line_admission = true;
+        config.throughput_min_sample_bytes = 1_000_000;
+        config.throughput_min_sample = Duration::from_secs(1);
+        let started = Instant::now();
+        let mut fast = fake_leg(0, 10, 0, 20);
+        fast.leg_route_id = Some(451);
+        fast.tcp_health.throughput_window = ThroughputWindow::new(started);
+        let mut slow = fake_leg(1, 10, 0, 25);
+        slow.leg_route_id = Some(455);
+        slow.tcp_health.throughput_window = ThroughputWindow::new(started);
+        let mut legs = vec![fast, slow];
+
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            451,
+            1,
+            true,
+            started,
+            &config,
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            455,
+            1,
+            true,
+            started,
+            &config,
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            451,
+            24_999_999,
+            true,
+            started + Duration::from_secs(1),
+            &config,
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            455,
+            999_999,
+            true,
+            started + Duration::from_secs(1),
+            &config,
+        ));
+
+        assert!((legs[0].tcp_health.throughput_mbps_ewma - 200.0).abs() < 0.01);
+        assert!((legs[1].tcp_health.throughput_mbps_ewma - 8.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn interactive_delivery_feedback_resets_a_partial_bulk_window() {
+        let mut config = test_config();
+        config.adaptive_line_admission = true;
+        config.throughput_min_sample_bytes = 2;
+        config.throughput_min_sample = Duration::from_secs(1);
+        let started = Instant::now();
+        let mut leg = fake_leg(0, 10, 0, 20);
+        leg.leg_route_id = Some(451);
+        leg.tcp_health.throughput_window = ThroughputWindow::new(started);
+        let mut legs = vec![leg];
+
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            451,
+            1,
+            true,
+            started + Duration::from_millis(500),
+            &config,
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            451,
+            1,
+            false,
+            started + Duration::from_secs(10),
+            &config,
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            451,
+            1,
+            true,
+            started + Duration::from_millis(10_500),
+            &config,
+        ));
+
+        assert_eq!(legs[0].tcp_health.throughput_qualifying_samples, 0);
+        assert_eq!(legs[0].tcp_health.throughput_mbps_ewma, 0.0);
+    }
+
+    #[test]
+    fn consecutive_slow_samples_quarantine_leg_relative_to_best() {
+        let mut config = test_config();
+        config.adaptive_line_admission = true;
+        config.throughput_min_mbps = 10.0;
+        config.throughput_relative_floor = 0.35;
+        config.throughput_bad_windows = 3;
+        config.throughput_quarantine = Duration::from_secs(60);
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+
+        apply_tcp_throughput_sample(&mut legs, 0, 200.0, now, &config);
+        for offset in 1..=3 {
+            apply_tcp_throughput_sample(
+                &mut legs,
+                1,
+                40.0,
+                now + Duration::from_secs(offset),
+                &config,
+            );
+        }
+
+        assert_eq!(
+            legs[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined
+        );
+        assert_eq!(legs[1].tcp_health.consecutive_bad_windows, 3);
+        assert!(legs[1]
+            .tcp_health
+            .quarantine_until
+            .is_some_and(|deadline| deadline >= now + Duration::from_secs(63)));
+        assert_eq!(
+            legs[0].tcp_health.bulk_admission,
+            BulkAdmissionState::Admitted
+        );
+    }
+
+    #[test]
+    fn upload_and_reverse_observers_make_independent_decisions() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut upload = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        let mut reverse = upload.clone();
+        apply_tcp_throughput_sample(&mut upload, 0, 160.0, now, &config);
+        apply_tcp_throughput_sample(&mut upload, 1, 150.0, now, &config);
+        apply_tcp_throughput_sample(&mut reverse, 0, 200.0, now, &config);
+        for offset in 1..=config.throughput_bad_windows {
+            apply_tcp_throughput_sample(
+                &mut reverse,
+                1,
+                5.0,
+                now + Duration::from_secs(offset as u64),
+                &config,
+            );
+        }
+        assert_ne!(
+            upload[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined
+        );
+        assert_eq!(
+            reverse[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined
+        );
+    }
+
+    #[test]
+    fn quarantined_leg_gets_only_bounded_due_probe_budget() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut leg = fake_leg(0, 10, 0, 20);
+        leg.tcp_health.bulk_admission = BulkAdmissionState::Quarantined;
+        leg.tcp_health.quarantine_until = Some(now - Duration::from_secs(1));
+        leg.tcp_health.next_probe_at = Some(now - Duration::from_secs(1));
+        begin_tcp_probe_if_due(&mut leg, now, &config);
+        assert!(tcp_leg_bulk_eligible(&leg, now, &config));
+        consume_tcp_probe_budget(&mut leg, config.throughput_probe_bytes as usize, now, &config);
+        assert!(!tcp_leg_bulk_eligible(&leg, now, &config));
+        assert_eq!(leg.tcp_health.bulk_admission, BulkAdmissionState::Probation);
+        assert_eq!(leg.tcp_health.probe_remaining_bytes, 0);
+    }
+
+    #[test]
+    fn two_good_probe_windows_restore_leg() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        legs[1].tcp_health.bulk_admission = BulkAdmissionState::Probation;
+        legs[1].tcp_health.consecutive_bad_windows = config.throughput_bad_windows;
+        apply_tcp_throughput_sample(&mut legs, 0, 200.0, now, &config);
+        apply_tcp_throughput_sample(&mut legs, 1, 170.0, now, &config);
+        assert_eq!(legs[1].tcp_health.bulk_admission, BulkAdmissionState::Probation);
+        apply_tcp_throughput_sample(&mut legs, 1, 180.0, now + Duration::from_secs(1), &config);
+        assert_eq!(legs[1].tcp_health.bulk_admission, BulkAdmissionState::Admitted);
+    }
+
+    #[test]
+    fn all_quarantined_falls_back_to_best_writable_leg() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 10), fake_leg(1, 10, 0, 50)];
+        for leg in &mut legs {
+            leg.tcp_health.bulk_admission = BulkAdmissionState::Quarantined;
+            leg.tcp_health.quarantine_until = Some(now + Duration::from_secs(60));
+        }
+        legs[0].tcp_health.throughput_mbps_ewma = 20.0;
+        legs[1].tcp_health.throughput_mbps_ewma = 40.0;
+        assert_eq!(select_weighted_bulk_leg(&legs, 0, now, &config), Some(1));
+    }
+
+    #[test]
+    fn quarantined_leg_waits_for_deadline_before_probe() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        apply_tcp_throughput_sample(&mut legs, 0, 200.0, now, &config);
+        for offset in 1..=config.throughput_bad_windows {
+            apply_tcp_throughput_sample(
+                &mut legs,
+                1,
+                5.0,
+                now + Duration::from_secs(offset as u64),
+                &config,
+            );
+        }
+        let quarantine_at = now + Duration::from_secs(config.throughput_bad_windows as u64);
+        begin_tcp_probe_if_due(&mut legs[1], quarantine_at + Duration::from_secs(10), &config);
+        assert_eq!(
+            legs[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined
+        );
+        begin_tcp_probe_if_due(
+            &mut legs[1],
+            quarantine_at + config.throughput_quarantine + Duration::from_millis(1),
+            &config,
+        );
+        assert_eq!(legs[1].tcp_health.bulk_admission, BulkAdmissionState::Probation);
+    }
+
+    #[test]
+    fn unsampled_bulk_leg_gets_controlled_exploration() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut sampled = fake_leg(0, 10, 0, 10);
+        sampled.tcp_health.throughput_mbps_ewma = 200.0;
+        sampled.tcp_health.throughput_qualifying_samples = 2;
+        let unsampled = fake_leg(1, 10, 0, 50);
+
+        assert_eq!(
+            select_weighted_bulk_leg(&[sampled, unsampled], 128 * 1024, now, &config),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn weighted_bulk_prefers_normalized_inflight_load() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut fast = fake_leg(0, 10, 400_000, 20);
+        let mut slow = fake_leg(1, 10, 150_000, 25);
+        fast.tcp_health.throughput_mbps_ewma = 200.0;
+        fast.tcp_health.throughput_qualifying_samples = 1;
+        slow.tcp_health.throughput_mbps_ewma = 50.0;
+        slow.tcp_health.throughput_qualifying_samples = 1;
+        assert_eq!(select_weighted_bulk_leg(&[fast, slow], 0, now, &config), Some(0));
+    }
+
+    #[test]
+    fn adaptive_capacity_calibration_saturates_one_leg_before_rotating() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+
+        assert_eq!(select_adaptive_bulk_leg(&mut legs, 128 * 1024, now, &config), Some(0));
+        legs[0].scheduled_bytes = 128 * 1024;
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now + Duration::from_millis(1), &config),
+            Some(0)
+        );
+
+        apply_tcp_throughput_sample(&mut legs, 0, 200.0, now + Duration::from_secs(1), &config);
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now + Duration::from_secs(1), &config),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn calibrated_capacity_is_not_replaced_by_weighted_share_samples() {
+        let mut config = adaptive_test_config();
+        config.throughput_min_sample_bytes = 1;
+        config.throughput_min_sample = Duration::from_millis(1);
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20)];
+        legs[0].leg_route_id = Some(447);
+        for offset in 0..config.throughput_bad_windows {
+            apply_tcp_throughput_sample(
+                &mut legs,
+                0,
+                200.0,
+                now + Duration::from_secs(offset as u64),
+                &config,
+            );
+        }
+
+        assert!(apply_tcp_delivery_observed(
+            &mut legs,
+            447,
+            1,
+            true,
+            now + Duration::from_secs(10),
+            &config,
+        ));
+        assert_eq!(
+            legs[0].tcp_health.throughput_qualifying_samples,
+            config.throughput_bad_windows as u64
+        );
+        assert_eq!(legs[0].tcp_health.throughput_mbps_ewma, 200.0);
+    }
+
+    #[test]
+    fn sampled_degraded_leg_continues_calibration_until_quarantined() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut fast = fake_leg(0, 10, 0, 20);
+        fast.tcp_health.throughput_mbps_ewma = 100.0;
+        fast.tcp_health.throughput_qualifying_samples = config.throughput_bad_windows as u64;
+        fast.tcp_health.bulk_admission = BulkAdmissionState::Admitted;
+        let mut degraded = fake_leg(1, 10, 0, 25);
+        degraded.tcp_health.throughput_mbps_ewma = 30.0;
+        degraded.tcp_health.throughput_qualifying_samples = config.throughput_bad_windows as u64;
+        degraded.tcp_health.consecutive_bad_windows = config.throughput_bad_windows - 1;
+        degraded.tcp_health.bulk_admission = BulkAdmissionState::Degraded;
+        let mut legs = vec![fast, degraded];
+
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now, &config),
+            Some(1)
+        );
+        apply_tcp_throughput_sample(&mut legs, 1, 30.0, now + Duration::from_secs(1), &config);
+        assert_eq!(
+            legs[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined
+        );
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now + Duration::from_secs(1), &config),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn sub_ten_mbps_low_rtt_leg_is_interactive_only() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut low_latency = fake_leg(0, 10, 0, 10);
+        let mut bulk = fake_leg(1, 10, 0, 35);
+        low_latency.tcp_health.throughput_mbps_ewma = 8.0;
+        low_latency.tcp_health.throughput_qualifying_samples = 1;
+        low_latency.tcp_health.bulk_admission = BulkAdmissionState::Degraded;
+        bulk.tcp_health.throughput_mbps_ewma = 180.0;
+        bulk.tcp_health.throughput_qualifying_samples = 1;
+        assert_eq!(select_latency_best_leg(&[low_latency.clone(), bulk.clone()]), Some(0));
+        assert_eq!(select_weighted_bulk_leg(&[low_latency, bulk], 0, now, &config), Some(1));
+    }
+
+    #[test]
+    fn flat_hybrid_uses_directional_delivery_admission_for_local_and_slave_legs() {
+        let mut config = adaptive_test_config();
+        config.throughput_min_sample_bytes = 60_000;
+        config.throughput_min_sample = Duration::from_millis(100);
+        let started = Instant::now();
+        let local_route = 1_004_511;
+        let slave_route = 1_004_531;
+        let mut local = fake_leg(0, 10, 0, 5);
+        local.leg_route_id = Some(local_route);
+        let mut slave = fake_leg(1, 10, 0, 35);
+        slave.leg_route_id = Some(slave_route);
+        let mut reverse_legs = vec![local, slave];
+
+        let reverse_delivery = SessionRole::Client.outbound_delivery(7, slave_route, 1);
+        assert!(SessionRole::Aggregator.is_inbound_delivery(&reverse_delivery));
+        assert!(!SessionRole::Client.is_inbound_delivery(&reverse_delivery));
+
+        assert!(apply_tcp_delivery_observed(
+            &mut reverse_legs,
+            slave_route,
+            1,
+            true,
+            started,
+            &config,
+        ));
+        assert!(apply_tcp_delivery_observed(
+            &mut reverse_legs,
+            slave_route,
+            1_874_999,
+            true,
+            started + Duration::from_millis(100),
+            &config,
+        ));
+
+        for window in 0..config.throughput_bad_windows {
+            let window_start = started + Duration::from_millis(200 + u64::from(window) * 200);
+            assert!(apply_tcp_delivery_observed(
+                &mut reverse_legs,
+                local_route,
+                1,
+                true,
+                window_start,
+                &config,
+            ));
+            assert!(apply_tcp_delivery_observed(
+                &mut reverse_legs,
+                local_route,
+                62_499,
+                true,
+                window_start + Duration::from_millis(100),
+                &config,
+            ));
+
+            if window == 0 {
+                assert_eq!(select_latency_best_leg(&reverse_legs), Some(0));
+                assert_eq!(
+                    select_weighted_bulk_leg(&reverse_legs, 128 * 1024, window_start, &config),
+                    Some(1),
+                );
+            }
+        }
+
+        assert!((reverse_legs[0].tcp_health.throughput_mbps_ewma - 5.0).abs() < 0.01);
+        assert!((reverse_legs[1].tcp_health.throughput_mbps_ewma - 150.0).abs() < 0.01);
+        assert_eq!(
+            reverse_legs[0].tcp_health.bulk_admission,
+            BulkAdmissionState::Quarantined,
+        );
+        assert_eq!(
+            select_weighted_bulk_leg(
+                &reverse_legs,
+                128 * 1024,
+                started + Duration::from_secs(1),
+                &config,
+            ),
+            Some(1),
+        );
+    }
+
+    #[test]
+    fn adaptive_bulk_scheduler_excludes_latency_only_leg() {
+        let config = adaptive_test_config();
+        let now = Instant::now();
+        let mut low_latency = fake_leg(0, 10, 0, 10);
+        let mut bulk = fake_leg(1, 10, 0, 35);
+        low_latency.tcp_health.throughput_mbps_ewma = 8.0;
+        low_latency.tcp_health.throughput_qualifying_samples = 1;
+        low_latency.tcp_health.bulk_admission = BulkAdmissionState::Degraded;
+        bulk.tcp_health.throughput_mbps_ewma = 180.0;
+        bulk.tcp_health.throughput_qualifying_samples = 1;
+        let mut legs = vec![low_latency, bulk];
+
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now, &config),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn adaptive_bulk_scheduler_consumes_one_due_probe_budget() {
+        let mut config = adaptive_test_config();
+        config.throughput_probe_bytes = 128 * 1024;
+        let now = Instant::now();
+        let mut healthy = fake_leg(0, 10, 64 * 1024 * 1024, 20);
+        healthy.tcp_health.throughput_mbps_ewma = 200.0;
+        healthy.tcp_health.throughput_qualifying_samples = 1;
+        let mut probe = fake_leg(1, 10, 0, 25);
+        probe.tcp_health.throughput_mbps_ewma = 40.0;
+        probe.tcp_health.throughput_qualifying_samples = 3;
+        probe.tcp_health.bulk_admission = BulkAdmissionState::Quarantined;
+        probe.tcp_health.next_probe_at = Some(now - Duration::from_secs(1));
+        let mut legs = vec![healthy, probe];
+
+        assert_eq!(
+            select_adaptive_bulk_leg(&mut legs, 128 * 1024, now, &config),
+            Some(1)
+        );
+        assert_eq!(
+            legs[1].tcp_health.bulk_admission,
+            BulkAdmissionState::Probation
+        );
+        assert_eq!(
+            select_adaptive_bulk_leg(
+                &mut legs,
+                128 * 1024,
+                now + Duration::from_millis(1),
+                &config,
+            ),
+            Some(0)
+        );
+    }
+
     #[test]
     fn client_leg_retry_backoff_is_extended_beyond_subsecond_thrashing() {
         assert_eq!(CLIENT_LEG_RETRY_BACKOFF, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn fixed_initial_leg_quorum_requires_configured_minimum() {
+        assert!(initial_leg_quorum_met(2, 5, 2));
+        assert!(!initial_leg_quorum_met(1, 5, 2));
+    }
+
+    #[test]
+    fn effective_initial_leg_counts_clamp_preferred_but_not_minimum() {
+        assert_eq!(effective_initial_leg_counts(1, 2, 1).unwrap(), (1, 1));
+        assert!(effective_initial_leg_counts(1, 5, 2).is_err());
+    }
+
+    #[test]
+    fn reconnect_backoff_is_exponential_and_bounded() {
+        assert_eq!(
+            bounded_retry_backoff(Duration::from_secs(5), Duration::from_secs(60), 0),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            bounded_retry_backoff(Duration::from_secs(5), Duration::from_secs(60), 4),
+            Duration::from_secs(60)
+        );
+        let jittered = retry_backoff_with_jitter(
+            Duration::from_secs(5),
+            Duration::from_secs(60),
+            1,
+            3,
+        );
+        assert!(jittered >= Duration::from_secs(10));
+        assert!(jittered <= Duration::from_secs(12));
+        assert_eq!(
+            jittered,
+            retry_backoff_with_jitter(
+                Duration::from_secs(5),
+                Duration::from_secs(60),
+                1,
+                3,
+            )
+        );
+    }
+
+    #[test]
+    fn hello_for_spec_uses_leg_route_id_and_shared_session_fields() {
+        let spec = crate::transport::parse_leg_spec(
+            "tcp://127.0.0.1:20962?endpoint_id=184&leg_route_id=455",
+        )
+        .unwrap();
+        let session_id = Uuid::nil();
+        let frame = hello_for_spec(&spec, session_id, 5, "secret");
+
+        match frame {
+            WireFrame::Hello(hello) => {
+                assert_eq!(hello.session_id, session_id);
+                assert_eq!(hello.expected_links, 5);
+                assert_eq!(hello.route_id, 455);
+                assert_eq!(hello.token, "secret");
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
     }
 
     #[test]
@@ -5699,6 +7434,26 @@ mod tests {
     }
 
     #[test]
+    fn bulk_transition_preserves_completed_warmup_quorum() {
+        let (local_write_tx, _local_write_rx) = mpsc::channel(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let mut state = TcpStreamState::new(local_write_tx, close_tx, true);
+        state.striping_stage = TcpStripingStage::Warmup;
+        state.warmup_leg_count = 2;
+        state.warmup_leg_bytes = 64 * 1024;
+
+        transition_tcp_striping_stage(&mut state, TcpStripingStage::Bulk);
+
+        assert_eq!(state.striping_stage, TcpStripingStage::Bulk);
+        assert!(state.bulk_mode);
+        assert_eq!(state.warmup_leg_count, 2);
+        assert_eq!(
+            decide_striping_stage(512 * 1024, 0, state.warmup_leg_count, 2, &test_config()),
+            TcpStripingStage::Bulk
+        );
+    }
+
+    #[test]
     fn latency_best_never_promotes_a_stream_to_bulk_striping() {
         assert_eq!(
             strategy_striping_stage(ClientStrategy::LatencyBest, TcpStripingStage::Bulk),
@@ -5720,6 +7475,36 @@ mod tests {
             &mut random_state,
         );
 
+        assert_eq!(selected, Some(1));
+    }
+
+    #[test]
+    fn speed_max_sticky_uses_lowest_rtt_before_bulk_promotion() {
+        let mut legs = vec![fake_leg(0, 10, 0, 45), fake_leg(1, 10, 0, 12)];
+        legs[0].role = LegRole::Primary;
+        legs[1].role = LegRole::Primary;
+        let mut cursor = 0usize;
+        let mut random_state = 7u64;
+
+        let affinity = select_strategy_affinity_leg(
+            ClientStrategy::SpeedMax,
+            &legs,
+            &mut cursor,
+            &mut random_state,
+        );
+        assert_eq!(affinity, Some(1));
+
+        let mut config = test_config();
+        config.latency_first = true;
+        let selected = select_pinned_strategy_leg(
+            ClientStrategy::SpeedMax,
+            &legs,
+            &mut cursor,
+            affinity,
+            4096,
+            4096,
+            &config,
+        );
         assert_eq!(selected, Some(1));
     }
 
@@ -5788,6 +7573,7 @@ mod tests {
         let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
         let mut cursor = 0usize;
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let tasks = SessionTaskGroup::new();
 
         let result = tokio::runtime::Runtime::new()
             .expect("runtime")
@@ -5805,6 +7591,7 @@ mod tests {
                 &mut cursor,
                 &event_tx,
                 &test_config(),
+                &tasks,
             ));
 
         assert!(result.is_ok());
@@ -6385,7 +8172,16 @@ mod tests {
         let (reader, writer) = tokio::io::split(stream);
         let (frame_tx, frame_rx) = leg_write_channel();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-        spawn_tcp_leg_io_tasks(7, reader, writer, frame_rx, event_tx, Duration::from_millis(50));
+        let tasks = SessionTaskGroup::new();
+        spawn_tcp_leg_io_tasks(
+            7,
+            reader,
+            writer,
+            frame_rx,
+            event_tx,
+            Duration::from_millis(50),
+            &tasks,
+        );
 
         frame_tx
             .try_send(QueuedLegFrame::new(WireFrame::DataC2S {
@@ -6417,7 +8213,16 @@ mod tests {
         let (reader, writer) = tokio::io::split(stream);
         let (frame_tx, frame_rx) = leg_write_channel();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-        spawn_tcp_leg_io_tasks(7, reader, writer, frame_rx, event_tx, Duration::from_secs(1));
+        let tasks = SessionTaskGroup::new();
+        spawn_tcp_leg_io_tasks(
+            7,
+            reader,
+            writer,
+            frame_rx,
+            event_tx,
+            Duration::from_secs(1),
+            &tasks,
+        );
 
         drop(peer);
 
@@ -6710,6 +8515,7 @@ mod tests {
     fn local_snapshot_serialization_shape_includes_protocol_health_and_events() {
         let mut legs = vec![fake_leg(0, 10, 0, 20)];
         legs[0].endpoint_id = Some(185);
+        legs[0].leg_route_id = Some(453);
         legs[0].node_id = Some(5);
         legs[0].host = String::from("8.163.90.235");
 
@@ -6717,6 +8523,10 @@ mod tests {
         penalize_tcp_leg(&mut legs, 0, TcpPenalty::RetransmitBurst);
         penalize_udp_leg(&mut legs, 0, UdpPenalty::HighLossRatio);
         penalize_udp_leg(&mut legs, 0, UdpPenalty::RetransmitBurst);
+        let mut config = adaptive_test_config();
+        config.throughput_min_sample_bytes = 1;
+        config.throughput_min_sample = Duration::from_millis(1);
+        apply_tcp_throughput_sample(&mut legs, 0, 42.0, Instant::now(), &config);
 
         let snapshot = build_leg_health_snapshot_json("client", 123, 26, &legs).expect("snapshot json");
         let value: serde_json::Value = serde_json::from_str(&snapshot).expect("valid json");
@@ -6725,11 +8535,40 @@ mod tests {
         assert_eq!(value["observer_id"], 123);
         assert_eq!(value["forward_id"], 26);
         assert_eq!(value["legs"][0]["endpoint_id"], 185);
+        assert_eq!(value["legs"][0]["leg_route_id"], 453);
         assert_eq!(value["legs"][0]["node_id"], 5);
         assert_eq!(value["legs"][0]["host"], "8.163.90.235");
+        assert_eq!(value["legs"][0]["active"], true);
+        assert_eq!(value["legs"][0]["initial_ready"], true);
+        assert_eq!(value["legs"][0]["added_late"], false);
+        assert_eq!(value["legs"][0]["reconnect_count"], 0);
+        assert_eq!(value["legs"][0]["scheduled_bytes"], 0);
+        assert_eq!(value["legs"][0]["cooldown_count"], 0);
+        assert_eq!(value["legs"][0]["tcp"]["throughput_mbps_ewma"], 42.0);
+        assert_eq!(value["legs"][0]["tcp"]["qualifying_samples"], 1);
+        assert_eq!(value["legs"][0]["tcp"]["bulk_admission"], "admitted");
+        assert!(value["legs"][0]["tcp"]["quarantine_until"].is_null());
         assert!(value["legs"][0]["tcp"]["effective_weight"].as_f64().unwrap_or(1.0) < 1.0);
         assert!(value["legs"][0]["udp"]["effective_weight"].as_f64().unwrap_or(1.0) < 1.0);
         assert!(value["legs"][0]["recent_events"].as_array().is_some_and(|items| !items.is_empty()));
+    }
+
+    #[test]
+    fn route_observability_counts_scheduled_payload_and_cooldowns() {
+        let mut legs = vec![fake_leg(0, 10, 0, 20)];
+        assert!(send_to_leg(
+            &mut legs,
+            0,
+            WireFrame::DataC2S {
+                stream_id: 7,
+                seq: 0,
+                payload: Bytes::from_static(b"payload"),
+            },
+        ));
+        apply_leg_cooldown(&mut legs, 0, Duration::from_secs(1));
+
+        assert_eq!(legs[0].scheduled_bytes, 7);
+        assert_eq!(legs[0].cooldown_count, 1);
     }
 
     #[test]
@@ -6766,8 +8605,16 @@ mod tests {
             label: String::from("leg-0"),
             spec_index: Some(0),
             endpoint_id: Some(0),
+            leg_route_id: None,
             node_id: Some(0),
             host: String::from("127.0.0.1"),
+            initial_connect_ms: 0,
+            hello_ack_ms: 0,
+            initial_ready: true,
+            added_late: false,
+            reconnect_count: 0,
+            scheduled_bytes: 0,
+            cooldown_count: 0,
             cooldown_until: None,
             penalty_count: 0,
             tcp_health: ProtocolLegHealth::new(),
@@ -6802,8 +8649,10 @@ mod tests {
         let mut inbound = InboundState::new();
         let payload = Bytes::from_static(b"abcd");
 
-        let queued = handle_inbound_data(&mut inbound, 0, payload, &tx).await.expect("queue inbound payload");
-        assert_eq!(queued, (4, 4));
+        let (queued, received) =
+            handle_inbound_data(&mut inbound, 0, payload, &tx).await.expect("queue inbound payload");
+        assert_eq!(queued, 4);
+        assert_eq!(received, 4);
         assert_eq!(inbound.next_offset, 4);
         assert_eq!(inbound.acked_offset, 0);
 
@@ -6857,6 +8706,8 @@ mod tests {
         let mut legs = vec![old_leg, arrival_leg];
         let mut cursor = 0usize;
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let tasks = SessionTaskGroup::new();
+
         handle_tcp_transport_frame(
             Uuid::nil(),
             SessionRole::Client,
@@ -6875,6 +8726,7 @@ mod tests {
             &mut cursor,
             &event_tx,
             &test_config(),
+            &tasks,
         )
         .await
         .unwrap();
@@ -6920,7 +8772,8 @@ mod tests {
         .expect("a full local writer queue must not block the transport event loop")
         .unwrap();
 
-        assert_eq!(queued, (0, 1));
+        assert_eq!(queued.0, 0);
+        assert_eq!(queued.1, 1);
         assert_eq!(inbound.next_offset, 0);
         assert_eq!(inbound.buffer.get(&0), Some(&Bytes::from_static(b"a")));
         assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
@@ -6950,7 +8803,8 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(queued, (1, 1));
+        assert_eq!(queued.0, 1);
+        assert_eq!(queued.1, 1);
         assert_eq!(inbound.next_offset, 1);
         assert_eq!(inbound.buffer.get(&1), Some(&Bytes::from_static(b"b")));
         match rx.recv().await {
@@ -7134,6 +8988,7 @@ mod tests {
             close_rx,
             event_tx,
             read_credit.clone(),
+            None,
         );
         writer.write_all(&vec![b'x'; 2048]).await.unwrap();
 
@@ -7175,6 +9030,7 @@ mod tests {
             idle_close_rx,
             event_tx.clone(),
             read_credit.clone(),
+            None,
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
         spawn_transport_stream_reader(
@@ -7184,6 +9040,7 @@ mod tests {
             active_close_rx,
             event_tx,
             read_credit,
+            None,
         );
         active_writer.write_all(b"data").await.unwrap();
 

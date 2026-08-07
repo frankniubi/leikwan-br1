@@ -83,7 +83,8 @@ object AndroidEffectiveForwardBuilder {
             contract.targetContract.isNotBlank() ||
             contract.aggregationEnabled ||
             contract.sidecarRequired ||
-            contract.bondSidecarPointId != null
+            contract.bondSidecarPointId != null ||
+            SlaveSidecarIngressContract.hasAggregationPlacement(contract.bonding)
     }
 
     private fun isDedicatedLeiGod(contract: ForwardContract): Boolean {
@@ -94,7 +95,8 @@ object AndroidEffectiveForwardBuilder {
 
     private fun isSidecarAggregation(contract: ForwardContract): Boolean {
         val clientMode = normalizeMode(contract.clientMode) ?: contract.mode
-        return contract.activeFamily.equals("sidecar_aggregation", ignoreCase = true) ||
+        return SlaveSidecarIngressContract.hasAggregationPlacement(contract.bonding) ||
+            contract.activeFamily.equals("sidecar_aggregation", ignoreCase = true) ||
             contract.targetContract.equals("sidecar_aggregation", ignoreCase = true) ||
             contract.runtimePreference.equals("mptcp_preferred_bond_fallback", ignoreCase = true) ||
             contract.aggregationEnabled ||
@@ -105,6 +107,9 @@ object AndroidEffectiveForwardBuilder {
 
     private fun hasUsableBondAggregation(contract: ForwardContract): Boolean {
         val bonding = contract.bonding ?: return false
+        if (SlaveSidecarIngressContract.hasAggregationPlacement(bonding)) {
+            return SlaveSidecarIngressContract.resolve(contract) != null
+        }
         if (!contract.sidecarRequired || !contract.aggregationEnabled) return false
         if (contract.bondSidecarPointId == null) return false
         if (contract.endpoints.isEmpty()) return false

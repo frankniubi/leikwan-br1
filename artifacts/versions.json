@@ -1,11 +1,11 @@
 {
   "slave_agent": {
-    "version": "2026.08.04.2",
+    "version": "2026.08.06.1",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "b9d90425799004855dd39bf7928b8a03fae1d124e2bdd48edfb7047f8260ad65",
-    "size_bytes": 332504,
-    "size": 332504
+    "sha256": "48ad5d414dae328980537778bd87d7a0bf46c3ddf44c0a38d40a9b691f3daf3c",
+    "size_bytes": 368067,
+    "size": 368067
   },
   "gost_linux_amd64": {
     "version": "3.2.6",
@@ -21,7 +21,7 @@
     "artifact_url": "/artifacts/leigod/leigod-linux-amd64",
     "sha256": "b15fc09c4c03df82ab5fda97962ae175c124b6f61ce3167e77a0fb3d14a33b86",
     "size_bytes": 10779919,
-    "note": "recovered LeiGod accelerator (slave only); runs leigod@<line> exposing SOCKS 127.0.0.1:20000+line. Fill sha256/size when published."
+    "note": "Recovered LeiGod provider for lease-managed Linux execution; exposes root-managed loopback SOCKS listeners."
   },
   "lguot_linux_amd64": {
     "version": "2026.06.03.2",
@@ -69,29 +69,29 @@
     "install_url": "/artifacts/uninstall-bond-sidecar.sh"
   },
   "client_agent": {
-    "version": "2026.08.04.1",
+    "version": "2026.08.06.5",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "4324a51b5c654c30449c8b5ff116beedce2eca1c5605d675b471a2e862dbfed5",
-    "size_bytes": 242762,
-    "size": 242762
+    "sha256": "f5b0e2965a59905fc5886b31e5f3a2773ce40f15865081ed7be77cd2b754dc48",
+    "size_bytes": 288812,
+    "size": 288812
   },
   "client_agent_installer": {
-    "version": "2026.07.28.2",
+    "version": "2026.08.06.1",
     "path": "install/install-client-agent.sh",
     "install_url": "/artifacts/install-client-agent.sh",
     "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "3e2a9a676b553d302bb8ea6454091b879d14c5bcd32a9a718aaf4afb07c62be8",
-    "size_bytes": 19535,
+    "sha256": "f780d1630c2ac0fda8edecf58b57669778c6be83a2affb63071f44edaa0efdd5",
+    "size_bytes": 20301,
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
-    "version": "2026.08.04.1",
+    "version": "2026.08.05.1",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "5e07d54a839486569718ee03d0266b8d0c03325082049e3df8b3d870e249f8e0",
-    "size_bytes": 131182,
-    "size": 131182
+    "sha256": "3b8c0983ba4edb740ddaf987f26694bfc725b113fc81271fb930e911a76c3c57",
+    "size_bytes": 133730,
+    "size": 133730
   },
   "mptcp_client_runtime": {
     "version": "2026.06.06.1",
@@ -127,11 +127,18 @@
     "artifact_url": "/artifacts/leikwan-udp-uot-merge.py"
   },
   "leikwan_bond_linux_amd64": {
-    "version": "0.1.30",
+    "version": "0.1.41",
     "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64",
-    "sha256": "513b0ad9e496c4e71a225fd381453acb45a1413b6766bf5dcfb91d7babfefb7b",
-    "size_bytes": 8946736
+    "sha256": "a7ec41102dfcb0c446b6d7c8fe412abb84270d34b26512b871a9aa2937ea62be",
+    "size_bytes": 9881608
+  },
+  "leikwan_pathd_linux_amd64": {
+    "version": "0.1.41",
+    "path": "artifacts/wstunnel/leikwan-pathd_linux_amd64",
+    "artifact_url": "/artifacts/wstunnel/leikwan-pathd_linux_amd64",
+    "sha256": "5d6f5f2ab8d514508793a95676afec775bb89b9d201aaf975c278ce3f2ef6a08",
+    "size_bytes": 9398488
   },
   "wstunnel_linux_amd64": {
     "version": "10.5.2",
@@ -172,26 +179,26 @@
     "platform": "linux-amd64"
   },
   "windows_client_app": {
-    "version": "0.1.18.1",
+    "version": "0.1.18.2",
     "path": "artifacts/windows/leikwan-bridge-setup.exe",
     "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
-    "sha256": "e152f578e90f01b91d0bc0f8e8b3402c15037566edf6736424c1e7c895820977",
-    "size_bytes": 8609924
+    "sha256": "1ce5a28c8918078ddf316affce90262db6e1b82220bab58e9aa7af700082514e",
+    "size_bytes": 102990544
   },
   "android_client_apk": {
-    "version": "0.1.0",
+    "version": "0.1.1",
     "path": "artifacts/android/leikwan-android-client.apk",
     "artifact_url": "/artifacts/leikwan-android-client.apk",
-    "sha256": "41c06cb7534ee119cf86c728be8025fa390bba34bd4eb840939d311d9fcf85e7",
-    "size_bytes": 55652648
+    "sha256": "c3631737989debc9b98a9d75db5f7bc8add3a75d2e359beaa7b0262e4de89d9f",
+    "size_bytes": 65685909
   },
   "install_forward_runtime": {
-    "version": "2026.08.04.2",
+    "version": "2026.08.06.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "95b9da49c3d52f35e0eb40962373307840bc5825e4870c31a152227eb8189684",
-    "size_bytes": 73001,
-    "size": 73001
+    "sha256": "88594240c92d6b340c2caba167d576836383020843c94f459809cde16e4e6e53",
+    "size_bytes": 80556,
+    "size": 80556
   },
   "tcp_race_runtime": {
     "version": "2026.07.27.1",
@@ -238,10 +245,10 @@
     "size_bytes": 17387
   },
   "leigod_forward_relay": {
-    "version": "2026.07.27.1",
+    "version": "2026.08.05.2",
     "path": "slave-agent/leigod_forward_relay.py",
     "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
-    "sha256": "1b96fc73623a991aacb0a33f503d177088fa2975fe5cb6c02fc2a28677de9848",
-    "size_bytes": 30683
+    "sha256": "64b64b6ac1464c220e82e2582c6a2d3845d29ee969d07a961de81260916ef700",
+    "size_bytes": 59161
   }
 }

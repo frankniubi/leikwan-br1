@@ -362,7 +362,7 @@ final class LeigodOnlyArtifactConsistencyService
 
     private function requiresExpectedPin(string $key): bool
     {
-        return in_array($key, ['leikwan_bond_linux_amd64', 'leikwan_bond_windows_amd64'], true);
+        return in_array($key, ['leikwan_bond_linux_amd64', 'leikwan_pathd_linux_amd64', 'leikwan_bond_windows_amd64'], true);
     }
 
     /** @return list<array<string, mixed>> */
@@ -386,7 +386,7 @@ final class LeigodOnlyArtifactConsistencyService
     {
         return $platformFamily === 'windows-bond'
             ? ['windows_client_app', 'leikwan_bond_windows_amd64']
-            : ['client_agent', 'leigod_forward_relay', 'leikwan_bond_linux_amd64', 'gost_linux_amd64', 'leigod_linux_amd64', 'lguot_linux_amd64'];
+            : ['client_agent', 'leigod_forward_relay', 'leikwan_bond_linux_amd64', 'leikwan_pathd_linux_amd64', 'gost_linux_amd64', 'leigod_linux_amd64', 'lguot_linux_amd64'];
     }
 
     /** @return list<string> */

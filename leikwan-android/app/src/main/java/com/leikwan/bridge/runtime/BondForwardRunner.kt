@@ -14,6 +14,41 @@ object BondForwardRunner {
     ): RuntimeContext {
         val bonding = forward.bonding
             ?: throw IllegalArgumentException("bond mode missing bonding config")
+        if (SlaveSidecarIngressContract.hasAggregationPlacement(bonding)) {
+            val ingress = SlaveSidecarIngressContract.resolve(forward)
+                ?: throw IllegalArgumentException("invalid slave_sidecar ingress contract")
+            val ingressBinary = binaries.ingressBinary?.takeIf { it.isNotBlank() }
+                ?: throw IllegalArgumentException("slave_sidecar requires packaged leikwan-ingress")
+            val command = listOf(
+                ingressBinary,
+                "client",
+                "--listen",
+                "127.0.0.1:${forward.listenPort}",
+                "--remote",
+                "${ingress.endpoint.host}:${ingress.endpoint.port}",
+                "--route-key",
+                ingress.routeKey,
+                "--auth-token",
+                ingress.endpoint.ingressAuthToken!!.trim(),
+            )
+            val bypassHosts = linkedSetOf(ingress.endpoint.host)
+            ingress.endpoint.cdnHost?.takeIf { it.isNotBlank() }?.let { bypassHosts += it }
+            return RuntimeContext(
+                forwardId = forward.forwardId,
+                mode = ForwardMode.BOND,
+                localListenPort = forward.listenPort,
+                localLegPorts = listOf(forward.listenPort),
+                processPlans = listOf(
+                    RuntimeProcessPlan(
+                        role = RuntimeProcessRole.INGRESS,
+                        command = command,
+                        readyPort = forward.listenPort,
+                    ),
+                ),
+                bypassHosts = bypassHosts,
+            )
+        }
+
         val bondBinary = binaries.bondBinary?.takeIf { it.isNotBlank() }
             ?: throw IllegalArgumentException("bond mode requires packaged leikwan-bond")
         if (forward.endpoints.isEmpty()) {

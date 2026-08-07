@@ -163,6 +163,28 @@ def int_or_default(value: object, default: int) -> int:
         return default
 
 
+def fixed_endpoint_legs(bond: dict) -> list[dict]:
+    if not truthy(bond.get("fixed_endpoint", False)):
+        return []
+    rows = bond.get("fixed_endpoint_legs", [])
+    if not isinstance(rows, list) or not 2 <= len(rows) <= 8:
+        raise RuntimeError("fixed endpoint bond requires between two and eight logical legs")
+    normalized = []
+    seen = set()
+    for row in rows:
+        leg_route_id = int_or_default(row.get("leg_route_id") if isinstance(row, dict) else 0, 0)
+        if leg_route_id <= 0 or leg_route_id in seen:
+            raise RuntimeError("fixed endpoint bond leg routes must be unique and positive")
+        seen.add(leg_route_id)
+        normalized.append(
+            {
+                "leg_route_id": leg_route_id,
+                "priority": int_or_default(row.get("priority") if isinstance(row, dict) else 10, 10),
+            }
+        )
+    return normalized
+
+
 def cfwg_watchdog_pin(forward_id: int, agent_config: dict) -> str:
     if forward_id <= 0:
         return ""
@@ -191,12 +213,15 @@ def _leg_query_params(priority: int, endpoint: dict | None = None) -> str:
     if isinstance(endpoint, dict):
         endpoint_id = int_or_default(endpoint.get("endpoint_id"), 0)
         node_id = int_or_default(endpoint.get("node_id"), 0)
+        leg_route_id = int_or_default(endpoint.get("leg_route_id"), 0)
         host = str(endpoint.get("display_host", "") or endpoint.get("host", "") or "").strip()
         leg_role = str(endpoint.get("leg_role", "") or "").strip()
         if endpoint_id > 0:
             params.append(f"endpoint_id={endpoint_id}")
         if node_id > 0:
             params.append(f"node_id={node_id}")
+        if leg_route_id > 0:
+            params.append(f"leg_route_id={leg_route_id}")
         if host != "":
             params.append(f"display_host={quote(host, safe='')}")
         if leg_role in {"primary", "helper"}:
@@ -731,6 +756,9 @@ def endpoint_path_prefix(endpoint: dict, default_path_prefix: str) -> str:
 def endpoint_sni(endpoint: dict, default_sni: str) -> str:
     return str(endpoint.get("cf_sni_host", "") or endpoint.get("sni_host", "") or endpoint.get("cdn_host", "") or default_sni or endpoint.get("host", "") or "").strip()
 def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
+    path_runtime = forward.get("path_runtime", {})
+    if isinstance(path_runtime, dict) and path_runtime.get("engine") == "linux_pathd":
+        raise RuntimeError("linux_pathd forwards must be reconciled by client-agent")
     forward = canonicalize_forward_runtime_contract(forward)
     forward_id = int(forward["forward_id"])
     listen_port = int(forward["listen_port"])
@@ -744,6 +772,11 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     service_name = f"leikwan-client-{forward_id}"
     service_path = f"/etc/systemd/system/{service_name}.service"
     bond = bonding_config(forward)
+    aggregation_placement = str(bond.get("aggregation_placement", "") or "").strip()
+    if aggregation_placement not in ("", "slave_sidecar"):
+        raise RuntimeError(f"unknown bond aggregation placement: {aggregation_placement}")
+    server_side_bond = aggregation_placement == "slave_sidecar"
+    fixed_legs = [] if server_side_bond else fixed_endpoint_legs(bond)
     mptcp = mptcp_config(forward)
     frontend_mode = sidecar_frontend_mode(forward, bond)
     bond_remote_target = str(bond.get("remote_target", "")).strip()
@@ -773,8 +806,70 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
         usable_endpoints.append(normalized)
     endpoints = usable_endpoints
 
+    if server_side_bond:
+        if mode != "bond" or not truthy(bond.get("fixed_endpoint", False)):
+            raise RuntimeError("server-side bond requires fixed native bond mode")
+        if transport != "tcp":
+            raise RuntimeError("server-side bond requires TCP-only transport")
+        if bond.get("fixed_endpoint_legs") not in (None, []):
+            raise RuntimeError("server-side bond contract must not expose logical legs")
+        if len(endpoints) != 1:
+            raise RuntimeError("server-side bond requires exactly one physical endpoint")
+        if str(bond.get("ingress_mode", "") or "").strip() != "plain_tcp_mux":
+            raise RuntimeError("server-side bond requires plain_tcp_mux ingress")
+        for field in ("remote_target", "sidecar_host", "aggregator_host", "session_token", "udp_session_token"):
+            if str(bond.get(field, "") or "").strip() != "":
+                raise RuntimeError(f"server-side bond contract must not expose {field}")
+        endpoint = endpoints[0]
+        if str(endpoint.get("runtime_target", "") or "").strip() != "":
+            raise RuntimeError("server-side bond contract must not expose a slave loopback target")
+        ingress_auth_token = str(endpoint.get("ingress_auth_token", "") or "").strip()
+        if ingress_auth_token == "":
+            raise RuntimeError("server-side bond requires ingress_auth_token")
+        route_key = str(bond.get("route_key", path_prefix) or path_prefix).strip()
+        if route_key == "":
+            raise RuntimeError("server-side bond requires route_key")
+        lines = [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            "trap 'kill $(jobs -p) 2>/dev/null || true' EXIT",
+            f"{bond_ingress_bin} client --listen 0.0.0.0:{listen_port} "
+            f"--remote {endpoint['host']}:{endpoint['port']} --route-key {route_key} "
+            f"--auth-token {ingress_auth_token} &",
+        ]
+        append_wait_for_local_listener(lines, [listen_port])
+        lines.append("wait -n")
+        start_script_path = f"/usr/local/bin/leikwan-client-start-{forward_id}.sh"
+        service_unit = f"""[Unit]
+Description=Leikwan Client {forward_id}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash {start_script_path}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+        return {
+            "service_name": service_name,
+            "service_path": service_path,
+            "service_unit": service_unit,
+            "start_script_path": start_script_path,
+            "start_script": "\n".join(lines) + "\n",
+            "extra_units": [],
+        }
+
     if frontend_mode == "single":
         endpoints = endpoints[:1]
+
+    if fixed_legs:
+        if mode != "bond" or frontend_mode != "":
+            raise RuntimeError("fixed endpoint bond requires native bond mode")
+        if len(endpoints) != 1:
+            raise RuntimeError("fixed endpoint bond requires exactly one physical endpoint")
 
     if len(endpoints) > 1 and mode == "race" and frontend_mode == "":
         base = 20000 + ((forward_id * 37) % 15000)
@@ -833,7 +928,7 @@ WantedBy=multi-user.target
     if mode == "bond" or frontend_mode != "":
         if bond_remote_target == "":
             raise RuntimeError("bond mode missing bonding.remote_target")
-        if frontend_mode == "":
+        if frontend_mode == "" and not fixed_legs:
             self_leg_endpoints = [
                 endpoint
                 for candidate in selected_self_leg_candidates(forward)
@@ -844,7 +939,7 @@ WantedBy=multi-user.target
                 endpoints = self_leg_endpoints + endpoints
         if endpoints == []:
             raise RuntimeError("bond mode requires at least one endpoint")
-        sidepath = udp_uot_sidepath_settings(forward, agent_config)
+        sidepath = None if fixed_legs else udp_uot_sidepath_settings(forward, agent_config)
         primary_transport = transport
         extra_units: list[dict] = []
         if sidepath is not None and transport == "tcp+udp":
@@ -875,11 +970,11 @@ WantedBy=multi-user.target
                 f"export LEIKWAN_BOND_SNAPSHOT_PATH='{snapshot_path}'",
             ]
         )
-        quic_via_slave = truthy(bond.get("quic_via_slave", True))
+        quic_via_slave = False if fixed_legs else truthy(bond.get("quic_via_slave", True))
         use_local_rate_limit = speed_limit_mbps if not truthy(bond.get("disable_local_rate_limit", True)) else None
         ws_priority = int_or_default(bond.get("ws_priority"), 10)
         join_timeout_ms = adaptive_join_timeout_ms(bond, endpoints)
-        selected_quic_legs = select_active_quic_legs(endpoints, bond)
+        selected_quic_legs = [] if fixed_legs else select_active_quic_legs(endpoints, bond)
         use_wss_as_active_legs = selected_quic_legs == []
         interactive_chunk_bytes = int_or_default(bond.get("interactive_chunk_bytes"), 16 * 1024)
         latency_guard_bytes = int_or_default(bond.get("latency_guard_bytes"), 256 * 1024)
@@ -895,15 +990,62 @@ WantedBy=multi-user.target
         udp_primary_only = truthy(bond.get("udp_primary_only", False))
         ingress_mode = str(bond.get("ingress_mode", "wss_path_mux")).strip() or "wss_path_mux"
         route_key = str(bond.get("route_key", path_prefix)).strip() or path_prefix
+        fixed_local_target = ""
+        fixed_runtime_args = ""
+        if fixed_legs:
+            if ingress_mode != "plain_tcp_mux":
+                raise RuntimeError("fixed endpoint bond requires plain_tcp_mux ingress")
+            endpoint = endpoints[0]
+            ingress_auth_token = str(
+                endpoint.get("ingress_auth_token", "") or bond.get("ingress_auth_token", "")
+            ).strip()
+            if ingress_auth_token == "":
+                raise RuntimeError("fixed endpoint bond requires ingress_auth_token")
+            shared_port = base
+            fixed_local_target = f"127.0.0.1:{shared_port}"
+            lines.append(
+                f"{bond_ingress_bin} client --listen {fixed_local_target} "
+                f"--remote {endpoint['host']}:{endpoint['port']} --route-key {route_key} "
+                f"--auth-token {ingress_auth_token} &"
+            )
+            append_wait_for_local_listener(lines, [shared_port])
+            preferred_initial_legs = max(
+                2,
+                min(len(fixed_legs), int_or_default(bond.get("preferred_initial_legs"), len(fixed_legs))),
+            )
+            minimum_initial_legs = max(
+                1,
+                min(preferred_initial_legs, int_or_default(bond.get("minimum_initial_legs"), 2)),
+            )
+            initial_leg_wait_ms = max(0, int_or_default(bond.get("initial_leg_wait_ms"), 3000))
+            reconnect_backoff_ms = max(100, int_or_default(bond.get("leg_reconnect_backoff_ms"), 5000))
+            reconnect_backoff_max_ms = max(
+                reconnect_backoff_ms,
+                int_or_default(bond.get("leg_reconnect_backoff_max_ms"), 60000),
+            )
+            fixed_runtime_args = (
+                f"--preferred-initial-legs {preferred_initial_legs} "
+                f"--minimum-initial-legs {minimum_initial_legs} "
+                f"--initial-leg-wait-ms {initial_leg_wait_ms} "
+                f"--leg-reconnect-backoff-ms {reconnect_backoff_ms} "
+                f"--leg-reconnect-backoff-max-ms {reconnect_backoff_max_ms} "
+            )
         tcp_ready_ports: list[int] = []
         udp_ready_ports: list[int] = []
         if primary_transport in ("tcp", "tcp+udp"):
             if bond_session_token == "":
                 raise RuntimeError("bond mode missing bonding.session_token for tcp transport")
             tcp_leg_targets = list(selected_quic_legs) if quic_via_slave else []
+            if fixed_legs:
+                for fixed_leg in fixed_legs:
+                    leg_metadata = dict(endpoints[0])
+                    leg_metadata.update(fixed_leg)
+                    tcp_leg_targets.append(
+                        render_tcp_leg(fixed_local_target, int(fixed_leg["priority"]), leg_metadata)
+                    )
             tcp_listen_port = rate_base if use_local_rate_limit else listen_port
             tcp_listen_host = "127.0.0.1" if use_local_rate_limit else "0.0.0.0"
-            for index, endpoint in enumerate(endpoints):
+            for index, endpoint in enumerate([] if fixed_legs else endpoints):
                 host = endpoint["host"]
                 port = endpoint["port"]
                 tcp_back = base + index
@@ -954,7 +1096,8 @@ WantedBy=multi-user.target
                 f"--warmup-slice-bytes {warmup_slice_bytes} "
                 f"--warmup-leg-delay-ms {warmup_leg_delay_ms} "
                 f"--bulk-promote-bytes {bulk_promote_bytes} "
-                f"--leg-cooldown-ms {leg_cooldown_ms} &"
+                f"--leg-cooldown-ms {leg_cooldown_ms} "
+                f"{fixed_runtime_args}&"
             )
             if use_local_rate_limit:
                 lines.append(
@@ -966,9 +1109,16 @@ WantedBy=multi-user.target
             if udp_token == "":
                 raise RuntimeError("bond mode missing bonding.udp_session_token for udp transport")
             udp_leg_targets = list(selected_quic_legs) if quic_via_slave else []
+            if fixed_legs:
+                for fixed_leg in fixed_legs:
+                    leg_metadata = dict(endpoints[0])
+                    leg_metadata.update(fixed_leg)
+                    udp_leg_targets.append(
+                        render_tcp_leg(fixed_local_target, int(fixed_leg["priority"]), leg_metadata)
+                    )
             udp_listen_port = rate_base + 1 if use_local_rate_limit else listen_port
             udp_listen_host = "127.0.0.1" if use_local_rate_limit else "0.0.0.0"
-            for index, endpoint in enumerate(endpoints):
+            for index, endpoint in enumerate([] if fixed_legs else endpoints):
                 host = endpoint["host"]
                 port = endpoint["port"]
                 udp_back = base + 200 + index
@@ -1021,7 +1171,8 @@ WantedBy=multi-user.target
                 f"--warmup-slice-bytes {warmup_slice_bytes} "
                 f"--warmup-leg-delay-ms {warmup_leg_delay_ms} "
                 f"--bulk-promote-bytes {bulk_promote_bytes} "
-                f"--leg-cooldown-ms {leg_cooldown_ms} &"
+                f"--leg-cooldown-ms {leg_cooldown_ms} "
+                f"{fixed_runtime_args}&"
             )
             if use_local_rate_limit:
                 lines.append(

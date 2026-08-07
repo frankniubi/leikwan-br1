@@ -38,6 +38,7 @@ data class BondingContract(
     val bulkPromoteBytes: Int?,
     val legCooldownMs: Int?,
     val remoteTarget: String? = null,
+    val aggregationPlacement: String? = null,
     val adaptiveJoinTimeout: Boolean? = null,
     val joinTimeoutFloorMs: Int? = null,
     val joinTimeoutCeilingMs: Int? = null,
@@ -85,6 +86,8 @@ data class ForwardContract(
     val bonding: BondingContract?,
     val mptcp: MptcpContract?,
     val routeRuleHelperOnly: Boolean = false,
+    val rawEndpointCount: Int = endpoints.size,
+    val rawEndpointInvalid: Boolean = false,
 ) {
     fun toListItem(methodDisplay: String = "LeiGod", runtimeMode: ForwardMode = mode): ForwardListItem {
         return ForwardListItem(
@@ -112,6 +115,45 @@ data class ForwardContract(
     }
 
     fun withListenPort(listenPort: Int): ForwardContract = copy(listenPort = listenPort)
+}
+
+internal data class SlaveSidecarIngress(
+    val endpoint: ForwardEndpoint,
+    val routeKey: String,
+)
+
+internal object SlaveSidecarIngressContract {
+    private const val PLACEMENT = "slave_sidecar"
+
+    fun hasAggregationPlacement(bonding: BondingContract?): Boolean =
+        !bonding?.aggregationPlacement.isNullOrBlank()
+
+    fun resolve(forward: ForwardContract): SlaveSidecarIngress? {
+        val bonding = forward.bonding ?: return null
+        if (!bonding.aggregationPlacement.equals(PLACEMENT, ignoreCase = true)) return null
+
+        val resolvedMode = forward.clientMode.trim()
+            .takeIf { it.isNotEmpty() }
+            ?.let { ForwardMode.normalize(it) }
+            ?: forward.mode
+        if (resolvedMode != ForwardMode.BOND
+            || !forward.transport.trim().equals("tcp", ignoreCase = true)
+            || forward.listenPort !in 1..65535
+            || !bonding.ingressMode.orEmpty().trim().equals("plain_tcp_mux", ignoreCase = true)) {
+            return null
+        }
+
+        if (forward.rawEndpointCount != 1 || forward.rawEndpointInvalid) return null
+        val endpoint = forward.endpoints.singleOrNull()
+            ?.takeIf { it.host.isNotBlank() && it.port in 1..65535 }
+            ?: return null
+        val routeKey = bonding.routeKey?.trim().takeIf { !it.isNullOrEmpty() }
+            ?: forward.pathPrefix.trim().takeIf { it.isNotEmpty() }
+            ?: return null
+        if (endpoint.ingressAuthToken.isNullOrBlank()) return null
+
+        return SlaveSidecarIngress(endpoint, routeKey)
+    }
 }
 
 data class ForwardListItem(
@@ -149,7 +191,14 @@ object ForwardContractParser {
         val obj = raw.takeIf { it.isJsonObject }?.asJsonObject ?: return null
         val forwardId = obj.longOrNull("forward_id") ?: return null
         val mode = ForwardMode.normalize(obj.stringOrEmpty("mode"))
-        val endpoints = obj.arrayOrEmpty("endpoints").mapNotNull { endpoint ->
+        val rawEndpointElements = obj.arrayOrEmpty("endpoints")
+        val rawEndpointInvalid = rawEndpointElements.any { endpoint ->
+            val item = endpoint.takeIf { it.isJsonObject }?.asJsonObject ?: return@any true
+            val host = item.stringOrEmpty("host")
+            val port = item.intOrNull("port") ?: 0
+            host.isBlank() || port !in 1..65535
+        }
+        val endpoints = rawEndpointElements.mapNotNull { endpoint ->
             val item = endpoint.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
             val host = item.stringOrEmpty("host")
             val port = item.intOrNull("port") ?: 0
@@ -199,6 +248,8 @@ object ForwardContractParser {
             bonding = obj.objectOrNull("bonding")?.toBondingContract(obj.stringOrNull("bond_ingress_mode")),
             mptcp = obj.objectOrNull("mptcp")?.toMptcpContract(),
             routeRuleHelperOnly = obj.boolOrNull("route_rule_helper_only") ?: false,
+            rawEndpointCount = rawEndpointElements.size,
+            rawEndpointInvalid = rawEndpointInvalid,
         )
     }
 }
@@ -223,6 +274,7 @@ private fun JsonObject.toBondingContract(topLevelIngressMode: String?): BondingC
         bulkPromoteBytes = intOrNull("bulk_promote_bytes"),
         legCooldownMs = intOrNull("leg_cooldown_ms"),
         remoteTarget = stringOrNull("remote_target"),
+        aggregationPlacement = stringOrNull("aggregation_placement"),
         adaptiveJoinTimeout = boolOrNull("adaptive_join_timeout"),
         joinTimeoutFloorMs = intOrNull("join_timeout_floor_ms"),
         joinTimeoutCeilingMs = intOrNull("join_timeout_ceiling_ms"),

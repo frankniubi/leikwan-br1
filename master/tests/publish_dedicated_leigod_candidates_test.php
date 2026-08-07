@@ -6,11 +6,12 @@ namespace Leikwan\Master\Database {
     {
         /** @var array<int, array<string, mixed>> */
         public array $availabilityRows = [];
+        public int $raceEnabled = 1;
 
         public function fetchOne(string $sql, array $params = []): ?array
         {
             if (str_contains($sql, 'FROM forward_routes')) {
-                return ['id' => 9, 'race_enabled' => 1, 'is_active' => 1];
+                return ['id' => 9, 'race_enabled' => $this->raceEnabled, 'is_active' => 1];
             }
             return null;
         }
@@ -123,6 +124,10 @@ namespace {
     $payload = callPublishPrivate($service, 'publishTaskPayloadForForward', $forward, $node, 316);
 
     assertPublishSame('race', $payload['leigod_forward']['mode'] ?? null, 'relay mode');
+    assertPublishSame('connect_latency', $payload['leigod_forward']['selection_signal'] ?? null, 'default race signal');
+    if (array_key_exists('throughput_min_bytes', $payload['leigod_forward'] ?? [])) {
+        failPublish('default race unexpectedly publishes throughput policy');
+    }
     assertPublishSame([451, 453], array_column($payload['leigod_forward']['candidates'] ?? [], 'line_id'), 'ordered line candidates');
     assertPublishSame('127.0.0.1:48316', $payload['target'] ?? null, 'slave runtime target');
     assertPublishSame(48316, $payload['leigod_forward']['relay_port'] ?? null, 'relay port');
@@ -140,6 +145,40 @@ namespace {
     $changedFingerprint = callPublishPrivate($service, 'desiredEndpointPayloadFingerprint', $forward, $node, $changedPayload);
     if ($fingerprint === $changedFingerprint) {
         failPublish('material candidate health change did not change the publish fingerprint');
+    }
+
+    file_put_contents($envPath, implode("\n", [
+        'LEIGOD_RACE_SELECTION_SIGNAL=throughput_ewma',
+        'LEIGOD_RACE_THROUGHPUT_MIN_BYTES=1048576',
+        'LEIGOD_RACE_THROUGHPUT_MIN_SECONDS=2',
+        'LEIGOD_RACE_THROUGHPUT_EWMA_ALPHA=0.25',
+        'LEIGOD_RACE_THROUGHPUT_EXPLORE_EVERY_CONNECTIONS=20',
+        'LEIGOD_RACE_THROUGHPUT_SAMPLE_TTL_SECONDS=1800',
+        'LEIGOD_RACE_THROUGHPUT_STALL_INTERVAL_SECONDS=1',
+        '',
+    ]), FILE_APPEND);
+    $throughputService = new ProvisioningService(new Config($envPath), $db);
+    $throughputPayload = callPublishPrivate($throughputService, 'publishTaskPayloadForForward', $forward, $node, 316);
+    $expectedThroughputPolicy = [
+        'selection_signal' => 'throughput_ewma',
+        'throughput_min_bytes' => 1048576,
+        'throughput_min_seconds' => 2.0,
+        'throughput_ewma_alpha' => 0.25,
+        'throughput_explore_every_connections' => 20,
+        'throughput_sample_ttl_seconds' => 1800.0,
+        'throughput_stall_interval_seconds' => 1.0,
+    ];
+    foreach ($expectedThroughputPolicy as $key => $value) {
+        assertPublishSame($value, $throughputPayload['leigod_forward'][$key] ?? null, 'throughput policy ' . $key);
+    }
+
+    $db->raceEnabled = 0;
+    $singlePayload = callPublishPrivate($throughputService, 'publishTaskPayloadForForward', $forward, $node, 316);
+    assertPublishSame('single', $singlePayload['leigod_forward']['mode'] ?? null, 'non-race relay mode');
+    foreach (array_keys($expectedThroughputPolicy) as $key) {
+        if (array_key_exists($key, $singlePayload['leigod_forward'] ?? [])) {
+            failPublish('single relay unexpectedly publishes race policy key ' . $key);
+        }
     }
 
     @unlink($envPath);

@@ -132,6 +132,7 @@ final class SidecarAgentController extends BaseController
             : $this->provisioning->mptcpSidecarManagementForPoint((int) $point['id']);
         $sidecarUplinkManagement = $this->provisioning->slaveSidecarUplinkManagementForPoint((int) $point['id']);
         $pointId = (int) ($point['id'] ?? 0);
+        $serverSideLeigodBondPolicy = $this->provisioning->serverSideLeigodBondPolicyForPoint($pointId);
         $bondForwardIds = $this->bondRuntimeForwardIdsForPoint($pointId, $runtimeState);
         $cfRows = $this->db->fetchAll(
             'SELECT f.id, f.path_prefix, f.target_host, f.target_port, f.transport_mode,
@@ -259,13 +260,13 @@ final class SidecarAgentController extends BaseController
                 'hybrid_mode' => 'quic_ws',
                 'total_speed_limit_mbps' => ($point['total_speed_limit_mbps'] ?? null) !== null ? (int) $point['total_speed_limit_mbps'] : null,
                 'token_secret' => (string) ($point['token_secret'] ?? ''),
-                'bond_runtime' => $hasBondRuntime ? [
+                'bond_runtime' => $hasBondRuntime ? array_merge([
                     'bind_host' => (string) ($point['bind_host'] ?? '0.0.0.0'),
                     'listen_port' => $bondListenPort,
                     'token_secret' => (string) ($point['token_secret'] ?? ''),
                     'forward_ids' => $bondForwardIds,
                     'total_speed_limit_mbps' => ($point['total_speed_limit_mbps'] ?? null) !== null ? (int) $point['total_speed_limit_mbps'] : null,
-                ] : null,
+                ], $serverSideLeigodBondPolicy) : null,
                 'mptcp_runtime' => $hasMptcpRuntime ? [
                     'bind_host' => (string) ($point['bind_host'] ?? '0.0.0.0'),
                     'listen_port' => $mptcpListenPort,

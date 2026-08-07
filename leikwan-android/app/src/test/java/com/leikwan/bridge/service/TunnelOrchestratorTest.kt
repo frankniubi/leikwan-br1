@@ -50,10 +50,13 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import retrofit2.Response
@@ -174,6 +177,139 @@ class TunnelOrchestratorTest {
             processRunner.started.map { it.cleanupStale },
         )
         assertTrue(legs.getValue(1L).localLegPorts.single() != legs.getValue(2L).localLegPorts.single())
+    }
+
+    @Test
+    fun `slave sidecar starts one original-port ingress without proxy node legs`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val prefs = Prefs(context.getSharedPreferences("orchestrator-slave-sidecar-test-prefs", Context.MODE_PRIVATE))
+        prefs.token = "agent-token"
+        prefs.selectedProxyId = 0L
+        db.proxyNodeDao().insert(ssNode("node-a"))
+        db.proxyNodeDao().insert(ssNode("node-b"))
+
+        val processRunner = RecordingProcessRunner()
+        val binaries = RuntimeBinaryPaths(
+            wstunnelBinary = "/runtime/wstunnel",
+            ingressBinary = "/runtime/leikwan-ingress",
+            bondBinary = "/runtime/leikwan-bond",
+        )
+        val panelApi = FakePanelApi(forwards = listOf(slaveSidecarForwardJson()))
+        val panelRepo = PanelRepository(
+            context,
+            prefsOverride = prefs,
+            apiOverride = panelApi,
+            routeRuleStore = ClientRouteRuleStore(
+                context.getSharedPreferences("orchestrator-slave-sidecar-rules", Context.MODE_PRIVATE)
+                    .also { it.edit().clear().commit() }
+            ),
+        )
+        val binaryInstaller = RecordingBinaryInstaller(context, binaries)
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = UserRoutingRuleStore(db),
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+            panelRepoFactory = { panelRepo },
+            binaryInstallerFactory = { binaryInstaller },
+            processRunnerFactory = { processRunner },
+            vpnServiceStarter = { _ -> },
+            vpnStartupAwaiter = { VpnStartupAwaitResult.Running },
+        )
+
+        orchestrator.startForForward(61L)
+
+        assertEquals(1, binaryInstaller.prepareCalls)
+        assertEquals(listOf(61L), processRunner.started.map { it.forwardId })
+        val runtime = processRunner.started.single().runtimeContext
+        assertEquals(11061, runtime.localListenPort)
+        assertEquals(listOf(11061), runtime.localLegPorts)
+        assertTrue(runtime.nodeLegs.isEmpty())
+        assertEquals(1, runtime.processPlans.size)
+        assertEquals(listOf("/runtime/leikwan-ingress", "client"), runtime.processPlans.single().command.take(2))
+        assertTrue(runtime.processPlans.single().command.contains("127.0.0.1:11061"))
+        assertTrue(runtime.processPlans.single().command.contains("8.163.90.132:7001"))
+
+        val config = JsonParser.parseString(LeikwanVpnService.configJson).asJsonObject
+        val outbounds = config.getAsJsonArray("outbounds").map { it.asJsonObject }
+        val proxy = outbounds.single { it.get("tag")?.asString == "proxy" }
+        assertEquals("direct", proxy.get("type").asString)
+        assertEquals("127.0.0.1", proxy.get("override_address").asString)
+        assertEquals(11061, proxy.get("override_port").asInt)
+        assertTrue(outbounds.none { it.get("type")?.asString == "selector" })
+        assertEquals("proxy", config.getAsJsonObject("route").get("final").asString)
+    }
+
+    @Test
+    fun `authoritative invalid slave sidecar placement stops active runtime before rejection`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val prefs = Prefs(context.getSharedPreferences("orchestrator-slave-sidecar-rejection-test-prefs", Context.MODE_PRIVATE))
+        prefs.token = "agent-token"
+        prefs.selectedProxyId = 0L
+
+        val processRunner = RecordingProcessRunner()
+        val binaries = RuntimeBinaryPaths(
+            wstunnelBinary = "/runtime/wstunnel",
+            ingressBinary = "/runtime/leikwan-ingress",
+            bondBinary = "/runtime/leikwan-bond",
+        )
+        val panelApi = FakePanelApi(forwards = listOf(slaveSidecarForwardJson()))
+        val panelRepo = PanelRepository(
+            context,
+            prefsOverride = prefs,
+            apiOverride = panelApi,
+            routeRuleStore = ClientRouteRuleStore(
+                context.getSharedPreferences("orchestrator-slave-sidecar-rejection-rules", Context.MODE_PRIVATE)
+                    .also { it.edit().clear().commit() }
+            ),
+        )
+        val binaryInstaller = RecordingBinaryInstaller(context, binaries)
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val vpnService = Robolectric.buildService(LeikwanVpnService::class.java)
+            .create()
+            .get()
+        try {
+            val orchestrator = TunnelOrchestrator(
+                context = context,
+                prefs = prefs,
+                db = db,
+                userRuleStore = UserRoutingRuleStore(db),
+                rulePackManager = RulePackManager(db, prefs),
+                explainabilityStore = RoutingExplainabilityStore(db, prefs),
+                routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+                panelRepoFactory = { panelRepo },
+                binaryInstallerFactory = { binaryInstaller },
+                processRunnerFactory = { processRunner },
+                vpnServiceStarter = { _ -> },
+                vpnStartupAwaiter = { VpnStartupAwaitResult.Running },
+            )
+
+            orchestrator.startForForward(61L)
+
+            assertNotNull(orchestrator.activeRuntimeForTest())
+            val stopAllCallsBeforeRejection = processRunner.stopAllCalls
+            panelApi.forwards = listOf(slaveSidecarForwardJson(aggregationPlacement = "unsupported"))
+            LeikwanVpnService.startupState = VpnStartupState.RUNNING
+
+            val error = runCatching { orchestrator.startForForward(61L) }.exceptionOrNull()
+
+            assertTrue(error?.message?.contains("Select a service") == true)
+            assertEquals(stopAllCallsBeforeRejection + 1, processRunner.stopAllCalls)
+            assertEquals(VpnStartupState.IDLE, LeikwanVpnService.startupState)
+            assertNull(orchestrator.activeRuntimeForTest())
+        } finally {
+            vpnService.onDestroy()
+        }
     }
 
     @Test
@@ -613,6 +749,7 @@ class TunnelOrchestratorTest {
         val started = mutableListOf<Started>()
         val stopped = mutableListOf<Long>()
         var stopAllCalled = false
+        var stopAllCalls = 0
 
         override fun start(forwardId: Long, runtimeContext: RuntimeContext, cleanupStale: Boolean) {
             if (forwardId in failForProcessKeys) {
@@ -627,6 +764,7 @@ class TunnelOrchestratorTest {
 
         override fun stopAll() {
             stopAllCalled = true
+            stopAllCalls += 1
         }
     }
 
@@ -643,7 +781,7 @@ class TunnelOrchestratorTest {
     }
 
     private class FakePanelApi(
-        private val forwards: List<JsonElement>,
+        var forwards: List<JsonElement>,
         private val routeDirections: List<RouteDirectionDto> = emptyList(),
         private val clientRules: List<ClientRouteRuleDto> = emptyList(),
         private val bindings: List<DirectionRuntimeBindingDto> = emptyList(),
@@ -793,4 +931,55 @@ class TunnelOrchestratorTest {
         }
         """.trimIndent()
     )
+
+    private fun slaveSidecarForwardJson(aggregationPlacement: String? = "slave_sidecar"): JsonElement = JsonParser.parseString(
+        """
+        {
+          "forward_id": 61,
+          "service_name": "slave-sidecar-61",
+          "target": "193.227.109.82:5201",
+          "listen_port": 11061,
+          "mode": "single",
+          "backend_mode": "leigod_mode",
+          "contract_version": 1,
+          "client_mode": "bond",
+          "active_family": "sidecar_aggregation",
+          "aggregation_enabled": true,
+          "target_contract": "sidecar_aggregation",
+          "sidecar_required": true,
+          "bond_sidecar_point_id": 9,
+          "transport": "tcp",
+          "service_status": "active",
+          "endpoint_mode": "manual",
+          "sni": "relay.example.com",
+          "path_prefix": "slave-sidecar-61",
+          "bonding": {
+            "aggregation_placement": "slave_sidecar",
+            "ingress_mode": "plain_tcp_mux",
+            "route_key": "slave-sidecar-61"
+          },
+          "endpoints": [
+            {
+              "endpoint_id": 184,
+              "node": "gz-1",
+              "host": "8.163.90.132",
+              "port": 7001,
+              "priority": 1,
+              "weight": 1,
+              "health_status": "healthy",
+              "ingress_protocol": "plain_tcp_mux",
+              "ingress_auth_token": "token-a"
+            }
+          ]
+        }
+        """.trimIndent()
+    ).also { raw ->
+        val bonding = raw.asJsonObject.getAsJsonObject("bonding")
+        if (aggregationPlacement == null) {
+            bonding.remove("aggregation_placement")
+        } else {
+            bonding.addProperty("aggregation_placement", aggregationPlacement)
+        }
+    }
+
 }

@@ -1,11 +1,91 @@
 package com.leikwan.bridge.runtime
 
+import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BondForwardRunnerTest {
+
+    @Test
+    fun `slave sidecar plan runs one ingress directly on the user listen port`() {
+        val forward = ForwardContractParser.parse(
+            JsonParser.parseString(
+                """
+                {
+                  "forward_id": 61,
+                  "service_name": "slave-sidecar-61",
+                  "listen_port": 11061,
+                  "mode": "single",
+                  "client_mode": "bond",
+                  "contract_version": 1,
+                  "active_family": "sidecar_aggregation",
+                  "aggregation_enabled": true,
+                  "target_contract": "sidecar_aggregation",
+                  "sidecar_required": true,
+                  "bond_sidecar_point_id": 9,
+                  "transport": "tcp",
+                  "service_status": "active",
+                  "endpoint_mode": "manual",
+                  "path_prefix": "slave-sidecar-61",
+                  "bonding": {
+                    "aggregation_placement": "slave_sidecar",
+                    "ingress_mode": "plain_tcp_mux",
+                    "route_key": "slave-sidecar-61"
+                  },
+                  "endpoints": [
+                    {
+                      "endpoint_id": 184,
+                      "host": "8.163.90.132",
+                      "port": 7001,
+                      "ingress_auth_token": "token-a"
+                    }
+                  ]
+                }
+                """.trimIndent(),
+            ),
+        )!!
+
+        val context = try {
+            BondForwardRunner.buildPlan(
+                forward = forward,
+                binaries = RuntimeBinaryPaths(
+                    wstunnelBinary = null,
+                    ingressBinary = "/runtime/leikwan-ingress",
+                    bondBinary = null,
+                ),
+            )
+        } catch (error: Exception) {
+            throw AssertionError(
+                "slave-sidecar contract should not require leikwan-bond or a session token: ${error.message}",
+                error,
+            )
+        }
+
+        assertEquals(ForwardMode.BOND, context.mode)
+        assertEquals(11061, context.localListenPort)
+        assertEquals(listOf(11061), context.localLegPorts)
+        assertEquals(1, context.processPlans.size)
+        val ingress = context.processPlans.single()
+        assertEquals(RuntimeProcessRole.INGRESS, ingress.role)
+        assertEquals(11061, ingress.readyPort)
+        assertEquals(
+            listOf(
+                "/runtime/leikwan-ingress",
+                "client",
+                "--listen",
+                "127.0.0.1:11061",
+                "--remote",
+                "8.163.90.132:7001",
+                "--route-key",
+                "slave-sidecar-61",
+                "--auth-token",
+                "token-a",
+            ),
+            ingress.command,
+        )
+    }
 
     @Test
     fun `bond runner mirrors latest linux quic standby tcp launch shape`() {

@@ -8,6 +8,7 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
+use Leikwan\Master\Support\ClientConfigRevisionService;
 use Leikwan\Master\Support\DesktopClientSessionService;
 use Leikwan\Master\Support\ProvisioningService;
 
@@ -33,6 +34,7 @@ final class ClientAgentController extends BaseController
         $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
         $mptcpRuntime = $this->artifactMetadata('mptcp_client_runtime');
         $cfwgLatencyWatchdog = $this->artifactMetadata('cfwg_latency_watchdog');
+        $pathdArtifact = $this->artifactMetadata('leikwan_pathd_linux_amd64');
         $desiredBondSha256 = (string) ($bondBinary['binary_sha256'] ?? $bondBinary['sha256'] ?? '');
         $updateRequestToken = trim((string) ($client['agent_update_request_token'] ?? ''));
         if ($updateRequestToken === '') {
@@ -46,12 +48,32 @@ final class ClientAgentController extends BaseController
         );
         $linuxProfileRuntime = null;
         $runtimePlatformScope = (string) ($client['runtime_platform_scope'] ?? 'all');
+        $approvedLinuxHybridCatalogIds = [];
+        $approvedLinuxHybridScopes = [];
+        $this->provisioning->hasApprovedLinuxHybridAssignment(
+            $client,
+            $deviceSession,
+            is_array($forwards) ? $forwards : [],
+            $approvedLinuxHybridCatalogIds,
+            $approvedLinuxHybridScopes
+        );
         if (in_array($runtimePlatformScope, ['all', 'linux'], true)) {
             $linuxProfileRuntime = $this->provisioning->linuxProfileRuntimeForClient($client, is_array($forwards) ? $forwards : []);
         }
+        $linuxPathLeases = in_array($runtimePlatformScope, ['all', 'linux'], true)
+            ? $this->provisioning->desiredLeigodLineManagementForClientDevice(
+                (int) $client['id'],
+                $deviceId,
+                $approvedLinuxHybridCatalogIds,
+                $approvedLinuxHybridScopes
+            )
+            : ['lines' => []];
+        $revision = (new ClientConfigRevisionService($this->db))->current((int) $client['id']);
+        $etag = '"client-' . (int) $client['id'] . '-r' . $revision . '"';
 
         return $this->json([
             'ok' => true,
+            'config_revision' => $revision,
             'client' => [
                 'id' => (int) $client['id'],
                 'name' => (string) $client['name'],
@@ -72,13 +94,45 @@ final class ClientAgentController extends BaseController
                 'desired_mptcp_runtime_sha256' => (string) ($mptcpRuntime['sha256'] ?? ''),
                 'desired_cfwg_watchdog_version' => (string) ($cfwgLatencyWatchdog['version'] ?? ''),
                 'desired_cfwg_watchdog_sha256' => (string) ($cfwgLatencyWatchdog['sha256'] ?? ''),
+                ...($pathdArtifact !== [] ? [
+                    'desired_pathd_version' => (string) ($pathdArtifact['version'] ?? ''),
+                    'desired_pathd_sha256' => (string) ($pathdArtifact['binary_sha256'] ?? $pathdArtifact['sha256'] ?? ''),
+                ] : []),
                 'online_device_limit' => max(1, (int) ($client['online_device_limit'] ?? 1)),
                 'active_online_devices' => $deviceSessionService->activeCountForClient((int) $client['id']),
                 'current_device_id' => $deviceId,
             ],
             'forwards' => $forwards,
             'linux_profile_runtime' => $linuxProfileRuntime,
-        ]);
+            'linux_path_leases' => $linuxPathLeases,
+        ])->withHeaders(['ETag' => $etag]);
+    }
+
+    public function watchConfigs(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $deviceSessionService = new ClientOnlineSessionService($this->db);
+        $deviceId = $deviceSessionService->enforceFromRequest($client, $request, 'watch');
+        $deviceSession = $deviceSessionService->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
+        $platform = strtolower(trim((string) (
+            $request->header('x-device-platform')
+            ?? ($deviceSession['platform'] ?? '')
+        )));
+        if (!str_starts_with($platform, 'linux')) {
+            throw new \Leikwan\Master\Support\ApiException('unsupported_runtime_platform', 409);
+        }
+        if (!$this->config->getBool('CLIENT_CONFIG_LONG_POLL_ENABLED', false)) {
+            throw new \Leikwan\Master\Support\ApiException('client_config_long_poll_disabled', 404);
+        }
+
+        $knownRevision = max(0, (int) $request->input('revision', 0));
+        $waitSeconds = max(0, min(25, (int) $request->input('wait', 25)));
+        $result = (new ClientConfigRevisionService($this->db))->watch(
+            (int) $client['id'],
+            $knownRevision,
+            $waitSeconds
+        );
+        return $this->json($result);
     }
 
     public function heartbeat(Request $request, array $params): Response
@@ -101,7 +155,9 @@ final class ClientAgentController extends BaseController
             'cfwg_watchdog_sha256' => $request->input('cfwg_watchdog_sha256'),
             'wireguard_listen_port' => $request->input('wireguard_listen_port'),
             'wireguard_fallback_tcp_port' => $request->input('wireguard_fallback_tcp_port'),
+            'leikwan_pathd' => $request->input('leikwan_pathd'),
         ]);
+        $pathdCapability = is_array($runtimeState['leikwan_pathd'] ?? null) ? $runtimeState['leikwan_pathd'] : [];
 
         // Regression sentinel: client_heartbeat_republish_on_wireguard_identity_change
         // Client heartbeats are frequent, so only republish assigned forwards when the
@@ -113,6 +169,8 @@ final class ClientAgentController extends BaseController
             (string) ($runtimeState['wireguard_public_key'] ?? ''),
             (string) ((int) ($runtimeState['wireguard_listen_port'] ?? 0)),
             (string) ((int) ($runtimeState['wireguard_fallback_tcp_port'] ?? 0)),
+            (string) ($pathdCapability['version'] ?? ''),
+            (string) ($pathdCapability['sha256'] ?? ''),
         ];
         $wgFingerprint = sha1(implode(':', $wgFingerprintInputs));
         $now = time();
@@ -148,9 +206,15 @@ final class ClientAgentController extends BaseController
                 is_array($reputation['forwards'] ?? null) ? $reputation['forwards'] : []
             );
         }
+        $clientLineHealth = $request->input('linux_path_line_health', []);
+        if (is_array($clientLineHealth) && $clientLineHealth !== []) {
+            (new \Leikwan\Master\Support\LeigodLineCatalogService($this->config, $this->db))
+                ->ingestClientHealth((int) $client['id'], $deviceId, $clientLineHealth);
+        }
         $this->provisioning->recordAgentUsage('client', (int) $client['id'], $usageBytesIn, $usageBytesOut);
         if ($shouldRepublish) {
             $this->provisioning->republishActiveForwardsForClient((int) $client['id']);
+            $this->provisioning->bumpClientConfigRevision((int) $client['id']);
         }
 
         return $this->json(['ok' => true]);
@@ -399,6 +463,16 @@ final class ClientAgentController extends BaseController
         foreach (['wireguard_listen_port', 'wireguard_fallback_tcp_port'] as $intKey) {
             if (array_key_exists($intKey, $input) && $input[$intKey] !== null && $input[$intKey] !== '') {
                 $merged[$intKey] = max(0, (int) $input[$intKey]);
+            }
+        }
+        if (array_key_exists('leikwan_pathd', $input)) {
+            $pathd = is_array($input['leikwan_pathd']) ? $input['leikwan_pathd'] : [];
+            $version = substr(trim((string) ($pathd['version'] ?? '')), 0, 64);
+            $sha256 = strtolower(trim((string) ($pathd['sha256'] ?? '')));
+            if ($version !== '' && preg_match('/^[a-f0-9]{64}$/', $sha256) === 1) {
+                $merged['leikwan_pathd'] = ['version' => $version, 'sha256' => $sha256];
+            } else {
+                unset($merged['leikwan_pathd']);
             }
         }
         return $merged;

@@ -35,6 +35,7 @@ public static class ForwardContractSignature
                 forward.Bonding.StrategyLocked,
                 forward.Bonding.IngressMode,
                 forward.Bonding.RouteKey,
+                forward.Bonding.AggregationPlacement,
                 forward.Bonding.SessionToken,
                 forward.Bonding.UdpSessionToken,
                 forward.Bonding.PolicyMode,

@@ -27,6 +27,68 @@ sidecar_agent_module = load_module(
 
 
 class SidecarDualRuntimeRegressionTests(unittest.TestCase):
+    def test_sidecar_bond_server_receives_adaptive_line_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            state_dir = pathlib.Path(tmp_dir) / "point-4-state"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                        "service_name": "leikwan-bond-sidecar-4",
+                        "runtime_config_path": str(pathlib.Path(tmp_dir) / "bond-runtime.json"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = sidecar_agent_module.SidecarAgent(config_path)
+            writes: dict[str, str] = {}
+
+            def fake_write(path: pathlib.Path, content: str, mode=None):  # noqa: ANN001
+                writes[str(path).replace("\\", "/")] = content
+                return True
+
+            management = {
+                "bond_runtime": {
+                    "bind_host": "0.0.0.0",
+                    "listen_port": 9000,
+                    "token_secret": "bond-secret",
+                    "adaptive_line_admission": True,
+                    "throughput_min_mbps": 12.5,
+                    "throughput_relative_floor": 0.4,
+                    "throughput_min_sample_bytes": 2_097_152,
+                    "throughput_min_sample_ms": 1_500,
+                    "throughput_bad_windows": 4,
+                    "throughput_recovery_windows": 3,
+                    "throughput_quarantine_ms": 75_000,
+                    "throughput_probe_interval_ms": 35_000,
+                    "throughput_probe_bytes": 524_288,
+                }
+            }
+            with mock.patch.object(agent, "systemd_available", return_value=True):
+                with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                    with mock.patch.object(sidecar_agent_module, "write_text_if_changed", side_effect=fake_write):
+                        with mock.patch.object(sidecar_agent_module.subprocess, "run"):
+                            agent.apply_management(management)
+
+            script_path = str(state_dir / "start-sidecar.sh").replace("\\", "/")
+            script = writes[script_path]
+            for expected in [
+                "--adaptive-line-admission",
+                "--throughput-min-mbps 12.5",
+                "--throughput-relative-floor 0.4",
+                "--throughput-min-sample-bytes 2097152",
+                "--throughput-min-sample-ms 1500",
+                "--throughput-bad-windows 4",
+                "--throughput-recovery-windows 3",
+                "--throughput-quarantine-ms 75000",
+                "--throughput-probe-interval-ms 35000",
+                "--throughput-probe-bytes 524288",
+            ]:
+                self.assertIn(expected, script)
+
     def test_apply_management_writes_bond_and_mptcp_runtime_units(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = pathlib.Path(tmp_dir) / "config.json"
