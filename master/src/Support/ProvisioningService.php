@@ -3575,13 +3575,64 @@ final class ProvisioningService
             return null;
         }
 
+        $schedulerMode = strtolower(trim((string) ($existing['scheduler_mode'] ?? 'legacy')));
+        if ($schedulerMode !== 'feedback_drr') {
+            $schedulerMode = 'legacy';
+        }
+        $globalQueueBytes = max(1, min(64 * 1024 * 1024, (int) ($existing['global_queue_bytes'] ?? 1048576)));
+        $globalQueuePackets = max(1, min(262144, (int) ($existing['global_queue_packets'] ?? 8192)));
+        $perSessionQueueBytes = max(1, min($globalQueueBytes, (int) ($existing['per_session_queue_bytes'] ?? 262144)));
+        $perSessionQueuePackets = max(1, min($globalQueuePackets, (int) ($existing['per_session_queue_packets'] ?? 512)));
+        $queueDeadlineMs = max(1, (int) ($existing['queue_deadline_ms'] ?? 10));
+        $queueTargetMs = max(0, min($queueDeadlineMs, (int) ($existing['queue_target_ms'] ?? 5)));
+        $chunkMaxBytes = max(65535, min(64 * 1024 * 1024, (int) ($existing['chunk_max_bytes'] ?? 65536)));
+        $chunkTargetBytes = max(1, min($chunkMaxBytes, (int) ($existing['chunk_target_bytes'] ?? 32768)));
+        $chunkMinBytes = max(1, min($chunkTargetBytes, (int) ($existing['chunk_min_bytes'] ?? 16384)));
+        $totalOutstandingBytes = max(1, min(64 * 1024 * 1024, (int) ($existing['max_total_outstanding_bytes'] ?? 8388608)));
+        $maxLegWindowBytes = max(1, min($totalOutstandingBytes, (int) ($existing['max_leg_window_bytes'] ?? 4194304)));
+        $minLegWindowBytes = max(1, min($maxLegWindowBytes, (int) ($existing['min_leg_window_bytes'] ?? 262144)));
+        $deliveryMode = strtolower(trim((string) ($existing['delivery_mode'] ?? ($schedulerMode === 'feedback_drr' ? 'unordered' : 'ordered'))));
+        if (!in_array($deliveryMode, ['ordered', 'unordered'], true)) {
+            $deliveryMode = $schedulerMode === 'feedback_drr' ? 'unordered' : 'ordered';
+        }
+        if ($schedulerMode === 'feedback_drr') {
+            $deliveryMode = 'unordered';
+            $wireguardAware = true;
+        } else {
+            $wireguardAware = filter_var($existing['wireguard_aware'] ?? false, FILTER_VALIDATE_BOOL);
+        }
+
         return [
             'enabled_forward_ids' => $normalizedForwardIds,
             'shadow_route_suffix' => trim((string) ($existing['shadow_route_suffix'] ?? '.uot')) ?: '.uot',
-            'sidecar_port' => max(1, (int) ($existing['sidecar_port'] ?? 8999)),
+            'sidecar_port' => max(7000, min(9000, (int) ($existing['sidecar_port'] ?? 8999))),
             'reorder_window_packets' => max(1, (int) ($existing['reorder_window_packets'] ?? 4096)),
             'reorder_window_bytes' => max(1024, (int) ($existing['reorder_window_bytes'] ?? 16777216)),
             'reorder_timeout_ms' => max(1, (int) ($existing['reorder_timeout_ms'] ?? 25)),
+            'delivery_mode' => $deliveryMode,
+            'wireguard_aware' => $wireguardAware,
+            'scheduler_mode' => $schedulerMode,
+            'aggregate_rate_bps' => max(1, (int) ($existing['aggregate_rate_bps'] ?? 300000000)),
+            'queue_target_ms' => $queueTargetMs,
+            'queue_deadline_ms' => $queueDeadlineMs,
+            'global_queue_bytes' => $globalQueueBytes,
+            'global_queue_packets' => $globalQueuePackets,
+            'per_session_queue_bytes' => $perSessionQueueBytes,
+            'per_session_queue_packets' => $perSessionQueuePackets,
+            'drr_quantum_bytes' => max(1, min($globalQueueBytes, (int) ($existing['drr_quantum_bytes'] ?? 16384))),
+            'chunk_min_bytes' => $chunkMinBytes,
+            'chunk_target_bytes' => $chunkTargetBytes,
+            'chunk_max_bytes' => $chunkMaxBytes,
+            'min_leg_window_bytes' => $minLegWindowBytes,
+            'max_leg_window_bytes' => $maxLegWindowBytes,
+            'max_total_outstanding_bytes' => $totalOutstandingBytes,
+            'progress_interval_bytes' => max(1, (int) ($existing['progress_interval_bytes'] ?? 65536)),
+            'progress_interval_frames' => max(1, (int) ($existing['progress_interval_frames'] ?? 32)),
+            'progress_interval_ms' => max(1, (int) ($existing['progress_interval_ms'] ?? 5)),
+            'finish_skew_budget_ms' => max(0, (int) ($existing['finish_skew_budget_ms'] ?? 2)),
+            'probe_interval_ms' => max(1, (int) ($existing['probe_interval_ms'] ?? 1000)),
+            'max_sessions' => max(1, min(65536, (int) ($existing['max_sessions'] ?? 4096))),
+            'control_queue_packets' => max(1, min(262144, (int) ($existing['control_queue_packets'] ?? 256))),
         ];
     }
 

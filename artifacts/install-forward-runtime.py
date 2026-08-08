@@ -4,7 +4,113 @@ from __future__ import annotations
 import json
 import ipaddress
 import pathlib
+import subprocess
 from urllib.parse import quote
+
+
+UOT_SCHEDULER_DEFAULTS = {
+    "scheduler_mode": "legacy",
+    "aggregate_rate_bps": 300_000_000,
+    "queue_target_ms": 5,
+    "queue_deadline_ms": 10,
+    "global_queue_bytes": 1_048_576,
+    "global_queue_packets": 8_192,
+    "per_session_queue_bytes": 262_144,
+    "per_session_queue_packets": 512,
+    "drr_quantum_bytes": 16_384,
+    "chunk_min_bytes": 16_384,
+    "chunk_target_bytes": 32_768,
+    "chunk_max_bytes": 65_536,
+    "min_leg_window_bytes": 262_144,
+    "max_leg_window_bytes": 4_194_304,
+    "max_total_outstanding_bytes": 8_388_608,
+    "progress_interval_bytes": 65_536,
+    "progress_interval_frames": 32,
+    "progress_interval_ms": 5,
+    "finish_skew_budget_ms": 2,
+    "probe_interval_ms": 1_000,
+    "max_sessions": 4_096,
+    "control_queue_packets": 256,
+}
+
+
+def normalize_uot_scheduler(raw: dict) -> dict:
+    mode = str(raw.get("scheduler_mode", "legacy") or "legacy").strip().lower()
+    if mode not in {"legacy", "feedback_drr"}:
+        raise ValueError(f"unsupported UoT scheduler_mode: {mode}")
+    normalized = {"scheduler_mode": mode}
+    for key, default in UOT_SCHEDULER_DEFAULTS.items():
+        if key == "scheduler_mode":
+            continue
+        value = raw[key] if key in raw else default
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be an integer")
+        try:
+            normalized[key] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+    validate_uot_scheduler(normalized)
+    return normalized
+
+
+def validate_uot_scheduler(settings: dict) -> None:
+    if settings["aggregate_rate_bps"] <= 0:
+        raise ValueError("aggregate_rate_bps must be positive")
+    if settings["queue_target_ms"] < 0 or settings["queue_target_ms"] > settings["queue_deadline_ms"] or settings["queue_deadline_ms"] <= 0:
+        raise ValueError("queue target/deadline is invalid")
+    if not 0 < settings["global_queue_bytes"] <= 64 * 1024 * 1024 or not 0 < settings["global_queue_packets"] <= 262_144:
+        raise ValueError("global queue limits are outside process bounds")
+    if not 0 < settings["per_session_queue_bytes"] <= settings["global_queue_bytes"] or not 0 < settings["per_session_queue_packets"] <= settings["global_queue_packets"]:
+        raise ValueError("per-session queue limits must fit global queue limits")
+    if settings["drr_quantum_bytes"] <= 0:
+        raise ValueError("drr_quantum_bytes must be positive")
+    if not 0 < settings["chunk_min_bytes"] <= settings["chunk_target_bytes"] <= settings["chunk_max_bytes"] or settings["chunk_max_bytes"] < 65_535:
+        raise ValueError("chunk sizes are invalid")
+    if not 0 < settings["min_leg_window_bytes"] <= settings["max_leg_window_bytes"] <= settings["max_total_outstanding_bytes"] <= 64 * 1024 * 1024:
+        raise ValueError("leg windows are outside process bounds")
+    if any(settings[key] <= 0 for key in ("progress_interval_bytes", "progress_interval_frames", "progress_interval_ms", "probe_interval_ms")):
+        raise ValueError("progress and probe intervals must be positive")
+    if not 0 < settings["max_sessions"] <= 65_536:
+        raise ValueError("max_sessions is outside process bounds")
+    if not 0 < settings["control_queue_packets"] <= 262_144:
+        raise ValueError("control_queue_packets is outside process bounds")
+
+
+def probe_uot_build_info(runtime_bin: str, timeout_seconds: float = 2.0) -> dict:
+    try:
+        completed = subprocess.run(
+            [runtime_bin, "--build-info-json"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("native UoT runtime capability probe failed") from exc
+    if completed.returncode != 0:
+        raise ValueError("native UoT runtime capability probe failed")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("native UoT runtime capability probe failed") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("native UoT runtime capability probe failed")
+    return payload
+
+
+def require_uot_feedback_capability(runtime_bin: str) -> dict:
+    payload = probe_uot_build_info(runtime_bin)
+    modes = payload.get("scheduler_modes", [])
+    capabilities = payload.get("capabilities", [])
+    if (
+        payload.get("protocol_version") != 2
+        or not isinstance(modes, list)
+        or "feedback_drr" not in modes
+        or not isinstance(capabilities, list)
+        or "leg-progress-v1" not in capabilities
+    ):
+        raise ValueError("native UoT runtime lacks feedback_drr/leg-progress-v1")
+    return payload
 
 
 def normalize_mode(mode: str) -> str:
@@ -310,12 +416,50 @@ def udp_uot_sidepath_settings(forward: dict, agent_config: dict) -> dict | None:
     forward_id = int(forward.get("forward_id", 0) or 0)
     if forward_id not in enabled_ids:
         return None
+    scheduler = normalize_uot_scheduler(raw)
+
+    def read_int(key: str, default: int) -> int:
+        value = raw[key] if key in raw else default
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be an integer")
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+
+    sidecar_port = read_int("sidecar_port", 8999)
+    if not 7000 <= sidecar_port <= 9000:
+        raise ValueError("udp_uot_sidepath sidecar_port must be within 7000-9000")
+    reorder_window_packets = read_int("reorder_window_packets", 4096)
+    reorder_window_bytes = read_int("reorder_window_bytes", 16_777_216)
+    reorder_timeout_ms = read_int("reorder_timeout_ms", 25)
+    if min(reorder_window_packets, reorder_window_bytes, reorder_timeout_ms) <= 0:
+        raise ValueError("reorder limits must be positive")
+    delivery_mode = str(
+        raw.get(
+            "delivery_mode",
+            "unordered" if scheduler["scheduler_mode"] == "feedback_drr" else "ordered",
+        )
+        or "ordered"
+    ).strip().lower()
+    if delivery_mode not in {"ordered", "unordered"}:
+        raise ValueError(f"unsupported UoT delivery_mode: {delivery_mode}")
+    wireguard_aware = truthy(
+        raw.get("wireguard_aware", scheduler["scheduler_mode"] == "feedback_drr")
+    )
+    if delivery_mode == "unordered" and not wireguard_aware:
+        raise ValueError("unordered delivery requires wireguard_aware=true")
+    if scheduler["scheduler_mode"] == "feedback_drr" and delivery_mode != "unordered":
+        raise ValueError("feedback_drr requires unordered delivery")
     return {
         "shadow_route_suffix": str(raw.get("shadow_route_suffix", ".uot") or ".uot"),
-        "sidecar_port": int(raw.get("sidecar_port", 8999) or 8999),
-        "reorder_window_packets": int(raw.get("reorder_window_packets", 4096) or 4096),
-        "reorder_window_bytes": int(raw.get("reorder_window_bytes", 16777216) or 16777216),
-        "reorder_timeout_ms": int(raw.get("reorder_timeout_ms", 25) or 25),
+        "sidecar_port": sidecar_port,
+        "reorder_window_packets": reorder_window_packets,
+        "reorder_window_bytes": reorder_window_bytes,
+        "reorder_timeout_ms": reorder_timeout_ms,
+        "delivery_mode": delivery_mode,
+        "wireguard_aware": wireguard_aware,
+        **scheduler,
     }
 
 
@@ -346,6 +490,11 @@ def render_udp_uot_aux_unit(
     service_name = f"leikwan-client-{forward_id}-udp-uot"
     service_path = f"/etc/systemd/system/{service_name}.service"
     runtime_bin = str(agent_config.get("uot_bond_bin", "/usr/local/bin/leikwan-uot-bond") or "/usr/local/bin/leikwan-uot-bond")
+    scheduler_mode = str(settings["scheduler_mode"])
+    if scheduler_mode == "feedback_drr" and runtime_bin.lower().endswith(".py"):
+        raise ValueError("feedback_drr requires the Rust leikwan-uot-bond runtime")
+    if scheduler_mode == "feedback_drr":
+        require_uot_feedback_capability(runtime_bin)
     config_payload = {
         "forward_id": forward_id,
         "listen_udp": f"0.0.0.0:{int(forward['listen_port'])}",
@@ -354,6 +503,8 @@ def render_udp_uot_aux_unit(
         "reorder_window_packets": int(settings["reorder_window_packets"]),
         "reorder_window_bytes": int(settings["reorder_window_bytes"]),
         "reorder_timeout_ms": int(settings["reorder_timeout_ms"]),
+        "delivery_mode": str(settings["delivery_mode"]),
+        "wireguard_aware": bool(settings["wireguard_aware"]),
         "legs": [
             {
                 "endpoint_id": int(endpoint.get("endpoint_id", 0) or 0),
@@ -367,6 +518,10 @@ def render_udp_uot_aux_unit(
             for endpoint in endpoints
         ],
     }
+    if not runtime_bin.lower().endswith(".py"):
+        config_payload.update(
+            {key: settings[key] for key in UOT_SCHEDULER_DEFAULTS}
+        )
     if runtime_bin.endswith(".py"):
         exec_start = f"/usr/bin/python3 {runtime_bin} --config {config_path}"
     else:

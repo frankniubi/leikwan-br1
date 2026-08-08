@@ -440,6 +440,63 @@ public sealed class ForwardRuntimeManagerTests
         Assert.Equal("bond", applied.Mode);
     }
 
+    [Fact]
+    public void ComputeContractSignature_IgnoresSidepathForUnselectedForward()
+    {
+        using var tempDir = new TempStateDirectory();
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
+        config.UdpUotSidepath = new UdpUotSidepathConfig
+        {
+            EnabledForwardIds = [99],
+            SchedulerMode = "feedback_drr",
+            DeliveryMode = "unordered",
+            WireguardAware = true,
+        };
+        var manager = new ForwardRuntimeManager(
+            config,
+            new TestProcessSupervisor(),
+            new StateManager(tempDir.Path),
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+        var forward = CreatePlainTcpMuxBondForward();
+
+        Assert.Equal(
+            LeikwanBridge.Core.Helpers.ForwardContractSignature.Compute(forward),
+            manager.ComputeContractSignature(forward));
+    }
+
+    [Fact]
+    public void ApplyForward_FeedbackCapabilityFailure_PreservesExistingRuntime()
+    {
+        using var tempDir = new TempStateDirectory();
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
+        config.UotBondBin = Path.Combine(tempDir.Path, "missing-uot-runtime.exe");
+        config.UdpUotSidepath = new UdpUotSidepathConfig
+        {
+            EnabledForwardIds = [26],
+            SchedulerMode = "feedback_drr",
+            DeliveryMode = "unordered",
+            WireguardAware = true,
+        };
+        var supervisor = new TestProcessSupervisor();
+        supervisor.RunningRoles.Add("existing-runtime");
+        var stateManager = new StateManager(tempDir.Path);
+        var manager = new ForwardRuntimeManager(
+            config,
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+
+        manager.ApplyForward(CreatePlainTcpMuxBondForward());
+
+        Assert.Contains("existing-runtime", supervisor.RunningRoles);
+        Assert.Empty(supervisor.StartedRoles);
+        Assert.Empty(stateManager.LoadApplied());
+    }
+
     private static AgentConfig CreateConfig()
     {
         return new AgentConfig

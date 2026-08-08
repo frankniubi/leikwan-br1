@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.07.28.2"
+INSTALLER_VERSION="2026.08.08.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -537,6 +537,13 @@ download_atomic "$ARTIFACT_BASE/artifacts/leikwan-rate-limit.py" "$BIN_DIR/leikw
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-mptcp-client.py" "$BIN_DIR/leikwan-mptcp-client.py"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"
+download_manifest_artifact leikwan_uot_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-uot-bond_linux_amd64" "$BIN_DIR/leikwan-uot-bond"
+"$BIN_DIR/leikwan-uot-bond" --build-info-json | python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+if value.get("protocol_version") != 2 or "feedback_drr" not in value.get("scheduler_modes", []) or "leg-progress-v1" not in value.get("capabilities", []):
+    raise SystemExit("installed native UoT runtime lacks feedback capability")
+'
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64" "$STATE_DIR/leikwan-mptcp-relay"
@@ -551,6 +558,7 @@ cat > "$CONFIG_DIR/config.json" <<JSON
   "bond_bin": "/usr/local/bin/leikwan-bond",
   "bond_ingress_bin": "/usr/local/bin/leikwan-ingress",
   "mptcp_client_bin": "$BIN_DIR/leikwan-mptcp-client.py",
+  "uot_bond_bin": "$BIN_DIR/leikwan-uot-bond",
   "log_level": "INFO",
   "installer_version": "$INSTALLER_VERSION",
   "installer_sha256": "$INSTALLER_SHA256"

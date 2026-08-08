@@ -28,7 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.08.04.1"
+AGENT_VERSION = "2026.08.08.1"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -723,11 +723,28 @@ class ClientAgent:
         wireguard_fallback_tcp_port = configured_fallback_port if configured_fallback_port > 0 else wireguard_listen_port + 10000
         bond_bin = pathlib.Path(str(config.get("bond_bin", "/usr/local/bin/leikwan-bond") or "/usr/local/bin/leikwan-bond"))
         mptcp_client = pathlib.Path(str(config.get("mptcp_client_bin", "/usr/local/bin/leikwan-mptcp-client.py") or "/usr/local/bin/leikwan-mptcp-client.py"))
+        uot_bond_bin = pathlib.Path(str(config.get("uot_bond_bin", "/usr/local/bin/leikwan-uot-bond") or "/usr/local/bin/leikwan-uot-bond"))
+        raw_sidepath = config.get("udp_uot_sidepath", {})
+        normalized_sidepath = dict(raw_sidepath) if isinstance(raw_sidepath, dict) else {}
+        uot_build_info: dict = {}
+        if normalized_sidepath:
+            try:
+                from install_forward_runtime import normalize_uot_scheduler, probe_uot_build_info
+
+                normalized_sidepath.update(normalize_uot_scheduler(normalized_sidepath))
+                if uot_bond_bin.exists() and not str(uot_bond_bin).lower().endswith(".py"):
+                    uot_build_info = probe_uot_build_info(str(uot_bond_bin))
+            except (ImportError, TypeError, ValueError):
+                normalized_sidepath = self.strip_apply_observation_fields(normalized_sidepath)
         runtime_inputs = {
             "agent_version": AGENT_VERSION,
             "agent_sha256": file_sha256(pathlib.Path(__file__).resolve()),
             "install_forward_runtime_sha256": file_sha256(self.install_forward_runtime_path()),
             "mptcp_client_sha256": file_sha256(mptcp_client),
+            "udp_uot_sidepath": normalized_sidepath,
+            "uot_bond_bin": str(uot_bond_bin),
+            "uot_bond_sha256": file_sha256(uot_bond_bin),
+            "uot_bond_build_info": uot_build_info,
             "bond_bin": str(bond_bin),
             "mptcp_client_bin": str(mptcp_client),
             "state_dir": str(getattr(self, "state_dir", config.get("state_dir", "/var/lib/leikwan-client-agent"))),
@@ -1514,7 +1531,13 @@ class ClientAgent:
         logging.warning("forward %s %s", forward_id, message)
 
     def apply_management_state(self, client_meta: dict) -> None:
-        self.apply_config_patch(client_meta.get("agent_config_json"))
+        authoritative_config = client_meta.get("agent_config_json")
+        if isinstance(authoritative_config, dict):
+            authoritative_config = dict(authoritative_config)
+            authoritative_config.setdefault("udp_uot_sidepath", None)
+        else:
+            authoritative_config = {"udp_uot_sidepath": None}
+        self.apply_config_patch(authoritative_config)
         explicit_request_token = str(client_meta.get("agent_update_request_token", "") or "")
         auto_request_token = self.auto_update_request_token(client_meta)
         update_state = self.load_update_state()

@@ -234,6 +234,9 @@ def build_leg_auth_payload(leg_config: LegConfig, session_token: str) -> bytes:
 
 def load_config(path: str) -> RuntimeConfig:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    scheduler_mode = str(raw.get("scheduler_mode", "legacy") or "legacy").strip().lower()
+    if scheduler_mode != "legacy":
+        raise RuntimeError("feedback_drr requires the native Rust UoT runtime")
     forward_id = int(raw["forward_id"])
     stats_path = str(raw.get("stats_path") or f"/run/leikwan/uot-bond-forward-{forward_id}.stats.json")
     legs = [

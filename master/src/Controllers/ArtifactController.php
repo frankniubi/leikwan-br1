@@ -321,6 +321,7 @@ final class ArtifactController extends BaseController
                 'sidecar_agent',
                 'mptcp_sidecar_runtime',
                 'udp_uot_merge_runtime',
+                'leikwan_udp_uot_merge_linux_amd64',
                 'bond_sidecar_installer',
                 'bond_sidecar_uninstaller'
             ),
@@ -341,6 +342,8 @@ final class ArtifactController extends BaseController
             'mptcp_client_runtime',
             'uot_runtime',
             'uot_bond_runtime',
+            'leikwan_uot_bond_linux_amd64',
+            'leikwan_uot_bond_windows_amd64',
             'sidecar_agent',
             'mptcp_sidecar_runtime',
             'udp_uot_merge_runtime',

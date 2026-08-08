@@ -128,14 +128,33 @@ fi
 
 mkdir -p "$BIN_DIR" /etc/leikwan
 
+VERSIONS_JSON="$(curl -fsSL "$ARTIFACT_BASE/artifacts/versions.json")"
+download_verified_artifact() {
+  local key="$1" url="$2" path="$3" expected tmp
+  expected="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get(sys.argv[2], {}).get("sha256", ""))' "$VERSIONS_JSON" "$key")"
+  [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "missing manifest sha256 for $key" >&2; return 1; }
+  tmp="${path}.new"
+  curl -fsSL "$url" -o "$tmp"
+  echo "$expected  $tmp" | sha256sum -c - >/dev/null
+  chmod 0755 "$tmp"
+  mv "$tmp" "$path"
+}
+
 curl -fsSL "$ARTIFACT_BASE/artifacts/install-forward-runtime.py" -o "$BIN_DIR/install_forward_runtime.py"
 curl -fsSL "$ARTIFACT_BASE/artifacts/leikwan-mptcp-client.py" -o "$BIN_DIR/leikwan-mptcp-client.py"
 curl -fsSL "$ARTIFACT_BASE/artifacts/leikwan-uot.py" -o "$BIN_DIR/leikwan-uot.py"
 curl -fsSL "$ARTIFACT_BASE/artifacts/leikwan-uot-bond.py" -o "$BIN_DIR/leikwan-uot-bond.py"
+download_verified_artifact leikwan_uot_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-uot-bond_linux_amd64" "$BIN_DIR/leikwan-uot-bond"
+"$BIN_DIR/leikwan-uot-bond" --build-info-json | python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+if value.get("protocol_version") != 2 or "feedback_drr" not in value.get("scheduler_modes", []) or "leg-progress-v1" not in value.get("capabilities", []):
+    raise SystemExit("installed native UoT runtime lacks feedback capability")
+'
 curl -fsSL "$ARTIFACT_BASE/artifacts/leikwan-rate-limit.py" -o "$BIN_DIR/leikwan-rate-limit.py"
 curl -fsSL "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" -o "$BIN_DIR/leikwan-ingress"
 curl -fsSL "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" -o "$BIN_DIR/leikwan-bond"
-chmod 0755 "$BIN_DIR/install_forward_runtime.py" "$BIN_DIR/leikwan-mptcp-client.py" "$BIN_DIR/leikwan-uot.py" "$BIN_DIR/leikwan-uot-bond.py" "$BIN_DIR/leikwan-rate-limit.py" "$BIN_DIR/leikwan-ingress" "$BIN_DIR/leikwan-bond"
+chmod 0755 "$BIN_DIR/install_forward_runtime.py" "$BIN_DIR/leikwan-mptcp-client.py" "$BIN_DIR/leikwan-uot.py" "$BIN_DIR/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond" "$BIN_DIR/leikwan-rate-limit.py" "$BIN_DIR/leikwan-ingress" "$BIN_DIR/leikwan-bond"
 
 # --- WireGuard watchdog ---
 curl -fsSL "$ARTIFACT_BASE/artifacts/leikwan-wg-watchdog.sh" -o "$BIN_DIR/leikwan-wg-watchdog.sh"
@@ -205,7 +224,7 @@ rendered = render_forward_runtime(
         "bond_bin": str(bin_dir / "leikwan-bond"),
         "bond_ingress_bin": str(bin_dir / "leikwan-ingress"),
         "mptcp_client_bin": str(bin_dir / "leikwan-mptcp-client.py"),
-        "uot_bond_bin": str(bin_dir / "leikwan-uot-bond.py"),
+        "uot_bond_bin": str(bin_dir / "leikwan-uot-bond"),
     },
 )
 

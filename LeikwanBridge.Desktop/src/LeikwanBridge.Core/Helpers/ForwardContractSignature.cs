@@ -7,7 +7,10 @@ namespace LeikwanBridge.Core.Helpers;
 
 public static class ForwardContractSignature
 {
-    public static string Compute(ForwardConfig forward)
+    public static string Compute(
+        ForwardConfig forward,
+        UdpUotSidepathConfig? udpUotSidepath = null,
+        string uotBinaryIdentity = "")
     {
         var payload = new
         {
@@ -29,6 +32,40 @@ public static class ForwardContractSignature
             forward.SidecarRequired,
             forward.BondSidecarPointId,
             forward.SpeedLimitMbps,
+            UdpUotSidepath = udpUotSidepath is null ? null : new
+            {
+                EnabledForwardIds = udpUotSidepath.EnabledForwardIds.OrderBy(id => id).ToList(),
+                udpUotSidepath.ShadowRouteSuffix,
+                udpUotSidepath.SidecarPort,
+                udpUotSidepath.ReorderWindowPackets,
+                udpUotSidepath.ReorderWindowBytes,
+                udpUotSidepath.ReorderTimeoutMs,
+                udpUotSidepath.DeliveryMode,
+                udpUotSidepath.WireguardAware,
+                udpUotSidepath.SchedulerMode,
+                udpUotSidepath.AggregateRateBps,
+                udpUotSidepath.QueueTargetMs,
+                udpUotSidepath.QueueDeadlineMs,
+                udpUotSidepath.GlobalQueueBytes,
+                udpUotSidepath.GlobalQueuePackets,
+                udpUotSidepath.PerSessionQueueBytes,
+                udpUotSidepath.PerSessionQueuePackets,
+                udpUotSidepath.DrrQuantumBytes,
+                udpUotSidepath.ChunkMinBytes,
+                udpUotSidepath.ChunkTargetBytes,
+                udpUotSidepath.ChunkMaxBytes,
+                udpUotSidepath.MinLegWindowBytes,
+                udpUotSidepath.MaxLegWindowBytes,
+                udpUotSidepath.MaxTotalOutstandingBytes,
+                udpUotSidepath.ProgressIntervalBytes,
+                udpUotSidepath.ProgressIntervalFrames,
+                udpUotSidepath.ProgressIntervalMs,
+                udpUotSidepath.FinishSkewBudgetMs,
+                udpUotSidepath.ProbeIntervalMs,
+                udpUotSidepath.MaxSessions,
+                udpUotSidepath.ControlQueuePackets,
+            },
+            UotBinaryIdentity = uotBinaryIdentity,
             Bonding = forward.Bonding is null ? null : new
             {
                 forward.Bonding.FrontendMode,

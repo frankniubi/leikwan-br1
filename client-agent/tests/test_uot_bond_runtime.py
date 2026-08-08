@@ -4,6 +4,7 @@ import pathlib
 import struct
 import sys
 import tempfile
+import json
 import unittest
 
 
@@ -24,6 +25,19 @@ uot_bond = load_module("leikwan_uot_bond_under_test", "client-agent/leikwan_uot_
 
 
 class UotBondRuntimeTests(unittest.TestCase):
+    def test_feedback_scheduler_requires_native_runtime_before_socket_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "runtime.json"
+            config_path.write_text(
+                json.dumps({"scheduler_mode": "feedback_drr"}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "feedback_drr requires the native Rust UoT runtime",
+            ):
+                uot_bond.load_config(str(config_path))
+
     def test_build_leg_auth_payload_encodes_token_endpoint_and_weight(self) -> None:
         leg = uot_bond.LegConfig(
             endpoint_id=184,

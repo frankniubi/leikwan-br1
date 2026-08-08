@@ -1,0 +1,70 @@
+{
+  "marker": "uot-qa-20260808",
+  "topology_id": "local-netns-five-leg",
+  "hop_order": [
+    "client",
+    "slave",
+    "sidecar"
+  ],
+  "reserved_ports": [
+    20013
+  ],
+  "namespaces": {
+    "client": "uot-qa-20260808-client",
+    "slave": "uot-qa-20260808-slave",
+    "sidecar": "uot-qa-20260808-sidecar"
+  },
+  "legs": [
+    {
+      "id": 1,
+      "client_addr": "10.250.1.1/30",
+      "slave_addr": "10.250.1.2/30",
+      "slave_sidecar_addr": "10.251.1.1/30",
+      "sidecar_addr": "10.251.1.2/30",
+      "ingress_port": 8801
+    },
+    {
+      "id": 2,
+      "client_addr": "10.250.2.1/30",
+      "slave_addr": "10.250.2.2/30",
+      "slave_sidecar_addr": "10.251.2.1/30",
+      "sidecar_addr": "10.251.2.2/30",
+      "ingress_port": 8802
+    },
+    {
+      "id": 3,
+      "client_addr": "10.250.3.1/30",
+      "slave_addr": "10.250.3.2/30",
+      "slave_sidecar_addr": "10.251.3.1/30",
+      "sidecar_addr": "10.251.3.2/30",
+      "ingress_port": 8803
+    },
+    {
+      "id": 4,
+      "client_addr": "10.250.4.1/30",
+      "slave_addr": "10.250.4.2/30",
+      "slave_sidecar_addr": "10.251.4.1/30",
+      "sidecar_addr": "10.251.4.2/30",
+      "ingress_port": 8804
+    },
+    {
+      "id": 5,
+      "client_addr": "10.250.5.1/30",
+      "slave_addr": "10.250.5.2/30",
+      "slave_sidecar_addr": "10.251.5.1/30",
+      "sidecar_addr": "10.251.5.2/30",
+      "ingress_port": 8805
+    }
+  ],
+  "workloads": {
+    "sessions64_rate_bps": 300000000,
+    "tunnel32_rate_bps": 300000000,
+    "combined_each_rate_bps": 150000000,
+    "duration_seconds": 60,
+    "datagram_bytes": 1200
+  },
+  "artifact_paths": {
+    "client_binary": "artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
+    "sidecar_binary": "artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64"
+  }
+}
