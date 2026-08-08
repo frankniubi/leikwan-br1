@@ -15,9 +15,7 @@
 /.tmp*
 /tmp_*.sh
 /tmp_*.py
-/findings.md
-/progress.md
-/task_plan.md
+
 /panel_verbose.out
 /sshpass.exe
 /status_report_*.md

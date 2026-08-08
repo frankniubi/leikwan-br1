@@ -480,6 +480,68 @@ final class ProvisioningService
         return 'direct_forward_node';
     }
 
+    /**
+     * Returns true when the forward is a single/race forward routed through a
+     * static sidecar that acts as the ingress frontend (single_race_via_sidecar).
+     *
+     * @param array<string, mixed> $forward
+     */
+    public function usesSingleRaceSidecarFrontend(array $forward): bool
+    {
+        $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
+        if (!in_array($clientMode, ['single', 'race'], true)) {
+            return false;
+        }
+        if (strtolower(trim((string) ($forward['backend_mode'] ?? 'current_mode'))) !== 'current_mode') {
+            return false;
+        }
+        $pointId = (int) ($forward['bond_sidecar_point_id'] ?? $forward['sidecar_point_id'] ?? 0);
+        if ($pointId <= 0) {
+            return false;
+        }
+        $pointConfigSource = $forward['bond_sidecar_point_agent_config_json']
+            ?? $forward['sidecar_agent_config_json']
+            ?? null;
+        if ($pointConfigSource === null || $pointConfigSource === '') {
+            $point = $this->sidecarPointById($pointId);
+            $pointConfigSource = is_array($point) ? ($point['agent_config_json'] ?? null) : null;
+        }
+        $pointConfig = $this->decodeJsonAssoc($pointConfigSource);
+        $raw = $pointConfig['single_race_via_sidecar'] ?? false;
+        if (is_bool($raw)) {
+            return $raw;
+        }
+        if (is_int($raw) || is_float($raw)) {
+            return (int) $raw === 1;
+        }
+        return in_array(strtolower(trim((string) $raw)), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    /**
+     * Returns the set of sidecar point IDs that use a single shared WireGuard
+     * interface for all slave peers (lwspN) rather than per-combination interfaces.
+     * Configured via the STATIC_SIDECAR_SHARED_WG_POINT_IDS env var (comma-separated
+     * integers).
+     *
+     * @return array<int, true>
+     */
+    private function staticSidecarSharedWireguardPointIds(): array
+    {
+        $ids = [];
+        foreach (explode(',', (string) ($this->config->get('STATIC_SIDECAR_SHARED_WG_POINT_IDS', '') ?? '')) as $raw) {
+            $pointId = (int) trim($raw);
+            if ($pointId > 0) {
+                $ids[$pointId] = true;
+            }
+        }
+        return $ids;
+    }
+
+    private function staticSidecarUsesSharedWireguardPeers(int $pointId): bool
+    {
+        return isset($this->staticSidecarSharedWireguardPointIds()[$pointId]);
+    }
+
     private function sidecarPointOverseasEligible(array $point): bool
     {
         $config = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
@@ -4829,7 +4891,22 @@ final class ProvisioningService
             throw new ApiException('invalid_forward_payload', 422, ['payload' => $payload]);
         }
 
-        $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $forwardRuntimePreference);
+        $sidecarFrontendRequested = $this->usesSingleRaceSidecarFrontend([
+            'client_mode' => $clientMode,
+            'backend_mode' => $backendMode,
+            'bond_sidecar_point_id' => $bondSidecarPointId,
+        ]);
+        $sidecarRequired = $sidecarFrontendRequested
+            || $this->sidecarRequiredForRuntime($backendMode, $clientMode, $forwardRuntimePreference);
+        $sharedSidecarRequired = $sidecarRequired
+            && strtolower(trim($backendMode)) === 'current_mode'
+            && $this->staticSidecarUsesSharedWireguardPeers($bondSidecarPointId);
+        if ($sharedSidecarRequired && $publicPort === 443) {
+            throw new ApiException('shared_sidecar_public_port_forbidden', 422, [
+                'bond_sidecar_point_id' => $bondSidecarPointId,
+                'public_port' => $publicPort,
+            ]);
+        }
         if ($sidecarRequired) {
             if ($bondSidecarPointId <= 0) {
                 throw new ApiException('bond_sidecar_point_required_for_aggregation', 422, ['client_mode' => $clientMode]);
@@ -5632,6 +5709,8 @@ final class ProvisioningService
                AND s.status = "active"',
             ['forward_combination_id' => $combinationId]
         );
+        /** @var array<int, string> $failures */
+        $failures = [];
         foreach ($forwards as $row) {
             $forwardId = (int) ($row['id'] ?? 0);
             if ($forwardId <= 0) {
@@ -5640,8 +5719,11 @@ final class ProvisioningService
             try {
                 $this->reconcileForwardEndpoints($forwardId);
             } catch (\Throwable $e) {
-                error_log('republishActiveForwardsForCombination failed for forward ' . $forwardId . ': ' . $e->getMessage());
+                $failures[$forwardId] = $e->getMessage();
             }
+        }
+        if ($failures !== []) {
+            throw new ApiException('republish_partial_failure', 500, ['failures' => $failures]);
         }
     }
 

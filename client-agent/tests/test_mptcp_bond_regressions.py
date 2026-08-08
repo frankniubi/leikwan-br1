@@ -394,7 +394,7 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
         self.assertEqual(len(rendered["extra_units"]), 1)
         udp_unit = rendered["extra_units"][0]
         self.assertEqual(udp_unit["service_name"], "leikwan-client-26-udp-uot")
-        self.assertIn("ExecStart=/usr/local/bin/leikwan-uot-bond --config /etc/leikwan/uot-bond-forward-26.json", udp_unit["service_unit"])
+        self.assertIn("ExecStart=/usr/bin/python3 /usr/local/bin/leikwan-uot-bond.py --config /etc/leikwan/uot-bond-forward-26.json", udp_unit["service_unit"])
         config_file = next(item for item in udp_unit["files"] if item["path"] == "/etc/leikwan/uot-bond-forward-26.json")
         self.assertIn('"route_key": "a43547b6350f72cd.uot"', config_file["content"])
         self.assertIn('"session_token": "udp-token"', config_file["content"])
