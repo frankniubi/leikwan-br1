@@ -92,6 +92,36 @@ public sealed class BondRuntimeBuilderTests
 
         var udpRuntime = Assert.Single(spec.Processes, process => process.Role == "bond-udp-uot-runtime");
         Assert.Contains("--config", udpRuntime.Arguments);
+        var configFile = Assert.Single(spec.GeneratedFiles!, file => file.FilePath.EndsWith("uot-bond-forward-26.json", StringComparison.Ordinal));
+        using var doc = JsonDocument.Parse(configFile.Content);
+        var root = doc.RootElement;
+        Assert.Equal("feedback_drr", root.GetProperty("scheduler_mode").GetString());
+        Assert.Equal(300_000_000L, root.GetProperty("aggregate_rate_bps").GetInt64());
+        Assert.Equal(5, root.GetProperty("queue_target_ms").GetInt32());
+        Assert.Equal(10, root.GetProperty("queue_deadline_ms").GetInt32());
+        Assert.Equal(1_048_576, root.GetProperty("global_queue_bytes").GetInt32());
+        Assert.Equal(8_192, root.GetProperty("global_queue_packets").GetInt32());
+        Assert.Equal(262_144, root.GetProperty("per_session_queue_bytes").GetInt32());
+        Assert.Equal(512, root.GetProperty("per_session_queue_packets").GetInt32());
+        Assert.Equal(16_384, root.GetProperty("drr_quantum_bytes").GetInt32());
+        Assert.Equal(32_768, root.GetProperty("chunk_target_bytes").GetInt32());
+        Assert.Equal(8_388_608, root.GetProperty("max_total_outstanding_bytes").GetInt32());
+        Assert.Equal(256, root.GetProperty("control_queue_packets").GetInt32());
+    }
+
+    [Fact]
+    public void BuildBond_FeedbackWithInvalidQueueContract_FailsBeforeRuntimeCreation()
+    {
+        using var tempDir = new TempStateDirectory();
+        var config = CreateUdpSidepathConfig();
+        config.StateDir = tempDir.Path;
+        config.UdpUotSidepath!.QueueTargetMs = 11;
+        config.UdpUotSidepath.QueueDeadlineMs = 10;
+        var builder = new BondRuntimeBuilder(config);
+
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Build(CreatePlainTcpMuxBondForward()));
+
+        Assert.Contains("queue target/deadline", error.Message);
     }
 
     [Fact]
@@ -220,7 +250,31 @@ public sealed class BondRuntimeBuilderTests
                 "sidecar_port": 8999,
                 "reorder_window_packets": 4096,
                 "reorder_window_bytes": 16777216,
-                "reorder_timeout_ms": 25
+                "reorder_timeout_ms": 25,
+                "delivery_mode": "unordered",
+                "wireguard_aware": true,
+                "scheduler_mode": "feedback_drr",
+                "aggregate_rate_bps": 300000000,
+                "queue_target_ms": 5,
+                "queue_deadline_ms": 10,
+                "global_queue_bytes": 1048576,
+                "global_queue_packets": 8192,
+                "per_session_queue_bytes": 262144,
+                "per_session_queue_packets": 512,
+                "drr_quantum_bytes": 16384,
+                "chunk_min_bytes": 16384,
+                "chunk_target_bytes": 32768,
+                "chunk_max_bytes": 65536,
+                "min_leg_window_bytes": 262144,
+                "max_leg_window_bytes": 4194304,
+                "max_total_outstanding_bytes": 8388608,
+                "progress_interval_bytes": 65536,
+                "progress_interval_frames": 32,
+                "progress_interval_ms": 5,
+                "finish_skew_budget_ms": 2,
+                "probe_interval_ms": 1000,
+                "max_sessions": 4096,
+                "control_queue_packets": 256
               }
             }
             """)!;

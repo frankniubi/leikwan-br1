@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.08.04.1"
+AGENT_VERSION = "2026.08.08.1"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
     "service_name": "leikwan-bond-sidecar",
     "runtime_config_path": "/etc/leikwan-sidecar/runtime.json",
     "runtime_bin": "/usr/local/bin/leikwan-mptcp-sidecar.py",
+    "udp_uot_merge_bin": "/usr/local/bin/leikwan-udp-uot-merge",
     "heartbeat_interval_seconds": 30,
     "log_level": "INFO",
     "allow_tcp_fallback": False,
@@ -36,6 +37,127 @@ DEFAULT_CONFIG = {
     "wireguard_fallback_tcp_port": 24969,
     "installer_version": "",
 }
+
+UOT_SCHEDULER_DEFAULTS = {
+    "scheduler_mode": "legacy",
+    "aggregate_rate_bps": 300_000_000,
+    "queue_target_ms": 5,
+    "queue_deadline_ms": 10,
+    "global_queue_bytes": 1_048_576,
+    "global_queue_packets": 8_192,
+    "per_session_queue_bytes": 262_144,
+    "per_session_queue_packets": 512,
+    "drr_quantum_bytes": 16_384,
+    "chunk_min_bytes": 16_384,
+    "chunk_target_bytes": 32_768,
+    "chunk_max_bytes": 65_536,
+    "min_leg_window_bytes": 262_144,
+    "max_leg_window_bytes": 4_194_304,
+    "max_total_outstanding_bytes": 8_388_608,
+    "progress_interval_bytes": 65_536,
+    "progress_interval_frames": 32,
+    "progress_interval_ms": 5,
+    "finish_skew_budget_ms": 2,
+    "probe_interval_ms": 1_000,
+    "max_sessions": 4_096,
+    "control_queue_packets": 256,
+}
+
+
+def normalize_uot_scheduler(raw: dict) -> dict:
+    mode = str(raw.get("scheduler_mode", "legacy") or "legacy").strip().lower()
+    if mode not in {"legacy", "feedback_drr"}:
+        raise ValueError(f"unsupported UoT scheduler_mode: {mode}")
+    normalized = {"scheduler_mode": mode}
+    for key, default in UOT_SCHEDULER_DEFAULTS.items():
+        if key == "scheduler_mode":
+            continue
+        value = raw[key] if key in raw else default
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be an integer")
+        try:
+            normalized[key] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+    validate_uot_scheduler(normalized)
+    return normalized
+
+
+def validate_uot_scheduler(settings: dict) -> None:
+    if settings["aggregate_rate_bps"] <= 0:
+        raise ValueError("aggregate_rate_bps must be positive")
+    if settings["queue_target_ms"] < 0 or settings["queue_target_ms"] > settings["queue_deadline_ms"] or settings["queue_deadline_ms"] <= 0:
+        raise ValueError("queue target/deadline is invalid")
+    if not 0 < settings["global_queue_bytes"] <= 64 * 1024 * 1024 or not 0 < settings["global_queue_packets"] <= 262_144:
+        raise ValueError("global queue limits are outside process bounds")
+    if not 0 < settings["per_session_queue_bytes"] <= settings["global_queue_bytes"] or not 0 < settings["per_session_queue_packets"] <= settings["global_queue_packets"]:
+        raise ValueError("per-session queue limits must fit global queue limits")
+    if settings["drr_quantum_bytes"] <= 0:
+        raise ValueError("drr_quantum_bytes must be positive")
+    if not 0 < settings["chunk_min_bytes"] <= settings["chunk_target_bytes"] <= settings["chunk_max_bytes"] or settings["chunk_max_bytes"] < 65_535:
+        raise ValueError("chunk sizes are invalid")
+    if not 0 < settings["min_leg_window_bytes"] <= settings["max_leg_window_bytes"] <= settings["max_total_outstanding_bytes"] <= 64 * 1024 * 1024:
+        raise ValueError("leg windows are outside process bounds")
+    if any(settings[key] <= 0 for key in ("progress_interval_bytes", "progress_interval_frames", "progress_interval_ms", "probe_interval_ms")):
+        raise ValueError("progress and probe intervals must be positive")
+    if not 0 < settings["max_sessions"] <= 65_536:
+        raise ValueError("max_sessions is outside process bounds")
+    if not 0 < settings["control_queue_packets"] <= 262_144:
+        raise ValueError("control_queue_packets is outside process bounds")
+
+
+def normalize_uot_delivery(raw: dict, scheduler: dict) -> dict:
+    values: dict[str, int] = {}
+    for key, default in {
+        "sidecar_port": 8999,
+        "reorder_window_packets": 4096,
+        "reorder_window_bytes": 16_777_216,
+        "reorder_timeout_ms": 25,
+    }.items():
+        value = raw[key] if key in raw else default
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be an integer")
+        try:
+            values[key] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+    if not 7000 <= values["sidecar_port"] <= 9000:
+        raise ValueError("udp_uot_sidepath sidecar_port must be within 7000-9000")
+    if min(
+        values["reorder_window_packets"],
+        values["reorder_window_bytes"],
+        values["reorder_timeout_ms"],
+    ) <= 0:
+        raise ValueError("reorder limits must be positive")
+    delivery_mode = str(
+        raw.get(
+            "delivery_mode",
+            "unordered" if scheduler["scheduler_mode"] == "feedback_drr" else "ordered",
+        )
+        or "ordered"
+    ).strip().lower()
+    if delivery_mode not in {"ordered", "unordered"}:
+        raise ValueError(f"unsupported UoT delivery_mode: {delivery_mode}")
+    raw_wireguard_aware = raw.get(
+        "wireguard_aware", scheduler["scheduler_mode"] == "feedback_drr"
+    )
+    if isinstance(raw_wireguard_aware, bool):
+        wireguard_aware = raw_wireguard_aware
+    elif str(raw_wireguard_aware).strip().lower() in {"1", "true", "yes", "on"}:
+        wireguard_aware = True
+    elif str(raw_wireguard_aware).strip().lower() in {"0", "false", "no", "off"}:
+        wireguard_aware = False
+    else:
+        raise ValueError("wireguard_aware must be boolean")
+    if delivery_mode == "unordered" and not wireguard_aware:
+        raise ValueError("unordered delivery requires wireguard_aware=true")
+    if scheduler["scheduler_mode"] == "feedback_drr" and delivery_mode != "unordered":
+        raise ValueError("feedback_drr requires unordered delivery")
+    return {
+        **values,
+        "delivery_mode": delivery_mode,
+        "wireguard_aware": wireguard_aware,
+    }
 
 
 def file_sha256(path: pathlib.Path) -> str:
@@ -46,6 +168,39 @@ def file_sha256(path: pathlib.Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def probe_uot_build_info(runtime_bin: str, timeout_seconds: float = 2.0) -> dict:
+    try:
+        completed = subprocess.run(
+            [runtime_bin, "--build-info-json"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("native UoT runtime capability probe failed") from exc
+    if completed.returncode != 0:
+        raise RuntimeError("native UoT runtime capability probe failed")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("native UoT runtime capability probe failed") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("native UoT runtime capability probe failed")
+    return payload
+
+
+def require_uot_feedback_capability(runtime_bin: str) -> dict:
+    payload = probe_uot_build_info(runtime_bin)
+    if (
+        payload.get("protocol_version") != 2
+        or "feedback_drr" not in payload.get("scheduler_modes", [])
+        or "leg-progress-v1" not in payload.get("capabilities", [])
+    ):
+        raise RuntimeError("native UoT runtime lacks feedback_drr/leg-progress-v1")
+    return payload
 
 
 def shared_wireguard_interface_name(value: object, prefixes: tuple[str, ...]) -> str:
@@ -2140,6 +2295,14 @@ WantedBy=multi-user.target
         udp_start_script = self.udp_uot_start_script_path()
 
         if (bond_runtime is not None or cf_runtime is not None) and enabled_forward_ids:
+            scheduler_config = normalize_uot_scheduler(sidepath)
+            delivery_config = normalize_uot_delivery(sidepath, scheduler_config)
+            udp_runtime_bin = str(
+                self.config.get("udp_uot_merge_bin", "/usr/local/bin/leikwan-udp-uot-merge")
+                or "/usr/local/bin/leikwan-udp-uot-merge"
+            )
+            if scheduler_config["scheduler_mode"] == "feedback_drr":
+                require_uot_feedback_capability(udp_runtime_bin)
             udp_bind_host = "0.0.0.0"
             udp_token_secret = ""
             if bond_runtime is not None:
@@ -2150,19 +2313,22 @@ WantedBy=multi-user.target
                 udp_token_secret = str(management.get("token_secret", "") or "")
             runtime_config = {
                 "listen_host": udp_bind_host,
-                "listen_port": int(sidepath.get("sidecar_port", 8999) or 8999),
+                "listen_port": delivery_config["sidecar_port"],
                 "token_secret": udp_token_secret,
                 "allowed_forward_ids": sorted(enabled_forward_ids),
-                "reorder_window_packets": int(sidepath.get("reorder_window_packets", 4096) or 4096),
-                "reorder_window_bytes": int(sidepath.get("reorder_window_bytes", 16777216) or 16777216),
-                "reorder_timeout_ms": int(sidepath.get("reorder_timeout_ms", 25) or 25),
+                "reorder_window_packets": delivery_config["reorder_window_packets"],
+                "reorder_window_bytes": delivery_config["reorder_window_bytes"],
+                "reorder_timeout_ms": delivery_config["reorder_timeout_ms"],
+                "delivery_mode": delivery_config["delivery_mode"],
+                "wireguard_aware": delivery_config["wireguard_aware"],
                 "stats_path": str(self.state_dir / "udp-uot-runtime-stats.json"),
+                **scheduler_config,
             }
             runtime_changed = write_text_if_changed(udp_runtime_path, json.dumps(runtime_config, ensure_ascii=False, indent=2) + "\n", mode=0o600)
             start_script_lines = [
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
-                f"exec /usr/local/bin/leikwan-udp-uot-merge --config {udp_runtime_path}",
+                f"exec {udp_runtime_bin} --config {udp_runtime_path}",
             ]
             start_changed = write_text_if_changed(udp_start_script, "\n".join(start_script_lines) + "\n", mode=0o755)
             unit_body = f"""[Unit]

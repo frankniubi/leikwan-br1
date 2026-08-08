@@ -354,7 +354,17 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
         self.assertIn("/usr/local/bin/leikwan-ingress client --listen 127.0.0.1:21162", script)
         self.assertIn("tcp://127.0.0.1:21162?priority=10", script)
 
-    def test_bond_udp_uot_sidepath_renders_tcp_primary_and_udp_aux_unit(self) -> None:
+    @mock.patch.object(
+        install_forward_runtime,
+        "probe_uot_build_info",
+        return_value={
+            "protocol_version": 2,
+            "capabilities": ["leg-progress-v1"],
+            "scheduler_modes": ["legacy", "feedback_drr"],
+        },
+        create=True,
+    )
+    def test_bond_udp_uot_sidepath_renders_tcp_primary_and_udp_aux_unit(self, _probe) -> None:
         rendered = install_forward_runtime.render_forward_runtime(
             {
                 "forward_id": 26,
@@ -385,6 +395,30 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
                     "reorder_window_packets": 4096,
                     "reorder_window_bytes": 16777216,
                     "reorder_timeout_ms": 25,
+                    "delivery_mode": "unordered",
+                    "wireguard_aware": True,
+                    "scheduler_mode": "feedback_drr",
+                    "aggregate_rate_bps": 300_000_000,
+                    "queue_target_ms": 5,
+                    "queue_deadline_ms": 10,
+                    "global_queue_bytes": 1_048_576,
+                    "global_queue_packets": 8_192,
+                    "per_session_queue_bytes": 262_144,
+                    "per_session_queue_packets": 512,
+                    "drr_quantum_bytes": 16_384,
+                    "chunk_min_bytes": 16_384,
+                    "chunk_target_bytes": 32_768,
+                    "chunk_max_bytes": 65_536,
+                    "min_leg_window_bytes": 262_144,
+                    "max_leg_window_bytes": 4_194_304,
+                    "max_total_outstanding_bytes": 8_388_608,
+                    "progress_interval_bytes": 65_536,
+                    "progress_interval_frames": 32,
+                    "progress_interval_ms": 5,
+                    "finish_skew_budget_ms": 2,
+                    "probe_interval_ms": 1_000,
+                    "max_sessions": 4_096,
+                    "control_queue_packets": 256,
                 },
             },
         )
@@ -398,6 +432,64 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
         config_file = next(item for item in udp_unit["files"] if item["path"] == "/etc/leikwan/uot-bond-forward-26.json")
         self.assertIn('"route_key": "a43547b6350f72cd.uot"', config_file["content"])
         self.assertIn('"session_token": "udp-token"', config_file["content"])
+        runtime = json.loads(config_file["content"])
+        self.assertEqual(runtime["scheduler_mode"], "feedback_drr")
+        self.assertEqual(runtime["aggregate_rate_bps"], 300_000_000)
+        self.assertEqual(runtime["queue_deadline_ms"], 10)
+        self.assertEqual(runtime["global_queue_bytes"], 1_048_576)
+        self.assertEqual(runtime["chunk_target_bytes"], 32_768)
+        self.assertEqual(runtime["max_total_outstanding_bytes"], 8_388_608)
+        self.assertEqual(runtime["control_queue_packets"], 256)
+
+    def test_feedback_scheduler_rejects_python_uot_fallback(self) -> None:
+        forward = {"forward_id": 26, "listen_port": 11024}
+        agent_config = {
+            "uot_bond_bin": "/usr/local/bin/leikwan-uot-bond.py",
+            "udp_uot_sidepath": {
+                "enabled_forward_ids": [26],
+                "scheduler_mode": "feedback_drr",
+            },
+        }
+        settings = install_forward_runtime.udp_uot_sidepath_settings(forward, agent_config)
+        with self.assertRaisesRegex(
+            ValueError,
+            "feedback_drr requires the Rust leikwan-uot-bond runtime",
+        ):
+            install_forward_runtime.render_udp_uot_aux_unit(
+                forward,
+                {"route_key": "route", "udp_session_token": "token"},
+                [{"endpoint_id": 1, "host": "127.0.0.1", "port": 7001}],
+                agent_config,
+                settings,
+            )
+
+    def test_feedback_apply_refuses_native_binary_without_capability(self) -> None:
+        forward = {"forward_id": 26, "listen_port": 11024}
+        agent_config = {
+            "uot_bond_bin": "/usr/local/bin/leikwan-uot-bond",
+            "udp_uot_sidepath": {
+                "enabled_forward_ids": [26],
+                "scheduler_mode": "feedback_drr",
+            },
+        }
+        settings = install_forward_runtime.udp_uot_sidepath_settings(forward, agent_config)
+        with mock.patch.object(
+            install_forward_runtime,
+            "probe_uot_build_info",
+            return_value={"protocol_version": 2, "scheduler_modes": ["legacy"], "capabilities": []},
+            create=True,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "native UoT runtime lacks feedback_drr/leg-progress-v1",
+            ):
+                install_forward_runtime.render_udp_uot_aux_unit(
+                    forward,
+                    {"route_key": "route", "udp_session_token": "token"},
+                    [{"endpoint_id": 1, "host": "127.0.0.1", "port": 7001}],
+                    agent_config,
+                    settings,
+                )
 
     def test_bond_udp_uot_sidepath_does_not_split_pure_udp_transport(self) -> None:
         rendered = install_forward_runtime.render_forward_runtime(
@@ -1627,6 +1719,110 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             agent.apply_config_patch({"udp_uot_sidepath": None})
             persisted = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertNotIn("udp_uot_sidepath", persisted)
+
+    def test_client_agent_authoritative_config_removal_clears_udp_uot_sidepath(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(pathlib.Path(tmp_dir) / "state"),
+                        "udp_uot_sidepath": {"enabled_forward_ids": [26]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = client_agent_module.ClientAgent(config_path)
+
+            agent.apply_management_state({"agent_config_json": {}})
+            persisted = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertNotIn("udp_uot_sidepath", persisted)
+
+            agent.apply_config_patch(
+                {"udp_uot_sidepath": {"enabled_forward_ids": [26]}}
+            )
+            agent.apply_management_state({"agent_config_json": None})
+            persisted = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertNotIn("udp_uot_sidepath", persisted)
+
+    def test_uot_scheduler_contract_rejects_explicit_invalid_values(self) -> None:
+        for module in (install_forward_runtime, sidecar_agent_module):
+            with self.subTest(module=module.__name__, case="zero_deadline"):
+                with self.assertRaisesRegex(ValueError, "queue target/deadline"):
+                    module.normalize_uot_scheduler({"queue_deadline_ms": 0})
+            with self.subTest(module=module.__name__, case="oversized_queue"):
+                with self.assertRaisesRegex(ValueError, "global queue limits"):
+                    module.normalize_uot_scheduler(
+                        {"global_queue_bytes": 64 * 1024 * 1024 + 1}
+                    )
+            with self.subTest(module=module.__name__, case="invalid_integer"):
+                with self.assertRaisesRegex(ValueError, "max_sessions must be an integer"):
+                    module.normalize_uot_scheduler({"max_sessions": "invalid"})
+
+    def test_uot_delivery_contract_rejects_feedback_ordered_and_bad_port(self) -> None:
+        forward = {"forward_id": 26}
+        base = {
+            "enabled_forward_ids": [26],
+            "scheduler_mode": "feedback_drr",
+            "delivery_mode": "ordered",
+            "wireguard_aware": True,
+        }
+        with self.assertRaisesRegex(ValueError, "feedback_drr requires unordered"):
+            install_forward_runtime.udp_uot_sidepath_settings(
+                forward, {"udp_uot_sidepath": base}
+            )
+        with self.assertRaisesRegex(ValueError, "sidecar_port"):
+            sidecar_agent_module.normalize_uot_delivery(
+                {**base, "delivery_mode": "unordered", "sidecar_port": 6999},
+                sidecar_agent_module.normalize_uot_scheduler(base),
+            )
+
+    def test_uot_scheduler_and_native_identity_change_forward_contract_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_bin = pathlib.Path(tmp_dir) / "leikwan-uot-bond"
+            runtime_bin.write_bytes(b"native-v1")
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "agent_token": "token",
+                        "state_dir": str(pathlib.Path(tmp_dir) / "state"),
+                        "uot_bond_bin": str(runtime_bin),
+                        "udp_uot_sidepath": {
+                            "enabled_forward_ids": [26],
+                            "scheduler_mode": "legacy",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = client_agent_module.ClientAgent(config_path)
+            forward = {"forward_id": 26, "updated_at": 1}
+            with mock.patch.object(agent, "running_kernel_supports_mptcp", return_value=False):
+                baseline = agent.forward_contract_signature(forward)
+                agent.config["udp_uot_sidepath"]["scheduler_mode"] = "feedback_drr"
+                feedback = agent.forward_contract_signature(forward)
+                agent.config["udp_uot_sidepath"]["aggregate_rate_bps"] = 200_000_000
+                rate_changed = agent.forward_contract_signature(forward)
+                runtime_bin.write_bytes(b"native-v2")
+                binary_changed = agent.forward_contract_signature(forward)
+                observation_only = agent.forward_contract_signature(
+                    {"forward_id": 26, "updated_at": 2, "last_latency_ms": 99}
+                )
+
+            self.assertNotEqual(baseline, feedback)
+            self.assertNotEqual(feedback, rate_changed)
+            self.assertNotEqual(rate_changed, binary_changed)
+            self.assertEqual(binary_changed, observation_only)
+            with mock.patch.object(agent, "load_applied", return_value={
+                "26": {"contract_signature": binary_changed}
+            }):
+                with mock.patch.object(agent, "applied_forward_runtime_is_present", return_value=True):
+                    self.assertTrue(agent.forward_apply_is_noop(26, binary_changed))
+                    self.assertFalse(agent.forward_apply_is_noop(26, rate_changed))
 
     def test_sidecar_agent_config_patch_can_add_and_remove_udp_uot_sidepath(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeItem {
@@ -66,6 +67,20 @@ impl MergeBuffer {
     }
 
     pub fn push(&mut self, session_id: u64, seq: u64, payload: Vec<u8>) -> Vec<MergeItem> {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.push_at(session_id, seq, payload, now_ms)
+    }
+
+    pub fn push_at(
+        &mut self,
+        session_id: u64,
+        seq: u64,
+        payload: Vec<u8>,
+        arrived_at_ms: u64,
+    ) -> Vec<MergeItem> {
         let mut ready = Vec::new();
         let packet_limit = self.packet_limit;
         let byte_limit = self.byte_limit;
@@ -102,7 +117,7 @@ impl MergeBuffer {
             state.buffered_bytes += payload.len();
             state.buffered.insert(seq, payload);
             if state.gap_started_at.is_none() {
-                state.gap_started_at = Some(0);
+                state.gap_started_at = Some(arrived_at_ms);
             }
             let helper = MergeBuffer {
                 packet_limit,
@@ -156,7 +171,10 @@ impl MergeBuffer {
     }
 
     pub fn total_buffered_bytes(&self) -> usize {
-        self.session_state.values().map(|state| state.buffered_bytes).sum()
+        self.session_state
+            .values()
+            .map(|state| state.buffered_bytes)
+            .sum()
     }
 }
 
@@ -234,6 +252,19 @@ mod tests {
         let skipped = buffer.flush_timeouts(11);
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].seq, 4);
+    }
+
+    #[test]
+    fn merge_buffer_starts_gap_timeout_when_the_gap_arrives() {
+        let mut buffer = MergeBuffer::new(16, 4096, 25);
+
+        assert!(buffer.push_at(4, 2, b"two".to_vec(), 100).is_empty());
+        assert!(buffer.flush_timeouts(124).is_empty());
+
+        let released = buffer.flush_timeouts(125);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].seq, 2);
+        assert_eq!(buffer.skipped_gap_packets, 1);
     }
 
     #[test]

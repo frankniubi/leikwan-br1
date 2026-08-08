@@ -22,8 +22,11 @@ final class LeigodOnlyArtifactSourceBuildMap
             'leigod_linux_amd64' => ['paths' => ['artifacts/leigod/leigod-linux-amd64'], 'route_path' => '/artifacts/leigod/leigod-linux-amd64', 'platform_family' => 'linux-bond', 'immutable_provenance' => true],
             'lguot_linux_amd64' => ['paths' => ['artifacts/lguot/lguot_linux_amd64'], 'route_path' => '/artifacts/lguot/lguot_linux_amd64', 'platform_family' => 'linux-bond', 'immutable_provenance' => true],
             'leikwan_bond_linux_amd64' => ['paths' => ['wstunnel-main/leikwan-bond', 'artifacts/wstunnel/leikwan-bond_linux_amd64'], 'route_path' => '/artifacts/wstunnel/leikwan-bond_linux_amd64', 'platform_family' => 'linux-bond'],
+            'leikwan_uot_bond_linux_amd64' => ['paths' => ['wstunnel-main/leikwan-uot', 'artifacts/wstunnel/leikwan-uot-bond_linux_amd64'], 'route_path' => '/artifacts/wstunnel/leikwan-uot-bond_linux_amd64', 'platform_family' => 'linux-bond'],
+            'leikwan_udp_uot_merge_linux_amd64' => ['paths' => ['wstunnel-main/leikwan-uot', 'artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64'], 'route_path' => '/artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64', 'platform_family' => 'linux-bond'],
             'windows_client_app' => ['paths' => ['wstunnel-main/leikwan-client-win', 'artifacts/windows/leikwan-bridge-setup.exe'], 'route_path' => '/artifacts/leikwan-bridge-setup.exe', 'platform_family' => 'windows-bond'],
             'leikwan_bond_windows_amd64' => ['paths' => ['wstunnel-main/leikwan-bond', 'artifacts/wstunnel/leikwan-bond_windows_amd64.exe'], 'route_path' => '/artifacts/wstunnel/leikwan-bond_windows_amd64.exe', 'platform_family' => 'windows-bond'],
+            'leikwan_uot_bond_windows_amd64' => ['paths' => ['wstunnel-main/leikwan-uot', 'artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe'], 'route_path' => '/artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe', 'platform_family' => 'windows-bond'],
         ];
         $this->routeOnlyHelpers = [
             'client_agent_update' => ['paths' => ['install/client-agent-update.sh'], 'route_path' => '/artifacts/client-agent-update.sh'],

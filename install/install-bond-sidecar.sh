@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.04.26.1"
+INSTALLER_VERSION="2026.08.08.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 AGENT_TOKEN=""
@@ -161,6 +161,18 @@ install_wireguard_tools
 
 mkdir -p "$CONFIG_DIR" "$BIN_DIR"
 
+VERSIONS_JSON="$(curl -fsSL "$ARTIFACT_BASE/artifacts/versions.json")"
+download_verified_artifact() {
+  local key="$1" url="$2" path="$3" expected tmp
+  expected="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get(sys.argv[2], {}).get("sha256", ""))' "$VERSIONS_JSON" "$key")"
+  [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "missing manifest sha256 for $key" >&2; return 1; }
+  tmp="${path}.new"
+  curl -fsSL "$url" -o "$tmp"
+  echo "$expected  $tmp" | sha256sum -c - >/dev/null
+  chmod 0755 "$tmp"
+  mv "$tmp" "$path"
+}
+
 download() {
   local url="$1"
   local path="$2"
@@ -184,6 +196,13 @@ fi
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-mptcp-sidecar.py" "$BIN_DIR/leikwan-mptcp-sidecar.py"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-udp-uot-merge.py" "$BIN_DIR/leikwan-udp-uot-merge.py"
+download_verified_artifact leikwan_udp_uot_merge_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64" "$BIN_DIR/leikwan-udp-uot-merge"
+"$BIN_DIR/leikwan-udp-uot-merge" --build-info-json | python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+if value.get("protocol_version") != 2 or "feedback_drr" not in value.get("scheduler_modes", []) or "leg-progress-v1" not in value.get("capabilities", []):
+    raise SystemExit("installed native UoT merge runtime lacks feedback capability")
+'
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-wss-mux.py" "$BIN_DIR/leikwan-wss-mux.py"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
@@ -224,6 +243,7 @@ cat > "$CONFIG_DIR/config.json" <<JSON
   "agent_token": "$AGENT_TOKEN",
   "service_name": "$SERVICE_NAME",
   "runtime_bin": "$BIN_DIR/leikwan-mptcp-sidecar.py",
+  "udp_uot_merge_bin": "$BIN_DIR/leikwan-udp-uot-merge",
   "runtime_config_path": "$CONFIG_DIR/runtime.json",
   "state_dir": "/var/lib/leikwan-sidecar",
   "log_level": "INFO",

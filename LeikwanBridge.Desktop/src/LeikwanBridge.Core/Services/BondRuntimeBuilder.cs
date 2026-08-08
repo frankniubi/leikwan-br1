@@ -351,7 +351,11 @@ public sealed class BondRuntimeBuilder
         if (sidepath == null)
             return null;
 
-        return sidepath.EnabledForwardIds.Contains(forwardId) ? sidepath : null;
+        if (!sidepath.EnabledForwardIds.Contains(forwardId))
+            return null;
+
+        sidepath.Validate();
+        return sidepath;
     }
 
     private static Dictionary<string, object?> BuildUdpUotRuntimePayload(
@@ -373,6 +377,30 @@ public sealed class BondRuntimeBuilder
             ["reorder_window_packets"] = settings.ReorderWindowPackets,
             ["reorder_window_bytes"] = settings.ReorderWindowBytes,
             ["reorder_timeout_ms"] = settings.ReorderTimeoutMs,
+            ["delivery_mode"] = settings.DeliveryMode,
+            ["wireguard_aware"] = settings.WireguardAware,
+            ["scheduler_mode"] = settings.SchedulerMode,
+            ["aggregate_rate_bps"] = settings.AggregateRateBps,
+            ["queue_target_ms"] = settings.QueueTargetMs,
+            ["queue_deadline_ms"] = settings.QueueDeadlineMs,
+            ["global_queue_bytes"] = settings.GlobalQueueBytes,
+            ["global_queue_packets"] = settings.GlobalQueuePackets,
+            ["per_session_queue_bytes"] = settings.PerSessionQueueBytes,
+            ["per_session_queue_packets"] = settings.PerSessionQueuePackets,
+            ["drr_quantum_bytes"] = settings.DrrQuantumBytes,
+            ["chunk_min_bytes"] = settings.ChunkMinBytes,
+            ["chunk_target_bytes"] = settings.ChunkTargetBytes,
+            ["chunk_max_bytes"] = settings.ChunkMaxBytes,
+            ["min_leg_window_bytes"] = settings.MinLegWindowBytes,
+            ["max_leg_window_bytes"] = settings.MaxLegWindowBytes,
+            ["max_total_outstanding_bytes"] = settings.MaxTotalOutstandingBytes,
+            ["progress_interval_bytes"] = settings.ProgressIntervalBytes,
+            ["progress_interval_frames"] = settings.ProgressIntervalFrames,
+            ["progress_interval_ms"] = settings.ProgressIntervalMs,
+            ["finish_skew_budget_ms"] = settings.FinishSkewBudgetMs,
+            ["probe_interval_ms"] = settings.ProbeIntervalMs,
+            ["max_sessions"] = settings.MaxSessions,
+            ["control_queue_packets"] = settings.ControlQueuePackets,
             ["stats_path"] = statsPath,
             ["legs"] = endpoints.Select(endpoint => new Dictionary<string, object?>
             {

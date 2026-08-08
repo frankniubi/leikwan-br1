@@ -120,7 +120,7 @@ public sealed class ConfigPollingService
                 continue;
 
             var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
-            var contractSignature = ForwardContractSignature.Compute(effectiveForward);
+            var contractSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
             var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
             var signatureMatches = hasAppliedState
                 && string.Equals(appliedState!.ContractSignature, contractSignature, StringComparison.Ordinal);

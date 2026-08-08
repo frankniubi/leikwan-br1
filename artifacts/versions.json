@@ -41,10 +41,12 @@
     "size_bytes": 17448
   },
   "client_installer": {
-    "version": "2026.05.12.1",
+    "version": "2026.08.08.1",
     "path": "install/install-client.sh",
     "install_url": "/artifacts/install-client.sh",
-    "remote_install_url": "/artifacts/remote-install-client.sh"
+    "remote_install_url": "/artifacts/remote-install-client.sh",
+    "sha256": "e81b7804c83ac0fb71b8be64a793eb908cb26c6565e5fe6fd59335fbe6d80f49",
+    "size_bytes": 8695
   },
   "client_installer_windows": {
     "version": "2026.04.08.1",
@@ -57,11 +59,11 @@
     "install_url": "/artifacts/manage-client.ps1"
   },
   "bond_sidecar_installer": {
-    "version": "2026.04.26.1",
+    "version": "2026.08.08.1",
     "path": "install/install-bond-sidecar.sh",
     "install_url": "/artifacts/install-bond-sidecar.sh",
-    "sha256": "3e8a16fb79e3f5c9d9311e0e1184a0fdab747f4ac77987b8580e3c08bea69d4c",
-    "size_bytes": 7251
+    "sha256": "323b5ebd63832de00f25e39381a7889f4752d715341b7a7ed85b3d0655f17cb9",
+    "size_bytes": 8721
   },
   "bond_sidecar_uninstaller": {
     "version": "2026.04.08.1",
@@ -69,29 +71,29 @@
     "install_url": "/artifacts/uninstall-bond-sidecar.sh"
   },
   "client_agent": {
-    "version": "2026.08.04.1",
+    "version": "2026.08.08.1",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "4324a51b5c654c30449c8b5ff116beedce2eca1c5605d675b471a2e862dbfed5",
-    "size_bytes": 242762,
-    "size": 242762
+    "sha256": "8f0138eb1f21b2866ae4e7f9a59e2f6f2eb30f048bf1ca56aebc7094576f6365",
+    "size_bytes": 244164,
+    "size": 244164
   },
   "client_agent_installer": {
-    "version": "2026.07.28.2",
+    "version": "2026.08.08.1",
     "path": "install/install-client-agent.sh",
     "install_url": "/artifacts/install-client-agent.sh",
     "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "3e2a9a676b553d302bb8ea6454091b879d14c5bcd32a9a718aaf4afb07c62be8",
-    "size_bytes": 19535,
+    "sha256": "418aa2d069355b5d0aa08e68d04769983775328fc7d041ceafb132ac0d31785e",
+    "size_bytes": 20074,
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
-    "version": "2026.08.04.1",
+    "version": "2026.08.08.1",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "5e07d54a839486569718ee03d0266b8d0c03325082049e3df8b3d870e249f8e0",
-    "size_bytes": 131182,
-    "size": 131182
+    "sha256": "989aa1b2a821937a9bd669b74932c928673a65a624023451470655ca0cfff469",
+    "size_bytes": 138652,
+    "size": 138652
   },
   "mptcp_client_runtime": {
     "version": "2026.06.06.1",
@@ -110,9 +112,11 @@
     "size_bytes": 7852
   },
   "uot_bond_runtime": {
-    "version": "2026.04.19.1",
+    "version": "2026.08.08.1",
     "path": "client-agent/leikwan_uot_bond.py",
-    "artifact_url": "/artifacts/leikwan-uot-bond.py"
+    "artifact_url": "/artifacts/leikwan-uot-bond.py",
+    "sha256": "979f1d894d41195a3ebca9bc19a81a5cfa908e83ad94368fdc90ec56a2b75db7",
+    "size_bytes": 24138
   },
   "mptcp_sidecar_runtime": {
     "version": "2026.05.13.1",
@@ -122,9 +126,41 @@
     "size_bytes": 42508
   },
   "udp_uot_merge_runtime": {
-    "version": "2026.04.19.1",
+    "version": "2026.08.08.1",
     "path": "sidecar-agent/leikwan_udp_uot_merge.py",
-    "artifact_url": "/artifacts/leikwan-udp-uot-merge.py"
+    "artifact_url": "/artifacts/leikwan-udp-uot-merge.py",
+    "sha256": "2c40404274ed1c5b1b828f500e299fdf61790c404ad293857d5725ef719c3525",
+    "size_bytes": 30481
+  },
+  "leikwan_uot_bond_linux_amd64": {
+    "version": "0.1.0",
+    "path": "artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
+    "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
+    "sha256": "a0cb82480f417a4c41368c86a6506c2fdfc2734cec4c074d95ac6c7262900835",
+    "size_bytes": 2745920,
+    "protocol_version": 2,
+    "capabilities": ["leg-progress-v1"],
+    "scheduler_modes": ["legacy", "feedback_drr"]
+  },
+  "leikwan_udp_uot_merge_linux_amd64": {
+    "version": "0.1.0",
+    "path": "artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64",
+    "artifact_url": "/artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64",
+    "sha256": "9da37a3aaa95157b0874faf0cd81837ccde105f676ec8c7c397643a073897e81",
+    "size_bytes": 2882032,
+    "protocol_version": 2,
+    "capabilities": ["leg-progress-v1"],
+    "scheduler_modes": ["legacy", "feedback_drr"]
+  },
+  "leikwan_uot_bond_windows_amd64": {
+    "version": "0.1.0",
+    "path": "artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
+    "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
+    "sha256": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
+    "size_bytes": 2052096,
+    "protocol_version": 2,
+    "capabilities": ["leg-progress-v1"],
+    "scheduler_modes": ["legacy", "feedback_drr"]
   },
   "leikwan_bond_linux_amd64": {
     "version": "0.1.30",
@@ -186,12 +222,12 @@
     "size_bytes": 55652648
   },
   "install_forward_runtime": {
-    "version": "2026.08.04.2",
+    "version": "2026.08.08.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "95b9da49c3d52f35e0eb40962373307840bc5825e4870c31a152227eb8189684",
-    "size_bytes": 73001,
-    "size": 73001
+    "sha256": "3d91c8ce9fbd11d7021eb5babf151a183d7a34c72f454d5f87a89bd4b5145273",
+    "size_bytes": 80029,
+    "size": 80029
   },
   "tcp_race_runtime": {
     "version": "2026.07.27.1",
