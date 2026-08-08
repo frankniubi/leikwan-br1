@@ -334,7 +334,7 @@ def render_udp_uot_aux_unit(
     config_path = f"/etc/leikwan/uot-bond-forward-{forward_id}.json"
     service_name = f"leikwan-client-{forward_id}-udp-uot"
     service_path = f"/etc/systemd/system/{service_name}.service"
-    runtime_bin = str(agent_config.get("uot_bond_bin", "/usr/local/bin/leikwan-uot-bond") or "/usr/local/bin/leikwan-uot-bond")
+    runtime_bin = str(agent_config.get("uot_bond_bin", "/usr/local/bin/leikwan-uot-bond.py") or "/usr/local/bin/leikwan-uot-bond.py")
     config_payload = {
         "forward_id": forward_id,
         "listen_udp": f"0.0.0.0:{int(forward['listen_port'])}",

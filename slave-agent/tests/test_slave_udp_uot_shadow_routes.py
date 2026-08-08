@@ -274,6 +274,36 @@ class SlaveUdpUotShadowRouteTests(unittest.TestCase):
         self.assertIn("Leikwan Plain TCP Backend", shadow_unit)
         self.assertIn(" backend --listen ", shadow_unit)
 
+    def test_reconcile_runtime_backfills_missing_udp_uot_shadow_service(self) -> None:
+        agent = self.make_agent()
+        task = {"service_id": 1, "forward_id": 26, "endpoint_id": 184}
+        payload = {
+            "listen_port": 7001,
+            "target": "138.252.162.120:9000",
+            "path_prefix": "a43547b6350f72cd",
+            "route_key": "a43547b6350f72cd",
+            "transport_mode": "tcp+udp",
+            "ingress_protocol": "plain_tcp_mux",
+            "ingress_auth_token": "token-123",
+            "backend_protocol": "tcp_relay",
+            "filter_profile": "off",
+        }
+        self.publish_with_mocks(agent, task, payload)
+
+        shadow_name = "wstunnel-svc-1-184-udp-uot"
+        agent.metadata_path(shadow_name).unlink()
+        agent.service_unit_path(shadow_name).unlink()
+
+        with mock.patch.object(agent, "ensure_nft_table"):
+            with mock.patch.object(agent, "delete_nft_rules"):
+                with mock.patch.object(agent, "add_nft_rules"):
+                    agent.reconcile_runtime()
+
+        self.assertIsNotNone(agent.load_service_metadata(shadow_name))
+        self.assertTrue(agent.service_unit_path(shadow_name).exists())
+        route_keys = [item["route_key"] for item in agent.listener_routes(7001)]
+        self.assertIn("a43547b6350f72cd.uot", route_keys)
+
     def test_republish_non_shadow_eligible_removes_shadow_metadata_and_route(self) -> None:
         agent = self.make_agent()
         task = {"service_id": 1, "forward_id": 26, "endpoint_id": 184}
