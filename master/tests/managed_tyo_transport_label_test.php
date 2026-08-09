@@ -11,7 +11,7 @@ $root = __DIR__ . '/..';
 $admin = file_get_contents($root . '/src/Controllers/AdminController.php') ?: '';
 foreach ([
     '>Managed TYO transport</option>',
-    '<label>Managed TYO route id</label>',
+    '<legend>Managed TYO line pool</legend>',
     '<label>Managed TYO carrier</label>',
     'Managed TYO transport = direct ingress (like current_mode, no Cloudflare) + an accelerated self-leg.',
 ] as $snippet) {

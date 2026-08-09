@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.07.25.1"
+INSTALLER_VERSION="2026.08.08.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -121,6 +121,10 @@ ensure_time_sync() {
 }
 
 current_installer_sha256() {
+  if [[ ! -f "$0" ]]; then
+    printf '\n'
+    return 0
+  fi
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$0" | awk '{print $1}'
     return 0
@@ -171,10 +175,28 @@ install_wireguard_tools
 STATE_DIR="/var/lib/leikwan-client-agent"
 INSTALLER_SHA256="$(current_installer_sha256)"
 mkdir -p "$CONFIG_DIR" "$BIN_DIR" "$STATE_DIR"
+PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"
+: > "$PROXY_ENV_FILE"
+for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy; do
+  proxy_value="${!proxy_name:-}"
+  if [[ -n "$proxy_value" ]]; then
+    if [[ "$proxy_value" == *$'\n'* || "$proxy_value" == *$'\r'* ]]; then
+      echo "invalid newline in $proxy_name" >&2
+      exit 1
+    fi
+    printf '%s=%s\n' "$proxy_name" "$proxy_value" >> "$PROXY_ENV_FILE"
+  fi
+done
+chmod 0600 "$PROXY_ENV_FILE"
 
 leikwan_protected_download() {
   local url="$1"
   local path="$2"
+  local proxy_url="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
+  if [[ -n "$proxy_url" ]]; then
+    curl -fsSL --proxy "$proxy_url" "$url" -o "$path"
+    return 0
+  fi
   python3 - "$url" "$path" <<'PY'
 import http.client
 import ipaddress
@@ -452,6 +474,51 @@ download_atomic() {
   mv "$tmp_path" "$path"
 }
 
+check_binary_current() {
+  local local_path="$1" expected_sha256="$2" actual
+  [[ -f "$local_path" && -n "$expected_sha256" ]] || return 1
+  actual=$(sha256sum "$local_path" 2>/dev/null | awk '{print $1}')
+  [[ "$actual" == "$expected_sha256" ]]
+}
+
+_vers_sha256() {
+  python3 -c "
+import json, sys
+try:
+    entry = json.loads(sys.argv[1]).get(sys.argv[2])
+    print(entry.get('sha256', '') if isinstance(entry, dict) else '')
+except Exception:
+    print('')
+" "$_VERSIONS_JSON" "$1" 2>/dev/null || echo ''
+}
+
+download_manifest_artifact() {
+  local key="$1" url="$2" path="$3" expected_sha256
+  expected_sha256="$(_vers_sha256 "$key")"
+  if check_binary_current "$path" "$expected_sha256"; then
+    echo "  $key up to date, skipping download"
+    return 0
+  fi
+  download_atomic "$url" "$path"
+  if [[ -n "$expected_sha256" ]] && ! check_binary_current "$path" "$expected_sha256"; then
+    rm -f "$path"
+    echo "downloaded artifact sha256 mismatch: $key" >&2
+    return 1
+  fi
+}
+
+_VERSIONS_PATH="$STATE_DIR/versions.json.new"
+leikwan_protected_download "$ARTIFACT_BASE/artifacts/versions.json" "$_VERSIONS_PATH"
+_VERSIONS_JSON="$(cat "$_VERSIONS_PATH")"
+rm -f "$_VERSIONS_PATH"
+if [[ -z "$INSTALLER_SHA256" ]]; then
+  INSTALLER_SHA256="$(_vers_sha256 client_agent_installer)"
+fi
+if [[ -z "$INSTALLER_SHA256" ]]; then
+  echo "missing client_agent_installer sha256 in versions manifest" >&2
+  exit 1
+fi
+
 download_atomic "$ARTIFACT_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
 download_atomic "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
 if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
@@ -459,6 +526,8 @@ if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
 fi
 download_atomic "$ARTIFACT_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
 download_atomic "$ARTIFACT_BASE/artifacts/forward-strategy.py" "$BIN_DIR/forward_strategy.py"
+download_manifest_artifact tcp_race_runtime "$ARTIFACT_BASE/artifacts/leikwan-tcp-race.py" "$BIN_DIR/leikwan-tcp-race.py"
+download_manifest_artifact udp_fanout_runtime "$ARTIFACT_BASE/artifacts/leikwan-udp-fanout.py" "$BIN_DIR/leikwan-udp-fanout.py"
 cat > "$BIN_DIR/leikwan-client-strategy" <<WRAPPER
 #!/usr/bin/env bash
 exec /usr/bin/python3 "$BIN_DIR/forward_strategy.py" "\$@"
@@ -468,6 +537,13 @@ download_atomic "$ARTIFACT_BASE/artifacts/leikwan-rate-limit.py" "$BIN_DIR/leikw
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-mptcp-client.py" "$BIN_DIR/leikwan-mptcp-client.py"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"
+download_manifest_artifact leikwan_uot_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-uot-bond_linux_amd64" "$BIN_DIR/leikwan-uot-bond"
+"$BIN_DIR/leikwan-uot-bond" --build-info-json | python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+if value.get("protocol_version") != 2 or "feedback_drr" not in value.get("scheduler_modes", []) or "leg-progress-v1" not in value.get("capabilities", []):
+    raise SystemExit("installed native UoT runtime lacks feedback capability")
+'
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64" "$STATE_DIR/leikwan-mptcp-relay"
@@ -482,6 +558,7 @@ cat > "$CONFIG_DIR/config.json" <<JSON
   "bond_bin": "/usr/local/bin/leikwan-bond",
   "bond_ingress_bin": "/usr/local/bin/leikwan-ingress",
   "mptcp_client_bin": "$BIN_DIR/leikwan-mptcp-client.py",
+  "uot_bond_bin": "$BIN_DIR/leikwan-uot-bond",
   "log_level": "INFO",
   "installer_version": "$INSTALLER_VERSION",
   "installer_sha256": "$INSTALLER_SHA256"
@@ -496,6 +573,7 @@ After=network.target
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-$PROXY_ENV_FILE
 ExecStart=/usr/bin/python3 $BIN_DIR/leikwan-client-agent.py --config $CONFIG_DIR/config.json run
 Restart=always
 RestartSec=5

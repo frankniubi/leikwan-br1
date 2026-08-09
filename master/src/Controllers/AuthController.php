@@ -3,16 +3,36 @@ declare(strict_types=1);
 
 namespace Leikwan\Master\Controllers;
 
+use Leikwan\Master\Config;
+use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
+use Leikwan\Master\Support\KnowledgebaseHtmlSanitizer;
+use Leikwan\Master\Support\KnowledgebaseService;
+use Leikwan\Master\Support\LocaleResolver;
 use Leikwan\Master\Support\PasswordResetService;
 use Leikwan\Master\Support\SessionAuth;
-use Leikwan\Master\Support\KnowledgebaseService;
+use Leikwan\Master\Support\OidcClient;
 use Leikwan\Master\Support\TenantRegistrationService;
 use Leikwan\Master\Support\WhmcsIdentityService;
 
 final class AuthController extends BaseController
 {
+    private const START_HERE_TOPIC_KEYS = [
+        'getting-started-five-minute-overview',
+        'install-client',
+        'getting-started-first-forward-checklist',
+        'connect-and-verify',
+    ];
+
+    private ?OidcClient $oidcClient;
+
+    public function __construct(Config $config, Database $db, ?OidcClient $oidcClient = null)
+    {
+        parent::__construct($config, $db);
+        $this->oidcClient = $oidcClient;
+    }
+
     public function home(Request $request, array $params): Response
     {
         $user = SessionAuth::currentUser($this->db);
@@ -104,6 +124,33 @@ final class AuthController extends BaseController
 
         $adminCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'admin'])['total'] ?? 0);
         $csrf = $this->escape(SessionAuth::csrfToken());
+        $showLegacyLogin = (string) $request->input('legacy', '') === '1';
+        $buyLoginMethod = '
+            <span class="login-method-pill login-method-pill--disabled" aria-disabled="true">
+              <span class="login-method-copy">
+                <strong>使用LeiKwan Buy登录 (Via LeiKwan Buy)</strong>
+              </span>
+            </span>';
+        if ($this->oidcClient !== null && $this->oidcClient->isConfigured()) {
+            $providerName = $this->escape($this->oidcClient->providerName());
+            $buyLoginMethod = '
+                <a class="login-method-pill login-method-pill--buy" href="/auth/oidc/start" title="Via ' . $providerName . '">
+                  <span class="login-method-copy">
+                    <strong>使用LeiKwan Buy登录 (Via LeiKwan Buy)</strong>
+                  </span>
+                  <span class="login-method-arrow" aria-hidden="true">&rarr;</span>
+                </a>';
+        }
+        $loginMethods = '
+            <div class="login-methods">
+              ' . $buyLoginMethod . '
+              <a class="login-method-pill login-method-pill--legacy" href="/login?legacy=1">
+                <span class="login-method-copy">
+                  <strong>使用会聚账户(旧) (Via LeiKwan Bridge (Legacy))</strong>
+                </span>
+                <span class="login-method-arrow" aria-hidden="true">&rarr;</span>
+              </a>
+            </div>';
         $sideCard = $adminCount === 0
             ? '<section class="surface-card auth-side">
                 <span class="card-kicker">Setup</span>
@@ -122,33 +169,46 @@ final class AuthController extends BaseController
                 <div class="actions"><a class="button ghost" href="/forgot-password">Forgot Password</a></div>
               </section>';
 
-        $body = '
-            <section class="auth-grid">
-              <section class="surface-card auth-card">
-                <span class="card-kicker">Sign In</span>
-                <h2>Welcome back</h2>
-                <p class="muted">Use your panel account to continue.</p>
-                <form method="post" action="/login">
-                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                  <div class="form-grid single">
-                    <div class="field">
-                      <label>Email</label>
-                      <input type="email" name="email" placeholder="you@example.com" required>
+        if ($showLegacyLogin) {
+            $body = '
+                <section class="auth-grid">
+                  <section class="surface-card auth-card">
+                    <span class="card-kicker">旧账户登录</span>
+                    <h2>使用会聚账户(旧)</h2>
+                    <form method="post" action="/login">
+                      <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                      <div class="form-grid single">
+                        <div class="field">
+                          <label>Email</label>
+                          <input type="email" name="email" placeholder="you@example.com" required>
+                        </div>
+                        <div class="field">
+                          <label>Password</label>
+                          <input type="password" name="password" placeholder="Your password" required>
+                        </div>
+                      </div>
+                      <div class="actions">
+                        <button class="button" type="submit">Sign In</button>
+                        <a class="button ghost" href="/login">返回登录方式</a>
+                        <a class="button secondary" href="/">Back Home</a>
+                      </div>
+                    </form>
+                  </section>
+                  ' . $sideCard . '
+                </section>';
+        } else {
+            $body = '
+                <section class="auth-grid login-method-grid">
+                  <section class="surface-card auth-card login-method-card">
+                    <span class="card-kicker">Sign In</span>
+                    <h2>选择登录方式</h2>
+                    ' . $loginMethods . '
+                    <div class="actions login-method-actions">
+                      <a class="button secondary" href="/">Back Home</a>
                     </div>
-                    <div class="field">
-                      <label>Password</label>
-                      <input type="password" name="password" placeholder="Your password" required>
-                    </div>
-                  </div>
-                  <div class="actions">
-                    <button class="button" type="submit">Sign In</button>
-                    <a class="button ghost" href="/register">Create Account</a>
-                    <a class="button secondary" href="/">Back Home</a>
-                  </div>
-                </form>
-              </section>
-              ' . $sideCard . '
-            </section>';
+                  </section>
+                </section>';
+        }
 
         return $this->publicPage($this->displayBrandName() . ' Sign In', $body);
 
@@ -228,68 +288,106 @@ final class AuthController extends BaseController
         }
 
         $service = new KnowledgebaseService($this->db);
-        $threads = $service->listPublishedThreads();
-        $selectedSlug = trim((string) $request->input('thread', ''));
-        $selectedThread = $selectedSlug !== ''
-            ? $service->findPublishedThreadBySlug($selectedSlug)
+        $locale = LocaleResolver::resolve($request);
+        $topics = $service->listPublishedTopics($locale);
+        $selectedTopicKey = trim((string) $request->input('thread', ''));
+        $selectedTopic = $selectedTopicKey !== ''
+            ? $service->findPublishedTopicByKey($selectedTopicKey, $locale)
             : null;
 
-        if ($selectedThread === null && $threads !== []) {
-            $selectedThread = $threads[0];
-            $selectedSlug = (string) ($selectedThread['slug'] ?? '');
+        if ($selectedTopic === null && $topics !== []) {
+            $selectedTopic = $topics[0];
+            $selectedTopicKey = (string) ($selectedTopic['topic_key'] ?? '');
         }
 
-        $threadCards = '';
-        foreach ($threads as $thread) {
-            $isActive = (string) ($thread['slug'] ?? '') === $selectedSlug;
-            $updatedAt = trim((string) ($thread['updated_at'] ?? ''));
-            $threadCards .= '<a class="kb-thread-card' . ($isActive ? ' active' : '') . '" href="/knowledgebase?thread=' . urlencode((string) ($thread['slug'] ?? '')) . '">'
+        $startHereCards = '';
+        $learnAsNeededCards = '';
+        foreach ($topics as $topic) {
+            $topicKey = (string) ($topic['topic_key'] ?? '');
+            $isActive = $topicKey === $selectedTopicKey;
+            $updatedAt = trim((string) ($topic['updated_at'] ?? ''));
+            $topicCard = '<a class="kb-thread-card' . ($isActive ? ' active' : '') . '" href="/knowledgebase?thread=' . urlencode($topicKey) . '">'
                 . '<div class="kb-thread-meta">'
-                . (((int) ($thread['is_pinned'] ?? 0) === 1) ? '<span class="kb-pill">Pinned</span>' : '')
-                . ($updatedAt !== '' ? '<span class="kb-updated">Updated ' . $this->escape($updatedAt) . '</span>' : '')
+                . (((int) ($topic['is_pinned'] ?? 0) === 1) ? '<span class="kb-pill">Pinned</span>' : '')
+                . ($updatedAt !== '' ? '<span class="kb-updated"><span>Updated</span> <time>' . $this->escape($updatedAt) . '</time></span>' : '')
                 . '</div>'
-                . '<strong>' . $this->escape((string) ($thread['title'] ?? 'Untitled')) . '</strong>'
-                . '<p>' . $this->escape((string) ($thread['excerpt'] ?? '')) . '</p>'
+                . '<strong>' . $this->escape((string) ($topic['title'] ?? 'Untitled guide')) . '</strong>'
+                . '<p>' . $this->escape((string) ($topic['excerpt'] ?? '')) . '</p>'
                 . '</a>';
+            if (in_array($topicKey, self::START_HERE_TOPIC_KEYS, true)) {
+                $startHereCards .= $topicCard;
+            } else {
+                $learnAsNeededCards .= $topicCard;
+            }
+        }
+
+        $topicGroups = '';
+        $startHereLabel = 'Start here';
+        $learnAsNeededLabel = 'Learn as needed';
+        if ($startHereCards !== '') {
+            $topicGroups .= '<section class="kb-topic-group"><h3>' . $startHereLabel . '</h3><div class="kb-thread-list">' . $startHereCards . '</div></section>';
+        }
+        if ($learnAsNeededCards !== '') {
+            $topicGroups .= '<section class="kb-topic-group"><h3>' . $learnAsNeededLabel . '</h3><div class="kb-thread-list">' . $learnAsNeededCards . '</div></section>';
+        }
+        if ($topicGroups === '') {
+            $topicGroups = '<div class="card"><p class="muted">No published guides yet.</p></div>';
         }
 
         $adminButton = (string) ($user['role'] ?? '') === 'admin'
-            ? '<a class="button secondary" href="/admin/knowledgebase">Open admin editor</a>'
+            ? '<a class="button secondary" href="/admin/knowledgebase">Open guide editor</a>'
             : '';
 
-        $articleHtml = $selectedThread !== null
-            ? '<article class="kb-article">'
+        $articleHtml = '<section class="card"><h3>No published guides yet.</h3><p class="muted">An administrator can publish the first user guide.</p></section>';
+        $mermaidAssets = '';
+        if ($selectedTopic !== null) {
+            $sanitizer = new KnowledgebaseHtmlSanitizer();
+            $articleBody = $sanitizer->sanitize((string) ($selectedTopic['body_html'] ?? ''));
+            $hasMermaid = str_contains($articleBody, '<pre class="mermaid">');
+            if ($hasMermaid) {
+                $diagramErrorLabel = $this->escape('Diagram could not be rendered. The source is shown below.');
+                $articleBody = str_replace(
+                    '<pre class="mermaid">',
+                    '<pre class="mermaid" data-error-label="' . $diagramErrorLabel . '">',
+                    $articleBody
+                );
+                $mermaidAssets = '<script src="/assets/vendor/mermaid/mermaid.min.js?v=11.12.0" defer></script>'
+                    . '<script src="/assets/knowledgebase-mermaid.js?v=20260729" defer></script>';
+            }
+            $usedFallback = (bool) ($selectedTopic['used_fallback'] ?? false);
+            $fallbackNotice = $usedFallback
+                ? '<p class="kb-fallback-notice">This topic is not available in your selected language. Showing English.</p>'
+                : '';
+            $articleHtml = '<article class="kb-article">'
                 . '<div class="kb-article-meta">'
-                . (((int) ($selectedThread['is_pinned'] ?? 0) === 1) ? '<span class="kb-pill">Pinned</span>' : '')
-                . '<span>Slug: ' . $this->escape((string) ($selectedThread['slug'] ?? '')) . '</span>'
+                . (((int) ($selectedTopic['is_pinned'] ?? 0) === 1) ? '<span class="kb-pill">Pinned</span>' : '')
+                . '<span><span>Updated</span> <time>' . $this->escape((string) ($selectedTopic['updated_at'] ?? '')) . '</time></span>'
                 . '</div>'
-                . '<h2>' . $this->escape((string) ($selectedThread['title'] ?? 'Knowledgebase')) . '</h2>'
-                . '<div class="kb-article-body">' . (string) ($selectedThread['body_html'] ?? '') . '</div>'
-                . '</article>'
-            : '<section class="card"><h3>No published threads yet.</h3><p class="muted">Admins can create the first knowledgebase thread from the admin panel.</p></section>';
+                . $fallbackNotice
+                . '<h2>' . $this->escape((string) ($selectedTopic['title'] ?? 'User Guide')) . '</h2>'
+                . '<div class="kb-article-body">' . $articleBody . '</div>'
+                . '</article>';
+        }
 
         $body = $this->knowledgebaseStyles() . '
             <section class="kb-shell">
               <section class="kb-hero">
                 <div>
-                  <span class="kb-eyebrow">Knowledgebase / Docs</span>
-                  <h2>Threaded operational docs for admins and tenants</h2>
-                  <p class="muted">Read the starter threads, open the exact topic you need, and keep future updates as normal panel-managed content instead of one giant static page.</p>
+                  <span class="kb-eyebrow">User Guides</span>
+                  <h2>Practical guides for setting up and using your service</h2>
+                  <p class="muted">Start with the essentials, then open another topic only when you need it.</p>
                 </div>
                 <div class="actions">
                   ' . $adminButton . '
                 </div>
               </section>
               <section class="kb-layout">
-                <aside class="kb-sidebar">
-                  <h3>Latest Threads</h3>
-                  <div class="kb-thread-list">' . ($threadCards !== '' ? $threadCards : '<div class="card"><p class="muted">No published threads yet.</p></div>') . '</div>
-                </aside>
+                <aside class="kb-sidebar">' . $topicGroups . '</aside>
                 <div class="kb-content">' . $articleHtml . '</div>
               </section>
-            </section>';
+            </section>' . $mermaidAssets;
 
-        return $this->page('Knowledgebase', $body, $user, $this->knowledgebaseNav($user));
+        return $this->page('User Guides', $body, $user, $this->knowledgebaseNav($user));
     }
 
     public function registerPage(Request $request, array $params): Response
@@ -627,7 +725,7 @@ final class AuthController extends BaseController
 
         if ($user !== null && (string) ($user['status'] ?? '') === 'pending_verification') {
             SessionAuth::flash('error', 'This account is waiting for email verification. Please open the verification email first.');
-            return Response::redirect('/login');
+            return Response::redirect('/login?legacy=1');
         }
 
         if (
@@ -638,7 +736,7 @@ final class AuthController extends BaseController
             !password_verify($password, (string) $user['password_hash'])
         ) {
             SessionAuth::flash('error', 'Email or password is incorrect, or this account has not set a local password yet.');
-            return Response::redirect('/login');
+            return Response::redirect('/login?legacy=1');
         }
 
         SessionAuth::login($user);
@@ -846,6 +944,9 @@ final class AuthController extends BaseController
   .kb-sidebar {
     padding: 22px;
   }
+  .kb-topic-group + .kb-topic-group {
+    margin-top: 24px;
+  }
   .kb-thread-list {
     display: flex;
     flex-direction: column;
@@ -907,6 +1008,24 @@ final class AuthController extends BaseController
     gap: 14px;
     line-height: 1.72;
   }
+  .kb-article-body figure {
+    display: grid;
+    gap: 8px;
+    margin: 8px 0;
+    max-width: 100%;
+  }
+  .kb-article-body figure img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+    border: 1px solid #dfe5e1;
+    border-radius: 12px;
+  }
+  .kb-article-body figure figcaption {
+    color: var(--muted);
+    font-size: 0.875rem;
+  }
   .kb-article-body h2,
   .kb-article-body h3,
   .kb-article-body p,
@@ -914,10 +1033,20 @@ final class AuthController extends BaseController
   .kb-article-body ol {
     margin: 0;
   }
+  .kb-mermaid-figure { margin: 8px 0; max-width: 100%; overflow: hidden; }
+  .kb-mermaid-figure svg { display: block; width: 100%; max-width: 100%; height: auto; }
+  .kb-mermaid-error { color: var(--danger, #b42318); font-weight: 700; }
+  .kb-mermaid-failed { max-width: 100%; overflow-x: auto; white-space: pre; }
+  .kb-fallback-notice { border-left: 4px solid #b7791f; padding: 12px 14px; background: #fff8e6; }
   @media (max-width: 980px) {
     .kb-layout {
       grid-template-columns: 1fr;
     }
+  }
+  @media (max-width: 520px) {
+    .kb-article { padding: 20px 16px; }
+    .kb-sidebar { padding: 16px; }
+    .kb-mermaid-figure svg { min-width: 0; }
   }
 </style>
 HTML;

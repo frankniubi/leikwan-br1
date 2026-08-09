@@ -7,6 +7,12 @@ public sealed class BondingConfig
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; }
 
+    [JsonPropertyName("frontend_mode")]
+    public string FrontendMode { get; set; } = "";
+
+    [JsonPropertyName("strategy_locked")]
+    public bool StrategyLocked { get; set; } = true;
+
     [JsonPropertyName("hybrid_mode")]
     public string HybridMode { get; set; } = "quic_ws";
 

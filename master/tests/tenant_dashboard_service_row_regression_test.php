@@ -24,6 +24,13 @@ if ($start === false || $end === false || $end <= $start) {
 
 $dashboard = substr($source, $start, $end - $start);
 
+if (!str_contains($dashboard, 'LEFT JOIN forwards f ON f.service_id = s.id AND f.enabled = 1')) {
+    fail('dashboard must filter enabled forwards in the LEFT JOIN so services with only disabled forwards remain visible');
+}
+if (str_contains($dashboard, 'f.id IS NULL OR f.enabled = 1')) {
+    fail('dashboard must not filter forwards in WHERE because that removes services with only disabled forwards');
+}
+
 foreach ([
     "(int) \$service['id']",
     "(string) \$service['name']",

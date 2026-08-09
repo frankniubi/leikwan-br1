@@ -138,6 +138,30 @@ class SidecarDualRuntimeRegressionTests(unittest.TestCase):
                             "reorder_window_packets": 4096,
                             "reorder_window_bytes": 16777216,
                             "reorder_timeout_ms": 25,
+                            "delivery_mode": "unordered",
+                            "wireguard_aware": True,
+                            "scheduler_mode": "feedback_drr",
+                            "aggregate_rate_bps": 300_000_000,
+                            "queue_target_ms": 5,
+                            "queue_deadline_ms": 10,
+                            "global_queue_bytes": 1_048_576,
+                            "global_queue_packets": 8_192,
+                            "per_session_queue_bytes": 262_144,
+                            "per_session_queue_packets": 512,
+                            "drr_quantum_bytes": 16_384,
+                            "chunk_min_bytes": 16_384,
+                            "chunk_target_bytes": 32_768,
+                            "chunk_max_bytes": 65_536,
+                            "min_leg_window_bytes": 262_144,
+                            "max_leg_window_bytes": 4_194_304,
+                            "max_total_outstanding_bytes": 8_388_608,
+                            "progress_interval_bytes": 65_536,
+                            "progress_interval_frames": 32,
+                            "progress_interval_ms": 5,
+                            "finish_skew_budget_ms": 2,
+                            "probe_interval_ms": 1_000,
+                            "max_sessions": 4_096,
+                            "control_queue_packets": 256,
                         },
                     }
                 ),
@@ -162,7 +186,8 @@ class SidecarDualRuntimeRegressionTests(unittest.TestCase):
                     with mock.patch.object(agent, "systemd_is_active", return_value=True):
                         with mock.patch.object(sidecar_agent_module, "write_text_if_changed", side_effect=fake_write):
                             with mock.patch.object(sidecar_agent_module.subprocess, "run") as run_mock:
-                                agent.apply_management_config(management, {})
+                                with mock.patch.object(sidecar_agent_module, "require_uot_feedback_capability"):
+                                    agent.apply_management_config(management, {})
 
             relay_mock.assert_not_called()
             runtime_path = str(state_dir / "udp-uot-runtime.json").replace("\\", "/")
@@ -181,6 +206,13 @@ class SidecarDualRuntimeRegressionTests(unittest.TestCase):
             self.assertEqual(payload["listen_port"], 8999)
             self.assertEqual(payload["token_secret"], "secret-123")
             self.assertEqual(payload["allowed_forward_ids"], [26])
+            self.assertEqual(payload["scheduler_mode"], "feedback_drr")
+            self.assertEqual(payload["aggregate_rate_bps"], 300_000_000)
+            self.assertEqual(payload["queue_deadline_ms"], 10)
+            self.assertEqual(payload["global_queue_bytes"], 1_048_576)
+            self.assertEqual(payload["chunk_target_bytes"], 32_768)
+            self.assertEqual(payload["max_total_outstanding_bytes"], 8_388_608)
+            self.assertEqual(payload["control_queue_packets"], 256)
 
 
 if __name__ == "__main__":

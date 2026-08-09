@@ -1,0 +1,50 @@
+<h2>你将完成什么</h2>
+<p>你将从已生效的套餐创建第一条转发，只填写表单中看得见的目标和传输选项，并记下应用后续连接所需的本地端口。</p>
+
+<h2>开始前准备</h2>
+<ul>
+  <li>确认套餐或服务状态为<strong>有效</strong>。</li>
+  <li>准备目标服务的主机名或 IP 地址。</li>
+  <li>确认目标端口，以及应用使用 TCP、UDP 还是两者。</li>
+  <li>不要猜测表单之外的内部设置。</li>
+</ul>
+
+<h2>操作步骤</h2>
+<pre class="mermaid">flowchart TD
+accTitle: 第一条转发表单路径
+accDescr: 打开有效套餐，选择转发线路，填写目标和传输方式，保存后等待预配完成并记下系统分配的本地端口。
+A[打开有效套餐] --&gt; B[选择 Forward Route]
+B --&gt; C[填写 Target Host 和 Target Port]
+C --&gt; D[选择 Transport]
+D --&gt; E[保存]
+E --&gt; F[等待转发可用]
+F --&gt; G[记下分配的本地端口]</pre>
+<p>第一张表单只需要线路方案、目标地址、目标端口、本地端口偏好和传输类型。保存会启动预配流程，系统分配的本地端口是下一步连接客户端时要使用的值。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表单显示 Forward Route、Target Host、Target Port、Local Listen Port 和 Transport">
+  <figcaption>演示截图：如果没有指定端口，把 Local Listen Port 留空，让面板分配。</figcaption>
+</figure>
+<ol>
+  <li>打开已生效的服务，选择 <strong>Create Forward</strong>。</li>
+  <li>在 <strong>Forward Route</strong> 中选择系统提供的线路方案。</li>
+  <li>在 <strong>Target Host</strong> 填写目标主机名或 IP。</li>
+  <li>在 <strong>Target Port</strong> 填写目标服务端口。</li>
+  <li>没有指定安全端口时，将 <strong>Local Listen Port</strong> 留空，让系统分配本地端口。</li>
+  <li>在 <strong>Transport</strong> 中为仅使用 TCP 的应用选择 <strong>TCP</strong>。</li>
+  <li>应用同时需要两种传输时选择 <strong>TCP + UDP</strong>，仅使用 UDP 时才选择 <strong>UDP</strong>。</li>
+  <li>选择 <strong>Create Forward</strong> 完成保存。</li>
+  <li>等待预配完成，再从转发卡片记下系统分配的本地端口。</li>
+</ol>
+
+<h2>如何确认成功</h2>
+<p>新转发卡片应显示预期的目标和本地端口。保存记录、预配完成、客户端最近同步、显示 <strong>Running</strong> 和应用成功是五个不同检查点；先等待配置可用，再在客户端同步后验证真实请求。</p>
+
+<h2>如果没有成功</h2>
+<p><strong>先停止猜测隐藏选项。</strong>如果没有可选的 Forward Route，或目标地址不确定，请确认套餐有效，只修正上述可见字段，并联系管理员发布合适的线路方案。</p>
+
+<h2>相关指南</h2>
+<ul>
+  <li><a href="/knowledgebase?thread=install-client">安装客户端</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">连接并验证</a></li>
+  <li><a href="/knowledgebase?thread=glossary">名词解释</a></li>
+</ul>

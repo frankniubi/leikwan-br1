@@ -4,11 +4,16 @@ declare(strict_types=1);
 use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Support\MigrationRunner;
-use Leikwan\Master\Support\ApiException;
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_start();
 }
+
+header('Cache-Control: no-store');
+header('Pragma: no-cache');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: no-referrer');
 
 spl_autoload_register(static function (string $class): void {
     $prefix = 'Leikwan\\Master\\';
@@ -27,6 +32,59 @@ $root = dirname(__DIR__);
 $envPath = $root . '/.env';
 $examplePath = $root . '/.env.example';
 $existingValues = readEnvFile(is_file($envPath) ? $envPath : $examplePath);
+$installed = is_file($envPath);
+$bootstrapTokenPath = $root . '/.installer-access-token';
+
+try {
+    $accessValues = $existingValues;
+    if (!$installed) {
+        $accessValues['INSTALLER_ACCESS_TOKEN'] = bootstrapInstallerToken($bootstrapTokenPath);
+    }
+} catch (Throwable $throwable) {
+    error_log('installer bootstrap token initialization failed: ' . $throwable::class);
+    http_response_code(500);
+    echo renderShell(
+        'LeiKwan Bridge Installer',
+        '<div class="callout danger"><strong>Installer unavailable.</strong><p>Installer access could not be initialized. Check the server logs.</p></div>'
+    );
+    exit;
+}
+
+if (!installerSessionAuthorized($accessValues)) {
+    $unlockError = '';
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && array_key_exists('installer_unlock_token', $_POST)) {
+        $expectedToken = configuredInstallerAccessToken($accessValues);
+        $providedToken = trim((string) $_POST['installer_unlock_token']);
+        if ($expectedToken !== '' && $providedToken !== '' && hash_equals($expectedToken, $providedToken)) {
+            session_regenerate_id(true);
+            $_SESSION['installer_access_hash'] = hash('sha256', $expectedToken);
+            header('Location: /install.php');
+            exit;
+        }
+        $unlockError = '<div class="callout danger"><strong>Access denied.</strong><p>The installer access token was not accepted.</p></div>';
+    }
+
+    http_response_code(403);
+    $accessHint = $installed
+        ? 'Use the local <code>INSTALLER_ACCESS_TOKEN</code>. Legacy installations may use their admin API token once, then save to generate a dedicated token.'
+        : 'Read the one-time token from <code>.installer-access-token</code> on the server. It is never sent to an unauthenticated browser.';
+    $body = $unlockError
+        . '<section class="card"><h2>Installer Access</h2>'
+        . '<p class="muted">' . $accessHint . '</p>'
+        . '<form method="post" autocomplete="off">'
+        . '<div class="field"><label>Installer Access Token</label><input type="password" name="installer_unlock_token" required></div>'
+        . '<div class="actions"><button class="button" type="submit">Unlock Installer</button></div>'
+        . '</form></section>';
+    echo renderShell('LeiKwan Bridge Installer', $body);
+    exit;
+}
+
+$installerCsrf = (string) ($_SESSION['installer_csrf_token'] ?? '');
+if ($installerCsrf === '') {
+    $installerCsrf = bin2hex(random_bytes(32));
+    $_SESSION['installer_csrf_token'] = $installerCsrf;
+}
+
 $defaults = array_merge([
     'APP_NAME' => '利群會聚 LeiKwan Bridge',
     'APP_ENV' => 'production',
@@ -44,6 +102,7 @@ $defaults = array_merge([
     'REDIS_HOST' => '127.0.0.1',
     'REDIS_PORT' => '6379',
     'MASTER_ADMIN_TOKEN' => '',
+    'INSTALLER_ACCESS_TOKEN' => '',
     'WHMCS_WEBHOOK_TOKEN' => '',
     'NODE_ENROLLMENT_TOKEN' => '',
     'WHMCS_BASE_URL' => 'https://buy.leikwanhost.com',
@@ -58,9 +117,14 @@ $defaults = array_merge([
     'MAX_TASK_BATCH' => '20',
     'NODE_HEARTBEAT_TTL_SECONDS' => '90',
 ], $existingValues);
+foreach (['MASTER_ADMIN_TOKEN', 'INSTALLER_ACCESS_TOKEN', 'WHMCS_WEBHOOK_TOKEN', 'NODE_ENROLLMENT_TOKEN'] as $tokenKey) {
+    if (str_starts_with(strtolower(trim((string) ($defaults[$tokenKey] ?? ''))), 'change_me')) {
+        $defaults[$tokenKey] = '';
+    }
+}
 
-$warningHtml = is_file($envPath)
-    ? '<div class="callout danger"><strong>Installer re-entry is enabled.</strong><p>This is convenient for upgrades and recovery, but you should restrict web access to <code>/install.php</code> with your own firewall, HTTP auth, or admin-only exposure.</p></div>'
+$warningHtml = $installed
+    ? '<div class="callout"><strong>Authenticated installer session.</strong><p>Re-entry is protected by the local installer token. Keep network access to <code>/install.php</code> restricted as an additional control.</p></div>'
     : '';
 
 $messageHtml = '';
@@ -68,15 +132,22 @@ $statusHtml = '';
 $formValues = $defaults;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $formValues = collectFormValues($defaults);
-    foreach (['MASTER_ADMIN_TOKEN', 'WHMCS_WEBHOOK_TOKEN', 'NODE_ENROLLMENT_TOKEN'] as $tokenKey) {
-        if (trim((string) $formValues[$tokenKey]) === '') {
-            $formValues[$tokenKey] = bin2hex(random_bytes(24));
-        }
-    }
-
+    $installerLock = null;
     try {
+        validateInstallerCsrf((string) ($_POST['installer_csrf_token'] ?? ''), $installerCsrf);
+        $installerLock = acquireInstallerLock($root . '/.installer.lock');
+        $formValues = collectFormValues($defaults);
+        foreach (['MASTER_ADMIN_TOKEN', 'INSTALLER_ACCESS_TOKEN', 'WHMCS_WEBHOOK_TOKEN', 'NODE_ENROLLMENT_TOKEN'] as $tokenKey) {
+            if (trim((string) $formValues[$tokenKey]) === '') {
+                $formValues[$tokenKey] = bin2hex(random_bytes(24));
+            }
+        }
+
         writeEnvFile($envPath, $formValues, $examplePath);
+        $_SESSION['installer_access_hash'] = hash('sha256', (string) $formValues['INSTALLER_ACCESS_TOKEN']);
+        if (!$installed && is_file($bootstrapTokenPath)) {
+            @unlink($bootstrapTokenPath);
+        }
 
         $config = new Config($envPath);
         $db = new Database($config);
@@ -104,11 +175,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'admin_result' => $adminChanged,
         ]);
     } catch (Throwable $throwable) {
-        $detailsHtml = '';
-        if ($throwable instanceof ApiException && $throwable->details() !== []) {
-            $detailsHtml = '<pre>' . h(json_encode($throwable->details(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) . '</pre>';
-        }
-        $messageHtml = '<div class="callout danger"><strong>Install / update failed.</strong><p>' . h($throwable->getMessage()) . '</p>' . $detailsHtml . '</div>';
+        error_log('installer operation failed: ' . $throwable::class);
+        $messageHtml = '<div class="callout danger"><strong>Install / update failed.</strong><p>Install / update could not be completed. Check the server logs.</p></div>';
+    } finally {
+        releaseInstallerLock($installerLock);
     }
 } else {
     try {
@@ -125,7 +195,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
         }
     } catch (Throwable $throwable) {
-        $statusHtml = '<div class="callout danger"><strong>Current status check failed.</strong><p>' . h($throwable->getMessage()) . '</p></div>';
+        error_log('installer status check failed: ' . $throwable::class);
+        $statusHtml = '<div class="callout danger"><strong>Current status check failed.</strong><p>Status is temporarily unavailable. Check the server logs.</p></div>';
     }
 }
 
@@ -136,7 +207,8 @@ $body = $warningHtml
         <section class="card">
           <h2>Install / Update</h2>
           <p class="muted">Use this page for first-time setup and for safe repeatable updates. It writes <code>.env</code>, applies missing migrations and can create or reset the admin account. If Cloudflare protects your panel domain, set <code>Agent API URL</code> to a non-proxied machine-only domain for slave/client agents and install scripts.</p>
-          <form method="post">
+          <form method="post" autocomplete="off">
+            <input type="hidden" name="installer_csrf_token" value="' . h($installerCsrf) . '">
             <div class="form-grid">
               <div class="field"><label>App Name</label><input name="APP_NAME" value="' . h((string) $formValues['APP_NAME']) . '"></div>
               <div class="field"><label>App URL</label><input name="APP_URL" value="' . h((string) $formValues['APP_URL']) . '" placeholder="https://panel.example.com"></div>
@@ -157,15 +229,15 @@ $body = $warningHtml
               <div class="field"><label>DB Port</label><input name="DB_PORT" value="' . h((string) $formValues['DB_PORT']) . '"></div>
               <div class="field"><label>DB Name / SQLite Path</label><input name="DB_NAME" value="' . h((string) $formValues['DB_NAME']) . '"></div>
               <div class="field"><label>DB User</label><input name="DB_USER" value="' . h((string) $formValues['DB_USER']) . '"></div>
-              <div class="field"><label>DB Password</label><input type="password" name="DB_PASSWORD" value="' . h((string) $formValues['DB_PASSWORD']) . '"></div>
+              <div class="field"><label>DB Password</label><input type="password" name="DB_PASSWORD" placeholder="Leave blank to keep the current value"></div>
               <div class="field"><label>Redis Host</label><input name="REDIS_HOST" value="' . h((string) $formValues['REDIS_HOST']) . '"></div>
               <div class="field"><label>Redis Port</label><input name="REDIS_PORT" value="' . h((string) $formValues['REDIS_PORT']) . '"></div>
               <div class="field"><label>WHMCS Base URL</label><input name="WHMCS_BASE_URL" value="' . h((string) $formValues['WHMCS_BASE_URL']) . '"></div>
               <div class="field"><label>WHMCS Identifier</label><input name="WHMCS_API_IDENTIFIER" value="' . h((string) $formValues['WHMCS_API_IDENTIFIER']) . '"></div>
-              <div class="field"><label>WHMCS Secret</label><input type="password" name="WHMCS_API_SECRET" value="' . h((string) $formValues['WHMCS_API_SECRET']) . '"></div>
-              <div class="field"><label>Admin Token</label><input name="MASTER_ADMIN_TOKEN" value="' . h((string) $formValues['MASTER_ADMIN_TOKEN']) . '"></div>
-              <div class="field"><label>WHMCS Webhook Token</label><input name="WHMCS_WEBHOOK_TOKEN" value="' . h((string) $formValues['WHMCS_WEBHOOK_TOKEN']) . '"></div>
-              <div class="field"><label>Node Enrollment Token</label><input name="NODE_ENROLLMENT_TOKEN" value="' . h((string) $formValues['NODE_ENROLLMENT_TOKEN']) . '"></div>
+              <div class="field"><label>WHMCS Secret</label><input type="password" name="WHMCS_API_SECRET" placeholder="Leave blank to keep the current value"></div>
+              <div class="field"><label>Admin Token</label><input type="password" name="MASTER_ADMIN_TOKEN" placeholder="Leave blank to keep or generate securely"></div>
+              <div class="field"><label>WHMCS Webhook Token</label><input type="password" name="WHMCS_WEBHOOK_TOKEN" placeholder="Leave blank to keep or generate securely"></div>
+              <div class="field"><label>Node Enrollment Token</label><input type="password" name="NODE_ENROLLMENT_TOKEN" placeholder="Leave blank to keep or generate securely"></div>
             </div>
             <h3>Admin Account</h3>
             <div class="form-grid">
@@ -216,12 +288,81 @@ function readEnvFile(string $path): array
     return $values;
 }
 
+function bootstrapInstallerToken(string $path): string
+{
+    if (is_file($path)) {
+        $existing = trim((string) file_get_contents($path));
+        if (strlen($existing) >= 32) {
+            return $existing;
+        }
+        throw new RuntimeException('installer_bootstrap_token_invalid');
+    }
+
+    $token = bin2hex(random_bytes(32));
+    $handle = @fopen($path, 'x');
+    if ($handle === false) {
+        $existing = is_file($path) ? trim((string) file_get_contents($path)) : '';
+        if (strlen($existing) >= 32) {
+            return $existing;
+        }
+        throw new RuntimeException('installer_bootstrap_token_create_failed');
+    }
+    try {
+        if (fwrite($handle, $token . PHP_EOL) === false) {
+            throw new RuntimeException('installer_bootstrap_token_write_failed');
+        }
+    } finally {
+        fclose($handle);
+    }
+    @chmod($path, 0600);
+    return $token;
+}
+
+function configuredInstallerAccessToken(array $values): string
+{
+    foreach (['INSTALLER_ACCESS_TOKEN', 'MASTER_ADMIN_TOKEN'] as $key) {
+        $token = trim((string) ($values[$key] ?? ''));
+        if (strlen($token) >= 24 && !str_starts_with(strtolower($token), 'change_me')) {
+            return $token;
+        }
+    }
+    return '';
+}
+
+function installerSessionAuthorized(array $values): bool
+{
+    $expectedToken = configuredInstallerAccessToken($values);
+    $sessionHash = (string) ($_SESSION['installer_access_hash'] ?? '');
+    return $expectedToken !== ''
+        && $sessionHash !== ''
+        && hash_equals(hash('sha256', $expectedToken), $sessionHash);
+}
+
+function validateInstallerCsrf(string $providedToken, string $expectedToken): void
+{
+    if ($providedToken === '' || !hash_equals($expectedToken, $providedToken)) {
+        throw new RuntimeException('installer_request_invalid');
+    }
+}
+
 function collectFormValues(array $defaults): array
 {
     $values = $defaults;
+    $secretKeys = [
+        'DB_PASSWORD',
+        'WHMCS_API_SECRET',
+        'MASTER_ADMIN_TOKEN',
+        'INSTALLER_ACCESS_TOKEN',
+        'WHMCS_WEBHOOK_TOKEN',
+        'NODE_ENROLLMENT_TOKEN',
+    ];
     foreach ($defaults as $key => $value) {
         if (array_key_exists($key, $_POST)) {
-            $values[$key] = (string) $_POST[$key];
+            $submitted = (string) $_POST[$key];
+            if (in_array($key, $secretKeys, true) && trim($submitted) === '' && trim((string) $value) !== '') {
+                continue;
+            }
+            $values[$key] = $submitted;
         }
     }
     return $values;
@@ -247,11 +388,54 @@ function writeEnvFile(string $path, array $values, string $templatePath): void
     $lines = [];
     foreach ($orderedKeys as $key) {
         $value = (string) ($values[$key] ?? '');
+        if (preg_match('/^[A-Z][A-Z0-9_]*$/', $key) !== 1) {
+            throw new RuntimeException('installer_env_key_invalid');
+        }
+        if (preg_match('/[\r\n\x00]/', $value) === 1) {
+            throw new RuntimeException('installer_env_value_invalid');
+        }
         $needsQuotes = str_contains($value, ' ') || str_contains($value, '#');
         $encoded = $needsQuotes ? '"' . addcslashes($value, "\\\"") . '"' : $value;
         $lines[] = $key . '=' . $encoded;
     }
-    file_put_contents($path, implode(PHP_EOL, $lines) . PHP_EOL);
+    $temporaryPath = $path . '.tmp.' . bin2hex(random_bytes(8));
+    try {
+        $bytes = file_put_contents($temporaryPath, implode(PHP_EOL, $lines) . PHP_EOL, LOCK_EX);
+        if ($bytes === false) {
+            throw new RuntimeException('installer_env_write_failed');
+        }
+        @chmod($temporaryPath, 0600);
+        if (!@rename($temporaryPath, $path)) {
+            throw new RuntimeException('installer_env_replace_failed');
+        }
+        @chmod($path, 0600);
+    } finally {
+        if (is_file($temporaryPath)) {
+            @unlink($temporaryPath);
+        }
+    }
+}
+
+function acquireInstallerLock(string $path)
+{
+    $handle = @fopen($path, 'c');
+    if ($handle === false || !flock($handle, LOCK_EX | LOCK_NB)) {
+        if (is_resource($handle)) {
+            fclose($handle);
+        }
+        throw new RuntimeException('installer_lock_unavailable');
+    }
+    @chmod($path, 0600);
+    return $handle;
+}
+
+function releaseInstallerLock($handle): void
+{
+    if (!is_resource($handle)) {
+        return;
+    }
+    flock($handle, LOCK_UN);
+    fclose($handle);
 }
 
 function upsertAdminUser(Database $db, string $email, string $password, string $name): array
@@ -365,7 +549,7 @@ function renderShell(string $title, string $body): string
   <title>' . h($title) . '</title>
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260725">
-  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260727f">
+  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260729a">
 </head>
 <body class="pg-public">
   <div class="shell">

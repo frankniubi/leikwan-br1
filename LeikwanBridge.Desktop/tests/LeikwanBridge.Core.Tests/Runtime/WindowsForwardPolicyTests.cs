@@ -6,6 +6,30 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 
 public sealed class WindowsForwardPolicyTests
 {
+    [Theory]
+    [InlineData("single")]
+    [InlineData("race")]
+    public void IsSupportedOnWindows_AcceptsExplicitSidecarFrontend(string mode)
+    {
+        var forward = CreateForward(50, mode);
+        forward.BackendMode = "current_mode";
+        forward.ContractVersion = 1;
+        forward.ClientMode = mode;
+        forward.ActiveFamily = "sidecar_aggregation";
+        forward.AggregationEnabled = false;
+        forward.TargetContract = "sidecar_aggregation";
+        forward.SidecarRequired = true;
+        forward.BondSidecarPointId = 10;
+        forward.Bonding = new BondingConfig
+        {
+            FrontendMode = mode,
+            StrategyLocked = true,
+            RemoteTarget = "10.240.10.1:18501",
+        };
+
+        Assert.True(WindowsForwardPolicy.IsSupportedOnWindows(forward));
+    }
+
     [Fact]
     public void FilterSupportedForwards_KeepsSupportedRuntimeModesForLegacyConfigs()
     {

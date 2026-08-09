@@ -1,0 +1,51 @@
+<h2>你将完成什么</h2>
+<p>你将按稳定、容错和多路径需求理解 Single、Race 与 Bond，为转发选择已被线路方案和客户端平台支持的连接模式，并避开无法保证的性能承诺。</p>
+
+<h2>开始前准备</h2>
+<ul>
+  <li>如果条件允许，先让一条基础转发稳定工作。</li>
+  <li>阅读套餐发布的线路约定，并确认客户端平台。</li>
+  <li>分清自己需要的是简单稳定、路径容错，还是明确受支持的 Bond 方案。</li>
+  <li>不要只因为名称听起来更快就更改模式。</li>
+</ul>
+
+<h2>操作步骤</h2>
+<pre class="mermaid">flowchart TD
+accTitle: 连接模式选择路径
+accDescr: 需要最简单的稳定路径时选择 Single，需要受支持的非聚合容错时选择 Race，只有方案明确支持且要求均已核实时才选择 Bond。
+A[你需要什么结果] --&gt; B{最简单的稳定路径吗}
+B -- 是 --&gt; C[选择 Single]
+B -- 否 --&gt; D{需要非聚合容错吗}
+D -- 是 --&gt; E[选择 Race]
+D -- 否 --&gt; F{方案明确支持 Bond 吗}
+F -- 是 --&gt; G[选择 Bond 并核对要求]
+F -- 否 --&gt; H[咨询管理员]</pre>
+<p>安全默认选项是 Single。Race 用于受支持的路径选择或容错，不会合并带宽；Bond 只适用于发布的线路约定明确支持该套餐和平台的情况。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发结果页显示用户可见的线路结果，而不是内部 Single、Race 或 Bond 组合">
+  <figcaption>演示截图：租户检查线路结果和状态，内部拓扑由方案管理。</figcaption>
+</figure>
+<ol>
+  <li>需要最简单、稳定的连接时选择 <strong>Single</strong>。</li>
+  <li>线路约定提供至少两个可用端点，且需要不聚合带宽的容错时选择 <strong>Race</strong>。</li>
+  <li>Race 不是带宽聚合。</li>
+  <li>Linux 的 TCP Race 通常每条连接选择一个胜出路径。</li>
+  <li>Linux 的 UDP Race 可能把数据报发送到多个可用路径。</li>
+  <li>Race 的具体行为因客户端平台而异，Android 不承诺 Race 或 MPTCP。</li>
+  <li>只有已发布的线路约定明确支持时才选择 <strong>Bond</strong>。</li>
+  <li>逐项核对 Bond 要求；仅在线路约定要求时使用 Sidecar。</li>
+  <li>支持范围不清楚时咨询管理员，不要猜测。</li>
+</ol>
+
+<h2>如何确认成功</h2>
+<p>连接模式必须同时符合套餐约定和客户端平台能力，真实应用也要在预期条件下成功。Race 应验证一个可用路径失效后受支持的请求仍能继续；Bond 应核对约定和实际结果，不能根据状态推断速度翻倍、跑满带宽或所有路径都被使用。</p>
+
+<h2>如果没有成功</h2>
+<p><strong>先停止承诺加速倍数或所有路径同时工作。</strong>如果 Single 可用且稳定，先恢复 Single，记录失败的平台和线路方案，再请管理员确认所需的 Race 或 Bond 行为是否受支持。</p>
+
+<h2>相关指南</h2>
+<ul>
+  <li><a href="/knowledgebase?thread=bond-sidecar-setup">配置 Sidecar</a></li>
+  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a></li>
+  <li><a href="/knowledgebase?thread=glossary">名词解释</a></li>
+</ul>

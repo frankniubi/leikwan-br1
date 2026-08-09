@@ -18,6 +18,7 @@ final class ProvisioningService
 
     private ?bool $nodeGroupIngressColumnsAvailable = null;
     private ?bool $nodeGroupDescriptionColumnAvailable = null;
+    private ?LeigodLineCatalogService $leigodLineCatalogService = null;
 
     /**
      * Per-(sidecar point) uniqueness-checked allocation registries. Keyed by point id,
@@ -30,8 +31,10 @@ final class ProvisioningService
     private array $staticSidecarUplinkPortRegistry = [];
     /** @var array<int, array<string, int>> */
     private array $staticSidecarLegPortRegistry = [];
-    /** @var array<int, array<string, string>> */
+    /** @var array<int, array<string, int>> */
     private array $staticSidecarSubnetRegistry = [];
+    /** @var array<int, bool> */
+    private array $sharedStaticSidecarSubnetRegistryPrimed = [];
     /** @var array<string, bool> */
     private array $staticSidecarUndersizeReported = [];
     /**
@@ -46,6 +49,101 @@ final class ProvisioningService
         private Config $config,
         private Database $db,
     ) {
+    }
+
+    private function leigodLineCatalog(): LeigodLineCatalogService
+    {
+        return $this->leigodLineCatalogService ??= new LeigodLineCatalogService($this->config, $this->db);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function listLeigodLines(): array
+    {
+        return $this->leigodLineCatalog()->listLines();
+    }
+
+    /** @return array<string, mixed> */
+    public function saveLeigodLine(array $payload): array
+    {
+        return $this->leigodLineCatalog()->saveLine($payload);
+    }
+
+    public function deleteLeigodLine(int $id): void
+    {
+        $this->leigodLineCatalog()->deleteLine($id);
+    }
+
+    /** @return array{lines:array<int, array<string, mixed>>} */
+    public function desiredLeigodLineManagementForNode(int $nodeId): array
+    {
+        return ['lines' => $this->leigodLineCatalog()->desiredLinesForNode($nodeId)];
+    }
+
+    /**
+     * @param array<int|string, mixed> $payload
+     * @return array{accepted:int,rejected:int}
+     */
+    public function ingestNodeLeigodLineHealth(int $nodeId, array $payload): array
+    {
+        return $this->leigodLineCatalog()->ingestNodeHealth($nodeId, $payload);
+    }
+
+    /** @return array<string, mixed> */
+    public function leigodRouteAvailability(int $routeId, string $transport): array
+    {
+        if (!$this->forwardRouteUsesDedicatedLeigod($routeId)) {
+            return [
+                'route_id' => $routeId,
+                'health_gated' => false,
+                'available' => true,
+                'healthy_node_count' => null,
+                'unavailable_reason' => null,
+                'nodes' => [],
+            ];
+        }
+        return ['health_gated' => true] + $this->leigodLineCatalog()->routeAvailability($routeId, $transport);
+    }
+
+    /** @return array<int, array{leigod_line_id:int,enabled:int,sort_order:int}> */
+    private function legacyLeigodMembershipPayload(int $lineId): array
+    {
+        $line = $this->db->fetchOne(
+            'SELECT * FROM leigod_lines WHERE line_id = :line_id LIMIT 1',
+            ['line_id' => $lineId]
+        );
+        $catalogId = (int) ($line['id'] ?? 0);
+        if ($catalogId <= 0) {
+            $now = $this->now();
+            $catalogId = $this->db->insert('leigod_lines', [
+                'line_id' => $lineId,
+                'label' => 'Legacy line ' . $lineId,
+                'notes' => null,
+                'tcp_probe_host' => '',
+                'tcp_probe_port' => 0,
+                'udp_probe_host' => null,
+                'udp_probe_port' => null,
+                'udp_probe_method' => null,
+                'config_sha256' => str_repeat('0', 64),
+                'is_active' => 0,
+                'sort_order' => 100,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+
+        return [[
+            'leigod_line_id' => $catalogId,
+            'enabled' => 1,
+            'sort_order' => 100,
+        ]];
+    }
+
+    private function transactionIfSupported(callable $callback): mixed
+    {
+        if (method_exists($this->db, 'transaction')) {
+            return $this->db->transaction($callback);
+        }
+        return $callback($this->db);
     }
 
     /**
@@ -283,9 +381,72 @@ final class ProvisioningService
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
-    public function createForward(int $serviceId, array $payload, string $actor = 'user'): array
+    public function createForward(
+        int $serviceId,
+        array $payload,
+        string $actor = 'user',
+        ?string $idempotencyKeyHash = null,
+        ?string $requestHash = null,
+        ?int $activeForwardLimit = null,
+        ?array $mutationPolicy = null
+    ): array
     {
-        return $this->saveForward($serviceId, null, $payload, $actor);
+        return $this->db->transaction(function () use ($serviceId, $payload, $actor, $idempotencyKeyHash, $requestHash, $activeForwardLimit, $mutationPolicy): array {
+            $this->lockForwardMutationService($serviceId, $mutationPolicy, 'service_not_found');
+
+            if (is_string($idempotencyKeyHash) && $idempotencyKeyHash !== '') {
+                $existing = $this->db->fetchOne(
+                    'SELECT id, enabled, api_request_hash
+                     FROM forwards
+                     WHERE service_id = :service_id
+                       AND api_idempotency_key_hash = :key_hash
+                     LIMIT 1',
+                    ['service_id' => $serviceId, 'key_hash' => $idempotencyKeyHash]
+                );
+                if ($existing !== null) {
+                    if (!is_string($requestHash)
+                        || !hash_equals((string) ($existing['api_request_hash'] ?? ''), $requestHash)) {
+                        throw new ApiException('idempotency_conflict', 409);
+                    }
+                    if ((int) ($existing['enabled'] ?? 0) !== 1) {
+                        throw new ApiException('idempotency_resource_inactive', 409);
+                    }
+                    return ['forward_id' => (int) $existing['id'], 'idempotent_replay' => true];
+                }
+            }
+
+            if ($activeForwardLimit !== null) {
+                $limit = max(1, min(100000, $activeForwardLimit));
+                $count = $this->db->fetchOne(
+                    'SELECT COUNT(*) AS active_count
+                     FROM forwards
+                     WHERE service_id = :service_id AND enabled = 1',
+                    ['service_id' => $serviceId]
+                );
+                if ((int) ($count['active_count'] ?? 0) >= $limit) {
+                    throw new ApiException('forward_quota_exceeded', 409);
+                }
+            }
+
+            if ($mutationPolicy !== null) {
+                $storedLimit = max(
+                    1,
+                    $activeForwardLimit ?? 0,
+                    min(1000000, $this->config->getInt('USER_FORWARD_STORED_LIMIT_PER_SERVICE', 512))
+                );
+                $stored = $this->db->fetchOne(
+                    'SELECT COUNT(*) AS stored_count
+                     FROM forwards
+                     WHERE service_id = :service_id',
+                    ['service_id' => $serviceId]
+                );
+                if ((int) ($stored['stored_count'] ?? 0) >= $storedLimit) {
+                    throw new ApiException('forward_storage_quota_exceeded', 409);
+                }
+            }
+
+            return $this->saveForward($serviceId, null, $payload, $actor, $idempotencyKeyHash, $requestHash);
+        });
     }
 
     /**
@@ -458,6 +619,33 @@ final class ProvisioningService
         return $backendMode === 'cf_mode' || $this->combinationUsesAggregation($clientMode, $runtimePreference);
     }
 
+    /**
+     * @param array<string, mixed> $forward
+     */
+    public function usesSingleRaceSidecarFrontend(array $forward): bool
+    {
+        $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
+        if (!in_array($clientMode, ['single', 'race'], true)) {
+            return false;
+        }
+        if (strtolower(trim((string) ($forward['backend_mode'] ?? 'current_mode'))) !== 'current_mode') {
+            return false;
+        }
+        $pointId = (int) ($forward['bond_sidecar_point_id'] ?? $forward['sidecar_point_id'] ?? 0);
+        if ($pointId <= 0) {
+            return false;
+        }
+        $pointConfigSource = $forward['bond_sidecar_point_agent_config_json']
+            ?? $forward['sidecar_agent_config_json']
+            ?? null;
+        if ($pointConfigSource === null || $pointConfigSource === '') {
+            $point = $this->sidecarPointById($pointId);
+            $pointConfigSource = is_array($point) ? ($point['agent_config_json'] ?? null) : null;
+        }
+        $pointConfig = $this->decodeJsonAssoc($pointConfigSource);
+        return $this->configValueEnabled($pointConfig['single_race_via_sidecar'] ?? false);
+    }
+
     private function activeFamilyForRuntime(string $backendMode, string $clientMode, string $runtimePreference): string
     {
         if ($this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference)) {
@@ -628,9 +816,38 @@ final class ProvisioningService
         if (!in_array($selfLegOuterTransport, ['cnix', 'cf', 'leigod'], true)) {
             throw new ApiException('invalid_self_leg_outer_transport', 422, ['self_leg_outer_transport' => $selfLegOuterTransport]);
         }
-        $leigodLineId = max(0, (int) ($payload['leigod_line_id'] ?? 0));
         $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+        $leigodLineId = max(0, (int) ($payload['leigod_line_id'] ?? 0));
+        $membershipPayloadProvided = array_key_exists('leigod_lines', $payload);
+        if ($membershipPayloadProvided && !is_array($payload['leigod_lines'])) {
+            throw new ApiException('invalid_leigod_line_memberships', 422);
+        }
+        $catalogMembershipsSupported = method_exists($this->db, 'transaction');
+        $normalizedLeigodMemberships = null;
+        $legacyScalarMembership = false;
+        $membershipRequireReady = false;
+
         if ($selfLegOuterTransport === 'leigod') {
+            if ($catalogMembershipsSupported && $membershipPayloadProvided) {
+                $membershipRequireReady = $isActive === 1 && !$sidecarRequired;
+                $normalizedLeigodMemberships = $this->leigodLineCatalog()->normalizeMemberships(
+                    $payload['leigod_lines'],
+                    $membershipRequireReady
+                );
+                $firstEnabledMembership = null;
+                foreach ($normalizedLeigodMemberships as $membership) {
+                    if ((int) ($membership['enabled'] ?? 0) === 1) {
+                        $firstEnabledMembership = $membership;
+                        break;
+                    }
+                }
+                $leigodLineId = (int) ($firstEnabledMembership['line_id'] ?? 0);
+            } elseif ($catalogMembershipsSupported && $leigodLineId > 0) {
+                if ($leigodLineId > 45535) {
+                    throw new ApiException('invalid_leigod_line_id', 422, ['line_id' => $leigodLineId]);
+                }
+                $legacyScalarMembership = true;
+            }
             if ($leigodLineId <= 0) {
                 throw new ApiException('leigod_line_required', 422, []);
             }
@@ -639,6 +856,9 @@ final class ProvisioningService
             }
         } else {
             $leigodLineId = 0;
+            if ($catalogMembershipsSupported) {
+                $normalizedLeigodMemberships = [];
+            }
         }
         if ($sidecarRequired && $sidecarPointId <= 0) {
             throw new ApiException('sidecar_required_for_forward_aggregation', 422, ['client_mode' => $clientMode]);
@@ -740,89 +960,112 @@ final class ProvisioningService
             'updated_at' => $this->now(),
         ];
 
-        if ($id > 0) {
+        $id = (int) $this->transactionIfSupported(function (mixed $_db = null) use (
+            $id,
+            $normalized,
+            $helperNodeGroupKeys,
+            $catalogMembershipsSupported,
+            $legacyScalarMembership,
+            $leigodLineId,
+            $normalizedLeigodMemberships,
+            $membershipRequireReady,
+            $backendMode,
+            $clientMode,
+            $sidecarPointId,
+            $cfLocationGroupId
+        ): int {
+            $savedId = $id;
+            $membershipPayload = is_array($normalizedLeigodMemberships) ? $normalizedLeigodMemberships : [];
+            if ($catalogMembershipsSupported && $legacyScalarMembership) {
+                $membershipPayload = $this->legacyLeigodMembershipPayload($leigodLineId);
+            }
+
+            if ($savedId > 0) {
+                $this->db->execute(
+                    'UPDATE forward_combinations
+                     SET name = :name,
+                         tenant_label = :tenant_label,
+                         tenant_description = :tenant_description,
+                         tenant_badge = :tenant_badge,
+                         node_group_key = :node_group_key,
+                         backend_mode = :backend_mode,
+                         sidecar_point_id = :sidecar_point_id,
+                         cf_location_group_id = :cf_location_group_id,
+                         client_mode = :client_mode,
+                         runtime_preference = :runtime_preference,
+                         allow_private_self_leg = :allow_private_self_leg,
+                         self_leg_scope = :self_leg_scope,
+                         self_leg_role = :self_leg_role,
+                         helper_group_cap = :helper_group_cap,
+                         helper_escalation_policy = :helper_escalation_policy,
+                         self_leg_cf_transport = :self_leg_cf_transport,
+                         self_leg_outer_transport = :self_leg_outer_transport,
+                         leigod_line_id = :leigod_line_id,
+                         leigod_uot_impl = :leigod_uot_impl,
+                         leigod_socks_user = :leigod_socks_user,
+                         leigod_socks_pass = :leigod_socks_pass,
+                         desired_latency_ms = :desired_latency_ms,
+                         allow_public_self_leg_donation = :allow_public_self_leg_donation,
+                         donation_qualify_window_seconds = :donation_qualify_window_seconds,
+                         donation_revoke_window_seconds = :donation_revoke_window_seconds,
+                         donation_min_open_ports = :donation_min_open_ports,
+                         bond_ingress_mode = :bond_ingress_mode,
+                         is_active = :is_active,
+                         sort_order = :sort_order,
+                         notes = :notes,
+                         updated_at = :updated_at
+                     WHERE id = :id',
+                    $normalized + ['id' => $savedId]
+                );
+            } else {
+                $savedId = $this->db->insert('forward_combinations', $normalized + [
+                    'created_at' => $this->now(),
+                ]);
+            }
+
+            $this->db->execute('DELETE FROM forward_combination_helper_groups WHERE forward_combination_id = :forward_combination_id', [
+                'forward_combination_id' => $savedId,
+            ]);
+            foreach ($helperNodeGroupKeys as $helperSortOrder => $helperNodeGroupKey) {
+                $this->db->insert('forward_combination_helper_groups', [
+                    'forward_combination_id' => $savedId,
+                    'node_group_key' => $helperNodeGroupKey,
+                    'sort_order' => $helperSortOrder,
+                    'is_active' => 1,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+            }
+
+            if ($catalogMembershipsSupported) {
+                $this->leigodLineCatalog()->saveCombinationMemberships(
+                    $savedId,
+                    $membershipPayload,
+                    $membershipRequireReady
+                );
+            }
+
+            // Keep denormalized per-forward ingress state coherent with the combination before publish.
             $this->db->execute(
-                'UPDATE forward_combinations
-                 SET name = :name,
-                     tenant_label = :tenant_label,
-                     tenant_description = :tenant_description,
-                     tenant_badge = :tenant_badge,
-                     node_group_key = :node_group_key,
-                     backend_mode = :backend_mode,
-                     sidecar_point_id = :sidecar_point_id,
-                     cf_location_group_id = :cf_location_group_id,
+                'UPDATE forwards
+                 SET backend_mode = :backend_mode,
                      client_mode = :client_mode,
-                     runtime_preference = :runtime_preference,
-                     allow_private_self_leg = :allow_private_self_leg,
-                     self_leg_scope = :self_leg_scope,
-                     self_leg_role = :self_leg_role,
-                     helper_group_cap = :helper_group_cap,
-                     helper_escalation_policy = :helper_escalation_policy,
-                     self_leg_cf_transport = :self_leg_cf_transport,
-                     self_leg_outer_transport = :self_leg_outer_transport,
-                     leigod_line_id = :leigod_line_id,
-                     leigod_uot_impl = :leigod_uot_impl,
-                     leigod_socks_user = :leigod_socks_user,
-                     leigod_socks_pass = :leigod_socks_pass,
-                     desired_latency_ms = :desired_latency_ms,
-                     allow_public_self_leg_donation = :allow_public_self_leg_donation,
-                     donation_qualify_window_seconds = :donation_qualify_window_seconds,
-                     donation_revoke_window_seconds = :donation_revoke_window_seconds,
-                     donation_min_open_ports = :donation_min_open_ports,
-                     bond_ingress_mode = :bond_ingress_mode,
-                     is_active = :is_active,
-                     sort_order = :sort_order,
-                     notes = :notes,
+                     bond_sidecar_point_id = :bond_sidecar_point_id,
+                     cf_location_group_id = :cf_location_group_id,
                      updated_at = :updated_at
-                 WHERE id = :id',
-                $normalized + ['id' => $id]
+                 WHERE forward_combination_id = :forward_combination_id',
+                [
+                    'backend_mode' => $backendMode,
+                    'client_mode' => $clientMode,
+                    'bond_sidecar_point_id' => $sidecarPointId > 0 ? $sidecarPointId : null,
+                    'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
+                    'updated_at' => $this->now(),
+                    'forward_combination_id' => $savedId,
+                ]
             );
-        } else {
-            $id = $this->db->insert('forward_combinations', $normalized + [
-                'created_at' => $this->now(),
-            ]);
-        }
 
-        $this->db->execute('DELETE FROM forward_combination_helper_groups WHERE forward_combination_id = :forward_combination_id', [
-            'forward_combination_id' => $id,
-        ]);
-        foreach ($helperNodeGroupKeys as $sortOrder => $helperNodeGroupKey) {
-            $this->db->insert('forward_combination_helper_groups', [
-                'forward_combination_id' => $id,
-                'node_group_key' => $helperNodeGroupKey,
-                'sort_order' => $sortOrder,
-                'is_active' => 1,
-                'created_at' => $this->now(),
-                'updated_at' => $this->now(),
-            ]);
-        }
-
-        // Keep the denormalized per-forward INGRESS columns in sync with the combination BEFORE
-        // republishing. publishTaskPayloadForForward reads client_mode + backend_mode +
-        // cf_location_group_id from the forwards row (and forwardUsesCfMode keys CF off
-        // forwards.cf_location_group_id > 0), so without this a live Forward-Mode/client-mode flip
-        // (e.g. cf_mode -> leigod_mode or leigod_mode/single -> leigod_mode/mptcp) ships an
-        // incoherent task. saveForward derives these columns from the combination at forward-save
-        // time; mirror that here so a combination save converges the ingress axis too
-        // (the 20260603_promote_leigod_mode migration does the same UPDATE one-time, comment: "CRITICAL:
-        // without this the cutover is incomplete").
-        $this->db->execute(
-            'UPDATE forwards
-             SET backend_mode = :backend_mode,
-                 client_mode = :client_mode,
-                 bond_sidecar_point_id = :bond_sidecar_point_id,
-                 cf_location_group_id = :cf_location_group_id,
-                 updated_at = :updated_at
-             WHERE forward_combination_id = :forward_combination_id',
-            [
-                'backend_mode' => $backendMode,
-                'client_mode' => $clientMode,
-                'bond_sidecar_point_id' => $sidecarPointId > 0 ? $sidecarPointId : null,
-                'cf_location_group_id' => $cfLocationGroupId > 0 ? $cfLocationGroupId : null,
-                'updated_at' => $this->now(),
-                'forward_combination_id' => $id,
-            ]
-        );
+            return $savedId;
+        });
 
         $this->republishActiveForwardsForCombination($id);
 
@@ -865,6 +1108,25 @@ final class ProvisioningService
     /**
      * @return array<int, array<string, mixed>>
      */
+    public function allowedForwardRoutesForPlan(int $planId): array
+    {
+        if ($planId <= 0) {
+            return [];
+        }
+
+        return $this->db->fetchAll(
+            'SELECT fr.*
+             FROM service_plan_forward_routes spfr
+             INNER JOIN forward_routes fr ON fr.id = spfr.forward_route_id
+             WHERE spfr.plan_id = :plan_id
+             ORDER BY fr.sort_order ASC, fr.id ASC',
+            ['plan_id' => $planId]
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
     public function allowedForwardCombinationsForPlan(int $planId): array
     {
         if ($planId <= 0) {
@@ -881,7 +1143,8 @@ final class ProvisioningService
              ORDER BY fc.sort_order ASC, fc.id ASC',
             ['plan_id' => $planId]
         );
-        return $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
+        $rows = $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
+        return $this->attachLeigodLinesToForwardCombinations($rows);
     }
 
     /**
@@ -893,17 +1156,21 @@ final class ProvisioningService
             return 0;
         }
         $row = $this->db->fetchOne(
-            'SELECT forward_combination_id FROM forward_route_combinations
-             WHERE forward_route_id = :id AND enabled = 1
-             ORDER BY sort_order ASC, id ASC LIMIT 1',
+            'SELECT frc.forward_combination_id
+             FROM forward_route_combinations frc
+             INNER JOIN forward_combinations fc ON fc.id = frc.forward_combination_id
+             WHERE frc.forward_route_id = :id
+               AND frc.enabled = 1
+               AND fc.is_active = 1
+             ORDER BY frc.sort_order ASC, frc.id ASC LIMIT 1',
             ['id' => $routeId]
         );
         return is_array($row) ? (int) ($row['forward_combination_id'] ?? 0) : 0;
     }
 
     /**
-     * Routes a service may select in the tenant add-forward UI. If the plan gates routes
-     * (service_plan_forward_routes), only those are offered; otherwise all active routes.
+     * Routes a service may select in the tenant add-forward UI. Route visibility is
+     * allowlist-only: a plan without explicit service_plan_forward_routes rows has no routes.
      */
     public function availableForwardRoutesForService(int $serviceId): array
     {
@@ -913,18 +1180,34 @@ final class ProvisioningService
         }
         $planId = (int) ($service['plan_id'] ?? 0);
         $gated = $this->db->fetchAll(
-            'SELECT fr.* FROM forward_routes fr
+            'SELECT DISTINCT fr.* FROM forward_routes fr
              INNER JOIN service_plan_forward_routes spfr ON spfr.forward_route_id = fr.id
+             INNER JOIN forward_route_combinations frc ON frc.forward_route_id = fr.id AND frc.enabled = 1
+             INNER JOIN forward_combinations fc ON fc.id = frc.forward_combination_id AND fc.is_active = 1
              WHERE spfr.plan_id = :plan_id AND fr.is_active = 1
              ORDER BY fr.sort_order ASC, fr.id ASC',
             ['plan_id' => $planId]
         );
-        if ($gated !== [] || $this->planUsesForwardRoutes($planId)) {
-            return array_values($gated);
+        $routes = array_values($gated);
+        foreach ($routes as &$route) {
+            $routeId = (int) ($route['id'] ?? 0);
+            if (!$this->forwardRouteUsesDedicatedLeigod($routeId)) {
+                $route['availability'] = null;
+                $route['healthy_node_count'] = null;
+                $route['unavailable_reason'] = null;
+                continue;
+            }
+            $availability = [
+                'tcp' => $this->leigodLineCatalog()->routeAvailability($routeId, 'tcp'),
+                'udp' => $this->leigodLineCatalog()->routeAvailability($routeId, 'udp'),
+                'both' => $this->leigodLineCatalog()->routeAvailability($routeId, 'both'),
+            ];
+            $route['availability'] = $availability;
+            $route['healthy_node_count'] = (int) ($availability['tcp']['healthy_node_count'] ?? 0);
+            $route['unavailable_reason'] = $availability['tcp']['unavailable_reason'] ?? null;
         }
-        return array_values($this->db->fetchAll(
-            'SELECT * FROM forward_routes WHERE is_active = 1 ORDER BY sort_order ASC, id ASC'
-        ));
+        unset($route);
+        return $routes;
     }
 
     /**
@@ -986,6 +1269,7 @@ final class ProvisioningService
              ORDER BY fc.sort_order ASC, fc.id ASC'
         );
         $rows = $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
+        $rows = $this->attachLeigodLinesToForwardCombinations($rows);
 
         return array_values(array_filter($rows, static function (array $row) use ($allowedGroupKeys, $allowedSidecarIds): bool {
             $groupOk = $allowedGroupKeys === [] || in_array((string) ($row['node_group_key'] ?? ''), $allowedGroupKeys, true);
@@ -1008,7 +1292,8 @@ final class ProvisioningService
              LEFT JOIN cf_location_groups cg ON cg.id = fc.cf_location_group_id
              ORDER BY fc.sort_order ASC, fc.id ASC'
         );
-        return $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
+        $rows = $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
+        return $this->attachLeigodLinesToForwardCombinations($rows);
     }
 
     /**
@@ -1033,7 +1318,24 @@ final class ProvisioningService
             return null;
         }
         $rows = $this->attachHelperNodeGroupKeysToForwardCombinations([$row]);
+        $rows = $this->attachLeigodLinesToForwardCombinations($rows);
         return $rows[0] ?? null;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function attachLeigodLinesToForwardCombinations(array $rows): array
+    {
+        foreach ($rows as &$row) {
+            $combinationId = (int) ($row['id'] ?? 0);
+            $row['leigod_lines'] = $combinationId > 0 && method_exists($this->db, 'transaction')
+                ? $this->leigodLineCatalog()->membershipsForCombination($combinationId)
+                : [];
+        }
+        unset($row);
+        return $rows;
     }
 
     /**
@@ -2158,11 +2460,14 @@ final class ProvisioningService
 
         foreach ($plans as &$plan) {
             $plan['uses_forward_combinations'] = $this->planUsesForwardCombinations((int) $plan['id']);
+            $plan['uses_forward_routes'] = $this->planUsesForwardRoutes((int) $plan['id']);
             $plan['allowed_forward_combinations'] = $this->allowedForwardCombinationsForPlan((int) $plan['id']);
+            $plan['allowed_forward_routes'] = $this->allowedForwardRoutesForPlan((int) $plan['id']);
             $plan['allowed_node_groups'] = $this->allowedNodeGroupsForPlan((int) $plan['id']);
             $plan['allowed_client_groups'] = $this->allowedClientGroupsForPlan((int) $plan['id']);
             $plan['allowed_sidecar_points'] = $this->allowedSidecarPointsForPlan((int) $plan['id']);
             $plan['forward_combination_count'] = count($plan['allowed_forward_combinations'] ?? []);
+            $plan['forward_route_count'] = count($plan['allowed_forward_routes'] ?? []);
             $plan['feature_flags'] = $this->decodeFeatureFlags((string) ($plan['feature_flags_json'] ?? ''));
         }
         unset($plan);
@@ -2441,23 +2746,23 @@ final class ProvisioningService
                 $sidecarPointIds[] = $casted;
             }
         }
-        $forwardCombinationIds = [];
-        foreach ((array) ($payload['allowed_forward_combination_ids'] ?? []) as $combinationId) {
-            $casted = (int) $combinationId;
+        $forwardRouteIds = [];
+        foreach ((array) ($payload['allowed_forward_route_ids'] ?? []) as $routeId) {
+            $casted = (int) $routeId;
             if ($casted > 0) {
-                $forwardCombinationIds[] = $casted;
+                $forwardRouteIds[] = $casted;
             }
         }
-        $forwardCombinationIds = array_values(array_unique($forwardCombinationIds));
+        $forwardRouteIds = array_values(array_unique($forwardRouteIds));
 
         if ($name === '' || $productCode === '') {
             throw new ApiException('invalid_plan_payload', 422, ['payload' => $payload]);
         }
-        if ($forwardCombinationIds === []) {
+        if ($forwardRouteIds === []) {
             throw new ApiException(
-                'invalid_plan_forward_combination_payload',
+                'invalid_plan_forward_route_payload',
                 422,
-                ['message' => 'Select at least one active forward combination before saving the plan.']
+                ['message' => 'Select at least one active forward route before saving the plan.']
             );
         }
 
@@ -2468,29 +2773,57 @@ final class ProvisioningService
             $monthlyIncludedTraffic = $traffic;
         }
 
-        $forwardCombinationRows = $this->db->fetchAll(
+        $forwardRouteRows = $this->db->fetchAll(
             'SELECT id, is_active
-             FROM forward_combinations
-             WHERE id IN (' . implode(',', array_map('intval', $forwardCombinationIds)) . ')'
+             FROM forward_routes
+             WHERE id IN (' . implode(',', array_map('intval', $forwardRouteIds)) . ')'
         );
-        $validForwardCombinationIds = [];
-        foreach ($forwardCombinationRows as $row) {
+        $validForwardRouteIds = [];
+        foreach ($forwardRouteRows as $row) {
             if ((int) ($row['is_active'] ?? 0) === 1) {
-                $validForwardCombinationIds[] = (int) ($row['id'] ?? 0);
+                $validForwardRouteIds[] = (int) ($row['id'] ?? 0);
             }
         }
-        sort($validForwardCombinationIds);
-        $expectedForwardCombinationIds = $forwardCombinationIds;
-        sort($expectedForwardCombinationIds);
-        if ($validForwardCombinationIds !== $expectedForwardCombinationIds) {
+        sort($validForwardRouteIds);
+        $expectedForwardRouteIds = $forwardRouteIds;
+        sort($expectedForwardRouteIds);
+        if ($validForwardRouteIds !== $expectedForwardRouteIds) {
             throw new ApiException(
-                'invalid_plan_forward_combination_payload',
+                'invalid_plan_forward_route_payload',
                 422,
-                ['message' => 'Select at least one active forward combination before saving the plan.']
+                ['message' => 'Select at least one active forward route before saving the plan.']
             );
         }
 
-        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $payload): array {
+        $forwardCombinationRows = $this->db->fetchAll(
+            'SELECT DISTINCT frc.forward_route_id, frc.forward_combination_id AS id
+             FROM forward_route_combinations frc
+             INNER JOIN forward_combinations fc ON fc.id = frc.forward_combination_id
+             WHERE frc.forward_route_id IN (' . implode(',', array_map('intval', $forwardRouteIds)) . ')
+               AND frc.enabled = 1
+               AND fc.is_active = 1
+             ORDER BY frc.forward_route_id ASC, frc.forward_combination_id ASC'
+        );
+        $routesWithActiveCombinations = [];
+        $forwardCombinationIds = [];
+        foreach ($forwardCombinationRows as $row) {
+            $routeId = (int) ($row['forward_route_id'] ?? 0);
+            $combinationId = (int) ($row['id'] ?? 0);
+            if ($routeId > 0 && $combinationId > 0) {
+                $routesWithActiveCombinations[$routeId] = true;
+                $forwardCombinationIds[$combinationId] = $combinationId;
+            }
+        }
+        $forwardCombinationIds = array_values($forwardCombinationIds);
+        if (count($routesWithActiveCombinations) !== count($forwardRouteIds)) {
+            throw new ApiException(
+                'invalid_plan_forward_route_payload',
+                422,
+                ['message' => 'Every selected route must contain an enabled active forward combination.']
+            );
+        }
+
+        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $forwardRouteIds, $payload): array {
             if ($id > 0) {
                 $this->db->execute(
                     'UPDATE service_plans
@@ -2612,13 +2945,28 @@ final class ProvisioningService
                 ]);
             }
 
+            $this->db->execute('DELETE FROM service_plan_forward_routes WHERE plan_id = :plan_id', [
+                'plan_id' => $id,
+            ]);
+            foreach ($forwardRouteIds as $routeId) {
+                $this->db->insert('service_plan_forward_routes', [
+                    'plan_id' => $id,
+                    'forward_route_id' => $routeId,
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+            }
+
             $plan = $this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id LIMIT 1', ['id' => $id]) ?? [];
             $plan['uses_forward_combinations'] = $this->planUsesForwardCombinations($id);
+            $plan['uses_forward_routes'] = $this->planUsesForwardRoutes($id);
             $plan['allowed_forward_combinations'] = $this->allowedForwardCombinationsForPlan($id);
+            $plan['allowed_forward_routes'] = $this->allowedForwardRoutesForPlan($id);
             $plan['allowed_node_groups'] = $this->allowedNodeGroupsForPlan($id);
             $plan['allowed_client_groups'] = $this->allowedClientGroupsForPlan($id);
             $plan['allowed_sidecar_points'] = $this->allowedSidecarPointsForPlan($id);
             $plan['forward_combination_count'] = count($plan['allowed_forward_combinations'] ?? []);
+            $plan['forward_route_count'] = count($plan['allowed_forward_routes'] ?? []);
             $plan['feature_flags'] = $this->decodeFeatureFlags((string) ($plan['feature_flags_json'] ?? ''));
             return $plan;
         });
@@ -3090,7 +3438,9 @@ final class ProvisioningService
              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
              WHERE f.enabled = 1
-             ORDER BY f.id ASC'
+               AND s.status = :active_status
+             ORDER BY f.id ASC',
+            ['active_status' => 'active']
         );
 
         $matched = [];
@@ -3287,13 +3637,64 @@ final class ProvisioningService
             return null;
         }
 
+        $schedulerMode = strtolower(trim((string) ($existing['scheduler_mode'] ?? 'legacy')));
+        if ($schedulerMode !== 'feedback_drr') {
+            $schedulerMode = 'legacy';
+        }
+        $globalQueueBytes = max(1, min(64 * 1024 * 1024, (int) ($existing['global_queue_bytes'] ?? 1048576)));
+        $globalQueuePackets = max(1, min(262144, (int) ($existing['global_queue_packets'] ?? 8192)));
+        $perSessionQueueBytes = max(1, min($globalQueueBytes, (int) ($existing['per_session_queue_bytes'] ?? 262144)));
+        $perSessionQueuePackets = max(1, min($globalQueuePackets, (int) ($existing['per_session_queue_packets'] ?? 512)));
+        $queueDeadlineMs = max(1, (int) ($existing['queue_deadline_ms'] ?? 10));
+        $queueTargetMs = max(0, min($queueDeadlineMs, (int) ($existing['queue_target_ms'] ?? 5)));
+        $chunkMaxBytes = max(65535, min(64 * 1024 * 1024, (int) ($existing['chunk_max_bytes'] ?? 65536)));
+        $chunkTargetBytes = max(1, min($chunkMaxBytes, (int) ($existing['chunk_target_bytes'] ?? 32768)));
+        $chunkMinBytes = max(1, min($chunkTargetBytes, (int) ($existing['chunk_min_bytes'] ?? 16384)));
+        $totalOutstandingBytes = max(1, min(64 * 1024 * 1024, (int) ($existing['max_total_outstanding_bytes'] ?? 8388608)));
+        $maxLegWindowBytes = max(1, min($totalOutstandingBytes, (int) ($existing['max_leg_window_bytes'] ?? 4194304)));
+        $minLegWindowBytes = max(1, min($maxLegWindowBytes, (int) ($existing['min_leg_window_bytes'] ?? 262144)));
+        $deliveryMode = strtolower(trim((string) ($existing['delivery_mode'] ?? ($schedulerMode === 'feedback_drr' ? 'unordered' : 'ordered'))));
+        if (!in_array($deliveryMode, ['ordered', 'unordered'], true)) {
+            $deliveryMode = $schedulerMode === 'feedback_drr' ? 'unordered' : 'ordered';
+        }
+        if ($schedulerMode === 'feedback_drr') {
+            $deliveryMode = 'unordered';
+            $wireguardAware = true;
+        } else {
+            $wireguardAware = filter_var($existing['wireguard_aware'] ?? false, FILTER_VALIDATE_BOOL);
+        }
+
         return [
             'enabled_forward_ids' => $normalizedForwardIds,
             'shadow_route_suffix' => trim((string) ($existing['shadow_route_suffix'] ?? '.uot')) ?: '.uot',
-            'sidecar_port' => max(1, (int) ($existing['sidecar_port'] ?? 8999)),
+            'sidecar_port' => max(7000, min(9000, (int) ($existing['sidecar_port'] ?? 8999))),
             'reorder_window_packets' => max(1, (int) ($existing['reorder_window_packets'] ?? 4096)),
             'reorder_window_bytes' => max(1024, (int) ($existing['reorder_window_bytes'] ?? 16777216)),
             'reorder_timeout_ms' => max(1, (int) ($existing['reorder_timeout_ms'] ?? 25)),
+            'delivery_mode' => $deliveryMode,
+            'wireguard_aware' => $wireguardAware,
+            'scheduler_mode' => $schedulerMode,
+            'aggregate_rate_bps' => max(1, (int) ($existing['aggregate_rate_bps'] ?? 300000000)),
+            'queue_target_ms' => $queueTargetMs,
+            'queue_deadline_ms' => $queueDeadlineMs,
+            'global_queue_bytes' => $globalQueueBytes,
+            'global_queue_packets' => $globalQueuePackets,
+            'per_session_queue_bytes' => $perSessionQueueBytes,
+            'per_session_queue_packets' => $perSessionQueuePackets,
+            'drr_quantum_bytes' => max(1, min($globalQueueBytes, (int) ($existing['drr_quantum_bytes'] ?? 16384))),
+            'chunk_min_bytes' => $chunkMinBytes,
+            'chunk_target_bytes' => $chunkTargetBytes,
+            'chunk_max_bytes' => $chunkMaxBytes,
+            'min_leg_window_bytes' => $minLegWindowBytes,
+            'max_leg_window_bytes' => $maxLegWindowBytes,
+            'max_total_outstanding_bytes' => $totalOutstandingBytes,
+            'progress_interval_bytes' => max(1, (int) ($existing['progress_interval_bytes'] ?? 65536)),
+            'progress_interval_frames' => max(1, (int) ($existing['progress_interval_frames'] ?? 32)),
+            'progress_interval_ms' => max(1, (int) ($existing['progress_interval_ms'] ?? 5)),
+            'finish_skew_budget_ms' => max(0, (int) ($existing['finish_skew_budget_ms'] ?? 2)),
+            'probe_interval_ms' => max(1, (int) ($existing['probe_interval_ms'] ?? 1000)),
+            'max_sessions' => max(1, min(65536, (int) ($existing['max_sessions'] ?? 4096))),
+            'control_queue_packets' => max(1, min(262144, (int) ($existing['control_queue_packets'] ?? 256))),
         ];
     }
 
@@ -3744,14 +4145,15 @@ final class ProvisioningService
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
-    public function updateForward(int $forwardId, array $payload, string $actor = 'user'): array
+    public function updateForward(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): array
     {
-        $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
-        if ($forward === null) {
-            throw new ApiException('forward_not_found', 404);
-        }
-
-        return $this->db->transaction(function () use ($forwardId, $forward, $payload, $actor): array {
+        return $this->db->transaction(function () use ($forwardId, $payload, $actor, $expectedRevision, $mutationPolicy): array {
+            $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1 FOR UPDATE', ['id' => $forwardId]);
+            if ($forward === null) {
+                throw new ApiException('forward_not_found', 404);
+            }
+            $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
+            $this->assertExpectedForwardRevision($forward, $expectedRevision);
             $this->revokeForwardEndpoints($forwardId, 'update');
             return $this->saveForward((int) $forward['service_id'], $forwardId, $payload, $actor);
         });
@@ -3761,32 +4163,43 @@ final class ProvisioningService
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
-    public function updateForwardNonStructural(int $forwardId, array $payload, string $actor = 'user'): array
+    public function updateForwardNonStructural(int $forwardId, array $payload, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): array
     {
-        $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
-        if ($forward === null) {
-            throw new ApiException('forward_not_found', 404);
-        }
+        return $this->db->transaction(function () use ($forwardId, $payload, $actor, $expectedRevision, $mutationPolicy): array {
+            $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1 FOR UPDATE', ['id' => $forwardId]);
+            if ($forward === null) {
+                throw new ApiException('forward_not_found', 404);
+            }
+            $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
+            $this->assertExpectedForwardRevision($forward, $expectedRevision);
 
-        $listenPort = max(0, (int) ($payload['listen_port'] ?? $forward['listen_port'] ?? 0));
-        $targetHost = trim((string) ($payload['target_host'] ?? $forward['target_host'] ?? ''));
-        $targetPort = max(0, (int) ($payload['target_port'] ?? $forward['target_port'] ?? 0));
-        $transportMode = match (strtolower(trim((string) ($payload['transport_mode'] ?? $forward['transport_mode'] ?? 'tcp')))) {
-            'udp' => 'udp',
-            'tcp+udp', 'udp+tcp', 'both' => 'tcp+udp',
-            default => 'tcp',
-        };
+            $listenPort = max(0, (int) ($payload['listen_port'] ?? $forward['listen_port'] ?? 0));
+            $targetHost = trim((string) ($payload['target_host'] ?? $forward['target_host'] ?? ''));
+            $targetPort = max(0, (int) ($payload['target_port'] ?? $forward['target_port'] ?? 0));
+            $transportMode = match (strtolower(trim((string) ($payload['transport_mode'] ?? $forward['transport_mode'] ?? 'tcp')))) {
+                'udp' => 'udp',
+                'tcp+udp', 'udp+tcp', 'both' => 'tcp+udp',
+                default => 'tcp',
+            };
 
-        if ($listenPort <= 0 || $targetHost === '' || $targetPort <= 0) {
-            throw new ApiException('invalid_forward_payload', 422, ['payload' => $payload]);
-        }
+            if ($listenPort <= 0 || $targetHost === '' || $targetPort <= 0) {
+                throw new ApiException('invalid_forward_payload', 422, ['payload' => $payload]);
+            }
+            [$targetHost, $targetPort, $listenPort] = $this->validateForwardMutationInputs(
+                $targetHost,
+                $targetPort,
+                $listenPort,
+                false
+            );
 
-        $this->db->execute(
+            $nextRevision = max(1, (int) ($forward['api_revision'] ?? 1)) + 1;
+            $this->db->execute(
             'UPDATE forwards
              SET listen_port = :listen_port,
                  target_host = :target_host,
                  target_port = :target_port,
                  transport_mode = :transport_mode,
+                 api_revision = :api_revision,
                  updated_at = :updated_at
              WHERE id = :id',
             [
@@ -3795,36 +4208,164 @@ final class ProvisioningService
                 'target_host' => $targetHost,
                 'target_port' => $targetPort,
                 'transport_mode' => $transportMode,
+                'api_revision' => $nextRevision,
                 'updated_at' => $this->now(),
             ]
-        );
+            );
 
-        $this->audit('forward.updated', [
-            'forward_id' => $forwardId,
-            'service_id' => (int) ($forward['service_id'] ?? 0),
-            'actor' => $actor,
-            'scope' => 'non_structural',
-        ]);
+            $this->audit('forward.updated', [
+                'forward_id' => $forwardId,
+                'service_id' => (int) ($forward['service_id'] ?? 0),
+                'actor' => $actor,
+                'scope' => 'non_structural',
+                'revision' => $nextRevision,
+            ]);
 
-        $this->revokeForwardEndpoints($forwardId, 'update');
-        $this->reconcileForwardEndpoints($forwardId);
+            $this->revokeForwardEndpoints($forwardId, 'update');
+            $this->reconcileForwardEndpoints($forwardId);
 
-        return $this->buildClientConfig($forwardId);
+            return $this->buildClientConfig($forwardId);
+        });
     }
 
-    public function deleteForward(int $forwardId, string $actor = 'user'): void
+    public function deleteForward(int $forwardId, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): void
     {
-        $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
-        if ($forward === null) {
-            throw new ApiException('forward_not_found', 404);
-        }
+        $this->db->transaction(function () use ($forwardId, $actor, $expectedRevision, $mutationPolicy): void {
+            $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1 FOR UPDATE', ['id' => $forwardId]);
+            if ($forward === null) {
+                throw new ApiException('forward_not_found', 404);
+            }
+            $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
+            $this->assertExpectedForwardRevision($forward, $expectedRevision);
+            $nextRevision = max(1, (int) ($forward['api_revision'] ?? 1)) + 1;
 
-        $this->revokeForwardEndpoints($forwardId, 'delete');
-        $this->db->execute('UPDATE forwards SET enabled = 0, updated_at = :updated_at WHERE id = :id', [
-            'id' => $forwardId,
-            'updated_at' => $this->now(),
-        ]);
-        $this->audit('forward.deleted', ['forward_id' => $forwardId, 'actor' => $actor]);
+            $this->revokeForwardEndpoints($forwardId, 'delete');
+            $now = $this->now();
+            $this->db->execute(
+                'UPDATE forwards
+                 SET enabled = 0,
+                     user_deleted_at = :user_deleted_at,
+                     balance_suspended_at = NULL,
+                     api_revision = :api_revision,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                [
+                    'id' => $forwardId,
+                    'user_deleted_at' => $now,
+                    'api_revision' => $nextRevision,
+                    'updated_at' => $now,
+                ]
+            );
+            $this->audit('forward.deleted', [
+                'forward_id' => $forwardId,
+                'service_id' => (int) ($forward['service_id'] ?? 0),
+                'actor' => $actor,
+                'revision' => $nextRevision,
+            ]);
+        });
+    }
+
+    public function reactivateEligibleForwardsForUser(int $userId, int $activeForwardLimit): int
+    {
+        if ($userId <= 0) {
+            throw new ApiException('user_auth_failed', 401);
+        }
+        $limit = max(1, min(100000, $activeForwardLimit));
+
+        return $this->db->transaction(function () use ($userId, $limit): int {
+            $user = $this->db->fetchOne(
+                'SELECT id, role, status FROM users WHERE id = :id LIMIT 1',
+                ['id' => $userId]
+            );
+            if ($user === null
+                || (string) ($user['role'] ?? '') !== 'tenant'
+                || (string) ($user['status'] ?? '') !== 'active') {
+                throw new ApiException('user_auth_failed', 401);
+            }
+
+            $services = $this->db->fetchAll(
+                'SELECT id
+                 FROM services
+                 WHERE user_id = :user_id AND status = :status
+                 ORDER BY id ASC',
+                ['user_id' => $userId, 'status' => 'active']
+            );
+            $reactivated = 0;
+            foreach ($services as $serviceRow) {
+                $serviceId = (int) ($serviceRow['id'] ?? 0);
+                if ($serviceId <= 0) {
+                    continue;
+                }
+                try {
+                    $lockedService = $this->lockForwardMutationService(
+                        $serviceId,
+                        ['user_id' => $userId, 'feature' => 'allow_manage_forwards'],
+                        'service_not_found'
+                    );
+                    if ((float) ($lockedService['user_wallet_balance'] ?? 0) <= 0) {
+                        throw new ApiException('insufficient_balance', 409);
+                    }
+                } catch (ApiException $exception) {
+                    if ($exception->getMessage() === 'feature_denied_manage_forwards') {
+                        continue;
+                    }
+                    throw $exception;
+                }
+
+                $active = $this->db->fetchOne(
+                    'SELECT COUNT(*) AS active_count
+                     FROM forwards
+                     WHERE service_id = :service_id AND enabled = 1',
+                    ['service_id' => $serviceId]
+                );
+                $remaining = max(0, $limit - (int) ($active['active_count'] ?? 0));
+                if ($remaining === 0) {
+                    continue;
+                }
+
+                $candidates = $this->db->fetchAll(
+                    'SELECT id
+                     FROM forwards
+                     WHERE service_id = :service_id
+                       AND enabled = 0
+                       AND user_deleted_at IS NULL
+                       AND balance_suspended_at IS NOT NULL
+                     ORDER BY id ASC
+                     LIMIT ' . $remaining . ' FOR UPDATE',
+                    ['service_id' => $serviceId]
+                );
+                foreach ($candidates as $candidate) {
+                    $forwardId = (int) ($candidate['id'] ?? 0);
+                    if ($forwardId <= 0) {
+                        continue;
+                    }
+                    $updated = $this->db->execute(
+                        'UPDATE forwards
+                          SET enabled = 1,
+                              balance_suspended_at = NULL,
+                              api_revision = GREATEST(1, api_revision) + 1,
+                             updated_at = :updated_at
+                         WHERE id = :id
+                            AND enabled = 0
+                            AND user_deleted_at IS NULL
+                            AND balance_suspended_at IS NOT NULL',
+                        ['id' => $forwardId, 'updated_at' => $this->now()]
+                    );
+                    if ($updated <= 0) {
+                        continue;
+                    }
+                    $this->audit('forward.reactivated', [
+                        'forward_id' => $forwardId,
+                        'service_id' => $serviceId,
+                        'actor' => 'tenant:' . $userId,
+                    ]);
+                    $this->reconcileForwardEndpoints($forwardId);
+                    $reactivated++;
+                }
+            }
+
+            return $reactivated;
+        });
     }
 
     /**
@@ -3889,8 +4430,11 @@ final class ProvisioningService
              LEFT JOIN forward_chains fc ON fc.id = f.forward_chain_id
              LEFT JOIN sidecar_points sp ON sp.id = f.bond_sidecar_point_id
              LEFT JOIN forward_combinations combo ON combo.id = f.forward_combination_id
-             WHERE f.id = :id LIMIT 1',
-            ['id' => $forwardId]
+             WHERE f.id = :id
+               AND f.enabled = 1
+               AND s.status = :active_status
+             LIMIT 1',
+            ['id' => $forwardId, 'active_status' => 'active']
         );
 
         if ($forward === null) {
@@ -3939,11 +4483,19 @@ final class ProvisioningService
         $runtimePreference = trim((string) ($forward['forward_combination_runtime_preference'] ?? 'single'));
         $backendMode = (string) ($forward['backend_mode'] ?? 'current_mode');
         $aggregationEnabled = $this->combinationUsesAggregation($clientMode, $runtimePreference);
-        $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
-        $activeFamily = $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
-        $targetContract = $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
+        $sidecarFrontend = $this->usesSingleRaceSidecarFrontend($forward);
+        $sidecarRequired = $sidecarFrontend
+            || $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+        $dedicatedLeigod = $backendMode === 'leigod_mode' && $clientMode === 'single' && !$sidecarRequired;
+        $activeFamily = $sidecarFrontend
+            ? 'sidecar_aggregation'
+            : $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
+        $targetContract = $sidecarFrontend
+            ? 'sidecar_aggregation'
+            : $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
         $publishesBondRuntime = $clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback';
         $publishesBondRuntime = $aggregationEnabled && $publishesBondRuntime;
+        $publishesBondRuntime = $publishesBondRuntime || $sidecarFrontend;
         $pointConfig = $this->decodeJsonAssoc($forward['bond_sidecar_point_agent_config_json'] ?? null);
         $pointPortSource = $sidecarRequired ? [
             'listen_port' => (int) ($forward['bond_sidecar_legacy_port'] ?? 0),
@@ -3956,13 +4508,13 @@ final class ProvisioningService
         ];
         $effectiveBondSidecarPort = $this->sidecarBondListenPort($pointPortSource);
         $effectiveMptcpSidecarPort = $this->sidecarMptcpListenPort($pointPortSource, $pointConfig);
-        $effectiveSidecarTarget = $sidecarRequired && in_array($clientMode, ['bond', 'mptcp'], true)
+        $effectiveSidecarTarget = $sidecarRequired && ($publishesBondRuntime || $clientMode === 'mptcp')
             ? $this->resolveSidecarDirectTarget(
                 array_merge($forward, [
                     'bond_sidecar_port' => $effectiveBondSidecarPort,
                     'mptcp_sidecar_port' => $effectiveMptcpSidecarPort,
                 ]),
-                $clientMode
+                $publishesBondRuntime ? 'bond' : $clientMode
             )
             : [
                 'host' => '',
@@ -4058,7 +4610,7 @@ final class ProvisioningService
                 'udp_fanout' => !in_array($clientMode, ['bond', 'mptcp'], true) && ((string) $forward['transport_mode']) === 'tcp+udp',
                 'dup_repeat' => 1,
             ],
-            'endpoints' => array_map(function (array $endpoint) use ($resolvedSniHost, $resolvedCdnHost, $ingressGroup, $clientMode, $bondIngressMode, $publishesBondRuntime, $forward): array {
+            'endpoints' => array_map(function (array $endpoint) use ($resolvedSniHost, $resolvedCdnHost, $ingressGroup, $clientMode, $bondIngressMode, $publishesBondRuntime, $dedicatedLeigod, $forward): array {
                 $nodeConfig = is_string($endpoint['node_agent_config_json'] ?? null) ? json_decode((string) $endpoint['node_agent_config_json'], true) : [];
                 if (!is_array($nodeConfig)) {
                     $nodeConfig = [];
@@ -4080,6 +4632,12 @@ final class ProvisioningService
                 if ($publishesBondRuntime && $bondIngressMode === 'plain_tcp_mux') {
                     $item['ingress_protocol'] = 'plain_tcp_mux';
                     $item['ingress_auth_token'] = $this->bondIngressAuthToken($forward, (int) $endpoint['id'], (string) ($forward['path_prefix'] ?? ''));
+                }
+                if ($dedicatedLeigod) {
+                    $item['runtime_target'] = '127.0.0.1:' . $this->stableLeigodRelayPort(
+                        (int) ($forward['id'] ?? 0),
+                        (int) ($endpoint['id'] ?? 0)
+                    );
                 }
                 return $item;
             }, $endpoints),
@@ -4531,7 +5089,14 @@ final class ProvisioningService
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
-    private function saveForward(int $serviceId, ?int $forwardId, array $payload, string $actor): array
+    private function saveForward(
+        int $serviceId,
+        ?int $forwardId,
+        array $payload,
+        string $actor,
+        ?string $idempotencyKeyHash = null,
+        ?string $requestHash = null
+    ): array
     {
         unset($payload['endpoint_count']);
 
@@ -4578,6 +5143,7 @@ final class ProvisioningService
         $nodeGroup = trim((string) ($payload['node_group'] ?? ($existingForward['node_group_key'] ?? $this->config->get('DEFAULT_NODE_GROUP', 'default'))));
         $specificNodeId = null;
         $specificNode = null;
+        $eligibleLeigodNodes = null;
         $publicPort = (int) ($payload['public_port'] ?? 0);
         $cdnHost = trim((string) ($payload['cdn_host'] ?? ''));
         $filterProfile = (string) ($payload['filter_profile'] ?? 'off');
@@ -4628,6 +5194,13 @@ final class ProvisioningService
             }
             $targetHost = $serviceIp;
         }
+
+        [$targetHost, $targetPort, $listenPort] = $this->validateForwardMutationInputs(
+            $targetHost,
+            $targetPort,
+            $listenPort,
+            true
+        );
 
         if ($forwardRouteId > 0) {
             $this->visibleForwardRouteForService($forwardRouteId, $serviceId);
@@ -4940,6 +5513,31 @@ final class ProvisioningService
             $bondRemotePort = 0;
         }
 
+        if ($this->isDedicatedLeigodRuntime($backendMode, $clientMode, $forwardRuntimePreference)) {
+            $eligibilityTransport = $this->leigodEligibilityTransport($transportMode);
+            $eligibleLeigodNodes = $forwardRouteId > 0
+                ? $this->leigodLineCatalog()->eligibleNodesForRoute($forwardRouteId, $eligibilityTransport)
+                : $this->leigodLineCatalog()->eligibleNodesForCombination($forwardCombinationId, $eligibilityTransport);
+            if ($eligibleLeigodNodes === []) {
+                throw new ApiException('leigod_route_no_healthy_candidate', 409, [
+                    'forward_route_id' => $forwardRouteId,
+                    'forward_combination_id' => $forwardCombinationId,
+                    'transport' => $eligibilityTransport,
+                ]);
+            }
+            if ($specificNodeId !== null) {
+                $eligibleNodeIds = array_map(static fn(array $node): int => (int) ($node['id'] ?? 0), $eligibleLeigodNodes);
+                if (!in_array($specificNodeId, $eligibleNodeIds, true)) {
+                    throw new ApiException('leigod_route_no_healthy_candidate', 409, [
+                        'node_id' => $specificNodeId,
+                        'forward_route_id' => $forwardRouteId,
+                        'forward_combination_id' => $forwardCombinationId,
+                        'transport' => $eligibilityTransport,
+                    ]);
+                }
+            }
+        }
+
         if ($endpointMode === 'direct') {
             throw new ApiException('endpoint_mode_not_supported_yet', 422, [
                 'endpoint_mode' => 'direct',
@@ -4992,6 +5590,9 @@ final class ProvisioningService
         if ($forwardId === null) {
             $forwardId = $this->db->insert('forwards', [
                 'service_id' => $serviceId,
+                'api_revision' => 1,
+                'api_idempotency_key_hash' => $idempotencyKeyHash,
+                'api_request_hash' => $requestHash,
                 'listen_port' => $listenPort,
                 'target_host' => $targetHost,
                 'target_port' => $targetPort,
@@ -5028,6 +5629,7 @@ final class ProvisioningService
             ]);
             $this->audit('forward.created', ['forward_id' => $forwardId, 'service_id' => $serviceId, 'actor' => $actor]);
         } else {
+            $nextRevision = max(1, (int) ($existingForward['api_revision'] ?? 1)) + 1;
             $this->db->execute(
                 'UPDATE forwards
                  SET listen_port = :listen_port,
@@ -5061,6 +5663,7 @@ final class ProvisioningService
                      cdn_host = :cdn_host,
                      filter_profile = :filter_profile,
                      enabled = 1,
+                     api_revision = :api_revision,
                      updated_at = :updated_at
                  WHERE id = :id',
                 [
@@ -5094,8 +5697,9 @@ final class ProvisioningService
                     'endpoint_count' => $endpointCount,
                     'public_port' => $publicPort > 0 ? $publicPort : $listenPort,
                     'cdn_host' => $cdnHost,
-                    'filter_profile' => $filterProfile,
-                    'updated_at' => $this->now(),
+                     'filter_profile' => $filterProfile,
+                     'api_revision' => $nextRevision,
+                     'updated_at' => $this->now(),
                 ]
             );
             $this->audit('forward.updated', ['forward_id' => $forwardId, 'service_id' => $serviceId, 'actor' => $actor]);
@@ -5104,9 +5708,23 @@ final class ProvisioningService
         $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
 
         $desiredEndpointCount = max((int) $forward['endpoint_count'], count($endpointGroupKeys));
+        $nodeSelectionCount = is_array($eligibleLeigodNodes)
+            ? max($desiredEndpointCount, $this->availableNodeCountForGroups($endpointGroupKeys, $serviceId))
+            : $desiredEndpointCount;
         $nodes = $specificNodeId !== null && is_array($specificNode)
             ? [$specificNode]
-            : $this->pickNodesForGroups($endpointGroupKeys, $desiredEndpointCount, $serviceId);
+            : $this->pickNodesForGroups($endpointGroupKeys, $nodeSelectionCount, $serviceId);
+        if (is_array($eligibleLeigodNodes)) {
+            $eligibleNodeIds = array_fill_keys(array_map(
+                static fn(array $node): int => (int) ($node['id'] ?? 0),
+                $eligibleLeigodNodes
+            ), true);
+            $nodes = array_values(array_filter(
+                $nodes,
+                static fn(array $node): bool => isset($eligibleNodeIds[(int) ($node['id'] ?? 0)])
+            ));
+            $nodes = array_slice($nodes, 0, $desiredEndpointCount);
+        }
         $reachableNodes = [];
         $skippedNodes = [];
         foreach ($nodes as $node) {
@@ -5122,6 +5740,13 @@ final class ProvisioningService
             $reachableNodes[] = $node;
         }
         $nodes = $reachableNodes;
+        if ($nodes === [] && is_array($eligibleLeigodNodes)) {
+            throw new ApiException('leigod_route_no_healthy_candidate', 409, [
+                'forward_route_id' => $forwardRouteId,
+                'forward_combination_id' => $forwardCombinationId,
+                'transport' => $this->leigodEligibilityTransport($transportMode),
+            ]);
+        }
         if ($nodes === []) {
             throw new ApiException('no_available_nodes', 409, [
                 'requested_node_group' => $forward['node_group_key'],
@@ -5131,8 +5756,10 @@ final class ProvisioningService
             ]);
         }
 
-        $directSidecarTarget = in_array($clientMode, ['bond', 'mptcp'], true)
-            ? $this->resolveSidecarDirectTarget($forward, $clientMode)
+        $sidecarFrontend = $this->usesSingleRaceSidecarFrontend($forward);
+        $directSidecarMode = $sidecarFrontend ? 'bond' : $clientMode;
+        $directSidecarTarget = in_array($directSidecarMode, ['bond', 'mptcp'], true)
+            ? $this->resolveSidecarDirectTarget($forward, $directSidecarMode)
             : null;
         $publishTarget = $directSidecarTarget !== null
             ? ($directSidecarTarget['host'] . ':' . $directSidecarTarget['port'])
@@ -5792,6 +6419,21 @@ final class ProvisioningService
             ];
         }
 
+        $enabledCombinationCount = count(array_filter(
+            $combos,
+            static fn(array $row): bool => (int) ($row['enabled'] ?? 0) === 1
+        ));
+        if ($raceEnabled === 0 && $enabledCombinationCount !== 1) {
+            throw new ApiException('forward_route_single_requires_one_combination', 422, [
+                'enabled_count' => $enabledCombinationCount,
+            ]);
+        }
+        if ($raceEnabled === 1 && $enabledCombinationCount < 2) {
+            throw new ApiException('forward_route_race_requires_two_combinations', 422, [
+                'enabled_count' => $enabledCombinationCount,
+            ]);
+        }
+
         $ingressKeys = [];
         foreach ($combos as $cid => $info) {
             if (!$info['enabled']) {
@@ -6087,39 +6729,43 @@ final class ProvisioningService
     }
 
     /**
-     * @return array{uplinks: array<int, array<string, mixed>>}
+     * @return array{uplinks: array<int, array<string, mixed>>, authoritative: bool}
      */
     public function slaveSidecarUplinkManagementForPoint(int $pointId): array
     {
         if ($pointId <= 0) {
-            return ['uplinks' => []];
+            return ['uplinks' => [], 'authoritative' => false];
         }
         $uplinks = [];
 
         foreach ($this->staticSlaveSidecarCombinationsForPoint($pointId) as $combination) {
             foreach ($this->staticRentedSlavesForCombination((int) ($combination['id'] ?? 0)) as $node) {
-                foreach ($this->buildStaticSidecarUplinkPairForNode($combination, $node) as $lane) {
+                $pairs = $this->buildStaticSidecarUplinkPairForNode($combination, $node);
+                if ($this->staticSidecarCombinationUsesSharedWireguardPeers($combination) && count($pairs) !== 1) {
+                    return ['uplinks' => [], 'authoritative' => false];
+                }
+                foreach ($pairs as $lane) {
                     $uplinks[] = $lane['sidecar'];
                 }
             }
         }
 
-        return ['uplinks' => $uplinks];
+        return ['uplinks' => $this->deduplicateStaticSidecarManagementUplinks($uplinks), 'authoritative' => true];
     }
 
     /**
-     * @return array{uplinks: array<int, array<string, mixed>>}
+     * @return array{uplinks: array<int, array<string, mixed>>, authoritative: bool}
      */
     public function slaveSidecarUplinkManagementForNode(int $nodeId): array
     {
         if ($nodeId <= 0) {
-            return ['uplinks' => []];
+            return ['uplinks' => [], 'authoritative' => false];
         }
 
         $uplinks = [];
         $node = $this->db->fetchOne('SELECT * FROM nodes WHERE id = :id LIMIT 1', ['id' => $nodeId]);
         if (!is_array($node)) {
-            return ['uplinks' => []];
+            return ['uplinks' => [], 'authoritative' => false];
         }
         foreach ($this->staticSlaveSidecarCombinations() as $combination) {
             $selectedNodeIds = array_map(
@@ -6129,12 +6775,49 @@ final class ProvisioningService
             if (!in_array($nodeId, $selectedNodeIds, true)) {
                 continue;
             }
-            foreach ($this->buildStaticSidecarUplinkPairForNode($combination, $node) as $lane) {
+            $pairs = $this->buildStaticSidecarUplinkPairForNode($combination, $node);
+            if ($this->staticSidecarCombinationUsesSharedWireguardPeers($combination) && count($pairs) !== 1) {
+                return ['uplinks' => [], 'authoritative' => false];
+            }
+            foreach ($pairs as $lane) {
                 $uplinks[] = $lane['slave'];
             }
         }
 
-        return ['uplinks' => $uplinks];
+        return ['uplinks' => $this->deduplicateStaticSidecarManagementUplinks($uplinks), 'authoritative' => true];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $uplinks
+     * @return array<int, array<string, mixed>>
+     */
+    private function deduplicateStaticSidecarManagementUplinks(array $uplinks): array
+    {
+        $deduped = [];
+        foreach ($uplinks as $uplink) {
+            if (!is_array($uplink)) {
+                continue;
+            }
+            $shared = (string) ($uplink['wireguard_peer_mode'] ?? '') === 'shared';
+            if ($shared) {
+                $pointId = (int) ($uplink['sidecar_point_id'] ?? 0);
+                $nodeId = (int) ($uplink['node_id'] ?? 0);
+                if ($pointId <= 0 || $nodeId <= 0) {
+                    continue;
+                }
+                $key = 'shared:' . $pointId . ':' . $nodeId;
+            } else {
+                $interfaceName = trim((string) ($uplink['interface_name'] ?? ''));
+                if ($interfaceName === '') {
+                    continue;
+                }
+                $key = 'legacy:' . $interfaceName;
+            }
+            if (!isset($deduped[$key])) {
+                $deduped[$key] = $uplink;
+            }
+        }
+        return array_values($deduped);
     }
 
     /**
@@ -6254,8 +6937,12 @@ final class ProvisioningService
         $combinationId = (int) ($combination['id'] ?? $combination['forward_combination_id'] ?? 0);
         $pointId = (int) ($combination['sidecar_point_id'] ?? 0);
         $nodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
-        if ($combinationId <= 0 || $pointId <= 0 || $nodeId <= 0) {
+        $sharedPeerMode = $pointId > 0 && $this->staticSidecarCombinationUsesSharedWireguardPeers($combination);
+        if (($combinationId <= 0 && !$sharedPeerMode) || $pointId <= 0 || $nodeId <= 0) {
             return [];
+        }
+        if ($this->staticSidecarUsesSharedWireguardPeers($pointId)) {
+            $this->primeSharedStaticSidecarSubnetRegistryForPoint($pointId);
         }
 
         $sidecarConfig = $this->decodeJsonAssoc($combination['sidecar_agent_config_json'] ?? null);
@@ -6278,6 +6965,10 @@ final class ProvisioningService
                     $sidecarConfig = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
                 }
             }
+        }
+        $wireguardEndpointHost = trim((string) ($sidecarConfig['wireguard_endpoint_host'] ?? ''));
+        if ($wireguardEndpointHost === '') {
+            $wireguardEndpointHost = $sidecarHost;
         }
 
         $listenSource = [
@@ -6329,6 +7020,58 @@ final class ProvisioningService
             $overlaySidecarIps = array_values(array_unique($overlaySidecarIps));
             $overlayClientIps = array_values(array_unique($overlayClientIps));
         }
+        if ($sharedPeerMode) {
+            $sidecarListenPort = (int) ($sidecarConfig['wireguard_listen_port'] ?? 0);
+            if ($sidecarListenPort <= 0 || $sidecarListenPort > 65535 || $sidecarHost === '') {
+                return [];
+            }
+            $addresses = $this->allocateStaticSidecarUplinkSubnet($pointId, 0, $nodeId, 'shared');
+            $relayPort = $this->sidecarBondListenPort([
+                'listen_port' => (int) ($combination['sidecar_listen_port'] ?? 0),
+                'bond_listen_port' => (int) ($combination['sidecar_bond_listen_port'] ?? 0),
+            ]);
+            if ($relayPort <= 0 || $relayPort > 65535) {
+                return [];
+            }
+            $base = [
+                'enabled' => true,
+                'mode' => 'static_slave_sidecar',
+                'wireguard_peer_mode' => 'shared',
+                'forward_combination_id' => $combinationId,
+                'sidecar_point_id' => $pointId,
+                'node_id' => $nodeId,
+                'lane' => 'shared',
+                'subnet' => $addresses['subnet'],
+                'listen_port' => $sidecarListenPort,
+                'outer_transport' => 'udp',
+                'peer_keepalive_seconds' => max(1, (int) ($this->config->getInt('STATIC_SIDECAR_WG_KEEPALIVE_SECONDS', 25) ?? 25)),
+                'watchdog' => [
+                    'enabled' => true,
+                    'handshake_stale_seconds' => max(10, (int) ($this->config->getInt('STATIC_SIDECAR_WG_HANDSHAKE_STALE_SECONDS', 90) ?? 90)),
+                    'restart_cooldown_seconds' => max(10, (int) ($this->config->getInt('STATIC_SIDECAR_WG_RESTART_COOLDOWN_SECONDS', 30) ?? 30)),
+                ],
+            ];
+            $sidecar = $base + [
+                'interface_name' => $this->sharedSidecarWireguardInterfaceName($pointId),
+                'local_address' => $addresses['sidecar_address'],
+                'peer_address' => $addresses['slave_address'],
+                'slave_peer_public_key' => $slavePublicKey,
+                'sidecar_peer_public_key' => $sidecarPublicKey,
+                'relay_target' => $addresses['sidecar_address'] . ':' . $relayPort,
+            ];
+            $slave = $base + [
+                'interface_name' => $this->sharedSlaveWireguardInterfaceName($pointId, $nodeId),
+                'local_address' => $addresses['slave_address'],
+                'peer_address' => $addresses['sidecar_address'],
+                'sidecar_peer_public_key' => $sidecarPublicKey,
+                'slave_peer_public_key' => $slavePublicKey,
+                'sidecar_endpoint_host' => $wireguardEndpointHost,
+                'sidecar_endpoint_port' => $sidecarListenPort,
+                'local_listen_port' => $this->stableStaticLocalUdpPort($pointId, 0, $nodeId, 'shared'),
+                'relay_target' => $addresses['sidecar_address'] . ':' . $relayPort,
+            ];
+            return [['sidecar' => $sidecar, 'slave' => $slave]];
+        }
         $lanes = [];
         foreach (['primary' => 'p', 'backup' => 'b'] as $lane => $suffix) {
             $addresses = $this->allocateStaticSidecarUplinkSubnet($pointId, $combinationId, $nodeId, $lane);
@@ -6372,7 +7115,7 @@ final class ProvisioningService
                 'peer_address' => $addresses['sidecar_address'],
                 'sidecar_peer_public_key' => $sidecarPublicKey,
                 'slave_peer_public_key' => $slavePublicKey,
-                'sidecar_endpoint_host' => $sidecarHost,
+                'sidecar_endpoint_host' => $wireguardEndpointHost,
                 'sidecar_endpoint_port' => $listenPort,
                 'local_listen_port' => $slaveListenPort,
                 'relay_target' => $addresses['sidecar_address'] . ':' . $relayPort,
@@ -6517,32 +7260,10 @@ final class ProvisioningService
         }
         $groupKeys = $this->orderedHelperGroupKeysForForward($forward);
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
+        $runtimePreference = $this->runtimePreferenceForForward($forward);
         $serviceId = (int) ($forward['service_id'] ?? 0);
         $desiredCount = $this->panelManagedEndpointCount($clientMode, $groupKeys, $serviceId ?: null);
         $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
-        if ($combinationId > 0) {
-            $combination = $this->forwardCombinationById($combinationId) ?? [];
-            $selectorCap = $this->reconcileCombinationSelectorCap($forward, $combination);
-            $selectedSlaves = $this->pickFastestSlavesForCombination($combinationId, $selectorCap);
-            $desiredNodes = $this->reconcileRentedNodes($selectedSlaves, $selectorCap);
-        } else {
-            $specificNodeId = $this->specificNodeIdFromCustomEndpointIds($forward['custom_endpoint_ids_json'] ?? null);
-            if ($specificNodeId !== null) {
-                $specificNode = $this->specificNodeForForward($specificNodeId, $serviceId);
-                $desiredNodes = is_array($specificNode) ? [$specificNode] : [];
-            } else {
-                $desiredNodes = $this->pickNodesForGroups($groupKeys, $desiredCount, $serviceId ?: null);
-            }
-        }
-        $reachableNodes = [];
-        foreach ($desiredNodes as $node) {
-            $publicHost = $this->resolveNodePublicHost($node);
-            if ($publicHost === '') {
-                continue;
-            }
-            $node['resolved_public_host'] = $publicHost;
-            $reachableNodes[(int) $node['id']] = $node;
-        }
         $existing = $this->db->fetchAll(
             'SELECT * FROM service_endpoints
              WHERE forward_id = :forward_id
@@ -6555,6 +7276,62 @@ final class ProvisioningService
                 'deleting' => 'deleting',
             ]
         );
+        $preferredNodeIds = [];
+        foreach ($existing as $endpoint) {
+            if (!in_array((string) ($endpoint['health_status'] ?? ''), ['active', 'pending'], true)) {
+                continue;
+            }
+            $nodeId = (int) ($endpoint['node_id'] ?? 0);
+            if ($nodeId > 0) {
+                $preferredNodeIds[] = $nodeId;
+            }
+        }
+        $eligibleLeigodNodeIds = null;
+        if ($this->isDedicatedLeigodRuntime((string) ($forward['backend_mode'] ?? ''), $clientMode, $runtimePreference)) {
+            $transport = $this->leigodEligibilityTransport((string) ($forward['transport_mode'] ?? 'tcp'));
+            $routeId = (int) ($forward['forward_route_id'] ?? 0);
+            $eligibleLeigodNodes = $routeId > 0
+                ? $this->leigodLineCatalog()->eligibleNodesForRoute($routeId, $transport)
+                : $this->leigodLineCatalog()->eligibleNodesForCombination($combinationId, $transport);
+            $eligibleLeigodNodeIds = array_fill_keys(array_map(
+                static fn(array $node): int => (int) ($node['id'] ?? 0),
+                $eligibleLeigodNodes
+            ), true);
+        }
+        if ($combinationId > 0) {
+            $combination = $this->forwardCombinationById($combinationId) ?? [];
+            $selectorCap = $this->reconcileCombinationSelectorCap($forward, $combination);
+            $selectedSlaves = $this->pickFastestSlavesForCombination($combinationId, $selectorCap);
+            $desiredNodes = $this->reconcileRentedNodes($selectedSlaves, $selectorCap);
+        } else {
+            $specificNodeId = $this->specificNodeIdFromCustomEndpointIds($forward['custom_endpoint_ids_json'] ?? null);
+            if ($specificNodeId !== null) {
+                $specificNode = $this->specificNodeForForward($specificNodeId, $serviceId);
+                $desiredNodes = is_array($specificNode) ? [$specificNode] : [];
+            } else {
+                $desiredNodes = $this->pickNodesForGroups(
+                    $groupKeys,
+                    $desiredCount,
+                    $serviceId ?: null,
+                    $preferredNodeIds
+                );
+            }
+        }
+        if (is_array($eligibleLeigodNodeIds)) {
+            $desiredNodes = array_values(array_filter(
+                $desiredNodes,
+                static fn(array $node): bool => isset($eligibleLeigodNodeIds[(int) ($node['id'] ?? 0)])
+            ));
+        }
+        $reachableNodes = [];
+        foreach ($desiredNodes as $node) {
+            $publicHost = $this->resolveNodePublicHost($node);
+            if ($publicHost === '') {
+                continue;
+            }
+            $node['resolved_public_host'] = $publicHost;
+            $reachableNodes[(int) $node['id']] = $node;
+        }
         $existingByNode = [];
         foreach ($existing as $endpoint) {
             $nodeId = (int) ($endpoint['node_id'] ?? 0);
@@ -6698,6 +7475,7 @@ final class ProvisioningService
             'selector_enabled' => (bool) ($selector['enabled'] ?? false),
             'selector_candidate_count' => is_array($selector['candidates'] ?? null) ? count($selector['candidates']) : 0,
             'selector_single_lane_monitor' => (bool) ($selector['single_lane_monitor'] ?? false),
+            'leigod_forward' => $this->materialLeigodForwardFingerprint($payload['leigod_forward'] ?? null),
         ];
         return sha1((string) json_encode($material, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
     }
@@ -6845,8 +7623,12 @@ final class ProvisioningService
             foreach ($routeCombos as $routeCombo) {
                 $routeCombo = $this->hydrateCombinationSidecarFields($routeCombo, (int) ($forward['bond_sidecar_point_id'] ?? 0));
                 foreach ($this->buildStaticSidecarUplinkPairForNode($routeCombo, $node) as $lane) {
-                    if (($lane['slave']['lane'] ?? '') === 'primary') {
-                        $routeUplinks[] = $lane['slave'];
+                    $slave = $lane['slave'];
+                    if ($this->isCanonicalStaticSidecarUplink($slave)) {
+                        $key = (int) ($slave['sidecar_point_id'] ?? 0)
+                            . ':' . (int) ($slave['node_id'] ?? 0)
+                            . ':' . (string) ($slave['interface_name'] ?? '');
+                        $routeUplinks[$key] = $slave;
                     }
                 }
             }
@@ -6856,12 +7638,26 @@ final class ProvisioningService
         }
         $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
         $nodeId = (int) ($node['id'] ?? $node['node_id'] ?? 0);
-        if ($combinationId <= 0 || $nodeId <= 0) {
+        if ($nodeId <= 0) {
             return [];
         }
-        $combination = $this->forwardCombinationById($combinationId);
-        if (!is_array($combination)) {
-            return [];
+        if ($combinationId <= 0) {
+            if (!$this->usesSingleRaceSidecarFrontend($forward)) {
+                return [];
+            }
+            $combination = [
+                'id' => 0,
+                'sidecar_point_id' => (int) ($forward['bond_sidecar_point_id'] ?? 0),
+                'backend_mode' => (string) ($forward['backend_mode'] ?? 'current_mode'),
+                'client_mode' => (string) ($forward['client_mode'] ?? 'single'),
+                'runtime_preference' => $this->runtimePreferenceForForward($forward),
+                'self_leg_outer_transport' => 'cnix',
+            ];
+        } else {
+            $combination = $this->forwardCombinationById($combinationId);
+            if (!is_array($combination)) {
+                return [];
+            }
         }
         if ((int) ($combination['sidecar_point_id'] ?? 0) <= 0 && (int) ($forward['bond_sidecar_point_id'] ?? 0) > 0) {
             $combination['sidecar_point_id'] = (int) $forward['bond_sidecar_point_id'];
@@ -6954,7 +7750,7 @@ final class ProvisioningService
             $sidecarServicePort = (int) ($this->resolveSidecarDirectTarget($forward, $normalizedTargetMode)['port'] ?? 0);
         }
         foreach ($this->staticSidecarUplinksWithServicePort($uplinks, $sidecarServicePort) as $slave) {
-            if (($slave['lane'] ?? '') !== 'primary') {
+            if (!$this->isCanonicalStaticSidecarUplink($slave)) {
                 continue;
             }
             return $slave;
@@ -7071,11 +7867,19 @@ final class ProvisioningService
         $runtimePreference = $this->runtimePreferenceForForward($forward);
         $backendMode = (string) ($forward['backend_mode'] ?? 'current_mode');
         $aggregationEnabled = $this->combinationUsesAggregation($clientMode, $runtimePreference);
-        $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
-        $activeFamily = $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
-        $targetContract = $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
+        $sidecarFrontend = $this->usesSingleRaceSidecarFrontend($forward);
+        $sidecarRequired = $sidecarFrontend
+            || $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+        $dedicatedLeigod = $backendMode === 'leigod_mode' && $clientMode === 'single' && !$sidecarRequired;
+        $activeFamily = $sidecarFrontend
+            ? 'sidecar_aggregation'
+            : $this->activeFamilyForRuntime($backendMode, $clientMode, $runtimePreference);
+        $targetContract = $sidecarFrontend
+            ? 'sidecar_aggregation'
+            : $this->targetContractForRuntime($backendMode, $clientMode, $runtimePreference);
         $publishesBondRuntime = $clientMode === 'bond' || $runtimePreference === 'mptcp_preferred_bond_fallback';
         $publishesBondRuntime = $aggregationEnabled && $publishesBondRuntime;
+        $publishesBondRuntime = $publishesBondRuntime || $sidecarFrontend;
         $plainTcpIngress = $publishesBondRuntime && $bondIngressMode === 'plain_tcp_mux';
         $routeKey = (string) ($forward['path_prefix'] ?? '');
         $directTargetMode = $publishesBondRuntime ? 'bond' : $clientMode;
@@ -7086,8 +7890,25 @@ final class ProvisioningService
             ? $this->staticSidecarUplinksWithServicePort($this->staticSidecarUplinksForForwardNode($forward, $node), (int) ($directSidecarTarget['port'] ?? 0))
             : [];
         $staticSidecarUplink = $directSidecarTarget !== null
-            ? (array_values(array_filter($staticSidecarUplinks, static fn(array $uplink): bool => ($uplink['lane'] ?? '') === 'primary'))[0] ?? null)
+            ? (array_values(array_filter($staticSidecarUplinks, fn(array $uplink): bool => $this->isCanonicalStaticSidecarUplink($uplink)))[0] ?? null)
             : null;
+        $sharedSidecarRequired = $directSidecarTarget !== null && $this->forwardRequiresSharedStaticSidecarUplink($forward);
+        if ($sharedSidecarRequired && (int) ($forward['public_port'] ?? 0) === 443) {
+            throw new ApiException('shared_sidecar_public_port_forbidden', 409, [
+                'forward_id' => (int) ($forward['id'] ?? 0),
+                'bond_sidecar_point_id' => (int) ($forward['bond_sidecar_point_id'] ?? 0),
+            ]);
+        }
+        if ($sharedSidecarRequired && (
+            !is_array($staticSidecarUplink)
+            || (string) ($staticSidecarUplink['wireguard_peer_mode'] ?? '') !== 'shared'
+        )) {
+            throw new ApiException('shared_sidecar_uplink_unavailable', 409, [
+                'forward_id' => (int) ($forward['id'] ?? 0),
+                'node_id' => (int) ($node['id'] ?? $node['node_id'] ?? 0),
+                'bond_sidecar_point_id' => (int) ($forward['bond_sidecar_point_id'] ?? 0),
+            ]);
+        }
         $staticSidecarSelector = $directSidecarTarget !== null
             ? $this->staticSidecarUplinkSelectorPayload($staticSidecarUplinks, (int) ($directSidecarTarget['port'] ?? 0), (int) ($forward['id'] ?? 0), $endpointId)
             : [];
@@ -7103,6 +7924,34 @@ final class ProvisioningService
         }
         if (is_array($staticSidecarUplink) && trim((string) ($staticSidecarUplink['relay_target'] ?? '')) !== '') {
             $publishTarget = (string) $staticSidecarUplink['relay_target'];
+        }
+        $leigodForward = null;
+        if ($dedicatedLeigod) {
+            $candidates = $this->leigodLineCatalog()->candidatesForForwardOnNode($forward, (int) ($node['id'] ?? 0));
+            if ($candidates === []) {
+                throw new ApiException('leigod_route_no_healthy_candidate', 409, [
+                    'node_id' => (int) ($node['id'] ?? 0),
+                    'forward_route_id' => (int) ($forward['forward_route_id'] ?? 0),
+                    'forward_combination_id' => (int) ($forward['forward_combination_id'] ?? 0),
+                ]);
+            }
+            $relayPort = $this->stableLeigodRelayPort((int) ($forward['id'] ?? 0), $endpointId);
+            $routeId = (int) ($forward['forward_route_id'] ?? 0);
+            $route = $routeId > 0
+                ? $this->db->fetchOne('SELECT race_enabled FROM forward_routes WHERE id = :id LIMIT 1', ['id' => $routeId])
+                : null;
+            $leigodForward = [
+                'mode' => is_array($route) && (int) ($route['race_enabled'] ?? 0) === 1 ? 'race' : 'single',
+                'relay_port' => $relayPort,
+                'target' => (string) ($forward['target_host'] ?? '') . ':' . (int) ($forward['target_port'] ?? 0),
+                'candidates' => $candidates,
+                'health_max_age_seconds' => max(15, min(3600, $this->config->getInt('LEIGOD_LINE_HEALTH_MAX_AGE_SECONDS', 180))),
+                'switch_improvement_ms' => max(1, min(1000, $this->config->getInt('LEIGOD_FORWARD_SWITCH_IMPROVEMENT_MS', 15))),
+                'minimum_hold_seconds' => max(1, min(3600, $this->config->getInt('LEIGOD_FORWARD_MINIMUM_HOLD_SECONDS', 30))),
+                'failure_threshold' => max(1, min(100, $this->config->getInt('LEIGOD_FORWARD_FAILURE_THRESHOLD', 2))),
+                'recovery_success_threshold' => max(1, min(100, $this->config->getInt('LEIGOD_FORWARD_RECOVERY_SUCCESS_THRESHOLD', 2))),
+            ];
+            $publishTarget = '127.0.0.1:' . $relayPort;
         }
         return [
             'listen_port' => (int) ($forward['public_port'] ?? 0),
@@ -7131,6 +7980,7 @@ final class ProvisioningService
             'transport_mode' => (string) ($forward['transport_mode'] ?? 'tcp+udp'),
             'ingress_protocol' => $plainTcpIngress ? 'plain_tcp_mux' : 'wss_path_mux',
             'backend_protocol' => $backendProtocol,
+            'leigod_forward' => $leigodForward,
             'sidecar_uplink' => $staticSidecarUplink ?? [],
             'sidecar_uplink_selector' => $staticSidecarSelector,
             'ingress_auth_token' => $plainTcpIngress
@@ -7143,6 +7993,84 @@ final class ProvisioningService
                 'public_port' => (int) ($forward['public_port'] ?? 0),
             ]) : null,
             'donation_policy' => $this->donationPolicyForForward($forward),
+        ];
+    }
+
+    private function stableLeigodRelayPort(int $forwardId, int $endpointId): int
+    {
+        if ($forwardId <= 0 || $endpointId <= 0) {
+            throw new ApiException('invalid_leigod_relay_identity', 500);
+        }
+        return 48000 + ($endpointId % 10000);
+    }
+
+    private function isDedicatedLeigodRuntime(string $backendMode, string $clientMode, string $runtimePreference): bool
+    {
+        return $backendMode === 'leigod_mode'
+            && $this->normalizeClientMode($clientMode) === 'single'
+            && !$this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+    }
+
+    private function leigodEligibilityTransport(string $transportMode): string
+    {
+        $transportMode = strtolower(trim($transportMode));
+        if ($transportMode === 'both' || str_contains($transportMode, '+')) {
+            return 'both';
+        }
+        return $transportMode === 'udp' ? 'udp' : 'tcp';
+    }
+
+    private function forwardRouteUsesDedicatedLeigod(int $routeId): bool
+    {
+        if ($routeId <= 0) {
+            return false;
+        }
+        $row = $this->db->fetchOne(
+            'SELECT COUNT(*) AS combination_count,
+                    SUM(CASE WHEN fc.backend_mode = :backend_mode
+                                  AND fc.client_mode = :client_mode
+                                  AND fc.sidecar_point_id IS NULL
+                             THEN 1 ELSE 0 END) AS dedicated_count
+             FROM forward_route_combinations frc
+             INNER JOIN forward_combinations fc ON fc.id = frc.forward_combination_id
+             WHERE frc.forward_route_id = :route_id
+               AND frc.enabled = 1
+               AND fc.is_active = 1',
+            [
+                'route_id' => $routeId,
+                'backend_mode' => 'leigod_mode',
+                'client_mode' => 'single',
+            ]
+        );
+        $combinationCount = (int) ($row['combination_count'] ?? 0);
+        return $combinationCount > 0 && (int) ($row['dedicated_count'] ?? 0) === $combinationCount;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function materialLeigodForwardFingerprint(mixed $payload): ?array
+    {
+        if (!is_array($payload)) {
+            return null;
+        }
+        $candidates = [];
+        foreach ((array) ($payload['candidates'] ?? []) as $candidate) {
+            if (!is_array($candidate)) {
+                continue;
+            }
+            $candidates[] = [
+                'combination_id' => (int) ($candidate['combination_id'] ?? 0),
+                'line_id' => (int) ($candidate['line_id'] ?? 0),
+                'config_sha256' => (string) ($candidate['config_sha256'] ?? ''),
+                'service_state' => (string) ($candidate['service_state'] ?? ''),
+                'tcp_status' => (string) ($candidate['tcp_status'] ?? ''),
+                'udp_status' => (string) ($candidate['udp_status'] ?? ''),
+            ];
+        }
+        return [
+            'mode' => (string) ($payload['mode'] ?? ''),
+            'relay_port' => (int) ($payload['relay_port'] ?? 0),
+            'target' => (string) ($payload['target'] ?? ''),
+            'candidates' => $candidates,
         ];
     }
 
@@ -7464,7 +8392,8 @@ final class ProvisioningService
         );
     }
 
-    private function pickNodes(string $groupKey, int $count, ?int $serviceId = null): array
+    /** @param array<int, int> $preferredNodeIds */
+    private function pickNodes(string $groupKey, int $count, ?int $serviceId = null, array $preferredNodeIds = []): array
     {
         $params = [
             'active' => 'active',
@@ -7498,12 +8427,19 @@ final class ProvisioningService
         }
 
         $sql .= $this->nodeSelectionFreshnessSql($params);
-        // FIX C: order the LIMIT-bounded candidate window by current_load ASC then node_id ASC. Stale
-        // nodes are already excluded by nodeSelectionFreshnessSql(), so among fresh equal-load nodes the
-        // previous last_heartbeat_at DESC tie-break only injected volatility: it changed every heartbeat
-        // and flipped which equal-load node fell inside the LIMIT window, churning endpoint membership.
-        // node_id ASC is an immutable tie-break, so the selected window is deterministic across reconciles.
-        $sql .= ' ORDER BY n.current_load ASC, n.id ASC LIMIT ' . max(1, $count);
+        $preferredPlaceholders = [];
+        foreach (array_values(array_unique(array_filter(array_map('intval', $preferredNodeIds), static fn(int $id): bool => $id > 0))) as $index => $nodeId) {
+            $key = 'preferred_node_' . $index;
+            $preferredPlaceholders[] = ':' . $key;
+            $params[$key] = $nodeId;
+        }
+        // Keep healthy assigned nodes ahead of new capacity so their own load contribution cannot evict
+        // them on the next reconcile. Eligibility and freshness filters still force real failover; new
+        // capacity remains load-balanced with an immutable node-id tie-break.
+        $preferredOrder = $preferredPlaceholders !== []
+            ? 'CASE WHEN n.id IN (' . implode(', ', $preferredPlaceholders) . ') THEN 0 ELSE 1 END ASC, '
+            : '';
+        $sql .= ' ORDER BY ' . $preferredOrder . 'n.current_load ASC, n.id ASC LIMIT ' . max(1, $count);
         return $this->db->fetchAll($sql, $params);
     }
 
@@ -7707,9 +8643,10 @@ final class ProvisioningService
 
     /**
      * @param array<int, string> $groupKeys
+     * @param array<int, int> $preferredNodeIds
      * @return array<int, array<string, mixed>>
      */
-    private function pickNodesForGroups(array $groupKeys, int $count, ?int $serviceId = null): array
+    private function pickNodesForGroups(array $groupKeys, int $count, ?int $serviceId = null, array $preferredNodeIds = []): array
     {
         $normalized = array_values(array_unique(array_filter(array_map(static fn(string $item): string => trim($item), $groupKeys), static fn(string $item): bool => $item !== '')));
         if ($normalized === []) {
@@ -7719,7 +8656,7 @@ final class ProvisioningService
         $primary = [];
         $secondary = [];
         foreach ($normalized as $groupKey) {
-            $groupNodes = $this->pickNodes($groupKey, max(1, $count), $serviceId);
+            $groupNodes = $this->pickNodes($groupKey, max(1, $count), $serviceId, $preferredNodeIds);
             if ($groupNodes === []) {
                 continue;
             }
@@ -8300,6 +9237,108 @@ final class ProvisioningService
     }
 
     /**
+     * Validate values that eventually reach generated slave units. The v1
+     * contract performs strict JSON typing; this shared boundary protects
+     * legacy, Web, and internal callers after their normalizers run.
+     *
+     * @return array{0:string,1:int,2:int}
+     */
+    private function validateForwardMutationInputs(
+        string $targetHost,
+        int $targetPort,
+        int $listenPort,
+        bool $allowAutomaticListenPort
+    ): array {
+        if ($targetPort < 1 || $targetPort > 65535) {
+            throw new ApiException('invalid_forward_payload', 422);
+        }
+        if ($listenPort < 0 || $listenPort > 65535 || (!$allowAutomaticListenPort && $listenPort === 0)) {
+            throw new ApiException('invalid_forward_payload', 422);
+        }
+
+        return [ForwardLineApiContract::validateTargetHost($targetHost), $targetPort, $listenPort];
+    }
+
+    /**
+     * @param array{user_id?: int, feature?: string}|null $mutationPolicy
+     * @return array<string, mixed>
+     */
+    private function lockForwardMutationService(int $serviceId, ?array $mutationPolicy, string $notFoundCode): array
+    {
+        $service = $this->db->fetchOne(
+            'SELECT * FROM services WHERE id = :id LIMIT 1 FOR UPDATE',
+            ['id' => $serviceId]
+        );
+        if ($service === null) {
+            throw new ApiException($notFoundCode, 404);
+        }
+        if ($mutationPolicy === null) {
+            return $service;
+        }
+
+        $expectedUserId = (int) ($mutationPolicy['user_id'] ?? 0);
+        if ($expectedUserId <= 0 || (int) ($service['user_id'] ?? 0) !== $expectedUserId) {
+            throw new ApiException($notFoundCode, 404);
+        }
+        if ((string) ($service['status'] ?? '') !== 'active') {
+            throw new ApiException('service_inactive', 409);
+        }
+
+        $user = $this->db->fetchOne(
+            'SELECT * FROM users WHERE id = :id LIMIT 1 FOR UPDATE',
+            ['id' => $expectedUserId]
+        );
+        if ($user === null
+            || (string) ($user['role'] ?? '') !== 'tenant'
+            || (string) ($user['status'] ?? '') !== 'active') {
+            throw new ApiException('user_auth_failed', 401);
+        }
+
+        $planFeatureFlagsJson = '';
+        $planId = (int) ($service['plan_id'] ?? 0);
+        if ($planId > 0) {
+            $plan = $this->db->fetchOne(
+                'SELECT * FROM service_plans WHERE id = :id LIMIT 1 FOR UPDATE',
+                ['id' => $planId]
+            );
+            if ($plan === null) {
+                throw new ApiException('operation_failed', 500);
+            }
+            $planFeatureFlagsJson = (string) ($plan['feature_flags_json'] ?? '');
+        }
+
+        $service['plan_feature_flags_json'] = $planFeatureFlagsJson;
+        $service['user_feature_flags_json'] = (string) ($user['feature_flags_json'] ?? '');
+        $service['user_wallet_balance'] = $user['wallet_balance'] ?? 0;
+        $feature = (string) ($mutationPolicy['feature'] ?? '');
+        $featureErrors = [
+            'allow_manage_forwards' => 'feature_denied_manage_forwards',
+            'allow_delete_forwards' => 'feature_denied_delete_forwards',
+        ];
+        if (!array_key_exists($feature, $featureErrors)) {
+            throw new ApiException('operation_failed', 500);
+        }
+        $features = $this->effectiveFeatureFlagsForService($service);
+        if (empty($features[$feature])) {
+            throw new ApiException($featureErrors[$feature], 403);
+        }
+
+        return $service;
+    }
+
+    /** @param array<string, mixed> $forward */
+    private function assertExpectedForwardRevision(array $forward, ?int $expectedRevision): void
+    {
+        if ($expectedRevision === null) {
+            return;
+        }
+        $actualRevision = max(1, (int) ($forward['api_revision'] ?? 1));
+        if ($expectedRevision !== $actualRevision) {
+            throw new ApiException('forward_version_conflict', 412);
+        }
+    }
+
+    /**
      * @param array<string, mixed> $payload
      */
     private function requiredString(array $payload, string $key): string
@@ -8440,6 +9479,9 @@ final class ProvisioningService
         $direct = $this->resolveSidecarDirectTarget($forward, 'bond');
         $tokenSecret = $this->bondTokenSecret($forward);
         $ingressMode = $this->normalizeBondIngressMode((string) ($forward['bond_ingress_mode'] ?? 'wss_path_mux'));
+        $frontendMode = $this->usesSingleRaceSidecarFrontend($forward)
+            ? $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'))
+            : '';
         $clientDirectQuicEnabled = $this->config->getBool('BOND_CLIENT_DIRECT_QUIC_ENABLED', false);
         [
             'join_timeout_ms' => $adaptiveJoinTimeoutMs,
@@ -8450,6 +9492,8 @@ final class ProvisioningService
         ['issued_at' => $issuedAt, 'expires_at' => $expiresAt] = $this->bondTokenTimestamps();
         return [
             'enabled' => true,
+            'frontend_mode' => $frontendMode,
+            'strategy_locked' => $frontendMode !== '',
             'ingress_mode' => $ingressMode,
             'route_key' => (string) ($forward['path_prefix'] ?? ''),
             'hybrid_mode' => 'quic_ws',
@@ -8793,6 +9837,17 @@ final class ProvisioningService
         return is_array($decoded) ? $decoded : [];
     }
 
+    private function configValueEnabled(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value) || is_float($value)) {
+            return (int) $value === 1;
+        }
+        return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'on'], true);
+    }
+
     /**
      * @return array{subnet:string,client_address:string,slave_address:string,sidecar_address:string}
      */
@@ -8894,6 +9949,42 @@ final class ProvisioningService
             return $name;
         }
         return 'lws' . substr(hash('crc32b', $pointId . ':' . $combinationId . ':' . $nodeId . ':' . $laneSuffix), 0, 11);
+    }
+
+    /** @return array<int, true> */
+    private function staticSidecarSharedWireguardPointIds(): array
+    {
+        $ids = [];
+        foreach (explode(',', (string) ($this->config->get('STATIC_SIDECAR_SHARED_WG_POINT_IDS', '') ?? '')) as $raw) {
+            $pointId = (int) trim($raw);
+            if ($pointId > 0) {
+                $ids[$pointId] = true;
+            }
+        }
+        return $ids;
+    }
+
+    private function staticSidecarUsesSharedWireguardPeers(int $pointId): bool
+    {
+        return isset($this->staticSidecarSharedWireguardPointIds()[$pointId]);
+    }
+
+    private function sharedSidecarWireguardInterfaceName(int $pointId): string
+    {
+        $name = 'lwsp' . $pointId;
+        if (strlen($name) <= 15) {
+            return $name;
+        }
+        return 'lwsp' . substr(hash('crc32b', (string) $pointId), 0, 11);
+    }
+
+    private function sharedSlaveWireguardInterfaceName(int $pointId, int $nodeId): string
+    {
+        $name = 'lwsp' . $pointId . 'n' . $nodeId;
+        if (strlen($name) <= 15) {
+            return $name;
+        }
+        return 'lwp' . substr(hash('crc32b', $pointId . ':' . $nodeId), 0, 12);
     }
 
     private function stableStaticSidecarUplinkPort(int $sidecarListenPort, int $portRangeEnd, int $pointId, int $combinationId, int $nodeId, string $lane): int
@@ -9064,6 +10155,54 @@ final class ProvisioningService
     {
         $t = strtolower(trim((string) ($combination['self_leg_outer_transport'] ?? 'cnix')));
         return $t === 'leigod' && (int) ($combination['leigod_line_id'] ?? 0) > 0;
+    }
+
+    private function staticSidecarCombinationUsesSharedWireguardPeers(array $combination): bool
+    {
+        $pointId = (int) ($combination['sidecar_point_id'] ?? 0);
+        return $this->staticSidecarUsesSharedWireguardPeers($pointId)
+            && !$this->staticSidecarCombinationUsesLeigod($combination)
+            && !$this->staticSidecarCombinationUsesCf($combination);
+    }
+
+    private function isCanonicalStaticSidecarUplink(array $uplink): bool
+    {
+        return in_array((string) ($uplink['lane'] ?? ''), ['primary', 'shared'], true);
+    }
+
+    private function forwardRequiresSharedStaticSidecarUplink(array $forward): bool
+    {
+        $pointId = (int) ($forward['bond_sidecar_point_id'] ?? 0);
+        if ($pointId <= 0 || !$this->staticSidecarUsesSharedWireguardPeers($pointId)) {
+            return false;
+        }
+        $backendMode = strtolower(trim((string) ($forward['backend_mode'] ?? 'current_mode')));
+        if ($backendMode !== 'current_mode') {
+            return false;
+        }
+        $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
+        $runtimePreference = $this->runtimePreferenceForForward($forward);
+        return $this->usesSingleRaceSidecarFrontend($forward)
+            || $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
+    }
+
+    private function primeSharedStaticSidecarSubnetRegistryForPoint(int $pointId): void
+    {
+        if ($pointId <= 0 || isset($this->sharedStaticSidecarSubnetRegistryPrimed[$pointId])) {
+            return;
+        }
+        $this->sharedStaticSidecarSubnetRegistryPrimed[$pointId] = true;
+        $nodeIds = [];
+        foreach ($this->db->fetchAll('SELECT id FROM nodes ORDER BY id ASC') as $row) {
+            $nodeId = (int) ($row['id'] ?? 0);
+            if ($nodeId > 0) {
+                $nodeIds[$nodeId] = true;
+            }
+        }
+        ksort($nodeIds, SORT_NUMERIC);
+        foreach (array_keys($nodeIds) as $nodeId) {
+            $this->allocateStaticSidecarUplinkSubnet($pointId, 0, (int) $nodeId, 'shared');
+        }
     }
 
     private function stableSidecarGostSocksPort(int $forwardCombinationId, int $nodeId, string $lane = ''): int
@@ -9957,6 +11096,16 @@ final class ProvisioningService
         $sidecarLegPort = $this->stableSidecarLegPort($sidecarListenPort, $sidecarPortRangeEnd, $forwardId, $nodeId);
         $staticSidecarUplink = $this->staticSidecarPrimaryUplinkForForwardNode($forward, $node, 'mptcp');
         $usesStaticSidecarUplink = is_array($staticSidecarUplink) && trim((string) ($staticSidecarUplink['peer_address'] ?? '')) !== '';
+        if ($this->forwardRequiresSharedStaticSidecarUplink($forward) && (
+            !$usesStaticSidecarUplink
+            || (string) ($staticSidecarUplink['wireguard_peer_mode'] ?? '') !== 'shared'
+        )) {
+            throw new ApiException('shared_sidecar_uplink_unavailable', 409, [
+                'forward_id' => $forwardId,
+                'node_id' => $nodeId,
+                'bond_sidecar_point_id' => (int) ($forward['bond_sidecar_point_id'] ?? 0),
+            ]);
+        }
         $clientCfRelayEnabled = $this->forwardUsesCfMode($forward) && $this->nodeSupportsCfwgRelay($nodeConfig);
         if ($clientCfRelayEnabled) {
             $outerTransport = 'wstunnel_udp';

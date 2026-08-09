@@ -19,6 +19,8 @@ final class Database
 
     private Config $config;
     private ?PDO $pdo = null;
+    private int $transactionDepth = 0;
+    private ?Throwable $rollbackOnlyCause = null;
 
     public function __construct(Config $config)
     {
@@ -79,6 +81,7 @@ final class Database
             $row = $stmt->fetch();
             return $row === false ? null : $row;
         } catch (Throwable $throwable) {
+            $this->markRollbackOnlyOnDeadlock($throwable);
             throw $this->queryException($throwable, $sql, $params);
         }
     }
@@ -94,6 +97,7 @@ final class Database
             $stmt->execute($this->sanitizeParams($sql, $params));
             return $stmt->fetchAll() ?: [];
         } catch (Throwable $throwable) {
+            $this->markRollbackOnlyOnDeadlock($throwable);
             throw $this->queryException($throwable, $sql, $params);
         }
     }
@@ -111,12 +115,14 @@ final class Database
                 $stmt->execute($this->sanitizeParams($sql, $params));
                 return $stmt->rowCount();
             } catch (Throwable $throwable) {
-                // Defense in depth: concurrent heartbeats can collide on the
-                // same provision_tasks rows and trip an InnoDB deadlock
-                // (SQLSTATE 40001 / error 1213). Retry a couple of times with a
-                // small backoff before surfacing the failure. Only deadlocks are
-                // retried; every other error is rethrown immediately.
-                if ($this->isDeadlock($throwable) && $attempt < self::DEADLOCK_MAX_ATTEMPTS) {
+                // A standalone statement may be retried. Inside a transaction,
+                // InnoDB can roll back the whole transaction, so the outer
+                // transaction wrapper must rerun the complete callback instead.
+                $inTransaction = $this->transactionDepth > 0 || $this->pdo()->inTransaction();
+                if ($inTransaction && $this->isDeadlock($throwable)) {
+                    $this->rollbackOnlyCause = $throwable;
+                }
+                if (!$inTransaction && $this->isDeadlock($throwable) && $attempt < self::DEADLOCK_MAX_ATTEMPTS) {
                     usleep($attempt * 20000);
                     continue;
                 }
@@ -149,14 +155,74 @@ final class Database
     public function transaction(callable $callback)
     {
         $pdo = $this->pdo();
-        $pdo->beginTransaction();
+        if ($pdo->inTransaction()) {
+            return $this->nestedTransaction($pdo, $callback);
+        }
+
+        $attempt = 0;
+        while (true) {
+            $attempt++;
+            $pdo->beginTransaction();
+            $this->transactionDepth = 1;
+            $this->rollbackOnlyCause = null;
+            try {
+                $result = $callback($this);
+                if ($this->rollbackOnlyCause instanceof Throwable) {
+                    throw $this->rollbackOnlyCause;
+                }
+                if (!$pdo->inTransaction()) {
+                    throw new \RuntimeException('database_transaction_was_rolled_back');
+                }
+                $pdo->commit();
+                return $result;
+            } catch (Throwable $throwable) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                if ($this->isDeadlock($throwable) && $attempt < self::DEADLOCK_MAX_ATTEMPTS) {
+                    usleep($attempt * 20000);
+                    continue;
+                }
+                throw $throwable;
+            } finally {
+                $this->transactionDepth = 0;
+                $this->rollbackOnlyCause = null;
+            }
+        }
+    }
+
+    private function nestedTransaction(PDO $pdo, callable $callback): mixed
+    {
+        $this->transactionDepth++;
+        $savepoint = 'leikwan_sp_' . $this->transactionDepth;
+        $savepointCreated = false;
         try {
+            $pdo->exec('SAVEPOINT ' . $savepoint);
+            $savepointCreated = true;
             $result = $callback($this);
-            $pdo->commit();
+            if ($this->rollbackOnlyCause instanceof Throwable) {
+                throw $this->rollbackOnlyCause;
+            }
+            $pdo->exec('RELEASE SAVEPOINT ' . $savepoint);
             return $result;
-        } catch (\Throwable $throwable) {
-            $pdo->rollBack();
+        } catch (Throwable $throwable) {
+            if ($this->isDeadlock($throwable)) {
+                $this->rollbackOnlyCause = $throwable;
+            } elseif ($savepointCreated && $pdo->inTransaction()) {
+                $pdo->exec('ROLLBACK TO SAVEPOINT ' . $savepoint);
+                $pdo->exec('RELEASE SAVEPOINT ' . $savepoint);
+            }
             throw $throwable;
+        } finally {
+            $this->transactionDepth = max(0, $this->transactionDepth - 1);
+        }
+    }
+
+    private function markRollbackOnlyOnDeadlock(Throwable $throwable): void
+    {
+        if ($this->isDeadlock($throwable)
+            && ($this->transactionDepth > 0 || $this->pdo()->inTransaction())) {
+            $this->rollbackOnlyCause = $throwable;
         }
     }
 

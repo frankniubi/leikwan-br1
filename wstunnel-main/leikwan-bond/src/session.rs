@@ -14,10 +14,11 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket, lookup_host};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, interval, sleep, timeout};
 use log::{debug, info, warn};
@@ -31,15 +32,27 @@ const UDP_PEER_IDLE_TTL: Duration = Duration::from_secs(120);
 const UDP_MAX_REASSEMBLED_BYTES: usize = 1024 * 1024;
 const DEFAULT_TCP_LEG_RTT: Duration = Duration::from_millis(120);
 const DEFAULT_QUIC_LEG_RTT: Duration = Duration::from_millis(35);
-const DEFAULT_INTERACTIVE_RTT_SLACK: Duration = Duration::from_millis(30);
 const CLIENT_LEG_RETRY_BACKOFF: Duration = Duration::from_secs(30 * 60);
 const MIN_TRANSPORT_RESUME_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_TRANSPORT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CLIENT_TCP_LEG_JOIN_GRACE: Duration = Duration::from_millis(600);
 const TRANSPORT_STREAM_CLOSE_GRACE: Duration = Duration::from_secs(2);
+const MIN_TRANSPORT_LEG_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const LEG_WRITE_QUEUE_CAPACITY: usize = 16;
 const MAX_TCP_RETRANSMIT_BATCH: usize = 8;
 const MAX_RECENT_HEALTH_EVENTS: usize = 20;
 const SNAPSHOT_WRITE_INTERVAL: Duration = Duration::from_millis(250);
+const DEFAULT_READ_CREDIT_CHUNKS: usize = 128;
+
+fn enable_tcp_nodelay(stream: &TcpStream) -> std::io::Result<()> {
+    stream.set_nodelay(true)
+}
+
+fn read_credit_chunks(config: &SessionConfig) -> usize {
+    let chunk_size = config.chunk_size.max(1024);
+    let window = config.max_window_bytes.max(chunk_size);
+    window.saturating_add(chunk_size - 1) / chunk_size
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -60,6 +73,10 @@ pub struct SessionConfig {
     pub udp_primary_only: bool,
     pub strategy_file: Option<PathBuf>,
     pub default_strategy: ClientStrategy,
+}
+
+fn transport_leg_write_timeout(config: &SessionConfig) -> Duration {
+    MIN_TRANSPORT_LEG_WRITE_TIMEOUT.max(config.retransmit_after.saturating_mul(4))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +126,12 @@ enum TcpPenalty {
     LocalReadFailed,
     LocalWriteFailed,
     CloseTimeout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TcpFailureScope {
+    LocalEndpoint,
+    Transport,
 }
 
 impl TcpPenalty {
@@ -335,10 +358,118 @@ enum LocalWriteCommand {
     Shutdown,
 }
 
+struct QueuedLegFrame {
+    frame: WireFrame,
+    enqueued_at: Instant,
+    outstanding_frames: Option<Arc<AtomicUsize>>,
+}
+
+impl QueuedLegFrame {
+    #[cfg(test)]
+    fn new(frame: WireFrame) -> Self {
+        Self {
+            frame,
+            enqueued_at: Instant::now(),
+            outstanding_frames: None,
+        }
+    }
+
+    fn tracked(frame: WireFrame, outstanding_frames: Arc<AtomicUsize>) -> Self {
+        outstanding_frames.fetch_add(1, Ordering::Relaxed);
+        Self {
+            frame,
+            enqueued_at: Instant::now(),
+            outstanding_frames: Some(outstanding_frames),
+        }
+    }
+}
+
+impl Drop for QueuedLegFrame {
+    fn drop(&mut self) {
+        if let Some(outstanding_frames) = &self.outstanding_frames {
+            let previous = outstanding_frames.fetch_sub(1, Ordering::Relaxed);
+            debug_assert!(previous > 0, "tracked leg frame count underflow");
+        }
+    }
+}
+
+fn leg_write_channel() -> (mpsc::Sender<QueuedLegFrame>, mpsc::Receiver<QueuedLegFrame>) {
+    mpsc::channel(LEG_WRITE_QUEUE_CAPACITY)
+}
+
+#[derive(Clone)]
+enum LegWriteSender {
+    Bounded {
+        sender: mpsc::Sender<QueuedLegFrame>,
+        outstanding_frames: Arc<AtomicUsize>,
+    },
+    Unbounded(mpsc::UnboundedSender<WireFrame>),
+    #[cfg(test)]
+    Stub,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegSendResult {
+    Queued,
+    Full,
+    Closed,
+}
+
+impl LegWriteSender {
+    fn bounded(sender: mpsc::Sender<QueuedLegFrame>) -> Self {
+        Self::Bounded {
+            sender,
+            outstanding_frames: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn has_capacity(&self) -> bool {
+        match self {
+            Self::Bounded { sender, .. } => !sender.is_closed() && sender.capacity() > 0,
+            Self::Unbounded(sender) => !sender.is_closed(),
+            #[cfg(test)]
+            Self::Stub => true,
+        }
+    }
+
+    fn try_send(&self, frame: WireFrame) -> LegSendResult {
+        match self {
+            Self::Bounded {
+                sender,
+                outstanding_frames,
+            } => match sender.try_send(QueuedLegFrame::tracked(
+                frame,
+                outstanding_frames.clone(),
+            )) {
+                Ok(()) => LegSendResult::Queued,
+                Err(mpsc::error::TrySendError::Full(_)) => LegSendResult::Full,
+                Err(mpsc::error::TrySendError::Closed(_)) => LegSendResult::Closed,
+            },
+            Self::Unbounded(sender) => match sender.send(frame) {
+                Ok(()) => LegSendResult::Queued,
+                Err(_) => LegSendResult::Closed,
+            },
+            #[cfg(test)]
+            Self::Stub => LegSendResult::Queued,
+        }
+    }
+
+    fn pending_frames(&self) -> usize {
+        match self {
+            Self::Bounded {
+                outstanding_frames, ..
+            } => outstanding_frames.load(Ordering::Relaxed),
+            Self::Unbounded(_) => 0,
+            #[cfg(test)]
+            Self::Stub => 0,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct LegState {
     id: usize,
-    sender: mpsc::UnboundedSender<WireFrame>,
+    sender: Option<LegWriteSender>,
     active: bool,
     inflight_bytes: usize,
     transport: LegTransport,
@@ -362,6 +493,7 @@ struct PendingChunk {
     last_sent_at: Instant,
     last_leg_id: usize,
     transmit_count: u8,
+    write_pending: bool,
 }
 
 struct FinTracker {
@@ -564,6 +696,10 @@ async fn run_client_tcp_listener(
 
     loop {
         let (accepted_stream, peer) = listener.accept().await?;
+        if let Err(err) = enable_tcp_nodelay(&accepted_stream) {
+            warn!("failed to enable TCP_NODELAY for local client {}: {}", peer, err);
+            continue;
+        }
         let mut pending_stream = Some(accepted_stream);
         let strategy = config
             .strategy_file
@@ -702,6 +838,10 @@ pub async fn run_server_listener(
         tokio::select! {
             accept = listener.accept() => {
                 let (socket, peer) = accept?;
+                if let Err(err) = enable_tcp_nodelay(&socket) {
+                    warn!("failed to enable TCP_NODELAY for bond leg {}: {}", peer, err);
+                    continue;
+                }
                 let tx = collector_tx.clone();
                 tokio::spawn(async move {
                     let leg = OpenLeg::new(
@@ -967,12 +1107,22 @@ enum ClientTransportCommand {
 }
 
 enum TcpTransportEvent {
-    LocalChunk { stream_id: u32, payload: Bytes },
+    LocalChunk {
+        stream_id: u32,
+        payload: Bytes,
+        read_credit: Arc<Semaphore>,
+    },
     LocalEof { stream_id: u32 },
     LocalReadFailed { stream_id: u32, error: String },
     LocalWriteCommitted { stream_id: u32, bytes: usize },
     LocalWriteClosed { stream_id: u32 },
     LocalWriteFailed { stream_id: u32, error: String },
+    FrameWritten {
+        leg_id: usize,
+        stream_id: u32,
+        seq: u64,
+        written_at: Instant,
+    },
     Frame { _leg_id: usize, frame: WireFrame },
     LegClosed { leg_id: usize },
     UpstreamConnected { stream_id: u32, stream: TcpStream },
@@ -993,6 +1143,7 @@ struct TcpStreamState {
     opened: bool,
     open_sent_at: Option<Instant>,
     preferred_leg_id: Option<usize>,
+    inbound_ack_leg_id: Option<usize>,
     bulk_mode: bool,
     striping_stage: TcpStripingStage,
     warmup_leg_count: usize,
@@ -1002,6 +1153,8 @@ struct TcpStreamState {
     close_deadline_at: Option<Instant>,
     local_write_tx: mpsc::Sender<LocalWriteCommand>,
     close_tx: watch::Sender<bool>,
+    read_credit: Arc<Semaphore>,
+    read_credit_in_use: usize,
 }
 
 impl TcpStreamState {
@@ -1014,6 +1167,22 @@ impl TcpStreamState {
         close_tx: watch::Sender<bool>,
         opened: bool,
         strategy: ClientStrategy,
+    ) -> Self {
+        Self::new_with_strategy_and_read_credit(
+            local_write_tx,
+            close_tx,
+            opened,
+            strategy,
+            Arc::new(Semaphore::new(DEFAULT_READ_CREDIT_CHUNKS)),
+        )
+    }
+
+    fn new_with_strategy_and_read_credit(
+        local_write_tx: mpsc::Sender<LocalWriteCommand>,
+        close_tx: watch::Sender<bool>,
+        opened: bool,
+        strategy: ClientStrategy,
+        read_credit: Arc<Semaphore>,
     ) -> Self {
         Self {
             strategy,
@@ -1029,6 +1198,7 @@ impl TcpStreamState {
             opened,
             open_sent_at: None,
             preferred_leg_id: None,
+            inbound_ack_leg_id: None,
             bulk_mode: false,
             striping_stage: TcpStripingStage::Sticky,
             warmup_leg_count: 1,
@@ -1038,6 +1208,8 @@ impl TcpStreamState {
             close_deadline_at: None,
             local_write_tx,
             close_tx,
+            read_credit,
+            read_credit_in_use: 0,
         }
     }
 
@@ -1059,6 +1231,10 @@ impl TcpStreamState {
             && self.inbound.writer_shutdown
             && self.local_backlog.is_empty()
             && self.pending_chunks.is_empty()
+    }
+
+    fn preferred_ack_leg_id(&self) -> Option<usize> {
+        self.inbound_ack_leg_id.or(self.preferred_leg_id)
     }
 }
 
@@ -1108,10 +1284,11 @@ fn should_reset_transport_stream_on_close_timeout(state: &TcpStreamState, now: I
         return false;
     }
 
-    // Once our FIN has been acknowledged, the peer may still legitimately send
-    // control/result bytes before it closes its own write side. Treat that as a
-    // half-closed stream, not a stuck close-path that should be reset.
+    // A stream that sent request bytes may legitimately half-close before the
+    // remote result arrives. A zero-byte connect-and-close probe has no result
+    // to wait for and must be reclaimed after the normal close grace.
     if state.outbound_fin_acked
+        && state.outbound_next_offset > 0
         && state.inbound.fin_offset.is_none()
         && !state.inbound.writer_shutdown
     {
@@ -1119,6 +1296,22 @@ fn should_reset_transport_stream_on_close_timeout(state: &TcpStreamState, now: I
     }
 
     true
+}
+
+fn close_timeout_failure_scope(state: &TcpStreamState) -> TcpFailureScope {
+    if state.outbound_next_offset == 0 && state.outbound_fin_acked {
+        TcpFailureScope::LocalEndpoint
+    } else {
+        TcpFailureScope::Transport
+    }
+}
+
+fn stream_reset_failure_scope(reason: &str) -> TcpFailureScope {
+    if reason == "unknown_stream" {
+        TcpFailureScope::Transport
+    } else {
+        TcpFailureScope::LocalEndpoint
+    }
 }
 
 fn stream_lifecycle_snapshot(state: &TcpStreamState) -> String {
@@ -1627,7 +1820,8 @@ async fn run_tcp_transport_session(
     config: SessionConfig,
 ) -> anyhow::Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<TcpTransportEvent>();
-    let mut legs = spawn_tcp_leg_tasks(initial_legs, event_tx.clone());
+    let leg_write_timeout = transport_leg_write_timeout(&config);
+    let mut legs = spawn_tcp_leg_tasks(initial_legs, event_tx.clone(), leg_write_timeout);
     let snapshot = snapshot_context(role, claims.as_ref());
     let mut last_snapshot_write = None::<Instant>;
     let mut streams = HashMap::<u32, TcpStreamState>::new();
@@ -1642,6 +1836,7 @@ async fn run_tcp_transport_session(
     let mut no_leg_deadline = None::<Instant>;
     let resume_timeout = transport_resume_timeout(&config);
     let idle_timeout = transport_idle_timeout(&config);
+    let read_credit = Arc::new(Semaphore::new(read_credit_chunks(&config)));
 
     refresh_active_spec_snapshot(&legs, active_specs_tx.as_ref());
 
@@ -1676,7 +1871,7 @@ async fn run_tcp_transport_session(
                     new_leg
                 };
                 let new_leg_id = legs.len();
-                let state = spawn_tcp_leg_task(new_leg_id, new_leg, event_tx.clone());
+                let state = spawn_tcp_leg_task(new_leg_id, new_leg, event_tx.clone(), leg_write_timeout);
                 info!("bond tcp transport {} added leg {}", session_id, state.label);
                 legs.push(state);
                 refresh_active_spec_snapshot(&legs, active_specs_tx.as_ref());
@@ -1695,11 +1890,12 @@ async fn run_tcp_transport_session(
                         let (local_read, local_write) = local_stream.into_split();
                         let (local_write_tx, local_write_rx) = mpsc::channel(64);
                         let (close_tx, close_rx) = watch::channel(false);
-                        let mut state = TcpStreamState::new_with_strategy(
+                        let mut state = TcpStreamState::new_with_strategy_and_read_credit(
                             local_write_tx.clone(),
                             close_tx.clone(),
                             false,
                             strategy,
+                            read_credit.clone(),
                         );
                         state.preferred_leg_id = select_strategy_affinity_leg(
                             strategy,
@@ -1709,7 +1905,14 @@ async fn run_tcp_transport_session(
                         );
                         streams.insert(stream_id, state);
                         debug!("transport {} attached local stream {}", session_id, stream_id);
-                        spawn_transport_stream_reader(stream_id, local_read, config.chunk_size, close_rx, event_tx.clone());
+                        spawn_transport_stream_reader(
+                            stream_id,
+                            local_read,
+                            config.chunk_size,
+                            close_rx,
+                            event_tx.clone(),
+                            read_credit.clone(),
+                        );
                         spawn_transport_stream_writer(stream_id, local_write, local_write_rx, event_tx.clone());
                         if let Some(state) = streams.get_mut(&stream_id) {
                             if send_stream_control_frame(
@@ -1742,7 +1945,7 @@ async fn run_tcp_transport_session(
                 };
                 last_activity = Instant::now();
                 match event {
-                    TcpTransportEvent::LocalChunk { stream_id, payload } => {
+                    TcpTransportEvent::LocalChunk { stream_id, payload, read_credit } => {
                         if let Some(state) = streams.get_mut(&stream_id) {
                             debug!(
                                 "transport {} queued local chunk stream={} bytes={}",
@@ -1750,7 +1953,10 @@ async fn run_tcp_transport_session(
                                 stream_id,
                                 payload.len()
                             );
+                            state.read_credit_in_use = state.read_credit_in_use.saturating_add(1);
                             state.local_backlog.push_back(payload);
+                        } else {
+                            read_credit.add_permits(1);
                         }
                     }
                     TcpTransportEvent::LocalEof { stream_id } => {
@@ -1809,9 +2015,10 @@ async fn run_tcp_transport_session(
                             continue;
                         }
                         if let Some(state) = streams.get_mut(&stream_id) {
-                            let _ = suppress_stream_preferred_tcp_leg(
+                            let _ = suppress_stream_preferred_tcp_leg_for_failure_scope(
                                 &mut legs,
                                 state,
+                                TcpFailureScope::LocalEndpoint,
                                 TcpPenalty::LocalReadFailed,
                                 config.leg_cooldown,
                             );
@@ -1839,11 +2046,16 @@ async fn run_tcp_transport_session(
                     }
                     TcpTransportEvent::LocalWriteCommitted { stream_id, bytes } => {
                         if let Some(state) = streams.get_mut(&stream_id) {
-                            let ack = record_inbound_write_commit(&mut state.inbound, bytes);
+                            let ack = record_inbound_write_commit_and_flush(
+                                &mut state.inbound,
+                                bytes,
+                                &state.local_write_tx,
+                            )?;
+                            let ack_leg_id = state.preferred_ack_leg_id();
                             let _ = send_stream_control_frame(
                                 &mut legs,
                                 &mut round_robin_cursor,
-                                state.preferred_leg_id,
+                                ack_leg_id,
                                 role.outbound_ack(stream_id, ack),
                             );
                             debug!("transport sent committed ack stream={} ack={}", stream_id, ack);
@@ -1869,10 +2081,11 @@ async fn run_tcp_transport_session(
                                 Some(state),
                                 "writer_shutdown=true",
                             );
+                            let ack_leg_id = state.preferred_ack_leg_id();
                             let _ = send_stream_control_frame(
                                 &mut legs,
                                 &mut round_robin_cursor,
-                                state.preferred_leg_id,
+                                ack_leg_id,
                                 role.outbound_ack(stream_id, state.inbound.acked_offset),
                             );
                             if state.local_eof && (state.outbound_fin.is_some() || state.outbound_fin_acked) {
@@ -1890,9 +2103,10 @@ async fn run_tcp_transport_session(
                     }
                     TcpTransportEvent::LocalWriteFailed { stream_id, error } => {
                         if let Some(state) = streams.get_mut(&stream_id) {
-                            let _ = suppress_stream_preferred_tcp_leg(
+                            let _ = suppress_stream_preferred_tcp_leg_for_failure_scope(
                                 &mut legs,
                                 state,
+                                TcpFailureScope::LocalEndpoint,
                                 TcpPenalty::LocalWriteFailed,
                                 config.leg_cooldown,
                             );
@@ -1917,6 +2131,11 @@ async fn run_tcp_transport_session(
                                 "client transport stream {} failed with local_write_failed; forcing transport reconnect",
                                 stream_id
                             ));
+                        }
+                    }
+                    TcpTransportEvent::FrameWritten { leg_id, stream_id, seq, written_at } => {
+                        if let Some(state) = streams.get_mut(&stream_id) {
+                            mark_transport_chunk_written(&mut state.pending_chunks, leg_id, seq, written_at);
                         }
                     }
                     TcpTransportEvent::Frame { _leg_id, frame } => {
@@ -1944,6 +2163,11 @@ async fn run_tcp_transport_session(
                         }
                         mark_leg_inactive(&mut legs, leg_id);
                         mark_transport_streams_for_retry(&mut streams, leg_id, config.retransmit_after);
+                        for state in streams.values_mut() {
+                            if state.inbound_ack_leg_id == Some(leg_id) {
+                                state.inbound_ack_leg_id = None;
+                            }
+                        }
                         if legs.iter().filter(|leg| leg.active).count() < 2 {
                             for state in streams.values_mut() {
                                 state.preferred_leg_id = None;
@@ -1960,8 +2184,24 @@ async fn run_tcp_transport_session(
                         let (upstream_read, upstream_write) = stream.into_split();
                         let (local_write_tx, local_write_rx) = mpsc::channel(64);
                         let (close_tx, close_rx) = watch::channel(false);
-                        streams.insert(stream_id, TcpStreamState::new(local_write_tx.clone(), close_tx.clone(), true));
-                        spawn_transport_stream_reader(stream_id, upstream_read, config.chunk_size, close_rx, event_tx.clone());
+                        streams.insert(
+                            stream_id,
+                            TcpStreamState::new_with_strategy_and_read_credit(
+                                local_write_tx.clone(),
+                                close_tx.clone(),
+                                true,
+                                ClientStrategy::SpeedMax,
+                                read_credit.clone(),
+                            ),
+                        );
+                        spawn_transport_stream_reader(
+                            stream_id,
+                            upstream_read,
+                            config.chunk_size,
+                            close_rx,
+                            event_tx.clone(),
+                            read_credit.clone(),
+                        );
                         spawn_transport_stream_writer(stream_id, upstream_write, local_write_rx, event_tx.clone());
                         let _ = send_control_frame(&mut legs, &mut round_robin_cursor, WireFrame::StreamOpenAck { stream_id });
                         debug!("transport {} sent stream-open-ack for stream {}", session_id, stream_id);
@@ -2073,9 +2313,11 @@ async fn run_tcp_transport_session(
                     }
 
                     if should_reset_transport_stream_on_close_timeout(state, Instant::now()) {
-                        let _ = suppress_stream_preferred_tcp_leg(
+                        let failure_scope = close_timeout_failure_scope(state);
+                        let _ = suppress_stream_preferred_tcp_leg_for_failure_scope(
                             &mut legs,
                             state,
+                            failure_scope,
                             TcpPenalty::CloseTimeout,
                             config.leg_cooldown,
                         );
@@ -2123,7 +2365,9 @@ async fn handle_tcp_transport_frame(
         if *stream_id == 0 {
             return Err(anyhow!("bond remote reset: {}", reason));
         }
-        penalize_tcp_leg(legs, leg_id, TcpPenalty::RecvReset);
+        if stream_reset_failure_scope(reason) == TcpFailureScope::Transport {
+            penalize_tcp_leg(legs, leg_id, TcpPenalty::RecvReset);
+        }
         log_transport_lifecycle(
             session_id,
             "recv_reset",
@@ -2210,7 +2454,8 @@ async fn handle_tcp_transport_frame(
             {
                 state.preferred_leg_id = Some(leg_id);
             }
-            apply_ack(&mut state.pending_chunks, legs, ack);
+            let completed_chunks = apply_ack(&mut state.pending_chunks, legs, ack);
+            release_transport_read_credit(state, completed_chunks);
             if ack > state.last_ack_offset {
                 state.last_ack_offset = ack;
                 state.last_ack_progress_at = Instant::now();
@@ -2275,7 +2520,17 @@ async fn handle_tcp_transport_frame(
             {
                 state.preferred_leg_id = Some(leg_id);
             }
-            let _queued_offset = handle_inbound_data(&mut state.inbound, seq, payload, &state.local_write_tx).await?;
+            state.inbound_ack_leg_id = Some(leg_id);
+            let (_queued_offset, newly_received_bytes) =
+                handle_inbound_data(&mut state.inbound, seq, payload, &state.local_write_tx).await?;
+            if newly_received_bytes == 0 {
+                let _ = send_stream_control_frame(
+                    legs,
+                    round_robin_cursor,
+                    Some(leg_id),
+                    role.outbound_ack(stream_id, state.inbound.acked_offset),
+                );
+            }
         } else {
             let reason = reset_reasons
                 .get(&stream_id)
@@ -2300,6 +2555,7 @@ async fn handle_tcp_transport_frame(
             {
                 state.preferred_leg_id = Some(leg_id);
             }
+            state.inbound_ack_leg_id = Some(leg_id);
             log_transport_lifecycle(
                 session_id,
                 "recv_fin",
@@ -2312,10 +2568,7 @@ async fn handle_tcp_transport_frame(
                 .fin_offset
                 .is_some_and(|existing| seq <= existing);
             state.inbound.fin_offset = Some(seq);
-            if state.inbound.next_offset >= seq && !state.inbound.writer_shutdown {
-                let _ = state.local_write_tx.send(LocalWriteCommand::Shutdown).await;
-                state.inbound.writer_shutdown = true;
-            }
+            try_queue_inbound_shutdown(&mut state.inbound, &state.local_write_tx)?;
             if duplicate_or_late_fin
                 && state.outbound_fin.is_some()
                 && state.is_drained_closing()
@@ -2349,7 +2602,7 @@ async fn handle_tcp_transport_frame(
             let _ = send_stream_control_frame(
                 legs,
                 round_robin_cursor,
-                state.preferred_leg_id,
+                state.preferred_ack_leg_id(),
                 role.outbound_ack(stream_id, state.inbound.acked_offset),
             );
             debug!(
@@ -2427,38 +2680,57 @@ fn spawn_transport_stream_reader<R>(
     chunk_size: usize,
     mut close_rx: watch::Receiver<bool>,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
+    read_credit: Arc<Semaphore>,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
         let mut buf = vec![0u8; chunk_size.max(1024)];
         loop {
-            tokio::select! {
+            // Idle streams must not consume shared backlog credit while waiting for data.
+            let read = tokio::select! {
                 changed = close_rx.changed() => {
                     if changed.is_err() || *close_rx.borrow() {
                         return;
                     }
+                    continue;
                 }
-                read = reader.read(&mut buf) => {
-                    match read {
-                        Ok(0) => {
-                            let _ = event_tx.send(TcpTransportEvent::LocalEof { stream_id });
-                            return;
+                read = reader.read(&mut buf) => read,
+            };
+
+            match read {
+                Ok(0) => {
+                    let _ = event_tx.send(TcpTransportEvent::LocalEof { stream_id });
+                    return;
+                }
+                Ok(read_len) => {
+                    let permit = tokio::select! {
+                        _ = close_rx.changed() => return,
+                        permit = read_credit.clone().acquire_owned() => {
+                            match permit {
+                                Ok(permit) => permit,
+                                Err(_) => return,
+                            }
                         }
-                        Ok(read_len) => {
-                            let _ = event_tx.send(TcpTransportEvent::LocalChunk {
-                                stream_id,
-                                payload: Bytes::copy_from_slice(&buf[..read_len]),
-                            });
-                        }
-                        Err(err) => {
-                            let _ = event_tx.send(TcpTransportEvent::LocalReadFailed {
-                                stream_id,
-                                error: err.to_string(),
-                            });
-                            return;
-                        }
+                    };
+                    if event_tx
+                        .send(TcpTransportEvent::LocalChunk {
+                            stream_id,
+                            payload: Bytes::copy_from_slice(&buf[..read_len]),
+                            read_credit: read_credit.clone(),
+                        })
+                        .is_err()
+                    {
+                        return;
                     }
+                    permit.forget();
+                }
+                Err(err) => {
+                    let _ = event_tx.send(TcpTransportEvent::LocalReadFailed {
+                        stream_id,
+                        error: err.to_string(),
+                    });
+                    return;
                 }
             }
         }
@@ -2507,15 +2779,24 @@ fn spawn_transport_stream_writer<W>(
     });
 }
 
-fn spawn_tcp_leg_tasks(legs: Vec<OpenLeg>, event_tx: mpsc::UnboundedSender<TcpTransportEvent>) -> Vec<LegState> {
+fn spawn_tcp_leg_tasks(
+    legs: Vec<OpenLeg>,
+    event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
+    write_timeout: Duration,
+) -> Vec<LegState> {
     let mut states = Vec::with_capacity(legs.len());
     for (leg_id, leg) in legs.into_iter().enumerate() {
-        states.push(spawn_tcp_leg_task(leg_id, leg, event_tx.clone()));
+        states.push(spawn_tcp_leg_task(leg_id, leg, event_tx.clone(), write_timeout));
     }
     states
 }
 
-fn spawn_tcp_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<TcpTransportEvent>) -> LegState {
+fn spawn_tcp_leg_task(
+    leg_id: usize,
+    leg: OpenLeg,
+    event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
+    write_timeout: Duration,
+) -> LegState {
     let transport = leg.transport;
     let priority = leg.priority;
     let role = leg.role;
@@ -2525,12 +2806,11 @@ fn spawn_tcp_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSend
     let node_id = leg.node_id;
     let host = leg.host;
     let (reader, writer) = tokio::io::split(leg.stream);
-    let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run_tcp_leg_writer(leg_id, writer, rx, event_tx.clone()));
-    tokio::spawn(run_tcp_leg_reader(leg_id, reader, event_tx));
+    let (tx, rx) = leg_write_channel();
+    spawn_tcp_leg_io_tasks(leg_id, reader, writer, rx, event_tx, write_timeout);
     LegState {
         id: leg_id,
-        sender: tx,
+        sender: Some(LegWriteSender::bounded(tx)),
         active: true,
         inflight_bytes: 0,
         transport,
@@ -2550,20 +2830,80 @@ fn spawn_tcp_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSend
     }
 }
 
-async fn run_tcp_leg_reader<R>(leg_id: usize, mut reader: R, event_tx: mpsc::UnboundedSender<TcpTransportEvent>)
+fn spawn_tcp_leg_io_tasks<R, W>(
+    leg_id: usize,
+    reader: R,
+    writer: W,
+    rx: mpsc::Receiver<QueuedLegFrame>,
+    event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
+    write_timeout: Duration,
+) where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    tokio::spawn(run_tcp_leg_writer(
+        leg_id,
+        writer,
+        rx,
+        event_tx.clone(),
+        write_timeout,
+        shutdown_rx.clone(),
+        shutdown_tx.clone(),
+    ));
+    tokio::spawn(run_tcp_leg_reader(
+        leg_id,
+        reader,
+        event_tx,
+        shutdown_rx,
+        shutdown_tx,
+    ));
+}
+
+fn notify_tcp_leg_closed(
+    leg_id: usize,
+    event_tx: &mpsc::UnboundedSender<TcpTransportEvent>,
+    shutdown_tx: &watch::Sender<bool>,
+) {
+    let first_close = shutdown_tx.send_if_modified(|shutdown| {
+        if *shutdown {
+            false
+        } else {
+            *shutdown = true;
+            true
+        }
+    });
+    if first_close {
+        let _ = event_tx.send(TcpTransportEvent::LegClosed { leg_id });
+    }
+}
+
+async fn run_tcp_leg_reader<R>(
+    leg_id: usize,
+    mut reader: R,
+    event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
+    mut shutdown_rx: watch::Receiver<bool>,
+    shutdown_tx: watch::Sender<bool>,
+)
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
     loop {
-        match read_frame(&mut reader).await {
+        let result = tokio::select! {
+            biased;
+            _ = shutdown_rx.changed() => return,
+            result = read_frame(&mut reader) => result,
+        };
+        match result {
             Ok(frame) => {
                 if event_tx.send(TcpTransportEvent::Frame { _leg_id: leg_id, frame }).is_err() {
+                    notify_tcp_leg_closed(leg_id, &event_tx, &shutdown_tx);
                     return;
                 }
             }
             Err(err) => {
                 debug!("bond tcp leg {} reader closed: {:?}", leg_id, err);
-                let _ = event_tx.send(TcpTransportEvent::LegClosed { leg_id });
+                notify_tcp_leg_closed(leg_id, &event_tx, &shutdown_tx);
                 return;
             }
         }
@@ -2573,19 +2913,61 @@ where
 async fn run_tcp_leg_writer<W>(
     leg_id: usize,
     mut writer: W,
-    mut rx: mpsc::UnboundedReceiver<WireFrame>,
+    mut rx: mpsc::Receiver<QueuedLegFrame>,
     event_tx: mpsc::UnboundedSender<TcpTransportEvent>,
+    write_timeout: Duration,
+    mut shutdown_rx: watch::Receiver<bool>,
+    shutdown_tx: watch::Sender<bool>,
 ) where
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    while let Some(frame) = rx.recv().await {
-        if let Err(err) = write_frame(&mut writer, &frame).await {
-            debug!("bond tcp leg {} writer closed: {:?}", leg_id, err);
-            let _ = event_tx.send(TcpTransportEvent::LegClosed { leg_id });
+    loop {
+        let frame = tokio::select! {
+            biased;
+            _ = shutdown_rx.changed() => return,
+            frame = rx.recv() => frame,
+        };
+        let Some(queued) = frame else {
+            notify_tcp_leg_closed(leg_id, &event_tx, &shutdown_tx);
             return;
+        };
+        let queued_for = queued.enqueued_at.elapsed();
+        let data_marker = match &queued.frame {
+            WireFrame::DataC2S { stream_id, seq, .. } | WireFrame::DataS2C { stream_id, seq, .. } => {
+                Some((*stream_id, *seq))
+            }
+            _ => None,
+        };
+        let result = tokio::select! {
+            biased;
+            _ = shutdown_rx.changed() => return,
+            result = tokio::time::timeout(write_timeout, write_frame(&mut writer, &queued.frame)) => result,
+        };
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                debug!("bond tcp leg {} writer closed: {:?}", leg_id, err);
+                notify_tcp_leg_closed(leg_id, &event_tx, &shutdown_tx);
+                return;
+            }
+            Err(_) => {
+                warn!(
+                    "bond tcp leg {} writer timed out after {:?} (queued for {:?})",
+                    leg_id, write_timeout, queued_for
+                );
+                notify_tcp_leg_closed(leg_id, &event_tx, &shutdown_tx);
+                return;
+            }
+        }
+        if let Some((stream_id, seq)) = data_marker {
+            let _ = event_tx.send(TcpTransportEvent::FrameWritten {
+                leg_id,
+                stream_id,
+                seq,
+                written_at: Instant::now(),
+            });
         }
     }
-    let _ = event_tx.send(TcpTransportEvent::LegClosed { leg_id });
 }
 
 fn refresh_active_spec_snapshot(legs: &[LegState], active_specs_tx: Option<&watch::Sender<HashSet<usize>>>) {
@@ -2713,7 +3095,7 @@ fn flush_tcp_stream_backlogs(
             let frame = role.outbound_data(stream_id, seq, payload.clone());
             if !send_to_leg(legs, leg_index, frame) {
                 state.local_backlog.push_front(payload);
-                continue;
+                break;
             }
             debug!(
                 "transport scheduled data stream={} seq={} bytes={} leg={}",
@@ -2729,7 +3111,8 @@ fn flush_tcp_stream_backlogs(
                     payload: payload.clone(),
                     last_sent_at: Instant::now(),
                     last_leg_id: leg_index,
-                    transmit_count: 1,
+                    transmit_count: 0,
+                    write_pending: true,
                 },
             );
             if state.striping_stage != TcpStripingStage::Bulk {
@@ -2814,19 +3197,18 @@ fn retransmit_transport_pending(
             break;
         };
         if send_to_leg(legs, leg_index, role.outbound_data(stream_id, seq, chunk.payload.clone())) {
-            chunk.last_sent_at = now;
             chunk.last_leg_id = leg_index;
-            chunk.transmit_count = chunk.transmit_count.saturating_add(1);
+            chunk.write_pending = true;
             if !bulk_mode {
                 *preferred_leg_id = Some(leg_index);
             }
             debug!(
-                "transport retransmitted data stream={} seq={} bytes={} leg={} count={}",
+                "transport queued retransmit stream={} seq={} bytes={} leg={} next_count={}",
                 stream_id,
                 seq,
                 chunk.payload.len(),
                 leg_index,
-                chunk.transmit_count
+                chunk.transmit_count.saturating_add(1)
             );
         }
     }
@@ -2846,7 +3228,7 @@ fn collect_retransmit_sequences(
     pending
         .iter()
         .filter_map(|(seq, chunk)| {
-            if now.duration_since(chunk.last_sent_at) >= retransmit_after {
+            if !chunk.write_pending && now.duration_since(chunk.last_sent_at) >= retransmit_after {
                 Some(*seq)
             } else {
                 None
@@ -2856,13 +3238,42 @@ fn collect_retransmit_sequences(
         .collect()
 }
 
+fn mark_transport_chunk_written(
+    pending: &mut BTreeMap<u64, PendingChunk>,
+    leg_id: usize,
+    seq: u64,
+    written_at: Instant,
+) -> bool {
+    let Some(chunk) = pending.get_mut(&seq) else {
+        return false;
+    };
+    if !chunk.write_pending || chunk.last_leg_id != leg_id {
+        return false;
+    }
+    chunk.write_pending = false;
+    chunk.last_sent_at = written_at;
+    chunk.transmit_count = chunk.transmit_count.saturating_add(1);
+    true
+}
+
+fn release_transport_read_credit(state: &mut TcpStreamState, completed_chunks: usize) -> usize {
+    let released = completed_chunks.min(state.read_credit_in_use);
+    if released > 0 {
+        state.read_credit_in_use -= released;
+        state.read_credit.add_permits(released);
+    }
+    released
+}
+
 fn close_transport_stream(
     stream_id: u32,
     streams: &mut HashMap<u32, TcpStreamState>,
     closed_streams: &mut HashSet<u32>,
 ) {
-    if let Some(state) = streams.remove(&stream_id) {
+    if let Some(mut state) = streams.remove(&stream_id) {
         let _ = state.close_tx.send(true);
+        let outstanding_read_credit = state.read_credit_in_use;
+        release_transport_read_credit(&mut state, outstanding_read_credit);
         let writer_shutdown = state.inbound.writer_shutdown;
         let local_write_tx = state.local_write_tx;
         if !writer_shutdown {
@@ -3452,7 +3863,7 @@ fn spawn_leg_task(leg_id: usize, leg: OpenLeg, event_tx: mpsc::UnboundedSender<S
     tokio::spawn(run_leg_reader(leg_id, reader, event_tx));
     LegState {
         id: leg_id,
-        sender: tx,
+        sender: Some(LegWriteSender::Unbounded(tx)),
         active: true,
         inflight_bytes: 0,
         transport,
@@ -3515,9 +3926,9 @@ async fn handle_inbound_data(
     seq: u64,
     payload: Bytes,
     local_write_tx: &mpsc::Sender<LocalWriteCommand>,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<(u64, usize)> {
     if inbound.writer_shutdown {
-        return Ok(inbound.next_offset);
+        return Ok((inbound.next_offset, 0));
     }
 
     let mut seq = seq;
@@ -3526,43 +3937,71 @@ async fn handle_inbound_data(
     if seq < inbound.next_offset {
         let already_seen = (inbound.next_offset - seq) as usize;
         if already_seen >= payload.len() {
-            return Ok(inbound.next_offset);
+            return Ok((inbound.next_offset, 0));
         }
         payload = payload.slice(already_seen..);
         seq = inbound.next_offset;
     }
 
-    if seq == inbound.next_offset {
-        local_write_tx
-            .send(LocalWriteCommand::Data(payload.clone()))
-            .await
-            .map_err(|_| anyhow!("local writer closed"))?;
-        inbound.pending_write_lengths.push_back(payload.len());
-        inbound.next_offset += payload.len() as u64;
-
-        while let Some(chunk) = inbound.buffer.remove(&inbound.next_offset) {
-            local_write_tx
-                .send(LocalWriteCommand::Data(chunk.clone()))
-                .await
-                .map_err(|_| anyhow!("local writer closed"))?;
-            inbound.pending_write_lengths.push_back(chunk.len());
-            inbound.next_offset += chunk.len() as u64;
-        }
-    } else {
-        inbound.buffer.entry(seq).or_insert(payload);
+    if inbound.buffer.contains_key(&seq) {
+        return Ok((inbound.next_offset, 0));
     }
+    let newly_received_bytes = payload.len();
+    inbound.buffer.insert(seq, payload);
+    try_flush_inbound_data(inbound, local_write_tx)?;
 
-    if let Some(fin_offset) = inbound.fin_offset {
-        if inbound.next_offset >= fin_offset && !inbound.writer_shutdown {
-            local_write_tx
-                .send(LocalWriteCommand::Shutdown)
-                .await
-                .map_err(|_| anyhow!("local writer closed"))?;
-            inbound.writer_shutdown = true;
+    try_queue_inbound_shutdown(inbound, local_write_tx)?;
+
+    Ok((inbound.next_offset, newly_received_bytes))
+}
+
+fn try_flush_inbound_data(
+    inbound: &mut InboundState,
+    local_write_tx: &mpsc::Sender<LocalWriteCommand>,
+) -> anyhow::Result<()> {
+    loop {
+        let chunk_seq = inbound.next_offset;
+        let Some(chunk) = inbound.buffer.remove(&chunk_seq) else {
+            break;
+        };
+        match local_write_tx.try_send(LocalWriteCommand::Data(chunk.clone())) {
+            Ok(()) => {
+                inbound.pending_write_lengths.push_back(chunk.len());
+                inbound.next_offset += chunk.len() as u64;
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                inbound.buffer.insert(chunk_seq, chunk);
+                break;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                // The writer reports LocalWriteFailed/Closed before dropping this receiver.
+                // Preserve the chunk so that event retains its existing stream-local scope.
+                inbound.buffer.insert(chunk_seq, chunk);
+                break;
+            }
         }
     }
+    Ok(())
+}
 
-    Ok(inbound.next_offset)
+fn try_queue_inbound_shutdown(
+    inbound: &mut InboundState,
+    local_write_tx: &mpsc::Sender<LocalWriteCommand>,
+) -> anyhow::Result<()> {
+    let ready = inbound
+        .fin_offset
+        .is_some_and(|fin_offset| inbound.next_offset >= fin_offset)
+        && !inbound.writer_shutdown;
+    if !ready {
+        return Ok(());
+    }
+    match local_write_tx.try_send(LocalWriteCommand::Shutdown) {
+        Ok(()) => inbound.writer_shutdown = true,
+        Err(mpsc::error::TrySendError::Full(_)) => {}
+        // The queued LocalWriteFailed/Closed event owns stream cleanup.
+        Err(mpsc::error::TrySendError::Closed(_)) => {}
+    }
+    Ok(())
 }
 
 fn record_inbound_write_commit(inbound: &mut InboundState, written_len: usize) -> u64 {
@@ -3570,6 +4009,17 @@ fn record_inbound_write_commit(inbound: &mut InboundState, written_len: usize) -
         inbound.acked_offset += expected_len.min(written_len) as u64;
     }
     inbound.acked_offset
+}
+
+fn record_inbound_write_commit_and_flush(
+    inbound: &mut InboundState,
+    written_len: usize,
+    local_write_tx: &mpsc::Sender<LocalWriteCommand>,
+) -> anyhow::Result<u64> {
+    let ack = record_inbound_write_commit(inbound, written_len);
+    try_flush_inbound_data(inbound, local_write_tx)?;
+    try_queue_inbound_shutdown(inbound, local_write_tx)?;
+    Ok(ack)
 }
 
 #[allow(dead_code)]
@@ -3605,7 +4055,7 @@ fn flush_local_backlog(
         let frame = role.outbound_data(0, seq, payload.clone());
         if !send_to_leg(legs, leg_index, frame) {
             backlog.push_front(payload);
-            continue;
+            break;
         }
 
         pending.insert(
@@ -3615,6 +4065,7 @@ fn flush_local_backlog(
                 last_sent_at: Instant::now(),
                 last_leg_id: leg_index,
                 transmit_count: 1,
+                write_pending: false,
             },
         );
         *outbound_next_offset += payload.len() as u64;
@@ -3938,7 +4389,7 @@ fn maybe_write_leg_health_snapshot(
     *last_written_at = Some(Instant::now());
 }
 
-fn apply_ack(pending: &mut BTreeMap<u64, PendingChunk>, legs: &mut [LegState], ack: u64) {
+fn apply_ack(pending: &mut BTreeMap<u64, PendingChunk>, legs: &mut [LegState], ack: u64) -> usize {
     let now = Instant::now();
     let completed: Vec<u64> = pending
         .iter()
@@ -3951,14 +4402,16 @@ fn apply_ack(pending: &mut BTreeMap<u64, PendingChunk>, legs: &mut [LegState], a
         })
         .collect();
 
+    let completed_count = completed.len();
     for seq in completed {
         if let Some(chunk) = pending.remove(&seq) {
-            if chunk.transmit_count <= 1 {
+            if !chunk.write_pending && chunk.transmit_count == 1 {
                 update_leg_rtt(legs, chunk.last_leg_id, now.duration_since(chunk.last_sent_at));
             }
             credit_tcp_delivery(legs, chunk.last_leg_id, chunk.payload.len());
         }
     }
+    completed_count
 }
 
 #[allow(dead_code)]
@@ -4307,6 +4760,15 @@ fn send_control_frame(legs: &mut [LegState], round_robin_cursor: &mut usize, fra
     send_frame_via_any_leg(legs, round_robin_cursor, frame)
 }
 
+fn can_bypass_preferred_control_queue(frame: &WireFrame) -> bool {
+    matches!(
+        frame,
+        WireFrame::StreamOpenAck { .. }
+            | WireFrame::AckC2S { .. }
+            | WireFrame::AckS2C { .. }
+    )
+}
+
 fn send_stream_control_frame(
     legs: &mut [LegState],
     round_robin_cursor: &mut usize,
@@ -4314,8 +4776,12 @@ fn send_stream_control_frame(
     frame: WireFrame,
 ) -> bool {
     if let Some(leg_id) = preferred_leg_id {
-        if send_to_leg(legs, leg_id, frame.clone()) {
-            return true;
+        if !can_bypass_preferred_control_queue(&frame)
+            || legs.get(leg_id).is_some_and(leg_writer_is_idle)
+        {
+            if send_to_leg(legs, leg_id, frame.clone()) {
+                return true;
+            }
         }
     }
     send_frame_via_any_leg(legs, round_robin_cursor, frame)
@@ -4533,29 +4999,38 @@ fn select_leg_for_data_with_cooldown(
 }
 
 fn select_control_leg(legs: &[LegState], round_robin_cursor: &mut usize) -> Option<usize> {
-    if let Some(primary_leg) = legs
+    let active_count = legs.len().max(1);
+    let selected = legs
         .iter()
-        .find(|leg| leg.active && leg.role == LegRole::Primary)
-    {
-        return Some(primary_leg.id);
+        .filter(|leg| leg.active && leg_writer_has_capacity(leg))
+        .min_by_key(|leg| {
+            (
+                leg_writer_pending_frames(leg),
+                leg.role != LegRole::Primary,
+                leg_health_state_rank(leg.tcp_health.state),
+                leg.priority,
+                leg.smoothed_rtt,
+                (leg.id + *round_robin_cursor) % active_count,
+            )
+        })
+        .map(|leg| leg.id);
+    if selected.is_some() {
+        *round_robin_cursor = round_robin_cursor.wrapping_add(1);
     }
-    select_leg_with_mode(
-        legs,
-        round_robin_cursor,
-        HealthProtocol::Tcp,
-        true,
-        DEFAULT_INTERACTIVE_RTT_SLACK,
-    )
+    selected
 }
 
 fn select_stream_affinity_leg(legs: &[LegState], round_robin_cursor: &mut usize) -> Option<usize> {
     if let Some(primary_leg) = legs
         .iter()
-        .find(|leg| leg.active && leg.role == LegRole::Primary)
+        .find(|leg| leg.active && leg.role == LegRole::Primary && leg_writer_has_capacity(leg))
     {
         return Some(primary_leg.id);
     }
-    let mut candidates: Vec<&LegState> = legs.iter().filter(|leg| leg.active).collect();
+    let mut candidates: Vec<&LegState> = legs
+        .iter()
+        .filter(|leg| leg.active && leg_writer_has_capacity(leg))
+        .collect();
     if candidates.is_empty() {
         return None;
     }
@@ -4603,13 +5078,23 @@ fn eligible_strategy_legs(legs: &[LegState]) -> Vec<&LegState> {
             leg_available_for_new_data(leg, now) && leg.tcp_health.state == LegHealthState::Healthy
         })
         .collect::<Vec<_>>();
-    if healthy.is_empty() {
-        legs.iter()
-            .filter(|leg| leg_available_for_new_data(leg, now))
-            .collect()
-    } else {
-        healthy
+    if !healthy.is_empty() {
+        return healthy;
     }
+
+    let available = legs
+        .iter()
+        .filter(|leg| leg_available_for_new_data(leg, now))
+        .collect::<Vec<_>>();
+    if !available.is_empty() {
+        return available;
+    }
+
+    // A cooldown ranks legs against alternatives; it must not stop the only
+    // writable path and strand the bounded transport read credits.
+    legs.iter()
+        .filter(|leg| leg.active && leg_writer_has_capacity(leg))
+        .collect()
 }
 
 fn select_latency_best_leg(legs: &[LegState]) -> Option<usize> {
@@ -4647,7 +5132,10 @@ fn select_udp_leg(
     config: &SessionConfig,
 ) -> Option<usize> {
     if config.latency_first && config.udp_primary_only {
-        if let Some(primary_leg) = legs.iter().find(|leg| leg.active && leg.role == LegRole::Primary) {
+        if let Some(primary_leg) = legs
+            .iter()
+            .find(|leg| leg.active && leg.role == LegRole::Primary && leg_writer_has_capacity(leg))
+        {
             return Some(primary_leg.id);
         }
     }
@@ -4748,7 +5236,7 @@ fn select_leg_with_mode(
         protocol,
         prefer_low_latency,
         rtt_slack,
-        |leg| leg.active,
+        |leg| leg.active && leg_writer_has_capacity(leg),
     )
 }
 
@@ -4903,10 +5391,25 @@ fn allowed_leg_count(stage: TcpStripingStage, healthy_leg_count: usize) -> usize
 }
 
 fn leg_available_for_new_data(leg: &LegState, now: Instant) -> bool {
-    if !leg.active {
+    if !leg.active || !leg_writer_has_capacity(leg) {
         return false;
     }
     !leg.cooldown_until.is_some_and(|deadline| deadline > now)
+}
+
+fn leg_writer_has_capacity(leg: &LegState) -> bool {
+    leg.sender.as_ref().is_some_and(LegWriteSender::has_capacity)
+}
+
+fn leg_writer_pending_frames(leg: &LegState) -> usize {
+    leg.sender
+        .as_ref()
+        .map(LegWriteSender::pending_frames)
+        .unwrap_or(usize::MAX)
+}
+
+fn leg_writer_is_idle(leg: &LegState) -> bool {
+    leg.active && leg_writer_has_capacity(leg) && leg_writer_pending_frames(leg) == 0
 }
 
 fn apply_leg_cooldown(legs: &mut [LegState], leg_id: usize, cooldown: Duration) {
@@ -4928,6 +5431,19 @@ fn suppress_stream_preferred_tcp_leg(
     apply_leg_cooldown(legs, leg_id, cooldown);
     penalize_tcp_leg(legs, leg_id, penalty);
     Some(leg_id)
+}
+
+fn suppress_stream_preferred_tcp_leg_for_failure_scope(
+    legs: &mut [LegState],
+    state: &mut TcpStreamState,
+    scope: TcpFailureScope,
+    penalty: TcpPenalty,
+    cooldown: Duration,
+) -> Option<usize> {
+    if scope == TcpFailureScope::LocalEndpoint {
+        return None;
+    }
+    suppress_stream_preferred_tcp_leg(legs, state, penalty, cooldown)
 }
 
 fn select_stream_leg_warmup(
@@ -5001,10 +5517,15 @@ fn send_to_leg(legs: &mut [LegState], leg_index: usize, frame: WireFrame) -> boo
     if !leg.active {
         return false;
     }
-    match leg.sender.send(frame) {
-        Ok(()) => true,
-        Err(_) => {
+    let Some(sender) = leg.sender.as_ref() else {
+        return false;
+    };
+    match sender.try_send(frame) {
+        LegSendResult::Queued => true,
+        LegSendResult::Full => false,
+        LegSendResult::Closed => {
             leg.active = false;
+            leg.sender.take();
             false
         }
     }
@@ -5028,6 +5549,7 @@ fn recompute_inflight(legs: &mut [LegState], pending: &BTreeMap<u64, PendingChun
 fn mark_leg_inactive(legs: &mut [LegState], leg_id: usize) {
     if let Some(leg) = legs.get_mut(leg_id) {
         leg.active = false;
+        leg.sender.take();
         leg.inflight_bytes = 0;
         leg.cooldown_until = Some(Instant::now());
         leg.penalty_count = leg.penalty_count.saturating_add(1);
@@ -5043,6 +5565,7 @@ fn mark_pending_for_retry(pending: &mut BTreeMap<u64, PendingChunk>, leg_id: usi
     for chunk in pending.values_mut() {
         if chunk.last_leg_id == leg_id {
             chunk.last_sent_at = force_retry;
+            chunk.write_pending = false;
         }
     }
 }
@@ -5073,10 +5596,9 @@ mod tests {
     use super::*;
 
     fn fake_leg(id: usize, priority: u16, inflight_bytes: usize, smoothed_rtt_ms: u64) -> LegState {
-        let (tx, _rx) = mpsc::unbounded_channel();
         LegState {
             id,
-            sender: tx,
+            sender: Some(LegWriteSender::Stub),
             active: true,
             inflight_bytes,
             transport: LegTransport::Tcp,
@@ -5126,6 +5648,33 @@ mod tests {
     #[test]
     fn default_leg_cooldown_is_extended_to_thirty_minutes() {
         assert_eq!(test_config().leg_cooldown, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn transport_leg_write_timeout_tolerates_multi_second_backpressure() {
+        let mut config = test_config();
+        assert_eq!(transport_leg_write_timeout(&config), Duration::from_secs(30));
+
+        config.retransmit_after = Duration::from_millis(100);
+        assert_eq!(transport_leg_write_timeout(&config), Duration::from_secs(30));
+
+        config.retransmit_after = Duration::from_secs(10);
+        assert_eq!(transport_leg_write_timeout(&config), Duration::from_secs(40));
+    }
+
+    #[test]
+    fn marking_leg_inactive_drops_writer_sender() {
+        let (tx, mut rx) = leg_write_channel();
+        let mut leg = fake_leg(0, 10, 0, 20);
+        leg.sender = Some(LegWriteSender::bounded(tx));
+        let mut legs = vec![leg];
+
+        mark_leg_inactive(&mut legs, 0);
+
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]
@@ -5272,9 +5821,10 @@ mod tests {
         state.preferred_leg_id = Some(0);
 
         let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
-        let suppressed = suppress_stream_preferred_tcp_leg(
+        let suppressed = suppress_stream_preferred_tcp_leg_for_failure_scope(
             &mut legs,
             &mut state,
+            TcpFailureScope::Transport,
             TcpPenalty::LocalWriteFailed,
             test_config().leg_cooldown,
         );
@@ -5286,6 +5836,28 @@ mod tests {
             legs[0].tcp_health.state,
             LegHealthState::Degraded | LegHealthState::Probation | LegHealthState::Quarantined
         ));
+    }
+
+    #[test]
+    fn local_endpoint_failure_does_not_cool_or_unpin_transport_leg() {
+        let (local_write_tx, _local_write_rx) = mpsc::channel::<LocalWriteCommand>(8);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let mut state = TcpStreamState::new(local_write_tx, close_tx, false);
+        state.preferred_leg_id = Some(0);
+
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        let suppressed = suppress_stream_preferred_tcp_leg_for_failure_scope(
+            &mut legs,
+            &mut state,
+            TcpFailureScope::LocalEndpoint,
+            TcpPenalty::LocalWriteFailed,
+            test_config().leg_cooldown,
+        );
+
+        assert_eq!(suppressed, None);
+        assert_eq!(state.preferred_leg_id, Some(0));
+        assert!(legs[0].cooldown_until.is_none());
+        assert_eq!(legs[0].penalty_count, 0);
     }
 
     #[test]
@@ -5322,6 +5894,7 @@ mod tests {
                     last_sent_at: old,
                     last_leg_id: 0,
                     transmit_count: 1,
+                    write_pending: false,
                 },
             );
         }
@@ -5338,6 +5911,575 @@ mod tests {
     }
 
     #[test]
+    fn ack_before_initial_frame_written_does_not_sample_queue_time_as_rtt() {
+        let old = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        let mut pending = BTreeMap::from([(
+            0,
+            PendingChunk {
+                payload: Bytes::from_static(b"x"),
+                last_sent_at: old,
+                last_leg_id: 0,
+                transmit_count: 0,
+                write_pending: true,
+            },
+        )]);
+        let mut legs = vec![fake_leg(0, 10, 0, 20)];
+
+        assert_eq!(apply_ack(&mut pending, &mut legs, 1), 1);
+        assert_eq!(legs[0].smoothed_rtt, Duration::from_millis(20));
+    }
+
+    #[test]
+    fn ack_before_retransmit_frame_written_does_not_sample_stale_rtt() {
+        let old = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        let mut pending = BTreeMap::from([(
+            0,
+            PendingChunk {
+                payload: Bytes::from_static(b"x"),
+                last_sent_at: old,
+                last_leg_id: 1,
+                transmit_count: 1,
+                write_pending: true,
+            },
+        )]);
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+
+        assert_eq!(apply_ack(&mut pending, &mut legs, 1), 1);
+        assert_eq!(legs[1].smoothed_rtt, Duration::from_millis(25));
+    }
+
+    #[test]
+    fn queued_transport_chunk_waits_for_socket_write_before_retransmit() {
+        let now = Instant::now();
+        let old = now.checked_sub(Duration::from_secs(1)).unwrap();
+        let pending = BTreeMap::from([(
+            0,
+            PendingChunk {
+                payload: Bytes::from_static(b"x"),
+                last_sent_at: old,
+                last_leg_id: 0,
+                transmit_count: 0,
+                write_pending: true,
+            },
+        )]);
+
+        let resend = collect_retransmit_sequences(
+            &pending,
+            now,
+            Duration::from_millis(300),
+            old,
+            8,
+        );
+
+        assert!(resend.is_empty(), "a queued frame has not started its retransmit clock");
+    }
+
+    #[test]
+    fn socket_write_confirmation_starts_transport_retransmit_clock() {
+        let queued_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        let written_at = Instant::now();
+        let mut pending = BTreeMap::from([(
+            128,
+            PendingChunk {
+                payload: Bytes::from_static(b"x"),
+                last_sent_at: queued_at,
+                last_leg_id: 2,
+                transmit_count: 0,
+                write_pending: true,
+            },
+        )]);
+
+        assert!(mark_transport_chunk_written(&mut pending, 2, 128, written_at));
+        let chunk = pending.get(&128).unwrap();
+        assert!(!chunk.write_pending);
+        assert_eq!(chunk.transmit_count, 1);
+        assert_eq!(chunk.last_sent_at, written_at);
+        assert!(collect_retransmit_sequences(
+            &pending,
+            written_at + Duration::from_millis(299),
+            Duration::from_millis(300),
+            queued_at,
+            8,
+        )
+        .is_empty());
+        assert_eq!(
+            collect_retransmit_sequences(
+                &pending,
+                written_at + Duration::from_millis(300),
+                Duration::from_millis(300),
+                queued_at,
+                8,
+            ),
+            vec![128]
+        );
+    }
+
+    #[test]
+    fn leg_close_before_write_confirmation_reopens_chunk_for_retry() {
+        let mut pending = BTreeMap::from([(
+            128,
+            PendingChunk {
+                payload: Bytes::from_static(b"x"),
+                last_sent_at: Instant::now(),
+                last_leg_id: 2,
+                transmit_count: 0,
+                write_pending: true,
+            },
+        )]);
+
+        mark_pending_for_retry(&mut pending, 2, Duration::from_millis(300));
+        let late_write = mark_transport_chunk_written(&mut pending, 2, 128, Instant::now());
+
+        let chunk = pending.get(&128).unwrap();
+        assert!(!late_write, "late writer completion must not reclaim a retryable chunk");
+        assert!(!chunk.write_pending);
+        assert_eq!(chunk.transmit_count, 0);
+    }
+
+    #[test]
+    fn acked_chunks_cannot_expand_the_leg_writer_queue() {
+        let (leg_tx, leg_rx) = leg_write_channel();
+        let mut leg = fake_leg(0, 10, 0, 20);
+        leg.sender = Some(LegWriteSender::bounded(leg_tx));
+        let mut legs = vec![leg];
+        let mut pending = BTreeMap::new();
+
+        for seq in 0..LEG_WRITE_QUEUE_CAPACITY as u64 {
+            let payload = Bytes::from_static(b"x");
+            pending.insert(
+                seq,
+                PendingChunk {
+                    payload: payload.clone(),
+                    last_sent_at: Instant::now(),
+                    last_leg_id: 0,
+                    transmit_count: 1,
+                    write_pending: false,
+                },
+            );
+            assert!(send_to_leg(
+                &mut legs,
+                0,
+                WireFrame::DataC2S {
+                    stream_id: 9,
+                    seq,
+                    payload,
+                },
+            ));
+        }
+
+        assert_eq!(apply_ack(&mut pending, &mut legs, LEG_WRITE_QUEUE_CAPACITY as u64), LEG_WRITE_QUEUE_CAPACITY);
+        assert!(pending.is_empty());
+        assert!(!send_to_leg(
+            &mut legs,
+            0,
+            WireFrame::DataC2S {
+                stream_id: 9,
+                seq: LEG_WRITE_QUEUE_CAPACITY as u64,
+                payload: Bytes::from_static(b"y"),
+            },
+        ));
+        assert!(legs[0].active, "a full queue is backpressure, not a dead leg");
+        assert_eq!(leg_rx.len(), LEG_WRITE_QUEUE_CAPACITY);
+    }
+
+    #[test]
+    fn control_frame_uses_helper_when_primary_writer_queue_is_full() {
+        let (primary_tx, primary_rx) = leg_write_channel();
+        let (helper_tx, helper_rx) = leg_write_channel();
+        let mut primary = fake_leg(0, 10, 0, 20);
+        primary.sender = Some(LegWriteSender::bounded(primary_tx));
+        primary.role = LegRole::Primary;
+        let mut helper = fake_leg(1, 20, 0, 30);
+        helper.sender = Some(LegWriteSender::bounded(helper_tx));
+        helper.role = LegRole::Helper;
+        let mut legs = vec![primary, helper];
+
+        for seq in 0..LEG_WRITE_QUEUE_CAPACITY as u64 {
+            assert!(send_to_leg(
+                &mut legs,
+                0,
+                WireFrame::DataC2S {
+                    stream_id: 9,
+                    seq,
+                    payload: Bytes::from_static(b"x"),
+                },
+            ));
+        }
+        let mut cursor = 0usize;
+
+        assert!(send_control_frame(&mut legs, &mut cursor, WireFrame::AckC2S { stream_id: 9, ack: 16 }));
+        assert_eq!(primary_rx.len(), LEG_WRITE_QUEUE_CAPACITY);
+        assert_eq!(helper_rx.len(), 1);
+    }
+
+    #[test]
+    fn stream_ack_uses_idle_helper_when_preferred_leg_has_data_queued() {
+        let (preferred_tx, mut preferred_rx) = leg_write_channel();
+        let (helper_tx, mut helper_rx) = leg_write_channel();
+        let mut preferred = fake_leg(0, 10, 0, 20);
+        preferred.sender = Some(LegWriteSender::bounded(preferred_tx));
+        preferred.role = LegRole::Primary;
+        let mut helper = fake_leg(1, 20, 0, 30);
+        helper.sender = Some(LegWriteSender::bounded(helper_tx));
+        helper.role = LegRole::Helper;
+        let mut legs = vec![preferred, helper];
+
+        assert!(send_to_leg(
+            &mut legs,
+            0,
+            WireFrame::DataC2S {
+                stream_id: 9,
+                seq: 0,
+                payload: Bytes::from_static(b"queued-data"),
+            },
+        ));
+        let mut cursor = 0usize;
+
+        assert!(send_stream_control_frame(
+            &mut legs,
+            &mut cursor,
+            Some(0),
+            WireFrame::AckC2S {
+                stream_id: 9,
+                ack: 11,
+            },
+        ));
+        assert_eq!(preferred_rx.len(), 1, "ACK must not queue behind preferred-leg data");
+        assert_eq!(helper_rx.len(), 1, "idle helper should carry the ACK");
+        assert!(matches!(
+            helper_rx.try_recv().unwrap().frame,
+            WireFrame::AckC2S {
+                stream_id: 9,
+                ack: 11,
+            }
+        ));
+        assert!(matches!(
+            preferred_rx.try_recv().unwrap().frame,
+            WireFrame::DataC2S { .. }
+        ));
+    }
+
+    #[test]
+    fn stream_open_stays_on_preferred_leg_when_data_is_queued() {
+        let (preferred_tx, mut preferred_rx) = leg_write_channel();
+        let (helper_tx, mut helper_rx) = leg_write_channel();
+        let mut preferred = fake_leg(0, 10, 0, 20);
+        preferred.sender = Some(LegWriteSender::bounded(preferred_tx));
+        preferred.role = LegRole::Primary;
+        let mut helper = fake_leg(1, 20, 0, 30);
+        helper.sender = Some(LegWriteSender::bounded(helper_tx));
+        helper.role = LegRole::Helper;
+        let mut legs = vec![preferred, helper];
+
+        assert!(send_to_leg(
+            &mut legs,
+            0,
+            WireFrame::DataC2S {
+                stream_id: 9,
+                seq: 0,
+                payload: Bytes::from_static(b"queued-data"),
+            },
+        ));
+        let mut cursor = 0usize;
+
+        assert!(send_stream_control_frame(
+            &mut legs,
+            &mut cursor,
+            Some(0),
+            WireFrame::StreamOpen { stream_id: 10 },
+        ));
+        assert_eq!(preferred_rx.len(), 2);
+        assert_eq!(helper_rx.len(), 0, "stream-open tracking remains tied to preferred leg");
+        assert!(matches!(
+            preferred_rx.try_recv().unwrap().frame,
+            WireFrame::DataC2S { .. }
+        ));
+        assert!(matches!(
+            preferred_rx.try_recv().unwrap().frame,
+            WireFrame::StreamOpen { stream_id: 10 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn leg_writer_pending_frames_includes_socket_write_in_progress() {
+        let (writer, _reader) = tokio::io::duplex(64);
+        let (frame_tx, frame_rx) = leg_write_channel();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let writer_task = tokio::spawn(run_tcp_leg_writer(
+            7,
+            writer,
+            frame_rx,
+            event_tx,
+            Duration::from_secs(30),
+            shutdown_rx,
+            shutdown_tx,
+        ));
+        let sender = LegWriteSender::bounded(frame_tx.clone());
+
+        assert_eq!(
+            sender.try_send(WireFrame::DataC2S {
+                stream_id: 9,
+                seq: 0,
+                payload: Bytes::from(vec![0x5a; 4096]),
+            }),
+            LegSendResult::Queued
+        );
+        timeout(Duration::from_secs(1), async {
+            while frame_tx.capacity() != frame_tx.max_capacity() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("writer must take the frame from the channel");
+
+        assert_eq!(
+            sender.pending_frames(),
+            1,
+            "a frame blocked in socket write must keep the leg non-idle"
+        );
+        writer_task.abort();
+    }
+
+    #[test]
+    fn tcp_data_selection_skips_a_full_primary_writer_queue() {
+        let (primary_tx, _primary_rx) = leg_write_channel();
+        let (helper_tx, _helper_rx) = leg_write_channel();
+        let mut primary = fake_leg(0, 10, 0, 20);
+        primary.sender = Some(LegWriteSender::bounded(primary_tx));
+        primary.role = LegRole::Primary;
+        let mut helper = fake_leg(1, 20, 0, 30);
+        helper.sender = Some(LegWriteSender::bounded(helper_tx));
+        helper.role = LegRole::Helper;
+        let mut legs = vec![primary, helper];
+
+        for seq in 0..LEG_WRITE_QUEUE_CAPACITY as u64 {
+            assert!(send_to_leg(
+                &mut legs,
+                0,
+                WireFrame::DataC2S {
+                    stream_id: 9,
+                    seq,
+                    payload: Bytes::from_static(b"x"),
+                },
+            ));
+        }
+        let mut cursor = 0usize;
+
+        assert_eq!(
+            select_leg_for_data(
+                &legs,
+                &mut cursor,
+                HealthProtocol::Tcp,
+                4096,
+                0,
+                &test_config(),
+            ),
+            Some(1),
+        );
+    }
+
+    #[tokio::test]
+    async fn tcp_leg_writer_times_out_backpressured_socket_without_confirming_data() {
+        let (writer, reader) = tokio::io::duplex(64);
+        let (frame_tx, frame_rx) = leg_write_channel();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        tokio::spawn(run_tcp_leg_writer(
+            7,
+            writer,
+            frame_rx,
+            event_tx,
+            Duration::from_millis(50),
+            shutdown_rx,
+            shutdown_tx,
+        ));
+
+        frame_tx
+            .try_send(QueuedLegFrame::new(WireFrame::DataC2S {
+                stream_id: 9,
+                seq: 128,
+                payload: Bytes::from(vec![0x5a; 4096]),
+            }))
+            .unwrap();
+
+        assert!(
+            timeout(Duration::from_millis(20), event_rx.recv()).await.is_err(),
+            "writer confirmation must wait while the socket is backpressured"
+        );
+        let event = timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, TcpTransportEvent::LegClosed { leg_id: 7 }));
+        drop(reader);
+    }
+
+    #[tokio::test]
+    async fn tcp_leg_writer_deadline_starts_when_frame_write_begins() {
+        let write_timeout = Duration::from_millis(400);
+        let (writer, mut reader) = tokio::io::duplex(64);
+        let (frame_tx, frame_rx) = leg_write_channel();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        tokio::spawn(run_tcp_leg_writer(
+            7,
+            writer,
+            frame_rx,
+            event_tx,
+            write_timeout,
+            shutdown_rx,
+            shutdown_tx,
+        ));
+
+        let mut leg = fake_leg(7, 10, 0, 20);
+        leg.sender = Some(LegWriteSender::bounded(frame_tx));
+        let mut legs = vec![leg];
+        for seq in [0_u64, 4096] {
+            assert!(send_to_leg(
+                &mut legs,
+                0,
+                WireFrame::DataC2S {
+                    stream_id: 9,
+                    seq,
+                    payload: Bytes::from(vec![0x5a; 4096]),
+                },
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let first = read_frame(&mut reader).await.unwrap();
+        assert!(matches!(first, WireFrame::DataC2S { seq: 0, .. }));
+        let written = timeout(Duration::from_millis(100), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(written, TcpTransportEvent::FrameWritten { seq: 0, .. }));
+
+        let next_leg_closed = async {
+            loop {
+                match event_rx.recv().await {
+                    Some(TcpTransportEvent::LegClosed { leg_id }) => break leg_id,
+                    Some(_) => continue,
+                    None => panic!("leg event channel closed before LegClosed"),
+                }
+            }
+        };
+        let mut next_leg_closed = Box::pin(next_leg_closed);
+        assert!(
+            timeout(Duration::from_millis(200), next_leg_closed.as_mut())
+                .await
+                .is_err(),
+            "queue residence must not consume the socket write timeout"
+        );
+
+        let closed = timeout(Duration::from_millis(300), next_leg_closed.as_mut())
+        .await
+        .expect("a genuinely blocked socket write must still time out");
+        assert_eq!(closed, 7);
+    }
+
+    #[tokio::test]
+    async fn tcp_leg_writer_timeout_cancels_reader_and_releases_stream() {
+        let (stream, mut peer) = tokio::io::duplex(64);
+        let (reader, writer) = tokio::io::split(stream);
+        let (frame_tx, frame_rx) = leg_write_channel();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        spawn_tcp_leg_io_tasks(7, reader, writer, frame_rx, event_tx, Duration::from_millis(50));
+
+        frame_tx
+            .try_send(QueuedLegFrame::new(WireFrame::DataC2S {
+                stream_id: 9,
+                seq: 128,
+                payload: Bytes::from(vec![0x5a; 4096]),
+            }))
+            .unwrap();
+
+        let event = timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, TcpTransportEvent::LegClosed { leg_id: 7 }));
+
+        let mut drained = Vec::new();
+        timeout(Duration::from_secs(1), peer.read_to_end(&mut drained))
+            .await
+            .expect("writer timeout must cancel the sibling reader and release the stream")
+            .unwrap();
+        if let Ok(Some(_)) = timeout(Duration::from_millis(50), event_rx.recv()).await {
+            panic!("one leg failure emitted an extra event");
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_leg_reader_failure_cancels_idle_writer() {
+        let (stream, peer) = tokio::io::duplex(64);
+        let (reader, writer) = tokio::io::split(stream);
+        let (frame_tx, frame_rx) = leg_write_channel();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        spawn_tcp_leg_io_tasks(7, reader, writer, frame_rx, event_tx, Duration::from_secs(1));
+
+        drop(peer);
+
+        let event = timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, TcpTransportEvent::LegClosed { leg_id: 7 }));
+        timeout(Duration::from_secs(1), async {
+            while !frame_tx.is_closed() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reader failure must cancel the sibling writer");
+        if let Ok(Some(_)) = timeout(Duration::from_millis(50), event_rx.recv()).await {
+            panic!("one leg failure emitted an extra event");
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_leg_writer_confirms_data_after_socket_write_completes() {
+        let (writer, mut reader) = tokio::io::duplex(8192);
+        let (frame_tx, frame_rx) = leg_write_channel();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        tokio::spawn(run_tcp_leg_writer(
+            7,
+            writer,
+            frame_rx,
+            event_tx,
+            Duration::from_secs(1),
+            shutdown_rx,
+            shutdown_tx,
+        ));
+
+        frame_tx
+            .try_send(QueuedLegFrame::new(WireFrame::DataC2S {
+                stream_id: 9,
+                seq: 128,
+                payload: Bytes::from(vec![0x5a; 4096]),
+            }))
+            .unwrap();
+
+        let frame = read_frame(&mut reader).await.unwrap();
+        assert!(matches!(frame, WireFrame::DataC2S { stream_id: 9, seq: 128, .. }));
+        let event = timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event,
+            TcpTransportEvent::FrameWritten {
+                leg_id: 7,
+                stream_id: 9,
+                seq: 128,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn retransmit_candidates_cap_to_oldest_gap_chunks() {
         let now = Instant::now();
         let old = now.checked_sub(Duration::from_secs(1)).unwrap();
@@ -5350,6 +6492,7 @@ mod tests {
                     last_sent_at: old,
                     last_leg_id: 0,
                     transmit_count: 1,
+                    write_pending: false,
                 },
             );
         }
@@ -5381,6 +6524,46 @@ mod tests {
             now,
         );
         assert_eq!(selected, Some(1));
+    }
+
+    #[test]
+    fn latency_best_skips_cooled_leg_when_an_alternative_exists() {
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20), fake_leg(1, 10, 0, 25)];
+        legs[0].cooldown_until = Some(now + Duration::from_secs(2));
+        let mut cursor = 0usize;
+
+        let selected = select_pinned_strategy_leg(
+            ClientStrategy::LatencyBest,
+            &legs,
+            &mut cursor,
+            Some(0),
+            128 * 1024,
+            16 * 1024 * 1024,
+            &test_config(),
+        );
+
+        assert_eq!(selected, Some(1));
+    }
+
+    #[test]
+    fn latency_best_reuses_only_active_leg_during_cooldown() {
+        let now = Instant::now();
+        let mut legs = vec![fake_leg(0, 10, 0, 20)];
+        legs[0].cooldown_until = Some(now + Duration::from_secs(2));
+        let mut cursor = 0usize;
+
+        let selected = select_pinned_strategy_leg(
+            ClientStrategy::LatencyBest,
+            &legs,
+            &mut cursor,
+            Some(0),
+            128 * 1024,
+            16 * 1024 * 1024,
+            &test_config(),
+        );
+
+        assert_eq!(selected, Some(0));
     }
 
     #[test]
@@ -5564,15 +6747,16 @@ mod tests {
                 last_sent_at: Instant::now(),
                 last_leg_id: 0,
                 transmit_count: 1,
+                write_pending: false,
             },
         );
 
         let mut streams = HashMap::new();
         streams.insert(2_u32, state);
-        let (leg_tx, _leg_rx) = mpsc::unbounded_channel();
+        let (leg_tx, _leg_rx) = leg_write_channel();
         let mut legs = vec![LegState {
             id: 0,
-            sender: leg_tx,
+            sender: Some(LegWriteSender::bounded(leg_tx)),
             active: true,
             inflight_bytes: 0,
             transport: LegTransport::Tcp,
@@ -5619,7 +6803,7 @@ mod tests {
         let payload = Bytes::from_static(b"abcd");
 
         let queued = handle_inbound_data(&mut inbound, 0, payload, &tx).await.expect("queue inbound payload");
-        assert_eq!(queued, 4);
+        assert_eq!(queued, (4, 4));
         assert_eq!(inbound.next_offset, 4);
         assert_eq!(inbound.acked_offset, 0);
 
@@ -5631,6 +6815,230 @@ mod tests {
         let ack = record_inbound_write_commit(&mut inbound, 4);
         assert_eq!(ack, 4);
         assert_eq!(inbound.acked_offset, 4);
+    }
+
+    #[tokio::test]
+    async fn duplicate_inbound_data_has_no_second_delivery_credit() {
+        let (tx, mut rx) = mpsc::channel::<LocalWriteCommand>(8);
+        let mut inbound = InboundState::new();
+
+        let first = handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"data"), &tx)
+            .await
+            .unwrap();
+        let duplicate = handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"data"), &tx)
+            .await
+            .unwrap();
+
+        assert_eq!(first, (4, 4));
+        assert_eq!(duplicate, (4, 0));
+        assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn duplicate_inbound_data_reacks_on_the_arrival_leg() {
+        let (local_write_tx, _local_write_rx) = mpsc::channel::<LocalWriteCommand>(8);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let mut state = TcpStreamState::new(local_write_tx, close_tx, true);
+        state.preferred_leg_id = Some(0);
+        state.inbound.next_offset = 4;
+        state.inbound.acked_offset = 4;
+
+        let mut streams = HashMap::from([(7_u32, state)]);
+        let mut connecting_streams = HashSet::new();
+        let mut closed_streams = HashSet::new();
+        let mut reset_reasons = HashMap::new();
+        let (old_leg_tx, mut old_leg_rx) = leg_write_channel();
+        let (arrival_leg_tx, mut arrival_leg_rx) = leg_write_channel();
+        let mut old_leg = fake_leg(0, 10, 0, 20);
+        old_leg.sender = Some(LegWriteSender::bounded(old_leg_tx));
+        let mut arrival_leg = fake_leg(1, 10, 0, 25);
+        arrival_leg.sender = Some(LegWriteSender::bounded(arrival_leg_tx));
+        let mut legs = vec![old_leg, arrival_leg];
+        let mut cursor = 0usize;
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        handle_tcp_transport_frame(
+            Uuid::nil(),
+            SessionRole::Client,
+            None,
+            1,
+            WireFrame::DataS2C {
+                stream_id: 7,
+                seq: 0,
+                payload: Bytes::from_static(b"data"),
+            },
+            &mut streams,
+            &mut connecting_streams,
+            &mut closed_streams,
+            &mut reset_reasons,
+            &mut legs,
+            &mut cursor,
+            &event_tx,
+            &test_config(),
+        )
+        .await
+        .unwrap();
+
+        assert!(old_leg_rx.try_recv().is_err());
+        let queued = arrival_leg_rx
+            .try_recv()
+            .expect("duplicate data must refresh the cumulative ACK on its arrival leg");
+        assert!(matches!(
+            queued.frame,
+            WireFrame::AckS2C {
+                stream_id: 7,
+                ack: 4,
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn accepted_tcp_stream_enables_nodelay() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connector = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
+        let (accepted, _) = listener.accept().await.unwrap();
+
+        enable_tcp_nodelay(&accepted).unwrap();
+
+        assert!(accepted.nodelay().unwrap());
+        drop(connector.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn inbound_data_does_not_block_transport_loop_when_local_writer_queue_is_full() {
+        let (tx, mut rx) = mpsc::channel::<LocalWriteCommand>(1);
+        tx.try_send(LocalWriteCommand::Data(Bytes::from_static(b"occupied")))
+            .unwrap();
+        let mut inbound = InboundState::new();
+
+        let queued = timeout(
+            Duration::from_millis(50),
+            handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"a"), &tx),
+        )
+        .await
+        .expect("a full local writer queue must not block the transport event loop")
+        .unwrap();
+
+        assert_eq!(queued, (0, 1));
+        assert_eq!(inbound.next_offset, 0);
+        assert_eq!(inbound.buffer.get(&0), Some(&Bytes::from_static(b"a")));
+        assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
+    }
+
+    #[tokio::test]
+    async fn later_inbound_data_flushes_contiguous_chunk_after_local_writer_backpressure() {
+        let (tx, mut rx) = mpsc::channel::<LocalWriteCommand>(1);
+        tx.try_send(LocalWriteCommand::Data(Bytes::from_static(b"occupied")))
+            .unwrap();
+        let mut inbound = InboundState::new();
+
+        timeout(
+            Duration::from_millis(50),
+            handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"a"), &tx),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
+
+        let queued = timeout(
+            Duration::from_millis(50),
+            handle_inbound_data(&mut inbound, 1, Bytes::from_static(b"b"), &tx),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(queued, (1, 1));
+        assert_eq!(inbound.next_offset, 1);
+        assert_eq!(inbound.buffer.get(&1), Some(&Bytes::from_static(b"b")));
+        match rx.recv().await {
+            Some(LocalWriteCommand::Data(bytes)) => assert_eq!(bytes, Bytes::from_static(b"a")),
+            _ => panic!("expected resumed contiguous payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn local_write_commit_flushes_buffered_inbound_data_without_waiting_for_another_frame() {
+        let (tx, mut rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let mut inbound = InboundState::new();
+
+        handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"a"), &tx)
+            .await
+            .unwrap();
+        handle_inbound_data(&mut inbound, 1, Bytes::from_static(b"b"), &tx)
+            .await
+            .unwrap();
+        assert_eq!(inbound.next_offset, 1);
+        assert_eq!(inbound.buffer.get(&1), Some(&Bytes::from_static(b"b")));
+        assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
+
+        let ack = record_inbound_write_commit_and_flush(&mut inbound, 1, &tx).unwrap();
+
+        assert_eq!(ack, 1);
+        assert_eq!(inbound.next_offset, 2);
+        assert!(inbound.buffer.is_empty());
+        match rx.recv().await {
+            Some(LocalWriteCommand::Data(bytes)) => assert_eq!(bytes, Bytes::from_static(b"b")),
+            _ => panic!("expected buffered payload after write commit"),
+        }
+    }
+
+    #[tokio::test]
+    async fn local_write_commit_queues_fin_after_buffered_data_reaches_fin_offset() {
+        let (tx, mut rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let mut inbound = InboundState::new();
+        inbound.fin_offset = Some(1);
+
+        timeout(
+            Duration::from_millis(50),
+            handle_inbound_data(&mut inbound, 0, Bytes::from_static(b"a"), &tx),
+        )
+            .await
+            .expect("FIN handling must not block while the local writer queue is full")
+            .unwrap();
+        assert_eq!(inbound.next_offset, 1);
+        assert!(matches!(rx.recv().await, Some(LocalWriteCommand::Data(_))));
+
+        record_inbound_write_commit_and_flush(&mut inbound, 1, &tx).unwrap();
+
+        let shutdown = timeout(Duration::from_millis(50), rx.recv())
+            .await
+            .expect("FIN shutdown must not wait on a full local writer queue")
+            .expect("local writer shutdown command");
+        assert!(matches!(shutdown, LocalWriteCommand::Shutdown));
+        assert!(inbound.writer_shutdown);
+    }
+
+    #[test]
+    fn local_write_commit_keeps_closed_writer_failure_stream_scoped() {
+        let (tx, rx) = mpsc::channel::<LocalWriteCommand>(1);
+        drop(rx);
+        let mut inbound = InboundState::new();
+        inbound.next_offset = 1;
+        inbound.pending_write_lengths.push_back(1);
+        inbound.buffer.insert(1, Bytes::from_static(b"b"));
+
+        let ack = record_inbound_write_commit_and_flush(&mut inbound, 1, &tx)
+            .expect("the queued writer failure event must retain stream-local failure scope");
+
+        assert_eq!(ack, 1);
+        assert_eq!(inbound.next_offset, 1);
+        assert_eq!(inbound.buffer.get(&1), Some(&Bytes::from_static(b"b")));
+    }
+
+    #[test]
+    fn inbound_fin_keeps_closed_writer_failure_stream_scoped() {
+        let (tx, rx) = mpsc::channel::<LocalWriteCommand>(1);
+        drop(rx);
+        let mut inbound = InboundState::new();
+        inbound.fin_offset = Some(0);
+
+        try_queue_inbound_shutdown(&mut inbound, &tx)
+            .expect("the queued writer failure event must retain stream-local failure scope");
+
+        assert!(!inbound.writer_shutdown);
     }
 
     #[tokio::test]
@@ -5646,7 +7054,7 @@ mod tests {
             .await
             .expect("late data after shutdown should not fail the whole transport");
 
-        assert_eq!(next_offset, 8);
+        assert_eq!(next_offset, (8, 0));
         assert_eq!(inbound.next_offset, 8);
     }
 
@@ -5712,8 +7120,167 @@ mod tests {
         assert!(!arm_transport_stream_close_deadline(&mut state));
     }
 
+    #[tokio::test]
+    async fn transport_reader_waits_for_read_credit_before_reading_ahead() {
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (close_tx, close_rx) = watch::channel(false);
+        let read_credit = Arc::new(tokio::sync::Semaphore::new(1));
+
+        spawn_transport_stream_reader(
+            7,
+            reader,
+            1024,
+            close_rx,
+            event_tx,
+            read_credit.clone(),
+        );
+        writer.write_all(&vec![b'x'; 2048]).await.unwrap();
+
+        let first = timeout(Duration::from_millis(200), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            first,
+            TcpTransportEvent::LocalChunk { stream_id: 7, ref payload, .. } if payload.len() == 1024
+        ));
+        assert!(timeout(Duration::from_millis(50), event_rx.recv()).await.is_err());
+
+        read_credit.add_permits(1);
+        let second = timeout(Duration::from_millis(200), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            second,
+            TcpTransportEvent::LocalChunk { stream_id: 7, ref payload, .. } if payload.len() == 1024
+        ));
+        let _ = close_tx.send(true);
+    }
+
+    #[tokio::test]
+    async fn idle_transport_reader_does_not_hold_shared_read_credit() {
+        let (_idle_writer, idle_reader) = tokio::io::duplex(4096);
+        let (mut active_writer, active_reader) = tokio::io::duplex(4096);
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (_idle_close_tx, idle_close_rx) = watch::channel(false);
+        let (_active_close_tx, active_close_rx) = watch::channel(false);
+        let read_credit = Arc::new(Semaphore::new(1));
+
+        spawn_transport_stream_reader(
+            7,
+            idle_reader,
+            1024,
+            idle_close_rx,
+            event_tx.clone(),
+            read_credit.clone(),
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        spawn_transport_stream_reader(
+            8,
+            active_reader,
+            1024,
+            active_close_rx,
+            event_tx,
+            read_credit,
+        );
+        active_writer.write_all(b"data").await.unwrap();
+
+        let event = timeout(Duration::from_millis(200), event_rx.recv())
+            .await
+            .expect("idle stream must not monopolize shared read credit")
+            .unwrap();
+        assert!(matches!(
+            event,
+            TcpTransportEvent::LocalChunk { stream_id: 8, ref payload, .. } if payload.as_ref() == b"data"
+        ));
+    }
+
+    #[tokio::test]
+    async fn ack_and_stream_close_return_transport_read_credit() {
+        let (tx, _rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let read_credit = Arc::new(Semaphore::new(0));
+        let mut state = TcpStreamState::new_with_strategy_and_read_credit(
+            tx,
+            close_tx,
+            true,
+            ClientStrategy::SpeedMax,
+            read_credit.clone(),
+        );
+        state.read_credit_in_use = 1;
+        state.pending_chunks.insert(
+            0,
+            PendingChunk {
+                payload: Bytes::from_static(b"data"),
+                last_sent_at: Instant::now(),
+                last_leg_id: 0,
+                transmit_count: 1,
+                write_pending: false,
+            },
+        );
+        let mut legs = vec![fake_leg(0, 10, 0, 20)];
+        let completed = apply_ack(&mut state.pending_chunks, &mut legs, 4);
+
+        assert_eq!(release_transport_read_credit(&mut state, completed), 1);
+        assert_eq!(state.read_credit_in_use, 0);
+        assert_eq!(read_credit.available_permits(), 1);
+
+        let (tx, _rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let close_credit = Arc::new(Semaphore::new(0));
+        let mut closing = TcpStreamState::new_with_strategy_and_read_credit(
+            tx,
+            close_tx,
+            true,
+            ClientStrategy::SpeedMax,
+            close_credit.clone(),
+        );
+        closing.read_credit_in_use = 2;
+        let mut streams = HashMap::from([(9, closing)]);
+        let mut closed_streams = HashSet::new();
+        close_transport_stream(9, &mut streams, &mut closed_streams);
+
+        assert_eq!(close_credit.available_permits(), 2);
+        assert!(closed_streams.contains(&9));
+    }
+
+    #[test]
+    fn endpoint_stream_resets_do_not_penalize_transport_legs() {
+        assert_eq!(stream_reset_failure_scope("local_read_failed"), TcpFailureScope::LocalEndpoint);
+        assert_eq!(stream_reset_failure_scope("local_write_failed"), TcpFailureScope::LocalEndpoint);
+        assert_eq!(stream_reset_failure_scope("close_timeout"), TcpFailureScope::LocalEndpoint);
+        assert_eq!(
+            stream_reset_failure_scope("failed to connect upstream target"),
+            TcpFailureScope::LocalEndpoint
+        );
+        assert_eq!(stream_reset_failure_scope("unknown_stream"), TcpFailureScope::Transport);
+    }
+
+    #[test]
+    fn transport_read_credit_uses_bounded_retransmit_window() {
+        assert_eq!(read_credit_chunks(&test_config()), 128);
+    }
+
     #[test]
     fn close_timeout_waits_for_remote_result_after_local_fin_is_acked() {
+        let (tx, _rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let mut state = TcpStreamState::new(tx, close_tx, true);
+        state.local_eof = true;
+        state.outbound_next_offset = 4;
+        state.outbound_fin_acked = true;
+        state.close_deadline_at = Some(Instant::now() - Duration::from_secs(5));
+
+        assert!(
+            !should_reset_transport_stream_on_close_timeout(&state, Instant::now()),
+            "once our fin is acked, keep the stream open for remote result/control data instead of resetting it immediately"
+        );
+    }
+
+    #[test]
+    fn close_timeout_reclaims_zero_byte_half_closed_probe() {
         let (tx, _rx) = mpsc::channel::<LocalWriteCommand>(1);
         let (close_tx, _close_rx) = watch::channel(false);
         let mut state = TcpStreamState::new(tx, close_tx, true);
@@ -5722,9 +7289,38 @@ mod tests {
         state.close_deadline_at = Some(Instant::now() - Duration::from_secs(5));
 
         assert!(
-            !should_reset_transport_stream_on_close_timeout(&state, Instant::now()),
-            "once our fin is acked, keep the stream open for remote result/control data instead of resetting it immediately"
+            should_reset_transport_stream_on_close_timeout(&state, Instant::now()),
+            "zero-byte connect-and-close probes must not retain upstream sockets indefinitely"
         );
+    }
+
+    #[test]
+    fn zero_byte_acked_close_timeout_is_local_endpoint_failure() {
+        let (tx, _rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let mut state = TcpStreamState::new(tx, close_tx, true);
+        state.local_eof = true;
+        state.outbound_fin_acked = true;
+
+        assert_eq!(
+            close_timeout_failure_scope(&state),
+            TcpFailureScope::LocalEndpoint,
+            "a completed zero-byte health probe must not cool the transport leg"
+        );
+    }
+
+    #[test]
+    fn incomplete_or_data_close_timeout_is_transport_failure() {
+        let (tx, _rx) = mpsc::channel::<LocalWriteCommand>(1);
+        let (close_tx, _close_rx) = watch::channel(false);
+        let mut state = TcpStreamState::new(tx, close_tx, true);
+        state.local_eof = true;
+
+        assert_eq!(close_timeout_failure_scope(&state), TcpFailureScope::Transport);
+
+        state.outbound_fin_acked = true;
+        state.outbound_next_offset = 4;
+        assert_eq!(close_timeout_failure_scope(&state), TcpFailureScope::Transport);
     }
 
     #[test]
@@ -5834,6 +7430,7 @@ mod tests {
                 last_sent_at: Instant::now(),
                 last_leg_id: 0,
                 transmit_count: 1,
+                write_pending: false,
             },
         );
 

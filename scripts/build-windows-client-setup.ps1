@@ -2,7 +2,7 @@ param(
     [string]$AppPublishDir = "artifacts/windows/publish",
     [string]$BondExe = "wstunnel-main/target/release/leikwan-bond.exe",
     [string]$IngressExe = "wstunnel-main/target/release/leikwan-ingress.exe",
-    [string]$UotBondExe = "wstunnel-main/target/release/leikwan-uot-bond.exe",
+    [string]$UotBondExe = "artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
     [string]$MptcpRelayExe = "wstunnel-main/target/x86_64-pc-windows-msvc/release/leikwan-mptcp-relay.exe",
     [string]$WstunnelExe = "wstunnel.exe",
     [string]$OutputSetup = "artifacts/windows/leikwan-bridge-setup.exe",
@@ -119,7 +119,7 @@ $IngressExe = Resolve-InputFile -ConfiguredPath $IngressExe -WasExplicitlyProvid
     "artifacts/windows/rebuild_payload/leikwan-ingress.exe"
 )
 $UotBondExe = Resolve-InputFile -ConfiguredPath $UotBondExe -WasExplicitlyProvided $PSBoundParameters.ContainsKey('UotBondExe') -Fallbacks @(
-    "artifacts/windows/rebuild_payload/leikwan-uot-bond.exe"
+    "artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe"
 )
 $MptcpRelayExe = Resolve-InputFile -ConfiguredPath $MptcpRelayExe -WasExplicitlyProvided $PSBoundParameters.ContainsKey('MptcpRelayExe') -Fallbacks @(
     "artifacts/wstunnel/leikwan-mptcp-relay_windows_amd64.exe",
@@ -130,6 +130,30 @@ $WstunnelExe = Resolve-InputFile -ConfiguredPath $WstunnelExe -WasExplicitlyProv
     "artifacts/windows/rebuild_payload/wstunnel.exe",
     "wstunnel.exe"
 )
+
+$versionsPath = "artifacts/versions.json"
+Require-File $versionsPath
+$versions = Get-Content -LiteralPath $versionsPath -Raw | ConvertFrom-Json
+$uotManifest = $versions.leikwan_uot_bond_windows_amd64
+if (-not $uotManifest -or [string]::IsNullOrWhiteSpace([string]$uotManifest.sha256)) {
+    throw "missing leikwan_uot_bond_windows_amd64 manifest metadata"
+}
+$actualUotSha256 = (Get-FileHash -LiteralPath $UotBondExe -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualUotSha256 -ne ([string]$uotManifest.sha256).ToLowerInvariant()) {
+    throw "UoT binary sha256 does not match manifest"
+}
+$uotBuildInfoRaw = & $UotBondExe --build-info-json
+if ($LASTEXITCODE -ne 0) {
+    throw "UoT binary build-info probe failed"
+}
+$uotBuildInfo = $uotBuildInfoRaw | ConvertFrom-Json
+if (
+    [int]$uotBuildInfo.protocol_version -ne 2 -or
+    -not (@($uotBuildInfo.scheduler_modes) -contains "feedback_drr") -or
+    -not (@($uotBuildInfo.capabilities) -contains "leg-progress-v1")
+) {
+    throw "UoT binary lacks feedback_drr/leg-progress-v1"
+}
 
 if (Test-Path -LiteralPath $StageDir) {
     Remove-Item -LiteralPath $StageDir -Recurse -Force

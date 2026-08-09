@@ -1,0 +1,52 @@
+<h2>你将完成什么</h2>
+<p>你将在 Windows、Android 或 Linux 上安装并登录客户端，随后确认设备在线且已经收到最近的转发配置。</p>
+
+<h2>开始前准备</h2>
+<ul>
+  <li>Windows 登录需要面板提供的 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
+  <li>Android 需要 arm64、Android 8.0+ 设备，并允许系统建立 VPN 连接。</li>
+  <li>Linux 主机需要 systemd、Python 3、网络访问能力和相当于 root 的权限。</li>
+  <li>登录信息和复制的命令都属于秘密；Linux 安装命令包含可直接用于代理身份验证的令牌。</li>
+</ul>
+
+<h2>操作步骤</h2>
+<pre class="mermaid">flowchart TD
+accTitle: 客户端安装路径
+accDescr: 按设备系统选择 Windows、Android 或 Linux 安装流程，完成后都要确认客户端最近同步。
+A[选择设备] --&gt; B{操作系统}
+B -- Windows --&gt; C[下载 Windows 应用]
+B -- Android --&gt; D[安装 arm64 Android 应用]
+B -- Linux --&gt; E[复制 Linux 安装命令]
+C --&gt; F[确认最近同步]
+D --&gt; F
+E --&gt; F</pre>
+<p>三个平台的安装入口和状态名称不同，但结束条件一致：目标设备上的客户端已连接，并且面板显示最近同步。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients 的 Install 页面显示 Windows、Android 和 Linux 安装入口">
+  <figcaption>演示截图：按钮和同步时间用于说明位置，不代表你的设备状态。</figcaption>
+</figure>
+<ol>
+  <li><strong>Windows：</strong>打开 <strong>Tenant → Clients</strong>，选择 <strong>Download Windows App</strong>。</li>
+  <li>安装并打开应用，填写 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
+  <li>选择 <strong>Connect</strong>，确认出现 <strong>Connection successful!</strong>，全局状态为 <strong>Connected</strong>，可用转发显示 <strong>Running</strong>。</li>
+  <li><strong>Android：</strong>在 arm64、Android 8.0+ 设备上安装应用并登录。</li>
+  <li>同意 Android 的 VPN 授权，只选择应用列出的受支持 LeiGod 服务。</li>
+  <li>观察状态从 <strong>Ready to connect</strong> 经过 <strong>Connecting...</strong> 变为 <strong>Connected</strong>。不要据此承诺 Android 支持 Race 或 MPTCP。</li>
+  <li><strong>Linux：</strong>打开 <strong>Tenant → Clients</strong>，展开 <strong>Linux Install</strong>，选择 <strong>Copy Install Command</strong>。</li>
+  <li>以相当于 root 的权限运行一次复制的命令；不要把它粘贴到聊天、工单、日志或共享历史记录。</li>
+  <li>确认安装器输出 <code>installed leikwan-client-agent</code>。</li>
+  <li>回到面板查看最近同步；也可在主机上确认 <code>config_pull_state.json</code> 的 <code>status</code> 为 <code>ok</code>。</li>
+</ol>
+
+<h2>如何确认成功</h2>
+<p>面板应显示预期客户端的最近同步。Windows 同时显示 <strong>Connection successful!</strong>、<strong>Connected</strong> 和转发的 <strong>Running</strong>；Android 到达 <strong>Connected</strong>；Linux 安装完成且拉取状态正常。之后仍需单独验证真实应用连接。</p>
+
+<h2>如果没有成功</h2>
+<p><strong>先停止公开凭据或反复运行秘密命令。</strong>核对 Master URL、设备时间、网络和权限。Android 要确认 VPN 授权；Linux 要确认 systemd 与 Python 3 可用。收集错误时删除代理身份验证令牌等秘密内容。</p>
+
+<h2>相关指南</h2>
+<ul>
+  <li><a href="/knowledgebase?thread=getting-started-five-minute-overview">五分钟完成首次连接</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">连接并验证</a></li>
+  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a></li>
+</ul>

@@ -15,10 +15,28 @@ foreach ([
     "public function saveForwardEdit(Request \$request, array \$params): Response",
     "private function normalizeTenantForwardEditPayload(array \$payload): array",
     "/tenant/services/{id}/forward/{fid}/edit",
-    "Current Forward Combination",
+    "Current Forward Route",
+    "allow_manage_forwards",
+    "forward_route_label",
+    "f.enabled = 1",
+    "ForwardLineApiContract::mergePatch(\$forward, \$changes)",
+    "\$targetHostField",
+    "Target Host (managed by service)",
+    "(int) (\$forward['api_revision'] ?? 1)",
+    "array_key_exists('transport_mode', \$changes)",
+    "\$this->provisioning->updateForward(",
 ] as $snippet) {
     if (!str_contains($tenant . $bootstrap, $snippet)) {
         fail('missing tenant edit snippet: ' . $snippet);
+    }
+}
+
+foreach ([
+    "'/tenant/forwards/' . \$forwardId . '/edit'",
+    'forward_combination_label',
+] as $forbidden) {
+    if (str_contains($tenant, $forbidden)) {
+        fail('stale tenant edit topology/link snippet: ' . $forbidden);
     }
 }
 

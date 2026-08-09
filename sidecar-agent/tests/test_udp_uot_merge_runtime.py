@@ -3,6 +3,8 @@ import importlib.util
 import pathlib
 import sys
 import time
+import tempfile
+import json
 import unittest
 from unittest import mock
 
@@ -24,6 +26,19 @@ merge_runtime = load_module("udp_uot_merge_under_test", "sidecar-agent/leikwan_u
 
 
 class UdpUotMergeRuntimeTests(unittest.TestCase):
+    def test_feedback_scheduler_requires_native_runtime_before_socket_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "runtime.json"
+            config_path.write_text(
+                json.dumps({"scheduler_mode": "feedback_drr"}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "feedback_drr requires the native Rust UoT runtime",
+            ):
+                merge_runtime.load_config(str(config_path))
+
     def test_build_auth_ready_frame_is_keepalive(self) -> None:
         frame = merge_runtime.build_auth_ready_frame()
         self.assertEqual(frame.msg_type, merge_runtime.MSG_KEEPALIVE)

@@ -20,7 +20,7 @@ namespace Leikwan\Master\Database {
          */
         public function fetchAll(string $sql, array $params = []): array
         {
-            return [];
+            return str_contains($sql, 'SELECT DISTINCT f.id') ? [['id' => 26]] : [];
         }
 
         /**
@@ -110,6 +110,32 @@ namespace {
         'shadow_route_suffix' => '.uot',
         'sidecar_port' => 8999,
         'reorder_window_packets' => 4096,
+        'reorder_window_bytes' => 16777216,
+        'reorder_timeout_ms' => 25,
+        'delivery_mode' => 'unordered',
+        'wireguard_aware' => true,
+        'scheduler_mode' => 'feedback_drr',
+        'aggregate_rate_bps' => 300000000,
+        'queue_target_ms' => 5,
+        'queue_deadline_ms' => 10,
+        'global_queue_bytes' => 1048576,
+        'global_queue_packets' => 8192,
+        'per_session_queue_bytes' => 262144,
+        'per_session_queue_packets' => 512,
+        'drr_quantum_bytes' => 16384,
+        'chunk_min_bytes' => 16384,
+        'chunk_target_bytes' => 32768,
+        'chunk_max_bytes' => 65536,
+        'min_leg_window_bytes' => 262144,
+        'max_leg_window_bytes' => 4194304,
+        'max_total_outstanding_bytes' => 8388608,
+        'progress_interval_bytes' => 65536,
+        'progress_interval_frames' => 32,
+        'progress_interval_ms' => 5,
+        'finish_skew_budget_ms' => 2,
+        'probe_interval_ms' => 1000,
+        'max_sessions' => 4096,
+        'control_queue_packets' => 256,
     ];
     $cfwgWatchdog = [
         'enabled' => true,
@@ -202,6 +228,24 @@ namespace {
     }
     if (($nodeConfig['udp_uot_sidepath'] ?? null) !== $sidepath) {
         fail('expected authoritative node config to preserve udp_uot_sidepath');
+    }
+
+    $assignedSidepath = $provisioning->udpUotSidepathConfigForAssignedClientForwards([[
+        'forward_id' => 26,
+        'mode' => 'bond',
+        'transport' => 'tcp+udp',
+        'bonding' => ['ingress_mode' => 'plain_tcp_mux'],
+    ]], $sidepath);
+    $nodeSidepath = $provisioning->udpUotSidepathConfigForNode(184, $sidepath);
+    $sidecarSidepath = $provisioning->udpUotSidepathConfigForSidecarPoint(4, $sidepath);
+    foreach ([
+        'assigned client' => $assignedSidepath,
+        'node' => $nodeSidepath,
+        'sidecar' => $sidecarSidepath,
+    ] as $label => $actual) {
+        if ($actual !== $sidepath) {
+            fail('expected ' . $label . ' scheduler contract to remain byte-for-value identical');
+        }
     }
 
     $clientControllerSource = file_get_contents($root . '/src/Controllers/ClientAgentController.php') ?: '';

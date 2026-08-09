@@ -557,8 +557,9 @@ namespace {
     $serviceController = file_get_contents(__DIR__ . '/../src/Controllers/ServiceController.php');
     foreach ([
         'private function normalizeForwardNonStructuralPayload(array $payload): array',
-        '$payload = $this->normalizeForwardNonStructuralPayload($request->body());',
-        '\'client_config\' => $this->provisioning->updateForwardNonStructural($forwardId, $payload, \'user\'),',
+        '$changes = $this->normalizeForwardNonStructuralPayload($request->body());',
+        'ForwardLineApiContract::normalizeLegacyUpdate',
+        '\'client_config_url\' => \'/api/user/forwards/\' . $forwardId . \'/client-config\'',
     ] as $snippet) {
         if (!str_contains((string) $serviceController, $snippet)) {
             fail('service API contract missing snippet: ' . $snippet);

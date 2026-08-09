@@ -1,0 +1,51 @@
+<h2>What you will accomplish</h2>
+<p>You will choose among Single, Race, and Bond by the result you need, while avoiding promises that the selected mode or platform cannot guarantee.</p>
+
+<h2>Before you begin</h2>
+<ul>
+  <li>Start with a working basic Forward when possible.</li>
+  <li>Read the published route contract for your package and Client platform.</li>
+  <li>Identify whether you need simplicity, path redundancy, or an explicitly supported Bond design.</li>
+  <li>Do not choose a mode only because its name sounds faster.</li>
+</ul>
+
+<h2>Steps</h2>
+<pre class="mermaid">flowchart TD
+accTitle: Connection mode decision
+accDescr: Choose Single for the simplest stable path, Race for supported path redundancy without aggregation, and Bond only when the plan explicitly supports it and its requirements are verified.
+A[What outcome do you need?] --&gt; B{Simplest stable path?}
+B -- Yes --&gt; C[Choose Single]
+B -- No --&gt; D{Redundancy without aggregation?}
+D -- Yes --&gt; E[Choose Race]
+D -- No --&gt; F{Plan explicitly supports Bond?}
+F -- Yes --&gt; G[Choose Bond and verify requirements]
+F -- No --&gt; H[Ask your administrator]</pre>
+<p>The safe default is Single. Race is for supported path selection or redundancy, not combined bandwidth. Bond is an advanced choice only when the published route contract says the package and platform support it.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="Forward result showing the user-facing route result instead of internal Single, Race, or Bond wiring">
+  <figcaption>Demo screenshot. The tenant checks the resulting route and status; internal topology stays managed by the plan.</figcaption>
+</figure>
+<ol>
+  <li>Choose <strong>Single</strong> for the simplest stable setup.</li>
+  <li>Choose <strong>Race</strong> when the contract offers multiple usable paths and you want redundancy without aggregation.</li>
+  <li>Remember that Race is not bandwidth aggregation.</li>
+  <li>On Linux TCP Race, expect one winner per connection.</li>
+  <li>On Linux UDP Race, the Client may fan out datagrams across usable paths.</li>
+  <li>Use Race only with at least two usable endpoints. Exact behavior differs by platform.</li>
+  <li>Choose <strong>Bond</strong> only when the published route contract explicitly supports it.</li>
+  <li>Verify every listed Bond requirement before testing. Not every Bond route requires a Sidecar.</li>
+  <li>If support is unclear, ask your administrator instead of guessing.</li>
+</ol>
+
+<h2>How to know it worked</h2>
+<p>The selected mode is allowed by the package, supported by the Client platform, and the application succeeds under the intended conditions. For Race, test that supported requests continue when one usable path is unavailable. For Bond, verify the published requirements and actual application result rather than inferring performance from status alone.</p>
+
+<h2>If it did not work</h2>
+<p><strong>Stop before promising speed doubling, full configured bandwidth, or use of every path.</strong> Return to Single if it is available and stable, record the failing platform and route package, then ask your administrator whether the contract supports the desired Race or Bond behavior.</p>
+
+<h2>Related guides</h2>
+<ul>
+  <li><a href="/knowledgebase?thread=bond-sidecar-setup">Configure a Sidecar</a></li>
+  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a></li>
+  <li><a href="/knowledgebase?thread=glossary">Glossary</a></li>
+</ul>

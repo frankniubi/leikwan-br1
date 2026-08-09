@@ -9,7 +9,7 @@ function fail(string $message): never {
 $source = file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php');
 foreach ([
     'available_forward_combinations',
-    'forward_combination_id',
+    'forward_route_id',
 ] as $required) {
     if (!str_contains($source, $required)) {
         fail('missing tenant combination snippet: ' . $required);

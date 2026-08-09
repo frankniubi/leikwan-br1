@@ -274,6 +274,15 @@ def build_auth_ready_frame() -> DataFrame:
 
 def load_config(path: str) -> RuntimeConfig:
     raw = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    scheduler_mode = str(raw.get("scheduler_mode", "legacy") or "legacy").strip().lower()
+    if scheduler_mode != "legacy":
+        import logging as _logging
+        _logging.warning(
+            "scheduler_mode=%s: Python runtime only supports legacy mode. "
+            "Use the native Rust leikwan-udp-uot-merge binary for feedback_drr.",
+            scheduler_mode,
+        )
+        # Python runtime continues in legacy mode regardless of scheduler_mode value
     return RuntimeConfig(
         listen_host=str(raw.get("listen_host", "0.0.0.0") or "0.0.0.0"),
         listen_port=int(raw.get("listen_port", 0) or 0),
