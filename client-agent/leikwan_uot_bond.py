@@ -236,7 +236,13 @@ def load_config(path: str) -> RuntimeConfig:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     scheduler_mode = str(raw.get("scheduler_mode", "legacy") or "legacy").strip().lower()
     if scheduler_mode != "legacy":
-        raise RuntimeError("feedback_drr requires the native Rust UoT runtime")
+        import logging as _logging
+        _logging.warning(
+            "scheduler_mode=%s: Python runtime only supports legacy mode. "
+            "Use the native Rust leikwan-uot-bond binary for feedback_drr.",
+            scheduler_mode,
+        )
+        # Python runtime continues in legacy mode regardless of scheduler_mode value
     forward_id = int(raw["forward_id"])
     stats_path = str(raw.get("stats_path") or f"/run/leikwan/uot-bond-forward-{forward_id}.stats.json")
     legs = [

@@ -908,6 +908,22 @@ impl Scheduler {
                 if wire_bytes > total_room {
                     return None;
                 }
+                // Per-leg fairness cap: prevent a single high-EWMA leg from
+                // accumulating more than 2× its fair share of outstanding bytes.
+                // Without this, one leg with an inflated EWMA monopolises all chunks
+                // (lowest predicted_finish) while others starve at bootstrap rates.
+                let n_active_for_cap = self
+                    .legs
+                    .values()
+                    .filter(|l| {
+                        l.active
+                            && l.feedback_capable
+                            && matches!(l.state, LegState::Warmup | LegState::Healthy)
+                    })
+                    .count()
+                    .max(1);
+                let per_leg_fair_cap =
+                    (self.config.max_total_outstanding_bytes / n_active_for_cap * 2) as u64;
                 let mut healthy_finishes = self
                     .legs
                     .values()
@@ -942,23 +958,48 @@ impl Scheduler {
                                         <= self.config.chunk_min_bytes
                                             + STREAM_PREFIX_BYTES
                                             + FRAME_HEADER_BYTES))
+                            // Per-leg fairness cap: a leg whose window_reserved already
+                            // exceeds its 2× fair share is temporarily skipped so that
+                            // other legs get a turn. This breaks the winner-take-all loop
+                            // where one high-EWMA leg accumulates all outstanding bytes.
+                            && wire_bytes as u64
+                                <= leg
+                                    .target_window_bytes
+                                    .min(per_leg_fair_cap)
+                                    .saturating_sub(leg.window_reserved_wire_bytes)
+                    })
+                    .min_by_key(|leg| (predicted_finish_us(leg, now_us), leg.leg_id))
+                    .map(|leg| (leg.leg_id, predicted_finish_us(leg, now_us)));
+                let skew_limit = median_finish
+                    .saturating_add(self.config.finish_skew_budget_ms.saturating_mul(1_000));
+                let deadline_pressure = oldest_deadline_us
+                    <= now_us.saturating_add(self.config.queue_target_ms.saturating_mul(1_000));
+                if let Some((leg_id, predicted_finish)) = selected {
+                    if predicted_finish <= skew_limit || deadline_pressure {
+                        return Some(leg_id);
+                    }
+                    // Best healthy leg's predicted finish exceeds skew budget and there is
+                    // no deadline pressure — fall through to check the lagging fallback.
+                }
+                // Fallback: when no healthy/warmup leg is eligible (all Lagging or all
+                // outside the skew budget), pick the lagging leg with the smallest remote
+                // outstanding so we keep making forward progress instead of returning None
+                // and letting every queued packet expire at the 30 ms deadline.
+                self.legs
+                    .values()
+                    .filter(|leg| {
+                        leg.active
+                            && leg.dispatch_available
+                            && &leg.scope_key == scope
+                            && leg.feedback_capable
+                            && matches!(leg.state, LegState::Lagging)
                             && wire_bytes as u64
                                 <= leg
                                     .target_window_bytes
                                     .saturating_sub(leg.window_reserved_wire_bytes)
                     })
-                    .min_by_key(|leg| (predicted_finish_us(leg, now_us), leg.leg_id))
-                    .map(|leg| (leg.leg_id, predicted_finish_us(leg, now_us)));
-                let (leg_id, predicted_finish) = selected?;
-                let skew_limit = median_finish
-                    .saturating_add(self.config.finish_skew_budget_ms.saturating_mul(1_000));
-                let deadline_pressure = oldest_deadline_us
-                    <= now_us.saturating_add(self.config.queue_target_ms.saturating_mul(1_000));
-                if predicted_finish > skew_limit && !deadline_pressure {
-                    None
-                } else {
-                    Some(leg_id)
-                }
+                    .min_by_key(|leg| (leg.outstanding_wire_bytes, leg.leg_id))
+                    .map(|leg| leg.leg_id)
             }
         }
     }
@@ -1022,6 +1063,16 @@ impl Scheduler {
     }
 
     pub fn writer_started(&mut self, leg_id: u64, reservation_ids: &[u64], now_us: u64) {
+        if let Some(leg) = self.legs.get_mut(&leg_id) {
+            // If this is the very first write on a fresh leg, reset last_progress_us
+            // to now. Without this, progress_age = process_uptime at the moment the
+            // first probe fires (can be tens of seconds), which immediately exceeds
+            // lag_age and forces the leg into Lagging before any feedback has a chance
+            // to arrive.
+            if leg.progress_samples == 0 {
+                leg.last_progress_us = now_us;
+            }
+        }
         for id in reservation_ids {
             if let Some(record) = self.reservations.get_mut(id) {
                 if record.leg_id == Some(leg_id)
@@ -1366,9 +1417,41 @@ impl Scheduler {
                         leg.transition(LegState::Warmup);
                     }
                 }
+                // When a leg has been idle long enough that its progress_srtt estimate
+                // is stale, decay both rate and SRTT toward their bootstrap minimums.
+                // Without this, a single outlier sample during startup (huge byte burst
+                // over a tiny elapsed window) can freeze delivery_rate_ewma_bps at a
+                // nonsensical Gbps value forever — because the leg never gets outstanding
+                // work again, has_outstanding_work stays false, and tick() skips all
+                // subsequent checks, including on_progress, so the EWMA never updates.
+                let idle_age_us = now_us.saturating_sub(leg.last_progress_us);
+                let decay_threshold_us = leg.progress_srtt_us.saturating_mul(4).max(2_000_000);
+                if leg.progress_samples > 0 && idle_age_us > decay_threshold_us {
+                    leg.delivery_rate_ewma_bps = (leg
+                        .delivery_rate_ewma_bps
+                        .saturating_mul(7)
+                        / 8)
+                    .max(BOOTSTRAP_RATE_BPS);
+                    if leg.progress_srtt_us > 50_000 {
+                        leg.progress_srtt_us = (leg.progress_srtt_us.saturating_mul(7) / 8)
+                            .max(50_000);
+                    }
+                }
                 continue;
             }
-            let srtt = leg.progress_srtt_us.max(50_000);
+            // Use a minimum SRTT of 200 ms when the leg has few samples.
+            // The hardcoded 50 ms floor causes lag_age = 100 ms, which fires before
+            // the first LegProgress can arrive on any line with RTT > 100 ms (e.g.
+            // Berlin/Germany lines at ~170 ms, Russia at ~188 ms). The result is a
+            // continuous quarantine/probe cycle that never accumulates enough samples
+            // to measure the real RTT. 200 ms gives lag_age = 400 ms, which is safely
+            // above the 167-188 ms first-feedback window for European lines while still
+            // being aggressive enough to detect genuine stalls within ~400 ms.
+            let srtt = leg.progress_srtt_us.max(if leg.progress_samples < 4 {
+                200_000
+            } else {
+                50_000
+            });
             let progress_age = now_us.saturating_sub(leg.last_progress_us);
             let quarantine_age = srtt.saturating_mul(4).max(500_000);
             let lag_age = srtt.saturating_mul(2).max(100_000);
@@ -1380,8 +1463,16 @@ impl Scheduler {
                 leg.transition(LegState::Quarantined);
                 continue;
             }
+            // Adaptive stall threshold: at least half the measured SRTT, at least 3×
+            // the progress polling interval, and never below 50 ms. Using a fixed 5 ms
+            // threshold on a 147 ms RTT path causes false-Lagging on every progress
+            // batch delay, which is why this was the primary trigger of the synchronized
+            // all-leg stall that killed scheduler throughput.
+            let stall_threshold_us = (srtt / 2)
+                .max(self.config.progress_interval_ms.saturating_mul(3_000))
+                .max(50_000);
             let window_stalled = leg.window_reserved_wire_bytes >= leg.target_window_bytes
-                && progress_age > self.config.progress_interval_ms * 1_000;
+                && progress_age > stall_threshold_us;
             if progress_age > lag_age || write_stalled || window_stalled {
                 leg.stale_periods = leg.stale_periods.saturating_add(1);
                 if leg.stale_periods >= 3 {
@@ -1607,7 +1698,14 @@ pub fn target_window_bytes(
 
 fn predicted_finish_us(leg: &LegScheduleState, now_us: u64) -> u64 {
     let rate = leg.delivery_rate_ewma_bps.max(BOOTSTRAP_RATE_BPS);
-    let service_us = u128::from(leg.window_reserved_wire_bytes)
+    // Use the total bytes not yet confirmed by the remote end:
+    //   window_reserved = still in writer queue (not yet accepted by local socket)
+    //   outstanding     = accepted by local socket but remote has not confirmed receipt
+    // Both are mutually exclusive and together represent the true in-flight backlog.
+    let total_undelivered = leg
+        .window_reserved_wire_bytes
+        .saturating_add(leg.outstanding_wire_bytes);
+    let service_us = u128::from(total_undelivered)
         .saturating_mul(8_000_000)
         .checked_div(u128::from(rate))
         .unwrap_or(0)
@@ -1924,8 +2022,12 @@ mod tests {
             .is_admitted());
 
         assert!(matches!(scheduler.schedule_next(0), ScheduleOutcome::Idle));
+        // With queue_deadline_ms=30 ms the packet deadline is 30_000 us from t=0.
+        // deadline_pressure fires when: deadline_us <= now + queue_target_ms * 1_000
+        //   → 30_000 <= now + 5_000  →  now >= 25_000 us.
+        assert!(matches!(scheduler.schedule_next(5_000), ScheduleOutcome::Idle));
         let assignment = scheduler
-            .schedule_next(5_000)
+            .schedule_next(25_000)
             .into_assignment()
             .expect("deadline pressure should permit the only available leg");
         assert_eq!(assignment.leg_id, 4);
@@ -2142,13 +2244,15 @@ mod tests {
         );
         let stalled = scheduler.schedule_next(0).into_assignment().unwrap();
         scheduler.writer_accepted(1, &stalled.reservation_ids, 1);
-        for now_us in [101_000, 102_000, 103_000] {
+        // With progress_samples < 4, bootstrap srtt min = 200 ms → lag_age = 400 ms,
+        // quarantine_age = 800 ms. Advance past those thresholds.
+        for now_us in [401_000, 402_000, 403_000] {
             scheduler.tick(now_us);
         }
         assert_eq!(scheduler.leg(1).unwrap().state, LegState::Lagging);
-        scheduler.tick(501_000);
+        scheduler.tick(801_000);
         assert_eq!(scheduler.leg(1).unwrap().state, LegState::Quarantined);
-        scheduler.tick(1_501_000);
+        scheduler.tick(1_801_000);
         assert_eq!(scheduler.leg(1).unwrap().state, LegState::Probe);
 
         let mut now_us = 1_501_000;

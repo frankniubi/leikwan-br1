@@ -85,6 +85,7 @@ struct ClientLegConfig {
     port: u16,
     auth_token: String,
     direct_tcp: bool,
+    socks5_proxy: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -385,13 +386,64 @@ async fn open_plain_tcp_leg(
     route_key: &str,
     auth_token: &str,
     direct_tcp: bool,
+    socks5_proxy: Option<&str>,
 ) -> Result<TcpStream> {
-    let mut stream = TcpStream::connect((host, port))
-        .await
-        .with_context(|| format!("failed to connect to leg {host}:{port}"))?;
-    stream
-        .set_nodelay(true)
-        .context("failed to disable Nagle on TCP leg")?;
+    let mut stream = if let Some(proxy) = socks5_proxy {
+        // Minimal inline SOCKS5 CONNECT (no-auth, RFC 1928).
+        // Used for LeiGod multi-line bonding: each leg routes through its own
+        // LeiGod line's local SOCKS5 listener (e.g. 127.0.0.1:20455).
+        let mut s = TcpStream::connect(proxy)
+            .await
+            .with_context(|| format!("failed to connect to SOCKS5 proxy {proxy}"))?;
+        s.set_nodelay(true)
+            .context("failed to disable Nagle on SOCKS5 proxy connection")?;
+        // Greeting: VER=5, NMETHODS=1, METHOD=0 (no auth)
+        s.write_all(&[0x05, 0x01, 0x00]).await?;
+        let mut greet_resp = [0u8; 2];
+        s.read_exact(&mut greet_resp).await?;
+        anyhow::ensure!(
+            greet_resp[0] == 0x05 && greet_resp[1] == 0x00,
+            "SOCKS5 proxy {proxy} rejected no-auth: {greet_resp:?}"
+        );
+        // CONNECT request: VER=5, CMD=1, RSV=0, ATYP=3 (domain name)
+        let host_bytes = host.as_bytes();
+        let host_len = u8::try_from(host_bytes.len())
+            .context("target hostname too long for SOCKS5 ATYP=3")?;
+        let mut req = Vec::with_capacity(7 + host_bytes.len());
+        req.extend_from_slice(&[0x05, 0x01, 0x00, 0x03, host_len]);
+        req.extend_from_slice(host_bytes);
+        req.push((port >> 8) as u8);
+        req.push((port & 0xff) as u8);
+        s.write_all(&req).await?;
+        s.flush().await?;
+        // Reply header: VER, REP, RSV, ATYP
+        let mut rep = [0u8; 4];
+        s.read_exact(&mut rep).await?;
+        anyhow::ensure!(
+            rep[0] == 0x05 && rep[1] == 0x00,
+            "SOCKS5 CONNECT to {host}:{port} via {proxy} failed: reply code {}",
+            rep[1]
+        );
+        // Discard bound address/port returned by the proxy
+        match rep[3] {
+            0x01 => { let mut _b = [0u8; 6]; s.read_exact(&mut _b).await?; }
+            0x03 => {
+                let mut len = [0u8; 1]; s.read_exact(&mut len).await?;
+                let mut _b = vec![0u8; usize::from(len[0]) + 2];
+                s.read_exact(&mut _b).await?;
+            }
+            0x04 => { let mut _b = [0u8; 18]; s.read_exact(&mut _b).await?; }
+            t => bail!("SOCKS5 unknown bound address type {t}"),
+        }
+        s
+    } else {
+        let s = TcpStream::connect((host, port))
+            .await
+            .with_context(|| format!("failed to connect to leg {host}:{port}"))?;
+        s.set_nodelay(true)
+            .context("failed to disable Nagle on TCP leg")?;
+        s
+    };
     if direct_tcp {
         return Ok(stream);
     }
@@ -588,6 +640,7 @@ async fn leg_loop(
             &config.route_key,
             &leg_cfg.auth_token,
             leg_cfg.direct_tcp,
+            leg_cfg.socks5_proxy.as_deref(),
         )
         .await
         {
@@ -837,6 +890,7 @@ pub async fn run(config: ClientConfig) -> Result<()> {
             port: leg.port,
             auth_token: leg.auth_token.clone(),
             direct_tcp: leg.direct_tcp,
+            socks5_proxy: leg.socks5_proxy.clone(),
         };
         tokio::spawn(leg_loop(
             leg_cfg,
@@ -1403,6 +1457,7 @@ mod tests {
                     health_role: "healthy".to_string(),
                     weight: 1,
                     direct_tcp: true,
+                    socks5_proxy: None,
                 },
                 ConfigLeg {
                     endpoint_id: 2,
@@ -1413,6 +1468,7 @@ mod tests {
                     health_role: "healthy".to_string(),
                     weight: 1,
                     direct_tcp: true,
+                    socks5_proxy: None,
                 },
             ],
             stats_path: "unused".to_string(),
@@ -1454,7 +1510,7 @@ mod tests {
             release_rx.await.expect("release signal");
         });
 
-        let stream = open_plain_tcp_leg("127.0.0.1", port, "route", "auth", true)
+        let stream = open_plain_tcp_leg("127.0.0.1", port, "route", "auth", true, None)
             .await
             .expect("direct connection");
         accepted_rx.await.expect("server accepted connection");
@@ -1476,7 +1532,7 @@ mod tests {
             accepted_tx.send(()).expect("accepted signal");
         });
 
-        let stream = open_plain_tcp_leg("127.0.0.1", port, "route", "auth", true)
+        let stream = open_plain_tcp_leg("127.0.0.1", port, "route", "auth", true, None)
             .await
             .expect("direct connection");
 
