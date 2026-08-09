@@ -133,6 +133,7 @@ async fn run_round_trip(client_mode: SchedulerMode) -> (serde_json::Value, serde
             health_role: "healthy".to_string(),
             weight: 1,
             direct_tcp: true,
+            socks5_proxy: None,
         }],
         stats_path: client_stats.to_string_lossy().into_owned(),
         session_idle_timeout_ms: 30_000,

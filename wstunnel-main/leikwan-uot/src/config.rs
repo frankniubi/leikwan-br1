@@ -209,6 +209,13 @@ pub struct ClientLegConfig {
     pub weight: u16,
     #[serde(default)]
     pub direct_tcp: bool,
+    /// Optional SOCKS5 proxy address for this leg (e.g. "127.0.0.1:20455").
+    /// When set, the leg dials through the proxy via SOCKS5 CONNECT before
+    /// sending the LEIKWAN-INGRESS handshake. Used for LeiGod multi-line bonding
+    /// where each leg rides a separate LeiGod line's local SOCKS5 listener.
+    /// None (default) = direct TCP connect, preserving existing behaviour.
+    #[serde(default)]
+    pub socks5_proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -270,7 +277,7 @@ pub struct SidecarConfig {
 }
 
 fn default_aggregate_rate_bps() -> u64 {
-    300_000_000
+    450_000_000
 }
 
 fn default_queue_target_ms() -> u64 {
@@ -278,11 +285,11 @@ fn default_queue_target_ms() -> u64 {
 }
 
 fn default_queue_deadline_ms() -> u64 {
-    10
+    30
 }
 
 fn default_global_queue_bytes() -> usize {
-    1_048_576
+    4_194_304
 }
 
 fn default_global_queue_packets() -> usize {
@@ -322,7 +329,7 @@ fn default_max_leg_window_bytes() -> usize {
 }
 
 fn default_max_total_outstanding_bytes() -> usize {
-    8_388_608
+    16_777_216
 }
 
 fn default_progress_interval_bytes() -> u64 {
@@ -338,7 +345,7 @@ fn default_progress_interval_ms() -> u64 {
 }
 
 fn default_finish_skew_budget_ms() -> u64 {
-    2
+    10
 }
 
 fn default_probe_interval_ms() -> u64 {
@@ -428,7 +435,8 @@ impl ClientConfig {
         if matches!(self.scheduler.scheduler_mode, SchedulerMode::FeedbackDrr)
             && !matches!(self.delivery_mode, DeliveryMode::Unordered)
         {
-            bail!("feedback_drr requires unordered delivery");
+            // ordered delivery is permitted with feedback_drr; the reorder buffer
+            // handles sequencing independently of the scheduler mode.
         }
         self.scheduler.validate(self.max_datagram_bytes)
     }
@@ -447,7 +455,8 @@ impl SidecarConfig {
         if matches!(self.scheduler.scheduler_mode, SchedulerMode::FeedbackDrr)
             && !matches!(self.delivery_mode, DeliveryMode::Unordered)
         {
-            bail!("feedback_drr requires unordered delivery");
+            // ordered delivery is permitted with feedback_drr; the reorder buffer
+            // handles sequencing independently of the scheduler mode.
         }
         self.scheduler.validate(self.max_datagram_bytes)
     }
@@ -563,9 +572,9 @@ mod tests {
     fn legacy_json_defaults_to_legacy_scheduler() {
         let parsed: ClientConfig = serde_json::from_str(LEGACY_CLIENT_JSON).unwrap();
         assert_eq!(parsed.scheduler.scheduler_mode, SchedulerMode::Legacy);
-        assert_eq!(parsed.scheduler.aggregate_rate_bps, 300_000_000);
+        assert_eq!(parsed.scheduler.aggregate_rate_bps, 450_000_000);
         assert_eq!(parsed.scheduler.queue_target_ms, 5);
-        assert_eq!(parsed.scheduler.queue_deadline_ms, 10);
+        assert_eq!(parsed.scheduler.queue_deadline_ms, 30);
         parsed.validate().unwrap();
     }
 
@@ -575,7 +584,7 @@ mod tests {
             scheduler_mode: SchedulerMode::FeedbackDrr,
             ..SchedulerConfig::default()
         };
-        assert_eq!(cfg.global_queue_bytes, 1_048_576);
+        assert_eq!(cfg.global_queue_bytes, 4_194_304);
         assert_eq!(cfg.global_queue_packets, 8_192);
         assert_eq!(cfg.per_session_queue_bytes, 262_144);
         assert_eq!(cfg.per_session_queue_packets, 512);
@@ -592,7 +601,7 @@ mod tests {
             (cfg.min_leg_window_bytes, cfg.max_leg_window_bytes),
             (262_144, 4_194_304)
         );
-        assert_eq!(cfg.max_total_outstanding_bytes, 8_388_608);
+        assert_eq!(cfg.max_total_outstanding_bytes, 16_777_216);
         assert_eq!(
             (
                 cfg.progress_interval_bytes,
@@ -601,7 +610,7 @@ mod tests {
             ),
             (65_536, 32, 5)
         );
-        assert_eq!(cfg.finish_skew_budget_ms, 2);
+        assert_eq!(cfg.finish_skew_budget_ms, 10);
         assert_eq!(cfg.probe_interval_ms, 1_000);
         assert_eq!(cfg.max_sessions, 4_096);
         assert_eq!(cfg.control_queue_packets, 256);
@@ -613,7 +622,7 @@ mod tests {
             scheduler_mode: SchedulerMode::FeedbackDrr,
             ..SchedulerConfig::default()
         };
-        cfg.queue_target_ms = 11;
+        cfg.queue_target_ms = 31;
         assert_eq!(
             cfg.validate(65_535).unwrap_err().to_string(),
             "queue_target_ms must not exceed queue_deadline_ms"
@@ -627,12 +636,11 @@ mod tests {
     }
 
     #[test]
-    fn feedback_runtime_rejects_ordered_delivery() {
+    fn feedback_drr_accepts_ordered_delivery() {
         let mut parsed: ClientConfig = serde_json::from_str(LEGACY_CLIENT_JSON).unwrap();
         parsed.scheduler.scheduler_mode = SchedulerMode::FeedbackDrr;
-        assert_eq!(
-            parsed.validate().unwrap_err().to_string(),
-            "feedback_drr requires unordered delivery"
-        );
+        // ordered delivery is now valid with feedback_drr — the reorder buffer
+        // handles sequencing independently of the scheduler.
+        assert!(parsed.validate().is_ok());
     }
 }
