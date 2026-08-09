@@ -122,10 +122,15 @@ final class Auth
             'SELECT s.*, f.id AS forward_id
              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
-             WHERE f.id = :forward_id AND s.client_token = :token LIMIT 1',
+             WHERE f.id = :forward_id
+               AND f.enabled = 1
+               AND s.status = :active_status
+               AND s.client_token = :token
+             LIMIT 1',
             [
                 'forward_id' => $forwardId,
                 'token' => $token,
+                'active_status' => 'active',
             ]
         );
 

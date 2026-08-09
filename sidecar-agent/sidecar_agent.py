@@ -8,15 +8,17 @@ import json
 import logging
 import os
 import pathlib
+import re
 import shutil
 import socket
 import sys
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.06.05.3"
+AGENT_VERSION = "2026.08.08.1"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -26,6 +28,7 @@ DEFAULT_CONFIG = {
     "service_name": "leikwan-bond-sidecar",
     "runtime_config_path": "/etc/leikwan-sidecar/runtime.json",
     "runtime_bin": "/usr/local/bin/leikwan-mptcp-sidecar.py",
+    "udp_uot_merge_bin": "/usr/local/bin/leikwan-udp-uot-merge",
     "heartbeat_interval_seconds": 30,
     "log_level": "INFO",
     "allow_tcp_fallback": False,
@@ -34,6 +37,127 @@ DEFAULT_CONFIG = {
     "wireguard_fallback_tcp_port": 24969,
     "installer_version": "",
 }
+
+UOT_SCHEDULER_DEFAULTS = {
+    "scheduler_mode": "legacy",
+    "aggregate_rate_bps": 300_000_000,
+    "queue_target_ms": 5,
+    "queue_deadline_ms": 10,
+    "global_queue_bytes": 1_048_576,
+    "global_queue_packets": 8_192,
+    "per_session_queue_bytes": 262_144,
+    "per_session_queue_packets": 512,
+    "drr_quantum_bytes": 16_384,
+    "chunk_min_bytes": 16_384,
+    "chunk_target_bytes": 32_768,
+    "chunk_max_bytes": 65_536,
+    "min_leg_window_bytes": 262_144,
+    "max_leg_window_bytes": 4_194_304,
+    "max_total_outstanding_bytes": 8_388_608,
+    "progress_interval_bytes": 65_536,
+    "progress_interval_frames": 32,
+    "progress_interval_ms": 5,
+    "finish_skew_budget_ms": 2,
+    "probe_interval_ms": 1_000,
+    "max_sessions": 4_096,
+    "control_queue_packets": 256,
+}
+
+
+def normalize_uot_scheduler(raw: dict) -> dict:
+    mode = str(raw.get("scheduler_mode", "legacy") or "legacy").strip().lower()
+    if mode not in {"legacy", "feedback_drr"}:
+        raise ValueError(f"unsupported UoT scheduler_mode: {mode}")
+    normalized = {"scheduler_mode": mode}
+    for key, default in UOT_SCHEDULER_DEFAULTS.items():
+        if key == "scheduler_mode":
+            continue
+        value = raw[key] if key in raw else default
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be an integer")
+        try:
+            normalized[key] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+    validate_uot_scheduler(normalized)
+    return normalized
+
+
+def validate_uot_scheduler(settings: dict) -> None:
+    if settings["aggregate_rate_bps"] <= 0:
+        raise ValueError("aggregate_rate_bps must be positive")
+    if settings["queue_target_ms"] < 0 or settings["queue_target_ms"] > settings["queue_deadline_ms"] or settings["queue_deadline_ms"] <= 0:
+        raise ValueError("queue target/deadline is invalid")
+    if not 0 < settings["global_queue_bytes"] <= 64 * 1024 * 1024 or not 0 < settings["global_queue_packets"] <= 262_144:
+        raise ValueError("global queue limits are outside process bounds")
+    if not 0 < settings["per_session_queue_bytes"] <= settings["global_queue_bytes"] or not 0 < settings["per_session_queue_packets"] <= settings["global_queue_packets"]:
+        raise ValueError("per-session queue limits must fit global queue limits")
+    if settings["drr_quantum_bytes"] <= 0:
+        raise ValueError("drr_quantum_bytes must be positive")
+    if not 0 < settings["chunk_min_bytes"] <= settings["chunk_target_bytes"] <= settings["chunk_max_bytes"] or settings["chunk_max_bytes"] < 65_535:
+        raise ValueError("chunk sizes are invalid")
+    if not 0 < settings["min_leg_window_bytes"] <= settings["max_leg_window_bytes"] <= settings["max_total_outstanding_bytes"] <= 64 * 1024 * 1024:
+        raise ValueError("leg windows are outside process bounds")
+    if any(settings[key] <= 0 for key in ("progress_interval_bytes", "progress_interval_frames", "progress_interval_ms", "probe_interval_ms")):
+        raise ValueError("progress and probe intervals must be positive")
+    if not 0 < settings["max_sessions"] <= 65_536:
+        raise ValueError("max_sessions is outside process bounds")
+    if not 0 < settings["control_queue_packets"] <= 262_144:
+        raise ValueError("control_queue_packets is outside process bounds")
+
+
+def normalize_uot_delivery(raw: dict, scheduler: dict) -> dict:
+    values: dict[str, int] = {}
+    for key, default in {
+        "sidecar_port": 8999,
+        "reorder_window_packets": 4096,
+        "reorder_window_bytes": 16_777_216,
+        "reorder_timeout_ms": 25,
+    }.items():
+        value = raw[key] if key in raw else default
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be an integer")
+        try:
+            values[key] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+    if not 7000 <= values["sidecar_port"] <= 9000:
+        raise ValueError("udp_uot_sidepath sidecar_port must be within 7000-9000")
+    if min(
+        values["reorder_window_packets"],
+        values["reorder_window_bytes"],
+        values["reorder_timeout_ms"],
+    ) <= 0:
+        raise ValueError("reorder limits must be positive")
+    delivery_mode = str(
+        raw.get(
+            "delivery_mode",
+            "unordered" if scheduler["scheduler_mode"] == "feedback_drr" else "ordered",
+        )
+        or "ordered"
+    ).strip().lower()
+    if delivery_mode not in {"ordered", "unordered"}:
+        raise ValueError(f"unsupported UoT delivery_mode: {delivery_mode}")
+    raw_wireguard_aware = raw.get(
+        "wireguard_aware", scheduler["scheduler_mode"] == "feedback_drr"
+    )
+    if isinstance(raw_wireguard_aware, bool):
+        wireguard_aware = raw_wireguard_aware
+    elif str(raw_wireguard_aware).strip().lower() in {"1", "true", "yes", "on"}:
+        wireguard_aware = True
+    elif str(raw_wireguard_aware).strip().lower() in {"0", "false", "no", "off"}:
+        wireguard_aware = False
+    else:
+        raise ValueError("wireguard_aware must be boolean")
+    if delivery_mode == "unordered" and not wireguard_aware:
+        raise ValueError("unordered delivery requires wireguard_aware=true")
+    if scheduler["scheduler_mode"] == "feedback_drr" and delivery_mode != "unordered":
+        raise ValueError("feedback_drr requires unordered delivery")
+    return {
+        **values,
+        "delivery_mode": delivery_mode,
+        "wireguard_aware": wireguard_aware,
+    }
 
 
 def file_sha256(path: pathlib.Path) -> str:
@@ -44,6 +168,46 @@ def file_sha256(path: pathlib.Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def probe_uot_build_info(runtime_bin: str, timeout_seconds: float = 2.0) -> dict:
+    try:
+        completed = subprocess.run(
+            [runtime_bin, "--build-info-json"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("native UoT runtime capability probe failed") from exc
+    if completed.returncode != 0:
+        raise RuntimeError("native UoT runtime capability probe failed")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("native UoT runtime capability probe failed") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("native UoT runtime capability probe failed")
+    return payload
+
+
+def require_uot_feedback_capability(runtime_bin: str) -> dict:
+    payload = probe_uot_build_info(runtime_bin)
+    if (
+        payload.get("protocol_version") != 2
+        or "feedback_drr" not in payload.get("scheduler_modes", [])
+        or "leg-progress-v1" not in payload.get("capabilities", [])
+    ):
+        raise RuntimeError("native UoT runtime lacks feedback_drr/leg-progress-v1")
+    return payload
+
+
+def shared_wireguard_interface_name(value: object, prefixes: tuple[str, ...]) -> str:
+    interface_name = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,15}", interface_name) is None:
+        return ""
+    return interface_name if interface_name.startswith(prefixes) else ""
 
 
 def http_json(method: str, url: str, token: str, payload: dict | None = None) -> dict:
@@ -105,7 +269,19 @@ def write_text_if_changed(path: pathlib.Path, content: str, mode: int | None = N
     changed = existing != content
     if changed:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+        temp_path = pathlib.Path(temp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if mode is not None and os.name != "nt":
+                temp_path.chmod(mode)
+            temp_path.replace(path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
     if mode is not None and path.exists() and os.name != "nt":
         current_mode = path.stat().st_mode & 0o777
         if current_mode != mode:
@@ -332,6 +508,231 @@ class SidecarAgent:
     @staticmethod
     def sidecar_uplink_system_path(interface_name: str) -> pathlib.Path:
         return pathlib.Path("/etc/wireguard") / f"{interface_name}.conf"
+
+    def validate_shared_sidecar_uplinks(self, uplinks: list[dict[str, object]]) -> tuple[str, int]:
+        if not uplinks:
+            raise ValueError("shared sidecar uplink group is empty")
+        raw_interface_name = str(uplinks[0].get("interface_name", "") or "").strip()
+        interface_name = shared_wireguard_interface_name(raw_interface_name, ("lwsp",))
+        listen_port = int(uplinks[0].get("listen_port", 0) or 0)
+        point_id = int(uplinks[0].get("sidecar_point_id", 0) or 0)
+        if raw_interface_name != "" and interface_name == "":
+            raise ValueError("invalid shared sidecar interface name")
+        if interface_name == "" or listen_port <= 0 or point_id <= 0:
+            raise ValueError("shared sidecar uplink identity is incomplete")
+
+        peer_keys: set[str] = set()
+        interface_addresses: set[str] = set()
+        allowed_ips: set[str] = set()
+        for uplink in uplinks:
+            if str(uplink.get("interface_name", "") or "").strip()[:15] != interface_name:
+                raise ValueError("shared sidecar interface mismatch")
+            if int(uplink.get("listen_port", 0) or 0) != listen_port:
+                raise ValueError("shared sidecar listen port mismatch")
+            if int(uplink.get("sidecar_point_id", 0) or 0) != point_id:
+                raise ValueError("shared sidecar point mismatch")
+            if str(uplink.get("outer_transport", "udp") or "udp").strip().lower() != "udp":
+                raise ValueError("shared sidecar canary only supports direct UDP outer transport")
+
+            peer_key = str(uplink.get("slave_peer_public_key", "") or "").strip()
+            local_address = str(uplink.get("local_address", "") or "").strip()
+            peer_address = str(uplink.get("peer_address", "") or "").strip()
+            if peer_key == "" or local_address == "" or peer_address == "":
+                raise ValueError("shared sidecar peer is incomplete")
+            if peer_key in peer_keys:
+                raise ValueError("duplicate shared sidecar peer public key")
+            if local_address in interface_addresses:
+                raise ValueError("duplicate shared sidecar interface address")
+            if peer_address in allowed_ips:
+                raise ValueError("duplicate shared sidecar peer AllowedIP")
+            peer_keys.add(peer_key)
+            interface_addresses.add(local_address)
+            allowed_ips.add(peer_address)
+
+            for raw_address in uplink.get("overlay_local_addresses", []) or []:
+                address = str(raw_address).strip()
+                if address != "":
+                    interface_addresses.add(address)
+            for raw_address in uplink.get("overlay_peer_allowed_ips", []) or []:
+                address = str(raw_address).strip()
+                if address == "":
+                    continue
+                if address in allowed_ips:
+                    raise ValueError("overlapping shared sidecar peer AllowedIP")
+                allowed_ips.add(address)
+        return interface_name, listen_port
+
+    def render_shared_sidecar_wireguard_config(self, uplinks: list[dict[str, object]], private_key: str) -> str:
+        _, listen_port = self.validate_shared_sidecar_uplinks(uplinks)
+        if private_key.strip() == "":
+            raise ValueError("shared sidecar private key is empty")
+
+        ordered = sorted(
+            uplinks,
+            key=lambda item: (
+                int(item.get("node_id", 0) or 0),
+                str(item.get("slave_peer_public_key", "") or ""),
+            ),
+        )
+        interface_addresses: list[str] = []
+        for uplink in ordered:
+            candidates = [uplink.get("local_address", ""), *(uplink.get("overlay_local_addresses", []) or [])]
+            for raw_address in candidates:
+                address = str(raw_address).strip()
+                if address != "" and address not in interface_addresses:
+                    interface_addresses.append(address)
+
+        lines = ["[Interface]", f"PrivateKey = {private_key.strip()}", f"ListenPort = {listen_port}"]
+        lines.extend(f"Address = {address}/32" for address in interface_addresses)
+        for uplink in ordered:
+            peer_address = str(uplink.get("peer_address", "") or "").strip()
+            allowed = [peer_address]
+            for raw_address in uplink.get("overlay_peer_allowed_ips", []) or []:
+                address = str(raw_address).strip()
+                if address != "" and address not in allowed:
+                    allowed.append(address)
+            keepalive = max(0, int(uplink.get("peer_keepalive_seconds", 0) or 0))
+            lines.extend([
+                "",
+                "[Peer]",
+                f"PublicKey = {str(uplink.get('slave_peer_public_key', '') or '').strip()}",
+                "AllowedIPs = " + ", ".join(f"{address}/32" for address in allowed),
+            ])
+            if keepalive > 0:
+                lines.append(f"PersistentKeepalive = {keepalive}")
+        return "\n".join(lines) + "\n"
+
+    def apply_shared_slave_sidecar_interface(self, uplinks: list[dict[str, object]]) -> None:
+        interface_name, _ = self.validate_shared_sidecar_uplinks(uplinks)
+        if shutil.which("wg") is None or shutil.which("wg-quick") is None:
+            raise RuntimeError("WireGuard tools are unavailable")
+        self.ensure_wireguard_identity()
+        try:
+            private_key = self.wireguard_private_key_path().read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise RuntimeError(f"shared slave-sidecar interface {interface_name} private key is unavailable") from exc
+        config = self.render_shared_sidecar_wireguard_config(uplinks, private_key)
+        path = self.sidecar_uplink_interfaces_dir() / f"{interface_name}.conf"
+        system_path = self.sidecar_uplink_system_path(interface_name)
+        with tempfile.TemporaryDirectory(prefix=f"{interface_name}-", dir=str(self.state_dir)) as staging_dir:
+            candidate_path = pathlib.Path(staging_dir) / f"{interface_name}.conf"
+            candidate_path.write_text(config, encoding="utf-8")
+            if os.name != "nt":
+                candidate_path.chmod(0o600)
+            validation = subprocess.run(
+                ["wg-quick", "strip", str(candidate_path)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if validation.returncode != 0:
+                raise RuntimeError(
+                    f"wg-quick validation failed for {interface_name}: "
+                    f"{validation.stderr or validation.stdout}"
+                )
+
+        def snapshot(target: pathlib.Path) -> tuple[str, int] | None:
+            if not target.exists():
+                return None
+            return target.read_text(encoding="utf-8"), target.stat().st_mode & 0o777
+
+        def restore(target: pathlib.Path, previous: tuple[str, int] | None) -> None:
+            if previous is None:
+                if target.exists():
+                    target.unlink()
+                return
+            previous_content, previous_mode = previous
+            write_text_if_changed(target, previous_content, mode=previous_mode)
+
+        previous_state = snapshot(path)
+        previous_system = snapshot(system_path)
+        service_name = f"wg-quick@{interface_name}"
+        service_active = shutil.which("systemctl") is not None and self.systemd_is_active(service_name)
+        service_enabled = False
+        if shutil.which("systemctl") is not None:
+            service_enabled = subprocess.run(
+                ["systemctl", "is-enabled", f"{service_name}.service"],
+                text=True,
+                capture_output=True,
+                check=False,
+            ).returncode == 0
+        try:
+            changed = write_text_if_changed(path, config, mode=0o600)
+            system_changed = write_text_if_changed(system_path, config, mode=0o600)
+            if shutil.which("systemctl") is None:
+                raise RuntimeError("systemctl is unavailable")
+            if changed or system_changed or not service_active:
+                enabled = subprocess.run(
+                    ["systemctl", "enable", f"{service_name}.service"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if enabled.returncode != 0:
+                    raise RuntimeError(
+                        f"systemctl enable failed for {service_name}: {enabled.stderr or enabled.stdout}"
+                    )
+                started = subprocess.run(
+                    ["systemctl", "restart" if service_active else "start", f"{service_name}.service"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if started.returncode != 0:
+                    raise RuntimeError(
+                        f"systemctl {'restart' if service_active else 'start'} failed for {service_name}: "
+                        f"{started.stderr or started.stdout}"
+                    )
+        except Exception:
+            restore(path, previous_state)
+            restore(system_path, previous_system)
+            if service_active and previous_system is not None:
+                restored = subprocess.run(
+                    ["systemctl", "restart", f"{service_name}.service"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if restored.returncode != 0:
+                    logging.error(
+                        "failed to restore previous shared WireGuard interface %s: %s",
+                        interface_name,
+                        restored.stderr or restored.stdout,
+                    )
+            elif previous_system is None:
+                subprocess.run(
+                    ["systemctl", "stop", f"{service_name}.service"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            if not service_enabled:
+                subprocess.run(
+                    ["systemctl", "disable", f"{service_name}.service"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            subprocess.run(
+                ["systemctl", "reset-failed", f"{service_name}.service"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            raise
+
+    @staticmethod
+    def static_sidecar_point_id_from_interface(interface_name: str) -> int:
+        normalized = str(interface_name or "").strip()[:15]
+        offset = 4 if normalized.startswith("lwsp") else 3 if normalized.startswith("lws") else 0
+        if offset == 0:
+            return 0
+        digits = ""
+        for char in normalized[offset:]:
+            if not char.isdigit():
+                break
+            digits += char
+        return int(digits) if digits else 0
 
     def apply_slave_sidecar_uplink(self, uplink: dict[str, object]) -> None:
         if not uplink.get("enabled") or shutil.which("wg") is None or shutil.which("wg-quick") is None:
@@ -1453,17 +1854,90 @@ WantedBy=multi-user.target
         # present (possibly empty) list IS authoritative -> empty means teardown.
         sidecar_uplinks_present = "sidecar_uplinks" in management
         raw_sidecar_uplinks = management.get("sidecar_uplinks", [])
-        sidecar_uplinks = raw_sidecar_uplinks if isinstance(raw_sidecar_uplinks, list) else []
+        sidecar_uplinks_valid = isinstance(raw_sidecar_uplinks, list)
+        if sidecar_uplinks_valid:
+            for raw_uplink in raw_sidecar_uplinks:
+                if not isinstance(raw_uplink, dict):
+                    sidecar_uplinks_valid = False
+                    break
+                interface_name = str(raw_uplink.get("interface_name", "") or "").strip()[:15]
+                if interface_name == "":
+                    sidecar_uplinks_valid = False
+                    break
+                if str(raw_uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared":
+                    if shared_wireguard_interface_name(raw_uplink.get("interface_name", ""), ("lwsp",)) == "":
+                        sidecar_uplinks_valid = False
+                        break
+                    try:
+                        sidecar_point_id = int(raw_uplink.get("sidecar_point_id", 0) or 0)
+                    except (TypeError, ValueError):
+                        sidecar_uplinks_valid = False
+                        break
+                    if sidecar_point_id <= 0:
+                        sidecar_uplinks_valid = False
+                        break
+        if sidecar_uplinks_present and not sidecar_uplinks_valid:
+            logging.error("malformed sidecar_uplinks section; preserving all current interfaces")
+            sidecar_uplinks_present = False
+        sidecar_uplinks = raw_sidecar_uplinks if sidecar_uplinks_valid else []
         if sidecar_uplinks_present:
             current_uplink_state = self.load_sidecar_uplink_state()
             active_interfaces: set[str] = set()
             disabled_interfaces: set[str] = set()
             static_uplink_point_ids: set[int] = set()
+            shared_groups: dict[int, list[dict[str, object]]] = {}
+            legacy_uplinks: list[dict[str, object]] = []
             for uplink in sidecar_uplinks:
                 if not isinstance(uplink, dict):
                     continue
                 interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
                 if interface_name == "":
+                    continue
+                if str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared":
+                    shared_groups.setdefault(int(uplink.get("sidecar_point_id", 0) or 0), []).append(uplink)
+                else:
+                    legacy_uplinks.append(uplink)
+
+            failed_shared_points: set[int] = set()
+            shared_interface_names = {
+                str(peer.get("interface_name", "") or "").strip()[:15]
+                for peers in shared_groups.values()
+                for peer in peers
+            }
+            for shared_point_id, peers in shared_groups.items():
+                enabled_peers = [peer for peer in peers if bool(peer.get("enabled", True))]
+                if not enabled_peers:
+                    disabled_names = {
+                        str(peer.get("interface_name", "") or "").strip()[:15]
+                        for peer in peers
+                        if str(peer.get("interface_name", "") or "").strip()[:15] != ""
+                    }
+                    if len(disabled_names) != 1:
+                        failed_shared_points.add(shared_point_id)
+                        logging.error("shared sidecar point %s has conflicting disabled interfaces; preserving current state", shared_point_id)
+                        continue
+                    interface_name = next(iter(disabled_names))
+                    disabled_interfaces.add(interface_name)
+                    self.remove_slave_sidecar_uplink({"interface_name": interface_name})
+                    continue
+                try:
+                    interface_name, _ = self.validate_shared_sidecar_uplinks(enabled_peers)
+                    self.apply_shared_slave_sidecar_interface(enabled_peers)
+                except Exception:  # noqa: BLE001
+                    failed_shared_points.add(shared_point_id)
+                    logging.exception("shared slave-sidecar point %s reconcile failed; preserving current interfaces", shared_point_id)
+                    continue
+                active_interfaces.add(interface_name)
+                if shared_point_id > 0:
+                    static_uplink_point_ids.add(shared_point_id)
+
+            for uplink in legacy_uplinks:
+                interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+                legacy_point_id = int(uplink.get("sidecar_point_id", point_id) or point_id)
+                if legacy_point_id in failed_shared_points:
+                    continue
+                if interface_name in shared_interface_names:
+                    logging.error("legacy slave-sidecar uplink %s conflicts with shared desired state; skipping legacy record", interface_name)
                     continue
                 if not bool(uplink.get("enabled", True)):
                     disabled_interfaces.add(interface_name)
@@ -1479,23 +1953,27 @@ WantedBy=multi-user.target
                     self.apply_slave_sidecar_uplink(uplink)
                 except Exception:  # noqa: BLE001
                     logging.exception("slave-sidecar uplink %s reconcile failed; continuing", interface_name)
-            for cleanup_point_id in sorted(static_uplink_point_ids):
+            for cleanup_point_id in sorted(static_uplink_point_ids - failed_shared_points):
                 self.cleanup_stale_mptcp_transit_interfaces(cleanup_point_id, keep=transit_keep)
             existing_slaves = current_uplink_state.get("slaves", {}) if isinstance(current_uplink_state.get("slaves", {}), dict) else {}
             for slave_id, info in list(existing_slaves.items()):
                 iface = str((info if isinstance(info, dict) else {}).get("interface_name", "") or "").strip()[:15]
+                existing_point_id = self.static_sidecar_point_id_from_interface(iface)
+                if existing_point_id in failed_shared_points:
+                    active_interfaces.add(iface)
+                    continue
                 if iface != "" and iface not in active_interfaces:
                     if iface not in disabled_interfaces:
                         self.remove_slave_sidecar_uplink({"interface_name": iface})
                     existing_slaves.pop(slave_id, None)
             next_state = {"slaves": {}}
-            for uplink in sidecar_uplinks:
-                if not isinstance(uplink, dict) or not bool(uplink.get("enabled", True)):
-                    continue
-                interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
-                if interface_name == "":
-                    continue
-                next_state["slaves"][interface_name] = {"interface_name": interface_name}
+            for interface_name in sorted(active_interfaces):
+                previous_info = existing_slaves.get(interface_name)
+                next_state["slaves"][interface_name] = (
+                    dict(previous_info)
+                    if isinstance(previous_info, dict)
+                    else {"interface_name": interface_name}
+                )
             self.save_sidecar_uplink_state(next_state)
             self.cleanup_orphan_slave_transit_cf_backends(active_interfaces)
 
@@ -1817,6 +2295,14 @@ WantedBy=multi-user.target
         udp_start_script = self.udp_uot_start_script_path()
 
         if (bond_runtime is not None or cf_runtime is not None) and enabled_forward_ids:
+            scheduler_config = normalize_uot_scheduler(sidepath)
+            delivery_config = normalize_uot_delivery(sidepath, scheduler_config)
+            udp_runtime_bin = str(
+                self.config.get("udp_uot_merge_bin", "/usr/local/bin/leikwan-udp-uot-merge")
+                or "/usr/local/bin/leikwan-udp-uot-merge"
+            )
+            if scheduler_config["scheduler_mode"] == "feedback_drr":
+                require_uot_feedback_capability(udp_runtime_bin)
             udp_bind_host = "0.0.0.0"
             udp_token_secret = ""
             if bond_runtime is not None:
@@ -1827,19 +2313,22 @@ WantedBy=multi-user.target
                 udp_token_secret = str(management.get("token_secret", "") or "")
             runtime_config = {
                 "listen_host": udp_bind_host,
-                "listen_port": int(sidepath.get("sidecar_port", 8999) or 8999),
+                "listen_port": delivery_config["sidecar_port"],
                 "token_secret": udp_token_secret,
                 "allowed_forward_ids": sorted(enabled_forward_ids),
-                "reorder_window_packets": int(sidepath.get("reorder_window_packets", 4096) or 4096),
-                "reorder_window_bytes": int(sidepath.get("reorder_window_bytes", 16777216) or 16777216),
-                "reorder_timeout_ms": int(sidepath.get("reorder_timeout_ms", 25) or 25),
+                "reorder_window_packets": delivery_config["reorder_window_packets"],
+                "reorder_window_bytes": delivery_config["reorder_window_bytes"],
+                "reorder_timeout_ms": delivery_config["reorder_timeout_ms"],
+                "delivery_mode": delivery_config["delivery_mode"],
+                "wireguard_aware": delivery_config["wireguard_aware"],
                 "stats_path": str(self.state_dir / "udp-uot-runtime-stats.json"),
+                **scheduler_config,
             }
             runtime_changed = write_text_if_changed(udp_runtime_path, json.dumps(runtime_config, ensure_ascii=False, indent=2) + "\n", mode=0o600)
             start_script_lines = [
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
-                f"exec /usr/local/bin/leikwan-udp-uot-merge --config {udp_runtime_path}",
+                f"exec {udp_runtime_bin} --config {udp_runtime_path}",
             ]
             start_changed = write_text_if_changed(udp_start_script, "\n".join(start_script_lines) + "\n", mode=0o755)
             unit_body = f"""[Unit]

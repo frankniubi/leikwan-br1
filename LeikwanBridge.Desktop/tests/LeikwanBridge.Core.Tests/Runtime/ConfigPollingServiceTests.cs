@@ -11,6 +11,23 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class ConfigPollingServiceTests
 {
     [Fact]
+    public void ApplyAuthoritativeConfig_NullOrMissingSidepath_ClearsPreviousState()
+    {
+        var config = new AgentConfig
+        {
+            UdpUotSidepath = new UdpUotSidepathConfig { EnabledForwardIds = [26] },
+        };
+
+        config.ApplyAuthoritativeConfig(null);
+        Assert.Null(config.UdpUotSidepath);
+
+        config.UdpUotSidepath = new UdpUotSidepathConfig { EnabledForwardIds = [26] };
+        using var document = System.Text.Json.JsonDocument.Parse("{}");
+        config.ApplyAuthoritativeConfig(document.RootElement);
+        Assert.Null(config.UdpUotSidepath);
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_PublishesPullStateAndAppliesForwardsBeforePublishingSnapshot()
     {
         using var tempDir = new TempStateDirectory();
@@ -85,10 +102,21 @@ public sealed class ConfigPollingServiceTests
             AgentToken = "token",
             ClientId = 1,
             StateDir = tempDir.Path,
+            UotBondBin = Path.Combine(tempDir.Path, "missing-uot-runtime.exe"),
+            UdpUotSidepath = new UdpUotSidepathConfig
+            {
+                EnabledForwardIds = [26],
+                ShadowRouteSuffix = ".uot",
+                SidecarPort = 8999,
+                ReorderWindowPackets = 4096,
+                ReorderWindowBytes = 16_777_216,
+                ReorderTimeoutMs = 25,
+            },
         };
         var stateManager = new StateManager(tempDir.Path);
         var forward = BuildForwardFromPullResponse();
-        var signature = ForwardContractSignature.Compute(EffectiveForwardConfigBuilder.Build(forward));
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        var signature = runtimeManager.ComputeContractSignature(EffectiveForwardConfigBuilder.Build(forward));
         stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
         {
             ["26"] = new()
@@ -99,8 +127,6 @@ public sealed class ConfigPollingServiceTests
                 LastApplyReason = "config_sync",
             },
         });
-
-        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
 
         using var api = new MasterApiClient(server.BaseUrl, "token");
         var service = new ConfigPollingService(api, runtimeManager, stateManager);

@@ -922,6 +922,11 @@ namespace {
         'is_active' => 1,
         'sort_order' => 1,
     ]]);
+    $db->seed('service_plan_forward_routes', [[
+        'id' => 1,
+        'plan_id' => 0,
+        'forward_route_id' => 999,
+    ]]);
     $forwardCountBeforeBadRoute = count($db->table('forwards'));
     try {
         $service->createForward(2, [

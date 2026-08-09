@@ -7,6 +7,41 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 
 public sealed class ForwardRuntimeManagerTests
 {
+    [Theory]
+    [InlineData("single", 1)]
+    [InlineData("race", 2)]
+    public void ApplyForward_SidecarFrontend_DispatchesToLockedBondRuntime(string mode, int expectedLegs)
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+
+        var forward = CreatePlainTcpMuxBondForward();
+        forward.Mode = mode;
+        forward.ClientMode = mode;
+        forward.ActiveFamily = "sidecar_aggregation";
+        forward.TargetContract = "sidecar_aggregation";
+        forward.SidecarRequired = true;
+        forward.AggregationEnabled = false;
+        forward.BondSidecarPointId = 10;
+        forward.Bonding!.FrontendMode = mode;
+        forward.Bonding.StrategyLocked = true;
+
+        manager.ApplyForward(forward);
+
+        Assert.Equal(expectedLegs, supervisor.StartedRoles.Count(role => role.StartsWith("bond-ingress-leg-")));
+        Assert.Contains("bond-runtime", supervisor.StartedRoles);
+        Assert.DoesNotContain("single-runtime", supervisor.StartedRoles);
+        Assert.DoesNotContain("race-runtime", supervisor.StartedRoles);
+        Assert.Equal(mode, stateManager.LoadApplied()["26"].Mode);
+    }
+
     [Fact]
     public void ApplyForward_BondPlainTcpMux_StartsIngressBeforeBondRuntime()
     {
@@ -403,6 +438,63 @@ public sealed class ForwardRuntimeManagerTests
 
         var applied = stateManager.LoadApplied()["24"];
         Assert.Equal("bond", applied.Mode);
+    }
+
+    [Fact]
+    public void ComputeContractSignature_IgnoresSidepathForUnselectedForward()
+    {
+        using var tempDir = new TempStateDirectory();
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
+        config.UdpUotSidepath = new UdpUotSidepathConfig
+        {
+            EnabledForwardIds = [99],
+            SchedulerMode = "feedback_drr",
+            DeliveryMode = "unordered",
+            WireguardAware = true,
+        };
+        var manager = new ForwardRuntimeManager(
+            config,
+            new TestProcessSupervisor(),
+            new StateManager(tempDir.Path),
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+        var forward = CreatePlainTcpMuxBondForward();
+
+        Assert.Equal(
+            LeikwanBridge.Core.Helpers.ForwardContractSignature.Compute(forward),
+            manager.ComputeContractSignature(forward));
+    }
+
+    [Fact]
+    public void ApplyForward_FeedbackCapabilityFailure_PreservesExistingRuntime()
+    {
+        using var tempDir = new TempStateDirectory();
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
+        config.UotBondBin = Path.Combine(tempDir.Path, "missing-uot-runtime.exe");
+        config.UdpUotSidepath = new UdpUotSidepathConfig
+        {
+            EnabledForwardIds = [26],
+            SchedulerMode = "feedback_drr",
+            DeliveryMode = "unordered",
+            WireguardAware = true,
+        };
+        var supervisor = new TestProcessSupervisor();
+        supervisor.RunningRoles.Add("existing-runtime");
+        var stateManager = new StateManager(tempDir.Path);
+        var manager = new ForwardRuntimeManager(
+            config,
+            supervisor,
+            stateManager,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true);
+
+        manager.ApplyForward(CreatePlainTcpMuxBondForward());
+
+        Assert.Contains("existing-runtime", supervisor.RunningRoles);
+        Assert.Empty(supervisor.StartedRoles);
+        Assert.Empty(stateManager.LoadApplied());
     }
 
     private static AgentConfig CreateConfig()

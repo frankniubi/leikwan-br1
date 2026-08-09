@@ -167,10 +167,16 @@ public sealed class AgentConfig
     public void ApplyAuthoritativeConfig(JsonElement? agentConfigJson)
     {
         if (agentConfigJson is not JsonElement element || element.ValueKind != JsonValueKind.Object)
+        {
+            UdpUotSidepath = null;
             return;
+        }
 
         if (!element.TryGetProperty("udp_uot_sidepath", out var sidepathElement))
+        {
+            UdpUotSidepath = null;
             return;
+        }
 
         if (sidepathElement.ValueKind == JsonValueKind.Object)
         {

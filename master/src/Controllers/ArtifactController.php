@@ -28,6 +28,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('slave-agent/preconnect_relay.py', 'text/x-python; charset=utf-8', $request);
     }
 
+    public function leigodForwardRelay(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('slave-agent/leigod_forward_relay.py', 'text/x-python; charset=utf-8', $request);
+    }
+
     public function installSlave(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/install-slave.sh', 'text/plain; charset=utf-8', $request);
@@ -180,6 +185,16 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('artifacts/forward-strategy.py', 'text/x-python; charset=utf-8', $request);
     }
 
+    public function tcpRaceRuntime(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('client-agent/leikwan_tcp_race.py', 'text/x-python; charset=utf-8', $request);
+    }
+
+    public function udpFanoutRuntime(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('client-agent/leikwan_udp_fanout.py', 'text/x-python; charset=utf-8', $request);
+    }
+
     public function mptcpClientRuntime(Request $request, array $params): Response
     {
         return $this->serveRepoFile('client-agent/leikwan_mptcp_client.py', 'text/x-python; charset=utf-8', $request);
@@ -294,7 +309,7 @@ final class ArtifactController extends BaseController
     {
         return Response::json(200, [
             'component' => 'slave',
-            'manifest' => $this->manifestFor('slave_agent', 'slave_preconnect_relay', 'slave_installer', 'wstunnel_linux_amd64', 'wstunnel_linux_arm64', 'leikwan_leg_relay_linux_amd64'),
+            'manifest' => $this->manifestFor('slave_agent', 'slave_preconnect_relay', 'leigod_forward_relay', 'slave_installer', 'wstunnel_linux_amd64', 'wstunnel_linux_arm64', 'leikwan_leg_relay_linux_amd64'),
         ]);
     }
 
@@ -306,6 +321,7 @@ final class ArtifactController extends BaseController
                 'sidecar_agent',
                 'mptcp_sidecar_runtime',
                 'udp_uot_merge_runtime',
+                'leikwan_udp_uot_merge_linux_amd64',
                 'bond_sidecar_installer',
                 'bond_sidecar_uninstaller'
             ),
@@ -326,9 +342,13 @@ final class ArtifactController extends BaseController
             'mptcp_client_runtime',
             'uot_runtime',
             'uot_bond_runtime',
+            'leikwan_uot_bond_linux_amd64',
+            'leikwan_uot_bond_windows_amd64',
             'sidecar_agent',
             'mptcp_sidecar_runtime',
             'udp_uot_merge_runtime',
+            'tcp_race_runtime',
+            'udp_fanout_runtime',
             'android_client_apk',
             'windows_client_app',
             'legacy_client',

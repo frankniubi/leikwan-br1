@@ -13,19 +13,20 @@ if (!is_string($source) || $source === '') {
 }
 
 foreach ([
-    'Allowed Forward Combinations',
-    'Legacy plan detected. Choose forward combinations and save to convert this plan.',
-    'renderForwardCombinationPlanGroups(',
-    'allowed_forward_combination_ids[]',
-    "'allowed_forward_combination_ids' => \$request->body()['allowed_forward_combination_ids'] ?? [],",
-    'Forward Combinations',
+    '<label>Forward Routes</label>',
+    'renderForwardRoutePlanCheckboxes(',
+    'allowed_forward_route_ids[]',
+    "'allowed_forward_route_ids' => \$request->body()['allowed_forward_route_ids'] ?? [],",
+    'Forward Routes',
 ] as $required) {
     if (!str_contains($source, $required)) {
-        fail('missing required plan forward-combination snippet: ' . $required);
+        fail('missing required plan forward-route snippet: ' . $required);
     }
 }
 
 foreach ([
+    '<label>Allowed Forward Combinations</label>',
+    'name="allowed_forward_combination_ids[]"',
     '<label>Allowed Slave Groups</label>',
     '<label>Allowed Client Groups</label>',
     '<label>Allowed Sidecar Points</label>',

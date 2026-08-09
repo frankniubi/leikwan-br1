@@ -7,6 +7,8 @@ public static class WindowsForwardPolicy
     public static bool IsSupportedOnWindows(ForwardConfig forward)
     {
         var mode = NormalizeModeOrEmpty(FirstNonEmpty(forward.ClientMode, forward.Mode));
+        if (GetSidecarFrontendMode(forward) != "")
+            return true;
         if (mode is not ("single" or "bond" or "mptcp"))
             return false;
 
@@ -30,6 +32,29 @@ public static class WindowsForwardPolicy
         return forwards
             .Where(IsSupportedOnWindows)
             .ToList();
+    }
+
+    public static string GetSidecarFrontendMode(ForwardConfig forward)
+    {
+        var frontendMode = (forward.Bonding?.FrontendMode ?? "").Trim().ToLowerInvariant();
+        if (frontendMode is not ("single" or "race"))
+            return "";
+
+        var mode = NormalizeModeOrEmpty(FirstNonEmpty(forward.ClientMode, forward.Mode));
+        if (!string.Equals(mode, frontendMode, StringComparison.Ordinal)
+            || !forward.SidecarRequired
+            || !IsSidecarAggregation(forward)
+            || !forward.BondSidecarPointId.HasValue
+            || !HasBondSidecarTarget(forward.Bonding))
+            return "";
+
+        return frontendMode;
+    }
+
+    public static bool UsesBondRuntime(ForwardConfig forward)
+    {
+        var mode = NormalizeModeOrEmpty(FirstNonEmpty(forward.ClientMode, forward.Mode));
+        return mode == "bond" || GetSidecarFrontendMode(forward) != "";
     }
 
     private static bool HasCanonicalContract(ForwardConfig forward)

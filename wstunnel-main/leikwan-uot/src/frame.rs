@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 
-const FRAME_HEADER_BYTES: usize = 1 + 1 + 2 + 4 + 8 + 4;
+pub const FRAME_HEADER_BYTES: usize = 1 + 1 + 2 + 4 + 8 + 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -10,6 +10,9 @@ pub enum MsgType {
     Data = 2,
     Close = 3,
     Keepalive = 4,
+    FecParity = 5,
+    AuthAck = 6,
+    LegProgress = 7,
 }
 
 impl TryFrom<u8> for MsgType {
@@ -22,6 +25,9 @@ impl TryFrom<u8> for MsgType {
             2 => Ok(Self::Data),
             3 => Ok(Self::Close),
             4 => Ok(Self::Keepalive),
+            5 => Ok(Self::FecParity),
+            6 => Ok(Self::AuthAck),
+            7 => Ok(Self::LegProgress),
             _ => Err(anyhow!("unknown frame message type: {value}")),
         }
     }
@@ -68,7 +74,8 @@ pub fn decode_frame(payload: &[u8]) -> Result<DataFrame> {
         payload[14],
         payload[15],
     ]);
-    let payload_len = u32::from_be_bytes([payload[16], payload[17], payload[18], payload[19]]) as usize;
+    let payload_len =
+        u32::from_be_bytes([payload[16], payload[17], payload[18], payload[19]]) as usize;
     if payload.len() < FRAME_HEADER_BYTES + payload_len {
         bail!("truncated frame payload");
     }
@@ -119,5 +126,12 @@ mod tests {
         let mut encoded = encode_frame(&frame);
         encoded.extend_from_slice(b"trailing");
         assert!(decode_frame(&encoded).is_err());
+    }
+
+    #[test]
+    fn frame_numbers_preserve_the_experimental_fec_reservation() {
+        assert_eq!(MsgType::FecParity as u8, 5);
+        assert_eq!(MsgType::AuthAck as u8, 6);
+        assert_eq!(MsgType::LegProgress as u8, 7);
     }
 }

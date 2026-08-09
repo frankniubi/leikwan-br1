@@ -27,7 +27,7 @@ final class LeigodOnlyCanaryStatement extends PDOStatement
     public function fetch(int $mode = PDO::FETCH_DEFAULT, int $cursorOrientation = PDO::FETCH_ORI_NEXT, int $cursorOffset = 0): mixed
     {
         if (str_contains($this->sql, 'SELECT * FROM users')) {
-            return ['id' => 1, 'role' => 'admin', 'name' => 'Admin', 'email' => 'admin@example.test'];
+            return ['id' => 1, 'role' => 'admin', 'status' => 'active', 'name' => 'Admin', 'email' => 'admin@example.test'];
         }
         return false;
     }

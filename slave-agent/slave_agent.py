@@ -4,8 +4,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import datetime
 import email.utils
 import errno
+import hashlib
+import hmac
 import html
 import ipaddress
 import json
@@ -15,6 +18,7 @@ import re
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import time
@@ -22,13 +26,15 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.06.05.4"
+AGENT_VERSION = "2026.08.04.2"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 COMMAND_TIMEOUT_SECONDS = 30
+LEIGOD_LINE_CAP = 64
+LEIGOD_FORWARD_SELECTION_CAP = 128
 
 # Shared restart ledger (cross-language byte contract). The on-disk format is
 # one append-only file per interface at <dir>/<iface>.log, where each restart
@@ -164,6 +170,10 @@ DEFAULT_CONFIG = {
     "gost_bin": "/usr/local/bin/gost",
     "lguot_bin": "/usr/local/bin/lguot",
     "leigod_bin": "/usr/local/bin/leigod-linux-amd64",
+    "leigod_root": "/opt/leigod",
+    "leigod_forward_relay_bin": "/usr/local/bin/leikwan-leigod-forward-relay.py",
+    "leigod_probe_interval_seconds": 15,
+    "leigod_probe_connect_timeout_seconds": 2,
     "tls_cert_path": "/etc/wstunnel/ssl/server.crt",
     "tls_key_path": "/etc/wstunnel/ssl/server.key",
     "landing_page_path": "/etc/wstunnel/api-default.html",
@@ -410,6 +420,20 @@ def safe_service_basename(service_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value)[:120] or "selector"
 
 
+def safe_wireguard_interface_name(value: Any, prefixes: tuple[str, ...] = ()) -> str:
+    interface_name = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,15}", interface_name) is None:
+        return ""
+    if prefixes and not interface_name.startswith(prefixes):
+        return ""
+    return interface_name
+
+
+def is_sidecar_owned_shared_interface(value: Any) -> bool:
+    interface_name = str(value or "").strip()
+    return re.fullmatch(r"lwsp(?:[0-9]+|[0-9a-f]{8})", interface_name) is not None
+
+
 def mux_service_name(listen_port: int) -> str:
     return f"leikwan-wss-mux-{listen_port}"
 
@@ -424,6 +448,10 @@ def relay_service_name(service_id: int, endpoint_id: int) -> str:
 
 def relay_client_service_name(service_id: int, endpoint_id: int) -> str:
     return f"leikwan-relay-client-{service_id}-{endpoint_id}"
+
+
+def leigod_forward_service_name(service_name: str) -> str:
+    return f"{safe_service_basename(service_name)}-leigod-forward"
 
 
 def normalize_path_prefix(path_prefix: str) -> str:
@@ -463,6 +491,8 @@ def path_matches_prefix(request_path: str, route_path: str) -> bool:
 
 
 def shell_arg(value: str) -> str:
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        raise RuntimeError("unsafe unit argument")
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
@@ -1052,6 +1082,7 @@ class SlaveAgent:
         self.usage_state_path = self.state_dir / "usage_state.json"
         self.pull_state_path = self.state_dir / "management_pull_state.json"
         self.last_identity_refresh_at = 0.0
+        self._last_leigod_probe_at = 0.0
         self._static_uplink_restart_at: dict[str, float] = {}
         self.services_dir.mkdir(parents=True, exist_ok=True)
         self.listeners_dir.mkdir(parents=True, exist_ok=True)
@@ -1852,6 +1883,14 @@ class SlaveAgent:
         donation_self_check = self.build_donation_self_check_payload()
         if donation_self_check:
             payload["donation_self_check"] = donation_self_check
+        desired_line_ids = {int(row.get("line_id", 0) or 0) for row in self.load_leigod_desired_lines()}
+        health = self.load_leigod_line_health()
+        payload["leigod_line_health"] = [
+            health[line_id]
+            for line_id in sorted(desired_line_ids)
+            if line_id in health
+        ][:LEIGOD_LINE_CAP]
+        payload["leigod_forward_selections"] = self.collect_leigod_forward_selections()
         return payload
 
     def send_heartbeat(self) -> None:
@@ -2005,6 +2044,7 @@ class SlaveAgent:
         self.ensure_nft_table()
         self.cleanup_superseded_forward_services()
         self.cleanup_orphan_wstunnel_svc_units()
+        self.cleanup_orphan_leigod_forward_relays()
 
         for metadata in self.load_all_service_metadata():
             try:
@@ -2027,6 +2067,7 @@ class SlaveAgent:
                 relay_name = str(metadata.get("relay_service_name", relay_service_name(int(metadata.get("service_id", 0) or 0), endpoint_id)))
 
                 if status != "active":
+                    self.remove_leigod_forward_runtime(service_name, metadata)
                     if shutil.which("systemctl"):
                         run_command(f"systemctl stop {service_name}.service", check=False)
                         run_command(f"systemctl disable {service_name}.service", check=False)
@@ -2061,6 +2102,12 @@ class SlaveAgent:
                 if target == "" or public_port <= 0 or endpoint_id <= 0:
                     logging.warning("skipping invalid runtime metadata for %s", service_name)
                     continue
+                leigod_forward = metadata.get("leigod_forward", {})
+                if isinstance(leigod_forward, dict) and leigod_forward:
+                    runtime_config = leigod_forward.get("runtime_config")
+                    if not isinstance(runtime_config, dict):
+                        raise RuntimeError(f"missing leigod runtime config for {service_name}")
+                    self.ensure_leigod_forward_runtime(service_name, leigod_forward)
 
                 if self.backend_port_needs_reallocation(service_name, backend_port):
                     old_backend_port = backend_port
@@ -2243,6 +2290,7 @@ class SlaveAgent:
         sidecar_section_present = isinstance(management, dict) and "sidecar_static_uplinks" in management
         self.cleanup_orphan_sidecar_uplinks(section_present=sidecar_section_present)
         self.cleanup_orphan_mptcp_underlays()
+        self.probe_managed_leigod_lines(force=False)
 
     def apply_leigod_session(self, session_json: Any) -> None:
         """Write the per-slave LeiGod account session, pushed by the panel via management state.
@@ -2263,15 +2311,513 @@ class SlaveAgent:
             except OSError:
                 pass
             if changed:
-                logging.info("leigod session.json updated (%d bytes)", len(session_json))
+                logging.info("leigod session.json updated")
         except OSError as exc:  # noqa: BLE001
             logging.warning("failed to write leigod session.json: %s", exc)
+
+    def leigod_desired_state_path(self) -> Path:
+        return self.state_dir / "leigod-lines.json"
+
+    def leigod_line_health_state_path(self) -> Path:
+        return self.state_dir / "leigod-line-health.json"
+
+    def leigod_forwards_dir(self) -> Path:
+        path = self.state_dir / "leigod-forwards"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def leigod_forward_config_path(self, service_name: str) -> Path:
+        return self.leigod_forwards_dir() / f"{safe_service_basename(service_name)}.config.json"
+
+    def leigod_forward_state_path(self, service_name: str) -> Path:
+        return self.leigod_forwards_dir() / f"{safe_service_basename(service_name)}.state.json"
+
+    @staticmethod
+    def leigod_forward_service_name(service_name: str) -> str:
+        return leigod_forward_service_name(service_name)
+
+    @staticmethod
+    def desired_leigod_line_without_toml(line: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "line_id": int(line.get("line_id", 0) or 0),
+            "label": str(line.get("label", "") or "")[:191],
+            "config_sha256": str(line.get("config_sha256", "") or "").strip().lower(),
+            "socks_host": str(line.get("socks_host", "127.0.0.1") or "127.0.0.1").strip(),
+            "socks_port": int(line.get("socks_port", 0) or 0),
+            "tcp_probe_host": str(line.get("tcp_probe_host", "") or "").strip(),
+            "tcp_probe_port": int(line.get("tcp_probe_port", 0) or 0),
+            "udp_probe_host": str(line.get("udp_probe_host", "") or "").strip() or None,
+            "udp_probe_port": int(line.get("udp_probe_port", 0) or 0) or None,
+            "udp_probe_method": str(line.get("udp_probe_method", "") or "").strip().lower() or None,
+        }
+
+    def load_leigod_desired_lines(self) -> list[dict[str, Any]]:
+        path = self.leigod_desired_state_path()
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logging.warning("invalid leigod desired-line state: %s", path)
+            return []
+        rows = payload.get("lines", []) if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            return []
+        result: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for row in rows[:LEIGOD_LINE_CAP]:
+            if not isinstance(row, dict):
+                continue
+            line_id = int(row.get("line_id", 0) or 0)
+            if line_id < 1 or line_id > 45535 or line_id in seen:
+                continue
+            seen.add(line_id)
+            result.append(self.desired_leigod_line_without_toml(row))
+        return result
+
+    def save_leigod_desired_lines(self, lines: list[dict[str, Any]]) -> None:
+        sanitized = [self.desired_leigod_line_without_toml(line) for line in lines[:LEIGOD_LINE_CAP]]
+        sanitized.sort(key=lambda row: int(row.get("line_id", 0) or 0))
+        self.write_json(self.leigod_desired_state_path(), {"version": 1, "lines": sanitized})
+
+    def load_leigod_line_health(self) -> dict[int, dict[str, Any]]:
+        path = self.leigod_line_health_state_path()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logging.warning("invalid leigod health state: %s", path)
+            return {}
+        rows = payload.get("lines", []) if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            return {}
+        result: dict[int, dict[str, Any]] = {}
+        for row in rows[:LEIGOD_LINE_CAP]:
+            if not isinstance(row, dict):
+                continue
+            line_id = int(row.get("line_id", 0) or 0)
+            if 1 <= line_id <= 45535 and line_id not in result:
+                result[line_id] = dict(row)
+        return result
+
+    def save_leigod_line_health(self, health: dict[int, dict[str, Any]]) -> None:
+        rows: list[dict[str, Any]] = []
+        for line_id in sorted(health)[:LEIGOD_LINE_CAP]:
+            row = health[line_id]
+            if not isinstance(row, dict) or line_id < 1 or line_id > 45535:
+                continue
+            rows.append(
+                {
+                    "line_id": line_id,
+                    "config_sha256": str(row.get("config_sha256", "") or "").strip().lower(),
+                    "service_state": str(row.get("service_state", "failed") or "failed")[:16],
+                    "tcp_status": str(row.get("tcp_status", "unknown") or "unknown")[:16],
+                    "tcp_connect_ms": row.get("tcp_connect_ms"),
+                    "udp_status": str(row.get("udp_status", "unknown") or "unknown")[:16],
+                    "consecutive_successes": max(0, int(row.get("consecutive_successes", 0) or 0)),
+                    "consecutive_failures": max(0, int(row.get("consecutive_failures", 0) or 0)),
+                    "last_error": str(row.get("last_error", "") or "")[:500],
+                    "checked_at": str(row.get("checked_at", "") or ""),
+                }
+            )
+        self.write_json(self.leigod_line_health_state_path(), {"version": 1, "lines": rows})
+
+    @staticmethod
+    def utc_timestamp() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    def active_leigod_relay_line_ids(self) -> tuple[set[int], bool]:
+        referenced: set[int] = set()
+        try:
+            paths = list(self.leigod_forwards_dir().glob("*.config.json"))
+        except OSError:
+            return referenced, False
+        for path in paths:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                candidates = payload.get("candidates", []) if isinstance(payload, dict) else None
+                if not isinstance(candidates, list):
+                    return referenced, False
+                for candidate in candidates:
+                    if not isinstance(candidate, dict):
+                        return referenced, False
+                    line_id = int(candidate.get("line_id", 0) or 0)
+                    if line_id < 1 or line_id > 45535:
+                        return referenced, False
+                    referenced.add(line_id)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                logging.warning("cannot prove leigod relay references from %s", path)
+                return referenced, False
+        return referenced, True
+
+    def remove_managed_leigod_line(self, line_id: int) -> None:
+        if line_id < 1 or line_id > 45535:
+            return
+        unit = f"leigod@{line_id}.service"
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop {unit}", check=False)
+            run_command(f"systemctl disable {unit}", check=False)
+            run_command(f"systemctl reset-failed {unit}", check=False)
+        root = Path(str(self.config.get("leigod_root", "/opt/leigod") or "/opt/leigod"))
+        toml_path = root / "lines" / f"{line_id}.toml"
+        with contextlib.suppress(OSError):
+            toml_path.unlink()
+
+    def apply_leigod_lines(self, lines: Any, section_present: bool = True) -> None:
+        if not section_present:
+            return
+        if not isinstance(lines, list):
+            raise RuntimeError("leigod_lines management must be a list")
+        if len(lines) > LEIGOD_LINE_CAP:
+            raise RuntimeError(f"leigod_lines exceeds cap {LEIGOD_LINE_CAP}")
+
+        previous = {int(row["line_id"]): row for row in self.load_leigod_desired_lines()}
+        health = self.load_leigod_line_health()
+        desired: dict[int, dict[str, Any]] = {}
+        root = Path(str(self.config.get("leigod_root", "/opt/leigod") or "/opt/leigod"))
+        binary = str(self.config.get("leigod_bin", "/usr/local/bin/leigod-linux-amd64") or "").strip()
+        session_path = root / "session.json"
+
+        for raw in lines:
+            if not isinstance(raw, dict):
+                raise RuntimeError("leigod line row must be an object")
+            normalized = self.desired_leigod_line_without_toml(raw)
+            line_id = int(normalized["line_id"])
+            expected_hash = str(normalized["config_sha256"])
+            toml = raw.get("toml")
+            if line_id < 1 or line_id > 45535:
+                raise RuntimeError(f"invalid leigod line id: {line_id}")
+            if line_id in desired:
+                raise RuntimeError(f"duplicate leigod line id: {line_id}")
+            if normalized["socks_host"] != "127.0.0.1" or int(normalized["socks_port"] or 0) != 20000 + line_id:
+                raise RuntimeError(f"invalid leigod SOCKS endpoint for line {line_id}")
+            desired[line_id] = normalized
+            actual_hash = hashlib.sha256(toml.encode("utf-8")).hexdigest() if isinstance(toml, str) else ""
+            error = ""
+            tcp_probe_host = str(normalized.get("tcp_probe_host", "") or "")
+            tcp_probe_port = int(normalized.get("tcp_probe_port", 0) or 0)
+            udp_probe_host = str(normalized.get("udp_probe_host", "") or "")
+            udp_probe_port = int(normalized.get("udp_probe_port", 0) or 0)
+            udp_probe_method = str(normalized.get("udp_probe_method", "") or "")
+            udp_probe_present = udp_probe_host != "" or udp_probe_port > 0 or udp_probe_method != ""
+            if re.fullmatch(r"[a-f0-9]{64}", expected_hash) is None or not isinstance(toml, str) or toml == "":
+                error = "invalid_line_config"
+            elif not hmac.compare_digest(expected_hash, actual_hash):
+                error = "config_hash_mismatch"
+            elif tcp_probe_host == "" or any(character.isspace() for character in tcp_probe_host) or not 1 <= tcp_probe_port <= 65535:
+                error = "invalid_tcp_probe"
+            elif udp_probe_present and (
+                udp_probe_host == ""
+                or any(character.isspace() for character in udp_probe_host)
+                or not 1 <= udp_probe_port <= 65535
+                or udp_probe_method not in {"dns", "echo"}
+            ):
+                error = "invalid_udp_probe"
+            elif binary == "" or (shutil.which(binary) is None and not Path(binary).exists()):
+                error = "leigod_binary_missing"
+            elif not session_path.exists():
+                error = "session_missing"
+
+            if error == "":
+                toml_path = root / "lines" / f"{line_id}.toml"
+                self.write_bytes_if_changed(toml_path, toml.encode("utf-8"))
+                with contextlib.suppress(OSError):
+                    os.chmod(toml_path, 0o600)
+                try:
+                    persisted_hash = hashlib.sha256(toml_path.read_bytes()).hexdigest()
+                except OSError:
+                    persisted_hash = ""
+                if not hmac.compare_digest(expected_hash, persisted_hash):
+                    error = "persisted_config_hash_mismatch"
+                else:
+                    self.ensure_leigod_line_service(line_id, expected_sha256=expected_hash)
+
+            existing = health.get(line_id, {})
+            if error != "":
+                health[line_id] = {
+                    "line_id": line_id,
+                    "config_sha256": expected_hash,
+                    "service_state": "failed",
+                    "tcp_status": "unhealthy",
+                    "tcp_connect_ms": None,
+                    "udp_status": "unknown",
+                    "consecutive_successes": 0,
+                    "consecutive_failures": max(1, int(existing.get("consecutive_failures", 0) or 0) + 1),
+                    "last_error": error,
+                    "checked_at": self.utc_timestamp(),
+                }
+            elif str(existing.get("config_sha256", "")) != expected_hash:
+                health[line_id] = {
+                    "line_id": line_id,
+                    "config_sha256": expected_hash,
+                    "service_state": "active" if self.systemd_is_active(f"leigod@{line_id}") else "starting",
+                    "tcp_status": "unknown",
+                    "tcp_connect_ms": None,
+                    "udp_status": "unknown",
+                    "consecutive_successes": 0,
+                    "consecutive_failures": 0,
+                    "last_error": "",
+                    "checked_at": self.utc_timestamp(),
+                }
+            elif not existing:
+                health[line_id] = {
+                    "line_id": line_id,
+                    "config_sha256": expected_hash,
+                    "service_state": "active" if self.systemd_is_active(f"leigod@{line_id}") else "starting",
+                    "tcp_status": "unknown",
+                    "tcp_connect_ms": None,
+                    "udp_status": "unknown",
+                    "consecutive_successes": 0,
+                    "consecutive_failures": 0,
+                    "last_error": "",
+                    "checked_at": self.utc_timestamp(),
+                }
+
+        referenced, reference_proven = self.active_leigod_relay_line_ids()
+        for line_id, previous_line in previous.items():
+            if line_id in desired:
+                continue
+            if not reference_proven or line_id in referenced:
+                desired[line_id] = previous_line
+                continue
+            self.remove_managed_leigod_line(line_id)
+            health.pop(line_id, None)
+
+        self.save_leigod_desired_lines(list(desired.values()))
+        self.save_leigod_line_health(health)
+
+    @staticmethod
+    def _socket_recv_exact(sock: socket.socket, length: int) -> bytes:
+        chunks = bytearray()
+        while len(chunks) < length:
+            chunk = sock.recv(length - len(chunks))
+            if not chunk:
+                raise RuntimeError("SOCKS connection closed early")
+            chunks.extend(chunk)
+        return bytes(chunks)
+
+    @staticmethod
+    def _socks_address(host: str, port: int) -> bytes:
+        try:
+            return b"\x01" + socket.inet_pton(socket.AF_INET, host) + struct.pack(">H", port)
+        except OSError:
+            pass
+        try:
+            return b"\x04" + socket.inet_pton(socket.AF_INET6, host) + struct.pack(">H", port)
+        except OSError:
+            encoded = host.encode("idna")
+            if len(encoded) < 1 or len(encoded) > 255:
+                raise RuntimeError("invalid SOCKS target host")
+            return b"\x03" + bytes([len(encoded)]) + encoded + struct.pack(">H", port)
+
+    @classmethod
+    def _socks_read_address(cls, sock: socket.socket, atyp: int) -> tuple[str, int]:
+        if atyp == 1:
+            host = socket.inet_ntop(socket.AF_INET, cls._socket_recv_exact(sock, 4))
+        elif atyp == 4:
+            host = socket.inet_ntop(socket.AF_INET6, cls._socket_recv_exact(sock, 16))
+        elif atyp == 3:
+            size = cls._socket_recv_exact(sock, 1)[0]
+            host = cls._socket_recv_exact(sock, size).decode("idna")
+        else:
+            raise RuntimeError("invalid SOCKS address type")
+        return host, struct.unpack(">H", cls._socket_recv_exact(sock, 2))[0]
+
+    @classmethod
+    def _socks_read_reply(cls, sock: socket.socket) -> tuple[str, int]:
+        version, reply, _reserved, atyp = cls._socket_recv_exact(sock, 4)
+        if version != 5 or reply != 0:
+            raise RuntimeError(f"SOCKS command failed with reply {reply}")
+        return cls._socks_read_address(sock, atyp)
+
+    @classmethod
+    def _socks_negotiate(cls, sock: socket.socket) -> None:
+        sock.sendall(b"\x05\x01\x00")
+        if cls._socket_recv_exact(sock, 2) != b"\x05\x00":
+            raise RuntimeError("SOCKS no-auth negotiation failed")
+
+    def _probe_leigod_tcp(self, line: dict[str, Any], timeout: float) -> int:
+        started = time.monotonic()
+        with socket.create_connection(
+            (str(line["socks_host"]), int(line["socks_port"])),
+            timeout=timeout,
+        ) as control:
+            control.settimeout(timeout)
+            self._socks_negotiate(control)
+            control.sendall(
+                b"\x05\x01\x00"
+                + self._socks_address(str(line["tcp_probe_host"]), int(line["tcp_probe_port"]))
+            )
+            self._socks_read_reply(control)
+        return max(0, int(round((time.monotonic() - started) * 1000)))
+
+    @classmethod
+    def _decode_socks_udp_frame(cls, payload: bytes) -> tuple[str, int, bytes]:
+        if len(payload) < 4 or payload[:2] != b"\x00\x00" or payload[2] != 0:
+            raise RuntimeError("invalid SOCKS UDP response")
+        atyp = payload[3]
+        offset = 4
+        if atyp == 1:
+            if len(payload) < offset + 6:
+                raise RuntimeError("truncated SOCKS UDP response")
+            host = socket.inet_ntop(socket.AF_INET, payload[offset : offset + 4])
+            offset += 4
+        elif atyp == 4:
+            if len(payload) < offset + 18:
+                raise RuntimeError("truncated SOCKS UDP response")
+            host = socket.inet_ntop(socket.AF_INET6, payload[offset : offset + 16])
+            offset += 16
+        elif atyp == 3:
+            if len(payload) <= offset:
+                raise RuntimeError("truncated SOCKS UDP response")
+            size = payload[offset]
+            offset += 1
+            if len(payload) < offset + size + 2:
+                raise RuntimeError("truncated SOCKS UDP response")
+            host = payload[offset : offset + size].decode("idna")
+            offset += size
+        else:
+            raise RuntimeError("invalid SOCKS UDP address type")
+        port = struct.unpack(">H", payload[offset : offset + 2])[0]
+        return host, port, payload[offset + 2 :]
+
+    def _probe_leigod_udp(self, line: dict[str, Any], timeout: float) -> None:
+        method = str(line.get("udp_probe_method", "") or "").lower()
+        host = str(line.get("udp_probe_host", "") or "")
+        port = int(line.get("udp_probe_port", 0) or 0)
+        if method not in {"dns", "echo"} or host == "" or port <= 0:
+            raise RuntimeError("invalid UDP probe definition")
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as datagram:
+            datagram.bind(("127.0.0.1", 0))
+            datagram.settimeout(timeout)
+            with socket.create_connection((str(line["socks_host"]), int(line["socks_port"])), timeout=timeout) as control:
+                control.settimeout(timeout)
+                self._socks_negotiate(control)
+                local_port = int(datagram.getsockname()[1])
+                control.sendall(b"\x05\x03\x00" + self._socks_address("127.0.0.1", local_port))
+                relay_host, relay_port = self._socks_read_reply(control)
+                if relay_host in {"0.0.0.0", "::"}:
+                    relay_host = str(line["socks_host"])
+                if method == "dns":
+                    transaction = os.urandom(2)
+                    probe = transaction + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01"
+                else:
+                    probe = os.urandom(16)
+                datagram.sendto(
+                    b"\x00\x00\x00" + self._socks_address(host, port) + probe,
+                    (relay_host, relay_port),
+                )
+                response, source = datagram.recvfrom(65535)
+                if source[0] != relay_host or int(source[1]) != relay_port:
+                    raise RuntimeError("SOCKS UDP response came from unexpected relay")
+                _response_host, response_port, response_payload = self._decode_socks_udp_frame(response)
+                if response_port != port:
+                    raise RuntimeError("SOCKS UDP response port mismatch")
+                if method == "dns":
+                    if len(response_payload) < 4 or response_payload[:2] != transaction or not (response_payload[2] & 0x80):
+                        raise RuntimeError("DNS probe did not receive a matching response")
+                elif response_payload != probe:
+                    raise RuntimeError("UDP echo probe did not receive matching bytes")
+
+    def probe_leigod_line(self, line: dict[str, Any]) -> dict[str, Any]:
+        line_id = int(line.get("line_id", 0) or 0)
+        expected_hash = str(line.get("config_sha256", "") or "").lower()
+        previous = self.load_leigod_line_health().get(line_id, {})
+        root = Path(str(self.config.get("leigod_root", "/opt/leigod") or "/opt/leigod"))
+        binary = str(self.config.get("leigod_bin", "/usr/local/bin/leigod-linux-amd64") or "")
+        toml_path = root / "lines" / f"{line_id}.toml"
+        error = ""
+        if not (shutil.which(binary) or Path(binary).exists()):
+            error = "leigod_binary_missing"
+        elif not (root / "session.json").exists():
+            error = "session_missing"
+        elif not toml_path.exists():
+            error = "line_config_missing"
+        else:
+            try:
+                actual_hash = hashlib.sha256(toml_path.read_bytes()).hexdigest()
+            except OSError:
+                actual_hash = ""
+            if not hmac.compare_digest(expected_hash, actual_hash):
+                error = "config_hash_mismatch"
+        if error == "" and not self.systemd_is_active(f"leigod@{line_id}"):
+            error = "service_inactive"
+
+        timeout = max(0.1, min(30.0, float(self.config.get("leigod_probe_connect_timeout_seconds", 2) or 2)))
+        tcp_status = "unhealthy"
+        udp_status = "unknown"
+        tcp_connect_ms: int | None = None
+        errors: list[str] = []
+        if error == "":
+            try:
+                tcp_connect_ms = self._probe_leigod_tcp(line, timeout)
+                tcp_status = "healthy"
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"tcp:{str(exc)[:220]}")
+            if line.get("udp_probe_method"):
+                try:
+                    self._probe_leigod_udp(line, timeout)
+                    udp_status = "healthy"
+                except Exception as exc:  # noqa: BLE001
+                    udp_status = "unhealthy"
+                    errors.append(f"udp:{str(exc)[:220]}")
+        else:
+            errors.append(error)
+
+        success = tcp_status == "healthy" and udp_status in {"unknown", "healthy"}
+        return {
+            "line_id": line_id,
+            "config_sha256": expected_hash,
+            "service_state": "active" if error == "" else "failed",
+            "tcp_status": tcp_status,
+            "tcp_connect_ms": tcp_connect_ms,
+            "udp_status": udp_status,
+            "consecutive_successes": int(previous.get("consecutive_successes", 0) or 0) + 1 if success else 0,
+            "consecutive_failures": 0 if success else int(previous.get("consecutive_failures", 0) or 0) + 1,
+            "last_error": "; ".join(errors)[:500],
+            "checked_at": self.utc_timestamp(),
+        }
+
+    def probe_managed_leigod_lines(self, force: bool = False) -> None:
+        now = time.monotonic()
+        interval = max(1.0, min(3600.0, float(self.config.get("leigod_probe_interval_seconds", 15) or 15)))
+        if not force and self._last_leigod_probe_at > 0 and (now - self._last_leigod_probe_at) < interval:
+            return
+        self._last_leigod_probe_at = now
+        desired = self.load_leigod_desired_lines()
+        if not desired:
+            return
+        health = self.load_leigod_line_health()
+        for line in desired[:LEIGOD_LINE_CAP]:
+            line_id = int(line.get("line_id", 0) or 0)
+            try:
+                health[line_id] = self.probe_leigod_line(line)
+            except Exception as exc:  # noqa: BLE001
+                logging.exception("leigod line %s probe failed", line_id)
+                health[line_id] = {
+                    "line_id": line_id,
+                    "config_sha256": str(line.get("config_sha256", "") or ""),
+                    "service_state": "failed",
+                    "tcp_status": "unhealthy",
+                    "tcp_connect_ms": None,
+                    "udp_status": "unknown",
+                    "consecutive_successes": 0,
+                    "consecutive_failures": int(health.get(line_id, {}).get("consecutive_failures", 0) or 0) + 1,
+                    "last_error": str(exc)[:500],
+                    "checked_at": self.utc_timestamp(),
+                }
+        self.save_leigod_line_health(health)
 
     def apply_management_state(self, management: Any, schedule_updates: bool = True) -> None:
         if not isinstance(management, dict):
             return
         self.apply_config_patch(management.get("agent_config_json"))
         self.apply_leigod_session(management.get("leigod_session_json"))
+        self.apply_leigod_lines(
+            management.get("leigod_lines", []),
+            section_present="leigod_lines" in management,
+        )
         # BUG-1: only treat the static-uplink feed as authoritative when the
         # section was actually present in this management payload. A payload
         # that simply omitted the key must NOT be read as "tear everything
@@ -2427,6 +2973,104 @@ class SlaveAgent:
     def save_static_sidecar_uplink_state(self, payload: dict[str, Any]) -> None:
         self.write_json(self.static_sidecar_uplink_state_path(), payload)
 
+    @staticmethod
+    def validate_shared_static_sidecar_uplink(uplink: dict[str, Any]) -> str:
+        raw_interface_name = str(uplink.get("interface_name", "") or "").strip()
+        if raw_interface_name == "":
+            return "missing interface_name"
+        interface_name = safe_wireguard_interface_name(raw_interface_name, ("lwsp", "lwp"))
+        if interface_name == "":
+            return "invalid shared interface name"
+        try:
+            point_id = int(uplink.get("sidecar_point_id", 0) or 0)
+            node_id = int(uplink.get("node_id", 0) or 0)
+            listen_port = int(uplink.get("listen_port", 0) or 0)
+            endpoint_port = int(uplink.get("sidecar_endpoint_port", 0) or 0)
+            local_listen_port = int(uplink.get("local_listen_port", 0) or 0)
+        except (TypeError, ValueError):
+            return "invalid numeric identity"
+        if point_id <= 0 or node_id <= 0:
+            return "missing point or node identity"
+        if not interface_name.startswith(("lwsp", "lwp")):
+            return "invalid shared interface name"
+        if str(uplink.get("lane", "") or "").strip().lower() != "shared":
+            return "invalid shared lane"
+        if str(uplink.get("outer_transport", "") or "").strip().lower() != "udp":
+            return "shared outer transport must be udp"
+        if not (1 <= listen_port <= 65535) or endpoint_port != listen_port:
+            return "invalid shared sidecar listen port"
+        if not (1 <= local_listen_port <= 65535):
+            return "invalid shared local listen port"
+        local_address = str(uplink.get("local_address", "") or "").strip()
+        peer_address = str(uplink.get("peer_address", "") or "").strip()
+        try:
+            local_ip = ipaddress.ip_address(local_address)
+            peer_ip = ipaddress.ip_address(peer_address)
+        except ValueError:
+            return "invalid shared tunnel address"
+        if local_ip == peer_ip or local_ip.version != peer_ip.version:
+            return "invalid shared tunnel address pair"
+        if str(uplink.get("sidecar_peer_public_key", "") or "").strip() == "":
+            return "missing sidecar peer key"
+        if str(uplink.get("sidecar_endpoint_host", "") or "").strip() == "":
+            return "missing sidecar endpoint host"
+        return ""
+
+    def normalize_static_sidecar_uplinks(self, raw_uplinks: list[Any]) -> tuple[list[dict[str, Any]], set[str], bool]:
+        normalized: dict[str, dict[str, Any]] = {}
+        invalid: set[str] = set()
+        comparable_shared_fields = (
+            "sidecar_point_id",
+            "node_id",
+            "local_address",
+            "peer_address",
+            "sidecar_peer_public_key",
+            "sidecar_endpoint_host",
+            "sidecar_endpoint_port",
+            "local_listen_port",
+            "outer_transport",
+        )
+        for raw in raw_uplinks:
+            if not isinstance(raw, dict):
+                return [], set(), False
+            uplink = dict(raw)
+            raw_interface_name = str(uplink.get("interface_name", "") or "").strip()
+            interface_name = raw_interface_name[:15]
+            shared = str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared"
+            validation_error = self.validate_shared_static_sidecar_uplink(uplink) if shared else ""
+            if not uplink.get("enabled", False):
+                if validation_error in {
+                    "missing interface_name",
+                    "invalid shared interface name",
+                    "invalid numeric identity",
+                    "missing point or node identity",
+                    "invalid shared lane",
+                }:
+                    logging.error("invalid disabled shared sidecar uplink identity: %s", validation_error)
+                    return [], set(), False
+                continue
+            if shared:
+                if validation_error != "":
+                    if validation_error in {"missing interface_name", "invalid shared interface name"}:
+                        logging.error("invalid shared sidecar uplink without interface identity: %s", validation_error)
+                        return [], set(), False
+                    logging.error("invalid shared sidecar uplink %s: %s; preserving previous interface", interface_name, validation_error)
+                    invalid.add(interface_name)
+                    continue
+            elif interface_name == "":
+                continue
+            previous = normalized.get(interface_name)
+            if previous is None:
+                normalized[interface_name] = uplink
+                continue
+            if (
+                str(previous.get("wireguard_peer_mode", "") or "").strip().lower() != "shared"
+                or str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() != "shared"
+                or any(previous.get(key) != uplink.get(key) for key in comparable_shared_fields)
+            ):
+                invalid.add(interface_name)
+        return [uplink for name, uplink in normalized.items() if name not in invalid], invalid, True
+
     def apply_static_sidecar_uplinks(self, raw_uplinks: Any, section_present: bool = True) -> None:
         # BUG-1: when the uplink section was absent this cycle (or the fetch
         # failed and a defaulted-empty value was passed), do NOT reconcile and
@@ -2438,17 +3082,36 @@ class SlaveAgent:
             return
         if not isinstance(raw_uplinks, list):
             return
+        uplinks, invalid_interfaces, authoritative = self.normalize_static_sidecar_uplinks(raw_uplinks)
+        if not authoritative:
+            logging.error("invalid shared sidecar uplink section; preserving all previous interfaces")
+            return
+        previous = self.load_static_sidecar_uplink_state()
+        previous_interfaces = previous.get("interfaces", {}) if isinstance(previous.get("interfaces", {}), dict) else {}
         active: set[str] = set()
         next_state: dict[str, Any] = {"interfaces": {}}
-        for raw in raw_uplinks:
-            if not isinstance(raw, dict):
-                continue
-            uplink = dict(raw)
+        for interface_name in sorted(invalid_interfaces):
+            logging.error("conflicting shared sidecar uplink records for %s; preserving previous interface", interface_name)
+            previous_info = previous_interfaces.get(interface_name)
+            if isinstance(previous_info, dict):
+                active.add(interface_name)
+                next_state["interfaces"][interface_name] = dict(previous_info)
+        for uplink in uplinks:
             interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
-            if interface_name == "" or not uplink.get("enabled", False):
-                continue
+            shared = str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared"
+            if shared:
+                try:
+                    self.apply_shared_sidecar_uplink(interface_name, uplink)
+                except Exception:  # noqa: BLE001
+                    logging.exception("shared sidecar uplink %s apply failed; preserving previous interface", interface_name)
+                    previous_info = previous_interfaces.get(interface_name)
+                    if isinstance(previous_info, dict):
+                        active.add(interface_name)
+                        next_state["interfaces"][interface_name] = dict(previous_info)
+                    continue
+            else:
+                self.apply_sidecar_uplink(interface_name, uplink)
             active.add(interface_name)
-            self.apply_sidecar_uplink(interface_name, uplink)
             self.watch_static_sidecar_uplink(uplink)
             next_state["interfaces"][interface_name] = {
                 "interface_name": interface_name,
@@ -2457,8 +3120,6 @@ class SlaveAgent:
                 "node_id": int(uplink.get("node_id", 0) or 0),
                 "lane": str(uplink.get("lane", "") or ""),
             }
-        previous = self.load_static_sidecar_uplink_state()
-        previous_interfaces = previous.get("interfaces", {}) if isinstance(previous.get("interfaces", {}), dict) else {}
         for iface, info in list(previous_interfaces.items()):
             interface_name = str((info if isinstance(info, dict) else {}).get("interface_name", iface) or "").strip()[:15]
             if interface_name != "" and interface_name not in active:
@@ -2853,6 +3514,7 @@ WantedBy=multi-user.target
         desired_agent_version = str(management.get("desired_agent_version", "") or "").strip()
         desired_agent_sha256 = str(management.get("desired_agent_sha256", "") or "").strip().lower()
         desired_installer_version = str(management.get("desired_installer_version", "") or "").strip()
+        desired_installer_sha256 = str(management.get("desired_installer_sha256", "") or "").strip().lower()
         mismatches: list[str] = []
 
         if desired_agent_version and desired_agent_version != AGENT_VERSION:
@@ -2866,6 +3528,10 @@ WantedBy=multi-user.target
         local_installer_version = str(self.config.get("installer_version", "") or "").strip()
         if desired_installer_version and local_installer_version != desired_installer_version:
             mismatches.append(f"installer={desired_installer_version}")
+
+        local_installer_sha256 = str(self.config.get("installer_sha256", "") or "").strip().lower()
+        if desired_installer_sha256 and local_installer_sha256 != desired_installer_sha256:
+            mismatches.append(f"installer_sha256={desired_installer_sha256}")
 
         if mismatches == []:
             return ""
@@ -2911,6 +3577,11 @@ WantedBy=multi-user.target
             "backend_host",
             "backend_port_range_start",
             "backend_port_range_end",
+            "leigod_bin",
+            "leigod_root",
+            "leigod_forward_relay_bin",
+            "leigod_probe_interval_seconds",
+            "leigod_probe_connect_timeout_seconds",
             "mux_listen_hosts",
             "relay_quic_keepalive_seconds",
             "relay_quic_max_idle_seconds",
@@ -3150,6 +3821,331 @@ WantedBy=multi-user.target
             return self.write_filter_marker(task, payload)
         raise RuntimeError(f"unsupported action: {action}")
 
+    @staticmethod
+    def _parse_utc_timestamp(value: Any) -> float | None:
+        text = str(value or "").strip()
+        if text == "":
+            return None
+        try:
+            parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed.timestamp()
+
+    def validate_leigod_forward_payload(
+        self,
+        service_name: str,
+        task: dict[str, Any],
+        payload: dict[str, Any],
+        target: str,
+    ) -> dict[str, Any] | None:
+        raw = payload.get("leigod_forward")
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise RuntimeError("leigod_forward must be an object")
+        mode = str(raw.get("mode", "") or "").strip().lower()
+        if mode not in {"single", "race"}:
+            raise RuntimeError("invalid leigod relay mode")
+        relay_port = int(raw.get("relay_port", 0) or 0)
+        if relay_port < 1 or relay_port > 65535:
+            raise RuntimeError("invalid leigod relay port")
+        expected_runtime_target = f"127.0.0.1:{relay_port}"
+        if target != expected_runtime_target:
+            raise RuntimeError(
+                f"leigod relay target mismatch: expected {expected_runtime_target}, got {target}"
+            )
+        if relay_port in self.used_backend_ports(exclude_service_name=service_name):
+            raise RuntimeError(f"leigod relay port collision: {relay_port}")
+        real_target = str(raw.get("target", "") or "").strip()
+        target_host, target_port = split_host_port(real_target)
+        if target_host == "" or target_port < 1 or target_port > 65535:
+            raise RuntimeError("invalid leigod real target")
+
+        transport = str(payload.get("transport_mode", "tcp") or "tcp").strip().lower()
+        if transport not in {"tcp", "udp", "tcp+udp"}:
+            raise RuntimeError("invalid leigod relay transport")
+        raw_candidates = raw.get("candidates")
+        if not isinstance(raw_candidates, list) or len(raw_candidates) < 1 or len(raw_candidates) > 8:
+            raise RuntimeError("leigod relay requires between one and eight candidates")
+
+        desired = {int(row.get("line_id", 0) or 0): row for row in self.load_leigod_desired_lines()}
+        health = self.load_leigod_line_health()
+        health_max_age = max(15, min(3600, int(raw.get("health_max_age_seconds", 180) or 180)))
+        now = time.time()
+        candidates: list[dict[str, Any]] = []
+        seen_lines: set[int] = set()
+        seen_keys: set[tuple[int, int]] = set()
+        combinations: set[int] = set()
+        metadata_candidates: list[dict[str, Any]] = []
+        for index, candidate in enumerate(raw_candidates):
+            if not isinstance(candidate, dict):
+                raise RuntimeError("leigod relay candidate must be an object")
+            combination_id = int(candidate.get("combination_id", 0) or 0)
+            line_id = int(candidate.get("line_id", 0) or 0)
+            expected_hash = str(candidate.get("config_sha256", "") or "").strip().lower()
+            socks_host = str(candidate.get("socks_host", "") or "").strip()
+            socks_port = int(candidate.get("socks_port", 0) or 0)
+            if combination_id <= 0 or line_id < 1 or line_id > 45535:
+                raise RuntimeError("invalid leigod relay candidate identity")
+            if line_id in seen_lines or (combination_id, line_id) in seen_keys:
+                raise RuntimeError("duplicate leigod relay candidate")
+            if socks_host != "127.0.0.1" or socks_port != 20000 + line_id:
+                raise RuntimeError(f"leigod candidate {line_id} SOCKS port mismatch")
+            desired_line = desired.get(line_id)
+            local_health = health.get(line_id)
+            checked_at = self._parse_utc_timestamp((local_health or {}).get("checked_at"))
+            udp_status = str((local_health or {}).get("udp_status", "") or "")
+            udp_probe_configured = bool(str((desired_line or {}).get("udp_probe_method", "") or "").strip())
+            udp_healthy = udp_status == "healthy" or (not udp_probe_configured and udp_status == "unknown")
+            required_statuses_healthy = (
+                isinstance(desired_line, dict)
+                and isinstance(local_health, dict)
+                and re.fullmatch(r"[a-f0-9]{64}", expected_hash) is not None
+                and hmac.compare_digest(str(desired_line.get("config_sha256", "") or ""), expected_hash)
+                and hmac.compare_digest(str(local_health.get("config_sha256", "") or ""), expected_hash)
+                and str(local_health.get("service_state", "") or "") == "active"
+                and ("tcp" not in transport or str(local_health.get("tcp_status", "") or "") == "healthy")
+                and ("udp" not in transport or udp_healthy)
+                and checked_at is not None
+                and checked_at >= now - health_max_age
+                and checked_at <= now + 300
+            )
+            if not required_statuses_healthy:
+                raise RuntimeError(f"leigod candidate {line_id} is not healthy for {transport}")
+            seen_lines.add(line_id)
+            seen_keys.add((combination_id, line_id))
+            combinations.add(combination_id)
+            candidates.append(
+                {
+                    "combination_id": combination_id,
+                    "line_id": line_id,
+                    "socks_host": socks_host,
+                    "socks_port": socks_port,
+                    "sort_order": (index + 1) * 10,
+                }
+            )
+            metadata_candidates.append(
+                {
+                    "combination_id": combination_id,
+                    "line_id": line_id,
+                    "config_sha256": expected_hash,
+                    "socks_port": socks_port,
+                }
+            )
+        if mode == "race" and len(combinations) < 2:
+            raise RuntimeError("race leigod relay requires two distinct combinations")
+
+        runtime_config = {
+            "mode": mode,
+            "listen_host": "127.0.0.1",
+            "listen_port": relay_port,
+            "target_host": target_host,
+            "target_port": target_port,
+            "transport": transport,
+            "candidates": candidates,
+            "policy": {
+                "probe_interval_seconds": max(
+                    1,
+                    min(3600, int(self.config.get("leigod_probe_interval_seconds", 15) or 15)),
+                ),
+                "connect_timeout_seconds": max(
+                    0.1,
+                    min(30.0, float(self.config.get("leigod_probe_connect_timeout_seconds", 2) or 2)),
+                ),
+                "failure_threshold": max(1, min(100, int(raw.get("failure_threshold", 2) or 2))),
+                "recovery_success_threshold": max(
+                    1,
+                    min(100, int(raw.get("recovery_success_threshold", 2) or 2)),
+                ),
+                "switch_improvement_ms": max(
+                    0,
+                    min(1000, int(raw.get("switch_improvement_ms", 15) or 15)),
+                ),
+                "minimum_hold_seconds": max(
+                    0,
+                    min(3600, int(raw.get("minimum_hold_seconds", 30) or 30)),
+                ),
+            },
+        }
+        return {
+            "service_name": self.leigod_forward_service_name(service_name),
+            "mode": mode,
+            "relay_port": relay_port,
+            "target": real_target,
+            "transport": transport,
+            "candidates": metadata_candidates,
+            "runtime_config": runtime_config,
+            "config_path": str(self.leigod_forward_config_path(service_name)),
+            "state_path": str(self.leigod_forward_state_path(service_name)),
+            "service_id": int(task.get("service_id", 0) or 0),
+            "forward_id": int(task.get("forward_id", 0) or 0),
+            "endpoint_id": int(task.get("endpoint_id", 0) or 0),
+            "forward_route_id": int(payload.get("forward_route_id", 0) or 0),
+        }
+
+    def render_leigod_forward_unit(self, runtime: dict[str, Any]) -> str:
+        service_name = str(runtime["service_name"])
+        config_path = str(runtime["config_path"])
+        state_path = str(runtime["state_path"])
+        relay_bin = str(
+            self.config.get(
+                "leigod_forward_relay_bin",
+                "/usr/local/bin/leikwan-leigod-forward-relay.py",
+            )
+            or "/usr/local/bin/leikwan-leigod-forward-relay.py"
+        )
+        line_units = " ".join(
+            f"leigod@{int(candidate['line_id'])}.service"
+            for candidate in runtime.get("candidates", [])
+        )
+        return f"""[Unit]
+Description=Leikwan LeiGod Forward Relay {service_name}
+After=network-online.target {line_units}
+Wants=network-online.target {line_units}
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 {relay_bin} --config {config_path} --state-file {state_path}
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={self.leigod_forwards_dir()}
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    def ensure_leigod_forward_runtime(self, service_name: str, runtime: dict[str, Any]) -> None:
+        config_path = self.leigod_forward_config_path(service_name)
+        state_path = self.leigod_forward_state_path(service_name)
+        relay_service = self.leigod_forward_service_name(service_name)
+        runtime = dict(runtime)
+        runtime["service_name"] = relay_service
+        runtime["config_path"] = str(config_path)
+        runtime["state_path"] = str(state_path)
+        config_changed = not config_path.exists()
+        listener_restart_required = False
+        if not config_changed:
+            try:
+                current = json.loads(config_path.read_text(encoding="utf-8"))
+                config_changed = current != runtime.get("runtime_config")
+                if isinstance(current, dict) and isinstance(runtime.get("runtime_config"), dict):
+                    listener_restart_required = any(
+                        current.get(key) != runtime["runtime_config"].get(key)
+                        for key in ("listen_host", "listen_port", "transport")
+                    )
+            except (OSError, json.JSONDecodeError):
+                config_changed = True
+                listener_restart_required = True
+        self.write_json(config_path, dict(runtime["runtime_config"]))
+        with contextlib.suppress(OSError):
+            os.chmod(config_path, 0o600)
+        unit_path = self.service_unit_path(relay_service)
+        unit_changed = self.write_text_if_changed(unit_path, self.render_leigod_forward_unit(runtime))
+        was_active = self.systemd_is_active(relay_service)
+        self.ensure_backend_service(
+            relay_service,
+            unit_changed,
+            expected_exec_substring="leikwan-leigod-forward-relay.py",
+        )
+        if config_changed and was_active and not unit_changed and shutil.which("systemctl"):
+            if listener_restart_required:
+                run_command(f"systemctl restart {relay_service}.service", check=False)
+            else:
+                run_command(f"systemctl kill -s HUP {relay_service}.service", check=False)
+
+    def remove_leigod_forward_runtime(
+        self,
+        service_name: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        detail = (metadata or {}).get("leigod_forward", {}) if isinstance(metadata, dict) else {}
+        relay_service = str((detail if isinstance(detail, dict) else {}).get("service_name", "") or "")
+        if relay_service == "":
+            relay_service = self.leigod_forward_service_name(service_name)
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop {relay_service}.service", check=False)
+            run_command(f"systemctl disable {relay_service}.service", check=False)
+            run_command(f"systemctl reset-failed {relay_service}.service", check=False)
+        paths = [
+            self.service_unit_path(relay_service),
+            self.leigod_forward_config_path(service_name),
+            self.leigod_forward_state_path(service_name),
+        ]
+        changed = False
+        for path in paths:
+            if path.exists():
+                with contextlib.suppress(OSError):
+                    path.unlink()
+                    changed = True
+        if changed and shutil.which("systemctl"):
+            run_command("systemctl daemon-reload", check=False)
+
+    def collect_leigod_forward_selections(self) -> list[dict[str, Any]]:
+        selections: list[dict[str, Any]] = []
+        for metadata in sorted(
+            self.load_all_service_metadata(),
+            key=lambda row: (int(row.get("service_id", 0) or 0), str(row.get("service_name", "") or "")),
+        ):
+            if not self.metadata_is_active(metadata):
+                continue
+            detail = metadata.get("leigod_forward", {})
+            if not isinstance(detail, dict) or not detail:
+                continue
+            service_name = str(metadata.get("service_name", "") or "")
+            state_path = self.leigod_forward_state_path(service_name)
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(state, dict):
+                continue
+            selected_line_id = int(
+                state.get("selected_tcp_line_id", 0)
+                or state.get("selected_udp_line_id", 0)
+                or 0
+            )
+            candidate = next(
+                (
+                    row
+                    for row in detail.get("candidates", [])
+                    if isinstance(row, dict) and int(row.get("line_id", 0) or 0) == selected_line_id
+                ),
+                None,
+            )
+            if selected_line_id <= 0 or not isinstance(candidate, dict):
+                continue
+            updated_at = int(state.get("updated_at", 0) or 0)
+            selections.append(
+                {
+                    "service_id": int(metadata.get("service_id", 0) or 0),
+                    "service_name": service_name,
+                    "forward_id": int(metadata.get("forward_id", 0) or 0),
+                    "forward_route_id": int(detail.get("forward_route_id", 0) or 0),
+                    "selected_combination_id": int(candidate.get("combination_id", 0) or 0),
+                    "selected_line_id": selected_line_id,
+                    "mode": str(detail.get("mode", "single") or "single"),
+                    "candidate_count": min(64, len(detail.get("candidates", []))),
+                    "reason": "relay_state",
+                    "selected_at": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ",
+                        time.gmtime(updated_at if updated_at > 0 else time.time()),
+                    ),
+                }
+            )
+            if len(selections) >= LEIGOD_FORWARD_SELECTION_CAP:
+                break
+        return selections
+
     def publish_task(self, task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         service_name = safe_name(int(task["service_id"]), int(task["endpoint_id"]))
         relay_name = relay_service_name(int(task["service_id"]), int(task["endpoint_id"]))
@@ -3182,10 +4178,13 @@ WantedBy=multi-user.target
             target = f"127.0.0.1:{int(sidecar_uplink_selector.get('selector_port', 0) or 0)}"
         publish_bond_runtime = bool(payload.get("publish_bond_runtime", False)) or ingress_protocol == "plain_tcp_mux"
         metadata_path = self.metadata_path(service_name)
+        leigod_forward = self.validate_leigod_forward_payload(service_name, task, payload, target)
 
         self.cleanup_superseded_services_for_forward(int(task["forward_id"]), service_name)
 
         if mptcp_underlay and mptcp_underlay.get("enabled") and not publish_bond_runtime:
+            if leigod_forward is not None:
+                raise RuntimeError("leigod_forward is incompatible with underlay-only publish")
             metadata = {
                 "service_name": service_name,
                 "service_id": int(task["service_id"]),
@@ -3211,15 +4210,15 @@ WantedBy=multi-user.target
                 "filter_profile": str(payload.get("filter_profile", "off")),
                 "status": "active",
             }
-            self.write_json(metadata_path, metadata)
             self.apply_mptcp_underlay(service_name, mptcp_underlay)
             if sidecar_uplink.get("enabled"):
                 # compose model comment: true MPTCP underlay may ride over static uplink; early return used to skip it.
-                self.apply_sidecar_uplink(service_name, sidecar_uplink)
+                self.apply_published_sidecar_uplink(service_name, sidecar_uplink)
             if sidecar_uplink_selector.get("enabled"):
                 self.ensure_sidecar_uplink_selector(service_name, sidecar_uplink_selector)
             else:
                 self.remove_sidecar_uplink_selector(service_name)
+            self.write_json(metadata_path, metadata)
             return {
                 "service_name": service_name,
                 "unit_path": "",
@@ -3231,7 +4230,7 @@ WantedBy=multi-user.target
             }
 
         if sidecar_uplink.get("enabled"):
-            self.apply_sidecar_uplink(service_name, sidecar_uplink)
+            self.apply_published_sidecar_uplink(service_name, sidecar_uplink)
         if sidecar_uplink_selector.get("enabled"):
             self.ensure_sidecar_uplink_selector(service_name, sidecar_uplink_selector)
         else:
@@ -3246,6 +4245,10 @@ WantedBy=multi-user.target
         previous_public_port = int(existing.get("listen_port", 0) or 0)
         backend_port = int(existing.get("backend_port", 0) or 0)
         relay_client_port = int(existing.get("relay_client_port", 0) or 0)
+        if leigod_forward is not None:
+            self.ensure_leigod_forward_runtime(service_name, leigod_forward)
+        elif isinstance(existing.get("leigod_forward"), dict) and existing.get("leigod_forward"):
+            self.remove_leigod_forward_runtime(service_name, existing)
 
         self.ensure_listener_route_available(public_port, path_prefix, service_name)
         if self.backend_port_needs_reallocation(service_name, backend_port):
@@ -3351,6 +4354,7 @@ WantedBy=multi-user.target
             "mptcp_underlay": mptcp_underlay,
             "sidecar_uplink": sidecar_uplink,
             "sidecar_uplink_selector": sidecar_uplink_selector,
+            "leigod_forward": leigod_forward or {},
             "filter_profile": str(payload.get("filter_profile", "off")),
             "status": "active",
         }
@@ -3429,6 +4433,9 @@ WantedBy=multi-user.target
             "relay_client_service_name": relay_client_name if relay_protocols else None,
             "wstunnel_start_deferred": backend_start_deferred,
             "selector_port": int(sidecar_uplink_selector.get("selector_port", 0) or 0),
+            "leigod_forward_service_name": (
+                str(leigod_forward.get("service_name", "")) if leigod_forward is not None else None
+            ),
         }
 
     def stop_service(self, task: dict[str, Any], keep_files: bool) -> dict[str, Any]:
@@ -3448,6 +4455,8 @@ WantedBy=multi-user.target
                 public_ports.add(public_port)
             if metadata:
                 metadata["status"] = "suspended"
+                if service_name == base_service_name:
+                    metadata["leigod_forward"] = {}
                 self.write_json(self.metadata_path(service_name), metadata)
 
         base_targeted = base_service_name in service_names
@@ -3461,8 +4470,9 @@ WantedBy=multi-user.target
                 run_command(f"systemctl stop {relay_client_name}.service", check=False)
                 run_command(f"systemctl disable {relay_client_name}.service", check=False)
         if base_targeted:
+            self.remove_leigod_forward_runtime(base_service_name, base_metadata)
             self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
-            self.remove_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
+            self.remove_published_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
             self.remove_sidecar_uplink_selector(base_service_name)
 
         if not keep_files:
@@ -3520,9 +4530,10 @@ WantedBy=multi-user.target
                 run_command(f"systemctl stop {relay_client_name}.service", check=False)
                 run_command(f"systemctl disable {relay_client_name}.service", check=False)
         if base_targeted:
+            self.remove_leigod_forward_runtime(base_service_name, base_metadata)
             self.remove_sidecar_uplink_selector(base_service_name)
             self.remove_mptcp_underlay(base_service_name, base_metadata.get("mptcp_underlay") if isinstance(base_metadata, dict) else None)
-            self.remove_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
+            self.remove_published_sidecar_uplink(base_service_name, base_metadata.get("sidecar_uplink") if isinstance(base_metadata, dict) else None)
         for service_name in service_names:
             unit_path = self.service_unit_path(service_name)
             if unit_path.exists():
@@ -3729,6 +4740,33 @@ WantedBy=multi-user.target
         if reaped and have_systemctl:
             run_command("systemctl daemon-reload", check=False)
 
+    def cleanup_orphan_leigod_forward_relays(self) -> None:
+        # Match the existing orphan-unit guard: an empty metadata directory may
+        # mean state storage is temporarily unavailable, so it is not proof of
+        # ownership and must never trigger broad cleanup.
+        if not any(self.services_dir.glob("*.json")):
+            return
+        active_services = {
+            safe_service_basename(str(metadata.get("service_name", "") or ""))
+            for metadata in self.load_all_service_metadata()
+            if self.metadata_is_active(metadata)
+            and isinstance(metadata.get("leigod_forward"), dict)
+            and bool(metadata.get("leigod_forward"))
+        }
+        forward_dir = self.leigod_forwards_dir()
+        for config_path in forward_dir.glob("*.config.json"):
+            service_name = config_path.name[: -len(".config.json")]
+            if service_name in active_services:
+                continue
+            logging.info("removing orphan leigod forward relay: %s", service_name)
+            self.remove_leigod_forward_runtime(service_name)
+        for state_path in forward_dir.glob("*.state.json"):
+            service_name = state_path.name[: -len(".state.json")]
+            if service_name in active_services or self.leigod_forward_config_path(service_name).exists():
+                continue
+            with contextlib.suppress(OSError):
+                state_path.unlink()
+
     def udp_uot_sidepath_settings(self) -> dict[str, Any]:
         raw = self.config.get("udp_uot_sidepath", {})
         return raw if isinstance(raw, dict) else {}
@@ -3842,6 +4880,10 @@ WantedBy=multi-user.target
 
     def used_backend_ports(self, exclude_service_name: str | None = None) -> set[int]:
         ports: set[int] = set()
+        for line in self.load_leigod_desired_lines():
+            socks_port = int(line.get("socks_port", 0) or 0)
+            if socks_port > 0:
+                ports.add(socks_port)
         for metadata in self.load_all_service_metadata():
             if exclude_service_name and str(metadata.get("service_name", "")) == exclude_service_name:
                 continue
@@ -3851,6 +4893,11 @@ WantedBy=multi-user.target
             relay_client_port = int(metadata.get("relay_client_port", 0) or 0)
             if relay_client_port > 0:
                 ports.add(relay_client_port)
+            leigod_forward = metadata.get("leigod_forward", {})
+            if isinstance(leigod_forward, dict):
+                relay_port = int(leigod_forward.get("relay_port", 0) or 0)
+                if relay_port > 0:
+                    ports.add(relay_port)
         return ports
 
     @staticmethod
@@ -4310,6 +5357,97 @@ WantedBy=multi-user.target
         lane_offset = 1 if lane in {"backup", "b"} else 0
         return 43000 + abs(((point_id * 1009) + (combination_id * 131) + (node_id * 17) + lane_offset) % 2000)
 
+    def apply_shared_sidecar_uplink(self, service_name: str, uplink: dict[str, Any]) -> None:
+        validation_error = self.validate_shared_static_sidecar_uplink(uplink)
+        if validation_error != "":
+            raise ValueError(validation_error)
+        if not shutil.which("wg") or not shutil.which("wg-quick") or not shutil.which("systemctl"):
+            raise RuntimeError("WireGuard or systemd tooling is unavailable")
+        self.ensure_wireguard_identity()
+        private_key = self.wireguard_private_key_path().read_text(encoding="utf-8").strip()
+        if private_key == "":
+            raise RuntimeError("slave WireGuard private key is empty")
+
+        interface_name = safe_wireguard_interface_name(uplink.get("interface_name", ""), ("lwsp", "lwp"))
+        if interface_name == "":
+            raise ValueError("invalid shared interface name")
+        local_address = str(uplink.get("local_address", "") or "").strip()
+        peer_address = str(uplink.get("peer_address", "") or "").strip()
+        peer_public_key = str(uplink.get("sidecar_peer_public_key", "") or "").strip()
+        endpoint_host = str(uplink.get("sidecar_endpoint_host", "") or "").strip()
+        endpoint_port = int(uplink.get("sidecar_endpoint_port", 0) or 0)
+        local_listen_port = int(uplink.get("local_listen_port", 0) or 0)
+        keepalive = max(0, int(uplink.get("peer_keepalive_seconds", 25) or 25))
+        endpoint_literal = f"[{endpoint_host}]" if ":" in endpoint_host and not endpoint_host.startswith("[") else endpoint_host
+        config = (
+            "[Interface]\n"
+            f"PrivateKey = {private_key}\n"
+            f"ListenPort = {local_listen_port}\n"
+            f"Address = {local_address}/32\n"
+            "\n"
+            "[Peer]\n"
+            f"PublicKey = {peer_public_key}\n"
+            f"Endpoint = {endpoint_literal}:{endpoint_port}\n"
+            f"AllowedIPs = {peer_address}/32\n"
+            f"PersistentKeepalive = {keepalive}\n"
+        )
+        path = self.wireguard_interface_path(interface_name)
+        previous = None
+        if path.exists():
+            previous = (path.read_text(encoding="utf-8"), path.stat().st_mode & 0o777)
+        service_name = f"wg-quick@{interface_name}"
+        was_active = self.systemd_is_active(service_name)
+        was_enabled = run_command(f"systemctl is-enabled --quiet {service_name}.service", check=False).returncode == 0
+        try:
+            changed = self.write_text_if_changed(path, config)
+            if os.name != "nt":
+                path.chmod(0o600)
+            if changed:
+                daemon_reload = run_command("systemctl daemon-reload", check=False)
+                if daemon_reload.returncode != 0:
+                    raise RuntimeError(f"systemctl daemon-reload failed: {daemon_reload.stderr or daemon_reload.stdout}")
+            enabled = run_command(f"systemctl enable {service_name}.service", check=False)
+            if enabled.returncode != 0:
+                raise RuntimeError(f"systemctl enable failed for {service_name}: {enabled.stderr or enabled.stdout}")
+            if changed or not was_active:
+                action = "restart" if was_active else "start"
+                started = run_command(f"systemctl {action} {service_name}.service", check=False)
+                if started.returncode != 0:
+                    raise RuntimeError(
+                        f"systemctl {action} failed for {service_name}: {started.stderr or started.stdout}"
+                    )
+        except Exception:
+            if previous is None:
+                if path.exists():
+                    path.unlink()
+            else:
+                previous_content, previous_mode = previous
+                self.write_text_if_changed(path, previous_content)
+                if os.name != "nt":
+                    path.chmod(previous_mode)
+            if was_active and previous is not None:
+                restored = run_command(f"systemctl restart {service_name}.service", check=False)
+                if restored.returncode != 0:
+                    logging.error("failed to restore previous shared sidecar uplink %s: %s", interface_name, restored.stderr or restored.stdout)
+            elif previous is None:
+                run_command(f"systemctl stop {service_name}.service", check=False)
+            if not was_enabled:
+                run_command(f"systemctl disable {service_name}.service", check=False)
+            run_command(f"systemctl reset-failed {service_name}.service", check=False)
+            raise
+
+    def apply_published_sidecar_uplink(self, service_name: str, uplink: dict[str, Any]) -> None:
+        if str(uplink.get("wireguard_peer_mode", "") or "").strip().lower() == "shared":
+            interface_name = str(uplink.get("interface_name", "") or "").strip()[:15]
+            self.apply_shared_sidecar_uplink(interface_name, uplink)
+            return
+        self.apply_sidecar_uplink(service_name, uplink)
+
+    def remove_published_sidecar_uplink(self, service_name: str, uplink: dict[str, Any] | None = None) -> None:
+        if str((uplink or {}).get("wireguard_peer_mode", "") or "").strip().lower() == "shared":
+            return
+        self.remove_sidecar_uplink(service_name, uplink)
+
     def apply_sidecar_uplink(self, service_name: str, uplink: dict[str, Any]) -> None:
         if not uplink.get("enabled") or not shutil.which("wg") or not shutil.which("wg-quick"):
             return
@@ -4533,8 +5671,9 @@ WantedBy=multi-user.target
                     run_command(f"wg-quick up {interface_name}", check=False)
 
     def remove_sidecar_uplink(self, service_name: str, uplink: dict[str, Any] | None = None) -> None:
-        interface_name = str((uplink or {}).get("interface_name", "") or service_name).strip()[:15]
+        interface_name = safe_wireguard_interface_name((uplink or {}).get("interface_name", "") or service_name)
         if interface_name == "":
+            logging.error("refusing to remove sidecar uplink with invalid interface name")
             return
         if shutil.which("systemctl"):
             run_command(f"systemctl stop wg-quick@{interface_name}.service", check=False)
@@ -4552,7 +5691,12 @@ WantedBy=multi-user.target
             path.unlink()
         self.remove_sidecar_wstunnel_udp_client_service(interface_name)
 
-    def ensure_leigod_line_service(self, line_id: int, line_toml: str = "") -> None:
+    def ensure_leigod_line_service(
+        self,
+        line_id: int,
+        line_toml: str = "",
+        expected_sha256: str = "",
+    ) -> bool:
         # Fully self-provision leigod@<line> from panel-published state: write the unit template (using
         # the configured leigod binary + root) and the per-line config toml, then start it. The shared
         # account session.json is delivered separately via apply_leigod_session (panel management). A
@@ -4560,25 +5704,40 @@ WantedBy=multi-user.target
         # published line toml is all a slave needs. Idempotent (write_text_if_changed). We only START
         # lines here (never auto-stop: a shared line may back another lane); per-interface gost clients
         # are reaped by remove_sidecar_uplink / cleanup_orphan_sidecar_uplinks.
-        if int(line_id) <= 0 or not shutil.which("systemctl"):
-            return
+        if int(line_id) <= 0:
+            return False
         leigod_bin = str(self.config.get("leigod_bin", "/usr/local/bin/leigod-linux-amd64") or "/usr/local/bin/leigod-linux-amd64")
         leigod_root = Path(str(self.config.get("leigod_root", "/opt/leigod") or "/opt/leigod"))
         # Churn guard: never write a Restart=always unit on a node lacking the leigod accelerator binary.
         if shutil.which(leigod_bin) is None and not Path(leigod_bin).exists():
-            return
+            return False
         if isinstance(line_toml, str) and line_toml.strip() != "":
             try:
                 lines_dir = leigod_root / "lines"
                 lines_dir.mkdir(parents=True, exist_ok=True)
                 toml_path = lines_dir / f"{int(line_id)}.toml"
-                self.write_text_if_changed(toml_path, line_toml)
+                self.write_bytes_if_changed(toml_path, line_toml.encode("utf-8"))
                 try:
                     os.chmod(toml_path, 0o600)
                 except OSError:
                     pass
             except OSError as exc:  # noqa: BLE001
                 logging.warning("failed to write leigod line %s toml: %s", line_id, exc)
+                return False
+        toml_path = leigod_root / "lines" / f"{int(line_id)}.toml"
+        expected_hash = str(expected_sha256 or "").strip().lower()
+        if expected_hash != "":
+            if re.fullmatch(r"[a-f0-9]{64}", expected_hash) is None:
+                return False
+            try:
+                actual_hash = hashlib.sha256(toml_path.read_bytes()).hexdigest()
+            except OSError:
+                return False
+            if not hmac.compare_digest(expected_hash, actual_hash):
+                logging.warning("refusing to start leigod line %s with mismatched config hash", line_id)
+                return False
+        if not shutil.which("systemctl"):
+            return False
         unit_body = (
             "[Unit]\n"
             "Description=leigod exit line %i\n"
@@ -4594,17 +5753,18 @@ WantedBy=multi-user.target
             "[Install]\n"
             "WantedBy=multi-user.target\n"
         )
-        unit_path = Path("/etc/systemd/system/leigod@.service")
+        unit_path = self.service_unit_path("leigod@")
         unit_changed = self.write_text_if_changed(unit_path, unit_body)
         if unit_changed:
             run_command("systemctl daemon-reload", check=False)
         # Don't start until the session exists, else leigod crash-loops on "no session".
         if not (leigod_root / "session.json").exists():
-            return
+            return False
         unit = f"leigod@{int(line_id)}.service"
-        if unit_changed or not self.systemd_is_active(unit):
+        if unit_changed or not self.systemd_is_active(f"leigod@{int(line_id)}"):
             run_command(f"systemctl enable {unit}", check=False)
             run_command(f"systemctl {'restart' if unit_changed else 'start'} {unit}", check=False)
+        return True
 
     def ensure_sidecar_gost_uot_client_service(
         self,
@@ -5390,7 +6550,9 @@ WantedBy=multi-user.target
 
         result = run_command("wg show interfaces", check=False)
         for iface in str(getattr(result, "stdout", "") or "").strip().split():
-            if not iface.startswith("lws"):
+            if not iface.startswith(("lws", "lwp")):
+                continue
+            if is_sidecar_owned_shared_interface(iface):
                 continue
             if iface in active_interfaces:
                 continue
@@ -5399,39 +6561,46 @@ WantedBy=multi-user.target
 
         if shutil.which("systemctl"):
             unit_result = run_command(
-                "systemctl list-units 'wg-quick@lws*' 'leikwan-wgcf-lws*' 'leikwan-gost-lws*' 'leikwan-lguot-lws*' '*-sidecar-selector.service' --type=service --all --no-legend --no-pager",
+                "systemctl list-units 'wg-quick@lws*' 'wg-quick@lwp*' 'leikwan-wgcf-lws*' 'leikwan-wgcf-lwp*' 'leikwan-uot-lws*' 'leikwan-uot-lwp*' 'leikwan-gost-lws*' 'leikwan-gost-lwp*' 'leikwan-lguot-lws*' 'leikwan-lguot-lwp*' '*-sidecar-selector.service' --type=service --all --no-legend --no-pager",
                 check=False,
             )
             for line in str(getattr(unit_result, "stdout", "") or "").splitlines():
                 unit_name = line.strip().split()[0] if line.strip() else ""
                 if unit_name == "":
                     continue
-                wg_match = re.match(r"^wg-quick@(lws[^.]+)\.service$", unit_name)
-                cf_match = re.match(r"^leikwan-wgcf-(lws[^.]+)\.service$", unit_name)
-                gost_match = re.match(r"^leikwan-gost-(lws[^.]+)\.service$", unit_name)
-                lguot_match = re.match(r"^leikwan-lguot-(lws[^.]+)\.service$", unit_name)
+                wg_match = re.match(r"^wg-quick@(lw[sp][^.]+)\.service$", unit_name)
+                cf_match = re.match(r"^leikwan-wgcf-(lw[sp][^.]+)\.service$", unit_name)
+                uot_match = re.match(r"^leikwan-uot-(lw[sp][^.]+)\.service$", unit_name)
+                gost_match = re.match(r"^leikwan-gost-(lw[sp][^.]+)\.service$", unit_name)
+                lguot_match = re.match(r"^leikwan-lguot-(lw[sp][^.]+)\.service$", unit_name)
                 selector_match = re.match(r"^(.+)-sidecar-selector\.service$", unit_name)
                 if wg_match is not None:
                     iface = wg_match.group(1)
-                    if iface not in active_interfaces:
+                    if not is_sidecar_owned_shared_interface(iface) and iface not in active_interfaces:
                         run_command(f"systemctl stop {unit_name}", check=False)
                         run_command(f"systemctl disable {unit_name}", check=False)
                         run_command(f"systemctl reset-failed {unit_name}", check=False)
                 elif cf_match is not None:
                     iface = cf_match.group(1)
-                    if iface not in active_interfaces:
+                    if not is_sidecar_owned_shared_interface(iface) and iface not in active_interfaces:
+                        run_command(f"systemctl stop {unit_name}", check=False)
+                        run_command(f"systemctl disable {unit_name}", check=False)
+                        run_command(f"systemctl reset-failed {unit_name}", check=False)
+                elif uot_match is not None:
+                    iface = uot_match.group(1)
+                    if not is_sidecar_owned_shared_interface(iface) and iface not in active_interfaces:
                         run_command(f"systemctl stop {unit_name}", check=False)
                         run_command(f"systemctl disable {unit_name}", check=False)
                         run_command(f"systemctl reset-failed {unit_name}", check=False)
                 elif gost_match is not None:
                     iface = gost_match.group(1)
-                    if iface not in active_interfaces:
+                    if not is_sidecar_owned_shared_interface(iface) and iface not in active_interfaces:
                         run_command(f"systemctl stop {unit_name}", check=False)
                         run_command(f"systemctl disable {unit_name}", check=False)
                         run_command(f"systemctl reset-failed {unit_name}", check=False)
                 elif lguot_match is not None:
                     iface = lguot_match.group(1)
-                    if iface not in active_interfaces:
+                    if not is_sidecar_owned_shared_interface(iface) and iface not in active_interfaces:
                         run_command(f"systemctl stop {unit_name}", check=False)
                         run_command(f"systemctl disable {unit_name}", check=False)
                         run_command(f"systemctl reset-failed {unit_name}", check=False)
@@ -5505,6 +6674,16 @@ WantedBy=multi-user.target
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_name(path.name + ".tmp")
         tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(path)
+        return True
+
+    @staticmethod
+    def write_bytes_if_changed(path: Path, content: bytes) -> bool:
+        if path.exists() and path.read_bytes() == content:
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(path.name + ".tmp")
+        tmp_path.write_bytes(content)
         tmp_path.replace(path)
         return True
 

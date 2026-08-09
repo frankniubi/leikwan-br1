@@ -83,6 +83,26 @@ namespace Leikwan\Master\Database {
                     $group = $this->findById('node_groups', (int) ($node['group_id'] ?? 0));
                     $rows[] = array_merge($node, ['node_group_key' => (string) ($group['group_key'] ?? '')]);
                 }
+                $preferredIds = [];
+                foreach ($params as $key => $value) {
+                    if (str_starts_with((string) $key, 'preferred_node_')) {
+                        $preferredIds[(int) $value] = true;
+                    }
+                }
+                usort($rows, static function (array $left, array $right) use ($preferredIds): int {
+                    $preferredCmp = (isset($preferredIds[(int) ($left['id'] ?? 0)]) ? 0 : 1)
+                        <=> (isset($preferredIds[(int) ($right['id'] ?? 0)]) ? 0 : 1);
+                    if ($preferredCmp !== 0) {
+                        return $preferredCmp;
+                    }
+                    $loadCmp = ((int) ($left['current_load'] ?? 0)) <=> ((int) ($right['current_load'] ?? 0));
+                    return $loadCmp !== 0
+                        ? $loadCmp
+                        : ((int) ($left['id'] ?? 0)) <=> ((int) ($right['id'] ?? 0));
+                });
+                if (preg_match('/LIMIT (\d+)/', $n, $matches)) {
+                    $rows = array_slice($rows, 0, (int) $matches[1]);
+                }
                 return $rows;
             }
             if (str_contains($n, 'FROM service_endpoints WHERE forward_id = :forward_id')) {
@@ -138,6 +158,25 @@ namespace Leikwan\Master\Database {
                 }
             }
             return $c;
+        }
+
+        public function destroyTaskCount(): int
+        {
+            $count = 0;
+            foreach ($this->inserts as $row) {
+                if ($row['table'] === 'provision_tasks' && (string) ($row['data']['action'] ?? '') === 'destroy') {
+                    $count++;
+                }
+            }
+            return $count;
+        }
+
+        public function endpointInsertCount(): int
+        {
+            return count(array_filter(
+                $this->inserts,
+                static fn(array $row): bool => $row['table'] === 'service_endpoints'
+            ));
         }
 
         /** @return array<int, string> publish-task target strings, in insert order */
@@ -208,17 +247,30 @@ namespace {
     $db->seed('app_settings', []);
     $db->seed('services', [['id' => 1, 'status' => 'active', 'client_token' => 'svc-tok']]);
     $db->seed('node_groups', [['id' => 5, 'group_key' => 'hk-pool']]);
-    $db->seed('nodes', [[
-        'id' => 11,
-        'group_id' => 5,
-        'name' => 'edge-11',
-        'status' => 'active',
-        'public_ip' => '203.0.113.11',
-        'current_load' => 0,
-        'last_heartbeat_at' => '2026-05-30 00:00:00',
-        'agent_config_json' => null,
-        'agent_version' => '2026.05.20.1',
-    ]]);
+    $db->seed('nodes', [
+        [
+            'id' => 11,
+            'group_id' => 5,
+            'name' => 'edge-11',
+            'status' => 'active',
+            'public_ip' => '203.0.113.11',
+            'current_load' => 8,
+            'last_heartbeat_at' => '2026-05-30 00:00:00',
+            'agent_config_json' => null,
+            'agent_version' => '2026.05.20.1',
+        ],
+        [
+            'id' => 12,
+            'group_id' => 5,
+            'name' => 'edge-12',
+            'status' => 'active',
+            'public_ip' => '203.0.113.12',
+            'current_load' => 0,
+            'last_heartbeat_at' => '2026-05-30 00:00:00',
+            'agent_config_json' => null,
+            'agent_version' => '2026.05.20.1',
+        ],
+    ]);
     $db->seed('forwards', [[
         'id' => 9,
         'service_id' => 1,
@@ -260,6 +312,9 @@ namespace {
     $afterFirst = $db->publishTaskCount();
     if ($afterFirst < 1) {
         fail('first reconcile of an active endpoint must publish to establish the desired-payload fingerprint baseline');
+    }
+    if ($db->endpointInsertCount() !== 0 || $db->destroyTaskCount() !== 0) {
+        fail('healthy existing endpoint must remain sticky when another node reports lower current_load');
     }
 
     // (2) Unchanged reconcile -> no drift -> must NOT publish again.

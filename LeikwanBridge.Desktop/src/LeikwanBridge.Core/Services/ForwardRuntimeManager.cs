@@ -54,6 +54,16 @@ public class ForwardRuntimeManager : IDisposable
         _config.ApplyAuthoritativeConfig(agentConfigJson);
     }
 
+    public virtual string ComputeContractSignature(ForwardConfig forward)
+    {
+        var sidepath = _config.UdpUotSidepath;
+        if (sidepath == null || !sidepath.EnabledForwardIds.Contains(forward.ForwardId))
+            return ForwardContractSignature.Compute(forward);
+
+        var uotIdentity = UotRuntimeCapabilityProbe.BuildIdentity(_config.GetEffectiveUotBondBin());
+        return ForwardContractSignature.Compute(forward, sidepath, uotIdentity);
+    }
+
     private void ApplyForwardCore(ForwardConfig forward, AppliedForwardState? previousState, string? contractSignature, string applyReason)
     {
         var selectedForward = forward;
@@ -64,31 +74,36 @@ public class ForwardRuntimeManager : IDisposable
             selectedForward = MptcpFallbackService.ConvertToBond(selectedForward);
             mode = ModeNormalizer.Normalize(selectedForward.Mode);
         }
+        var frontendMode = WindowsForwardPolicy.GetSidecarFrontendMode(selectedForward);
 
 
         Log.Information("applying forward {ForwardId} mode={Mode} transport={Transport} endpoints={Count}",
             forwardId, mode, selectedForward.Transport, selectedForward.Endpoints.Count);
 
-        // Stop existing processes
-        _supervisor.StopAll(forwardId);
-        WaitForPortsReleased(PortsForReleaseWait(previousState, selectedForward.ListenPort), TimeSpan.FromSeconds(3));
-
         BondRuntimeBuilder.RuntimeSpec spec;
         try
         {
-            spec = mode switch
-            {
-                "bond" => _bondBuilder.Build(WithSelectedBondRuntimeEndpoints(selectedForward)),
-                "race" => _bondBuilder.BuildRace(selectedForward),
-                "mptcp" => _mptcpBuilder.Build(selectedForward),
-                _ => _bondBuilder.BuildSingle(selectedForward),
-            };
+            spec = frontendMode != ""
+                ? _bondBuilder.BuildFrontend(WithSelectedBondRuntimeEndpoints(selectedForward))
+                : mode switch
+                {
+                    "bond" => _bondBuilder.Build(WithSelectedBondRuntimeEndpoints(selectedForward)),
+                    "race" => _bondBuilder.BuildRace(selectedForward),
+                    "mptcp" => _mptcpBuilder.Build(selectedForward),
+                    _ => _bondBuilder.BuildSingle(selectedForward),
+                };
+            if (RequiresFeedbackScheduler(selectedForward))
+                UotRuntimeCapabilityProbe.RequireFeedbackCapability(_config.GetEffectiveUotBondBin());
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "failed to build runtime spec for forward {ForwardId}", forwardId);
+            Log.Error(ex, "failed to validate runtime spec for forward {ForwardId}; existing runtime preserved", forwardId);
             return;
         }
+
+        // Validation above is intentionally complete before replacing the running runtime.
+        _supervisor.StopAll(forwardId);
+        WaitForPortsReleased(PortsForReleaseWait(previousState, selectedForward.ListenPort), TimeSpan.FromSeconds(3));
 
         foreach (var file in spec.GeneratedFiles ?? [])
         {
@@ -182,7 +197,7 @@ public class ForwardRuntimeManager : IDisposable
         applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
 
         var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
-        var contractSignature = ForwardContractSignature.Compute(effectiveForward);
+        var contractSignature = ComputeContractSignature(effectiveForward);
         var signatureMatches = previousState != null
             && string.Equals(previousState.ContractSignature, contractSignature, StringComparison.Ordinal);
         if (!force && signatureMatches && IsForwardRunning(forward.ForwardId))
@@ -200,6 +215,14 @@ public class ForwardRuntimeManager : IDisposable
     }
 
     public void Dispose() => _supervisor.Dispose();
+
+    private bool RequiresFeedbackScheduler(ForwardConfig forward)
+    {
+        var sidepath = _config.UdpUotSidepath;
+        return sidepath != null
+            && sidepath.EnabledForwardIds.Contains(forward.ForwardId)
+            && string.Equals(sidepath.SchedulerMode, "feedback_drr", StringComparison.OrdinalIgnoreCase);
+    }
 
     private bool WaitForRequiredPorts(IEnumerable<int> ports, TimeSpan timeout)
     {
@@ -266,7 +289,7 @@ public class ForwardRuntimeManager : IDisposable
 
     private ForwardConfig WithSelectedBondRuntimeEndpoints(ForwardConfig forward)
     {
-        if (ModeNormalizer.Normalize(forward.Mode) != "bond"
+        if (!WindowsForwardPolicy.UsesBondRuntime(forward)
             || !string.Equals(forward.Bonding?.PolicyMode, "latency_first", StringComparison.OrdinalIgnoreCase))
             return forward;
 

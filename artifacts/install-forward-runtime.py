@@ -4,7 +4,113 @@ from __future__ import annotations
 import json
 import ipaddress
 import pathlib
+import subprocess
 from urllib.parse import quote
+
+
+UOT_SCHEDULER_DEFAULTS = {
+    "scheduler_mode": "legacy",
+    "aggregate_rate_bps": 300_000_000,
+    "queue_target_ms": 5,
+    "queue_deadline_ms": 10,
+    "global_queue_bytes": 1_048_576,
+    "global_queue_packets": 8_192,
+    "per_session_queue_bytes": 262_144,
+    "per_session_queue_packets": 512,
+    "drr_quantum_bytes": 16_384,
+    "chunk_min_bytes": 16_384,
+    "chunk_target_bytes": 32_768,
+    "chunk_max_bytes": 65_536,
+    "min_leg_window_bytes": 262_144,
+    "max_leg_window_bytes": 4_194_304,
+    "max_total_outstanding_bytes": 8_388_608,
+    "progress_interval_bytes": 65_536,
+    "progress_interval_frames": 32,
+    "progress_interval_ms": 5,
+    "finish_skew_budget_ms": 2,
+    "probe_interval_ms": 1_000,
+    "max_sessions": 4_096,
+    "control_queue_packets": 256,
+}
+
+
+def normalize_uot_scheduler(raw: dict) -> dict:
+    mode = str(raw.get("scheduler_mode", "legacy") or "legacy").strip().lower()
+    if mode not in {"legacy", "feedback_drr"}:
+        raise ValueError(f"unsupported UoT scheduler_mode: {mode}")
+    normalized = {"scheduler_mode": mode}
+    for key, default in UOT_SCHEDULER_DEFAULTS.items():
+        if key == "scheduler_mode":
+            continue
+        value = raw[key] if key in raw else default
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be an integer")
+        try:
+            normalized[key] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+    validate_uot_scheduler(normalized)
+    return normalized
+
+
+def validate_uot_scheduler(settings: dict) -> None:
+    if settings["aggregate_rate_bps"] <= 0:
+        raise ValueError("aggregate_rate_bps must be positive")
+    if settings["queue_target_ms"] < 0 or settings["queue_target_ms"] > settings["queue_deadline_ms"] or settings["queue_deadline_ms"] <= 0:
+        raise ValueError("queue target/deadline is invalid")
+    if not 0 < settings["global_queue_bytes"] <= 64 * 1024 * 1024 or not 0 < settings["global_queue_packets"] <= 262_144:
+        raise ValueError("global queue limits are outside process bounds")
+    if not 0 < settings["per_session_queue_bytes"] <= settings["global_queue_bytes"] or not 0 < settings["per_session_queue_packets"] <= settings["global_queue_packets"]:
+        raise ValueError("per-session queue limits must fit global queue limits")
+    if settings["drr_quantum_bytes"] <= 0:
+        raise ValueError("drr_quantum_bytes must be positive")
+    if not 0 < settings["chunk_min_bytes"] <= settings["chunk_target_bytes"] <= settings["chunk_max_bytes"] or settings["chunk_max_bytes"] < 65_535:
+        raise ValueError("chunk sizes are invalid")
+    if not 0 < settings["min_leg_window_bytes"] <= settings["max_leg_window_bytes"] <= settings["max_total_outstanding_bytes"] <= 64 * 1024 * 1024:
+        raise ValueError("leg windows are outside process bounds")
+    if any(settings[key] <= 0 for key in ("progress_interval_bytes", "progress_interval_frames", "progress_interval_ms", "probe_interval_ms")):
+        raise ValueError("progress and probe intervals must be positive")
+    if not 0 < settings["max_sessions"] <= 65_536:
+        raise ValueError("max_sessions is outside process bounds")
+    if not 0 < settings["control_queue_packets"] <= 262_144:
+        raise ValueError("control_queue_packets is outside process bounds")
+
+
+def probe_uot_build_info(runtime_bin: str, timeout_seconds: float = 2.0) -> dict:
+    try:
+        completed = subprocess.run(
+            [runtime_bin, "--build-info-json"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("native UoT runtime capability probe failed") from exc
+    if completed.returncode != 0:
+        raise ValueError("native UoT runtime capability probe failed")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("native UoT runtime capability probe failed") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("native UoT runtime capability probe failed")
+    return payload
+
+
+def require_uot_feedback_capability(runtime_bin: str) -> dict:
+    payload = probe_uot_build_info(runtime_bin)
+    modes = payload.get("scheduler_modes", [])
+    capabilities = payload.get("capabilities", [])
+    if (
+        payload.get("protocol_version") != 2
+        or not isinstance(modes, list)
+        or "feedback_drr" not in modes
+        or not isinstance(capabilities, list)
+        or "leg-progress-v1" not in capabilities
+    ):
+        raise ValueError("native UoT runtime lacks feedback_drr/leg-progress-v1")
+    return payload
 
 
 def normalize_mode(mode: str) -> str:
@@ -38,6 +144,17 @@ def bonding_config(forward: dict) -> dict:
 def mptcp_config(forward: dict) -> dict:
     config = forward.get("mptcp", {})
     return config if isinstance(config, dict) else {}
+
+
+def sidecar_frontend_mode(forward: dict, bond: dict) -> str:
+    frontend_mode = str(bond.get("frontend_mode", "") or "").strip().lower()
+    if frontend_mode not in {"single", "race"}:
+        return ""
+    if contract_bool(forward.get("sidecar_required")) is not True:
+        return ""
+    if not forward_contract_is_sidecar_aggregation(forward):
+        return ""
+    return frontend_mode
 
 
 def is_ip_literal(value: object) -> bool:
@@ -299,12 +416,50 @@ def udp_uot_sidepath_settings(forward: dict, agent_config: dict) -> dict | None:
     forward_id = int(forward.get("forward_id", 0) or 0)
     if forward_id not in enabled_ids:
         return None
+    scheduler = normalize_uot_scheduler(raw)
+
+    def read_int(key: str, default: int) -> int:
+        value = raw[key] if key in raw else default
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be an integer")
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+
+    sidecar_port = read_int("sidecar_port", 8999)
+    if not 7000 <= sidecar_port <= 9000:
+        raise ValueError("udp_uot_sidepath sidecar_port must be within 7000-9000")
+    reorder_window_packets = read_int("reorder_window_packets", 4096)
+    reorder_window_bytes = read_int("reorder_window_bytes", 16_777_216)
+    reorder_timeout_ms = read_int("reorder_timeout_ms", 25)
+    if min(reorder_window_packets, reorder_window_bytes, reorder_timeout_ms) <= 0:
+        raise ValueError("reorder limits must be positive")
+    delivery_mode = str(
+        raw.get(
+            "delivery_mode",
+            "unordered" if scheduler["scheduler_mode"] == "feedback_drr" else "ordered",
+        )
+        or "ordered"
+    ).strip().lower()
+    if delivery_mode not in {"ordered", "unordered"}:
+        raise ValueError(f"unsupported UoT delivery_mode: {delivery_mode}")
+    wireguard_aware = truthy(
+        raw.get("wireguard_aware", scheduler["scheduler_mode"] == "feedback_drr")
+    )
+    if delivery_mode == "unordered" and not wireguard_aware:
+        raise ValueError("unordered delivery requires wireguard_aware=true")
+    if scheduler["scheduler_mode"] == "feedback_drr" and delivery_mode != "unordered":
+        raise ValueError("feedback_drr requires unordered delivery")
     return {
         "shadow_route_suffix": str(raw.get("shadow_route_suffix", ".uot") or ".uot"),
-        "sidecar_port": int(raw.get("sidecar_port", 8999) or 8999),
-        "reorder_window_packets": int(raw.get("reorder_window_packets", 4096) or 4096),
-        "reorder_window_bytes": int(raw.get("reorder_window_bytes", 16777216) or 16777216),
-        "reorder_timeout_ms": int(raw.get("reorder_timeout_ms", 25) or 25),
+        "sidecar_port": sidecar_port,
+        "reorder_window_packets": reorder_window_packets,
+        "reorder_window_bytes": reorder_window_bytes,
+        "reorder_timeout_ms": reorder_timeout_ms,
+        "delivery_mode": delivery_mode,
+        "wireguard_aware": wireguard_aware,
+        **scheduler,
     }
 
 
@@ -334,7 +489,12 @@ def render_udp_uot_aux_unit(
     config_path = f"/etc/leikwan/uot-bond-forward-{forward_id}.json"
     service_name = f"leikwan-client-{forward_id}-udp-uot"
     service_path = f"/etc/systemd/system/{service_name}.service"
-    runtime_bin = str(agent_config.get("uot_bond_bin", "/usr/local/bin/leikwan-uot-bond.py") or "/usr/local/bin/leikwan-uot-bond.py")
+    runtime_bin = str(agent_config.get("uot_bond_bin", "/usr/local/bin/leikwan-uot-bond") or "/usr/local/bin/leikwan-uot-bond")
+    scheduler_mode = str(settings["scheduler_mode"])
+    if scheduler_mode == "feedback_drr" and runtime_bin.lower().endswith(".py"):
+        raise ValueError("feedback_drr requires the Rust leikwan-uot-bond runtime")
+    if scheduler_mode == "feedback_drr":
+        require_uot_feedback_capability(runtime_bin)
     config_payload = {
         "forward_id": forward_id,
         "listen_udp": f"0.0.0.0:{int(forward['listen_port'])}",
@@ -343,6 +503,8 @@ def render_udp_uot_aux_unit(
         "reorder_window_packets": int(settings["reorder_window_packets"]),
         "reorder_window_bytes": int(settings["reorder_window_bytes"]),
         "reorder_timeout_ms": int(settings["reorder_timeout_ms"]),
+        "delivery_mode": str(settings["delivery_mode"]),
+        "wireguard_aware": bool(settings["wireguard_aware"]),
         "legs": [
             {
                 "endpoint_id": int(endpoint.get("endpoint_id", 0) or 0),
@@ -356,6 +518,10 @@ def render_udp_uot_aux_unit(
             for endpoint in endpoints
         ],
     }
+    if not runtime_bin.lower().endswith(".py"):
+        config_payload.update(
+            {key: settings[key] for key in UOT_SCHEDULER_DEFAULTS}
+        )
     if runtime_bin.endswith(".py"):
         exec_start = f"/usr/bin/python3 {runtime_bin} --config {config_path}"
     else:
@@ -734,6 +900,7 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     service_path = f"/etc/systemd/system/{service_name}.service"
     bond = bonding_config(forward)
     mptcp = mptcp_config(forward)
+    frontend_mode = sidecar_frontend_mode(forward, bond)
     bond_remote_target = str(bond.get("remote_target", "")).strip()
     if bond_remote_target == "" and str(forward.get("backend_mode", "") or "").strip().lower() == "cf_mode":
         fallback_port = int_or_default(forward.get("bond_sidecar_port"), 0)
@@ -761,7 +928,10 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
         usable_endpoints.append(normalized)
     endpoints = usable_endpoints
 
-    if len(endpoints) > 1 and mode == "race":
+    if frontend_mode == "single":
+        endpoints = endpoints[:1]
+
+    if len(endpoints) > 1 and mode == "race" and frontend_mode == "":
         base = 20000 + ((forward_id * 37) % 15000)
         rate_base = rate_limit_base_port(forward_id)
         rate_tcp_port = rate_base
@@ -772,12 +942,13 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
         for index, endpoint in enumerate(endpoints):
             host = endpoint["host"]
             port = endpoint["port"]
+            endpoint_target = str(endpoint.get("runtime_target", target) or target)
             tcp_back = base + index
             udp_back = base + 200 + index
-            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
+            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
             tcp_targets.append(f"127.0.0.1:{tcp_back}")
             if transport in ("udp", "tcp+udp"):
-                lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{udp_back}:{target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
+                lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{udp_back}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
                 udp_targets.append(f"127.0.0.1:{udp_back}")
         if transport in ("tcp", "tcp+udp"):
             tcp_race_listen_port = rate_tcp_port if speed_limit_mbps else listen_port
@@ -814,17 +985,18 @@ WantedBy=multi-user.target
             "start_script": "\n".join(lines) + "\n",
         }
 
-    if mode == "bond":
+    if mode == "bond" or frontend_mode != "":
         if bond_remote_target == "":
             raise RuntimeError("bond mode missing bonding.remote_target")
-        self_leg_endpoints = [
-            endpoint
-            for candidate in selected_self_leg_candidates(forward)
-            for endpoint in [self_leg_endpoint(candidate, forward)]
-            if endpoint is not None
-        ]
-        if self_leg_endpoints:
-            endpoints = self_leg_endpoints + endpoints
+        if frontend_mode == "":
+            self_leg_endpoints = [
+                endpoint
+                for candidate in selected_self_leg_candidates(forward)
+                for endpoint in [self_leg_endpoint(candidate, forward)]
+                if endpoint is not None
+            ]
+            if self_leg_endpoints:
+                endpoints = self_leg_endpoints + endpoints
         if endpoints == []:
             raise RuntimeError("bond mode requires at least one endpoint")
         sidepath = udp_uot_sidepath_settings(forward, agent_config)
@@ -838,12 +1010,16 @@ WantedBy=multi-user.target
         rate_base = rate_limit_base_port(forward_id)
         lines = ["#!/usr/bin/env bash", "set -euo pipefail", "trap 'kill $(jobs -p) 2>/dev/null || true' EXIT"]
         strategy_path = f"/var/lib/leikwan-client-agent/forward-strategies/{forward_id}.strategy"
-        lines.extend(
-            [
-                "mkdir -p /var/lib/leikwan-client-agent/forward-strategies",
-                f"if [[ ! -s {strategy_path} ]]; then printf 'latency_best\\n' > {strategy_path}; fi",
-            ]
-        )
+        strategy_locked = frontend_mode != "" and truthy(bond.get("strategy_locked", True))
+        strategy_args = ""
+        if not strategy_locked:
+            lines.extend(
+                [
+                    "mkdir -p /var/lib/leikwan-client-agent/forward-strategies",
+                    f"if [[ ! -s {strategy_path} ]]; then printf 'latency_best\\n' > {strategy_path}; fi",
+                ]
+            )
+            strategy_args = f"--strategy-file {strategy_path} "
         client_id = int_or_default(agent_config.get("client_id"), 0)
         snapshot_path = f"/run/leikwan/bond-leg-health-forward-{forward_id}.json"
         lines.extend(
@@ -858,7 +1034,6 @@ WantedBy=multi-user.target
         use_local_rate_limit = speed_limit_mbps if not truthy(bond.get("disable_local_rate_limit", True)) else None
         ws_priority = int_or_default(bond.get("ws_priority"), 10)
         join_timeout_ms = adaptive_join_timeout_ms(bond, endpoints)
-        single_leg_fast_path = len(endpoints) == 1 and primary_transport in ("tcp", "tcp+udp")
         selected_quic_legs = select_active_quic_legs(endpoints, bond)
         use_wss_as_active_legs = selected_quic_legs == []
         interactive_chunk_bytes = int_or_default(bond.get("interactive_chunk_bytes"), 16 * 1024)
@@ -917,13 +1092,11 @@ WantedBy=multi-user.target
                     tcp_leg_targets.append(render_tcp_leg(f"127.0.0.1:{tcp_back}", endpoint_priority, endpoint))
             append_wait_for_local_listener(lines, tcp_ready_ports)
             tcp_latency_flags = "--latency-first " if latency_first else ""
-            single_leg_fast_path_flag = "--single-leg-fast-path " if single_leg_fast_path else ""
             lines.append(
                 f"{bond_bin} client --protocol tcp --listen {tcp_listen_host}:{tcp_listen_port} "
                 f"{tcp_latency_flags}"
-                f"{single_leg_fast_path_flag}"
                 f"--legs '{','.join(tcp_leg_targets)}' --session-token '{bond_session_token}' "
-                f"--strategy-file {strategy_path} --default-strategy latency_best "
+                f"{strategy_args}--default-strategy latency_best "
                 f"--chunk-size {int(bond.get('chunk_size', 65536) or 65536)} "
                 f"--max-window-bytes {int(bond.get('max_window_bytes', 8388608) or 8388608)} "
                 f"--retransmit-ms {int(bond.get('retransmit_ms', 700) or 700)} "
@@ -990,7 +1163,7 @@ WantedBy=multi-user.target
                 f"{bond_bin} client --protocol udp --listen {udp_listen_host}:{udp_listen_port} "
                 f"{udp_latency_flags}"
                 f"--legs '{','.join(udp_leg_targets)}' --session-token '{udp_token}' "
-                f"--strategy-file {strategy_path} --default-strategy latency_best "
+                f"{strategy_args}--default-strategy latency_best "
                 f"--chunk-size {int(bond.get('chunk_size', 65536) or 65536)} "
                 f"--max-window-bytes {int(bond.get('max_window_bytes', 8388608) or 8388608)} "
                 f"--retransmit-ms {int(bond.get('retransmit_ms', 700) or 700)} "
@@ -1400,16 +1573,17 @@ WantedBy=multi-user.target
         raise RuntimeError(f"forward {forward_id} has no usable endpoints")
 
     endpoint = endpoints[0]
+    endpoint_target = str(endpoint.get("runtime_target", target) or target)
     rate_base = rate_limit_base_port(forward_id)
     internal_tcp_port = rate_base
     internal_udp_port = rate_base + 1
     if speed_limit_mbps:
         lines = ["#!/usr/bin/env bash", "set -euo pipefail", "trap 'kill $(jobs -p) 2>/dev/null || true' EXIT"]
         if transport in ("tcp", "tcp+udp"):
-            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{internal_tcp_port}:{target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
+            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{internal_tcp_port}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
             lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py tcp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{internal_tcp_port} --mbps {speed_limit_mbps} &")
         if transport in ("udp", "tcp+udp"):
-            lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{internal_udp_port}:{target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
+            lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{internal_udp_port}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
             lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py udp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{internal_udp_port} --mbps {speed_limit_mbps} &")
         lines.append("wait -n")
         start_script_path = f"/usr/local/bin/leikwan-client-start-{forward_id}.sh"
@@ -1436,9 +1610,9 @@ WantedBy=multi-user.target
 
     listen_flags: list[str] = []
     if transport in ("tcp", "tcp+udp"):
-        listen_flags.append(f"-L tcp://[::]:{listen_port}:{target}")
+        listen_flags.append(f"-L tcp://[::]:{listen_port}:{endpoint_target}")
     if transport in ("udp", "tcp+udp"):
-        listen_flags.append(f"-L udp://[::]:{listen_port}:{target}?timeout_sec=0")
+        listen_flags.append(f"-L udp://[::]:{listen_port}:{endpoint_target}?timeout_sec=0")
     exec_start = f"/usr/local/bin/wstunnel client {' '.join(listen_flags)} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']}"
     service_unit = f"""[Unit]
 Description=Leikwan Client {forward_id}

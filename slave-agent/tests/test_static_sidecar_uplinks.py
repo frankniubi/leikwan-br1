@@ -76,6 +76,200 @@ class SlaveStaticSidecarUplinkTests(unittest.TestCase):
             "sidecar_static_uplinks": [uplink],
         }
 
+    @staticmethod
+    def shared_uplink(combination_id: int = 13, **overrides) -> dict:
+        uplink = {
+            "enabled": True,
+            "mode": "static_slave_sidecar",
+            "wireguard_peer_mode": "shared",
+            "forward_combination_id": combination_id,
+            "sidecar_point_id": 10,
+            "node_id": 2,
+            "lane": "shared",
+            "interface_name": "lwsp10n2",
+            "listen_port": 18502,
+            "local_address": "10.240.3.2",
+            "peer_address": "10.240.3.1",
+            "sidecar_peer_public_key": "sidecar-public-key",
+            "sidecar_endpoint_host": "hk-sidecar.example",
+            "sidecar_endpoint_port": 18502,
+            "local_listen_port": 43172,
+            "outer_transport": "udp",
+            "peer_keepalive_seconds": 25,
+        }
+        uplink.update(overrides)
+        return uplink
+
+    def test_shared_point_is_applied_once_when_panel_repeats_combination_provenance(self):
+        agent = self.make_agent()
+        first = self.shared_uplink(combination_id=13)
+        repeated = self.shared_uplink(combination_id=99)
+
+        with mock.patch.object(agent, "apply_shared_sidecar_uplink") as apply_uplink:
+            with mock.patch.object(agent, "watch_static_sidecar_uplink"):
+                agent.apply_static_sidecar_uplinks([first, repeated])
+
+        apply_uplink.assert_called_once()
+
+    def test_conflicting_shared_duplicates_preserve_previous_interface(self):
+        agent = self.make_agent()
+        agent.save_static_sidecar_uplink_state({
+            "interfaces": {
+                "lwsp10n2": {
+                    "interface_name": "lwsp10n2",
+                    "sidecar_point_id": 10,
+                    "node_id": 2,
+                    "lane": "shared",
+                }
+            }
+        })
+        first = self.shared_uplink(combination_id=13)
+        conflict = self.shared_uplink(combination_id=99, sidecar_endpoint_port=18504)
+
+        with mock.patch.object(agent, "apply_shared_sidecar_uplink") as apply_uplink:
+            with mock.patch.object(agent, "watch_static_sidecar_uplink"):
+                with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
+                    agent.apply_static_sidecar_uplinks([first, conflict])
+
+        apply_uplink.assert_not_called()
+        remove_uplink.assert_not_called()
+        state = agent.load_static_sidecar_uplink_state()
+        self.assertIn("lwsp10n2", state.get("interfaces", {}))
+
+    def test_incomplete_shared_record_preserves_previous_interface(self):
+        agent = self.make_agent()
+        agent.save_static_sidecar_uplink_state({
+            "interfaces": {
+                "lwsp10n2": {
+                    "interface_name": "lwsp10n2",
+                    "sidecar_point_id": 10,
+                    "node_id": 2,
+                    "lane": "shared",
+                }
+            }
+        })
+        incomplete = self.shared_uplink(sidecar_peer_public_key="")
+
+        with mock.patch.object(agent, "apply_shared_sidecar_uplink") as apply_uplink:
+            with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
+                agent.apply_static_sidecar_uplinks([incomplete])
+
+        apply_uplink.assert_not_called()
+        remove_uplink.assert_not_called()
+        state = agent.load_static_sidecar_uplink_state()
+        self.assertIn("lwsp10n2", state.get("interfaces", {}))
+
+    def test_malformed_shared_interface_name_preserves_all_previous_interfaces(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                agent = self.make_agent()
+                previous = {
+                    "interface_name": "lwsp10n2",
+                    "sidecar_point_id": 10,
+                    "node_id": 2,
+                    "lane": "shared",
+                }
+                agent.save_static_sidecar_uplink_state({"interfaces": {"lwsp10n2": previous}})
+                malicious = self.shared_uplink(interface_name="lwsp10;id", enabled=enabled)
+
+                with mock.patch.object(agent, "apply_shared_sidecar_uplink") as apply_uplink:
+                    with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
+                        agent.apply_static_sidecar_uplinks([malicious])
+
+                apply_uplink.assert_not_called()
+                remove_uplink.assert_not_called()
+                state = agent.load_static_sidecar_uplink_state()
+                self.assertEqual(previous, state.get("interfaces", {}).get("lwsp10n2"))
+
+    def test_remove_sidecar_uplink_rejects_unsafe_persisted_interface_name(self):
+        agent = self.make_agent()
+
+        with mock.patch.object(slave_agent_module.shutil, "which", return_value="/usr/bin/systemctl"):
+            with mock.patch.object(slave_agent_module, "run_command") as run:
+                agent.remove_sidecar_uplink("ignored", {"interface_name": "lwsp10;id"})
+
+        run.assert_not_called()
+
+    def test_shared_apply_failure_does_not_commit_or_cleanup(self):
+        agent = self.make_agent()
+        previous = {
+            "interface_name": "lwsp10n2",
+            "sidecar_point_id": 10,
+            "node_id": 2,
+            "lane": "shared",
+        }
+        agent.save_static_sidecar_uplink_state({"interfaces": {"lwsp10n2": previous}})
+
+        with mock.patch.object(agent, "apply_shared_sidecar_uplink", side_effect=RuntimeError("start failed")):
+            with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
+                agent.apply_static_sidecar_uplinks([self.shared_uplink()])
+
+        remove_uplink.assert_not_called()
+        state = agent.load_static_sidecar_uplink_state()
+        self.assertEqual(previous, state.get("interfaces", {}).get("lwsp10n2"))
+
+    def test_shared_first_apply_failure_does_not_create_state(self):
+        agent = self.make_agent()
+        with mock.patch.object(agent, "apply_shared_sidecar_uplink", side_effect=RuntimeError("start failed")):
+            with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
+                agent.apply_static_sidecar_uplinks([self.shared_uplink()])
+        remove_uplink.assert_not_called()
+        state = agent.load_static_sidecar_uplink_state()
+        self.assertEqual({}, state.get("interfaces", {}))
+
+    def test_shared_restart_failure_restores_previous_config(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        config_path = agent.wireguard_interface_path("lwsp10n2")
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("old-config\n", encoding="utf-8")
+        restart_attempts = 0
+
+        def fake_run(command: str, check: bool = True):
+            nonlocal restart_attempts
+            if command == "systemctl is-active --quiet wg-quick@lwsp10n2.service":
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if command == "systemctl restart wg-quick@lwsp10n2.service":
+                restart_attempts += 1
+                return SimpleNamespace(returncode=1 if restart_attempts == 1 else 0, stdout="", stderr="restart failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with self.assertRaises(RuntimeError):
+                    agent.apply_shared_sidecar_uplink("lwsp10n2", self.shared_uplink())
+
+        self.assertEqual("old-config\n", config_path.read_text(encoding="utf-8"))
+        self.assertEqual(2, restart_attempts)
+
+    def test_shared_first_start_failure_disables_new_unit(self):
+        agent = self.make_agent()
+        agent.wireguard_private_key_path().parent.mkdir(parents=True, exist_ok=True)
+        agent.wireguard_private_key_path().write_text("slave-private\n", encoding="utf-8")
+        config_path = agent.wireguard_interface_path("lwsp10n2")
+        commands: list[str] = []
+
+        def fake_run(command: str, check: bool = True):
+            commands.append(command)
+            if command == "systemctl is-active --quiet wg-quick@lwsp10n2.service":
+                return SimpleNamespace(returncode=1, stdout="inactive", stderr="")
+            if command == "systemctl is-enabled --quiet wg-quick@lwsp10n2.service":
+                return SimpleNamespace(returncode=1, stdout="disabled", stderr="")
+            if command == "systemctl start wg-quick@lwsp10n2.service":
+                return SimpleNamespace(returncode=1, stdout="", stderr="start failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=lambda cmd: "/usr/bin/" + cmd):
+            with mock.patch.object(slave_agent_module, "run_command", side_effect=fake_run):
+                with self.assertRaises(RuntimeError):
+                    agent.apply_shared_sidecar_uplink("lwsp10n2", self.shared_uplink())
+
+        self.assertFalse(config_path.exists())
+        self.assertIn("systemctl stop wg-quick@lwsp10n2.service", commands)
+        self.assertIn("systemctl disable wg-quick@lwsp10n2.service", commands)
+        self.assertIn("systemctl reset-failed wg-quick@lwsp10n2.service", commands)
+
     def mark_selector_interfaces_ready(self, agent, *interfaces: str) -> None:
         for iface in interfaces:
             path = agent.wireguard_interface_path(iface)
@@ -870,6 +1064,92 @@ rtt min/avg/max/mdev = 35.000/38.000/42.000/2.000 ms
         metadata = agent.load_service_metadata("wstunnel-svc-6-571")
         self.assertEqual("127.0.0.1:45200", metadata["target"])
         self.assertTrue(metadata["sidecar_uplink_selector"]["enabled"])
+
+    def test_publish_task_dispatches_shared_uplink_to_strict_apply(self):
+        agent = self.make_agent()
+        task = {"service_id": 6, "forward_id": 80, "endpoint_id": 580, "payload": {}}
+        shared = self.shared_uplink()
+        shared["relay_target"] = "10.240.3.1:18501"
+        payload = {
+            "target": shared["relay_target"],
+            "listen_port": 7001,
+            "path_prefix": "f80",
+            "route_key": "f80",
+            "transport_mode": "tcp",
+            "ingress_protocol": "plain_tcp_mux",
+            "backend_protocol": "tcp_relay",
+            "ingress_auth_token": "token",
+            "publish_bond_runtime": True,
+            "sidecar_uplink": shared,
+            "sidecar_uplink_selector": {},
+        }
+
+        with mock.patch.object(agent, "apply_shared_sidecar_uplink") as strict_apply:
+            with mock.patch.object(agent, "apply_sidecar_uplink") as legacy_apply:
+                with mock.patch.object(agent, "ensure_nft_table"):
+                    with mock.patch.object(agent, "delete_nft_rules"):
+                        with mock.patch.object(agent, "add_nft_rules"):
+                            with mock.patch.object(agent, "ensure_backend_service"):
+                                with mock.patch.object(agent, "sync_listener"):
+                                    with mock.patch.object(agent, "write_filter_marker", return_value={"filter_profile": "off"}):
+                                        agent.publish_task(task, payload)
+
+        strict_apply.assert_called_once_with("lwsp10n2", shared)
+        legacy_apply.assert_not_called()
+
+    def test_underlay_publish_failure_does_not_write_active_metadata(self):
+        agent = self.make_agent()
+        task = {"service_id": 6, "forward_id": 80, "endpoint_id": 580, "payload": {}}
+        payload = {
+            "target": "10.240.3.1:18501",
+            "listen_port": 7001,
+            "path_prefix": "f80",
+            "route_key": "f80",
+            "transport_mode": "tcp",
+            "ingress_protocol": "wss_path_mux",
+            "backend_protocol": "wss_backend",
+            "ingress_auth_token": "token",
+            "mptcp_underlay": {"enabled": True},
+            "sidecar_uplink": self.shared_uplink(),
+            "sidecar_uplink_selector": {},
+        }
+
+        with mock.patch.object(agent, "apply_mptcp_underlay"):
+            with mock.patch.object(agent, "apply_published_sidecar_uplink", side_effect=RuntimeError("shared apply failed")):
+                with self.assertRaisesRegex(RuntimeError, "shared apply failed"):
+                    agent.publish_task(task, payload)
+
+        self.assertIsNone(agent.load_service_metadata("wstunnel-svc-6-580"))
+
+    def test_forward_lifecycle_does_not_remove_management_owned_shared_uplink(self):
+        for action in ("stop", "destroy"):
+            with self.subTest(action=action):
+                agent = self.make_agent()
+                service_name = "wstunnel-svc-6-580"
+                agent.save_service_metadata(service_name, {
+                    "service_name": service_name,
+                    "service_id": 6,
+                    "forward_id": 80,
+                    "endpoint_id": 580,
+                    "listen_port": 0,
+                    "status": "active",
+                    "sidecar_uplink": self.shared_uplink(),
+                    "mptcp_underlay": {},
+                })
+                task = {"service_id": 6, "forward_id": 80, "endpoint_id": 580, "payload": {}}
+
+                with mock.patch.object(slave_agent_module.shutil, "which", return_value=None):
+                    with mock.patch.object(agent, "remove_mptcp_underlay"):
+                        with mock.patch.object(agent, "remove_sidecar_uplink") as remove_uplink:
+                            with mock.patch.object(agent, "remove_sidecar_uplink_selector"):
+                                with mock.patch.object(agent, "remove_leigod_forward_runtime"):
+                                    with mock.patch.object(agent, "delete_nft_rules"):
+                                        if action == "stop":
+                                            agent.stop_service(task, keep_files=True)
+                                        else:
+                                            agent.destroy_service(task)
+
+                remove_uplink.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -8,7 +8,9 @@ use Leikwan\Master\Controllers\ArtifactController;
 use Leikwan\Master\Controllers\AuthController;
 use Leikwan\Master\Controllers\ClientAgentController;
 use Leikwan\Master\Controllers\HealthController;
+use Leikwan\Master\Controllers\ForwardLineApiController;
 use Leikwan\Master\Controllers\NodeController;
+use Leikwan\Master\Controllers\OidcController;
 use Leikwan\Master\Controllers\ServiceController;
 use Leikwan\Master\Controllers\SidecarAgentController;
 use Leikwan\Master\Controllers\TenantController;
@@ -24,8 +26,12 @@ use Leikwan\Master\Support\LeigodOnlyArtifactSourceBuildMap;
 use Leikwan\Master\Support\LeigodOnlyRolloutLockService;
 use Leikwan\Master\Support\LeigodOnlyRuntimeContractService;
 use Leikwan\Master\Support\MigrationRunner;
+use Leikwan\Master\Support\OidcClient;
+use Leikwan\Master\Support\OidcIdentityService;
+use Leikwan\Master\Support\OidcSessionStore;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\WhmcsClient;
+use Leikwan\Master\Support\WhmcsIdentityService;
 
 final class Bootstrap
 {
@@ -109,10 +115,23 @@ final class Bootstrap
     private function registerRoutes(): void
     {
         $health = new HealthController($this->config, $this->db);
-        $auth = new AuthController($this->config, $this->db);
+        $oidcClient = new OidcClient($this->config);
+        $oidcSessionStore = new OidcSessionStore();
+        $oidcIdentityService = new OidcIdentityService($this->db);
+        $whmcsIdentityService = new WhmcsIdentityService($this->config, $this->db);
+        $auth = new AuthController($this->config, $this->db, $oidcClient);
+        $oidc = new OidcController(
+            $this->config,
+            $this->db,
+            $oidcClient,
+            $oidcSessionStore,
+            $oidcIdentityService,
+            $whmcsIdentityService,
+        );
         $admin = new AdminController($this->config, $this->db, $this->provisioning, $this->leigodOnlyAdminServices());
         $whmcs = new WhmcsController($this->config, $this->db, $this->provisioning);
         $services = new ServiceController($this->config, $this->db, $this->provisioning);
+        $forwardApi = new ForwardLineApiController($this->config, $this->db, $this->provisioning);
         $nodes = new NodeController($this->config, $this->db, $this->provisioning);
         $clientAgent = new ClientAgentController($this->config, $this->db, $this->provisioning);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
@@ -122,6 +141,8 @@ final class Bootstrap
         $this->router->add('GET', '/', [$auth, 'home']);
         $this->router->add('GET', '/knowledgebase', [$auth, 'knowledgebasePage']);
         $this->router->add('GET', '/login', [$auth, 'loginPage']);
+        $this->router->add('GET', '/auth/oidc/start', [$oidc, 'start']);
+        $this->router->add('GET', '/auth/oidc/callback', [$oidc, 'callback']);
         $this->router->add('GET', '/register', [$auth, 'registerPage']);
         $this->router->add('GET', '/forgot-password', [$auth, 'forgotPasswordPage']);
         $this->router->add('POST', '/forgot-password', [$auth, 'requestPasswordReset']);
@@ -167,15 +188,23 @@ final class Bootstrap
         $this->router->add('POST', '/admin/republish/client/{id}', [$admin, 'republishForClient']);
         $this->router->add('GET', '/admin/cf-location-groups', [$admin, 'cfLocationGroupsPage']);
         $this->router->add('POST', '/admin/cf-location-groups', [$admin, 'saveCfLocationGroup']);
+        $this->router->add('GET', '/admin/leigod-lines', [$admin, 'leigodLinesPage']);
+        $this->router->add('POST', '/admin/leigod-lines', [$admin, 'saveLeigodLine']);
+        $this->router->add('POST', '/admin/leigod-lines/{id}/delete', [$admin, 'deleteLeigodLine']);
         $this->router->add('GET', '/admin/forward-combinations', [$admin, 'forwardCombinationsPage']);
         $this->router->add('POST', '/admin/forward-combinations', [$admin, 'saveForwardCombination']);
         $this->router->add('GET', '/admin/forward-routes', [$admin, 'forwardRoutesPage']);
         $this->router->add('POST', '/admin/forward-routes', [$admin, 'saveForwardRoute']);
         $this->router->add('POST', '/admin/forward-combinations/{id}/donations/{donationId}/revoke', [$admin, 'revokeDonation']);
-        $this->router->add('GET', '/admin/knowledgebase', [$admin, 'knowledgebaseThreadsPage']);
-        $this->router->add('GET', '/admin/knowledgebase/new', [$admin, 'knowledgebaseEditorPage']);
-        $this->router->add('GET', '/admin/knowledgebase/{id}/edit', [$admin, 'knowledgebaseEditorPage']);
-        $this->router->add('POST', '/admin/knowledgebase/save', [$admin, 'saveKnowledgebaseThread']);
+        $this->router->add('GET', '/admin/knowledgebase', [$admin, 'knowledgebaseTopicsPage']);
+        $this->router->add('GET', '/admin/knowledgebase/topics/new', [$admin, 'knowledgebaseTopicEditorPage']);
+        $this->router->add('GET', '/admin/knowledgebase/topics/{id}/edit', [$admin, 'knowledgebaseTopicEditorPage']);
+        $this->router->add('POST', '/admin/knowledgebase/topics/save', [$admin, 'saveKnowledgebaseTopic']);
+        $this->router->add('POST', '/admin/knowledgebase/topics/{id}/delete', [$admin, 'deleteKnowledgebaseTopic']);
+        $this->router->add('GET', '/admin/knowledgebase/topics/{id}/articles/{locale}/edit', [$admin, 'knowledgebaseArticleEditorPage']);
+        $this->router->add('POST', '/admin/knowledgebase/articles/save', [$admin, 'saveKnowledgebaseArticle']);
+        $this->router->add('POST', '/admin/knowledgebase/articles/preview', [$admin, 'previewKnowledgebaseArticle']);
+        $this->router->add('POST', '/admin/knowledgebase/articles/{id}/delete', [$admin, 'deleteKnowledgebaseArticle']);
         $this->router->add('POST', '/admin/knowledgebase/images', [$admin, 'uploadKnowledgebaseImage']);
         $this->router->add('GET', '/admin-transport-endpoints', [$admin, 'sidecarsPage']);
         $this->router->add('POST', '/admin-transport-endpoints', [$admin, 'saveSidecarPoint']);
@@ -251,6 +280,13 @@ final class Bootstrap
         $this->router->add('GET', '/api/user/forwards/{id}/client-config', [$services, 'clientConfig']);
         $this->router->add('POST', '/api/user/services/{id}/regenerate-client-token', [$services, 'regenerateClientToken']);
 
+        $this->router->add('GET', '/api/v1/user/services/{id}/forward-options', [$forwardApi, 'options']);
+        $this->router->add('GET', '/api/v1/user/services/{id}/forwards', [$forwardApi, 'index']);
+        $this->router->add('POST', '/api/v1/user/services/{id}/forwards', [$forwardApi, 'create']);
+        $this->router->add('GET', '/api/v1/user/forwards/{id}', [$forwardApi, 'show']);
+        $this->router->add('PATCH', '/api/v1/user/forwards/{id}', [$forwardApi, 'patch']);
+        $this->router->add('DELETE', '/api/v1/user/forwards/{id}', [$forwardApi, 'delete']);
+
         $this->router->add('POST', '/api/node/register', [$nodes, 'register']);
         $this->router->add('POST', '/api/node/heartbeat', [$nodes, 'heartbeat']);
         $this->router->add('POST', '/api/node/report-usage', [$nodes, 'reportUsage']);
@@ -271,6 +307,7 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/versions.json', [$artifacts, 'versionsManifest']);
         $this->router->add('GET', '/artifacts/slave-agent.py', [$artifacts, 'slaveAgent']);
         $this->router->add('GET', '/artifacts/leikwan-preconnect-relay.py', [$artifacts, 'slavePreconnectRelay']);
+        $this->router->add('GET', '/artifacts/leikwan-leigod-forward-relay.py', [$artifacts, 'leigodForwardRelay']);
         $this->router->add('GET', '/artifacts/slave-manifest.json', [$artifacts, 'slaveManifest']);
         $this->router->add('GET', '/artifacts/sidecar-manifest.json', [$artifacts, 'sidecarManifest']);
         $this->router->add('GET', '/artifacts/client-manifest.json', [$artifacts, 'clientManifest']);
@@ -282,6 +319,8 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/lguot/lguot_linux_amd64', [$artifacts, 'lguotBinary']);
         $this->router->add('GET', '/artifacts/install-forward-runtime.py', [$artifacts, 'installForwardRuntime']);
         $this->router->add('GET', '/artifacts/forward-strategy.py', [$artifacts, 'forwardStrategyHelper']);
+        $this->router->add('GET', '/artifacts/leikwan-tcp-race.py', [$artifacts, 'tcpRaceRuntime']);
+        $this->router->add('GET', '/artifacts/leikwan-udp-fanout.py', [$artifacts, 'udpFanoutRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-mptcp-client.py', [$artifacts, 'mptcpClientRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-uot.py', [$artifacts, 'uotRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-uot-bond.py', [$artifacts, 'uotBondRuntime']);

@@ -21,6 +21,7 @@ final class SessionAuth
     public static function login(array $user): void
     {
         self::boot();
+        session_regenerate_id(true);
         $_SESSION['auth'] = [
             'user_id' => (int) $user['id'],
             'role' => (string) $user['role'],
@@ -54,7 +55,7 @@ final class SessionAuth
         }
 
         $user = $db->fetchOne('SELECT * FROM users WHERE id = :id LIMIT 1', ['id' => $identity['user_id']]);
-        if ($user === null) {
+        if ($user === null || (string) ($user['status'] ?? '') !== 'active') {
             self::logout();
             return null;
         }

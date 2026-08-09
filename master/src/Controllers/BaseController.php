@@ -1104,6 +1104,7 @@ abstract class BaseController
             ['group' => 'Infrastructure', 'href' => '/admin-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
             ['group' => 'Infrastructure', 'href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],
             ['group' => 'Infrastructure', 'href' => '/admin/nodes', 'label' => 'Slave Nodes', 'active' => $active === 'nodes'],
+            ['group' => 'Infrastructure', 'href' => '/admin/leigod-lines', 'label' => 'Managed TYO Lines', 'active' => $active === 'leigod-lines'],
             ['group' => 'Infrastructure', 'href' => '/admin/client-groups', 'label' => 'Client Groups', 'active' => $active === 'client-groups'],
             ['group' => 'Infrastructure', 'href' => '/admin/credentials', 'label' => 'Credentials', 'active' => $active === 'credentials'],
             ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
@@ -1156,6 +1157,7 @@ abstract class BaseController
     window.LEIKWAN_I18N = {
       defaultLocale: 'en',
       supported: ['en', 'zh-TW', 'zh-Hans'],
+      cookieName: 'leikwan_locale',
       basePath: '/i18n'
     };
   </script>
@@ -1181,11 +1183,11 @@ HTML;
         $styleLinks = '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
             . ($isBridgeHome
                 ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260728a">'
-                : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260728a">');
+                : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260729a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
 
-        $actionsHtml = '<a class="button ghost" href="/register">Create Account</a><a class="button" href="/login">Sign In</a>';
+        $actionsHtml = '<a class="button" href="/login">Sign In</a>';
         if ($viewer !== null) {
             $consoleHref = $this->escape($this->dashboardPathForUser($viewer));
             $consoleLabel = $this->escape($this->dashboardLabelForUser($viewer));
@@ -1318,7 +1320,7 @@ HTML;
   <title>{$escapedTitle}</title>
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260725">
-  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260728a">
+  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260729a">
 </head>
 <body class="pg-app">
   <div class="shell">

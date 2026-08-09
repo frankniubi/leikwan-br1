@@ -179,7 +179,8 @@ class StrictDoHTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b'{"ok":true}'
 
-        with mock.patch.object(client_agent_module, "urlopen_with_leikwan_doh", return_value=FakeResponse()) as open_mock:
+        with mock.patch.dict(client_agent_module.os.environ, {}, clear=True), \
+             mock.patch.object(client_agent_module, "urlopen_with_leikwan_doh", return_value=FakeResponse()) as open_mock:
             self.assertEqual(
                 {"ok": True},
                 client_agent_module.http_json("GET", "https://panel.leikwanhost.com/api/health", "token"),
@@ -188,6 +189,20 @@ class StrictDoHTests(unittest.TestCase):
         request = open_mock.call_args.args[0]
         self.assertEqual("https://panel.leikwanhost.com/api/health", request.full_url)
         self.assertEqual("Bearer token", request.headers["Authorization"])
+
+    def test_explicit_proxy_takes_precedence_over_strict_doh(self) -> None:
+        class FakeResponse:
+            pass
+
+        request = client_agent_module.urllib.request.Request("https://panel.leikwanhost.com/api/health")
+        with mock.patch.dict(client_agent_module.os.environ, {"HTTPS_PROXY": "http://127.0.0.1:2080"}, clear=True), \
+             mock.patch.object(client_agent_module.urllib.request, "urlopen", return_value=FakeResponse()) as urlopen_mock, \
+             mock.patch.object(client_agent_module, "urlopen_with_leikwan_doh") as doh_mock:
+            response = client_agent_module._urlopen_for_request(request, timeout=7)
+
+        self.assertIsInstance(response, FakeResponse)
+        urlopen_mock.assert_called_once_with(request, timeout=7)
+        doh_mock.assert_not_called()
 
 
 if __name__ == "__main__":

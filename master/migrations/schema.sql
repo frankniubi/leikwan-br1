@@ -25,6 +25,25 @@ CREATE TABLE IF NOT EXISTS users (
     wallet_warning_sent TINYINT(1) NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS oidc_identities (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    issuer_hash CHAR(64) NOT NULL,
+    subject_hash CHAR(64) NOT NULL,
+    email VARCHAR(191) NOT NULL,
+    email_verified_at DATETIME NULL,
+    last_login_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_oidc_identities_user FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE KEY uniq_oidc_identity_subject (issuer_hash, subject_hash),
+    UNIQUE KEY uniq_oidc_identity_user_issuer (user_id, issuer_hash),
+    INDEX idx_oidc_identities_user (user_id),
+    INDEX idx_oidc_identities_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS app_settings (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     setting_key VARCHAR(191) NOT NULL UNIQUE,
@@ -382,6 +401,11 @@ CREATE TABLE IF NOT EXISTS sidecar_points (
 CREATE TABLE IF NOT EXISTS forwards (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     service_id BIGINT UNSIGNED NOT NULL,
+    api_revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    api_idempotency_key_hash CHAR(64) NULL,
+    api_request_hash CHAR(64) NULL,
+    user_deleted_at DATETIME NULL,
+    balance_suspended_at DATETIME NULL,
     target_source VARCHAR(32) NOT NULL DEFAULT 'manual',
     target_service_id BIGINT UNSIGNED NULL,
     listen_port INT NOT NULL,
@@ -421,6 +445,7 @@ CREATE TABLE IF NOT EXISTS forwards (
     CONSTRAINT fk_forwards_line_client_group FOREIGN KEY (line_client_group_id) REFERENCES client_groups(id),
     CONSTRAINT fk_forwards_sidecar_point FOREIGN KEY (bond_sidecar_point_id) REFERENCES sidecar_points(id),
     CONSTRAINT fk_forwards_chain FOREIGN KEY (forward_chain_id) REFERENCES forward_chains(id),
+    UNIQUE KEY uniq_forward_service_idempotency (service_id, api_idempotency_key_hash),
     INDEX idx_forwards_service (service_id),
     INDEX idx_forwards_target_service (target_service_id)
 );
@@ -1197,4 +1222,84 @@ CREATE TABLE IF NOT EXISTS forward_retirement_cleanup_leases (
     UNIQUE KEY uniq_forward_retirement_cleanup_lease (forward_id, lease_token, result_token),
     INDEX idx_forward_retirement_cleanup_pending (state, updated_at),
     INDEX idx_forward_retirement_cleanup_fence (scope, forward_id, owner_token, fencing_token, artifact_snapshot_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS leigod_lines (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    line_id INT UNSIGNED NOT NULL,
+    label VARCHAR(191) NOT NULL,
+    notes TEXT NULL,
+    tcp_probe_host VARCHAR(255) NOT NULL,
+    tcp_probe_port INT UNSIGNED NOT NULL,
+    udp_probe_host VARCHAR(255) NULL,
+    udp_probe_port INT UNSIGNED NULL,
+    udp_probe_method VARCHAR(32) NULL,
+    config_sha256 CHAR(64) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 0,
+    sort_order INT NOT NULL DEFAULT 100,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_leigod_external_line (line_id)
+);
+
+CREATE TABLE IF NOT EXISTS forward_combination_leigod_lines (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    forward_combination_id BIGINT UNSIGNED NOT NULL,
+    leigod_line_id BIGINT UNSIGNED NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 100,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_fcll_combination FOREIGN KEY (forward_combination_id) REFERENCES forward_combinations(id),
+    CONSTRAINT fk_fcll_line FOREIGN KEY (leigod_line_id) REFERENCES leigod_lines(id),
+    UNIQUE KEY uniq_combination_leigod_line (forward_combination_id, leigod_line_id)
+);
+
+CREATE TABLE IF NOT EXISTS node_leigod_line_health (
+    node_id BIGINT UNSIGNED NOT NULL,
+    leigod_line_id BIGINT UNSIGNED NOT NULL,
+    config_sha256 CHAR(64) NOT NULL,
+    service_state VARCHAR(32) NOT NULL,
+    tcp_status VARCHAR(32) NOT NULL,
+    tcp_connect_ms INT UNSIGNED NULL,
+    udp_status VARCHAR(32) NOT NULL,
+    consecutive_successes INT UNSIGNED NOT NULL DEFAULT 0,
+    consecutive_failures INT UNSIGNED NOT NULL DEFAULT 0,
+    last_error VARCHAR(500) NULL,
+    checked_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (node_id, leigod_line_id),
+    CONSTRAINT fk_nllh_node FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    CONSTRAINT fk_nllh_line FOREIGN KEY (leigod_line_id) REFERENCES leigod_lines(id) ON DELETE CASCADE,
+    INDEX idx_nllh_line_freshness (leigod_line_id, checked_at)
+);
+
+CREATE TABLE IF NOT EXISTS knowledgebase_topics (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    topic_key VARCHAR(190) NOT NULL,
+    is_pinned TINYINT(1) NOT NULL DEFAULT 0,
+    sort_order INT NOT NULL DEFAULT 100,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_knowledgebase_topics_key (topic_key),
+    KEY idx_knowledgebase_topics_reader (is_pinned, sort_order, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS knowledgebase_articles (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    topic_id BIGINT UNSIGNED NOT NULL,
+    locale VARCHAR(16) NOT NULL,
+    author_user_id BIGINT UNSIGNED NULL,
+    title VARCHAR(190) NOT NULL,
+    excerpt TEXT NULL,
+    body_html MEDIUMTEXT NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'draft',
+    published_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_knowledgebase_articles_topic FOREIGN KEY (topic_id) REFERENCES knowledgebase_topics(id),
+    CONSTRAINT fk_knowledgebase_articles_author FOREIGN KEY (author_user_id) REFERENCES users(id),
+    UNIQUE KEY uniq_knowledgebase_article_locale (topic_id, locale),
+    KEY idx_knowledgebase_articles_reader (locale, status, topic_id),
+    KEY idx_knowledgebase_articles_updated (updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

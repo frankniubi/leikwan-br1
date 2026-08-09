@@ -105,6 +105,24 @@ if ! curl --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -fsSL "$
   write_update_state "error" "failed to download install-slave.sh from ${ARTIFACT_BASE%/}/artifacts/install-slave.sh"
   exit 1
 fi
+EXPECTED_INSTALLER_SHA256=$(curl --connect-timeout 15 --max-time 60 --retry 2 --retry-delay 2 -fsSL \
+  "${ARTIFACT_BASE%/}/artifacts/versions.json" | python3 -c '
+import json, sys
+try:
+    entry = json.load(sys.stdin).get("slave_installer", {})
+    print(entry.get("sha256", "") if isinstance(entry, dict) else "")
+except Exception:
+    print("")
+')
+if [[ ! "$EXPECTED_INSTALLER_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
+  write_update_state "error" "slave_installer sha256 missing from versions manifest"
+  exit 1
+fi
+ACTUAL_INSTALLER_SHA256=$(sha256sum /tmp/leikwan-install-slave.sh | awk '{print $1}')
+if [[ "$ACTUAL_INSTALLER_SHA256" != "$EXPECTED_INSTALLER_SHA256" ]]; then
+  write_update_state "error" "downloaded install-slave.sh sha256 mismatch"
+  exit 1
+fi
 chmod +x /tmp/leikwan-install-slave.sh
 if [[ "${MODE}" == "check" ]]; then
   exec /tmp/leikwan-install-slave.sh --check-update --config "${CONFIG_PATH}" --artifact-base "${ARTIFACT_BASE}"

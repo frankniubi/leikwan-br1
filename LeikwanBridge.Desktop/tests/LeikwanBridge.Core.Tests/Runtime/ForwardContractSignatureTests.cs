@@ -149,6 +149,32 @@ public sealed class ForwardContractSignatureTests
     }
 
     [Fact]
+    public void Compute_ChangesWhenUotSchedulerOrNativeIdentityChanges()
+    {
+        var forward = new ForwardConfig
+        {
+            ForwardId = 26,
+            Mode = "bond",
+            ListenPort = 11024,
+        };
+        var sidepath = new UdpUotSidepathConfig
+        {
+            EnabledForwardIds = [26],
+            SchedulerMode = "feedback_drr",
+            DeliveryMode = "unordered",
+            WireguardAware = true,
+        };
+
+        var baseline = ForwardContractSignature.Compute(forward, sidepath, "sha-a:build-a");
+        sidepath.AggregateRateBps = 200_000_000;
+        var rateChanged = ForwardContractSignature.Compute(forward, sidepath, "sha-a:build-a");
+        var binaryChanged = ForwardContractSignature.Compute(forward, sidepath, "sha-b:build-b");
+
+        Assert.NotEqual(baseline, rateChanged);
+        Assert.NotEqual(rateChanged, binaryChanged);
+    }
+
+    [Fact]
     public void AppliedForwardState_RoundTripsContractSignature_AndEndpointClonePreservesHealthStatus()
     {
         var endpoint = new EndpointConfig

@@ -1,11 +1,11 @@
 {
   "slave_agent": {
-    "version": "2026.06.05.4",
+    "version": "2026.08.04.2",
     "path": "slave-agent/slave_agent.py",
     "artifact_url": "/artifacts/slave-agent.py",
-    "sha256": "37d77d10676f9f1cf44f3b2ca413780422487b139c449be3465a0ea96da8a553",
-    "size_bytes": 273213,
-    "size": 273213
+    "sha256": "b9d90425799004855dd39bf7928b8a03fae1d124e2bdd48edfb7047f8260ad65",
+    "size_bytes": 332504,
+    "size": 332504
   },
   "gost_linux_amd64": {
     "version": "3.2.6",
@@ -33,18 +33,20 @@
     "note": "CPU-efficient UDP-over-TCP carrier (batched recvmmsg/sendmmsg, SOCKS5-chained, token auth) for the leigod arm. Drop-in alt to gost when leigod_uot_impl=lguot: ~2.4x throughput at 1/3 CPU on a 2-vCPU slave (178 vs 73 Mbit/s). Source: tools/lguot/."
   },
   "slave_installer": {
-    "version": "2026.05.20.1",
+    "version": "2026.07.27.1",
     "path": "install/install-slave.sh",
     "install_url": "/artifacts/install-slave.sh",
     "remote_install_url": "/artifacts/remote-install-slave.sh",
-    "sha256": "5e48a9e5b0aa248d43247c3a26867db4b17008494be126c3b565665106aea6d1",
-    "size_bytes": 13410
+    "sha256": "060fc3094c55a4087beb6d3db38ee50f34ed4b41fc58b98dab000950cb61422b",
+    "size_bytes": 17448
   },
   "client_installer": {
-    "version": "2026.05.12.1",
+    "version": "2026.08.08.1",
     "path": "install/install-client.sh",
     "install_url": "/artifacts/install-client.sh",
-    "remote_install_url": "/artifacts/remote-install-client.sh"
+    "remote_install_url": "/artifacts/remote-install-client.sh",
+    "sha256": "e81b7804c83ac0fb71b8be64a793eb908cb26c6565e5fe6fd59335fbe6d80f49",
+    "size_bytes": 8695
   },
   "client_installer_windows": {
     "version": "2026.04.08.1",
@@ -57,11 +59,11 @@
     "install_url": "/artifacts/manage-client.ps1"
   },
   "bond_sidecar_installer": {
-    "version": "2026.04.26.1",
+    "version": "2026.08.08.1",
     "path": "install/install-bond-sidecar.sh",
     "install_url": "/artifacts/install-bond-sidecar.sh",
-    "sha256": "3e8a16fb79e3f5c9d9311e0e1184a0fdab747f4ac77987b8580e3c08bea69d4c",
-    "size_bytes": 7251
+    "sha256": "323b5ebd63832de00f25e39381a7889f4752d715341b7a7ed85b3d0655f17cb9",
+    "size_bytes": 8721
   },
   "bond_sidecar_uninstaller": {
     "version": "2026.04.08.1",
@@ -69,29 +71,29 @@
     "install_url": "/artifacts/uninstall-bond-sidecar.sh"
   },
   "client_agent": {
-    "version": "2026.07.25.1",
+    "version": "2026.08.08.1",
     "path": "client-agent/client_agent.py",
     "artifact_url": "/artifacts/client-agent.py",
-    "sha256": "fcdcb6e7a8d3de1e83cf3940058b1ba02280e54279dfe51a3178ae5048819149",
-    "size_bytes": 241325,
-    "size": 241325
+    "sha256": "8f0138eb1f21b2866ae4e7f9a59e2f6f2eb30f048bf1ca56aebc7094576f6365",
+    "size_bytes": 244164,
+    "size": 244164
   },
   "client_agent_installer": {
-    "version": "2026.07.25.1",
+    "version": "2026.08.08.1",
     "path": "install/install-client-agent.sh",
     "install_url": "/artifacts/install-client-agent.sh",
     "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "f41c6502c2446df638bd88eab22fe24bd6ae9717a5c8ec8144489b1187bd5a6f",
-    "size_bytes": 17133,
+    "sha256": "418aa2d069355b5d0aa08e68d04769983775328fc7d041ceafb132ac0d31785e",
+    "size_bytes": 20074,
     "artifact_url": "/artifacts/install-client-agent.sh"
   },
   "sidecar_agent": {
-    "version": "2026.06.05.3",
+    "version": "2026.08.08.1",
     "path": "sidecar-agent/sidecar_agent.py",
     "artifact_url": "/artifacts/sidecar-agent.py",
-    "sha256": "587b0d06805bdccda6dbfc84293542290391ae61f441add7d91c1dc485684842",
-    "size_bytes": 114880,
-    "size": 114880
+    "sha256": "989aa1b2a821937a9bd669b74932c928673a65a624023451470655ca0cfff469",
+    "size_bytes": 138652,
+    "size": 138652
   },
   "mptcp_client_runtime": {
     "version": "2026.06.06.1",
@@ -110,9 +112,11 @@
     "size_bytes": 7852
   },
   "uot_bond_runtime": {
-    "version": "2026.04.19.1",
+    "version": "2026.08.08.1",
     "path": "client-agent/leikwan_uot_bond.py",
-    "artifact_url": "/artifacts/leikwan-uot-bond.py"
+    "artifact_url": "/artifacts/leikwan-uot-bond.py",
+    "sha256": "979f1d894d41195a3ebca9bc19a81a5cfa908e83ad94368fdc90ec56a2b75db7",
+    "size_bytes": 24138
   },
   "mptcp_sidecar_runtime": {
     "version": "2026.05.13.1",
@@ -122,16 +126,48 @@
     "size_bytes": 42508
   },
   "udp_uot_merge_runtime": {
-    "version": "2026.04.19.1",
+    "version": "2026.08.08.1",
     "path": "sidecar-agent/leikwan_udp_uot_merge.py",
-    "artifact_url": "/artifacts/leikwan-udp-uot-merge.py"
+    "artifact_url": "/artifacts/leikwan-udp-uot-merge.py",
+    "sha256": "2c40404274ed1c5b1b828f500e299fdf61790c404ad293857d5725ef719c3525",
+    "size_bytes": 30481
+  },
+  "leikwan_uot_bond_linux_amd64": {
+    "version": "0.1.0",
+    "path": "artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
+    "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
+    "sha256": "a0cb82480f417a4c41368c86a6506c2fdfc2734cec4c074d95ac6c7262900835",
+    "size_bytes": 2745920,
+    "protocol_version": 2,
+    "capabilities": ["leg-progress-v1"],
+    "scheduler_modes": ["legacy", "feedback_drr"]
+  },
+  "leikwan_udp_uot_merge_linux_amd64": {
+    "version": "0.1.0",
+    "path": "artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64",
+    "artifact_url": "/artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64",
+    "sha256": "9da37a3aaa95157b0874faf0cd81837ccde105f676ec8c7c397643a073897e81",
+    "size_bytes": 2882032,
+    "protocol_version": 2,
+    "capabilities": ["leg-progress-v1"],
+    "scheduler_modes": ["legacy", "feedback_drr"]
+  },
+  "leikwan_uot_bond_windows_amd64": {
+    "version": "0.1.0",
+    "path": "artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
+    "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
+    "sha256": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
+    "size_bytes": 2052096,
+    "protocol_version": 2,
+    "capabilities": ["leg-progress-v1"],
+    "scheduler_modes": ["legacy", "feedback_drr"]
   },
   "leikwan_bond_linux_amd64": {
-    "version": "0.1.16",
+    "version": "0.1.30",
     "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64",
-    "sha256": "a2587b603040e8947ba0fbcd3b883d3b5e6fc2b0f7fbd0203474da113b1be2d4",
-    "size_bytes": 8745640
+    "sha256": "513b0ad9e496c4e71a225fd381453acb45a1413b6766bf5dcfb91d7babfefb7b",
+    "size_bytes": 8946736
   },
   "wstunnel_linux_amd64": {
     "version": "10.5.2",
@@ -144,8 +180,8 @@
     "version": "0.1.0",
     "path": "artifacts/wstunnel/leikwan-ingress_linux_amd64",
     "artifact_url": "/artifacts/wstunnel/leikwan-ingress_linux_amd64",
-    "sha256": "cb53060c7a2978cbecbb2aa08d2acc28133428545f9bfc7711ca9ffe4925cd83",
-    "size_bytes": 3079928
+    "sha256": "7f6358b07911b54774d7f3b8ed99baacc880fa222eea3663d2173c5058ce44fc",
+    "size_bytes": 3236312
   },
   "leikwan_bond_windows_amd64": {
     "version": "0.1.16",
@@ -186,12 +222,26 @@
     "size_bytes": 55652648
   },
   "install_forward_runtime": {
-    "version": "2026.07.25.1",
+    "version": "2026.08.08.1",
     "path": "client-agent/install_forward_runtime.py",
     "artifact_url": "/artifacts/install-forward-runtime.py",
-    "sha256": "ca2da6dfaafb9869d2e7d90bb3d4129144596cd032b7c58b45808a26da8661e2",
-    "size_bytes": 72190,
-    "size": 72190
+    "sha256": "3d91c8ce9fbd11d7021eb5babf151a183d7a34c72f454d5f87a89bd4b5145273",
+    "size_bytes": 80029,
+    "size": 80029
+  },
+  "tcp_race_runtime": {
+    "version": "2026.07.27.1",
+    "path": "client-agent/leikwan_tcp_race.py",
+    "artifact_url": "/artifacts/leikwan-tcp-race.py",
+    "sha256": "7caf5ac21ed2d7eb26917cda32258a1704d0a4d29457f67691adeb87f7f55db9",
+    "size_bytes": 9358
+  },
+  "udp_fanout_runtime": {
+    "version": "2026.07.27.1",
+    "path": "client-agent/leikwan_udp_fanout.py",
+    "artifact_url": "/artifacts/leikwan-udp-fanout.py",
+    "sha256": "eb5947976240c2def73627cc31650b6ad6819ddc24a797b6bbb9222094cba58f",
+    "size_bytes": 9742
   },
   "forward_strategy": {
     "version": "2026.07.25.1",
@@ -222,5 +272,12 @@
     "artifact_url": "/artifacts/leikwan-preconnect-relay.py",
     "sha256": "76d1f0a7f34d9f5f927e696e17839ef2aad1a9136795971b06757aeaaacaab03",
     "size_bytes": 17387
+  },
+  "leigod_forward_relay": {
+    "version": "2026.07.27.1",
+    "path": "slave-agent/leigod_forward_relay.py",
+    "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
+    "sha256": "1b96fc73623a991aacb0a33f503d177088fa2975fe5cb6c02fc2a28677de9848",
+    "size_bytes": 30683
   }
 }

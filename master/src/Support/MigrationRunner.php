@@ -5,7 +5,6 @@ namespace Leikwan\Master\Support;
 
 use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
-use PDO;
 
 final class MigrationRunner
 {
@@ -86,17 +85,39 @@ final class MigrationRunner
      */
     public function applyPending(): array
     {
-        $this->ensureHistoryTable();
-        $appliedNow = [];
-        foreach ($this->pendingMigrations() as $migration) {
-            $this->runMigration($migration);
-            $this->db->insert('schema_migrations', [
-                'migration_name' => $migration,
-                'applied_at' => gmdate('Y-m-d H:i:s'),
-            ]);
-            $appliedNow[] = $migration;
+        $lockName = $this->migrationLockName();
+        $locked = false;
+        try {
+            $this->ensureHistoryTable();
+            $locked = $this->acquireMigrationLock($lockName);
+            if (!$locked) {
+                throw new ApiException('migration_lock_unavailable', 503);
+            }
+
+            $appliedNow = [];
+            foreach ($this->pendingMigrations() as $migration) {
+                $this->runMigration($migration);
+                $this->db->insert('schema_migrations', [
+                    'migration_name' => $migration,
+                    'applied_at' => gmdate('Y-m-d H:i:s'),
+                ]);
+                $appliedNow[] = $migration;
+            }
+            return $appliedNow;
+        } catch (ApiException $exception) {
+            if (in_array($exception->getMessage(), ['migration_failed', 'migration_lock_unavailable'], true)) {
+                throw $exception;
+            }
+            error_log('migration application failed: ' . $exception::class);
+            throw new ApiException('migration_failed', 500);
+        } catch (\Throwable $throwable) {
+            error_log('migration application failed: ' . $throwable::class);
+            throw new ApiException('migration_failed', 500);
+        } finally {
+            if ($locked) {
+                $this->releaseMigrationLock($lockName);
+            }
         }
-        return $appliedNow;
     }
 
     /**
@@ -104,11 +125,16 @@ final class MigrationRunner
      */
     public function status(): array
     {
-        return [
-            'available' => $this->availableMigrations(),
-            'applied' => $this->appliedMigrations(),
-            'pending' => $this->pendingMigrations(),
-        ];
+        try {
+            return [
+                'available' => $this->availableMigrations(),
+                'applied' => $this->appliedMigrations(),
+                'pending' => $this->pendingMigrations(),
+            ];
+        } catch (\Throwable $throwable) {
+            error_log('migration status failed: ' . $throwable::class);
+            throw new ApiException('migration_status_failed', 500);
+        }
     }
 
     private function runMigration(string $migration): void
@@ -120,7 +146,6 @@ final class MigrationRunner
 
         $sql = (string) file_get_contents($path);
         $statements = $this->splitStatements($sql);
-        $pdo = $this->db->pdo();
         try {
             foreach ($statements as $statement) {
                 $trimmed = trim($this->normalizeStatement($statement));
@@ -128,7 +153,7 @@ final class MigrationRunner
                     continue;
                 }
                 try {
-                    $pdo->exec($trimmed);
+                    $this->db->execute($trimmed);
                 } catch (\Throwable $throwable) {
                     if ($this->shouldIgnoreStatementError($trimmed, $throwable)) {
                         continue;
@@ -138,11 +163,43 @@ final class MigrationRunner
                 }
             }
         } catch (\Throwable $throwable) {
-            throw new ApiException('migration_failed', 500, [
-                'migration' => $migration,
-                'statement' => $trimmed ?? null,
-                'message' => $throwable->getMessage(),
-            ]);
+            error_log('migration failed [' . basename($migration) . ']: ' . $throwable::class);
+            throw new ApiException('migration_failed', 500);
+        }
+    }
+
+    private function migrationLockName(): string
+    {
+        $database = (string) $this->config->get('DB_NAME', 'leikwan_master');
+        return 'leikwan_migrations_' . substr(hash('sha256', $database), 0, 32);
+    }
+
+    private function acquireMigrationLock(string $lockName): bool
+    {
+        if ((string) $this->config->get('DB_DRIVER', 'mysql') === 'sqlite') {
+            return true;
+        }
+        try {
+            $row = $this->db->fetchOne(
+                'SELECT GET_LOCK(:lock_name, :timeout_seconds) AS acquired',
+                ['lock_name' => $lockName, 'timeout_seconds' => 30]
+            );
+            return (int) ($row['acquired'] ?? 0) === 1;
+        } catch (\Throwable $throwable) {
+            error_log('migration lock acquisition failed: ' . $throwable::class);
+            throw new ApiException('migration_lock_unavailable', 503);
+        }
+    }
+
+    private function releaseMigrationLock(string $lockName): void
+    {
+        if ((string) $this->config->get('DB_DRIVER', 'mysql') === 'sqlite') {
+            return;
+        }
+        try {
+            $this->db->fetchOne('SELECT RELEASE_LOCK(:lock_name) AS released', ['lock_name' => $lockName]);
+        } catch (\Throwable $throwable) {
+            error_log('migration lock release failed: ' . $throwable::class);
         }
     }
 
@@ -218,28 +275,35 @@ final class MigrationRunner
     private function shouldIgnoreStatementError(string $statement, \Throwable $throwable): bool
     {
         $message = strtolower($throwable->getMessage());
+        $normalizedStatement = strtolower(trim($statement));
+        $singleAddClause = preg_match_all('/\badd\b/i', $statement) === 1;
+        $singleColumnAdd = $singleAddClause
+            && preg_match('/^alter\s+table\b[\s\S]*\badd\s+column\b/i', $statement) === 1;
 
-        if (str_contains($message, 'duplicate column name')) {
+        if (str_contains($message, 'duplicate column name') && $singleColumnAdd) {
             return true;
         }
 
-        if (str_contains($message, 'already exists') && str_contains(strtolower($statement), 'add column')) {
+        if (str_contains($message, 'already exists') && $singleColumnAdd) {
             return true;
         }
 
-        if (str_contains($message, 'table') && str_contains($message, 'already exists') && str_contains(strtolower($statement), 'create table')) {
+        if (str_contains($message, 'table')
+            && str_contains($message, 'already exists')
+            && preg_match('/^create\s+table\b/i', $normalizedStatement) === 1) {
             return true;
         }
 
-        if (str_contains($message, 'duplicate key name')) {
+        $singleIndexAdd = $singleAddClause
+            && preg_match('/^alter\s+table\b[\s\S]*\badd\s+(?:unique\s+)?(?:key|index)\b/i', $statement) === 1;
+        $createIndex = preg_match('/^create\s+(?:unique\s+)?index\b/i', $normalizedStatement) === 1;
+        if (str_contains($message, 'duplicate key name') && ($singleIndexAdd || $createIndex)) {
             return true;
         }
 
-        if (str_contains($message, 'duplicate foreign key constraint name')) {
-            return true;
-        }
-
-        if (str_contains($message, 'duplicate entry') && str_contains($message, 'for key')) {
+        $singleForeignKeyAdd = $singleAddClause
+            && preg_match('/^alter\s+table\b[\s\S]*\badd\s+constraint\b[\s\S]*\bforeign\s+key\b/i', $statement) === 1;
+        if (str_contains($message, 'duplicate foreign key constraint name') && $singleForeignKeyAdd) {
             return true;
         }
 

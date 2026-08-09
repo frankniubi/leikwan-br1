@@ -20,4 +20,43 @@ foreach (['/artifacts/versions.json', 'check_binary_current', '_vers_sha256', 'g
 }
 if (!str_contains($slave, 'skipping download')) fail('installer must short-circuit matching sha downloads');
 
+$clientInstaller = $sources['install-client-agent'];
+foreach ([
+    'proxy_url="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"',
+    'curl -fsSL --proxy "$proxy_url" "$url" -o "$path"',
+    'if [[ ! -f "$0" ]]; then',
+] as $snippet) {
+    if (!str_contains($clientInstaller, $snippet)) {
+        fail('install-client-agent missing proxied one-click support: ' . $snippet);
+    }
+}
+foreach ([
+    'PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"',
+    'EnvironmentFile=-$PROXY_ENV_FILE',
+    'chmod 0600 "$PROXY_ENV_FILE"',
+] as $snippet) {
+    if (!str_contains($clientInstaller, $snippet)) {
+        fail('install-client-agent missing persistent runtime proxy support: ' . $snippet);
+    }
+}
+foreach ([
+    'INSTALLER_SHA256="$(_vers_sha256 client_agent_installer)"',
+    'missing client_agent_installer sha256 in versions manifest',
+] as $snippet) {
+    if (!str_contains($clientInstaller, $snippet)) {
+        fail('install-client-agent missing piped installer hash fallback: ' . $snippet);
+    }
+}
+
+$clientUninstaller = file_get_contents($root . '/install/uninstall-client-agent.sh');
+if (!is_string($clientUninstaller)) fail('failed to read uninstall-client-agent');
+foreach ([
+    'STATE_DIR="/var/lib/leikwan-client-agent"',
+    'rm -rf "$CONFIG_DIR" "$STATE_DIR"',
+] as $snippet) {
+    if (!str_contains($clientUninstaller, $snippet)) {
+        fail('uninstall-client-agent missing clean purge support: ' . $snippet);
+    }
+}
+
 echo "ok\n";
