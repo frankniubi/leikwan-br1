@@ -2177,6 +2177,25 @@ class SlaveAgent:
 
                 if metadata_changed:
                     self.write_json(self.metadata_path(service_name), metadata)
+
+                if not self.is_udp_uot_shadow_metadata(metadata) and self.udp_uot_sidepath_enabled(
+                    {
+                        "forward_id": int(metadata.get("forward_id", 0) or 0),
+                    },
+                    metadata,
+                ):
+                    self.ensure_udp_uot_shadow_service(
+                        {
+                            "forward_id": int(metadata.get("forward_id", 0) or 0),
+                            "service_id": int(metadata.get("service_id", 0) or 0),
+                            "endpoint_id": int(metadata.get("endpoint_id", 0) or 0),
+                        },
+                        metadata,
+                        service_name,
+                        str(metadata.get("route_key", path_prefix) or path_prefix),
+                        target,
+                        str(metadata.get("ingress_auth_token", "") or ""),
+                    )
             except Exception:  # noqa: BLE001
                 logging.exception("failed to reconcile runtime metadata: %s", metadata)
 
@@ -4374,39 +4393,14 @@ WantedBy=multi-user.target
             self.ensure_backend_service(shadow_service, shadow_unit_changed, expected_exec_substring="wstunnel client")
             self.save_service_metadata(shadow_service, shadow_metadata)
         elif self.udp_uot_sidepath_enabled(task, payload):
-            settings = self.udp_uot_sidepath_settings()
-            shadow_service = udp_uot_shadow_service_name(service_name)
-            existing_shadow = self.load_service_metadata(shadow_service) or {}
-            shadow_backend_port = int(existing_shadow.get("backend_port", 0) or 0)
-            if shadow_backend_port <= 0:
-                shadow_backend_port = self.allocate_backend_port(shadow_service)
-            shadow_target = replace_target_port(target, int(settings.get("sidecar_port", 8999) or 8999))
-            shadow_suffix = str(settings.get("shadow_route_suffix", ".uot") or ".uot")
-            shadow_route_key = route_key + shadow_suffix
-            shadow_metadata = dict(metadata)
-            shadow_metadata.update(
-                {
-                    "service_name": shadow_service,
-                    "unit_path": str(self.service_unit_path(shadow_service)),
-                    "backend_port": shadow_backend_port,
-                    "target": shadow_target,
-                    "path_prefix": shadow_route_key,
-                    "route_key": shadow_route_key,
-                    "transport_mode": "tcp",
-                    "relay_protocols": [],
-                    "relay_target": "",
-                    "relay_service_name": "",
-                    "relay_client_service_name": "",
-                    "relay_client_port": 0,
-                    "ingress_protocol": "plain_tcp_mux",
-                    "backend_protocol": "tcp_relay",
-                    "ingress_auth_token": ingress_auth_token,
-                }
+            self.ensure_udp_uot_shadow_service(
+                task,
+                payload,
+                service_name,
+                route_key,
+                target,
+                ingress_auth_token,
             )
-            shadow_unit = self.render_plain_tcp_backend_unit(shadow_service, shadow_backend_port, shadow_target)
-            shadow_unit_changed = self.write_text_if_changed(self.service_unit_path(shadow_service), shadow_unit)
-            self.ensure_backend_service(shadow_service, shadow_unit_changed, expected_exec_substring="leikwan-ingress backend")
-            self.save_service_metadata(shadow_service, shadow_metadata)
         else:
             self.remove_udp_uot_shadow_service(task, payload, service_name)
 
@@ -4808,6 +4802,49 @@ WantedBy=multi-user.target
         shadow_suffix = str(self.udp_uot_sidepath_settings().get("shadow_route_suffix", ".uot") or ".uot")
         route_key = str(metadata.get("route_key", metadata.get("path_prefix", "")) or "").strip()
         return route_key.endswith(shadow_suffix)
+
+    def ensure_udp_uot_shadow_service(
+        self,
+        task: dict[str, Any],
+        payload: dict[str, Any],
+        service_name: str,
+        route_key: str,
+        target: str,
+        ingress_auth_token: str,
+    ) -> None:
+        settings = self.udp_uot_sidepath_settings()
+        shadow_service = udp_uot_shadow_service_name(service_name)
+        existing_shadow = self.load_service_metadata(shadow_service) or {}
+        shadow_backend_port = int(existing_shadow.get("backend_port", 0) or 0)
+        if shadow_backend_port <= 0:
+            shadow_backend_port = self.allocate_backend_port(shadow_service)
+        shadow_target = replace_target_port(target, int(settings.get("sidecar_port", 8999) or 8999))
+        shadow_suffix = str(settings.get("shadow_route_suffix", ".uot") or ".uot")
+        shadow_route_key = route_key + shadow_suffix
+        shadow_metadata = dict(payload)
+        shadow_metadata.update(
+            {
+                "service_name": shadow_service,
+                "unit_path": str(self.service_unit_path(shadow_service)),
+                "backend_port": shadow_backend_port,
+                "target": shadow_target,
+                "path_prefix": shadow_route_key,
+                "route_key": shadow_route_key,
+                "transport_mode": "tcp",
+                "relay_protocols": [],
+                "relay_target": "",
+                "relay_service_name": "",
+                "relay_client_service_name": "",
+                "relay_client_port": 0,
+                "ingress_protocol": "plain_tcp_mux",
+                "backend_protocol": "tcp_relay",
+                "ingress_auth_token": ingress_auth_token,
+            }
+        )
+        shadow_unit = self.render_plain_tcp_backend_unit(shadow_service, shadow_backend_port, shadow_target)
+        shadow_unit_changed = self.write_text_if_changed(self.service_unit_path(shadow_service), shadow_unit)
+        self.ensure_backend_service(shadow_service, shadow_unit_changed, expected_exec_substring="leikwan-ingress backend")
+        self.save_service_metadata(shadow_service, shadow_metadata)
 
     def remove_udp_uot_shadow_service(self, task: dict[str, Any], payload: dict[str, Any], base_service_name: str) -> None:
         shadow_service_name = udp_uot_shadow_service_name(base_service_name)
