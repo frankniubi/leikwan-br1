@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.08.08.1"
+INSTALLER_VERSION="2026.08.10.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -534,6 +534,8 @@ exec /usr/bin/python3 "$BIN_DIR/forward_strategy.py" "\$@"
 WRAPPER
 chmod 0755 "$BIN_DIR/leikwan-client-strategy"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-rate-limit.py" "$BIN_DIR/leikwan-rate-limit.py"
+download_manifest_artifact tcp_accel_installer "$ARTIFACT_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"
+"$BIN_DIR/install-tcp-accel.sh" client --artifact-base "$ARTIFACT_BASE" --bin-dir "$BIN_DIR"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-mptcp-client.py" "$BIN_DIR/leikwan-mptcp-client.py"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"

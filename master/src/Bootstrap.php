@@ -328,12 +328,15 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/leikwan-udp-uot-merge.py', [$artifacts, 'udpUotMergeRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-wss-mux.py', [$artifacts, 'wssMuxRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-rate-limit.py', [$artifacts, 'clientRateLimitHelper']);
+        $this->router->add('GET', '/artifacts/leikwan-tcp-accel.py', [$artifacts, 'tcpAccelRuntime']);
+        $this->router->add('GET', '/artifacts/leikwan-tcp-accel-bridge.py', [$artifacts, 'tcpAccelBridgeRuntime']);
         $this->router->add('GET', '/artifacts/api-default.html', [$artifacts, 'apiDefaultPage']);
         $this->router->add('GET', '/artifacts/install-slave.sh', [$artifacts, 'installSlave']);
         $this->router->add('GET', '/artifacts/uninstall-slave.sh', [$artifacts, 'uninstallSlave']);
         $this->router->add('GET', '/artifacts/dedupe-slave.sh', [$artifacts, 'dedupeSlave']);
         $this->router->add('GET', '/artifacts/install-client.sh', [$artifacts, 'installClient']);
         $this->router->add('GET', '/artifacts/install-bond-sidecar.sh', [$artifacts, 'installBondSidecar']);
+        $this->router->add('GET', '/artifacts/install-tcp-accel.sh', [$artifacts, 'installTcpAccel']);
         $this->router->add('GET', '/artifacts/install-mptcp-sidecar.sh', [$artifacts, 'installBondSidecar']);
         $this->router->add('GET', '/artifacts/uninstall-bond-sidecar.sh', [$artifacts, 'uninstallBondSidecar']);
         $this->router->add('GET', '/artifacts/uninstall-mptcp-sidecar.sh', [$artifacts, 'uninstallBondSidecar']);
