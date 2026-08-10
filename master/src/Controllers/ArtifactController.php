@@ -230,6 +230,21 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('client-agent/leikwan_rate_limit.py', 'text/x-python; charset=utf-8', $request);
     }
 
+    public function tcpAccelRuntime(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('tools/tcp-accel/tcp_accel.py', 'text/x-python; charset=utf-8', $request);
+    }
+
+    public function tcpAccelBridgeRuntime(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('slave-agent/leigod_tcp_accel_bridge.py', 'text/x-python; charset=utf-8', $request);
+    }
+
+    public function installTcpAccel(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-tcp-accel.sh', 'text/plain; charset=utf-8', $request);
+    }
+
     public function installClientAgent(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/install-client-agent.sh', 'text/plain; charset=utf-8', $request);
@@ -309,7 +324,7 @@ final class ArtifactController extends BaseController
     {
         return Response::json(200, [
             'component' => 'slave',
-            'manifest' => $this->manifestFor('slave_agent', 'slave_preconnect_relay', 'leigod_forward_relay', 'slave_installer', 'wstunnel_linux_amd64', 'wstunnel_linux_arm64', 'leikwan_leg_relay_linux_amd64'),
+            'manifest' => $this->manifestFor('slave_agent', 'slave_preconnect_relay', 'leigod_forward_relay', 'slave_installer', 'tcp_accel_runtime', 'tcp_accel_bridge_runtime', 'tcp_accel_installer', 'wstunnel_linux_amd64', 'wstunnel_linux_arm64', 'leikwan_leg_relay_linux_amd64'),
         ]);
     }
 
@@ -323,7 +338,9 @@ final class ArtifactController extends BaseController
                 'udp_uot_merge_runtime',
                 'leikwan_udp_uot_merge_linux_amd64',
                 'bond_sidecar_installer',
-                'bond_sidecar_uninstaller'
+                'bond_sidecar_uninstaller',
+                'tcp_accel_runtime',
+                'tcp_accel_installer'
             ),
         ]);
     }
@@ -349,6 +366,8 @@ final class ArtifactController extends BaseController
             'udp_uot_merge_runtime',
             'tcp_race_runtime',
             'udp_fanout_runtime',
+            'tcp_accel_runtime',
+            'tcp_accel_installer',
             'android_client_apk',
             'windows_client_app',
             'legacy_client',

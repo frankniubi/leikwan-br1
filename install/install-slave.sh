@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.07.27.1"
+INSTALLER_VERSION="2026.08.10.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 TOKEN=""
@@ -149,6 +149,23 @@ download_atomic() {
   curl -fsSL "$url" -o "$tmp_path"
   chmod 0755 "$tmp_path"
   mv "$tmp_path" "$path"
+}
+
+download_optional_atomic() {
+  local url="$1"
+  local path="$2"
+  local label="${3:-optional artifact}"
+  local tmp_path="${path}.new"
+  if curl -fsSL "$url" -o "$tmp_path"; then
+    chmod 0755 "$tmp_path"
+    mv "$tmp_path" "$path"
+    return 0
+  else
+    local rc=$?
+    rm -f "$tmp_path"
+    echo "warning: $label unavailable from $url (curl rc=$rc); continuing without $path" >&2
+    return 0
+  fi
 }
 
 download_manifest_artifact() {
@@ -372,6 +389,8 @@ download_atomic "$ARTIFACT_BASE/artifacts/leikwan-preconnect-relay.py" "$BIN_DIR
 download_manifest_artifact leigod_forward_relay "$ARTIFACT_BASE/artifacts/leikwan-leigod-forward-relay.py" "$BIN_DIR/leikwan-leigod-forward-relay.py"
 download_atomic "$ARTIFACT_BASE/artifacts/slave-agent-update.sh" "$BIN_DIR/leikwan-slave-update"
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
+download_manifest_artifact tcp_accel_installer "$ARTIFACT_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"
+"$BIN_DIR/install-tcp-accel.sh" slave --artifact-base "$ARTIFACT_BASE" --bin-dir "$BIN_DIR"
 
 _sha=$(_vers_sha256 wstunnel_linux_amd64)
 if check_binary_current "$BIN_DIR/wstunnel" "$_sha"; then
@@ -395,7 +414,10 @@ _sha=$(_vers_sha256 gost_linux_amd64)
 if check_binary_current "$BIN_DIR/gost" "$_sha"; then
   echo "  gost up to date, skipping download"
 else
-  download_atomic "$ARTIFACT_BASE/artifacts/gost/gost_linux_amd64" "$BIN_DIR/gost"
+  # gost is only required for legacy leigod_uot_impl=gost lanes.  The current BR1
+  # LeiGod rollout uses lguot; do not break new installs if the historical gost
+  # artifact is absent from the panel artifact store.
+  download_optional_atomic "$ARTIFACT_BASE/artifacts/gost/gost_linux_amd64" "$BIN_DIR/gost" "legacy gost UoT carrier"
 fi
 
 _sha=$(_vers_sha256 leigod_linux_amd64)

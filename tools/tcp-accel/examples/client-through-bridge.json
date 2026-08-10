@@ -1,0 +1,33 @@
+{
+  "token_file": "/etc/leigod/tcp-accel/token",
+  "remotes": [
+    "BRIDGE_HOST:8230",
+    "BRIDGE_HOST:8231",
+    "BRIDGE_HOST:8232",
+    "BRIDGE_HOST:8233"
+  ],
+  "lanes": 4,
+  "minimum_lanes": 1,
+  "join_timeout_ms": 1200,
+  "chunk_size": 32768,
+  "lane_queue_frames": 8,
+  "tcp_user_timeout_ms": 30000,
+  "forwards": [
+    {
+      "name": "example-https",
+      "listen": "0.0.0.0:15443",
+      "target": "1.1.1.1:443"
+    },
+    {
+      "name": "example-iperf",
+      "listen": "0.0.0.0:15210",
+      "target": "10.7.1.1:5210"
+    }
+  ],
+  "socks5": [
+    {
+      "name": "universal-socks5",
+      "listen": "0.0.0.0:1080"
+    }
+  ]
+}

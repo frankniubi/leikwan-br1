@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.08.08.1"
+INSTALLER_VERSION="2026.08.10.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 AGENT_TOKEN=""
@@ -189,6 +189,25 @@ download_atomic() {
   mv "$tmp_path" "$path"
 }
 
+download_optional_atomic() {
+  local url="$1"
+  local path="$2"
+  local label="${3:-optional artifact}"
+  local tmp_path="${path}.new"
+  if curl -fsSL "$url" -o "$tmp_path"; then
+    chmod 0755 "$tmp_path"
+    mv "$tmp_path" "$path"
+    return 0
+  else
+    local rc=$?
+    rm -f "$tmp_path"
+    echo "warning: $label unavailable from $url (curl rc=$rc); continuing without $path" >&2
+    return 0
+  fi
+}
+
+download_verified_artifact tcp_accel_installer "$ARTIFACT_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"
+"$BIN_DIR/install-tcp-accel.sh" sidecar --artifact-base "$ARTIFACT_BASE" --bin-dir "$BIN_DIR"
 download_atomic "$ARTIFACT_BASE/artifacts/sidecar-agent.py" "$BIN_DIR/leikwan-sidecar-agent.py"
 if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
   download_atomic "$ARTIFACT_BASE/artifacts/sidecar-agent-update.sh" "$BIN_DIR/leikwan-sidecar-update"
@@ -206,8 +225,10 @@ if value.get("protocol_version") != 2 or "feedback_drr" not in value.get("schedu
 download_atomic "$ARTIFACT_BASE/artifacts/leikwan-wss-mux.py" "$BIN_DIR/leikwan-wss-mux.py"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
 download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
-# LeiGod basis: the sidecar runs the gost UoT SOCKS server (leikwan-leigod-gost-server-<iface>).
-download_atomic "$ARTIFACT_BASE/artifacts/gost/gost_linux_amd64" "$BIN_DIR/gost"
+# LeiGod basis: gost is only required for legacy leigod_uot_impl=gost lanes.  The
+# current BR1 LeiGod rollout uses lguot; keep install idempotent if the historical
+# gost artifact is absent from the panel artifact store.
+download_optional_atomic "$ARTIFACT_BASE/artifacts/gost/gost_linux_amd64" "$BIN_DIR/gost" "legacy gost UoT carrier"
 # lguot: CPU-efficient UoT server, the leigod_uot_impl=lguot alternative to the gost server.
 download_atomic "$ARTIFACT_BASE/artifacts/lguot/lguot_linux_amd64" "$BIN_DIR/lguot"
 
