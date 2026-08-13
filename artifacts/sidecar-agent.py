@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.08.08.1"
+AGENT_VERSION = "2026.08.13.1"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -61,6 +61,16 @@ UOT_SCHEDULER_DEFAULTS = {
     "probe_interval_ms": 1_000,
     "max_sessions": 4_096,
     "control_queue_packets": 256,
+    # First-wins latency scheduler (selective-first-wins-v1). Defaults keep it OFF.
+    "wireguard_latency_sensitive_max_bytes": 0,
+    "wireguard_latency_sensitive_copies": 1,
+    # DESDWAN-proven feedback_drr tuning (2026-08-13 live config).
+    "startup_leg_window_bytes": 131_072,
+    "session_reorder_budget_ms": 1,
+    "max_leg_queue_packets": 8_192,
+    "max_leg_queue_bytes": 16_777_216,
+    "max_datagram_bytes": 65_535,
+    "udp_socket_buffer_bytes": 8_388_608,
 }
 
 
@@ -104,6 +114,22 @@ def validate_uot_scheduler(settings: dict) -> None:
         raise ValueError("max_sessions is outside process bounds")
     if not 0 < settings["control_queue_packets"] <= 262_144:
         raise ValueError("control_queue_packets is outside process bounds")
+    # First-wins (selective-first-wins-v1) — mirrors the Rust SchedulerConfig validation.
+    if settings["wireguard_latency_sensitive_copies"] not in (1, 2):
+        raise ValueError("wireguard_latency_sensitive_copies must be 1 or 2")
+    if settings["wireguard_latency_sensitive_copies"] == 2:
+        if settings["wireguard_latency_sensitive_max_bytes"] <= 0:
+            raise ValueError("first-wins copies=2 requires wireguard_latency_sensitive_max_bytes > 0")
+        if settings["scheduler_mode"] != "feedback_drr":
+            raise ValueError("first-wins copies=2 requires scheduler_mode=feedback_drr")
+    if settings["wireguard_latency_sensitive_max_bytes"] > settings["max_datagram_bytes"]:
+        raise ValueError("wireguard_latency_sensitive_max_bytes must fit max_datagram_bytes")
+    if not 0 < settings["startup_leg_window_bytes"] <= settings["min_leg_window_bytes"]:
+        raise ValueError("startup_leg_window_bytes must fit within min_leg_window_bytes")
+    if settings["session_reorder_budget_ms"] > settings["queue_deadline_ms"]:
+        raise ValueError("session_reorder_budget_ms must not exceed queue_deadline_ms")
+    if not 0 < settings["max_leg_queue_packets"] <= 262_144 or not 0 < settings["max_leg_queue_bytes"] <= 64 * 1024 * 1024:
+        raise ValueError("per-leg queue limits are outside process bounds")
 
 
 def normalize_uot_delivery(raw: dict, scheduler: dict) -> dict:

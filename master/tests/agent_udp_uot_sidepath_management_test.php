@@ -136,6 +136,15 @@ namespace {
         'probe_interval_ms' => 1000,
         'max_sessions' => 4096,
         'control_queue_packets' => 256,
+        'wireguard_latency_sensitive_max_bytes' => 256,
+        'wireguard_latency_sensitive_copies' => 2,
+        'startup_leg_window_bytes' => 131072,
+        'session_reorder_budget_ms' => 1,
+        'max_leg_queue_packets' => 8192,
+        'max_leg_queue_bytes' => 16777216,
+        'udp_socket_buffer_bytes' => 8388608,
+        'max_datagram_bytes' => 65535,
+        'forward_leigod_lines' => ['26' => [455, 693]],
     ];
     $cfwgWatchdog = [
         'enabled' => true,

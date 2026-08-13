@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.08.04.2"
+AGENT_VERSION = "2026.08.13.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -4793,6 +4793,7 @@ WantedBy=multi-user.target
         names = [base_service_name]
         if self.load_service_metadata(shadow_service_name) is not None or self.udp_uot_sidepath_enabled(task, payload):
             names.append(shadow_service_name)
+        names.extend(self.udp_uot_leigod_shadow_names(base_service_name))
         return names
 
     def is_udp_uot_shadow_metadata(self, metadata: dict[str, Any]) -> bool:
@@ -4845,6 +4846,175 @@ WantedBy=multi-user.target
         shadow_unit_changed = self.write_text_if_changed(self.service_unit_path(shadow_service), shadow_unit)
         self.ensure_backend_service(shadow_service, shadow_unit_changed, expected_exec_substring="leikwan-ingress backend")
         self.save_service_metadata(shadow_service, shadow_metadata)
+        self.reconcile_udp_uot_leigod_shadows(
+            task,
+            payload,
+            service_name,
+            route_key,
+            target,
+            ingress_auth_token,
+            settings,
+        )
+
+    def udp_uot_leigod_line_ids(self, forward_id: int) -> list[int]:
+        """Leigod line IDs assigned to this forward's UoT sidepath (node config:
+        udp_uot_sidepath.forward_leigod_lines["<forward_id>"] = [line_id, ...])."""
+        settings = self.udp_uot_sidepath_settings()
+        raw = settings.get("forward_leigod_lines", {})
+        if not isinstance(raw, dict):
+            return []
+        values = raw.get(str(forward_id), raw.get(forward_id, []))
+        if not isinstance(values, list):
+            return []
+        result: list[int] = []
+        for value in values:
+            try:
+                line_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if line_id > 0 and line_id not in result:
+                result.append(line_id)
+        return result
+
+    def udp_uot_leigod_shadow_names(self, base_service_name: str) -> list[str]:
+        """All per-line shadow/gost service names derived from the base shadow name.
+
+        Line shadows are found via their metadata records; gost forwarder units have no
+        metadata of their own (their port lives in the line shadow's metadata), so they
+        are found by globbing the systemd unit directory."""
+        shadow_service = udp_uot_shadow_service_name(base_service_name)
+        prefix = shadow_service + "-l"
+        names: set[str] = set()
+        for metadata in self.load_all_service_metadata():
+            name = str(metadata.get("service_name", "") or "")
+            if name.startswith(prefix):
+                names.add(name)
+        systemd_dir = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system"))
+        for unit_path in systemd_dir.glob(f"{shadow_service}-lg*.service"):
+            names.add(unit_path.name[: -len(".service")])
+        return sorted(names)
+
+    def reconcile_udp_uot_leigod_shadows(
+        self,
+        task: dict[str, Any],
+        payload: dict[str, Any],
+        service_name: str,
+        route_key: str,
+        target: str,
+        ingress_auth_token: str,
+        settings: dict[str, Any],
+    ) -> None:
+        """Provision one shadow route + slave-local gost forwarder per assigned leigod line.
+
+        Chain per line: client uot-bond leg --LEIKWAN-INGRESS OPEN <route>.l<line>-->
+        slave ingress -> line shadow backend (tcp_relay) -> 127.0.0.1:<gost_port> ->
+        gost -F socks5://127.0.0.1:<line_socks> -> leigod line -> sidecar merge port.
+        SOCKS5 is only ever listened on the slave; the client never sees it.
+        """
+        shadow_service = udp_uot_shadow_service_name(service_name)
+        forward_id = int(task.get("forward_id", 0) or 0)
+        desired_lines = self.udp_uot_leigod_line_ids(forward_id)
+        sidecar_port = int(settings.get("sidecar_port", 8999) or 8999)
+        shadow_suffix = str(settings.get("shadow_route_suffix", ".uot") or ".uot")
+        sidecar_target = replace_target_port(target, sidecar_port)
+        available_lines = {
+            int(line.get("line_id", 0) or 0): int(line.get("socks_port", 0) or 0)
+            for line in self.load_leigod_desired_lines()
+        }
+        gost_bin = str(self.config.get("gost_bin", "/usr/local/bin/gost") or "/usr/local/bin/gost")
+        gost_available = shutil.which(gost_bin) is not None
+
+        desired_names: set[str] = set()
+        for line_id in desired_lines:
+            socks_port = available_lines.get(line_id, 0)
+            if socks_port <= 0 or not gost_available:
+                continue
+            gost_name = f"{shadow_service}-lg{line_id}"
+            line_shadow = f"{shadow_service}-l{line_id}"
+            desired_names.add(gost_name)
+            desired_names.add(line_shadow)
+
+            line_route_key = f"{route_key}{shadow_suffix}.l{line_id}"
+            existing_line = self.load_service_metadata(line_shadow) or {}
+            line_backend_port = int(existing_line.get("backend_port", 0) or 0)
+            if line_backend_port <= 0:
+                line_backend_port = self.allocate_backend_port(line_shadow)
+            # The gost forwarder port is persisted inside the line shadow's metadata (a
+            # standalone metadata record for the gost unit would fail the reconcile_runtime
+            # guard and be re-rendered as a wstunnel unit).
+            gost_port = int(existing_line.get("leigod_gost_port", 0) or 0)
+            if gost_port <= 0:
+                gost_port = self.allocate_backend_port(gost_name)
+
+            gost_unit = self.render_udp_uot_leigod_gost_unit(gost_name, gost_port, socks_port, sidecar_target)
+            gost_changed = self.write_text_if_changed(self.service_unit_path(gost_name), gost_unit)
+            self.ensure_backend_service(gost_name, gost_changed, expected_exec_substring="gost")
+
+            line_metadata = dict(payload)
+            line_metadata.update(
+                {
+                    "service_name": line_shadow,
+                    "unit_path": str(self.service_unit_path(line_shadow)),
+                    "backend_port": line_backend_port,
+                    "target": f"127.0.0.1:{gost_port}",
+                    "path_prefix": line_route_key,
+                    "route_key": line_route_key,
+                    "transport_mode": "tcp",
+                    "relay_protocols": [],
+                    "relay_target": "",
+                    "relay_service_name": "",
+                    "relay_client_service_name": "",
+                    "relay_client_port": 0,
+                    "ingress_protocol": "plain_tcp_mux",
+                    "backend_protocol": "tcp_relay",
+                    "ingress_auth_token": ingress_auth_token,
+                    "leigod_line_id": line_id,
+                    "leigod_gost_port": gost_port,
+                    "status": "active",
+                }
+            )
+            line_unit = self.render_plain_tcp_backend_unit(line_shadow, line_backend_port, f"127.0.0.1:{gost_port}")
+            line_changed = self.write_text_if_changed(self.service_unit_path(line_shadow), line_unit)
+            self.ensure_backend_service(line_shadow, line_changed, expected_exec_substring="leikwan-ingress backend")
+            self.save_service_metadata(line_shadow, line_metadata)
+
+        for stale_name in self.udp_uot_leigod_shadow_names(service_name):
+            if stale_name not in desired_names:
+                self.remove_udp_uot_leigod_unit(stale_name)
+        systemd_dir = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system"))
+        for unit_path in systemd_dir.glob(f"{shadow_service}-lg*.service"):
+            stale_gost = unit_path.name[: -len(".service")]
+            if stale_gost not in desired_names:
+                self.remove_udp_uot_leigod_unit(stale_gost)
+
+    def render_udp_uot_leigod_gost_unit(self, service_name: str, listen_port: int, socks_port: int, target: str) -> str:
+        gost_bin = str(self.config.get("gost_bin", "/usr/local/bin/gost") or "/usr/local/bin/gost")
+        return f"""[Unit]
+Description=Leikwan UoT leigod line forwarder {service_name}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={gost_bin} -L tcp://127.0.0.1:{listen_port}/{target} -F socks5://127.0.0.1:{socks_port}
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    def remove_udp_uot_leigod_unit(self, service_name: str) -> None:
+        unit_path = self.service_unit_path(service_name)
+        if shutil.which("systemctl"):
+            run_command(f"systemctl stop {service_name}.service", check=False)
+            run_command(f"systemctl disable {service_name}.service", check=False)
+            run_command("systemctl daemon-reload", check=False)
+        if unit_path.exists():
+            unit_path.unlink()
+        metadata_path = self.metadata_path(service_name)
+        if metadata_path.exists():
+            metadata_path.unlink()
 
     def remove_udp_uot_shadow_service(self, task: dict[str, Any], payload: dict[str, Any], base_service_name: str) -> None:
         shadow_service_name = udp_uot_shadow_service_name(base_service_name)
@@ -4862,6 +5032,8 @@ WantedBy=multi-user.target
                 "payload": shadow_payload,
             }
         )
+        for line_name in self.udp_uot_leigod_shadow_names(base_service_name):
+            self.remove_udp_uot_leigod_unit(line_name)
 
     def ensure_listener_route_available(self, public_port: int, path_prefix: str, service_name: str) -> None:
         desired_route = normalized_route_path(path_prefix)
@@ -4898,6 +5070,9 @@ WantedBy=multi-user.target
                 relay_port = int(leigod_forward.get("relay_port", 0) or 0)
                 if relay_port > 0:
                     ports.add(relay_port)
+            leigod_gost_port = int(metadata.get("leigod_gost_port", 0) or 0)
+            if leigod_gost_port > 0:
+                ports.add(leigod_gost_port)
         return ports
 
     @staticmethod

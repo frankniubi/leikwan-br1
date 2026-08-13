@@ -31,6 +31,17 @@ UOT_SCHEDULER_DEFAULTS = {
     "probe_interval_ms": 1_000,
     "max_sessions": 4_096,
     "control_queue_packets": 256,
+    # First-wins latency scheduler (selective-first-wins-v1). Defaults keep it OFF:
+    # max_bytes=0 disables latency-sensitive classification entirely.
+    "wireguard_latency_sensitive_max_bytes": 0,
+    "wireguard_latency_sensitive_copies": 1,
+    # DESDWAN-proven feedback_drr tuning (2026-08-13 live config).
+    "startup_leg_window_bytes": 131_072,
+    "session_reorder_budget_ms": 1,
+    "max_leg_queue_packets": 8_192,
+    "max_leg_queue_bytes": 16_777_216,
+    "max_datagram_bytes": 65_535,
+    "udp_socket_buffer_bytes": 8_388_608,
 }
 
 
@@ -74,6 +85,22 @@ def validate_uot_scheduler(settings: dict) -> None:
         raise ValueError("max_sessions is outside process bounds")
     if not 0 < settings["control_queue_packets"] <= 262_144:
         raise ValueError("control_queue_packets is outside process bounds")
+    # First-wins (selective-first-wins-v1) — mirrors the Rust SchedulerConfig validation.
+    if settings["wireguard_latency_sensitive_copies"] not in (1, 2):
+        raise ValueError("wireguard_latency_sensitive_copies must be 1 or 2")
+    if settings["wireguard_latency_sensitive_copies"] == 2:
+        if settings["wireguard_latency_sensitive_max_bytes"] <= 0:
+            raise ValueError("first-wins copies=2 requires wireguard_latency_sensitive_max_bytes > 0")
+        if settings["scheduler_mode"] != "feedback_drr":
+            raise ValueError("first-wins copies=2 requires scheduler_mode=feedback_drr")
+    if settings["wireguard_latency_sensitive_max_bytes"] > settings["max_datagram_bytes"]:
+        raise ValueError("wireguard_latency_sensitive_max_bytes must fit max_datagram_bytes")
+    if not 0 < settings["startup_leg_window_bytes"] <= settings["min_leg_window_bytes"]:
+        raise ValueError("startup_leg_window_bytes must fit within min_leg_window_bytes")
+    if settings["session_reorder_budget_ms"] > settings["queue_deadline_ms"]:
+        raise ValueError("session_reorder_budget_ms must not exceed queue_deadline_ms")
+    if not 0 < settings["max_leg_queue_packets"] <= 262_144 or not 0 < settings["max_leg_queue_bytes"] <= 64 * 1024 * 1024:
+        raise ValueError("per-leg queue limits are outside process bounds")
 
 
 def probe_uot_build_info(runtime_bin: str, timeout_seconds: float = 2.0) -> dict:
@@ -451,6 +478,24 @@ def udp_uot_sidepath_settings(forward: dict, agent_config: dict) -> dict | None:
         raise ValueError("unordered delivery requires wireguard_aware=true")
     if scheduler["scheduler_mode"] == "feedback_drr" and delivery_mode != "unordered":
         raise ValueError("feedback_drr requires unordered delivery")
+    # Per-forward leigod line assignment: legs are fanned out per (endpoint, line)
+    # onto slave-side shadow routes "<route_key><suffix>.l<line_id>" that ride each
+    # leigod line. The client only opens plain-TCP ingress legs; SOCKS5 is
+    # terminated on the slave, never on the client.
+    leigod_line_ids: list[int] = []
+    forward_lines = raw.get("forward_leigod_lines", {})
+    if isinstance(forward_lines, dict):
+        raw_lines = forward_lines.get(str(forward_id), forward_lines.get(forward_id, []))
+        if isinstance(raw_lines, list):
+            seen: set[int] = set()
+            for value in raw_lines:
+                try:
+                    line_id = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if line_id > 0 and line_id not in seen:
+                    seen.add(line_id)
+                    leigod_line_ids.append(line_id)
     return {
         "shadow_route_suffix": str(raw.get("shadow_route_suffix", ".uot") or ".uot"),
         "sidecar_port": sidecar_port,
@@ -459,6 +504,7 @@ def udp_uot_sidepath_settings(forward: dict, agent_config: dict) -> dict | None:
         "reorder_timeout_ms": reorder_timeout_ms,
         "delivery_mode": delivery_mode,
         "wireguard_aware": wireguard_aware,
+        "leigod_line_ids": leigod_line_ids,
         **scheduler,
     }
 
@@ -495,6 +541,33 @@ def render_udp_uot_aux_unit(
         raise ValueError("feedback_drr requires the Rust leikwan-uot-bond runtime")
     if scheduler_mode == "feedback_drr":
         require_uot_feedback_capability(runtime_bin)
+    leigod_line_ids = [int(line_id) for line_id in settings.get("leigod_line_ids") or [] if int(line_id) > 0]
+    legs: list[dict] = []
+    for endpoint in endpoints:
+        base_leg = {
+            "host": str(endpoint["host"]),
+            "port": int(endpoint["port"]),
+            "auth_token": str(endpoint.get("ingress_auth_token", "") or bond.get("ingress_auth_token", "")),
+            "dynamic_priority": int_or_default(endpoint.get("dynamic_priority"), int_or_default(bond.get("ws_priority"), 10)),
+            "health_role": str(endpoint.get("health_role", "healthy") or "healthy"),
+            "weight": udp_leg_weight(endpoint, int_or_default(bond.get("ws_priority"), 10)),
+        }
+        endpoint_id = int(endpoint.get("endpoint_id", 0) or 0)
+        if leigod_line_ids:
+            # Fan out one leg per leigod line: each leg opens the slave's per-line
+            # shadow route, which rides that line's slave-local SOCKS5 egress.
+            # endpoint_id must stay unique per leg (the client runtime keys legs by it).
+            for line_id in leigod_line_ids:
+                legs.append(
+                    {
+                        "endpoint_id": endpoint_id * 100_000 + line_id,
+                        "route_key": f"{shadow_route_key}.l{line_id}",
+                        "path_group": line_id,
+                        **base_leg,
+                    }
+                )
+        else:
+            legs.append({"endpoint_id": endpoint_id, **base_leg})
     config_payload = {
         "forward_id": forward_id,
         "listen_udp": f"0.0.0.0:{int(forward['listen_port'])}",
@@ -505,18 +578,7 @@ def render_udp_uot_aux_unit(
         "reorder_timeout_ms": int(settings["reorder_timeout_ms"]),
         "delivery_mode": str(settings["delivery_mode"]),
         "wireguard_aware": bool(settings["wireguard_aware"]),
-        "legs": [
-            {
-                "endpoint_id": int(endpoint.get("endpoint_id", 0) or 0),
-                "host": str(endpoint["host"]),
-                "port": int(endpoint["port"]),
-                "auth_token": str(endpoint.get("ingress_auth_token", "") or bond.get("ingress_auth_token", "")),
-                "dynamic_priority": int_or_default(endpoint.get("dynamic_priority"), int_or_default(bond.get("ws_priority"), 10)),
-                "health_role": str(endpoint.get("health_role", "healthy") or "healthy"),
-                "weight": udp_leg_weight(endpoint, int_or_default(bond.get("ws_priority"), 10)),
-            }
-            for endpoint in endpoints
-        ],
+        "legs": legs,
     }
     if not runtime_bin.lower().endswith(".py"):
         config_payload.update(
