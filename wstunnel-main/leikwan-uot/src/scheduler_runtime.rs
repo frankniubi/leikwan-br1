@@ -51,6 +51,10 @@ pub enum SchedulerCommand {
     },
     Progress {
         leg_id: u64,
+        /// Guards the command the same way WriterStarted/WriterAccepted/WriterFailed/
+        /// LegDisconnected do: a stale-epoch Progress frame from a dropped-then-
+        /// reconnected leg is silently discarded rather than counted as invalid.
+        connection_epoch: u64,
         progress: LegProgress,
     },
     InvalidControl,
@@ -239,8 +243,14 @@ fn handle_command(
         SchedulerCommand::AuthAcknowledged { leg_id, ack } => {
             let _ = scheduler.acknowledge_leg(leg_id, &ack, now_us);
         }
-        SchedulerCommand::Progress { leg_id, progress } => {
-            let _ = scheduler.on_progress(leg_id, &progress, now_us);
+        SchedulerCommand::Progress {
+            leg_id,
+            connection_epoch,
+            progress,
+        } => {
+            if current_connection_epoch(scheduler, leg_id) == Some(connection_epoch) {
+                let _ = scheduler.on_progress(leg_id, &progress, now_us);
+            }
         }
         SchedulerCommand::InvalidControl => scheduler.record_invalid_control(),
         SchedulerCommand::UdpEgressError {
@@ -452,6 +462,7 @@ mod tests {
         handle
             .send(SchedulerCommand::Progress {
                 leg_id: 1,
+                connection_epoch: 10,
                 progress: LegProgress::accepted(Direction::ClientToSidecar, 10, 1, 31, 1, 31),
             })
             .await
