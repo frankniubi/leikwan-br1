@@ -152,9 +152,9 @@
       "legacy",
       "feedback_drr"
     ],
-    "sha256": "1d8e59b51da8cf5e0a1e17b30fff15a5f82fd75d4038f1878194eb5cff80e2b7",
-    "size_bytes": 3054296,
-    "version": "0.2.0"
+    "sha256": "76cfd207887da44d6451b2af6e131e898c690bb83ed5bd209423fb01974fa4ab",
+    "size_bytes": 3067256,
+    "version": "0.2.1"
   },
   "leikwan_uot_bond_linux_amd64": {
     "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
@@ -168,9 +168,9 @@
       "legacy",
       "feedback_drr"
     ],
-    "sha256": "8e4d228222dcf53082250447d94d6ab38f3bdbfe90deca9fe02926576638b9ad",
-    "size_bytes": 2941840,
-    "version": "0.2.0"
+    "sha256": "2c4ad7ad698745df19eec6b8a289f5ee3f0a769ca3715a22ac775ebf6155f687",
+    "size_bytes": 2953960,
+    "version": "0.2.1"
   },
   "leikwan_uot_bond_windows_amd64": {
     "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
