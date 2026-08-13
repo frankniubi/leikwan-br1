@@ -797,6 +797,7 @@ async fn handle_leg(
                     progress_direction: Direction::SidecarToClient,
                     weight,
                     now_us: 0,
+                    path_group: 0,
                 },
                 data_tx: data_tx.clone(),
             })

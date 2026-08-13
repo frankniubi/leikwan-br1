@@ -1,6 +1,10 @@
 use anyhow::{anyhow, bail, Result};
 
 pub const FRAME_HEADER_BYTES: usize = 1 + 1 + 2 + 4 + 8 + 4;
+/// Data-frame flag: this datagram is a first-wins replica copy. The receiver
+/// consults its FirstWinsCache and suppresses it if the (session, seq) was
+/// already delivered by the primary copy.
+pub const DATA_FLAG_FIRST_WINS: u16 = 0x0001;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

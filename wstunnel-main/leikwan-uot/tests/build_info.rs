@@ -24,7 +24,10 @@ fn binaries_report_the_feedback_capability_contract() {
         assert_eq!(value["binary"], name);
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(value["protocol_version"], 2);
-        assert_eq!(value["capabilities"], json!(["leg-progress-v1"]));
+        assert_eq!(
+            value["capabilities"],
+            json!(["leg-progress-v1", "selective-first-wins-v1"])
+        );
         assert_eq!(value["scheduler_modes"], json!(["legacy", "feedback_drr"]));
     }
 }

@@ -86,6 +86,7 @@ struct ClientLegConfig {
     auth_token: String,
     direct_tcp: bool,
     socks5_proxy: Option<String>,
+    path_group: u64,
 }
 
 #[derive(Debug, Default)]
@@ -407,8 +408,8 @@ async fn open_plain_tcp_leg(
         );
         // CONNECT request: VER=5, CMD=1, RSV=0, ATYP=3 (domain name)
         let host_bytes = host.as_bytes();
-        let host_len = u8::try_from(host_bytes.len())
-            .context("target hostname too long for SOCKS5 ATYP=3")?;
+        let host_len =
+            u8::try_from(host_bytes.len()).context("target hostname too long for SOCKS5 ATYP=3")?;
         let mut req = Vec::with_capacity(7 + host_bytes.len());
         req.extend_from_slice(&[0x05, 0x01, 0x00, 0x03, host_len]);
         req.extend_from_slice(host_bytes);
@@ -426,13 +427,20 @@ async fn open_plain_tcp_leg(
         );
         // Discard bound address/port returned by the proxy
         match rep[3] {
-            0x01 => { let mut _b = [0u8; 6]; s.read_exact(&mut _b).await?; }
+            0x01 => {
+                let mut _b = [0u8; 6];
+                s.read_exact(&mut _b).await?;
+            }
             0x03 => {
-                let mut len = [0u8; 1]; s.read_exact(&mut len).await?;
+                let mut len = [0u8; 1];
+                s.read_exact(&mut len).await?;
                 let mut _b = vec![0u8; usize::from(len[0]) + 2];
                 s.read_exact(&mut _b).await?;
             }
-            0x04 => { let mut _b = [0u8; 18]; s.read_exact(&mut _b).await?; }
+            0x04 => {
+                let mut _b = [0u8; 18];
+                s.read_exact(&mut _b).await?;
+            }
             t => bail!("SOCKS5 unknown bound address type {t}"),
         }
         s
@@ -725,6 +733,7 @@ async fn leg_loop(
                         progress_direction: Direction::ClientToSidecar,
                         weight: current_weight,
                         now_us: 0,
+                        path_group: leg_cfg.path_group,
                     },
                     data_tx: data_tx.clone(),
                 })
@@ -891,6 +900,7 @@ pub async fn run(config: ClientConfig) -> Result<()> {
             auth_token: leg.auth_token.clone(),
             direct_tcp: leg.direct_tcp,
             socks5_proxy: leg.socks5_proxy.clone(),
+            path_group: leg.path_group,
         };
         tokio::spawn(leg_loop(
             leg_cfg,
@@ -1460,6 +1470,7 @@ mod tests {
                     dynamic_priority: 0,
                     health_role: "healthy".to_string(),
                     weight: 1,
+                    path_group: 0,
                     direct_tcp: true,
                     socks5_proxy: None,
                 },
@@ -1471,6 +1482,7 @@ mod tests {
                     dynamic_priority: 0,
                     health_role: "healthy".to_string(),
                     weight: 1,
+                    path_group: 0,
                     direct_tcp: true,
                     socks5_proxy: None,
                 },

@@ -1,6 +1,7 @@
 pub mod client_runtime;
 pub mod config;
 pub mod delivery;
+pub mod first_wins;
 pub mod frame;
 pub mod merge;
 pub mod progress;
@@ -17,7 +18,10 @@ pub fn build_info(binary: &str) -> serde_json::Value {
         "binary": binary,
         "version": env!("CARGO_PKG_VERSION"),
         "protocol_version": progress::PROTOCOL_VERSION,
-        "capabilities": [progress::LEG_PROGRESS_CAPABILITY],
+        "capabilities": [
+            progress::LEG_PROGRESS_CAPABILITY,
+            progress::FIRST_WINS_CAPABILITY
+        ],
         "scheduler_modes": ["legacy", "feedback_drr"],
     })
 }
