@@ -14,11 +14,14 @@ use tokio::time::MissedTickBehavior;
 
 use crate::config::{ClientConfig, SchedulerMode};
 use crate::delivery::DatagramDelivery;
-use crate::frame::{decode_frame, encode_frame, DataFrame, MsgType};
+use crate::first_wins::FirstWinsCache;
+use crate::frame::{decode_frame, encode_frame, DataFrame, MsgType, DATA_FLAG_FIRST_WINS};
 use crate::merge::MergeItem;
 use crate::progress::{AuthAck, AuthCapabilities, Direction, LegProgress, ProgressEmitter};
 use crate::queue::{select_least_backlogged_after, LegQueueBudget, QueueCandidate};
-use crate::scheduler::{LegRegistration, SchedulerScopeKey, SchedulerSessionKey, TrafficClass};
+use crate::scheduler::{
+    classify_wireguard_traffic, LegRegistration, SchedulerScopeKey, SchedulerSessionKey,
+};
 use crate::scheduler_runtime::{
     connection_epoch, process_epoch, spawn_scheduler, RuntimeChunk, SchedulerCommand,
     SchedulerHandle,
@@ -34,6 +37,8 @@ pub const LEG_QUARANTINE_MS: u64 = 30_000;
 const FRAME_PREFIX_BYTES: usize = 4;
 const MAX_RECONNECT_BACKOFF_MS: u64 = 5_000;
 const KEEPALIVE_INTERVAL_MS: u64 = 2_000;
+const FIRST_WINS_CACHE_TTL_MS: u64 = 10_000;
+const FIRST_WINS_CACHE_CAPACITY: usize = 65_536;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeLegState {
@@ -102,6 +107,9 @@ struct Stats {
     datagrams_dropped_unknown_session: u64,
     datagrams_direct_delivered: u64,
     handshake_datagrams_duplicated: u64,
+    first_wins_delivered: u64,
+    first_wins_duplicates_suppressed: u64,
+    suppressed_copy_progress_accepted: u64,
     reorder_buffer_bytes: u64,
     udp_egress_errors: u64,
     control_queue_drops: u64,
@@ -111,6 +119,7 @@ struct Stats {
 struct ClientState {
     legs: BTreeMap<u64, RuntimeLegState>,
     delivery: DatagramDelivery,
+    first_wins: FirstWinsCache,
     peer_to_session: HashMap<SocketAddr, u64>,
     session_to_peer: HashMap<u64, SocketAddr>,
     session_next_seq: HashMap<u64, u64>,
@@ -145,6 +154,7 @@ impl ClientState {
                 config.reorder_window_bytes,
                 config.reorder_timeout_ms,
             ),
+            first_wins: FirstWinsCache::new(FIRST_WINS_CACHE_TTL_MS, FIRST_WINS_CACHE_CAPACITY),
             peer_to_session: HashMap::new(),
             session_to_peer: HashMap::new(),
             session_next_seq: HashMap::new(),
@@ -185,6 +195,7 @@ impl ClientState {
         self.session_next_seq.remove(&session_id);
         self.session_last_seen_ms.remove(&session_id);
         self.delivery.remove_session(session_id);
+        self.first_wins.remove_session(session_id);
         self.stats.sessions_active = self.session_to_peer.len() as u64;
     }
 
@@ -290,6 +301,15 @@ impl ClientState {
         self.stats.reorder_buffer_bytes = self.delivery.buffered_bytes() as u64;
         result
     }
+
+    fn first_wins_is_committed(&mut self, session_id: u64, sequence: u64) -> bool {
+        self.first_wins.is_committed(session_id, sequence, now_ms())
+    }
+
+    fn commit_first_wins(&mut self, session_id: u64, sequence: u64) {
+        self.first_wins.commit(session_id, sequence, now_ms());
+        self.stats.first_wins_delivered = self.stats.first_wins_delivered.saturating_add(1);
+    }
 }
 
 #[derive(Debug)]
@@ -327,8 +347,13 @@ pub fn build_extended_leg_auth_payload(
     weight: u16,
     session_token: &str,
     connection_epoch: u64,
+    request_first_wins: bool,
 ) -> Vec<u8> {
-    let capabilities = AuthCapabilities::leg_progress(connection_epoch);
+    let capabilities = if request_first_wins {
+        AuthCapabilities::leg_progress_with_first_wins(connection_epoch)
+    } else {
+        AuthCapabilities::leg_progress(connection_epoch)
+    };
     serde_json::json!({
         "token": session_token,
         "endpoint_id": endpoint_id,
@@ -689,11 +714,14 @@ async fn leg_loop(
             session_id: 0,
             seq: 0,
             payload: if scheduler.is_some() {
+                let request_first_wins = config.scheduler.wireguard_latency_sensitive_copies == 2
+                    && config.scheduler.wireguard_latency_sensitive_max_bytes > 0;
                 build_extended_leg_auth_payload(
                     leg_cfg.endpoint_id,
                     current_weight,
                     &config.session_token,
                     active_connection_epoch,
+                    request_first_wins,
                 )
             } else {
                 build_leg_auth_payload(leg_cfg.endpoint_id, current_weight, &config.session_token)
@@ -923,6 +951,8 @@ pub async fn run(config: ClientConfig) -> Result<()> {
     let udp_idle_timeout = config.session_idle_timeout_ms;
     let max_datagram_bytes = config.max_datagram_bytes;
     let wireguard_aware = config.wireguard_aware;
+    let wireguard_latency_sensitive_max_bytes =
+        config.scheduler.wireguard_latency_sensitive_max_bytes;
     let udp_scheduler = scheduler.clone();
     let scheduler_scope = SchedulerScopeKey::Client {
         forward_id: config.forward_id,
@@ -952,11 +982,8 @@ pub async fn run(config: ClientConfig) -> Result<()> {
                 (session_id, seq)
             };
             if let Some(scheduler) = &udp_scheduler {
-                let class = if is_duplicate_eligible(&payload) {
-                    TrafficClass::WireGuardHandshake
-                } else {
-                    TrafficClass::Regular
-                };
+                let class =
+                    classify_wireguard_traffic(&payload, wireguard_latency_sensitive_max_bytes);
                 if scheduler
                     .try_admit(
                         SchedulerSessionKey {
@@ -1123,10 +1150,15 @@ pub async fn run(config: ClientConfig) -> Result<()> {
                         .get(&leg_id)
                         .filter(|emitter| emitter.connection_epoch() == connection_epoch)
                         .map(|_| (leg_id, connection_epoch, wire_bytes));
+                    let first_wins =
+                        frame.flags & DATA_FLAG_FIRST_WINS == DATA_FLAG_FIRST_WINS;
+                    let mut duplicate_suppressed = false;
                     let mut emits = Vec::<(
                         Vec<u8>,
                         SocketAddr,
                         u64,
+                        u64,
+                        bool,
                         Option<(u64, u64, usize)>,
                     )>::new();
                     {
@@ -1135,14 +1167,31 @@ pub async fn run(config: ClientConfig) -> Result<()> {
                             MsgType::Data => {
                                 let session_id = frame.session_id as u64;
                                 if guard.session_to_peer.contains_key(&session_id) {
-                                    emits.extend(
-                                        guard
-                                            .deliver_inbound_data(session_id, frame.seq, frame.payload)
-                                            .into_iter()
-                                            .map(|(payload, peer, session_id)| {
-                                                (payload, peer, session_id, progress_identity)
-                                            }),
-                                    );
+                                    if first_wins
+                                        && guard.first_wins_is_committed(session_id, frame.seq)
+                                    {
+                                        duplicate_suppressed = true;
+                                        guard.stats.first_wins_duplicates_suppressed = guard
+                                            .stats
+                                            .first_wins_duplicates_suppressed
+                                            .saturating_add(1);
+                                    } else {
+                                        emits.extend(
+                                            guard
+                                                .deliver_inbound_data(session_id, frame.seq, frame.payload)
+                                                .into_iter()
+                                                .map(|(payload, peer, session_id)| {
+                                                    (
+                                                        payload,
+                                                        peer,
+                                                        session_id,
+                                                        frame.seq,
+                                                        first_wins,
+                                                        progress_identity,
+                                                    )
+                                                }),
+                                        );
+                                    }
                                 } else {
                                     guard.stats.datagrams_dropped_unknown_session += 1;
                                 }
@@ -1159,12 +1208,37 @@ pub async fn run(config: ClientConfig) -> Result<()> {
                         }
                         guard.stats.reorder_buffer_bytes = guard.delivery.buffered_bytes() as u64;
                     }
-                    for (payload, peer, session_id, progress_identity) in emits {
+                    if duplicate_suppressed {
+                        if let Some((progress_leg, epoch, accepted_wire_bytes)) = progress_identity {
+                            if let Some(emitter) = progress_emitters.get_mut(&progress_leg) {
+                                if emitter.connection_epoch() == epoch {
+                                    emitter.record_udp_accepted(accepted_wire_bytes);
+                                    let mut guard = dispatch_state.lock().await;
+                                    guard.stats.suppressed_copy_progress_accepted = guard
+                                        .stats
+                                        .suppressed_copy_progress_accepted
+                                        .saturating_add(1);
+                                }
+                            }
+                        }
+                    }
+                    for (
+                        payload,
+                        peer,
+                        session_id,
+                        sequence,
+                        first_wins,
+                        progress_identity,
+                    ) in emits
+                    {
                         let sent = send_udp_checked(&dispatch_socket, &payload, peer).await;
                         let mut guard = dispatch_state.lock().await;
                         if sent.is_ok() {
                             guard.session_last_seen_ms.insert(session_id, now_ms());
                             guard.stats.datagrams_out += 1;
+                            if first_wins {
+                                guard.commit_first_wins(session_id, sequence);
+                            }
                         } else {
                             guard.stats.udp_egress_errors += 1;
                         }
@@ -1295,6 +1369,12 @@ pub async fn run(config: ClientConfig) -> Result<()> {
                     "datagrams_dropped_unknown_session": guard.stats.datagrams_dropped_unknown_session,
                     "datagrams_direct_delivered": guard.stats.datagrams_direct_delivered,
                     "handshake_datagrams_duplicated": guard.stats.handshake_datagrams_duplicated,
+                    "first_wins_delivered": guard.stats.first_wins_delivered,
+                    "first_wins_duplicates_suppressed": guard.stats.first_wins_duplicates_suppressed,
+                    "first_wins_cache_entries": guard.first_wins.entries(),
+                    "first_wins_cache_high_water": guard.first_wins.high_water(),
+                    "first_wins_cache_evictions": guard.first_wins.evictions(),
+                    "suppressed_copy_progress_accepted": guard.stats.suppressed_copy_progress_accepted,
                     "reorder_buffer_bytes": guard.stats.reorder_buffer_bytes,
                     "udp_egress_errors": guard.stats.udp_egress_errors,
                     "control_queue_drops": guard.stats.control_queue_drops,
@@ -1340,7 +1420,7 @@ mod tests {
 
     #[test]
     fn extended_auth_preserves_legacy_fields_and_requests_progress() {
-        let payload = build_extended_leg_auth_payload(184, 8, "udp-token", 77);
+        let payload = build_extended_leg_auth_payload(184, 8, "udp-token", 77, true);
         let decoded: serde_json::Value = serde_json::from_slice(&payload).expect("json");
         assert_eq!(decoded["token"], "udp-token");
         assert_eq!(decoded["endpoint_id"], 184);
@@ -1348,9 +1428,20 @@ mod tests {
         assert_eq!(decoded["protocol_version"], 2);
         assert_eq!(
             decoded["capabilities"],
-            serde_json::json!(["leg-progress-v1"])
+            serde_json::json!(["leg-progress-v1", "selective-first-wins-v1"])
         );
         assert_eq!(decoded["connection_epoch"], 77);
+    }
+
+    #[test]
+    fn extended_auth_does_not_request_first_wins_when_disabled() {
+        let payload = build_extended_leg_auth_payload(184, 8, "udp-token", 77, false);
+        let decoded: serde_json::Value = serde_json::from_slice(&payload).expect("json");
+
+        assert_eq!(
+            decoded["capabilities"],
+            serde_json::json!(["leg-progress-v1"])
+        );
     }
 
     #[tokio::test]
