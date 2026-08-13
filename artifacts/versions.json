@@ -79,10 +79,10 @@
   "install_forward_runtime": {
     "artifact_url": "/artifacts/install-forward-runtime.py",
     "path": "client-agent/install_forward_runtime.py",
-    "sha256": "3d91c8ce9fbd11d7021eb5babf151a183d7a34c72f454d5f87a89bd4b5145273",
-    "size": 80029,
-    "size_bytes": 80029,
-    "version": "2026.08.08.1"
+    "sha256": "a6061714f023a3262365de9224fb2e49381be9bb1d3a309e27207eb8db9f533d",
+    "size": 83683,
+    "size_bytes": 83683,
+    "version": "2026.08.13.1"
   },
   "leigod_forward_relay": {
     "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
@@ -152,9 +152,9 @@
       "legacy",
       "feedback_drr"
     ],
-    "sha256": "76cfd207887da44d6451b2af6e131e898c690bb83ed5bd209423fb01974fa4ab",
-    "size_bytes": 3067256,
-    "version": "0.2.1"
+    "sha256": "657be0971a820283f37d1bc94f9fafbb8bf1c592208e4f29b5dc522855574bfb",
+    "size_bytes": 3067608,
+    "version": "0.2.2"
   },
   "leikwan_uot_bond_linux_amd64": {
     "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
@@ -168,9 +168,9 @@
       "legacy",
       "feedback_drr"
     ],
-    "sha256": "2c4ad7ad698745df19eec6b8a289f5ee3f0a769ca3715a22ac775ebf6155f687",
-    "size_bytes": 2953960,
-    "version": "0.2.1"
+    "sha256": "56c114cf269579d76a27ac45ccf8fe61db3b5abddcab49cabbd43f187df4e73a",
+    "size_bytes": 2957184,
+    "version": "0.2.2"
   },
   "leikwan_uot_bond_windows_amd64": {
     "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
@@ -219,18 +219,18 @@
   "sidecar_agent": {
     "artifact_url": "/artifacts/sidecar-agent.py",
     "path": "sidecar-agent/sidecar_agent.py",
-    "sha256": "989aa1b2a821937a9bd669b74932c928673a65a624023451470655ca0cfff469",
-    "size": 138652,
-    "size_bytes": 138652,
-    "version": "2026.08.08.1"
+    "sha256": "004c786bf59817b8c26354f752e8f586e71a0ef0775d1d0021f2d2ecb00e9a72",
+    "size": 140469,
+    "size_bytes": 140469,
+    "version": "2026.08.13.1"
   },
   "slave_agent": {
     "artifact_url": "/artifacts/slave-agent.py",
     "path": "slave-agent/slave_agent.py",
-    "sha256": "ee84250b0b0d3e4677ca401875c88c716277358ca42980c2a34cada741f596a0",
-    "size": 333753,
-    "size_bytes": 333753,
-    "version": "2026.08.09.1"
+    "sha256": "a1d5b0d99a2d22bce6326742ca96b140231eb01f1f2a90232b643e769d78c1f9",
+    "size": 342221,
+    "size_bytes": 342221,
+    "version": "2026.08.13.1"
   },
   "slave_installer": {
     "install_url": "/artifacts/install-slave.sh",

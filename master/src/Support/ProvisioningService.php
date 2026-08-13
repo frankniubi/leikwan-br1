@@ -668,68 +668,6 @@ final class ProvisioningService
         return 'direct_forward_node';
     }
 
-    /**
-     * Returns true when the forward is a single/race forward routed through a
-     * static sidecar that acts as the ingress frontend (single_race_via_sidecar).
-     *
-     * @param array<string, mixed> $forward
-     */
-    public function usesSingleRaceSidecarFrontend(array $forward): bool
-    {
-        $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
-        if (!in_array($clientMode, ['single', 'race'], true)) {
-            return false;
-        }
-        if (strtolower(trim((string) ($forward['backend_mode'] ?? 'current_mode'))) !== 'current_mode') {
-            return false;
-        }
-        $pointId = (int) ($forward['bond_sidecar_point_id'] ?? $forward['sidecar_point_id'] ?? 0);
-        if ($pointId <= 0) {
-            return false;
-        }
-        $pointConfigSource = $forward['bond_sidecar_point_agent_config_json']
-            ?? $forward['sidecar_agent_config_json']
-            ?? null;
-        if ($pointConfigSource === null || $pointConfigSource === '') {
-            $point = $this->sidecarPointById($pointId);
-            $pointConfigSource = is_array($point) ? ($point['agent_config_json'] ?? null) : null;
-        }
-        $pointConfig = $this->decodeJsonAssoc($pointConfigSource);
-        $raw = $pointConfig['single_race_via_sidecar'] ?? false;
-        if (is_bool($raw)) {
-            return $raw;
-        }
-        if (is_int($raw) || is_float($raw)) {
-            return (int) $raw === 1;
-        }
-        return in_array(strtolower(trim((string) $raw)), ['1', 'true', 'yes', 'on'], true);
-    }
-
-    /**
-     * Returns the set of sidecar point IDs that use a single shared WireGuard
-     * interface for all slave peers (lwspN) rather than per-combination interfaces.
-     * Configured via the STATIC_SIDECAR_SHARED_WG_POINT_IDS env var (comma-separated
-     * integers).
-     *
-     * @return array<int, true>
-     */
-    private function staticSidecarSharedWireguardPointIds(): array
-    {
-        $ids = [];
-        foreach (explode(',', (string) ($this->config->get('STATIC_SIDECAR_SHARED_WG_POINT_IDS', '') ?? '')) as $raw) {
-            $pointId = (int) trim($raw);
-            if ($pointId > 0) {
-                $ids[$pointId] = true;
-            }
-        }
-        return $ids;
-    }
-
-    private function staticSidecarUsesSharedWireguardPeers(int $pointId): bool
-    {
-        return isset($this->staticSidecarSharedWireguardPointIds()[$pointId]);
-    }
-
     private function sidecarPointOverseasEligible(array $point): bool
     {
         $config = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
@@ -3663,6 +3601,46 @@ final class ProvisioningService
         } else {
             $wireguardAware = filter_var($existing['wireguard_aware'] ?? false, FILTER_VALIDATE_BOOL);
         }
+        // First-wins latency scheduler (selective-first-wins-v1): race a bounded WG transport
+        // packet as 2 copies on legs in DIFFERENT path groups, first delivered wins.
+        // Mirrors the Rust SchedulerConfig validation: copies==2 requires max_bytes>0 and
+        // feedback_drr; defaults keep the feature OFF (max_bytes=0, copies=1).
+        $firstWinsMaxBytes = max(0, (int) ($existing['wireguard_latency_sensitive_max_bytes'] ?? 0));
+        $firstWinsCopies = max(1, min(2, (int) ($existing['wireguard_latency_sensitive_copies'] ?? 1)));
+        if ($firstWinsCopies === 2) {
+            if ($schedulerMode !== 'feedback_drr' || $firstWinsMaxBytes <= 0) {
+                $firstWinsCopies = 1;
+            }
+        }
+        $maxDatagramBytes = max(1024, min(65535, (int) ($existing['max_datagram_bytes'] ?? 65535)));
+        $firstWinsMaxBytes = min($firstWinsMaxBytes, $maxDatagramBytes);
+        $startupLegWindowBytes = max(1, min($minLegWindowBytes, (int) ($existing['startup_leg_window_bytes'] ?? 131072)));
+        $sessionReorderBudgetMs = max(0, min($queueDeadlineMs, (int) ($existing['session_reorder_budget_ms'] ?? 1)));
+        $maxLegQueuePackets = max(1, min(262144, (int) ($existing['max_leg_queue_packets'] ?? 8192)));
+        $maxLegQueueBytes = max(1024, min(64 * 1024 * 1024, (int) ($existing['max_leg_queue_bytes'] ?? 16777216)));
+        $udpSocketBufferBytes = max(65536, min(64 * 1024 * 1024, (int) ($existing['udp_socket_buffer_bytes'] ?? 8388608)));
+        // Per-forward leigod line assignment for the UoT sidepath: maps forward_id (string key)
+        // to the leigod line IDs whose slave-side shadow routes the legs should ride.
+        // The slave terminates SOCKS5 locally; clients only ever open plain-TCP ingress legs.
+        $forwardLeigodLines = [];
+        if (is_array($existing['forward_leigod_lines'] ?? null)) {
+            foreach ($existing['forward_leigod_lines'] as $rawForwardId => $rawLineIds) {
+                $mappedForwardId = (int) $rawForwardId;
+                if ($mappedForwardId <= 0 || !is_array($rawLineIds)) {
+                    continue;
+                }
+                $lineIds = [];
+                foreach ($rawLineIds as $rawLineId) {
+                    $lineId = (int) $rawLineId;
+                    if ($lineId > 0) {
+                        $lineIds[$lineId] = true;
+                    }
+                }
+                if ($lineIds !== []) {
+                    $forwardLeigodLines[(string) $mappedForwardId] = array_map('intval', array_keys($lineIds));
+                }
+            }
+        }
 
         return [
             'enabled_forward_ids' => $normalizedForwardIds,
@@ -3695,6 +3673,15 @@ final class ProvisioningService
             'probe_interval_ms' => max(1, (int) ($existing['probe_interval_ms'] ?? 1000)),
             'max_sessions' => max(1, min(65536, (int) ($existing['max_sessions'] ?? 4096))),
             'control_queue_packets' => max(1, min(262144, (int) ($existing['control_queue_packets'] ?? 256))),
+            'wireguard_latency_sensitive_max_bytes' => $firstWinsMaxBytes,
+            'wireguard_latency_sensitive_copies' => $firstWinsCopies,
+            'startup_leg_window_bytes' => $startupLegWindowBytes,
+            'session_reorder_budget_ms' => $sessionReorderBudgetMs,
+            'max_leg_queue_packets' => $maxLegQueuePackets,
+            'max_leg_queue_bytes' => $maxLegQueueBytes,
+            'udp_socket_buffer_bytes' => $udpSocketBufferBytes,
+            'max_datagram_bytes' => $maxDatagramBytes,
+            'forward_leigod_lines' => $forwardLeigodLines,
         ];
     }
 

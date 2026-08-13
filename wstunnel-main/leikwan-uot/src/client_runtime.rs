@@ -92,6 +92,7 @@ struct ClientLegConfig {
     direct_tcp: bool,
     socks5_proxy: Option<String>,
     path_group: u64,
+    route_key: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -670,7 +671,7 @@ async fn leg_loop(
         let stream = match open_plain_tcp_leg(
             &leg_cfg.host,
             leg_cfg.port,
-            &config.route_key,
+            leg_cfg.route_key.as_deref().unwrap_or(&config.route_key),
             &leg_cfg.auth_token,
             leg_cfg.direct_tcp,
             leg_cfg.socks5_proxy.as_deref(),
@@ -929,6 +930,7 @@ pub async fn run(config: ClientConfig) -> Result<()> {
             direct_tcp: leg.direct_tcp,
             socks5_proxy: leg.socks5_proxy.clone(),
             path_group: leg.path_group,
+            route_key: leg.route_key.clone(),
         };
         tokio::spawn(leg_loop(
             leg_cfg,
@@ -1562,6 +1564,7 @@ mod tests {
                     health_role: "healthy".to_string(),
                     weight: 1,
                     path_group: 0,
+                    route_key: None,
                     direct_tcp: true,
                     socks5_proxy: None,
                 },
@@ -1574,6 +1577,7 @@ mod tests {
                     health_role: "healthy".to_string(),
                     weight: 1,
                     path_group: 0,
+                    route_key: None,
                     direct_tcp: true,
                     socks5_proxy: None,
                 },

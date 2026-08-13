@@ -331,3 +331,118 @@ class SlaveUdpUotShadowRouteTests(unittest.TestCase):
         route_keys = [item["route_key"] for item in agent.listener_routes(7001)]
         self.assertIn("a43547b6350f72cd", route_keys)
         self.assertNotIn("a43547b6350f72cd.uot", route_keys)
+
+
+class SlaveUdpUotLeigodShadowTests(unittest.TestCase):
+    def make_agent(self, forward_lines: dict) -> slave_agent_module.SlaveAgent:
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        self.systemd_dir = pathlib.Path(tmp_dir.name) / "systemd"
+        config_path = pathlib.Path(tmp_dir.name) / "config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "master_url": "https://panel.example.com",
+                    "node_token": "token",
+                    "state_dir": str(pathlib.Path(tmp_dir.name) / "state"),
+                    "systemd_dir": str(self.systemd_dir),
+                    "ingress_bin": "/usr/local/bin/leikwan-ingress",
+                    "udp_uot_sidepath": {
+                        "enabled_forward_ids": [26],
+                        "shadow_route_suffix": ".uot",
+                        "sidecar_port": 8999,
+                        "forward_leigod_lines": forward_lines,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        agent = slave_agent_module.SlaveAgent(config_path)
+        agent.save_leigod_desired_lines(
+            [
+                {"line_id": 455, "socks_port": 20455},
+                {"line_id": 693, "socks_port": 20693},
+            ]
+        )
+        return agent
+
+    def publish(self, agent) -> None:
+        task = {"service_id": 1, "forward_id": 26, "endpoint_id": 184}
+        payload = {
+            "listen_port": 7001,
+            "target": "138.252.162.120:9000",
+            "path_prefix": "a43547b6350f72cd",
+            "route_key": "a43547b6350f72cd",
+            "transport_mode": "tcp+udp",
+            "ingress_protocol": "plain_tcp_mux",
+            "ingress_auth_token": "token-123",
+            "backend_protocol": "tcp_relay",
+            "filter_profile": "off",
+        }
+        real_which = slave_agent_module.shutil.which
+
+        def fake_which(binary, *args, **kwargs):
+            if str(binary).endswith("gost"):
+                return "/usr/local/bin/gost"
+            if binary == "systemctl":
+                return None
+            return real_which(binary, *args, **kwargs)
+
+        with mock.patch.object(slave_agent_module.shutil, "which", side_effect=fake_which):
+            with mock.patch.object(agent, "ensure_nft_table"), mock.patch.object(agent, "delete_nft_rules"), mock.patch.object(
+                agent, "add_nft_rules"
+            ), mock.patch.object(agent, "write_filter_marker", return_value={"filter_profile": "off"}):
+                agent.publish_task(task, payload)
+
+    def test_leigod_lines_create_per_line_shadow_routes_and_gost_units(self) -> None:
+        agent = self.make_agent({"26": [455, 693]})
+        self.publish(agent)
+
+        routes = agent.listener_routes(7001)
+        route_keys = [item["route_key"] for item in routes]
+        self.assertIn("a43547b6350f72cd.uot.l455", route_keys)
+        self.assertIn("a43547b6350f72cd.uot.l693", route_keys)
+
+        metadata = agent.load_service_metadata("wstunnel-svc-1-184-udp-uot-l455")
+        self.assertIsNotNone(metadata)
+        self.assertEqual(metadata["leigod_line_id"], 455)
+        gost_port = int(metadata["leigod_gost_port"])
+        self.assertGreater(gost_port, 0)
+        self.assertEqual(metadata["target"], f"127.0.0.1:{gost_port}")
+
+        gost_unit = (self.systemd_dir / "wstunnel-svc-1-184-udp-uot-lg455.service").read_text(encoding="utf-8")
+        self.assertIn(f"-L tcp://127.0.0.1:{gost_port}/138.252.162.120:8999", gost_unit)
+        self.assertIn("-F socks5://127.0.0.1:20455", gost_unit)
+
+    def test_missing_leigod_line_is_skipped(self) -> None:
+        agent = self.make_agent({"26": [455, 999]})
+        self.publish(agent)
+        route_keys = [item["route_key"] for item in agent.listener_routes(7001)]
+        self.assertIn("a43547b6350f72cd.uot.l455", route_keys)
+        self.assertNotIn("a43547b6350f72cd.uot.l999", route_keys)
+
+    def test_lines_removed_from_config_cleanup_per_line_services(self) -> None:
+        agent = self.make_agent({"26": [455]})
+        self.publish(agent)
+        self.assertIn("a43547b6350f72cd.uot.l455", [item["route_key"] for item in agent.listener_routes(7001)])
+
+        config_path = agent.config_path if hasattr(agent, "config_path") else None
+        # shrink the assignment to no lines and republish
+        import json as _json
+
+        cfg = _json.loads(pathlib.Path(agent.config_path).read_text(encoding="utf-8")) if config_path else None
+        if cfg is None:
+            # fall back: locate config via state_dir parent
+            cfg_path = pathlib.Path(agent.state_dir).parent / "config.json"
+        else:
+            cfg_path = config_path
+        cfg = _json.loads(pathlib.Path(cfg_path).read_text(encoding="utf-8"))
+        cfg["udp_uot_sidepath"]["forward_leigod_lines"] = {}
+        pathlib.Path(cfg_path).write_text(_json.dumps(cfg), encoding="utf-8")
+        agent.config = cfg
+
+        self.publish(agent)
+        route_keys = [item["route_key"] for item in agent.listener_routes(7001)]
+        self.assertNotIn("a43547b6350f72cd.uot.l455", route_keys)
+        self.assertFalse((self.systemd_dir / "wstunnel-svc-1-184-udp-uot-lg455.service").exists())
+        self.assertFalse((self.systemd_dir / "wstunnel-svc-1-184-udp-uot-l455.service").exists())

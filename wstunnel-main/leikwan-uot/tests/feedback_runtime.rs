@@ -135,6 +135,7 @@ async fn run_round_trip(client_mode: SchedulerMode) -> (serde_json::Value, serde
             health_role: "healthy".to_string(),
             weight: 1,
             path_group: 0,
+            route_key: None,
             direct_tcp: true,
             socks5_proxy: None,
         }],
@@ -263,6 +264,7 @@ async fn first_wins_delivers_one_datagram_and_releases_both_leg_ledgers() {
                 health_role: "healthy".to_string(),
                 weight: 1,
                 path_group: endpoint_id,
+                route_key: None,
                 direct_tcp: true,
                 socks5_proxy: None,
             })

@@ -249,6 +249,12 @@ pub struct ClientLegConfig {
     /// id, so every leg is its own group unless explicitly grouped.
     #[serde(default)]
     pub path_group: u64,
+    /// Optional per-leg ingress route key override. When set, the leg's
+    /// LEIKWAN-INGRESS OPEN handshake uses this route key instead of the
+    /// session-wide one, letting one bond instance spread legs across
+    /// different slave-side routes (e.g. per-leigod-line shadow routes).
+    #[serde(default)]
+    pub route_key: Option<String>,
     #[serde(default)]
     pub dynamic_priority: u16,
     #[serde(default = "default_health_role")]
@@ -562,6 +568,27 @@ mod tests {
         let parsed: ClientConfig = serde_json::from_str(raw).expect("client config");
         assert_eq!(parsed.forward_id, 26);
         assert_eq!(parsed.legs[0].weight, 8);
+    }
+
+    #[test]
+    fn client_leg_route_key_defaults_to_none_and_parses_override() {
+        let raw = r#"{
+          "forward_id": 26,
+          "listen_udp": "0.0.0.0:11024",
+          "route_key": "abc.uot",
+          "session_token": "udp-token",
+          "reorder_window_packets": 16,
+          "reorder_window_bytes": 4096,
+          "reorder_timeout_ms": 25,
+          "legs": [
+            {"endpoint_id": 1, "host": "10.0.0.1", "port": 443, "auth_token": "t"},
+            {"endpoint_id": 2, "host": "10.0.0.1", "port": 443, "auth_token": "t", "route_key": "abc.uot.l455", "path_group": 455}
+          ]
+        }"#;
+        let parsed: ClientConfig = serde_json::from_str(raw).expect("client config");
+        assert_eq!(parsed.legs[0].route_key, None);
+        assert_eq!(parsed.legs[1].route_key.as_deref(), Some("abc.uot.l455"));
+        assert_eq!(parsed.legs[1].path_group, 455);
     }
 
     #[test]
