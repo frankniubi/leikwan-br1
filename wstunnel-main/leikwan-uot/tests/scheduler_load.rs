@@ -363,6 +363,7 @@ impl VirtualLoad {
                 connection_epoch: link.epoch,
                 progress_direction: Direction::ClientToSidecar,
                 weight: 1,
+                path_group: 0,
                 now_us: 0,
             });
             scheduler
@@ -648,6 +649,7 @@ impl VirtualLoad {
             connection_epoch: self.links[0].epoch,
             progress_direction: Direction::ClientToSidecar,
             weight: 1,
+            path_group: 0,
             now_us,
         });
         self.scheduler

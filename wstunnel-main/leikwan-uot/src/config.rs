@@ -75,6 +75,8 @@ pub struct SchedulerConfig {
     pub chunk_max_bytes: usize,
     #[serde(default = "default_min_leg_window_bytes")]
     pub min_leg_window_bytes: usize,
+    #[serde(default = "default_startup_leg_window_bytes")]
+    pub startup_leg_window_bytes: usize,
     #[serde(default = "default_max_leg_window_bytes")]
     pub max_leg_window_bytes: usize,
     #[serde(default = "default_max_total_outstanding_bytes")]
@@ -87,6 +89,17 @@ pub struct SchedulerConfig {
     pub progress_interval_ms: u64,
     #[serde(default = "default_finish_skew_budget_ms")]
     pub finish_skew_budget_ms: u64,
+    #[serde(default = "default_session_reorder_budget_ms")]
+    pub session_reorder_budget_ms: u64,
+    /// Maximum payload size (bytes) for a WireGuard datagram to be classified as a
+    /// bounded latency-sensitive transport packet eligible for the first-wins
+    /// replica race. 0 (the default) disables the feature entirely.
+    #[serde(default)]
+    pub wireguard_latency_sensitive_max_bytes: usize,
+    /// Number of copies sent for latency-sensitive transport packets: 1 (single
+    /// copy, the default) or 2 (race a replica on a different path group).
+    #[serde(default = "default_wireguard_latency_sensitive_copies")]
+    pub wireguard_latency_sensitive_copies: u8,
     #[serde(default = "default_probe_interval_ms")]
     pub probe_interval_ms: u64,
     #[serde(default = "default_max_sessions")]
@@ -111,12 +124,16 @@ impl Default for SchedulerConfig {
             chunk_target_bytes: default_chunk_target_bytes(),
             chunk_max_bytes: default_chunk_max_bytes(),
             min_leg_window_bytes: default_min_leg_window_bytes(),
+            startup_leg_window_bytes: default_startup_leg_window_bytes(),
             max_leg_window_bytes: default_max_leg_window_bytes(),
             max_total_outstanding_bytes: default_max_total_outstanding_bytes(),
             progress_interval_bytes: default_progress_interval_bytes(),
             progress_interval_frames: default_progress_interval_frames(),
             progress_interval_ms: default_progress_interval_ms(),
             finish_skew_budget_ms: default_finish_skew_budget_ms(),
+            session_reorder_budget_ms: default_session_reorder_budget_ms(),
+            wireguard_latency_sensitive_max_bytes: 0,
+            wireguard_latency_sensitive_copies: default_wireguard_latency_sensitive_copies(),
             probe_interval_ms: default_probe_interval_ms(),
             max_sessions: default_max_sessions(),
             control_queue_packets: default_control_queue_packets(),
@@ -131,6 +148,19 @@ impl SchedulerConfig {
     }
 
     pub fn validate(&self, max_datagram_bytes: usize) -> Result<()> {
+        if !(1..=2).contains(&self.wireguard_latency_sensitive_copies) {
+            bail!("wireguard_latency_sensitive_copies must be 1 or 2");
+        }
+        if self.wireguard_latency_sensitive_copies == 2
+            && self.wireguard_latency_sensitive_max_bytes == 0
+        {
+            bail!("two latency-sensitive copies require a nonzero byte threshold");
+        }
+        if self.wireguard_latency_sensitive_copies == 2
+            && !matches!(self.scheduler_mode, SchedulerMode::FeedbackDrr)
+        {
+            bail!("two latency-sensitive copies require feedback_drr");
+        }
         if self.aggregate_rate_bps == 0 {
             bail!("aggregate_rate_bps must be positive");
         }
@@ -191,6 +221,18 @@ impl SchedulerConfig {
         if self.burst_bytes(max_wire_frame_bytes) < max_wire_frame_bytes {
             bail!("token bucket burst must fit one maximum wire frame");
         }
+        if self.startup_leg_window_bytes == 0
+            || self.startup_leg_window_bytes > self.min_leg_window_bytes
+            || self.startup_leg_window_bytes < max_wire_frame_bytes
+        {
+            bail!("startup_leg_window_bytes must fit one max wire frame and satisfy startup <= min_leg_window_bytes");
+        }
+        if self.session_reorder_budget_ms > self.queue_deadline_ms {
+            bail!("session_reorder_budget_ms must not exceed queue_deadline_ms");
+        }
+        if self.wireguard_latency_sensitive_max_bytes > max_datagram_bytes {
+            bail!("wireguard_latency_sensitive_max_bytes must fit max_datagram_bytes");
+        }
         Ok(())
     }
 }
@@ -201,6 +243,12 @@ pub struct ClientLegConfig {
     pub host: String,
     pub port: u16,
     pub auth_token: String,
+    /// Path-group identifier for the first-wins latency scheduler. Legs sharing a
+    /// path group ride the same physical path; the scheduler only races a replica
+    /// on a leg in a DIFFERENT group. 0 (the default) auto-maps to the endpoint
+    /// id, so every leg is its own group unless explicitly grouped.
+    #[serde(default)]
+    pub path_group: u64,
     #[serde(default)]
     pub dynamic_priority: u16,
     #[serde(default = "default_health_role")]
@@ -324,6 +372,10 @@ fn default_min_leg_window_bytes() -> usize {
     262_144
 }
 
+fn default_startup_leg_window_bytes() -> usize {
+    131_072
+}
+
 fn default_max_leg_window_bytes() -> usize {
     4_194_304
 }
@@ -346,6 +398,14 @@ fn default_progress_interval_ms() -> u64 {
 
 fn default_finish_skew_budget_ms() -> u64 {
     10
+}
+
+fn default_session_reorder_budget_ms() -> u64 {
+    1
+}
+
+fn default_wireguard_latency_sensitive_copies() -> u8 {
+    1
 }
 
 fn default_probe_interval_ms() -> u64 {

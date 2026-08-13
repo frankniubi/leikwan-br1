@@ -413,6 +413,7 @@ mod tests {
                     progress_direction: Direction::ClientToSidecar,
                     weight: 1,
                     now_us: 0,
+                    path_group: 0,
                 },
                 data_tx,
             })
@@ -506,6 +507,7 @@ mod tests {
                     progress_direction: Direction::ClientToSidecar,
                     weight: 1,
                     now_us: 0,
+                    path_group: 0,
                 },
                 data_tx,
             })

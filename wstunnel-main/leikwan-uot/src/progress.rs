@@ -9,6 +9,7 @@ pub const PROTOCOL_VERSION: u8 = 2;
 pub const LEG_PROGRESS_VERSION: u8 = 1;
 pub const LEG_PROGRESS_BYTES: usize = 44;
 pub const LEG_PROGRESS_CAPABILITY: &str = "leg-progress-v1";
+pub const FIRST_WINS_CAPABILITY: &str = "selective-first-wins-v1";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u8)]
@@ -45,6 +46,17 @@ impl AuthCapabilities {
         }
     }
 
+    pub fn leg_progress_with_first_wins(connection_epoch: u64) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            capabilities: vec![
+                LEG_PROGRESS_CAPABILITY.to_string(),
+                FIRST_WINS_CAPABILITY.to_string(),
+            ],
+            connection_epoch,
+        }
+    }
+
     pub fn requests_leg_progress(&self) -> bool {
         self.protocol_version == PROTOCOL_VERSION
             && self.connection_epoch != 0
@@ -52,6 +64,14 @@ impl AuthCapabilities {
                 .capabilities
                 .iter()
                 .any(|capability| capability == LEG_PROGRESS_CAPABILITY)
+    }
+
+    pub fn requests_first_wins(&self) -> bool {
+        self.requests_leg_progress()
+            && self
+                .capabilities
+                .iter()
+                .any(|capability| capability == FIRST_WINS_CAPABILITY)
     }
 }
 
@@ -71,6 +91,17 @@ impl AuthAck {
         }
     }
 
+    pub fn leg_progress_with_first_wins(connection_epoch: u64) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            capabilities: vec![
+                LEG_PROGRESS_CAPABILITY.to_string(),
+                FIRST_WINS_CAPABILITY.to_string(),
+            ],
+            connection_epoch,
+        }
+    }
+
     pub fn matches(&self, connection_epoch: u64) -> bool {
         self.protocol_version == PROTOCOL_VERSION
             && self.connection_epoch == connection_epoch
@@ -78,6 +109,14 @@ impl AuthAck {
                 .capabilities
                 .iter()
                 .any(|capability| capability == LEG_PROGRESS_CAPABILITY)
+    }
+
+    pub fn supports_first_wins(&self, connection_epoch: u64) -> bool {
+        self.matches(connection_epoch)
+            && self
+                .capabilities
+                .iter()
+                .any(|capability| capability == FIRST_WINS_CAPABILITY)
     }
 }
 

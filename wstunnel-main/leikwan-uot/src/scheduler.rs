@@ -12,6 +12,7 @@ use crate::queue::{select_least_backlogged_after, QueueCandidate};
 use crate::telemetry::{
     DropReason, LegStatsSnapshot, LifecycleStage, StatsSnapshot, Telemetry, UdpErrorKind,
 };
+use crate::wireguard::{is_duplicate_eligible, is_latency_sensitive_transport};
 
 const STREAM_PREFIX_BYTES: usize = 4;
 const TERMINAL_HISTORY_LIMIT: usize = 1_024;
@@ -41,7 +42,45 @@ pub struct SchedulerSessionKey {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrafficClass {
     WireGuardHandshake,
+    /// A bounded WireGuard transport-data datagram eligible for the first-wins
+    /// replica race (the primary copy).
+    WireGuardSmallTransport,
+    /// The second (replica) copy of a first-wins latency-sensitive datagram,
+    /// raced on a leg in a different path group.
+    WireGuardSmallTransportReplica,
     Regular,
+}
+
+impl TrafficClass {
+    const fn is_latency_sensitive(self) -> bool {
+        matches!(
+            self,
+            Self::WireGuardSmallTransport | Self::WireGuardSmallTransportReplica
+        )
+    }
+
+    const fn is_latency_replica(self) -> bool {
+        matches!(self, Self::WireGuardSmallTransportReplica)
+    }
+}
+
+/// Classify a WireGuard datagram payload for scheduling. A handshake (message
+/// type 1-3) is always `WireGuardHandshake`. A bounded transport-data datagram
+/// (message type 4, within `latency_sensitive_max_bytes`) is
+/// `WireGuardSmallTransport` (eligible for the first-wins replica race).
+/// Everything else is `Regular`. With `latency_sensitive_max_bytes == 0` (the
+/// default) no datagram is ever classified as latency-sensitive.
+pub fn classify_wireguard_traffic(
+    payload: &[u8],
+    latency_sensitive_max_bytes: usize,
+) -> TrafficClass {
+    if is_duplicate_eligible(payload) {
+        TrafficClass::WireGuardHandshake
+    } else if is_latency_sensitive_transport(payload, latency_sensitive_max_bytes) {
+        TrafficClass::WireGuardSmallTransport
+    } else {
+        TrafficClass::Regular
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,6 +135,13 @@ struct ReservationRecord {
     enqueue_us: u64,
     deadline_us: u64,
     class: TrafficClass,
+    /// True once this reservation has been paired as a first-wins replica whose
+    /// primary has been admitted on a different path group.
+    first_wins: bool,
+    /// When set, this reservation must avoid legs in the given path group (used
+    /// by a first-wins replica to land on a different physical path than the
+    /// primary).
+    avoid_path_group: Option<u64>,
     leg_id: Option<u64>,
     stage: ReservationStage,
     scheduled_once: bool,
@@ -149,6 +195,8 @@ pub struct LegRegistration {
     pub progress_direction: Direction,
     pub weight: u16,
     pub now_us: u64,
+    /// Path-group identifier for the first-wins scheduler (0 = auto-map to leg_id).
+    pub path_group: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +217,12 @@ pub struct LegScheduleState {
     pub connection_epoch: u64,
     pub progress_direction: Direction,
     pub weight: u16,
+    /// Path group this leg rides. The first-wins scheduler only races a replica
+    /// on a leg in a DIFFERENT group.
+    pub path_group: u64,
+    /// True once the peer's AuthAck advertised selective-first-wins-v1 for this
+    /// leg's connection epoch.
+    pub first_wins_capable: bool,
     pub window_reserved_wire_bytes: u64,
     pub outstanding_wire_bytes: u64,
     pub target_window_bytes: u64,
@@ -195,6 +249,15 @@ pub struct LegScheduleState {
 
 impl LegScheduleState {
     fn new(registration: LegRegistration, minimum_window: usize) -> Self {
+        // path_group == 0 (unset) auto-maps to the leg id, so every leg is its
+        // own group unless explicitly grouped — which means the first-wins
+        // diversity predicate (different path_group) is never satisfied by
+        // default, keeping the feature inert.
+        let path_group = if registration.path_group == 0 {
+            registration.leg_id
+        } else {
+            registration.path_group
+        };
         Self {
             leg_id: registration.leg_id,
             scope_key: registration.scope_key,
@@ -205,6 +268,8 @@ impl LegScheduleState {
             connection_epoch: registration.connection_epoch,
             progress_direction: registration.progress_direction,
             weight: registration.weight.max(1),
+            path_group,
+            first_wins_capable: false,
             window_reserved_wire_bytes: 0,
             outstanding_wire_bytes: 0,
             target_window_bytes: minimum_window as u64,
@@ -434,6 +499,10 @@ impl Scheduler {
         now_us: u64,
     ) -> Admission {
         session.process_epoch = self.process_epoch;
+        let issue_replica = matches!(class, TrafficClass::WireGuardSmallTransport)
+            && self.config.wireguard_latency_sensitive_copies == 2;
+        let replica_session = issue_replica.then(|| session.clone());
+        let replica_payload = issue_replica.then(|| payload.clone());
         let payload_bytes = payload.len();
         let wire_bytes = STREAM_PREFIX_BYTES + FRAME_HEADER_BYTES + payload_bytes;
         self.telemetry
@@ -487,6 +556,8 @@ impl Scheduler {
             enqueue_us: now_us,
             deadline_us,
             class,
+            first_wins: false,
+            avoid_path_group: None,
             leg_id: None,
             stage: ReservationStage::Queued,
             scheduled_once: false,
@@ -499,7 +570,22 @@ impl Scheduler {
                 ..SessionQueue::default()
             });
         let was_empty = queue.reservation_ids.is_empty();
-        queue.reservation_ids.push_back(reservation_id);
+        if class.is_latency_sensitive() {
+            // Latency-sensitive packets jump ahead of Regular traffic in the
+            // per-session queue so they are not stuck behind bulk data.
+            let insert_at = queue
+                .reservation_ids
+                .iter()
+                .position(|id| {
+                    self.reservations
+                        .get(id)
+                        .is_some_and(|record| matches!(record.class, TrafficClass::Regular))
+                })
+                .unwrap_or(queue.reservation_ids.len());
+            queue.reservation_ids.insert(insert_at, reservation_id);
+        } else {
+            queue.reservation_ids.push_back(reservation_id);
+        }
         queue.queued_bytes = queue.queued_bytes.saturating_add(payload_bytes);
         queue.queued_packets = queue.queued_packets.saturating_add(1);
         if was_empty {
@@ -515,6 +601,19 @@ impl Scheduler {
         self.queue_bytes_high_water = self.queue_bytes_high_water.max(self.queue_bytes);
         self.telemetry
             .record_lifecycle(LifecycleStage::Admitted, payload_bytes, wire_bytes);
+        if let (Some(replica_session), Some(replica_payload)) = (replica_session, replica_payload) {
+            // Admit the replica as a second reservation. The scheduler later
+            // pairs it with the primary (enable_first_wins_pair) and lands it on
+            // a different path group; the receiver's FirstWinsCache keeps only
+            // the first-delivered copy.
+            let _ = self.admit_frame(
+                replica_session,
+                sequence,
+                replica_payload,
+                TrafficClass::WireGuardSmallTransportReplica,
+                now_us,
+            );
+        }
         Admission::Admitted(reservation_id)
     }
 
@@ -576,6 +675,7 @@ impl Scheduler {
             return Err(SchedulerError::InvalidAck);
         }
         leg.feedback_capable = true;
+        leg.first_wins_capable = ack.supports_first_wins(leg.connection_epoch);
         leg.cumulative_sent_frames = 0;
         leg.cumulative_sent_wire_bytes = 0;
         leg.last_progress_accepted_wire_bytes = 0;
@@ -624,6 +724,16 @@ impl Scheduler {
                 self.active_sessions.push_back(session_key);
                 continue;
             };
+            // A latency-sensitive replica whose primary was never paired into a
+            // first-wins pair has no value on its own — drop it and move on, so a
+            // feature-off or un-negotiated peer never ships a redundant copy.
+            let first_class = first_record.class;
+            let first_avoid_path_group = first_record.avoid_path_group;
+            if first_class.is_latency_replica() && !first_record.first_wins {
+                self.skip_queued_replica(&session_key, first_id);
+                self.active_sessions.push_back(session_key);
+                continue;
+            }
             let quantum = self
                 .config
                 .drr_quantum_bytes
@@ -653,6 +763,7 @@ impl Scheduler {
                 wire_bytes,
                 oldest_deadline_us,
                 now_us,
+                first_avoid_path_group,
             );
             if selected_leg.is_none() && self.has_available_probe(&session_key.scope_key) {
                 let probe_ids = self.probe_chunk_candidates(&session_key);
@@ -663,6 +774,7 @@ impl Scheduler {
                         probe_wire_bytes,
                         oldest_deadline_us,
                         now_us,
+                        first_avoid_path_group,
                     );
                     if selected_leg.is_some() {
                         candidate_ids = probe_ids;
@@ -675,6 +787,13 @@ impl Scheduler {
                 self.active_sessions.push_back(session_key);
                 return ScheduleOutcome::Idle;
             };
+            // If this is a latency-sensitive primary, try to pair it with a
+            // replica on a different path group so both can race (first-wins).
+            // No-op unless copies==2, feedback_drr, and a capable secondary in a
+            // different group exists.
+            if matches!(first_class, TrafficClass::WireGuardSmallTransport) {
+                self.enable_first_wins_pair(&session_key, first_id, leg_id, wire_bytes);
+            }
             if let Err(wake_us) = self.pacer.try_consume(wire_bytes, now_us) {
                 self.active_sessions.push_back(session_key);
                 return ScheduleOutcome::WaitUntilUs(wake_us);
@@ -872,6 +991,7 @@ impl Scheduler {
         wire_bytes: usize,
         oldest_deadline_us: u64,
         now_us: u64,
+        avoid_path_group: Option<u64>,
     ) -> Option<u64> {
         match self.effective_mode(scope) {
             EffectiveSchedulerMode::Legacy => {
@@ -973,6 +1093,11 @@ impl Scheduler {
                                 leg.state,
                                 LegState::Warmup | LegState::Healthy | LegState::Probe
                             )
+                            // A first-wins replica must land on a leg in a
+                            // different path group than its primary; for any other
+                            // class avoid_path_group is None and this is a no-op.
+                            && avoid_path_group
+                                .is_none_or(|group| leg.path_group != group)
                             && (!matches!(leg.state, LegState::Probe)
                                 || (!leg.probe_outstanding
                                     && wire_bytes
@@ -1040,6 +1165,101 @@ impl Scheduler {
         if let Some(leg) = self.legs.get_mut(&leg_id) {
             leg.dispatch_available = available;
         }
+    }
+
+    /// Try to pair a latency-sensitive primary reservation with its queued
+    /// replica so the replica is raced on a leg in a different path group. The
+    /// pair only forms when: two copies are configured, the effective mode is
+    /// feedback_drr, the primary leg is first-wins-capable (peer negotiated
+    /// selective-first-wins-v1), and a healthy secondary leg in a different
+    /// path group that is also first-wins-capable exists. When the pair forms,
+    /// the matching replica reservation is marked first-wins and pinned to avoid
+    /// the primary's path group. Otherwise the replica is later dropped by
+    /// skip_queued_replica in schedule_next and a single copy is sent.
+    #[allow(clippy::too_many_arguments)]
+    fn enable_first_wins_pair(
+        &mut self,
+        session_key: &SchedulerSessionKey,
+        primary_id: u64,
+        primary_leg_id: u64,
+        _wire_bytes: usize,
+    ) {
+        if self.config.wireguard_latency_sensitive_copies != 2 {
+            return;
+        }
+        if !matches!(
+            self.effective_mode(&session_key.scope_key),
+            EffectiveSchedulerMode::FeedbackDrr
+        ) {
+            return;
+        }
+        let primary_group = match self.legs.get(&primary_leg_id) {
+            Some(leg) if leg.first_wins_capable => leg.path_group,
+            _ => return,
+        };
+        // Require a healthy secondary in a different path group that is also
+        // first-wins-capable, otherwise the replica would just duplicate the
+        // primary on the same physical path.
+        let has_secondary = self.legs.values().any(|leg| {
+            leg.active
+                && leg.dispatch_available
+                && &leg.scope_key == &session_key.scope_key
+                && leg.first_wins_capable
+                && leg.path_group != primary_group
+                && matches!(leg.state, LegState::Warmup | LegState::Healthy)
+        });
+        if !has_secondary {
+            return;
+        }
+        let primary_sequence = self
+            .reservations
+            .get(&primary_id)
+            .map(|r| r.sequence)
+            .unwrap_or(u64::MAX);
+        // Find this primary's queued replica (same session+sequence, replica
+        // class) and mark it first-wins, pinned to avoid the primary's group.
+        let replica_id = self.reservations.iter().find_map(|(id, record)| {
+            if *id != primary_id
+                && record.session == *session_key
+                && record.sequence == primary_sequence
+                && matches!(record.class, TrafficClass::WireGuardSmallTransportReplica)
+            {
+                Some(*id)
+            } else {
+                None
+            }
+        });
+        if let Some(replica_id) = replica_id {
+            if let Some(replica) = self.reservations.get_mut(&replica_id) {
+                replica.first_wins = true;
+                replica.avoid_path_group = Some(primary_group);
+            }
+        }
+    }
+
+    /// Drop a queued replica reservation that was never paired into a
+    /// first-wins pair (feature off, un-negotiated peer, or no secondary in a
+    /// different group). Refunds the session queue and root counters so the
+    /// replica does not leak accounting or consume a scheduling slot.
+    fn skip_queued_replica(&mut self, session_key: &SchedulerSessionKey, reservation_id: u64) {
+        let Some(record) = self.reservations.remove(&reservation_id) else {
+            return;
+        };
+        if let Some(queue) = self.sessions.get_mut(session_key) {
+            queue.reservation_ids.retain(|id| *id != reservation_id);
+            queue.queued_bytes = queue.queued_bytes.saturating_sub(record.payload_bytes);
+            queue.queued_packets = queue.queued_packets.saturating_sub(1);
+            if queue.reservation_ids.is_empty() {
+                self.sessions.remove(session_key);
+            }
+        }
+        self.queue_bytes = self.queue_bytes.saturating_sub(record.payload_bytes);
+        self.queue_packets = self.queue_packets.saturating_sub(1);
+        self.telemetry.record_drop(
+            DropReason::QueueDeadline,
+            record.payload_bytes,
+            record.wire_bytes,
+        );
     }
 
     pub fn return_assignment(&mut self, assignment: ChunkAssignment) {
@@ -1847,6 +2067,7 @@ mod tests {
             progress_direction: Direction::ClientToSidecar,
             weight: 1,
             now_us: 0,
+            path_group: 0,
         });
         scheduler
             .acknowledge_leg(leg_id, &AuthAck::leg_progress(epoch), 0)
@@ -1928,6 +2149,7 @@ mod tests {
             progress_direction: Direction::ClientToSidecar,
             weight: 1,
             now_us: 0,
+            path_group: 0,
         });
         scheduler.register_leg(LegRegistration {
             leg_id: 2,
@@ -1936,6 +2158,7 @@ mod tests {
             progress_direction: Direction::ClientToSidecar,
             weight: 1,
             now_us: 0,
+            path_group: 0,
         });
         scheduler
             .acknowledge_leg(1, &AuthAck::leg_progress(10), 0)
@@ -1958,6 +2181,7 @@ mod tests {
             progress_direction: Direction::ClientToSidecar,
             weight: 1,
             now_us: 1_000,
+            path_group: 0,
         });
         assert_eq!(
             scheduler.effective_mode(&scope()),
@@ -1975,6 +2199,7 @@ mod tests {
             progress_direction: Direction::ClientToSidecar,
             weight: 1,
             now_us: 0,
+            path_group: 0,
         });
         let reservation_id = scheduler
             .admit(
@@ -2006,6 +2231,7 @@ mod tests {
             progress_direction: Direction::ClientToSidecar,
             weight: 1,
             now_us: 0,
+            path_group: 0,
         });
         scheduler.admit(
             session(1),
@@ -2448,5 +2674,73 @@ mod tests {
         scheduler.tick(2_001_000);
 
         assert_eq!(scheduler.leg(1).unwrap().state, LegState::Warmup);
+    }
+
+    #[test]
+    fn first_wins_off_by_default_issues_no_replica() {
+        // With defaults (max_bytes = 0, copies = 1) classify never produces
+        // WireGuardSmallTransport, so admit never issues a replica and the
+        // first-wins code path is inert — the load-bearing feature-OFF guard.
+        let mut scheduler = feedback_scheduler();
+        add_feedback_leg(&mut scheduler, 1, 10);
+        let leg = scheduler.legs.get_mut(&1).unwrap();
+        leg.state = LegState::Healthy;
+        leg.progress_samples = 2;
+
+        // Message type 4 (transport) in the first 4 bytes; with max_bytes=0 the
+        // classifier is disabled and returns Regular for everything.
+        let mut transport = vec![0u8; 128];
+        transport[..4].copy_from_slice(&4u32.to_le_bytes());
+        assert!(scheduler
+            .admit(
+                session(1),
+                Bytes::from(transport.clone()),
+                classify_wireguard_traffic(&transport, 0),
+                0,
+            )
+            .is_admitted());
+        // classify_wireguard_traffic(.., 0) returns Regular (max_bytes==0 disables),
+        // so exactly one reservation exists, no replica was admitted.
+        assert_eq!(scheduler.reservations.len(), 1);
+        assert!(scheduler.reservations.values().all(|r| !r.first_wins));
+        assert!(scheduler
+            .reservations
+            .values()
+            .all(|r| r.avoid_path_group.is_none()));
+    }
+
+    #[test]
+    fn enable_first_wins_pair_is_a_noop_unless_two_copies_configured() {
+        // Even when a primary is classified latency-sensitive and the leg is
+        // first-wins-capable, the pair only forms at copies == 2. With the
+        // default copies == 1 the replica (if any) is dropped and the primary
+        // is scheduled as a single copy.
+        let mut scheduler = Scheduler::new(
+            SchedulerConfig {
+                scheduler_mode: SchedulerMode::FeedbackDrr,
+                wireguard_latency_sensitive_max_bytes: 256,
+                wireguard_latency_sensitive_copies: 1, // feature off
+                ..SchedulerConfig::default()
+            },
+            77,
+            0,
+        );
+        add_feedback_leg(&mut scheduler, 1, 10);
+        let leg = scheduler.legs.get_mut(&1).unwrap();
+        leg.state = LegState::Healthy;
+        leg.progress_samples = 2;
+        leg.first_wins_capable = true;
+
+        // Latency-sensitive transport payload: message type 4 in the first 4
+        // bytes (LE), 128 bytes total — within the max_bytes=256 threshold.
+        let mut transport = vec![0u8; 128];
+        transport[..4].copy_from_slice(&4u32.to_le_bytes());
+        let payload = Bytes::from(transport.clone());
+        let class = classify_wireguard_traffic(&transport, 256);
+        assert_eq!(class, TrafficClass::WireGuardSmallTransport);
+        assert!(scheduler.admit(session(1), payload, class, 0).is_admitted());
+        // copies == 1 ⇒ no replica admitted; one reservation, never paired.
+        assert_eq!(scheduler.reservations.len(), 1);
+        assert!(scheduler.reservations.values().all(|r| !r.first_wins));
     }
 }
