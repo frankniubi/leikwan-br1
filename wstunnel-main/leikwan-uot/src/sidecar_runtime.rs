@@ -1026,7 +1026,11 @@ pub async fn run(config: SidecarConfig) -> Result<()> {
                                 match LegProgress::decode(&frame.payload) {
                                     Ok(progress) => {
                                         scheduler
-                                            .send(SchedulerCommand::Progress { leg_id, progress })
+                                            .send(SchedulerCommand::Progress {
+                                                leg_id,
+                                                connection_epoch,
+                                                progress,
+                                            })
                                             .await
                                             .ok();
                                     }
