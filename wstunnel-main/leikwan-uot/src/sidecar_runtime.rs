@@ -18,11 +18,14 @@ use tokio::time::MissedTickBehavior;
 
 use crate::config::{SchedulerMode, SidecarConfig};
 use crate::delivery::DatagramDelivery;
-use crate::frame::{decode_frame, encode_frame, DataFrame, MsgType};
+use crate::first_wins::FirstWinsCache;
+use crate::frame::{decode_frame, encode_frame, DataFrame, MsgType, DATA_FLAG_FIRST_WINS};
 use crate::merge::MergeItem;
 use crate::progress::{AuthAck, AuthCapabilities, Direction, LegProgress, ProgressEmitter};
 use crate::queue::{select_least_backlogged_after, LegQueueBudget, QueueCandidate};
-use crate::scheduler::{LegRegistration, SchedulerScopeKey, SchedulerSessionKey, TrafficClass};
+use crate::scheduler::{
+    classify_wireguard_traffic, LegRegistration, SchedulerScopeKey, SchedulerSessionKey,
+};
 use crate::scheduler_runtime::{
     connection_epoch, process_epoch, spawn_scheduler, RuntimeChunk, SchedulerCommand,
     SchedulerHandle,
@@ -35,6 +38,8 @@ pub const LEG_PROBATION_AFTER_FAILURES: u32 = 2;
 pub const LEG_QUARANTINE_AFTER_FAILURES: u32 = 3;
 pub const LEG_PROBATION_MS: u64 = 5_000;
 pub const LEG_QUARANTINE_MS: u64 = 30_000;
+const FIRST_WINS_CACHE_TTL_MS: u64 = 10_000;
+const FIRST_WINS_CACHE_CAPACITY: usize = 65_536;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParsedLegAuthPayload {
@@ -192,6 +197,9 @@ struct Stats {
     datagrams_dropped_unknown_session: u64,
     datagrams_direct_delivered: u64,
     handshake_datagrams_duplicated: u64,
+    first_wins_delivered: u64,
+    first_wins_duplicates_suppressed: u64,
+    suppressed_copy_progress_accepted: u64,
     bytes_in: u64,
     bytes_out: u64,
     reorder_buffer_bytes: u64,
@@ -202,6 +210,7 @@ struct Stats {
 #[derive(Debug)]
 struct SidecarState {
     delivery: DatagramDelivery,
+    first_wins: FirstWinsCache,
     active_legs: HashMap<u64, ActiveLeg>,
     sessions: BTreeMap<(ScopeKey, u64), SessionInfo>,
     delivery_session_ids: BTreeMap<SessionKey, u64>,
@@ -243,6 +252,7 @@ impl SidecarState {
                 config.reorder_window_bytes,
                 config.reorder_timeout_ms,
             ),
+            first_wins: FirstWinsCache::new(FIRST_WINS_CACHE_TTL_MS, FIRST_WINS_CACHE_CAPACITY),
             active_legs: HashMap::new(),
             sessions: BTreeMap::new(),
             delivery_session_ids: BTreeMap::new(),
@@ -393,8 +403,22 @@ impl SidecarState {
         if let Some(delivery_session_id) = self.delivery_session_ids.remove(session_key) {
             self.delivery_session_keys.remove(&delivery_session_id);
             self.delivery.remove_session(delivery_session_id);
+            self.first_wins.remove_session(delivery_session_id);
         }
         self.stats.sessions_active = self.sessions.len() as u64;
+    }
+
+    fn first_wins_session_id(&mut self, session_key: &SessionKey) -> u64 {
+        self.delivery_session_id(session_key)
+    }
+
+    fn first_wins_is_committed(&mut self, session_id: u64, sequence: u64) -> bool {
+        self.first_wins.is_committed(session_id, sequence, now_ms())
+    }
+
+    fn commit_first_wins(&mut self, session_id: u64, sequence: u64) {
+        self.first_wins.commit(session_id, sequence, now_ms());
+        self.stats.first_wins_delivered = self.stats.first_wins_delivered.saturating_add(1);
     }
 }
 
@@ -578,15 +602,19 @@ fn progress_frame(progress: LegProgress) -> DataFrame {
     }
 }
 
-fn auth_ack_frame(connection_epoch: u64) -> DataFrame {
+fn auth_ack_frame(connection_epoch: u64, first_wins: bool) -> DataFrame {
+    let ack = if first_wins {
+        AuthAck::leg_progress_with_first_wins(connection_epoch)
+    } else {
+        AuthAck::leg_progress(connection_epoch)
+    };
     DataFrame {
         version: 1,
         msg_type: MsgType::AuthAck,
         flags: 0,
         session_id: 0,
         seq: 0,
-        payload: serde_json::to_vec(&AuthAck::leg_progress(connection_epoch))
-            .expect("AuthAck serialization cannot fail"),
+        payload: serde_json::to_vec(&ack).expect("AuthAck serialization cannot fail"),
     }
 }
 
@@ -727,6 +755,10 @@ async fn handle_leg(
     let scope_key = build_scope_key(&claims, &auth_payload.token);
     let requested_progress = auth_payload.requested_progress();
     let feedback_negotiated = scheduler.is_some() && requested_progress.is_some();
+    let first_wins_negotiated = feedback_negotiated
+        && requested_progress
+            .as_ref()
+            .is_some_and(AuthCapabilities::requests_first_wins);
     let active_connection_epoch = requested_progress
         .as_ref()
         .map(|capabilities| capabilities.connection_epoch)
@@ -772,7 +804,11 @@ async fn handle_leg(
         guard.insert(leg_id, control_tx);
     }
     if feedback_negotiated {
-        write_frame_prefixed(&mut writer, &auth_ack_frame(active_connection_epoch)).await?;
+        write_frame_prefixed(
+            &mut writer,
+            &auth_ack_frame(active_connection_epoch, first_wins_negotiated),
+        )
+        .await?;
     }
     {
         let mut guard = state.lock().await;
@@ -807,7 +843,11 @@ async fn handle_leg(
             scheduler
                 .send(SchedulerCommand::AuthAcknowledged {
                     leg_id,
-                    ack: AuthAck::leg_progress(active_connection_epoch),
+                    ack: if first_wins_negotiated {
+                        AuthAck::leg_progress_with_first_wins(active_connection_epoch)
+                    } else {
+                        AuthAck::leg_progress(active_connection_epoch)
+                    },
                 })
                 .await
                 .context("scheduler stopped while acknowledging sidecar leg")?;
@@ -993,6 +1033,8 @@ pub async fn run(config: SidecarConfig) -> Result<()> {
     let idle_timeout = config.session_idle_timeout_ms;
     let reorder_timeout = config.reorder_timeout_ms;
     let wireguard_aware = config.wireguard_aware;
+    let wireguard_latency_sensitive_max_bytes =
+        config.scheduler.wireguard_latency_sensitive_max_bytes;
     let udp_socket_buffer_bytes = config.udp_socket_buffer_bytes;
     let dispatch_scheduler = scheduler.clone();
     let progress_interval_bytes = config.scheduler.progress_interval_bytes;
@@ -1061,9 +1103,15 @@ pub async fn run(config: SidecarConfig) -> Result<()> {
                         .get(&leg_id)
                         .filter(|emitter| emitter.connection_epoch() == connection_epoch)
                         .map(|_| (leg_id, connection_epoch, wire_bytes));
+                    let first_wins =
+                        frame.flags & DATA_FLAG_FIRST_WINS == DATA_FLAG_FIRST_WINS;
+                    let mut duplicate_suppressed = false;
                     let mut sends = Vec::<(
                         Arc<UdpSocket>,
                         Vec<u8>,
+                        u64,
+                        u64,
+                        bool,
                         Option<(u64, u64, usize)>,
                     )>::new();
                     match frame.msg_type {
@@ -1122,15 +1170,37 @@ pub async fn run(config: SidecarConfig) -> Result<()> {
                                 }
                             }
                             let mut guard = dispatch_state.lock().await;
-                            for (emitted_key, payload) in guard.deliver_inbound_data(&full_key, frame.seq, frame.payload) {
-                                if let Some(session) = guard.sessions.get_mut(&emitted_key) {
-                                    session.last_seen_ms = now_ms();
-                                    sends.push((session.socket.clone(), payload, progress_identity));
-                                    guard.stats.datagrams_in += 1;
-                                    guard.stats.bytes_in += sends
-                                        .last()
-                                        .map(|(_, payload, _)| payload.len() as u64)
-                                        .unwrap_or(0);
+                            let first_wins_session_id =
+                                guard.first_wins_session_id(&full_key);
+                            if first_wins
+                                && guard.first_wins_is_committed(
+                                    first_wins_session_id,
+                                    frame.seq,
+                                )
+                            {
+                                duplicate_suppressed = true;
+                                guard.stats.first_wins_duplicates_suppressed = guard
+                                    .stats
+                                    .first_wins_duplicates_suppressed
+                                    .saturating_add(1);
+                            } else {
+                                for (emitted_key, payload) in guard.deliver_inbound_data(&full_key, frame.seq, frame.payload) {
+                                    if let Some(session) = guard.sessions.get_mut(&emitted_key) {
+                                        session.last_seen_ms = now_ms();
+                                        sends.push((
+                                            session.socket.clone(),
+                                            payload,
+                                            first_wins_session_id,
+                                            frame.seq,
+                                            first_wins,
+                                            progress_identity,
+                                        ));
+                                        guard.stats.datagrams_in += 1;
+                                        guard.stats.bytes_in += sends
+                                            .last()
+                                            .map(|(_, payload, ..)| payload.len() as u64)
+                                            .unwrap_or(0);
+                                    }
                                 }
                             }
                             if guard.delivery.is_unordered() {
@@ -1153,9 +1223,37 @@ pub async fn run(config: SidecarConfig) -> Result<()> {
                         | MsgType::AuthAck
                         | MsgType::LegProgress => {}
                     }
-                    for (socket, payload, progress_identity) in sends {
+                    if duplicate_suppressed {
+                        if let Some((progress_leg, epoch, accepted_wire_bytes)) = progress_identity {
+                            if let Some(emitter) = progress_emitters.get_mut(&progress_leg) {
+                                if emitter.connection_epoch() == epoch {
+                                    emitter.record_udp_accepted(accepted_wire_bytes);
+                                    let mut guard = dispatch_state.lock().await;
+                                    guard.stats.suppressed_copy_progress_accepted = guard
+                                        .stats
+                                        .suppressed_copy_progress_accepted
+                                        .saturating_add(1);
+                                }
+                            }
+                        }
+                    }
+                    for (
+                        socket,
+                        payload,
+                        first_wins_session_id,
+                        sequence,
+                        first_wins,
+                        progress_identity,
+                    ) in sends
+                    {
                         let sent = send_connected_udp_checked(&socket, &payload).await;
                         if sent.is_ok() {
+                            if first_wins {
+                                dispatch_state
+                                    .lock()
+                                    .await
+                                    .commit_first_wins(first_wins_session_id, sequence);
+                            }
                             if let Some((progress_leg, epoch, accepted_wire_bytes)) = progress_identity {
                                 if let Some(emitter) = progress_emitters.get_mut(&progress_leg) {
                                     if emitter.connection_epoch() == epoch {
@@ -1220,11 +1318,10 @@ pub async fn run(config: SidecarConfig) -> Result<()> {
                     };
                     let payload_bytes = payload.len();
                     if let Some(scheduler) = &dispatch_scheduler {
-                        let class = if is_duplicate_eligible(&payload) {
-                            TrafficClass::WireGuardHandshake
-                        } else {
-                            TrafficClass::Regular
-                        };
+                        let class = classify_wireguard_traffic(
+                            &payload,
+                            wireguard_latency_sensitive_max_bytes,
+                        );
                         let admitted = scheduler
                             .try_admit(
                                 SchedulerSessionKey {
@@ -1396,6 +1493,12 @@ pub async fn run(config: SidecarConfig) -> Result<()> {
                     "datagrams_dropped_unknown_session": guard.stats.datagrams_dropped_unknown_session,
                     "datagrams_direct_delivered": guard.stats.datagrams_direct_delivered,
                     "handshake_datagrams_duplicated": guard.stats.handshake_datagrams_duplicated,
+                    "first_wins_delivered": guard.stats.first_wins_delivered,
+                    "first_wins_duplicates_suppressed": guard.stats.first_wins_duplicates_suppressed,
+                    "first_wins_cache_entries": guard.first_wins.entries(),
+                    "first_wins_cache_high_water": guard.first_wins.high_water(),
+                    "first_wins_cache_evictions": guard.first_wins.evictions(),
+                    "suppressed_copy_progress_accepted": guard.stats.suppressed_copy_progress_accepted,
                     "bytes_in": guard.stats.bytes_in,
                     "bytes_out": guard.stats.bytes_out,
                     "reorder_buffer_bytes": guard.stats.reorder_buffer_bytes,
@@ -1465,8 +1568,27 @@ mod tests {
         let parsed = parse_leg_auth_payload(payload).expect("parse");
         let capabilities = parsed.requested_progress().expect("capability");
         assert_eq!(capabilities.connection_epoch, 77);
-        let ack: AuthAck = serde_json::from_slice(&auth_ack_frame(77).payload).unwrap();
+        let ack: AuthAck = serde_json::from_slice(&auth_ack_frame(77, false).payload).unwrap();
         assert!(ack.matches(77));
+    }
+
+    #[test]
+    fn parse_leg_auth_payload_negotiates_first_wins_capability() {
+        let payload = br#"{
+            "token":"udp-token",
+            "endpoint_id":184,
+            "weight":8,
+            "protocol_version":2,
+            "capabilities":["leg-progress-v1","selective-first-wins-v1"],
+            "connection_epoch":77
+        }"#;
+        let parsed = parse_leg_auth_payload(payload).expect("parse");
+        let capabilities = parsed.requested_progress().expect("capability");
+        assert_eq!(capabilities.connection_epoch, 77);
+        assert!(capabilities.requests_first_wins());
+        let ack: AuthAck = serde_json::from_slice(&auth_ack_frame(77, true).payload).unwrap();
+        assert!(ack.matches(77));
+        assert!(ack.supports_first_wins(77));
     }
 
     #[tokio::test]

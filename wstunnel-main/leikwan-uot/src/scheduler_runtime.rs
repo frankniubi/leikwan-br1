@@ -338,7 +338,7 @@ fn dispatch_ready(scheduler: &mut Scheduler, legs: &mut HashMap<u64, LegSink>, n
                 .map(|datagram| DataFrame {
                     version: 1,
                     msg_type: MsgType::Data,
-                    flags: 0,
+                    flags: datagram.flags,
                     session_id: datagram.session.session_id as u32,
                     seq: datagram.sequence,
                     payload: datagram.payload.to_vec(),

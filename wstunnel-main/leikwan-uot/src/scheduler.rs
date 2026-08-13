@@ -4,7 +4,7 @@ use std::fmt;
 use bytes::Bytes;
 
 use crate::config::{SchedulerConfig, SchedulerMode};
-use crate::frame::FRAME_HEADER_BYTES;
+use crate::frame::{DATA_FLAG_FIRST_WINS, FRAME_HEADER_BYTES};
 use crate::progress::{
     AuthAck, Direction, LegProgress, ProgressError, ProgressValidator, RttCheckpoints,
 };
@@ -313,6 +313,7 @@ pub struct ScheduledDatagram {
     pub sequence: u64,
     pub payload: Bytes,
     pub wire_bytes: usize,
+    pub flags: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -823,6 +824,11 @@ impl Scheduler {
                             sequence: record.sequence,
                             payload: record.payload.clone(),
                             wire_bytes: record.wire_bytes,
+                            flags: if record.first_wins {
+                                DATA_FLAG_FIRST_WINS
+                            } else {
+                                0
+                            },
                         });
                         if !record.scheduled_once {
                             record.scheduled_once = true;
@@ -1173,8 +1179,10 @@ impl Scheduler {
     /// feedback_drr, the primary leg is first-wins-capable (peer negotiated
     /// selective-first-wins-v1), and a healthy secondary leg in a different
     /// path group that is also first-wins-capable exists. When the pair forms,
-    /// the matching replica reservation is marked first-wins and pinned to avoid
-    /// the primary's path group. Otherwise the replica is later dropped by
+    /// both the primary and the matching replica reservation are marked
+    /// first-wins (so both wire frames carry DATA_FLAG_FIRST_WINS and the
+    /// receiver suppresses the loser) and the replica is pinned to avoid the
+    /// primary's path group. Otherwise the replica is later dropped by
     /// skip_queued_replica in schedule_next and a single copy is sent.
     #[allow(clippy::too_many_arguments)]
     fn enable_first_wins_pair(
@@ -1230,6 +1238,9 @@ impl Scheduler {
             }
         });
         if let Some(replica_id) = replica_id {
+            if let Some(primary) = self.reservations.get_mut(&primary_id) {
+                primary.first_wins = true;
+            }
             if let Some(replica) = self.reservations.get_mut(&replica_id) {
                 replica.first_wins = true;
                 replica.avoid_path_group = Some(primary_group);
