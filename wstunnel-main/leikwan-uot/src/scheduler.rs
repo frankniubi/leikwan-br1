@@ -924,6 +924,27 @@ impl Scheduler {
                     .max(1);
                 let per_leg_fair_cap =
                     (self.config.max_total_outstanding_bytes / n_active_for_cap * 2) as u64;
+                // Per-leg rate floor for predicted-finish ranking: the fair share of the
+                // aggregate rate, never below the bootstrap rate. Using this floor in the
+                // leg-selection tiebreak (instead of the raw EWMA) prevents a leg whose
+                // EWMA is momentarily stale/frozen from being ranked as perpetually slow,
+                // which would starve it of dispatch and trap it behind the others.
+                let n_active = self
+                    .legs
+                    .values()
+                    .filter(|l| {
+                        l.active
+                            && l.dispatch_available
+                            && l.feedback_capable
+                            && matches!(
+                                l.state,
+                                LegState::Warmup | LegState::Healthy | LegState::Probe
+                            )
+                    })
+                    .count()
+                    .max(1) as u64;
+                let rate_floor =
+                    (self.config.aggregate_rate_bps / n_active).max(BOOTSTRAP_RATE_BPS);
                 let mut healthy_finishes = self
                     .legs
                     .values()
@@ -968,8 +989,19 @@ impl Scheduler {
                                     .min(per_leg_fair_cap)
                                     .saturating_sub(leg.window_reserved_wire_bytes)
                     })
-                    .min_by_key(|leg| (predicted_finish_us(leg, now_us), leg.leg_id))
-                    .map(|leg| (leg.leg_id, predicted_finish_us(leg, now_us)));
+                    .min_by_key(|leg| {
+                        (
+                            predicted_finish_us_with_floor(leg, now_us, rate_floor),
+                            leg.outstanding_wire_bytes,
+                            leg.leg_id,
+                        )
+                    })
+                    .map(|leg| {
+                        (
+                            leg.leg_id,
+                            predicted_finish_us_with_floor(leg, now_us, rate_floor),
+                        )
+                    });
                 let skew_limit = median_finish
                     .saturating_add(self.config.finish_skew_budget_ms.saturating_mul(1_000));
                 let deadline_pressure = oldest_deadline_us
@@ -1068,8 +1100,9 @@ impl Scheduler {
             // to now. Without this, progress_age = process_uptime at the moment the
             // first probe fires (can be tens of seconds), which immediately exceeds
             // lag_age and forces the leg into Lagging before any feedback has a chance
-            // to arrive.
-            if leg.progress_samples == 0 {
+            // to arrive. Also reset for a leg in Probe state, whose last_progress_us
+            // may still carry a stale value from before quarantine.
+            if leg.progress_samples == 0 || matches!(leg.state, LegState::Probe) {
                 leg.last_progress_us = now_us;
             }
         }
@@ -1225,6 +1258,12 @@ impl Scheduler {
                     .checked_div(u128::from(elapsed_us))
                     .unwrap_or(0)
                     .min(u128::from(u64::MAX)) as u64;
+                // Cap each per-sample rate at the configured aggregate ceiling (floor at
+                // the bootstrap rate) before it enters the EWMA. A single outlier sample
+                // — a huge accepted-byte burst over a tiny elapsed window during startup
+                // — can otherwise pin delivery_rate_ewma_bps at a nonsensical Gbps value
+                // that starves the leg of scheduling credit forever after.
+                let rate = rate.min(self.config.aggregate_rate_bps.max(BOOTSTRAP_RATE_BPS));
                 leg.delivery_rate_ewma_bps = if leg.progress_samples == 0 {
                     rate.max(1)
                 } else {
@@ -1401,6 +1440,10 @@ impl Scheduler {
                 {
                     leg.probe_successes = 0;
                     leg.probe_outstanding = false;
+                    // Start the probe cycle with a clean slate: stale_periods accumulated
+                    // before quarantine would otherwise immediately re-Lag/re-quarantine
+                    // the leg on the next tick before the probe can collect feedback.
+                    leg.stale_periods = 0;
                     leg.transition(LegState::Probe);
                 }
                 continue;
@@ -1427,14 +1470,11 @@ impl Scheduler {
                 let idle_age_us = now_us.saturating_sub(leg.last_progress_us);
                 let decay_threshold_us = leg.progress_srtt_us.saturating_mul(4).max(2_000_000);
                 if leg.progress_samples > 0 && idle_age_us > decay_threshold_us {
-                    leg.delivery_rate_ewma_bps = (leg
-                        .delivery_rate_ewma_bps
-                        .saturating_mul(7)
-                        / 8)
-                    .max(BOOTSTRAP_RATE_BPS);
+                    leg.delivery_rate_ewma_bps =
+                        (leg.delivery_rate_ewma_bps.saturating_mul(7) / 8).max(BOOTSTRAP_RATE_BPS);
                     if leg.progress_srtt_us > 50_000 {
-                        leg.progress_srtt_us = (leg.progress_srtt_us.saturating_mul(7) / 8)
-                            .max(50_000);
+                        leg.progress_srtt_us =
+                            (leg.progress_srtt_us.saturating_mul(7) / 8).max(50_000);
                     }
                 }
                 continue;
@@ -1447,11 +1487,13 @@ impl Scheduler {
             // to measure the real RTT. 200 ms gives lag_age = 400 ms, which is safely
             // above the 167-188 ms first-feedback window for European lines while still
             // being aggressive enough to detect genuine stalls within ~400 ms.
-            let srtt = leg.progress_srtt_us.max(if leg.progress_samples < 4 {
-                200_000
-            } else {
-                50_000
-            });
+            let srtt = leg.progress_srtt_us.max(
+                if leg.progress_samples < 4 || matches!(leg.state, LegState::Probe) {
+                    200_000
+                } else {
+                    50_000
+                },
+            );
             let progress_age = now_us.saturating_sub(leg.last_progress_us);
             let quarantine_age = srtt.saturating_mul(4).max(500_000);
             let lag_age = srtt.saturating_mul(2).max(100_000);
@@ -1718,6 +1760,46 @@ fn predicted_finish_us(leg: &LegScheduleState, now_us: u64) -> u64 {
         .saturating_add(service_us)
         .saturating_add(leg.progress_srtt_us / 2)
         .saturating_add(stall_penalty)
+}
+
+/// Same model as `predicted_finish_us` but clamps the effective rate to a floor
+/// derived from the number of active legs. When the active fleet is small the
+/// per-leg fair share of the aggregate rate is large; using that as a floor
+/// prevents a leg with a momentarily-frozen EWMA (long idle, stale sample) from
+/// being ranked as if it can never catch up, which would starve it of dispatch
+/// and keep it permanently behind. The extra-credit variant lets a caller add a
+/// fixed byte budget (e.g. an about-to-be-admitted chunk) on top of the leg's
+/// current in-flight bytes.
+fn predicted_finish_us_with_floor_and_extra(
+    leg: &LegScheduleState,
+    now_us: u64,
+    rate_floor: u64,
+    extra_wire_bytes: u64,
+) -> u64 {
+    let rate = leg
+        .delivery_rate_ewma_bps
+        .max(rate_floor.max(BOOTSTRAP_RATE_BPS));
+    let total_undelivered = leg
+        .window_reserved_wire_bytes
+        .saturating_add(leg.outstanding_wire_bytes)
+        .saturating_add(extra_wire_bytes);
+    let service_us = u128::from(total_undelivered)
+        .saturating_mul(8_000_000)
+        .checked_div(u128::from(rate))
+        .unwrap_or(0)
+        .min(u128::from(u64::MAX)) as u64;
+    let stall_penalty = leg
+        .write_stall_started_us
+        .map(|started| now_us.saturating_sub(started))
+        .unwrap_or(0);
+    now_us
+        .saturating_add(service_us)
+        .saturating_add(leg.progress_srtt_us / 2)
+        .saturating_add(stall_penalty)
+}
+
+fn predicted_finish_us_with_floor(leg: &LegScheduleState, now_us: u64, rate_floor: u64) -> u64 {
+    predicted_finish_us_with_floor_and_extra(leg, now_us, rate_floor, 0)
 }
 
 fn tokio_instant_from_us(offset_us: u64) -> tokio::time::Instant {
@@ -1999,6 +2081,7 @@ mod tests {
             let leg = scheduler.legs.get_mut(&leg_id).unwrap();
             leg.state = LegState::Healthy;
             leg.progress_samples = 2;
+            leg.target_window_bytes = 4 * 1024 * 1024;
             if leg_id < 4 {
                 leg.delivery_rate_ewma_bps = 1_000_000_000;
                 leg.window_reserved_wire_bytes = leg.target_window_bytes;
@@ -2021,15 +2104,14 @@ mod tests {
             )
             .is_admitted());
 
-        assert!(matches!(scheduler.schedule_next(0), ScheduleOutcome::Idle));
-        // With queue_deadline_ms=30 ms the packet deadline is 30_000 us from t=0.
-        // deadline_pressure fires when: deadline_us <= now + queue_target_ms * 1_000
-        //   → 30_000 <= now + 5_000  →  now >= 25_000 us.
-        assert!(matches!(scheduler.schedule_next(5_000), ScheduleOutcome::Idle));
+        // With the rate floor, leg 4 (10 Mbps EWMA) is elevated to
+        // rate_floor = aggregate_rate / n_legs = 450M/4 = 112.5 Mbps for predicted-
+        // finish purposes. Its predicted_finish is now low enough that it falls within
+        // the skew budget and is selected immediately — the intent of the floor.
         let assignment = scheduler
-            .schedule_next(25_000)
+            .schedule_next(0)
             .into_assignment()
-            .expect("deadline pressure should permit the only available leg");
+            .expect("rate floor should allow the only eligible leg to be selected immediately");
         assert_eq!(assignment.leg_id, 4);
     }
 
