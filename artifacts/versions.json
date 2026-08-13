@@ -143,7 +143,8 @@
   "leikwan_udp_uot_merge_linux_amd64": {
     "artifact_url": "/artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64",
     "capabilities": [
-      "leg-progress-v1"
+      "leg-progress-v1",
+      "selective-first-wins-v1"
     ],
     "path": "artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64",
     "protocol_version": 2,
@@ -151,14 +152,15 @@
       "legacy",
       "feedback_drr"
     ],
-    "sha256": "9da37a3aaa95157b0874faf0cd81837ccde105f676ec8c7c397643a073897e81",
-    "size_bytes": 2882032,
-    "version": "0.1.0"
+    "sha256": "1d8e59b51da8cf5e0a1e17b30fff15a5f82fd75d4038f1878194eb5cff80e2b7",
+    "size_bytes": 3054296,
+    "version": "0.2.0"
   },
   "leikwan_uot_bond_linux_amd64": {
     "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
     "capabilities": [
-      "leg-progress-v1"
+      "leg-progress-v1",
+      "selective-first-wins-v1"
     ],
     "path": "artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
     "protocol_version": 2,
@@ -166,9 +168,9 @@
       "legacy",
       "feedback_drr"
     ],
-    "sha256": "a0cb82480f417a4c41368c86a6506c2fdfc2734cec4c074d95ac6c7262900835",
-    "size_bytes": 2745920,
-    "version": "0.1.0"
+    "sha256": "8e4d228222dcf53082250447d94d6ab38f3bdbfe90deca9fe02926576638b9ad",
+    "size_bytes": 2941840,
+    "version": "0.2.0"
   },
   "leikwan_uot_bond_windows_amd64": {
     "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
