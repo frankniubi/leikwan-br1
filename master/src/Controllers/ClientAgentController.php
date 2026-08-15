@@ -44,6 +44,10 @@ final class ClientAgentController extends BaseController
             is_array($forwards) ? $forwards : [],
             is_array($agentConfig['udp_uot_sidepath'] ?? null) ? $agentConfig['udp_uot_sidepath'] : []
         );
+        $agentConfig['tcp_accel_sidepath'] = $this->provisioning->tcpAccelSidepathConfigForAssignedClientForwards(
+            is_array($forwards) ? $forwards : [],
+            is_array($agentConfig['tcp_accel_sidepath'] ?? null) ? $agentConfig['tcp_accel_sidepath'] : []
+        );
         $linuxProfileRuntime = null;
         $runtimePlatformScope = (string) ($client['runtime_platform_scope'] ?? 'all');
         if (in_array($runtimePlatformScope, ['all', 'linux'], true)) {
@@ -283,6 +287,7 @@ final class ClientAgentController extends BaseController
             'health_check_interval_seconds',
             'log_level',
             'udp_uot_sidepath',
+            'tcp_accel_sidepath',
             'cfwg_latency_watchdog',
             'runtime_refresh',
             'cfwg_edge_pins',

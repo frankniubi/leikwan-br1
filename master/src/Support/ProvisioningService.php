@@ -3575,20 +3575,21 @@ final class ProvisioningService
             return null;
         }
 
+        $existing = $this->migrateLegacyUdpUotSchedulerProfile($existing);
         $schedulerMode = strtolower(trim((string) ($existing['scheduler_mode'] ?? 'legacy')));
         if ($schedulerMode !== 'feedback_drr') {
             $schedulerMode = 'legacy';
         }
-        $globalQueueBytes = max(1, min(64 * 1024 * 1024, (int) ($existing['global_queue_bytes'] ?? 1048576)));
+        $globalQueueBytes = max(1, min(64 * 1024 * 1024, (int) ($existing['global_queue_bytes'] ?? 4194304)));
         $globalQueuePackets = max(1, min(262144, (int) ($existing['global_queue_packets'] ?? 8192)));
-        $perSessionQueueBytes = max(1, min($globalQueueBytes, (int) ($existing['per_session_queue_bytes'] ?? 262144)));
+        $perSessionQueueBytes = max(1, min($globalQueueBytes, (int) ($existing['per_session_queue_bytes'] ?? 1048576)));
         $perSessionQueuePackets = max(1, min($globalQueuePackets, (int) ($existing['per_session_queue_packets'] ?? 512)));
-        $queueDeadlineMs = max(1, (int) ($existing['queue_deadline_ms'] ?? 10));
+        $queueDeadlineMs = max(1, (int) ($existing['queue_deadline_ms'] ?? 30));
         $queueTargetMs = max(0, min($queueDeadlineMs, (int) ($existing['queue_target_ms'] ?? 5)));
         $chunkMaxBytes = max(65535, min(64 * 1024 * 1024, (int) ($existing['chunk_max_bytes'] ?? 65536)));
         $chunkTargetBytes = max(1, min($chunkMaxBytes, (int) ($existing['chunk_target_bytes'] ?? 32768)));
         $chunkMinBytes = max(1, min($chunkTargetBytes, (int) ($existing['chunk_min_bytes'] ?? 16384)));
-        $totalOutstandingBytes = max(1, min(64 * 1024 * 1024, (int) ($existing['max_total_outstanding_bytes'] ?? 8388608)));
+        $totalOutstandingBytes = max(1, min(64 * 1024 * 1024, (int) ($existing['max_total_outstanding_bytes'] ?? 16777216)));
         $maxLegWindowBytes = max(1, min($totalOutstandingBytes, (int) ($existing['max_leg_window_bytes'] ?? 4194304)));
         $minLegWindowBytes = max(1, min($maxLegWindowBytes, (int) ($existing['min_leg_window_bytes'] ?? 262144)));
         $deliveryMode = strtolower(trim((string) ($existing['delivery_mode'] ?? ($schedulerMode === 'feedback_drr' ? 'unordered' : 'ordered'))));
@@ -3619,28 +3620,10 @@ final class ProvisioningService
         $maxLegQueuePackets = max(1, min(262144, (int) ($existing['max_leg_queue_packets'] ?? 8192)));
         $maxLegQueueBytes = max(1024, min(64 * 1024 * 1024, (int) ($existing['max_leg_queue_bytes'] ?? 16777216)));
         $udpSocketBufferBytes = max(65536, min(64 * 1024 * 1024, (int) ($existing['udp_socket_buffer_bytes'] ?? 8388608)));
-        // Per-forward leigod line assignment for the UoT sidepath: maps forward_id (string key)
-        // to the leigod line IDs whose slave-side shadow routes the legs should ride.
-        // The slave terminates SOCKS5 locally; clients only ever open plain-TCP ingress legs.
-        $forwardLeigodLines = [];
-        if (is_array($existing['forward_leigod_lines'] ?? null)) {
-            foreach ($existing['forward_leigod_lines'] as $rawForwardId => $rawLineIds) {
-                $mappedForwardId = (int) $rawForwardId;
-                if ($mappedForwardId <= 0 || !is_array($rawLineIds)) {
-                    continue;
-                }
-                $lineIds = [];
-                foreach ($rawLineIds as $rawLineId) {
-                    $lineId = (int) $rawLineId;
-                    if ($lineId > 0) {
-                        $lineIds[$lineId] = true;
-                    }
-                }
-                if ($lineIds !== []) {
-                    $forwardLeigodLines[(string) $mappedForwardId] = array_map('intval', array_keys($lineIds));
-                }
-            }
-        }
+        $forwardLeigodLines = $this->authoritativeForwardLeigodLines(
+            $normalizedForwardIds,
+            is_array($existing['forward_leigod_lines'] ?? null) ? $existing['forward_leigod_lines'] : []
+        );
 
         return [
             'enabled_forward_ids' => $normalizedForwardIds,
@@ -3652,7 +3635,7 @@ final class ProvisioningService
             'delivery_mode' => $deliveryMode,
             'wireguard_aware' => $wireguardAware,
             'scheduler_mode' => $schedulerMode,
-            'aggregate_rate_bps' => max(1, (int) ($existing['aggregate_rate_bps'] ?? 300000000)),
+            'aggregate_rate_bps' => max(1, (int) ($existing['aggregate_rate_bps'] ?? 450000000)),
             'queue_target_ms' => $queueTargetMs,
             'queue_deadline_ms' => $queueDeadlineMs,
             'global_queue_bytes' => $globalQueueBytes,
@@ -3669,7 +3652,7 @@ final class ProvisioningService
             'progress_interval_bytes' => max(1, (int) ($existing['progress_interval_bytes'] ?? 65536)),
             'progress_interval_frames' => max(1, (int) ($existing['progress_interval_frames'] ?? 32)),
             'progress_interval_ms' => max(1, (int) ($existing['progress_interval_ms'] ?? 5)),
-            'finish_skew_budget_ms' => max(0, (int) ($existing['finish_skew_budget_ms'] ?? 2)),
+            'finish_skew_budget_ms' => max(0, (int) ($existing['finish_skew_budget_ms'] ?? 20)),
             'probe_interval_ms' => max(1, (int) ($existing['probe_interval_ms'] ?? 1000)),
             'max_sessions' => max(1, min(65536, (int) ($existing['max_sessions'] ?? 4096))),
             'control_queue_packets' => max(1, min(262144, (int) ($existing['control_queue_packets'] ?? 256))),
@@ -3682,6 +3665,322 @@ final class ProvisioningService
             'udp_socket_buffer_bytes' => $udpSocketBufferBytes,
             'max_datagram_bytes' => $maxDatagramBytes,
             'forward_leigod_lines' => $forwardLeigodLines,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $existing
+     * @return array<string, mixed>
+     */
+    private function migrateLegacyUdpUotSchedulerProfile(array $existing): array
+    {
+        if (strtolower(trim((string) ($existing['scheduler_mode'] ?? ''))) !== 'feedback_drr') {
+            return $existing;
+        }
+        $legacyProfile = [
+            'aggregate_rate_bps' => 300000000,
+            'queue_target_ms' => 5,
+            'queue_deadline_ms' => 10,
+            'global_queue_bytes' => 1048576,
+            'per_session_queue_bytes' => 262144,
+            'max_total_outstanding_bytes' => 8388608,
+            'finish_skew_budget_ms' => 2,
+        ];
+        foreach ($legacyProfile as $key => $value) {
+            if (!array_key_exists($key, $existing) || is_bool($existing[$key]) || (int) $existing[$key] !== $value) {
+                return $existing;
+            }
+        }
+        return array_replace($existing, [
+            'aggregate_rate_bps' => 450000000,
+            'queue_target_ms' => 5,
+            'queue_deadline_ms' => 30,
+            'global_queue_bytes' => 4194304,
+            'per_session_queue_bytes' => 1048576,
+            'max_total_outstanding_bytes' => 16777216,
+            'finish_skew_budget_ms' => 20,
+        ]);
+    }
+
+    /**
+     * @param array<int, int> $forwardIds
+     * @param array<int|string, mixed> $existing
+     * @return array<string, array<int, int>>
+     */
+    private function authoritativeForwardLeigodLines(array $forwardIds, array $existing): array
+    {
+        $requested = array_fill_keys($forwardIds, true);
+        $mapping = [];
+        foreach ($existing as $rawForwardId => $rawLineIds) {
+            $forwardId = (int) $rawForwardId;
+            if (!isset($requested[$forwardId]) || !is_array($rawLineIds)) {
+                continue;
+            }
+            $lineIds = [];
+            foreach ($rawLineIds as $rawLineId) {
+                $lineId = (int) $rawLineId;
+                if ($lineId > 0) {
+                    $lineIds[$lineId] = true;
+                }
+            }
+            if ($lineIds !== []) {
+                $mapping[(string) $forwardId] = array_map('intval', array_keys($lineIds));
+            }
+        }
+
+        $params = [];
+        $placeholders = [];
+        foreach ($forwardIds as $index => $forwardId) {
+            $name = 'forward_id_' . $index;
+            $params[$name] = $forwardId;
+            $placeholders[] = ':' . $name;
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT f.id AS forward_id, ll.line_id
+             FROM forwards f
+             INNER JOIN forward_combinations fc ON fc.id = f.forward_combination_id
+             INNER JOIN forward_combination_leigod_lines fcll
+                     ON fcll.forward_combination_id = fc.id AND fcll.enabled = 1
+             INNER JOIN leigod_lines ll ON ll.id = fcll.leigod_line_id AND ll.is_active = 1
+             WHERE f.id IN (' . implode(', ', $placeholders) . ')
+             ORDER BY f.id ASC, fcll.sort_order ASC, ll.sort_order ASC, ll.line_id ASC',
+            $params
+        );
+        $authoritative = [];
+        foreach ($rows as $row) {
+            $forwardId = (int) ($row['forward_id'] ?? 0);
+            $lineId = (int) ($row['line_id'] ?? 0);
+            if (!isset($requested[$forwardId]) || $lineId <= 0) {
+                continue;
+            }
+            $authoritative[$forwardId][$lineId] = true;
+        }
+        foreach ($authoritative as $forwardId => $lineIds) {
+            $mapping[(string) $forwardId] = array_map('intval', array_keys($lineIds));
+        }
+        return $mapping;
+    }
+
+    /**
+     * tcp-accel split-TCP sidepath for assigned client forwards. The block is
+     * only emitted when the operator sets TCP_ACCEL_SIDECAR_SERVER on the
+     * panel host; without the env the feature stays fully off.
+     *
+     * @param array<int, array<string, mixed>> $forwards
+     * @param array<string, mixed> $existing
+     * @return array<string, mixed>|null
+     */
+    public function tcpAccelSidepathConfigForAssignedClientForwards(array $forwards, array $existing = []): ?array
+    {
+        $sidecarServer = $this->tcpAccelSidecarServerEndpoint();
+        if ($sidecarServer === null) {
+            return null;
+        }
+
+        $eligible = [];
+        foreach ($forwards as $forward) {
+            if (!is_array($forward)) {
+                continue;
+            }
+            $forwardId = (int) ($forward['forward_id'] ?? 0);
+            if ($forwardId <= 0) {
+                continue;
+            }
+            if (!$this->tcpAccelSidepathForwardEligible($forward)) {
+                continue;
+            }
+            $eligible[$forwardId] = $forward;
+        }
+        if ($eligible === []) {
+            return null;
+        }
+
+        $lines = $this->authoritativeForwardLeigodLines(array_keys($eligible), []);
+        $forwardsOut = [];
+        foreach ($eligible as $forwardId => $forward) {
+            $lineIds = array_map('intval', $existing['forward_line_ids'][$forwardId] ?? $lines[(string) $forwardId] ?? []);
+            if ($lineIds === []) {
+                continue;
+            }
+            $targetHost = trim((string) ($forward['target_host'] ?? ''));
+            $targetPort = (int) ($forward['target_port'] ?? 0);
+            if ($targetHost === '' || $targetPort <= 0) {
+                continue;
+            }
+            $remotes = [];
+            foreach (is_array($forward['endpoints'] ?? null) ? $forward['endpoints'] : [] as $endpoint) {
+                if (!is_array($endpoint)) {
+                    continue;
+                }
+                $host = trim((string) ($endpoint['host'] ?? ''));
+                if ($host === '') {
+                    continue;
+                }
+                foreach ($lineIds as $lineId) {
+                    $remotes[] = $host . ':' . $this->tcpAccelBridgeListenPort($lineId);
+                }
+            }
+            if ($remotes === []) {
+                continue;
+            }
+            $forwardsOut[(string) $forwardId] = [
+                'target' => $targetHost . ':' . $targetPort,
+                'remotes' => array_values(array_unique($remotes)),
+            ];
+        }
+        if ($forwardsOut === []) {
+            return null;
+        }
+
+        return $this->buildTcpAccelSidepathConfigBase(array_map('intval', array_keys($forwardsOut)), $existing)
+            + ['sidecar_server' => $sidecarServer, 'forwards' => $forwardsOut];
+    }
+
+    /**
+     * tcp-accel slave bridge config for one node: one bridge instance per
+     * eligible forward, one listener per LeiGod line in 7000-9000.
+     *
+     * @param array<string, mixed> $existing
+     * @return array<string, mixed>|null
+     */
+    public function tcpAccelSidepathConfigForNode(int $nodeId, array $existing = []): ?array
+    {
+        $sidecarServer = $this->tcpAccelSidecarServerEndpoint();
+        if ($sidecarServer === null || $nodeId <= 0) {
+            return null;
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT DISTINCT f.id, f.target_host, f.target_port
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             INNER JOIN service_endpoints se ON se.forward_id = f.id
+             WHERE se.node_id = :node_id
+               AND f.enabled = 1
+               AND s.status = :service_status
+               AND se.health_status <> :deleted
+               AND se.health_status <> :deleting
+               AND f.transport_mode LIKE :tcp_transport
+               AND f.transport_mode LIKE :udp_transport
+               AND f.bond_ingress_mode = :ingress_mode
+               AND f.client_mode = :bond_mode
+             ORDER BY f.id ASC',
+            [
+                'node_id' => $nodeId,
+                'service_status' => 'active',
+                'deleted' => 'deleted',
+                'deleting' => 'deleting',
+                'tcp_transport' => '%tcp%',
+                'udp_transport' => '%udp%',
+                'ingress_mode' => 'plain_tcp_mux',
+                'bond_mode' => 'bond',
+            ]
+        );
+
+        $forwardIds = array_values(array_filter(array_map(
+            static fn(array $row): int => (int) ($row['id'] ?? 0),
+            $rows
+        ), static fn(int $forwardId): bool => $forwardId > 0));
+        if ($forwardIds === []) {
+            return null;
+        }
+
+        $lines = $this->authoritativeForwardLeigodLines($forwardIds, []);
+        $bridges = [];
+        foreach ($rows as $row) {
+            $forwardId = (int) ($row['id'] ?? 0);
+            $lineIds = array_map('intval', $lines[(string) $forwardId] ?? []);
+            if ($lineIds === []) {
+                continue;
+            }
+            $listeners = [];
+            foreach ($lineIds as $lineId) {
+                $listeners[] = [
+                    'line_id' => $lineId,
+                    'listen_port' => $this->tcpAccelBridgeListenPort($lineId),
+                ];
+            }
+            $bridges[(string) $forwardId] = [
+                'remote' => $sidecarServer,
+                'listeners' => $listeners,
+            ];
+        }
+        if ($bridges === []) {
+            return null;
+        }
+
+        return $this->buildTcpAccelSidepathConfigBase(array_map('intval', array_keys($bridges)), $existing)
+            + ['sidecar_server' => $sidecarServer, 'bridges' => $bridges];
+    }
+
+    /**
+     * @param array<string, mixed> $forward
+     */
+    private function tcpAccelSidepathForwardEligible(array $forward): bool
+    {
+        if ($this->normalizeClientMode((string) ($forward['mode'] ?? 'single')) !== 'bond') {
+            return false;
+        }
+        $transport = strtolower(trim((string) ($forward['transport'] ?? 'tcp+udp')));
+        $bonding = is_array($forward['bonding'] ?? null) ? $forward['bonding'] : [];
+        $ingressMode = $this->normalizeBondIngressMode((string) ($bonding['ingress_mode'] ?? 'wss_path_mux'));
+        // The split path pairs with the UoT sidepath: bulk TCP on tcp-accel,
+        // WireGuard/UDP on the UoT runtime. Both transports must be declared.
+        return str_contains($transport, 'tcp')
+            && str_contains($transport, 'udp')
+            && $ingressMode === 'plain_tcp_mux';
+    }
+
+    /**
+     * Deterministic slave bridge listener port per LeiGod line, kept inside
+     * the 7000-9000 window enforced by leigod_tcp_accel_bridge.py. The slave
+     * side renders the matching SOCKS dial address as 127.0.0.1:20000+line_id.
+     */
+    private function tcpAccelBridgeListenPort(int $lineId): int
+    {
+        return 7000 + (((int) $lineId) % 2000);
+    }
+
+    private function tcpAccelSidecarServerEndpoint(): ?string
+    {
+        $raw = trim((string) (getenv('TCP_ACCEL_SIDECAR_SERVER') ?: ''));
+        if ($raw === '') {
+            return null;
+        }
+        [$host, $portText] = array_pad(explode(':', $raw, 2), 2, '');
+        $host = trim($host);
+        $port = (int) $portText;
+        if ($host === '' || $port <= 0 || $port > 65535) {
+            return null;
+        }
+        return $host . ':' . $port;
+    }
+
+    /**
+     * @param array<int, int> $forwardIds
+     * @param array<string, mixed> $existing
+     * @return array<string, mixed>
+     */
+    private function buildTcpAccelSidepathConfigBase(array $forwardIds, array $existing): array
+    {
+        sort($forwardIds);
+        $token = trim((string) (getenv('TCP_ACCEL_TOKEN') ?: ''));
+        $lanes = max(1, min(64, (int) ($existing['lanes'] ?? 4)));
+        $minimumLanes = max(1, min($lanes, (int) ($existing['minimum_lanes'] ?? 2)));
+        return [
+            'enabled_forward_ids' => array_values(array_unique(array_filter($forwardIds, static fn(int $id): bool => $id > 0))),
+            'token' => $token !== '' ? $token : null,
+            'lanes' => $lanes,
+            'minimum_lanes' => $minimumLanes,
+            'join_timeout_ms' => max(0, min(30000, (int) ($existing['join_timeout_ms'] ?? 1200))),
+            // Lane window = max(chunk, frames*chunk). Live 3-line canary (2026-08-15,
+            // sh36 -> node19 bridge -> leigod 455/456/453 -> sidecar80): 32KB chunks
+            // capped the 5-lane aggregate at ~38 Mbps (window 1.28MB / ~300ms full-path
+            // ACK RTT); 512KB x 16 = 8MB/lane measured 56-176 Mbps. 1MiB chunks
+            // collapse (head-of-line on 1MiB reassembly gaps).
+            'chunk_size' => max(1, min(16 * 1024 * 1024, (int) ($existing['chunk_size'] ?? 524288))),
+            'lane_queue_frames' => max(1, min(1024, (int) ($existing['lane_queue_frames'] ?? 16))),
+            'tcp_user_timeout_ms' => max(0, min(3600000, (int) ($existing['tcp_user_timeout_ms'] ?? 30000))),
         ];
     }
 
@@ -6185,6 +6484,7 @@ final class ProvisioningService
                     sp.mptcp_listen_port AS mptcp_sidecar_port,
                     sp.bond_listen_port AS sidecar_bond_listen_port,
                     sp.listen_port AS sidecar_listen_port,
+                    sp.sidecar_host AS bond_sidecar_host,
                     sp.token_secret AS bond_sidecar_point_token_secret,
                     sp.agent_config_json AS bond_sidecar_point_agent_config_json,
                     e.id AS endpoint_id, e.node_id,
@@ -6816,6 +7116,7 @@ final class ProvisioningService
             'SELECT fc.*, sp.name AS sidecar_point_name, sp.sidecar_host,
                     sp.listen_port AS sidecar_listen_port,
                     sp.bond_listen_port AS sidecar_bond_listen_port,
+                    sp.sidecar_host AS bond_sidecar_host,
                     sp.mptcp_listen_port AS sidecar_mptcp_listen_port,
                     sp.cf_listen_port AS sidecar_cf_listen_port,
                     sp.agent_config_json AS sidecar_agent_config_json
@@ -6838,6 +7139,7 @@ final class ProvisioningService
             'SELECT fc.*, sp.name AS sidecar_point_name, sp.sidecar_host,
                     sp.listen_port AS sidecar_listen_port,
                     sp.bond_listen_port AS sidecar_bond_listen_port,
+                    sp.sidecar_host AS bond_sidecar_host,
                     sp.mptcp_listen_port AS sidecar_mptcp_listen_port,
                     sp.cf_listen_port AS sidecar_cf_listen_port,
                     sp.agent_config_json AS sidecar_agent_config_json
@@ -6862,6 +7164,7 @@ final class ProvisioningService
             'SELECT fc.*, sp.name AS sidecar_point_name, sp.sidecar_host,
                     sp.listen_port AS sidecar_listen_port,
                     sp.bond_listen_port AS sidecar_bond_listen_port,
+                    sp.sidecar_host AS bond_sidecar_host,
                     sp.mptcp_listen_port AS sidecar_mptcp_listen_port,
                     sp.cf_listen_port AS sidecar_cf_listen_port,
                     sp.agent_config_json AS sidecar_agent_config_json
@@ -7965,6 +8268,7 @@ final class ProvisioningService
             'tls_cert_ref' => (string) $this->config->get('DEFAULT_TLS_CERT_REF', 'default-edge-cert'),
             'filter_profile' => (string) ($forward['filter_profile'] ?? 'off'),
             'transport_mode' => (string) ($forward['transport_mode'] ?? 'tcp+udp'),
+            'uot_sidecar_host' => $this->uotSidecarHostForForward($forward),
             'ingress_protocol' => $plainTcpIngress ? 'plain_tcp_mux' : 'wss_path_mux',
             'backend_protocol' => $backendProtocol,
             'leigod_forward' => $leigodForward,
@@ -7983,9 +8287,32 @@ final class ProvisioningService
         ];
     }
 
-    private function stableLeigodRelayPort(int $forwardId, int $endpointId): int
+    /**
+     * Public host of the forward's bond sidecar point for the UoT sidepath.
+     * Not every publish-path query selects sp.sidecar_host, so fall back to a
+     * point lookup when the column wasn't joined in.
+     *
+     * @param array<string, mixed> $forward
+     */
+    private function uotSidecarHostForForward(array $forward): string
     {
-        if ($forwardId <= 0 || $endpointId <= 0) {
+        $host = trim((string) ($forward['bond_sidecar_host'] ?? ''));
+        if ($host !== '') {
+            return $host;
+        }
+        $pointId = (int) ($forward['bond_sidecar_point_id'] ?? 0);
+        if ($pointId <= 0) {
+            return '';
+        }
+        $row = $this->db->fetchOne(
+            'SELECT sidecar_host FROM sidecar_points WHERE id = :id LIMIT 1',
+            ['id' => $pointId]
+        );
+        return trim((string) ($row['sidecar_host'] ?? ''));
+    }
+
+    private function stableLeigodRelayPort(int $forwardId, int $endpointId): int
+    {        if ($forwardId <= 0 || $endpointId <= 0) {
             throw new ApiException('invalid_leigod_relay_identity', 500);
         }
         return 48000 + ($endpointId % 10000);

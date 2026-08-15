@@ -10,12 +10,12 @@ from urllib.parse import quote
 
 UOT_SCHEDULER_DEFAULTS = {
     "scheduler_mode": "legacy",
-    "aggregate_rate_bps": 300_000_000,
+    "aggregate_rate_bps": 450_000_000,
     "queue_target_ms": 5,
-    "queue_deadline_ms": 10,
-    "global_queue_bytes": 1_048_576,
+    "queue_deadline_ms": 30,
+    "global_queue_bytes": 4_194_304,
     "global_queue_packets": 8_192,
-    "per_session_queue_bytes": 262_144,
+    "per_session_queue_bytes": 1_048_576,
     "per_session_queue_packets": 512,
     "drr_quantum_bytes": 16_384,
     "chunk_min_bytes": 16_384,
@@ -23,11 +23,11 @@ UOT_SCHEDULER_DEFAULTS = {
     "chunk_max_bytes": 65_536,
     "min_leg_window_bytes": 262_144,
     "max_leg_window_bytes": 4_194_304,
-    "max_total_outstanding_bytes": 8_388_608,
+    "max_total_outstanding_bytes": 16_777_216,
     "progress_interval_bytes": 65_536,
     "progress_interval_frames": 32,
     "progress_interval_ms": 5,
-    "finish_skew_budget_ms": 2,
+    "finish_skew_budget_ms": 20,
     "probe_interval_ms": 1_000,
     "max_sessions": 4_096,
     "control_queue_packets": 256,
@@ -44,11 +44,31 @@ UOT_SCHEDULER_DEFAULTS = {
     "udp_socket_buffer_bytes": 8_388_608,
 }
 
+UOT_SCHEDULER_LEGACY_PROFILE = {
+    "aggregate_rate_bps": 300_000_000,
+    "queue_target_ms": 5,
+    "queue_deadline_ms": 10,
+    "global_queue_bytes": 1_048_576,
+    "per_session_queue_bytes": 262_144,
+    "max_total_outstanding_bytes": 8_388_608,
+    "finish_skew_budget_ms": 2,
+}
+
 
 def normalize_uot_scheduler(raw: dict) -> dict:
     mode = str(raw.get("scheduler_mode", "legacy") or "legacy").strip().lower()
     if mode not in {"legacy", "feedback_drr"}:
         raise ValueError(f"unsupported UoT scheduler_mode: {mode}")
+    if mode == "feedback_drr" and all(
+        key in raw
+        and not isinstance(raw[key], bool)
+        and _matches_integer(raw[key], value)
+        for key, value in UOT_SCHEDULER_LEGACY_PROFILE.items()
+    ):
+        raw = {**raw, **{
+            key: UOT_SCHEDULER_DEFAULTS[key]
+            for key in UOT_SCHEDULER_LEGACY_PROFILE
+        }}
     normalized = {"scheduler_mode": mode}
     for key, default in UOT_SCHEDULER_DEFAULTS.items():
         if key == "scheduler_mode":
@@ -62,6 +82,13 @@ def normalize_uot_scheduler(raw: dict) -> dict:
             raise ValueError(f"{key} must be an integer") from exc
     validate_uot_scheduler(normalized)
     return normalized
+
+
+def _matches_integer(raw: object, expected: int) -> bool:
+    try:
+        return int(raw) == expected
+    except (TypeError, ValueError):
+        return False
 
 
 def validate_uot_scheduler(settings: dict) -> None:
@@ -618,6 +645,141 @@ WantedBy=multi-user.target
     }
 
 
+def _tcp_accel_host_port(text: str, field: str) -> tuple[str, int]:
+    host, sep, port_text = str(text or "").strip().rpartition(":")
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if not sep or not host or not port_text.isdigit() or not 1 <= int(port_text) <= 65535:
+        raise ValueError(f"tcp_accel_sidepath invalid {field}: {text!r}")
+    return host, int(port_text)
+
+
+def tcp_accel_sidepath_settings(forward: dict, agent_config: dict) -> dict | None:
+    raw = agent_config.get("tcp_accel_sidepath", {})
+    if not isinstance(raw, dict):
+        return None
+    enabled_ids = {
+        int(value)
+        for value in raw.get("enabled_forward_ids", [])
+        if str(value).strip().isdigit()
+    }
+    forward_id = int(forward.get("forward_id", 0) or 0)
+    if forward_id not in enabled_ids:
+        return None
+    forwards_map = raw.get("forwards", {})
+    entry = forwards_map.get(str(forward_id)) if isinstance(forwards_map, dict) else None
+    if not isinstance(entry, dict):
+        return None
+
+    def read_int(key: str, default: int, lo: int, hi: int) -> int:
+        value = raw[key] if key in raw else default
+        if isinstance(value, bool):
+            raise ValueError(f"tcp_accel_sidepath {key} must be an integer")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"tcp_accel_sidepath {key} must be an integer") from exc
+        if not lo <= parsed <= hi:
+            raise ValueError(f"tcp_accel_sidepath {key} must be within {lo}-{hi}")
+        return parsed
+
+    remotes: list[str] = []
+    seen: set[str] = set()
+    raw_remotes = entry.get("remotes", [])
+    if not isinstance(raw_remotes, list):
+        raise ValueError("tcp_accel_sidepath remotes must be a list")
+    for value in raw_remotes:
+        text = str(value or "").strip()
+        _tcp_accel_host_port(text, "remote")
+        if text not in seen:
+            seen.add(text)
+            remotes.append(text)
+    if not remotes:
+        raise ValueError("tcp_accel_sidepath requires at least one remote")
+    target = str(entry.get("target", "") or "").strip()
+    _tcp_accel_host_port(target, "target")
+    lanes = read_int("lanes", 4, 1, 64)
+    return {
+        "target": target,
+        "remotes": remotes,
+        "lanes": lanes,
+        "minimum_lanes": min(read_int("minimum_lanes", 2, 1, lanes), lanes),
+        "join_timeout_ms": read_int("join_timeout_ms", 1200, 0, 30000),
+        # 512KB chunks: live canary showed the lane window (frames*chunk) must cover
+        # the full-path ACK RTT; 32KB chunks capped 5 lanes at ~38 Mbps.
+        "chunk_size": read_int("chunk_size", 524288, 1, 16 * 1024 * 1024),
+        "lane_queue_frames": read_int("lane_queue_frames", 16, 1, 1024),
+        "tcp_user_timeout_ms": read_int("tcp_user_timeout_ms", 30000, 0, 3600000),
+        "token": str(raw.get("token") or "").strip() or None,
+    }
+
+
+def render_tcp_accel_client_unit(forward: dict, agent_config: dict, settings: dict) -> dict:
+    # Split-TCP sidepath: bulk TCP listeners are terminated by tcp_accel
+    # (multi-lane aggregation through the slave bridges), while WireGuard/UDP
+    # stays on the UoT aux runtime. The bond WSS legs are not started for a
+    # forward on this path, so this unit replaces the main bond service.
+    forward_id = int(forward["forward_id"])
+    listen_port = int(forward["listen_port"])
+    config_path = f"/etc/leigod/tcp-accel/client-forward-{forward_id}.json"
+    service_name = f"leikwan-client-{forward_id}-tcp-accel"
+    service_path = f"/etc/systemd/system/{service_name}.service"
+    runtime_bin = str(
+        agent_config.get("tcp_accel_bin", "/opt/leigod/tcp-accel/tcp_accel.py")
+        or "/opt/leigod/tcp-accel/tcp_accel.py"
+    )
+    config_payload: dict = {
+        "remotes": [str(remote) for remote in settings["remotes"]],
+        "lanes": int(settings["lanes"]),
+        "minimum_lanes": int(settings["minimum_lanes"]),
+        "join_timeout_ms": int(settings["join_timeout_ms"]),
+        "chunk_size": int(settings["chunk_size"]),
+        "lane_queue_frames": int(settings["lane_queue_frames"]),
+        "forwards": [
+            {
+                "name": f"forward-{forward_id}",
+                "listen": f"0.0.0.0:{listen_port}",
+                "target": str(settings["target"]),
+            }
+        ],
+    }
+    if int(settings["tcp_user_timeout_ms"]) > 0:
+        config_payload["tcp_user_timeout_ms"] = int(settings["tcp_user_timeout_ms"])
+    if settings["token"]:
+        config_payload["token"] = str(settings["token"])
+    exec_start = (
+        f"/usr/bin/python3 {runtime_bin} --log-level INFO client-config --config {config_path}"
+    )
+    service_unit = f"""[Unit]
+Description=Leikwan Client {forward_id} tcp-accel
+After=network.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+ExecStart={exec_start}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+    return {
+        "service_name": service_name,
+        "service_path": service_path,
+        "service_unit": service_unit,
+        "start_script_path": "",
+        "start_script": "",
+        "files": [
+            {
+                "path": config_path,
+                "content": json.dumps(config_payload, ensure_ascii=False, indent=2) + "\n",
+                "mode": 0o600,
+            }
+        ],
+    }
+
+
 
 
 def candidate_kind(candidate: dict) -> str:
@@ -1066,7 +1228,19 @@ WantedBy=multi-user.target
         extra_units: list[dict] = []
         if sidepath is not None and transport == "tcp+udp":
             primary_transport = "tcp"
-            extra_units.append(render_udp_uot_aux_unit(forward, bond, endpoints, agent_config, sidepath))
+            uot_unit = render_udp_uot_aux_unit(forward, bond, endpoints, agent_config, sidepath)
+            tcp_accel = (
+                tcp_accel_sidepath_settings(forward, agent_config)
+                if not speed_limit_mbps
+                else None
+            )
+            if tcp_accel is not None:
+                # Split path: bulk TCP on tcp-accel (this unit becomes the main
+                # service for the forward), WireGuard/UDP on the UoT runtime.
+                # The bond WSS legs are not rendered at all.
+                accel_unit = render_tcp_accel_client_unit(forward, agent_config, tcp_accel)
+                return {**accel_unit, "extra_units": [uot_unit]}
+            extra_units.append(uot_unit)
 
         base = 20000 + ((forward_id * 37) % 15000)
         rate_base = rate_limit_base_port(forward_id)
