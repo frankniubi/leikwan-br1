@@ -383,6 +383,7 @@ final class NodeController extends BaseController
             'accept_panel_republish',
             'disable_auto_update',
             'udp_uot_sidepath',
+            'tcp_accel_sidepath',
             'forward_chain_remediation',
         ], null);
 
@@ -585,6 +586,10 @@ final class NodeController extends BaseController
         $agentConfig['udp_uot_sidepath'] = $this->provisioning->udpUotSidepathConfigForNode(
             (int) ($node['id'] ?? 0),
             is_array($agentConfig['udp_uot_sidepath'] ?? null) ? $agentConfig['udp_uot_sidepath'] : []
+        );
+        $agentConfig['tcp_accel_sidepath'] = $this->provisioning->tcpAccelSidepathConfigForNode(
+            (int) ($node['id'] ?? 0),
+            is_array($agentConfig['tcp_accel_sidepath'] ?? null) ? $agentConfig['tcp_accel_sidepath'] : []
         );
 
         $uplinkManagement = $this->provisioning->slaveSidecarUplinkManagementForNode((int) $node['id']);

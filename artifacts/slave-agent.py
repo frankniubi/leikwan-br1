@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.08.13.1"
+AGENT_VERSION = "2026.08.13.2"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -470,11 +470,11 @@ def udp_uot_shadow_service_name(service_name: str) -> str:
 
 
 def udp_uot_base_service_name(service_name: str) -> str:
-    suffix = "-udp-uot"
     value = str(service_name).strip()
-    if value.endswith(suffix):
-        return value[: -len(suffix)]
-    return value
+    # Strip the UoT shadow suffix, including per-leigod-line shadows
+    # ("-udp-uot-l<line>") and their gost forwarders ("-udp-uot-lg<line>"),
+    # so the superseded-service sweeper treats them as part of the same family.
+    return re.sub(r"-udp-uot(?:-lg?\d+)?$", "", value)
 
 
 def replace_target_port(target: str, new_port: int) -> str:
@@ -3597,6 +3597,7 @@ WantedBy=multi-user.target
             "usage_interval_seconds",
             "log_level",
             "udp_uot_sidepath",
+            "tcp_accel_sidepath",
             "forward_chain_remediation",
         }
         changed = False
@@ -3632,6 +3633,11 @@ WantedBy=multi-user.target
             "tls_cert_pem",
             "tls_key_pem",
         }
+        if "tcp_accel_sidepath" in changed_keys:
+            try:
+                self.reap_stale_tcp_accel_bridges()
+            except Exception:  # noqa: BLE001
+                logging.exception("failed to reap stale tcp-accel bridges")
         if changed_keys & tls_runtime_keys:
             try:
                 tls_files_changed = self.provision_inline_tls_assets()
@@ -4340,6 +4346,7 @@ WantedBy=multi-user.target
             "path_prefix": path_prefix,
             "route_key": route_key,
             "backend_mode": backend_mode,
+            "uot_sidecar_host": str(payload.get("uot_sidecar_host", "") or "").strip(),
             "cf_mode": cf_mode,
             "selected_cf_ip": str(selection["selected_ip"]) if selection is not None else "",
             "ingress_protocol": ingress_protocol,
@@ -4717,6 +4724,11 @@ WantedBy=multi-user.target
         reaped = 0
         for unit_path in unit_files:
             service_name = unit_path.stem
+            # Per-leigod-line gost forwarder units carry no metadata of their own
+            # (their port lives in the parent line shadow's metadata); they are
+            # managed by reconcile_udp_uot_leigod_shadows, not this sweeper.
+            if re.search(r"-udp-uot-lg\d+$", service_name):
+                continue
             if self.metadata_path(service_name).exists():
                 continue
             if have_systemctl:
@@ -4855,6 +4867,7 @@ WantedBy=multi-user.target
             ingress_auth_token,
             settings,
         )
+        self.reconcile_tcp_accel_bridge(task)
 
     def udp_uot_leigod_line_ids(self, forward_id: int) -> list[int]:
         """Leigod line IDs assigned to this forward's UoT sidepath (node config:
@@ -4916,7 +4929,15 @@ WantedBy=multi-user.target
         desired_lines = self.udp_uot_leigod_line_ids(forward_id)
         sidecar_port = int(settings.get("sidecar_port", 8999) or 8999)
         shadow_suffix = str(settings.get("shadow_route_suffix", ".uot") or ".uot")
-        sidecar_target = replace_target_port(target, sidecar_port)
+        # The gost forwarder rides the leigod line, so its target is resolved at the
+        # leigod EXIT: it must be the sidecar's public address (published by the panel
+        # as uot_sidecar_host), not the payload target (which for leigod_mode forwards
+        # is a slave-local relay port).
+        uot_sidecar_host = str(payload.get("uot_sidecar_host", "") or "").strip()
+        if uot_sidecar_host != "":
+            sidecar_target = f"{uot_sidecar_host}:{sidecar_port}"
+        else:
+            sidecar_target = replace_target_port(target, sidecar_port)
         available_lines = {
             int(line.get("line_id", 0) or 0): int(line.get("socks_port", 0) or 0)
             for line in self.load_leigod_desired_lines()
@@ -4936,15 +4957,20 @@ WantedBy=multi-user.target
 
             line_route_key = f"{route_key}{shadow_suffix}.l{line_id}"
             existing_line = self.load_service_metadata(line_shadow) or {}
+            # Reserve the line shadow's port before allocating the gost port: both come
+            # from the same pool, and the line shadow's metadata is only saved below, so
+            # without the explicit reservation both allocations would return the same port.
+            reserved: set[int] = set()
             line_backend_port = int(existing_line.get("backend_port", 0) or 0)
             if line_backend_port <= 0:
                 line_backend_port = self.allocate_backend_port(line_shadow)
+            reserved.add(line_backend_port)
             # The gost forwarder port is persisted inside the line shadow's metadata (a
             # standalone metadata record for the gost unit would fail the reconcile_runtime
             # guard and be re-rendered as a wstunnel unit).
             gost_port = int(existing_line.get("leigod_gost_port", 0) or 0)
-            if gost_port <= 0:
-                gost_port = self.allocate_backend_port(gost_name)
+            if gost_port <= 0 or gost_port == line_backend_port:
+                gost_port = self.allocate_backend_port(gost_name, reserved)
 
             gost_unit = self.render_udp_uot_leigod_gost_unit(gost_name, gost_port, socks_port, sidecar_target)
             gost_changed = self.write_text_if_changed(self.service_unit_path(gost_name), gost_unit)
@@ -4970,6 +4996,13 @@ WantedBy=multi-user.target
                     "ingress_auth_token": ingress_auth_token,
                     "leigod_line_id": line_id,
                     "leigod_gost_port": gost_port,
+                    # Strip inherited runtime attachments: the reconcile loop would
+                    # otherwise spawn a sidecar-uplink selector / uplink / mptcp
+                    # underlay per line shadow (unit churn, selector probe storms).
+                    "sidecar_uplink": {},
+                    "sidecar_uplink_selector": {},
+                    "mptcp_underlay": None,
+                    "leigod_forward": {},
                     "status": "active",
                 }
             )
@@ -5015,6 +5048,140 @@ WantedBy=multi-user.target
         metadata_path = self.metadata_path(service_name)
         if metadata_path.exists():
             metadata_path.unlink()
+
+    # ---- tcp-accel split-TCP sidepath (bulk TCP bridge per forward) ----
+
+    def tcp_accel_sidepath_settings(self) -> dict[str, Any]:
+        raw = self.config.get("tcp_accel_sidepath", {})
+        return raw if isinstance(raw, dict) else {}
+
+    def tcp_accel_bridge_service_name(self) -> str:
+        return "leikwan-tcp-accel-bridge"
+
+    def reconcile_tcp_accel_bridge(self, task: dict[str, Any]) -> None:
+        """Render the node-wide tcp-accel SOCKS bridge when the panel enabled
+        the split-TCP sidepath for any forward on this node:
+
+            client tcp-accel -> bridge listener -> leigod line SOCKS5 -> sidecar server
+
+        Listener ports are deterministic per leigod line (panel: 7000+line_id%
+        2000), so all forwards' entries are merged into ONE bridge unit — two
+        per-forward units would race for the same listen port. The SOCKS dial
+        address is the slave-local line listener (127.0.0.1:20000+line_id).
+        Without panel entries, usable listeners, or the bridge runtime, the
+        unit is reaped."""
+        forward_id = int(task.get("forward_id", 0) or 0)
+        if forward_id <= 0:
+            return
+        service_name = self.tcp_accel_bridge_service_name()
+        runtime_bin = str(
+            self.config.get(
+                "tcp_accel_bridge_bin",
+                "/opt/leigod/tcp-accel/leigod_tcp_accel_bridge.py",
+            )
+            or ""
+        )
+        bridges = self.tcp_accel_sidepath_settings().get("bridges", {})
+        remote = ""
+        listeners: list[dict[str, Any]] = []
+        seen_lines: set[int] = set()
+        if isinstance(bridges, dict):
+            for raw_forward_id, entry in sorted(bridges.items(), key=lambda item: str(item[0])):
+                if not isinstance(entry, dict):
+                    continue
+                entry_remote = str(entry.get("remote", "") or "").strip()
+                if entry_remote == "":
+                    continue
+                if remote == "":
+                    remote = entry_remote
+                listeners_raw = entry.get("listeners", [])
+                for item in listeners_raw if isinstance(listeners_raw, list) else []:
+                    if not isinstance(item, dict):
+                        continue
+                    line_id = int(item.get("line_id", 0) or 0)
+                    listen_port = int(item.get("listen_port", 0) or 0)
+                    if line_id <= 0 or line_id in seen_lines:
+                        continue
+                    if not 7000 <= listen_port <= 9000:
+                        continue
+                    socks_port = self.tcp_accel_line_socks_port(line_id)
+                    if socks_port <= 0:
+                        continue
+                    seen_lines.add(line_id)
+                    listeners.append(
+                        {
+                            "listen": f"0.0.0.0:{listen_port}",
+                            "socks": f"127.0.0.1:{socks_port}",
+                            "line_id": line_id,
+                        }
+                    )
+        if remote == "" or not listeners or not Path(runtime_bin).exists():
+            self.remove_tcp_accel_bridge()
+            return
+
+        config_dir = Path(
+            str(self.config.get("tcp_accel_config_dir", "/etc/leigod/tcp-accel") or "/etc/leigod/tcp-accel")
+        )
+        config_path = config_dir / "bridge.json"
+        config_payload = {"remote": remote, "listeners": listeners}
+        config_dir.mkdir(parents=True, exist_ok=True)
+        self.write_text_if_changed(
+            config_path, json.dumps(config_payload, ensure_ascii=False, indent=2) + "\n"
+        )
+        unit = f"""[Unit]
+Description=Leikwan tcp-accel bridge
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 {runtime_bin} --log-level INFO bridge --config {config_path}
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+"""
+        unit_path = self.service_unit_path(service_name)
+        changed = self.write_text_if_changed(unit_path, unit)
+        if shutil.which("systemctl"):
+            if changed:
+                run_command("systemctl daemon-reload", check=False)
+            run_command(f"systemctl enable {service_name}.service", check=False)
+            if changed:
+                run_command(f"systemctl restart {service_name}.service", check=False)
+            else:
+                run_command(f"systemctl start {service_name}.service", check=False)
+
+    def tcp_accel_line_socks_port(self, line_id: int) -> int:
+        for line in self.load_leigod_desired_lines():
+            if int(line.get("line_id", 0) or 0) == line_id:
+                return int(line.get("socks_port", 0) or 0)
+        return 20000 + line_id if line_id > 0 else 0
+
+    def remove_tcp_accel_bridge(self) -> None:
+        # Same stop/disable/unlink semantics as the UoT leigod units.
+        self.remove_udp_uot_leigod_unit(self.tcp_accel_bridge_service_name())
+        config_dir = Path(
+            str(self.config.get("tcp_accel_config_dir", "/etc/leigod/tcp-accel") or "/etc/leigod/tcp-accel")
+        )
+        config_path = config_dir / "bridge.json"
+        if config_path.exists():
+            config_path.unlink()
+
+    def reap_stale_tcp_accel_bridges(self) -> None:
+        """Remove the bridge unit when the panel no longer lists any entry
+        (or a legacy per-forward unit from earlier renderings)."""
+        bridges = self.tcp_accel_sidepath_settings().get("bridges", {})
+        has_entries = isinstance(bridges, dict) and bridges != {}
+        if not has_entries:
+            self.remove_tcp_accel_bridge()
+        systemd_dir = Path(str(self.config.get("systemd_dir", "/etc/systemd/system") or "/etc/systemd/system"))
+        for unit_path in systemd_dir.glob("leikwan-tcp-accel-bridge*.service"):
+            service_name = unit_path.name[: -len(".service")]
+            if service_name == self.tcp_accel_bridge_service_name() and has_entries:
+                continue
+            self.remove_udp_uot_leigod_unit(service_name)
 
     def remove_udp_uot_shadow_service(self, task: dict[str, Any], payload: dict[str, Any], base_service_name: str) -> None:
         shadow_service_name = udp_uot_shadow_service_name(base_service_name)
