@@ -155,7 +155,7 @@ final class OidcClient
             throw new RuntimeException('oidc_configuration_invalid');
         }
 
-        return $this->jsonResponse('POST', $endpoint, ['headers' => $headers, 'form' => $form]);
+        return $this->providerJson('oidc_token_request_failed', 'POST', $endpoint, ['headers' => $headers, 'form' => $form]);
     }
 
     /** @return array<string, mixed> */
@@ -173,7 +173,7 @@ final class OidcClient
             throw new RuntimeException('oidc_callback_invalid');
         }
 
-        $jwks = $this->jsonResponse('GET', $jwksUri, ['headers' => ['Accept' => 'application/json']]);
+        $jwks = $this->providerJson('oidc_jwks_request_failed', 'GET', $jwksUri, ['headers' => ['Accept' => 'application/json']]);
         $key = $this->matchingJwk($jwks, $header['kid']);
         $pem = $this->jwkToPem($key);
         if (!function_exists('openssl_verify') || openssl_verify($encodedHeader . '.' . $encodedPayload, $signature, $pem, OPENSSL_ALGO_SHA256) !== 1) {
@@ -187,7 +187,7 @@ final class OidcClient
     /** @return array<string, mixed> */
     private function userinfo(string $endpoint, string $accessToken): array
     {
-        return $this->jsonResponse('GET', $endpoint, ['headers' => [
+        return $this->providerJson('oidc_userinfo_request_failed', 'GET', $endpoint, ['headers' => [
             'Accept' => 'application/json',
             'Authorization' => 'Bearer ' . $accessToken,
         ]]);
@@ -209,7 +209,7 @@ final class OidcClient
         if (!$this->httpsUrl($discoveryUrl)) {
             throw new RuntimeException('oidc_configuration_invalid');
         }
-        $metadata = $this->jsonResponse('GET', $discoveryUrl, ['headers' => ['Accept' => 'application/json']]);
+        $metadata = $this->providerJson('oidc_discovery_request_failed', 'GET', $discoveryUrl, ['headers' => ['Accept' => 'application/json']]);
         if (($metadata['issuer'] ?? null) !== $this->issuer()) {
             throw new RuntimeException('oidc_configuration_invalid');
         }
@@ -350,6 +350,19 @@ final class OidcClient
             throw new RuntimeException('oidc_provider_response_invalid');
         }
         return $this->jsonObject($body);
+    }
+
+    /** @return array<string, mixed> */
+    private function providerJson(string $failureCode, string $method, string $url, array $options): array
+    {
+        try {
+            return $this->jsonResponse($method, $url, $options);
+        } catch (RuntimeException $exception) {
+            if ($exception->getMessage() === 'oidc_provider_request_failed') {
+                throw new RuntimeException($failureCode, 0, $exception);
+            }
+            throw $exception;
+        }
     }
 
     /** @return array<string, mixed> */

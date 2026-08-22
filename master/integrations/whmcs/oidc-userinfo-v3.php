@@ -41,6 +41,65 @@ function v3OidcAuthorizationHeader(): string
     return $authorization;
 }
 
+/**
+ * Fetch WHMCS UserInfo locally first, then retry through the public HTTPS route if the
+ * loopback path cannot establish a verified TLS connection (for example, an expired origin
+ * certificate). Both paths retain normal certificate and hostname verification.
+ *
+ * @return array{body:string,status:int}
+ */
+function v3OidcFetchUserinfo(string $upstream, string $authorization, string $host, int $port): array
+{
+    $request = static function (bool $loopback) use ($upstream, $authorization, $host, $port): array {
+        $handle = curl_init($upstream);
+        if ($handle === false) {
+            return ['body' => '', 'status' => 0, 'curl_error' => CURLE_FAILED_INIT];
+        }
+
+        $options = [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
+            CURLOPT_HTTPHEADER => [
+                'Accept: application/json',
+                'Authorization: ' . $authorization,
+            ],
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+        ];
+        if ($loopback) {
+            $options[CURLOPT_RESOLVE] = [$host . ':' . $port . ':127.0.0.1'];
+        }
+
+        curl_setopt_array($handle, $options);
+        $raw = curl_exec($handle);
+        $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+        $curlError = curl_errno($handle);
+        curl_close($handle);
+
+        return [
+            'body' => is_string($raw) ? $raw : '',
+            'status' => $status,
+            'curl_error' => $curlError,
+        ];
+    };
+
+    $local = $request(true);
+    if ($local['curl_error'] === 0 && $local['body'] !== '') {
+        return ['body' => $local['body'], 'status' => $local['status']];
+    }
+
+    // Retry the public HTTPS path after a loopback transport or TLS failure.
+    $public = $request(false);
+    if ($public['curl_error'] !== 0 || $public['body'] === '') {
+        throw new RuntimeException('upstream_request_failed');
+    }
+
+    return ['body' => $public['body'], 'status' => $public['status']];
+}
+
 try {
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
         header('Allow: GET');
@@ -62,30 +121,9 @@ try {
     $host = (string) $parts['host'];
     $port = max(1, (int) ($parts['port'] ?? 443));
     $upstream = $systemUrl . '/oauth/userinfo.php';
-    $handle = curl_init($upstream);
-    if ($handle === false) {
-        throw new RuntimeException('curl_init_failed');
-    }
-    curl_setopt_array($handle, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => false,
-        CURLOPT_CONNECTTIMEOUT => 5,
-        CURLOPT_TIMEOUT => 15,
-        CURLOPT_HTTPHEADER => [
-            'Accept: application/json',
-            'Authorization: ' . $authorization,
-        ],
-        CURLOPT_SSL_VERIFYPEER => true,
-        CURLOPT_SSL_VERIFYHOST => 2,
-        CURLOPT_RESOLVE => [$host . ':' . $port . ':127.0.0.1'],
-    ]);
-    $raw = curl_exec($handle);
-    $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
-    $curlError = curl_errno($handle);
-    curl_close($handle);
-    if (!is_string($raw) || $curlError !== 0) {
-        throw new RuntimeException('upstream_request_failed');
-    }
+    $upstreamResponse = v3OidcFetchUserinfo($upstream, $authorization, $host, $port);
+    $raw = $upstreamResponse['body'];
+    $status = $upstreamResponse['status'];
 
     $userinfo = json_decode($raw, true);
     if ($status !== 200 || !is_array($userinfo)) {

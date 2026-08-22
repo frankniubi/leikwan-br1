@@ -46,6 +46,17 @@ function assertThrows(callable $callback, string $message): void
     fail($message);
 }
 
+function assertThrowsWithMessage(callable $callback, string $expectedMessage, string $message): void
+{
+    try {
+        $callback();
+    } catch (Throwable $error) {
+        assertSame($expectedMessage, $error->getMessage(), $message);
+        return;
+    }
+    fail($message . ': no exception');
+}
+
 function base64UrlEncode(string $value): string
 {
     return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
@@ -247,6 +258,41 @@ file_put_contents(
 $invalidUserinfoClient = new OidcClient(new Config($invalidUserinfoPath));
 assertTrue(!$invalidUserinfoClient->isConfigured(), 'userinfo override must use HTTPS');
 
+$stageConfigPath = tempnam(sys_get_temp_dir(), 'lw-oidc-stage-');
+if ($stageConfigPath === false) {
+    fail('failed to create stage config');
+}
+file_put_contents($stageConfigPath, implode("\n", [
+    'OIDC_ENABLED=true',
+    'OIDC_ISSUER_URL=https://issuer.example',
+    'OIDC_DISCOVERY_URL=https://issuer.example/.well-known/openid-configuration',
+    'OIDC_CLIENT_ID=client-123',
+    'OIDC_CLIENT_SECRET=super-secret',
+    'OIDC_REDIRECT_URI=https://panel.example/callback',
+    'OIDC_TOKEN_AUTH_METHOD=client_secret_post',
+    'OIDC_USE_PKCE=false',
+]) . "\n");
+$stageClient = new OidcClient(new Config($stageConfigPath), static function (string $method, string $url): array {
+    if ($url === 'https://issuer.example/.well-known/openid-configuration') {
+        return ['status' => 200, 'body' => json_encode([
+            'issuer' => 'https://issuer.example',
+            'authorization_endpoint' => 'https://issuer.example/authorize',
+            'token_endpoint' => 'https://issuer.example/token',
+            'jwks_uri' => 'https://issuer.example/keys',
+            'userinfo_endpoint' => 'https://issuer.example/userinfo',
+        ], JSON_THROW_ON_ERROR)];
+    }
+    if ($url === 'https://issuer.example/token') {
+        return ['status' => 503, 'body' => '{}'];
+    }
+    fail('unexpected staged HTTP request to ' . $url);
+});
+assertThrowsWithMessage(
+    static fn() => $stageClient->authenticateCallback('authorization-code', ['nonce' => 'nonce-value']),
+    'oidc_token_request_failed',
+    'token transport failures must identify the failing OIDC stage'
+);
+
 $clientSource = (string) file_get_contents(__DIR__ . '/../src/Support/OidcClient.php');
 assertTrue(str_contains($clientSource, "'follow_location' => 0"), 'stream HTTP fallback must reject redirects');
 
@@ -255,4 +301,5 @@ assertTrue(str_contains($clientSource, "'follow_location' => 0"), 'stream HTTP f
 @unlink($missingSecretPath);
 @unlink($scopeConfigPath);
 @unlink($invalidUserinfoPath);
+@unlink($stageConfigPath);
 echo "ok\n";

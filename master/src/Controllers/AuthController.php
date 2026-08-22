@@ -125,12 +125,17 @@ final class AuthController extends BaseController
         $adminCount = (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'admin'])['total'] ?? 0);
         $csrf = $this->escape(SessionAuth::csrfToken());
         $showLegacyLogin = (string) $request->input('legacy', '') === '1';
+        $showBuyLogin = (string) $request->input('buy', '') === '1';
         $buyLoginMethod = '
             <span class="login-method-pill login-method-pill--disabled" aria-disabled="true">
               <span class="login-method-copy">
                 <strong>使用LeiKwan Buy登录 (Via LeiKwan Buy)</strong>
               </span>
             </span>';
+        $buyCredentialFallback = '
+            <a class="login-method-fallback" href="/login?buy=1">
+              直接使用 LeiKwan Buy 账号密码 / Direct Buy credentials
+            </a>';
         if ($this->oidcClient !== null && $this->oidcClient->isConfigured()) {
             $providerName = $this->escape($this->oidcClient->providerName());
             $buyLoginMethod = '
@@ -139,7 +144,9 @@ final class AuthController extends BaseController
                     <strong>使用LeiKwan Buy登录 (Via LeiKwan Buy)</strong>
                   </span>
                   <span class="login-method-arrow" aria-hidden="true">&rarr;</span>
-                </a>';
+                </a>' . $buyCredentialFallback;
+        } elseif ($this->whmcsIdentityService()->isConfigured()) {
+            $buyLoginMethod = $buyCredentialFallback;
         }
         $loginMethods = '
             <div class="login-methods">
@@ -190,6 +197,33 @@ final class AuthController extends BaseController
                       <div class="actions">
                         <button class="button" type="submit">Sign In</button>
                         <a class="button ghost" href="/login">返回登录方式</a>
+                        <a class="button secondary" href="/">Back Home</a>
+                      </div>
+                    </form>
+                  </section>
+                  ' . $sideCard . '
+                </section>';
+        } elseif ($showBuyLogin) {
+            $body = '
+                <section class="auth-grid">
+                  <section class="surface-card auth-card">
+                    <span class="card-kicker">LeiKwan Buy</span>
+                    <h2>Sign in with Buy</h2>
+                    <form method="post" action="/login/buy">
+                      <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                      <div class="form-grid single">
+                        <div class="field">
+                          <label>Buy Email</label>
+                          <input type="email" name="email" placeholder="you@example.com" autocomplete="username" required>
+                        </div>
+                        <div class="field">
+                          <label>Buy Password</label>
+                          <input type="password" name="password" autocomplete="current-password" required>
+                        </div>
+                      </div>
+                      <div class="actions">
+                        <button class="button" type="submit">Sign In</button>
+                        <a class="button ghost" href="/login">Back to Login Methods</a>
                         <a class="button secondary" href="/">Back Home</a>
                       </div>
                     </form>
@@ -742,6 +776,30 @@ final class AuthController extends BaseController
         SessionAuth::login($user);
         SessionAuth::flash('success', 'Signed in successfully.');
         return Response::redirect('/');
+    }
+
+    public function buyLogin(Request $request, array $params): Response
+    {
+        try {
+            SessionAuth::validateCsrf($request);
+            $service = $this->whmcsIdentityService();
+            if (!$service->isConfigured()) {
+                throw new \RuntimeException('buy_login_not_configured');
+            }
+
+            $identity = $service->authenticate(
+                (string) $request->input('email', ''),
+                (string) $request->input('password', '')
+            );
+            $user = $service->loginWithAuthenticatedIdentity($identity);
+            SessionAuth::login($user);
+            SessionAuth::flash('success', 'Signed in with LeiKwan Buy.');
+            return Response::redirect('/');
+        } catch (\Throwable $throwable) {
+            error_log('Buy credential login failed: ' . $throwable::class);
+            SessionAuth::flash('error', 'Unable to sign in with LeiKwan Buy. Check your email and password, then try again.');
+            return Response::redirect('/login?buy=1');
+        }
     }
 
     public function requestBuyBinding(Request $request, array $params): Response

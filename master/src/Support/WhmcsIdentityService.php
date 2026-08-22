@@ -154,6 +154,23 @@ final class WhmcsIdentityService
 
     /**
      * @param array<string, mixed> $remoteIdentity
+     * @return array<string, mixed>
+     */
+    public function loginWithAuthenticatedIdentity(array $remoteIdentity): array
+    {
+        $whmcsClientId = max(0, (int) ($remoteIdentity['whmcs_client_id'] ?? 0));
+        if ($whmcsClientId <= 0) {
+            throw new ApiException('whmcs_client_not_found', 404, ['message' => 'The authenticated Buy station account has no billing client.']);
+        }
+
+        $user = $this->boundUserForClient($whmcsClientId) ?? $this->resolveTargetUser($remoteIdentity);
+        $user = $this->activateAuthenticatedTenant($user);
+
+        return $this->bindUserToProfile($user, $remoteIdentity);
+    }
+
+    /**
+     * @param array<string, mixed> $remoteIdentity
      * @param array<string, mixed>|null $currentUser
      * @return array<string, mixed>
      */
@@ -597,6 +614,46 @@ final class WhmcsIdentityService
                 'whmcs_currency_code' => strtoupper(trim((string) ($profile['currency_code'] ?? 'CNY'))),
                 'whmcs_bound_at' => $now,
                 'whmcs_last_synced_at' => $now,
+                'updated_at' => $now,
+            ]
+        );
+
+        return $this->db->fetchOne('SELECT * FROM users WHERE id = :id LIMIT 1', ['id' => $user['id']]) ?? $user;
+    }
+
+    /**
+     * A successful Buy password authentication is sufficient to verify a pending tenant.
+     *
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>
+     */
+    private function activateAuthenticatedTenant(array $user): array
+    {
+        if ((string) ($user['role'] ?? '') !== 'tenant') {
+            throw new ApiException('whmcs_binding_not_supported', 422, ['message' => 'Only tenant accounts can sign in with a Buy station account.']);
+        }
+
+        $status = (string) ($user['status'] ?? '');
+        if ($status === 'active') {
+            return $user;
+        }
+        if ($status !== 'pending_verification') {
+            throw new ApiException('whmcs_binding_not_supported', 422, ['message' => 'This panel account is not active.']);
+        }
+
+        $now = $this->now();
+        $this->db->execute(
+            'UPDATE users
+             SET status = :status,
+                 email_verified_at = COALESCE(email_verified_at, :email_verified_at),
+                 email_verification_token = NULL,
+                 verification_sent_at = NULL,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $user['id'],
+                'status' => 'active',
+                'email_verified_at' => $now,
                 'updated_at' => $now,
             ]
         );

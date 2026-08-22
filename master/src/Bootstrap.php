@@ -152,6 +152,7 @@ final class Bootstrap
         $this->router->add('POST', '/register', [$auth, 'register']);
         $this->router->add('GET', '/verify-email', [$auth, 'verifyEmail']);
         $this->router->add('POST', '/login', [$auth, 'login']);
+        $this->router->add('POST', '/login/buy', [$auth, 'buyLogin']);
         $this->router->add('POST', '/tenant/billing/bind', [$auth, 'requestBuyBinding']);
         $this->router->add('POST', '/buy-binding/verify', [$auth, 'verifyBuyBinding']);
         $this->router->add('POST', '/logout', [$auth, 'logout']);

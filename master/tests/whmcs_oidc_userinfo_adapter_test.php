@@ -32,7 +32,9 @@ $source = (string) file_get_contents($path);
 foreach ([
     "header('Cache-Control: no-store')",
     "\$_SERVER['HTTP_AUTHORIZATION']",
+    'function v3OidcFetchUserinfo(',
     "CURLOPT_FOLLOWLOCATION => false",
+    'CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4',
     "CURLOPT_SSL_VERIFYPEER => true",
     "CURLOPT_SSL_VERIFYHOST => 2",
     "WHMCS\\Config\\Setting::getValue('SystemURL')",
@@ -45,6 +47,9 @@ foreach ([
 ] as $needle) {
     assertContains($needle, $source, 'adapter security contract');
 }
+
+assertContains('v3OidcFetchUserinfo($upstream, $authorization, $host, $port)', $source, 'adapter must use the resilient upstream fetcher');
+assertContains('Retry the public HTTPS path after a loopback transport or TLS failure.', $source, 'adapter must document its public HTTPS fallback');
 
 assertOrdered("->isEmailAddressVerified()", "\$userinfo['email_verified'] = true", $source, 'client verification must precede claim elevation');
 assertOrdered("->emailVerified()", "\$userinfo['email_verified'] = true", $source, 'owner verification must precede claim elevation');
