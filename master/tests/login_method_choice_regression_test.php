@@ -106,6 +106,7 @@ try {
     assertContains('使用LeiKwan Buy登录', $defaultBody, 'default login page must show the Buy login method');
     assertContains('(Via LeiKwan Buy)', $defaultBody, 'Buy login method must show its English label');
     assertContains('href="/auth/oidc/start"', $defaultBody, 'Buy login method must start OIDC');
+    assertContains('href="/login?buy=1"', $defaultBody, 'Buy login method must expose a direct credential fallback');
     assertContains('使用会聚账户(旧)', $defaultBody, 'default login page must show the legacy login method');
     assertContains('(Via LeiKwan Bridge (Legacy))', $defaultBody, 'legacy login method must show its English label');
     assertContains('href="/login?legacy=1"', $defaultBody, 'legacy login method must open the legacy form');
@@ -126,6 +127,14 @@ try {
     }
     assertContains('name="email"', $legacyResponse->body(), 'legacy login page must show the email input');
     assertContains('name="password"', $legacyResponse->body(), 'legacy login page must show the password input');
+
+    $buyResponse = $app->handle(new Request('GET', '/login', ['buy' => '1'], [], [], ''));
+    if ($buyResponse->status() !== 200) {
+        fail('Buy login page did not return 200');
+    }
+    assertContains('action="/login/buy"', $buyResponse->body(), 'Buy login form must use its dedicated POST route');
+    assertContains('name="email"', $buyResponse->body(), 'Buy login page must show the Buy email input');
+    assertContains('name="password"', $buyResponse->body(), 'Buy login page must show the Buy password input');
 
     $failedLogin = $app->handle(new Request('POST', '/login', [], [
         'csrf_token' => 'login-method-choice-csrf',
@@ -148,6 +157,15 @@ try {
     ] as $shellPath) {
         assertContains($assetVersion, (string) file_get_contents($shellPath), 'every public shell must load the updated login styles');
     }
+
+    $bootstrap = (string) file_get_contents(__DIR__ . '/../src/Bootstrap.php');
+    $authSource = (string) file_get_contents(__DIR__ . '/../src/Controllers/AuthController.php');
+    $whmcsIdentitySource = (string) file_get_contents(__DIR__ . '/../src/Support/WhmcsIdentityService.php');
+    assertContains("'POST', '/login/buy'", $bootstrap, 'Buy login POST route must be registered');
+    assertContains('public function buyLogin(', $authSource, 'Buy login handler must exist');
+    assertContains('loginWithAuthenticatedIdentity(', $authSource, 'Buy login must resolve the authenticated client identity');
+    assertContains('public function loginWithAuthenticatedIdentity(', $whmcsIdentitySource, 'authenticated Buy login resolver must exist');
+    assertContains('bindUserToProfile(', $whmcsIdentitySource, 'authenticated Buy login must preserve client binding checks');
 } finally {
     @unlink($env);
 }
