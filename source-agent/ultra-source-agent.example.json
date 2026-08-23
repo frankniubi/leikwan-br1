@@ -1,0 +1,17 @@
+{
+  "panel_url": "https://panel.example.com",
+  "source_id": "source-a",
+  "source_secret": "replace-me",
+  "binary_path": "/opt/ultra-source/runtime/line-client",
+  "lines_dir": "/opt/ultra-source/lines",
+  "inventory_path": "/opt/ultra-source/lines/index.json",
+  "state_dir": "/var/lib/ultra-source-agent",
+  "session_path": "/var/lib/ultra-source-agent/session.json",
+  "poll_interval_seconds": 60,
+  "request_timeout_seconds": 10,
+  "acquire_timeout_seconds": 30,
+  "material_lifetime_seconds": 1800,
+  "max_lines_per_cycle": 8,
+  "inventory_refresh_seconds": 1800,
+  "max_inventory_lines": 256
+}
