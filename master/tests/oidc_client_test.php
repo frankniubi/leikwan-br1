@@ -14,6 +14,7 @@ spl_autoload_register(static function (string $class): void {
 
 use Leikwan\Master\Config;
 use Leikwan\Master\Support\OidcClient;
+use Leikwan\Master\Support\OidcProviderException;
 
 function fail(string $message): never
 {
@@ -293,8 +294,124 @@ assertThrowsWithMessage(
     'token transport failures must identify the failing OIDC stage'
 );
 
+$retryCalls = [];
+$retryClient = new OidcClient(new Config($stageConfigPath), static function (string $method, string $url) use (&$retryCalls): array {
+    $retryCalls[] = [$method, $url];
+    if ($url === 'https://issuer.example/.well-known/openid-configuration' && count($retryCalls) === 1) {
+        return ['status' => 503, 'body' => '{}'];
+    }
+    if ($url === 'https://issuer.example/.well-known/openid-configuration') {
+        return ['status' => 200, 'body' => json_encode([
+            'issuer' => 'https://issuer.example',
+            'authorization_endpoint' => 'https://issuer.example/authorize',
+            'token_endpoint' => 'https://issuer.example/token',
+            'jwks_uri' => 'https://issuer.example/keys',
+            'userinfo_endpoint' => 'https://issuer.example/userinfo',
+        ], JSON_THROW_ON_ERROR)];
+    }
+    fail('unexpected retry request to ' . $url);
+});
+$retryClient->authorizationUrl(['state' => 'retry-state', 'nonce' => 'retry-nonce']);
+assertSame(2, count($retryCalls), 'discovery GET must retry one transient provider failure');
+
+$explicitEndpointsPath = tempnam(sys_get_temp_dir(), 'lw-oidc-explicit-');
+if ($explicitEndpointsPath === false) {
+    fail('failed to create explicit endpoints config');
+}
+file_put_contents($explicitEndpointsPath, (string) file_get_contents($stageConfigPath) . implode("\n", [
+    'OIDC_AUTHORIZATION_URL=https://issuer.example/authorize',
+    'OIDC_TOKEN_URL=https://issuer.example/token',
+    'OIDC_JWKS_URL=https://issuer.example/keys',
+    'OIDC_USERINFO_URL=https://issuer.example/userinfo-adapter',
+]) . "\n");
+$explicitClient = new OidcClient(new Config($explicitEndpointsPath), static function (): array {
+    fail('explicit provider endpoints must not call discovery');
+});
+$explicitAuthorizationUrl = $explicitClient->authorizationUrl(['state' => 'explicit-state', 'nonce' => 'explicit-nonce']);
+assertSame('https://issuer.example/authorize', strtok($explicitAuthorizationUrl, '?'), 'explicit authorization endpoint');
+
+$whmcsEndpointsPath = tempnam(sys_get_temp_dir(), 'lw-oidc-whmcs-');
+if ($whmcsEndpointsPath === false) {
+    fail('failed to create WHMCS endpoints config');
+}
+file_put_contents($whmcsEndpointsPath, str_replace(
+    'OIDC_DISCOVERY_URL=https://issuer.example/.well-known/openid-configuration',
+    'OIDC_DISCOVERY_URL=https://issuer.example/oauth/openid-configuration.php',
+    (string) file_get_contents($envPath)
+));
+$whmcsClient = new OidcClient(new Config($whmcsEndpointsPath), static function (): array {
+    fail('same-origin WHMCS endpoints must not call discovery');
+});
+$whmcsAuthorizationUrl = $whmcsClient->authorizationUrl($flow + ['code_challenge' => 'challenge-value']);
+assertSame('https://issuer.example/oauth/authorize.php', strtok($whmcsAuthorizationUrl, '?'), 'derived WHMCS authorization endpoint');
+
+$unsafeExplicitPath = tempnam(sys_get_temp_dir(), 'lw-oidc-unsafe-');
+if ($unsafeExplicitPath === false) {
+    fail('failed to create unsafe endpoints config');
+}
+file_put_contents($unsafeExplicitPath, str_replace(
+    'OIDC_AUTHORIZATION_URL=https://issuer.example/authorize',
+    'OIDC_AUTHORIZATION_URL=https://user:pass@issuer.example/authorize',
+    (string) file_get_contents($explicitEndpointsPath)
+));
+$unsafeExplicitClient = new OidcClient(new Config($unsafeExplicitPath));
+assertTrue(!$unsafeExplicitClient->isConfigured(), 'provider endpoints must reject embedded URL credentials');
+
+$queryDiscoveryCalls = 0;
+$queryDiscoveryPath = tempnam(sys_get_temp_dir(), 'lw-oidc-query-');
+if ($queryDiscoveryPath === false) {
+    fail('failed to create query discovery config');
+}
+file_put_contents($queryDiscoveryPath, str_replace(
+    'OIDC_DISCOVERY_URL=https://issuer.example/.well-known/openid-configuration',
+    'OIDC_DISCOVERY_URL=https://issuer.example/oauth/openid-configuration.php?variant=1',
+    (string) file_get_contents($envPath)
+));
+$queryDiscoveryClient = new OidcClient(new Config($queryDiscoveryPath), static function () use (&$queryDiscoveryCalls): array {
+    $queryDiscoveryCalls++;
+    return ['status' => 200, 'body' => [
+        'issuer' => 'https://issuer.example',
+        'authorization_endpoint' => 'https://issuer.example/authorize',
+        'token_endpoint' => 'https://issuer.example/token',
+        'jwks_uri' => 'https://issuer.example/keys',
+        'userinfo_endpoint' => 'https://issuer.example/userinfo',
+    ]];
+});
+$queryDiscoveryClient->authorizationUrl($flow + ['code_challenge' => 'challenge-value']);
+assertSame(1, $queryDiscoveryCalls, 'WHMCS derivation must reject discovery URLs with a query');
+
+$tokenAttempts = 0;
+$retryStageClient = new OidcClient(new Config($stageConfigPath), static function (string $method, string $url) use (&$tokenAttempts): array {
+    if ($url === 'https://issuer.example/.well-known/openid-configuration') {
+        return ['status' => 200, 'body' => json_encode([
+            'issuer' => 'https://issuer.example',
+            'authorization_endpoint' => 'https://issuer.example/authorize',
+            'token_endpoint' => 'https://issuer.example/token',
+            'jwks_uri' => 'https://issuer.example/keys',
+            'userinfo_endpoint' => 'https://issuer.example/userinfo',
+        ], JSON_THROW_ON_ERROR)];
+    }
+    if ($url === 'https://issuer.example/token') {
+        $tokenAttempts++;
+        return ['status' => 503, 'body' => '{"error":"invalid_grant"}'];
+    }
+    fail('unexpected token retry request to ' . $url);
+});
+try {
+    $retryStageClient->authenticateCallback('authorization-code', ['nonce' => 'retry-nonce']);
+    fail('token request failure must throw');
+} catch (OidcProviderException $error) {
+    assertSame('oidc_token_request_failed', $error->getMessage(), 'token failure stage');
+    assertSame('POST', $error->context()['method'] ?? null, 'token failure method');
+    assertSame(503, $error->context()['status'] ?? null, 'token failure status');
+    assertSame('invalid_grant', $error->context()['provider_error'] ?? null, 'provider error code must be retained safely');
+    assertTrue(!str_contains(json_encode($error->context()) ?: '', 'secret'), 'provider context must not expose secrets');
+    assertSame(1, $tokenAttempts, 'token POST must not retry a one-time authorization code');
+}
+
 $clientSource = (string) file_get_contents(__DIR__ . '/../src/Support/OidcClient.php');
 assertTrue(str_contains($clientSource, "'follow_location' => 0"), 'stream HTTP fallback must reject redirects');
+assertTrue(str_contains($clientSource, 'CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4'), 'cURL provider requests must use IPv4');
 
 @unlink($envPath);
 @unlink($badConfigPath);
@@ -302,4 +419,8 @@ assertTrue(str_contains($clientSource, "'follow_location' => 0"), 'stream HTTP f
 @unlink($scopeConfigPath);
 @unlink($invalidUserinfoPath);
 @unlink($stageConfigPath);
+@unlink($explicitEndpointsPath);
+@unlink($whmcsEndpointsPath);
+@unlink($unsafeExplicitPath);
+@unlink($queryDiscoveryPath);
 echo "ok\n";

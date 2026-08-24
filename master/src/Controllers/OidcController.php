@@ -9,6 +9,7 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\OidcClient;
 use Leikwan\Master\Support\OidcIdentityService;
+use Leikwan\Master\Support\OidcProviderException;
 use Leikwan\Master\Support\OidcSessionStore;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\WhmcsIdentityService;
@@ -95,7 +96,11 @@ final class OidcController extends BaseController
 
             return Response::redirect($this->localReturnPath((string) ($flow['return_to'] ?? '/')));
         } catch (Throwable $throwable) {
+            $context = $throwable instanceof OidcProviderException ? $throwable->context() : [];
             error_log(sprintf('OIDC callback failed: %s (%s)', $throwable->getMessage(), $throwable::class));
+            if ($context !== []) {
+                error_log('OIDC provider context: ' . (json_encode($context, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '{}'));
+            }
             SessionAuth::flash('error', 'Unable to sign in with the identity provider. Please try again.');
             return Response::redirect('/login');
         }
