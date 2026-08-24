@@ -117,6 +117,11 @@ def forward_requires_panel_endpoints(forward: dict, mode: str) -> bool:
     return str(forward.get("backend_mode", "") or "").strip().lower() != "ultra" and mode != "mptcp"
 
 
+def unsupported_client_backend_mode(forward: dict) -> str:
+    backend = str(forward.get("backend_mode", "") or "").strip().lower()
+    return "cf_mode" if backend == "cf_mode" else ""
+
+
 def forward_runtime_service_name(forward: dict) -> str:
     forward_id = int(forward.get("forward_id", 0) or 0)
     prefix = "ultra-forward" if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra" else "leikwan-client"
@@ -1505,7 +1510,7 @@ class ClientAgent:
         return payload.get("linux_profile_runtime", {}) if isinstance(payload, dict) else {}
 
     def bond_leg_snapshot_dir(self) -> pathlib.Path:
-        configured = str(self.config.get("bond_leg_snapshot_dir", "") or "").strip()
+        configured = str(getattr(self, "config", {}).get("bond_leg_snapshot_dir", "") or "").strip()
         if configured != "":
             return pathlib.Path(configured)
         return pathlib.Path("/run/leikwan")
@@ -1667,8 +1672,22 @@ class ClientAgent:
     def sync_once(self) -> None:
         token = self.config["agent_token"]
         payload, response_headers, master = pull_client_configs(self.config, token)
-        forwards = payload.get("forwards", [])
-        self.latest_forwards = [forward for forward in forwards if isinstance(forward, dict)]
+        pulled_forwards = [forward for forward in payload.get("forwards", []) if isinstance(forward, dict)]
+        unsupported_forward_ids = []
+        for forward in pulled_forwards:
+            if unsupported_client_backend_mode(forward) == "":
+                continue
+            try:
+                forward_id = int(forward.get("forward_id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if forward_id > 0:
+                unsupported_forward_ids.append(forward_id)
+        self.latest_forwards = [
+            forward
+            for forward in pulled_forwards
+            if unsupported_client_backend_mode(forward) == ""
+        ]
         client_meta = payload.get("client", {})
         device_id = str(client_meta.get("current_device_id", "") or "") if isinstance(client_meta, dict) else ""
         try:
@@ -1689,6 +1708,9 @@ class ClientAgent:
         token = self.config["agent_token"]
         desired_ids = set()
         force_runtime_refresh_ids = self.consume_local_refresh_requests()
+        for forward_id in unsupported_forward_ids:
+            self.log_invalid_forward(forward_id, "stopping unsupported backend_mode=cf_mode")
+            self.stop_forward(forward_id, delete_files=True)
         for forward in forwards:
             forward_id = int(forward["forward_id"])
             validation_forward = dict(forward)
@@ -1837,6 +1859,7 @@ class ClientAgent:
                 "noop_forward_ids": noop_forward_ids,
                 "invalid_forward_ids": skipped_invalid_forward_ids,
                 "inactive_forward_ids": inactive_forward_ids,
+                "unsupported_forward_ids": unsupported_forward_ids,
                 "agent_update_request_token": str(client_meta.get("agent_update_request_token", "") or ""),
                 "diag_request_token": str(client_meta.get("diag_request_token", "") or ""),
                 "clock": self.panel_clock_state_from_headers(response_headers),
@@ -2419,6 +2442,11 @@ class ClientAgent:
             return
 
         for forward in forwards:
+            if unsupported_client_backend_mode(forward) != "":
+                forward_id = int(forward.get("forward_id", 0) or 0)
+                if forward_id > 0:
+                    self.stop_forward(forward_id, delete_files=True)
+                continue
             if str(forward.get("service_status", "active")) != "active":
                 continue
 
@@ -2536,7 +2564,6 @@ class ClientAgent:
                 bonding = {}
             bond_runtime = self.forward_uses_bond_runtime(forward)
             plain_tcp_ingress = bond_runtime and str(bonding.get("ingress_mode", "wss_path_mux")) == "plain_tcp_mux"
-            backend_mode = str(forward.get("backend_mode", "current_mode") or "current_mode")
             bond_session_token = str(bonding.get("session_token", "") or "").strip()
             self_leg_primary = bond_runtime and self.forward_has_selected_self_leg(forward_id, forward)
             for endpoint_index, endpoint in enumerate(endpoints):
@@ -2556,7 +2583,7 @@ class ClientAgent:
                         str(forward.get("path_prefix", "")),
                     )
                 if ready and bond_runtime and plain_tcp_ingress and bond_session_token != "":
-                    ready, stronger_latency_ms, stronger_error = self.cf_bond_one_leg_connect_probe(forward, endpoint, endpoint_index)
+                    ready, stronger_latency_ms, stronger_error = self.bond_one_leg_connect_probe(forward, endpoint, endpoint_index)
                     if stronger_latency_ms is not None:
                         latency_ms = stronger_latency_ms
                     if stronger_error is not None:
@@ -2571,7 +2598,7 @@ class ClientAgent:
                         .get(str(endpoint_id), {})
                         .get("role", "healthy")
                     )
-                    if not ready and plain_tcp_ingress and (backend_mode == "cf_mode" or bond_one_leg_probe_failed):
+                    if not ready and plain_tcp_ingress and bond_one_leg_probe_failed:
                         updated = self.force_bond_endpoint_quarantine(
                             forward_id,
                             endpoint_id,
@@ -2921,7 +2948,7 @@ class ClientAgent:
         entry["consecutive_successes"] = 0
         entry["quarantine_until"] = now + CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS
         entry["probation_until"] = 0.0
-        entry["last_error"] = error or "cf_bond_leg_probe_failed"
+        entry["last_error"] = error or "bond_leg_probe_failed"
         entry["last_latency_ms"] = latency_ms
         entry["quality_score"] = 0.0
         self.save_bond_endpoint_health(health)
@@ -2944,7 +2971,7 @@ class ClientAgent:
         return (rtt_value, -quality_score, dynamic_priority, endpoint_id)
 
     @staticmethod
-    def cf_bond_runtime_health_entry(leg: dict, now: float) -> tuple[str, dict] | None:
+    def bond_runtime_health_entry(leg: dict, now: float) -> tuple[str, dict] | None:
         endpoint_id = int(leg.get("endpoint_id", 0) or 0)
         tcp = leg.get("tcp", {}) if isinstance(leg.get("tcp", {}), dict) else {}
         if endpoint_id <= 0 or tcp == {}:
@@ -2952,7 +2979,6 @@ class ClientAgent:
 
         runtime_state = str(tcp.get("state", "healthy") or "healthy").strip().lower()
         runtime_reason = str(tcp.get("last_reason", "") or "").strip()
-
         role = "healthy"
         quarantine_until = 0.0
         probation_until = 0.0
@@ -2977,6 +3003,37 @@ class ClientAgent:
                 "quality_score": 0.6 if role == "healthy" else (0.4 if role == "probation" else 0.0),
             },
         )
+
+    def reconcile_bond_runtime_health(self, forward: dict, now: float | None = None) -> dict:
+        now = time.time() if now is None else now
+        if not self.forward_uses_bond_runtime(forward):
+            return self.load_bond_endpoint_health()
+
+        forward_id = int(forward.get("forward_id", 0) or 0)
+        if forward_id <= 0:
+            return self.load_bond_endpoint_health()
+
+        snapshot = self.load_forward_bond_runtime_snapshot(forward_id)
+        legs = snapshot.get("legs", []) if isinstance(snapshot.get("legs", []), list) else []
+        health = self.load_bond_endpoint_health()
+        scoped = health.setdefault(str(forward_id), {})
+        changed = False
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            mapped = self.bond_runtime_health_entry(leg, now)
+            if mapped is None:
+                continue
+            endpoint_id, entry = mapped
+            previous = scoped.get(endpoint_id)
+            if isinstance(previous, dict) and entry.get("one_leg_rtt_ms") is None and previous.get("one_leg_rtt_ms") is not None:
+                entry["one_leg_rtt_ms"] = previous.get("one_leg_rtt_ms")
+            if previous != entry:
+                scoped[endpoint_id] = entry
+                changed = True
+        if changed:
+            self.save_bond_endpoint_health(health)
+        return health
 
     @classmethod
     def latency_first_bond_enabled(cls, forward: dict) -> bool:
@@ -3345,41 +3402,6 @@ class ClientAgent:
         next_forward["mptcp"] = mptcp
         return next_forward
 
-    def reconcile_cf_bond_runtime_health(self, forward: dict, now: float | None = None) -> dict:
-        now = time.time() if now is None else now
-        if not self.forward_uses_bond_runtime(forward):
-            return self.load_bond_endpoint_health()
-        if str(forward.get("backend_mode", "current_mode") or "current_mode") != "cf_mode":
-            return self.load_bond_endpoint_health()
-
-        forward_id = int(forward.get("forward_id", 0) or 0)
-        if forward_id <= 0:
-            return self.load_bond_endpoint_health()
-
-        snapshot = self.load_forward_bond_runtime_snapshot(forward_id)
-        legs = snapshot.get("legs", []) if isinstance(snapshot.get("legs", []), list) else []
-        health = self.load_bond_endpoint_health()
-        scoped = health.setdefault(str(forward_id), {})
-        changed = False
-
-        for leg in legs:
-            if not isinstance(leg, dict):
-                continue
-            mapped = self.cf_bond_runtime_health_entry(leg, now)
-            if mapped is None:
-                continue
-            endpoint_id, entry = mapped
-            previous = scoped.get(endpoint_id)
-            if isinstance(previous, dict) and entry.get("one_leg_rtt_ms") is None and previous.get("one_leg_rtt_ms") is not None:
-                entry["one_leg_rtt_ms"] = previous.get("one_leg_rtt_ms")
-            if previous != entry:
-                scoped[endpoint_id] = entry
-                changed = True
-
-        if changed:
-            self.save_bond_endpoint_health(health)
-        return health
-
     @staticmethod
     def forward_has_mptcp_runtime_config(forward: dict) -> bool:
         mptcp = forward.get("mptcp", {}) if isinstance(forward, dict) else {}
@@ -3626,6 +3648,8 @@ class ClientAgent:
         return 999999.0
 
     def select_forward_candidates(self, forward: dict, now: float | None = None) -> list[dict]:
+        if unsupported_client_backend_mode(forward) != "":
+            return []
         candidates = [dict(item) for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
         ready = [item for item in candidates if bool(item.get("ready", True))]
         for item in ready:
@@ -4624,7 +4648,7 @@ class ClientAgent:
         except Exception as exc:  # noqa: BLE001
             return False, None, str(exc)
 
-    def cf_bond_one_leg_connect_probe(
+    def bond_one_leg_connect_probe(
         self,
         forward: dict,
         endpoint: dict,
@@ -4636,7 +4660,7 @@ class ClientAgent:
         host = str(endpoint.get("host", "") or "").strip()
         token = str((forward.get("bonding", {}) or {}).get("session_token", "") or "").strip()
         if forward_id <= 0 or endpoint_id <= 0 or host == "" or token == "":
-            return False, None, "cf_bond_probe_missing_forward_fields"
+            return False, None, "bond_probe_missing_forward_fields"
 
         back_port = self.bond_runtime_endpoint_back_port(forward_id, endpoint_index, "tcp")
         ws_priority = int(((forward.get("bonding", {}) or {}).get("ws_priority", 10) or 10))
@@ -4700,7 +4724,7 @@ class ClientAgent:
 
         try:
             deadline = started + max(0.5, timeout)
-            last_error = "cf_bond_leg_probe_timeout"
+            last_error = "bond_leg_probe_timeout"
             while time.time() < deadline:
                 if process.poll() is not None:
                     return False, None, process_error()
@@ -4721,13 +4745,15 @@ class ClientAgent:
                     process.wait(timeout=1.0)
 
     def select_bond_runtime_endpoints(self, forward: dict, now: float | None = None) -> list[dict]:
+        if unsupported_client_backend_mode(forward) != "":
+            return []
         now = time.time() if now is None else now
         endpoints = [dict(endpoint) for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
         bonding = forward.get("bonding", {})
         if not isinstance(bonding, dict):
             bonding = {}
         base_priority = int(bonding.get("ws_priority", 10) or 10)
-        health = self.reconcile_cf_bond_runtime_health(forward, now).get(str(int(forward.get("forward_id", 0) or 0)), {})
+        health = self.reconcile_bond_runtime_health(forward, now).get(str(int(forward.get("forward_id", 0) or 0)), {})
 
         decorated = []
         for endpoint in endpoints:
@@ -4755,7 +4781,6 @@ class ClientAgent:
             decorated.append(endpoint)
 
         latency_first = self.latency_first_bond_enabled(forward)
-        is_cf_bond = str(forward.get("backend_mode", "current_mode") or "current_mode") == "cf_mode"
         if not latency_first:
             preferred = [item for item in decorated if item["health_role"] != "quarantined"]
             if preferred:
@@ -4773,7 +4798,7 @@ class ClientAgent:
         quarantined.sort(key=self.latency_first_primary_sort_key)
 
         if healthy:
-            selected = healthy[:3] if is_cf_bond else healthy
+            selected = healthy
         elif probation:
             selected = probation[:1]
         else:
@@ -4796,6 +4821,8 @@ class ClientAgent:
         error_message = ""
         try:
             for forward in forwards:
+                if unsupported_client_backend_mode(forward) != "":
+                    continue
                 forward_id = int(forward["forward_id"])
                 local_service_name = forward_runtime_service_name(forward)
                 local_status = subprocess.run(f"systemctl is-active {local_service_name}.service", shell=True, text=True, capture_output=True)
