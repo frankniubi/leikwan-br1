@@ -6,19 +6,81 @@ namespace Leikwan\Master\Controllers;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\Auth;
+use Leikwan\Master\Support\AppSettings;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\DesktopClientSessionService;
+use Leikwan\Master\Support\LeigodTokenBroker;
+use Leikwan\Master\Support\LeigodTokenProvider;
 use Leikwan\Master\Support\ProvisioningService;
+use Leikwan\Master\Support\UltraClientStatusService;
+use Leikwan\Master\Support\UltraInventoryService;
+use Leikwan\Master\Support\UltraMode;
+use Leikwan\Master\Support\UltraMaterialService;
 
 final class ClientAgentController extends BaseController
 {
+    private LeigodTokenProvider $ultraTokenProvider;
+    private UltraMaterialService $ultraMaterials;
+    private UltraClientStatusService $ultraClientStatus;
+
     public function __construct(
         \Leikwan\Master\Config $config,
         \Leikwan\Master\Database\Database $db,
         private ProvisioningService $provisioning,
+        ?LeigodTokenProvider $leigodTokenProvider = null,
+        ?UltraMaterialService $ultraMaterials = null,
+        ?UltraClientStatusService $ultraClientStatus = null,
     ) {
         parent::__construct($config, $db);
+        $this->ultraMaterials = $ultraMaterials
+            ?? new UltraMaterialService($config, $db, new AppSettings($db));
+        $this->ultraTokenProvider = $leigodTokenProvider
+            ?? new LeigodTokenBroker($config, new AppSettings($db), $this->ultraMaterials);
+        $this->ultraClientStatus = $ultraClientStatus ?? new UltraClientStatusService($config, $db);
+    }
+
+    public function resolveUltraMaterials(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $deviceSessions = new ClientOnlineSessionService($this->db);
+        $deviceId = $deviceSessions->enforceFromRequest($client, $request, 'pull');
+        $deviceSession = $deviceSessions->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
+        $assigned = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
+        $allowed = [];
+        foreach ($assigned as $forward) {
+            if (is_array($forward)
+                && UltraMode::isBackendMode($forward['backend_mode'] ?? '')
+                && (string) ($forward['service_status'] ?? '') === 'active') {
+                $allowed[(int) ($forward['forward_id'] ?? 0)] = true;
+            }
+        }
+        $resolved = [];
+        $requests = $request->input('forwards', []);
+        foreach (array_slice(is_array($requests) ? $requests : [], 0, 32) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $forwardId = (int) ($item['forward_id'] ?? 0);
+            $token = trim((string) ($item['token'] ?? ''));
+            if ($forwardId <= 0 || $token === '' || !isset($allowed[$forwardId])) {
+                continue;
+            }
+            $material = $this->ultraMaterials->resolveClientToken(
+                $token,
+                (int) $client['id'],
+                $deviceId,
+                $forwardId,
+                []
+            );
+            if ($material !== []) {
+                $resolved[] = $material;
+            }
+        }
+        return $this->json(['ok' => true, 'materials' => $resolved])->withHeaders([
+            'Cache-Control' => 'no-store, no-cache, must-revalidate',
+            'Pragma' => 'no-cache',
+        ]);
     }
 
     public function pullConfigs(Request $request, array $params): Response
@@ -53,8 +115,9 @@ final class ClientAgentController extends BaseController
         if (in_array($runtimePlatformScope, ['all', 'linux'], true)) {
             $linuxProfileRuntime = $this->provisioning->linuxProfileRuntimeForClient($client, is_array($forwards) ? $forwards : []);
         }
+        $forwards = $this->attachUltraAccessGrants($forwards, (int) $client['id'], $deviceId);
 
-        return $this->json([
+        $response = $this->json([
             'ok' => true,
             'client' => [
                 'id' => (int) $client['id'],
@@ -83,6 +146,79 @@ final class ClientAgentController extends BaseController
             'forwards' => $forwards,
             'linux_profile_runtime' => $linuxProfileRuntime,
         ]);
+        return $response->withHeaders([
+            'Cache-Control' => 'no-store, no-cache, must-revalidate',
+            'Pragma' => 'no-cache',
+        ]);
+    }
+
+    /**
+     * Attach only normalized, short-lived broker grants to active ultra
+     * forwards. Legacy leigod_mode and current_mode forwards do not enter
+     * this path. Broker failures fail closed for the grant, not for unrelated
+     * client configuration.
+     *
+     * @param array<int, array<string, mixed>> $forwards
+     * @return array<int, array<string, mixed>>
+     */
+    private function attachUltraAccessGrants(array $forwards, int $clientId, string $deviceId): array
+    {
+        $brokerForwards = $forwards;
+        if (isset($this->provisioning)) {
+            $metadata = $this->provisioning->ultraLineMetadataForAssignedForwards($forwards);
+            foreach ($brokerForwards as $index => $forward) {
+                if (!is_array($forward)) {
+                    continue;
+                }
+                $forwardId = (string) ((int) ($forward['forward_id'] ?? 0));
+                if (!isset($metadata[$forwardId])) {
+                    continue;
+                }
+                $brokerForwards[$index]['_ultra_line_ids'] = $metadata[$forwardId]['line_ids'];
+                $brokerForwards[$index]['_ultra_lines'] = $metadata[$forwardId]['lines'];
+                $brokerForwards[$index]['_ultra_line_direction'] = $metadata[$forwardId]['line_direction'];
+                $brokerForwards[$index]['_ultra_destination_zone'] = $metadata[$forwardId]['destination_zone'];
+                $brokerForwards[$index]['_ultra_allowed_ingress_zones'] = $metadata[$forwardId]['allowed_ingress_zones'];
+                $brokerForwards[$index]['_ultra_fallback_policy'] = $metadata[$forwardId]['fallback_policy'];
+            }
+        }
+        try {
+            $grants = $this->ultraTokenProvider->grantsForClientForwards($clientId, $deviceId, $brokerForwards);
+        } catch (\Throwable) {
+            return $forwards;
+        }
+        if ($grants === []) {
+            return $forwards;
+        }
+
+        $zoneAliases = [];
+        try {
+            foreach ((new UltraInventoryService($this->config, $this->db))->activeZones('ingress') as $zone) {
+                $code = strtolower(trim((string) ($zone['zone_code'] ?? '')));
+                $aliases = is_array($zone['aliases'] ?? null) ? array_values(array_map('strval', $zone['aliases'])) : [];
+                if ($code !== '' && $code !== 'unknown' && $aliases !== []) {
+                    $zoneAliases[$code] = array_slice($aliases, 0, 16);
+                }
+            }
+        } catch (\Throwable) {
+            $zoneAliases = [];
+        }
+
+        foreach ($forwards as $index => $forward) {
+            if (!is_array($forward)
+                || !UltraMode::isBackendMode($forward['backend_mode'] ?? '')
+                || (string) ($forward['service_status'] ?? '') !== 'active') {
+                continue;
+            }
+            $forwardId = (string) ((int) ($forward['forward_id'] ?? 0));
+            $grant = $grants[$forwardId] ?? null;
+            if (!is_array($grant) || trim((string) ($grant['token'] ?? '')) === '') {
+                continue;
+            }
+            $grant['zone_aliases'] = $zoneAliases;
+            $forwards[$index][UltraMode::ACCESS_FIELD] = $grant;
+        }
+        return $forwards;
     }
 
     public function heartbeat(Request $request, array $params): Response
@@ -91,6 +227,14 @@ final class ClientAgentController extends BaseController
         $deviceSessionService = new ClientOnlineSessionService($this->db);
         $deviceId = $deviceSessionService->deviceIdFromRequest($request);
         $deviceSessionService->recordAndEnforce($client, $deviceId, $deviceSessionService->deviceMetadataFromRequest($request), 'heartbeat');
+        $ultraStatuses = $request->input('ultra_status', []);
+        if (is_array($ultraStatuses)) {
+            try {
+                $this->ultraClientStatus->ingest((int) $client['id'], $deviceId, $ultraStatuses);
+            } catch (\Throwable) {
+                // Runtime status is observational and must not interrupt the data-plane heartbeat.
+            }
+        }
         $usageBytesIn = max(0, (int) $request->input('usage_bytes_in', 0));
         $usageBytesOut = max(0, (int) $request->input('usage_bytes_out', 0));
         $existingAgentConfig = is_string($client['agent_config_json'] ?? null)
@@ -286,6 +430,7 @@ final class ClientAgentController extends BaseController
             'poll_interval_seconds',
             'health_check_interval_seconds',
             'log_level',
+            'panel_mirror_urls',
             'udp_uot_sidepath',
             'tcp_accel_sidepath',
             'cfwg_latency_watchdog',

@@ -70,6 +70,8 @@ final class UltraInventoryService
         $title = self::cleanText($raw['title'] ?? '', 255);
         $family = self::cleanText($raw['family_key'] ?? '', 255);
         $classificationText = trim($title . ' ' . $family);
+        $catalogIngress = self::cleanText($raw['catalog_ingress'] ?? '', 191);
+        $catalogDestination = self::cleanText($raw['catalog_destination'] ?? '', 191);
         $discoveryIp = trim((string) ($raw['discovery_ip'] ?? ''));
         if ($discoveryIp !== '' && filter_var($discoveryIp, FILTER_VALIDATE_IP) === false) {
             return null;
@@ -83,9 +85,11 @@ final class UltraInventoryService
             'area_id' => self::nullableUnsigned($raw['area_id'] ?? null),
             'line_type' => self::nullableUnsigned($raw['line_type'] ?? null),
             'discovery_ip' => $discoveryIp !== '' ? $discoveryIp : null,
+            'catalog_ingress_label' => $catalogIngress !== '' ? $catalogIngress : null,
+            'catalog_destination_label' => $catalogDestination !== '' ? $catalogDestination : null,
             'config_sha256' => $configSha,
-            'auto_ingress_zone' => self::classifyText($classificationText, $zonesByRole['ingress'] ?? []),
-            'auto_destination_zone' => self::classifyText($classificationText, $zonesByRole['destination'] ?? []),
+            'auto_ingress_zone' => self::classifyText($catalogIngress !== '' ? $catalogIngress : $classificationText, $zonesByRole['ingress'] ?? []),
+            'auto_destination_zone' => self::classifyText($catalogDestination !== '' ? $catalogDestination : $classificationText, $zonesByRole['destination'] ?? []),
             'last_discovered_at' => $timestamp,
             'is_source_present' => 1,
             'is_enabled' => 0,
@@ -161,11 +165,11 @@ final class UltraInventoryService
                 $db->execute(
                     'INSERT INTO ultra_lines
                         (source_id, line_id, source_title, source_family_key, game_id, area_id, line_type,
-                         discovery_ip, config_sha256, auto_ingress_zone, auto_destination_zone,
+                         discovery_ip, catalog_ingress_label, catalog_destination_label, config_sha256, auto_ingress_zone, auto_destination_zone,
                          last_discovered_at, is_source_present, is_enabled, sort_order, created_at, updated_at)
                      VALUES
                         (:source_id, :line_id, :source_title, :source_family_key, :game_id, :area_id, :line_type,
-                         :discovery_ip, :config_sha256, :auto_ingress_zone, :auto_destination_zone,
+                         :discovery_ip, :catalog_ingress_label, :catalog_destination_label, :config_sha256, :auto_ingress_zone, :auto_destination_zone,
                          :last_discovered_at, :is_source_present, :is_enabled, :sort_order, :created_at, :updated_at)
                      ON DUPLICATE KEY UPDATE
                         source_title = VALUES(source_title),
@@ -174,6 +178,8 @@ final class UltraInventoryService
                         area_id = VALUES(area_id),
                         line_type = VALUES(line_type),
                         discovery_ip = VALUES(discovery_ip),
+                        catalog_ingress_label = VALUES(catalog_ingress_label),
+                        catalog_destination_label = VALUES(catalog_destination_label),
                         config_sha256 = VALUES(config_sha256),
                         auto_ingress_zone = VALUES(auto_ingress_zone),
                         auto_destination_zone = VALUES(auto_destination_zone),
@@ -255,7 +261,9 @@ final class UltraInventoryService
     {
         $limit = max(1, min(200, $limit));
         $offset = max(0, $offset);
-        $where = ['1 = 1'];
+        $where = $this->truthy($filters['include_absent'] ?? false)
+            ? ['1 = 1']
+            : ['ul.is_source_present = 1'];
         $params = [];
         foreach (['ingress' => 'COALESCE(admin_ingress_zone, auto_ingress_zone)', 'destination' => 'COALESCE(admin_destination_zone, auto_destination_zone)'] as $key => $column) {
             $value = strtolower(trim((string) ($filters[$key] ?? '')));
@@ -264,10 +272,19 @@ final class UltraInventoryService
                 $params[$key] = $value;
             }
         }
+        foreach (['catalog_ingress' => 'catalog_ingress_label', 'catalog_destination' => 'catalog_destination_label'] as $key => $column) {
+            $value = self::cleanText($filters[$key] ?? '', 191);
+            if ($value !== '') {
+                $where[] = $column . ' = :' . $key;
+                $params[$key] = $value;
+            }
+        }
+        $materialRequired = self::materialRequiredSql();
         return $this->db->fetchAll(
             'SELECT ul.*,
                     COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS effective_ingress_zone,
-                    COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS effective_destination_zone
+                    COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS effective_destination_zone,
+                    CASE WHEN ' . $materialRequired . ' THEN 1 ELSE 0 END AS material_required
              FROM ultra_lines ul
              WHERE ' . implode(' AND ', $where) . '
              ORDER BY ul.sort_order ASC, ul.line_id ASC
@@ -280,6 +297,47 @@ final class UltraInventoryService
     public function listSourcesForAdmin(): array
     {
         return $this->db->fetchAll('SELECT * FROM ultra_sources ORDER BY source_id ASC');
+    }
+
+    public static function materialState(
+        ?string $expiresAt,
+        int $now,
+        int $expiringWindowSeconds = 600,
+        bool $required = true,
+    ): string
+    {
+        if (!$required) {
+            return 'not_required';
+        }
+        $expiresAt = trim((string) $expiresAt);
+        if ($expiresAt === '') {
+            return 'not_acquired';
+        }
+        $expiresTimestamp = strtotime($expiresAt . ' UTC');
+        if ($expiresTimestamp === false || $expiresTimestamp <= $now) {
+            return 'expired';
+        }
+        return $expiresTimestamp <= $now + max(60, $expiringWindowSeconds) ? 'expiring' : 'ready';
+    }
+
+    public static function materialStateLabel(string $state): string
+    {
+        return match ($state) {
+            'not_required' => 'not required',
+            'not_acquired' => 'not acquired',
+            default => $state,
+        };
+    }
+
+    public static function materialStateBadgeClass(string $state): string
+    {
+        return match ($state) {
+            'ready' => 'success',
+            'expiring' => 'info',
+            'not_required' => 'info',
+            'not_acquired' => 'info',
+            default => 'danger',
+        };
     }
 
     /** @param array<int, string> $relayIps */
@@ -344,18 +402,55 @@ final class UltraInventoryService
     public function summaryCounts(): array
     {
         $now = $this->now();
+        $materialRequired = self::materialRequiredSql();
         $row = $this->db->fetchOne(
-            'SELECT COUNT(*) AS discovered,
-                    SUM(CASE WHEN is_source_present = 1 AND is_enabled = 1 AND last_material_expires_at > :now THEN 1 ELSE 0 END) AS ready,
-                    SUM(CASE WHEN is_source_present = 1 AND is_enabled = 1 AND last_material_expires_at > :now AND last_material_expires_at <= :expiring THEN 1 ELSE 0 END) AS expiring
-             FROM ultra_lines',
-            ['now' => gmdate('Y-m-d H:i:s', $now), 'expiring' => gmdate('Y-m-d H:i:s', $now + 600)]
+            'SELECT SUM(CASE WHEN ul.is_source_present = 1 THEN 1 ELSE 0 END) AS discovered,
+                    SUM(CASE WHEN ul.is_source_present = 0 THEN 1 ELSE 0 END) AS unavailable,
+                    SUM(CASE WHEN ul.is_source_present = 1 AND NOT (' . $materialRequired . ') THEN 1 ELSE 0 END) AS not_required,
+                    SUM(CASE WHEN ul.is_source_present = 1 AND (' . $materialRequired . ') AND ul.last_material_expires_at IS NULL THEN 1 ELSE 0 END) AS not_acquired,
+                    SUM(CASE WHEN ul.is_source_present = 1 AND (' . $materialRequired . ') AND ul.last_material_expires_at IS NOT NULL AND ul.last_material_expires_at <= :now_expired THEN 1 ELSE 0 END) AS expired,
+                    SUM(CASE WHEN ul.is_source_present = 1 AND (' . $materialRequired . ') AND ul.last_material_expires_at > :expiring_ready THEN 1 ELSE 0 END) AS ready,
+                    SUM(CASE WHEN ul.is_source_present = 1 AND (' . $materialRequired . ') AND ul.last_material_expires_at > :now AND ul.last_material_expires_at <= :expiring THEN 1 ELSE 0 END) AS expiring
+             FROM ultra_lines ul',
+            [
+                'now_expired' => gmdate('Y-m-d H:i:s', $now),
+                'now' => gmdate('Y-m-d H:i:s', $now),
+                'expiring_ready' => gmdate('Y-m-d H:i:s', $now + 600),
+                'expiring' => gmdate('Y-m-d H:i:s', $now + 600),
+            ]
         ) ?? [];
         return [
             'discovered' => max(0, (int) ($row['discovered'] ?? 0)),
+            'unavailable' => max(0, (int) ($row['unavailable'] ?? 0)),
+            'not_required' => max(0, (int) ($row['not_required'] ?? 0)),
+            'not_acquired' => max(0, (int) ($row['not_acquired'] ?? 0)),
+            'expired' => max(0, (int) ($row['expired'] ?? 0)),
             'ready' => max(0, (int) ($row['ready'] ?? 0)),
             'expiring' => max(0, (int) ($row['expiring'] ?? 0)),
         ];
+    }
+
+    private static function materialRequiredSql(): string
+    {
+        return "EXISTS (
+            SELECT 1
+            FROM forward_combination_ultra_lines required_fcul
+            INNER JOIN forward_combinations required_fc
+                    ON required_fc.id = required_fcul.forward_combination_id
+                   AND required_fc.backend_mode = 'ultra'
+                   AND required_fc.is_active = 1
+            INNER JOIN forwards required_f
+                    ON required_f.forward_combination_id = required_fc.id
+                   AND required_f.backend_mode = 'ultra'
+                   AND required_f.enabled = 1
+            INNER JOIN services required_s
+                    ON required_s.id = required_f.service_id
+                   AND required_s.status = 'active'
+            WHERE required_fcul.ultra_line_id = ul.id
+              AND required_fcul.enabled = 1
+              AND ul.is_source_present = 1
+              AND ul.is_enabled = 1
+        )";
     }
 
     private function validZoneOverride(mixed $value, string $role): ?string

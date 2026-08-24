@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import ipaddress
 import pathlib
+import re
 import subprocess
 from urllib.parse import quote
 
@@ -1109,8 +1110,122 @@ def endpoint_path_prefix(endpoint: dict, default_path_prefix: str) -> str:
 
 def endpoint_sni(endpoint: dict, default_sni: str) -> str:
     return str(endpoint.get("cf_sni_host", "") or endpoint.get("sni_host", "") or endpoint.get("cdn_host", "") or default_sni or endpoint.get("host", "") or "").strip()
+
+
+def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
+    forward_id = int(forward.get("forward_id", 0) or 0)
+    listen_port = int(forward.get("listen_port", 0) or 0)
+    if forward_id <= 0 or not 1 <= listen_port <= 65535:
+        raise RuntimeError("ultra runtime identity is invalid")
+    access = forward.get("ultra_access")
+    if not isinstance(access, dict):
+        raise RuntimeError("ultra capability missing")
+    if str(access.get("protocol", "") or "") != "leikwan-ultra-capability-v1":
+        raise RuntimeError("ultra capability protocol invalid")
+    token = str(access.get("token", "") or "").strip()
+    if token == "" or any(char.isspace() for char in token) or len(token) > 4096:
+        raise RuntimeError("ultra capability token invalid")
+    material = forward.get("_ultra_material")
+    if not isinstance(material, dict):
+        raise RuntimeError("ultra material missing")
+    if str(material.get("token", "") or "").strip() != token:
+        raise RuntimeError("ultra material scope invalid")
+    sealed_material = str(material.get("sealed_material", "") or "").strip()
+    if not sealed_material.startswith("um1.") or len(sealed_material) > 65536:
+        raise RuntimeError("ultra material invalid")
+    transport = str(access.get("transport", forward.get("transport", "tcp+udp")) or "tcp+udp").strip().lower()
+    if transport not in {"tcp", "udp", "tcp+udp"}:
+        raise RuntimeError("ultra transport invalid")
+    rate_limit = max(0, int_or_default(access.get("rate_limit_mbps"), normalize_speed_limit(forward.get("speed_limit_mbps")) or 0))
+    access_path = f"/run/ultra/forward-{forward_id}.access.json"
+    fallback_policy = str(access.get("fallback_policy", "detected_then_any") or "detected_then_any").strip().lower()
+    if fallback_policy not in {"detected_only", "detected_then_any", "any"}:
+        fallback_policy = "detected_then_any"
+    zone_aliases: dict[str, list[str]] = {}
+    raw_aliases = access.get("zone_aliases", {})
+    if isinstance(raw_aliases, dict):
+        for raw_code, raw_values in list(raw_aliases.items())[:16]:
+            code = str(raw_code or "").strip().lower()
+            if re.fullmatch(r"[a-z0-9-]{1,32}", code) is None or not isinstance(raw_values, list):
+                continue
+            aliases: list[str] = []
+            for raw_value in raw_values[:16]:
+                value = str(raw_value or "").strip()[:64]
+                if value and value not in aliases:
+                    aliases.append(value)
+            if aliases:
+                zone_aliases[code] = aliases
+    config_payload = {
+        "forward_id": forward_id,
+        "listen_host": "0.0.0.0",
+        "listen_port": listen_port,
+        "target": str(forward.get("target", "") or "").strip(),
+        "access_file": access_path,
+        "transport": transport,
+        "rate_limit_mbps": rate_limit,
+        "max_tcp_connections": 512,
+        "udp_queue_packets": 64,
+        "connect_timeout_seconds": 5,
+        "location_cache_path": "/var/lib/ultra/location.json",
+        "location_lock_path": "/run/ultra/location.lock",
+        "status_path": f"/run/ultra/forward-{forward_id}.status.json",
+        "fallback_policy": fallback_policy,
+        "zone_aliases": zone_aliases,
+        "probe_timeout_ms": 800,
+        "probe_workers": 4,
+    }
+    if config_payload["target"] == "":
+        raise RuntimeError("ultra target missing")
+    access_payload = {
+        "token": token,
+        "expires_at": str(material.get("expires_at", access.get("expires_at", "")) or ""),
+        "sealed_material": sealed_material,
+    }
+    config_path = f"/etc/ultra/forward-{forward_id}.json"
+    service_name = f"ultra-forward-{forward_id}"
+    service_path = f"/etc/systemd/system/{service_name}.service"
+    helper_path = "/usr/local/bin/ultra-client"
+    service_unit = f"""[Unit]
+Description=Ultra Forward {forward_id}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={helper_path} --config {config_path}
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/ultra /var/lib/ultra
+
+[Install]
+WantedBy=multi-user.target
+"""
+    return {
+        "service_name": service_name,
+        "service_path": service_path,
+        "service_unit": service_unit,
+        "start_script_path": "",
+        "start_script": "",
+        "files": [
+            {"path": config_path, "content": json.dumps(config_payload, ensure_ascii=False, indent=2) + "\n", "mode": 0o600},
+            {
+                "path": access_path,
+                "content": json.dumps(access_payload, ensure_ascii=False, indent=2) + "\n",
+                "mode": 0o600,
+                "restart_on_change": False,
+                "reload_signal": "HUP",
+            },
+        ],
+    }
+
+
 def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     forward = canonicalize_forward_runtime_contract(forward)
+    if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra":
+        return render_ultra_runtime(forward, agent_config)
     forward_id = int(forward["forward_id"])
     listen_port = int(forward["listen_port"])
     target = str(forward["target"])

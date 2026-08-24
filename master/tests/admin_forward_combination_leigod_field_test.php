@@ -26,10 +26,27 @@ function forbid(string $needle, string $src, int &$fail): void
 
 // Present: leigod_mode is a Forward Mode option + the mode-gated leigod fields.
 need('value="leigod_mode"', $src, $fail);
+need('value="ultra"', $src, $fail);
+need('>Ultra</option>', $src, $fail);
+need('name="line_direction"', $src, $fail);
+need('<label>Direction</label>', $src, $fail);
+need('None (Ultra control plane)', $src, $fail);
+need('data-node-group-field', $src, $fail);
+need('data-ultra-single-field', $src, $fail);
+need("s.value=\\'single\\'", $src, $fail);
 need('name="leigod_line_id"', $src, $fail);
 need('name="leigod_uot_impl"', $src, $fail);
 need('data-mode-field="leigod_mode"', $src, $fail);
+need('data-mode-field="ultra"', $src, $fail);
+need('data-ultra-memberships', $src, $fail);
+need('name="ultra_destination_zone"', $src, $fail);
+need('name="ultra_allowed_ingress_zones[]"', $src, $fail);
+need('name="ultra_fallback_policy"', $src, $fail);
+need('name="ultra_lines[', $src, $fail);
+need('effective_ingress_zone', $src, $fail);
+need('effective_destination_zone', $src, $fail);
 need('$leigodField', $src, $fail);
+need('$ultraField', $src, $fail);
 need('None (dedicated LeiGod forward node)', $src, $fail);
 need('<label>Transport Endpoint</label>', $src, $fail);
 need('Optional for dedicated Managed TYO forward-node routes', $src, $fail);
@@ -40,6 +57,8 @@ forbid('LEIGOD_BASIS_ENABLED', $src, $fail);
 forbid('name="self_leg_outer_transport"', $src, $fail);
 forbid('<select name="sidecar_point_id" required>', $src, $fail);
 forbid('<select name="sidecar_point_id" required ', $src, $fail);
+forbid('<select name="node_group_key" required>', $src, $fail);
+forbid('data-mode-fields="leigod_mode ultra"', $src, $fail);
 
 if ($fail) {
     fprintf(STDERR, "%d FAIL\n", $fail);

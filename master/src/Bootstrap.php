@@ -14,6 +14,7 @@ use Leikwan\Master\Controllers\OidcController;
 use Leikwan\Master\Controllers\ServiceController;
 use Leikwan\Master\Controllers\SidecarAgentController;
 use Leikwan\Master\Controllers\TenantController;
+use Leikwan\Master\Controllers\UltraSourceController;
 use Leikwan\Master\Controllers\WhmcsController;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Request;
@@ -32,6 +33,10 @@ use Leikwan\Master\Support\OidcSessionStore;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\WhmcsClient;
 use Leikwan\Master\Support\WhmcsIdentityService;
+use Leikwan\Master\Support\AppSettings;
+use Leikwan\Master\Support\UltraClientStatusService;
+use Leikwan\Master\Support\UltraMaterialService;
+use Leikwan\Master\Support\UltraInventoryService;
 
 final class Bootstrap
 {
@@ -128,12 +133,30 @@ final class Bootstrap
             $oidcIdentityService,
             $whmcsIdentityService,
         );
-        $admin = new AdminController($this->config, $this->db, $this->provisioning, $this->leigodOnlyAdminServices());
+        $ultraInventory = new UltraInventoryService($this->config, $this->db);
+        $ultraClientStatus = new UltraClientStatusService($this->config, $this->db);
+        $admin = new AdminController(
+            $this->config,
+            $this->db,
+            $this->provisioning,
+            $this->leigodOnlyAdminServices(),
+            $ultraInventory,
+            $ultraClientStatus,
+        );
         $whmcs = new WhmcsController($this->config, $this->db, $this->provisioning);
         $services = new ServiceController($this->config, $this->db, $this->provisioning);
         $forwardApi = new ForwardLineApiController($this->config, $this->db, $this->provisioning);
         $nodes = new NodeController($this->config, $this->db, $this->provisioning);
-        $clientAgent = new ClientAgentController($this->config, $this->db, $this->provisioning);
+        $ultraMaterials = new UltraMaterialService($this->config, $this->db, new AppSettings($this->db));
+        $clientAgent = new ClientAgentController(
+            $this->config,
+            $this->db,
+            $this->provisioning,
+            null,
+            $ultraMaterials,
+            $ultraClientStatus,
+        );
+        $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
         $tenant = new TenantController($this->config, $this->db, $this->provisioning);
         $artifacts = new ArtifactController($this->config);
@@ -194,6 +217,8 @@ final class Bootstrap
         $this->router->add('POST', '/admin/leigod-lines/{id}/delete', [$admin, 'deleteLeigodLine']);
         $this->router->add('GET', '/admin/forward-combinations', [$admin, 'forwardCombinationsPage']);
         $this->router->add('POST', '/admin/forward-combinations', [$admin, 'saveForwardCombination']);
+        $this->router->add('GET', '/admin/ultra', [$admin, 'ultraOperationsPage']);
+        $this->router->add('POST', '/admin/ultra/lines/{id}', [$admin, 'saveUltraLinePolicy']);
         $this->router->add('GET', '/admin/forward-routes', [$admin, 'forwardRoutesPage']);
         $this->router->add('POST', '/admin/forward-routes', [$admin, 'saveForwardRoute']);
         $this->router->add('POST', '/admin/forward-combinations/{id}/donations/{donationId}/revoke', [$admin, 'revokeDonation']);
@@ -301,8 +326,12 @@ final class Bootstrap
         $this->router->add('POST', '/api/client/login', [$clientAgent, 'desktopLogin']);
 $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopClient']);
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
+        $this->router->add('POST', '/api/client/ultra/materials', [$clientAgent, 'resolveUltraMaterials']);
         $this->router->add('POST', '/api/client/heartbeat', [$clientAgent, 'heartbeat']);
         $this->router->add('POST', '/api/client/diagnostics/result', [$clientAgent, 'diagnosticsResult']);
+        $this->router->add('GET', '/api/ultra/source/jobs', [$ultraSource, 'jobs']);
+        $this->router->add('POST', '/api/ultra/source/materials', [$ultraSource, 'upload']);
+        $this->router->add('POST', '/api/ultra/source/inventory', [$ultraSource, 'inventory']);
         $this->router->add('POST', '/api/sidecar/heartbeat', [$sidecarAgent, 'heartbeat']);
 
         $this->router->add('GET', '/artifacts/versions.json', [$artifacts, 'versionsManifest']);
@@ -319,6 +348,7 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/leigod/leigod-linux-amd64', [$artifacts, 'leigodBinary']);
         $this->router->add('GET', '/artifacts/lguot/lguot_linux_amd64', [$artifacts, 'lguotBinary']);
         $this->router->add('GET', '/artifacts/install-forward-runtime.py', [$artifacts, 'installForwardRuntime']);
+        $this->router->add('GET', '/artifacts/ultra/ultra-client_linux_amd64', [$artifacts, 'ultraClient']);
         $this->router->add('GET', '/artifacts/forward-strategy.py', [$artifacts, 'forwardStrategyHelper']);
         $this->router->add('GET', '/artifacts/leikwan-tcp-race.py', [$artifacts, 'tcpRaceRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-udp-fanout.py', [$artifacts, 'udpFanoutRuntime']);

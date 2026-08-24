@@ -28,19 +28,19 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "8f0138eb1f21b2866ae4e7f9a59e2f6f2eb30f048bf1ca56aebc7094576f6365",
-    "size": 244164,
-    "size_bytes": 244164,
-    "version": "2026.08.08.1"
+    "sha256": "1329f5460c25ffe04823aa80a4db975138d1e34ec838b3ba07a95c2d6ce5af13",
+    "size": 259022,
+    "size_bytes": 259022,
+    "version": "2026.08.24.1"
   },
   "client_agent_installer": {
     "artifact_url": "/artifacts/install-client-agent.sh",
     "install_url": "/artifacts/install-client-agent.sh",
     "path": "install/install-client-agent.sh",
     "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "37761e7c0415d8eab7b44bbba09c43186002ffbf690bc89514b999811434d0ed",
-    "size_bytes": 20294,
-    "version": "2026.08.10.1"
+    "sha256": "456d891bbd70298e3e703cf981d63aeb80113cbfbf45389c380ff5032ae3c41f",
+    "size_bytes": 20480,
+    "version": "2026.08.24.1"
   },
   "client_installer": {
     "install_url": "/artifacts/install-client.sh",
@@ -79,10 +79,17 @@
   "install_forward_runtime": {
     "artifact_url": "/artifacts/install-forward-runtime.py",
     "path": "client-agent/install_forward_runtime.py",
-    "sha256": "a6061714f023a3262365de9224fb2e49381be9bb1d3a309e27207eb8db9f533d",
-    "size": 83683,
-    "size_bytes": 83683,
-    "version": "2026.08.13.1"
+    "sha256": "2c646252fb19a1bea88cbf15acb5ec0cf45cfff07bb863abc57d50929a448a70",
+    "size": 95425,
+    "size_bytes": 95425,
+    "version": "2026.08.24.1"
+  },
+  "ultra_client_runtime": {
+    "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
+    "path": "artifacts/ultra/ultra-client_linux_amd64",
+    "sha256": "0076156a838099ec958fd8f60b1b79ac1d707d114cbf4629b614ef9c0fb7c825",
+    "size_bytes": 6410366,
+    "version": "2026.08.24.1"
   },
   "leigod_forward_relay": {
     "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",

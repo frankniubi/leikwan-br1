@@ -41,6 +41,10 @@ foreach ([
     'Slave Groups',
     'Slave Nodes',
     'User Groups',
+    '/admin/ultra',
+    '/admin/forward-combinations',
+    'Ultra Operations',
+    'Forward Combinations',
 ] as $required) {
     if (!str_contains($base, $required)) {
         fail('shared admin nav missing required snippet: ' . $required);
@@ -49,10 +53,8 @@ foreach ([
 
 foreach ([
     '/admin/cf-location-groups',
-    '/admin/forward-combinations',
     '/admin/chains',
     'CF Location Groups',
-    'Forward Combinations',
     "'label' => 'Chains'",
 ] as $retiredNavigationSnippet) {
     if (str_contains($base, $retiredNavigationSnippet)) {

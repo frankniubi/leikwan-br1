@@ -60,7 +60,24 @@ namespace Leikwan\Master\Database {
         }
 
         /** @param array<string, mixed> $params */
-        public function fetchAll(string $sql, array $params = []): array { return []; }
+        public function fetchAll(string $sql, array $params = []): array
+        {
+            if (str_contains($sql, 'FROM ultra_zones')) {
+                $codes = ($params['zone_role'] ?? '') === 'ingress' ? ['shanghai'] : ['tokyo'];
+                return array_map(static fn(string $code): array => ['zone_code' => $code], $codes);
+            }
+            if (str_contains($sql, 'FROM ultra_lines')) {
+                return [[
+                    'id' => 10,
+                    'line_id' => 453,
+                    'is_source_present' => 1,
+                    'is_enabled' => 1,
+                    'effective_ingress_zone' => 'shanghai',
+                    'effective_destination_zone' => 'tokyo',
+                ]];
+            }
+            return [];
+        }
 
         /** @param array<string, mixed> $params */
         public function execute(string $sql, array $params = []): int { return 0; }
@@ -232,6 +249,85 @@ namespace {
     $row = lastCombo();
     if (($row['self_leg_outer_transport'] ?? '') !== 'cf') {
         fail('cf_mode must derive self_leg=cf, got ' . var_export($row['self_leg_outer_transport'] ?? '', true));
+    }
+
+    // 7. ultra is a separate single-runtime capability mode and must not persist legacy LeiGod state.
+    Database::$inserts = [];
+    $p = $base;
+    $p['backend_mode'] = 'ultra';
+    $p['sidecar_point_id'] = 4;
+    $p['leigod_line_id'] = 453;
+    $p['line_direction'] = 'Shanghai to Japan';
+    $p['leigod_socks_user'] = 'legacy-user-must-be-cleared';
+    $p['leigod_socks_pass'] = 'legacy-pass-must-be-cleared';
+    $p['ultra_destination_zone'] = 'tokyo';
+    $p['ultra_allowed_ingress_zones'] = ['shanghai'];
+    $p['ultra_fallback_policy'] = 'detected_then_any';
+    $p['ultra_lines'] = [['ultra_line_id' => 10, 'enabled' => 1, 'sort_order' => 10]];
+    $service->saveForwardCombination($p);
+    $row = lastCombo();
+    foreach (['backend_mode' => 'ultra', 'client_mode' => 'single', 'runtime_preference' => 'single', 'self_leg_outer_transport' => 'cnix', 'helper_group_cap' => 0, 'line_direction' => 'Shanghai to Japan', 'ultra_destination_zone' => 'tokyo', 'ultra_fallback_policy' => 'detected_then_any'] as $k => $v) {
+        if (($row[$k] ?? null) !== $v) {
+            fail("ultra persisted $k = " . var_export($row[$k] ?? null, true) . ', expected ' . var_export($v, true));
+        }
+    }
+    foreach (['sidecar_point_id', 'cf_location_group_id', 'leigod_line_id', 'leigod_socks_user', 'leigod_socks_pass'] as $key) {
+        if (($row[$key] ?? null) !== null) {
+            fail('ultra must clear legacy field ' . $key . ', got ' . var_export($row[$key] ?? null, true));
+        }
+    }
+
+    Database::$inserts = [];
+    $ultraWithoutSlaveGroup = $p;
+    $ultraWithoutSlaveGroup['node_group_key'] = '';
+    $service->saveForwardCombination($ultraWithoutSlaveGroup);
+    $row = lastCombo();
+    if (($row['node_group_key'] ?? null) !== 'ultra-control-plane') {
+        fail('ultra without a slave group must persist the control-plane sentinel');
+    }
+
+    $missingUltraLine = $p;
+    $missingUltraLine['ultra_lines'] = [];
+    try {
+        $service->saveForwardCombination($missingUltraLine);
+        fail('expected ultra_line_required for ultra with no line id');
+    } catch (ApiException $e) {
+        if ($e->getMessage() !== 'ultra_line_required') {
+            fail('expected ultra_line_required, got ' . $e->getMessage());
+        }
+    }
+
+    $p['client_mode'] = 'bond';
+    try {
+        $service->saveForwardCombination($p);
+        fail('expected ultra_requires_single_runtime for ultra aggregation');
+    } catch (ApiException $e) {
+        if ($e->getMessage() !== 'ultra_requires_single_runtime') {
+            fail('expected ultra_requires_single_runtime, got ' . $e->getMessage());
+        }
+    }
+
+    $serviceReflection = new \ReflectionClass(ProvisioningService::class);
+    $sidecarRequired = $serviceReflection->getMethod('sidecarRequiredForRuntime');
+    $sidecarRequired->setAccessible(true);
+    if ($sidecarRequired->invoke($service, 'ultra', 'single', 'single') !== false) {
+        fail('ultra must not require a sidecar');
+    }
+    $activeFamily = $serviceReflection->getMethod('activeFamilyForRuntime');
+    $activeFamily->setAccessible(true);
+    if ($activeFamily->invoke($service, 'ultra', 'single', 'single') !== 'ultra') {
+        fail('ultra active_family must be ultra');
+    }
+    $targetContract = $serviceReflection->getMethod('targetContractForRuntime');
+    $targetContract->setAccessible(true);
+    if ($targetContract->invoke($service, 'ultra', 'single', 'single') !== 'ultra') {
+        fail('ultra target_contract must be ultra');
+    }
+    $dedicatedLeigod = $serviceReflection->getMethod('isDedicatedLeigodRuntime');
+    $dedicatedLeigod->setAccessible(true);
+    if ($dedicatedLeigod->invoke($service, 'ultra', 'single', 'single') !== false
+        || $dedicatedLeigod->invoke($service, 'leigod_mode', 'single', 'single') !== true) {
+        fail('ultra/legacy dedicated runtime boundary changed');
     }
 
     echo "ok\n";

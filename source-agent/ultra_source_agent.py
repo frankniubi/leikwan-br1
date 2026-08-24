@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import random
+import re
 import secrets
 import subprocess
 import time
@@ -25,8 +26,19 @@ except ImportError:  # pragma: no cover - Python 3.10 compatibility on source ho
     tomllib = None
 
 
-AGENT_VERSION = "2026.08.24.1"
+AGENT_VERSION = "2026.08.24.3"
 MAX_INVENTORY_BYTES = 256 * 1024
+CATALOG_SCHEMA_VERSION = 1
+
+LINELIST_SUMMARY_RE = re.compile(
+    r"^os_type=\d+\s+game_id=\d+\s+area_id=\d+\s+lines=(\d+)\s*$",
+    re.MULTILINE,
+)
+LINELIST_ROW_RE = re.compile(
+    r"^\s*line_id=(\d+)\s+area_id=(\d+)\s+line_type=(\d+)\s+"
+    r"title=(.*?)\s+speed_ip=(\S+)\s+pc_port=(\d+)\s*$",
+    re.MULTILINE,
+)
 
 
 def rfc3339(timestamp: int | float) -> str:
@@ -210,16 +222,228 @@ def _literal_ip(*values: object) -> str:
     return ""
 
 
-def build_inventory(lines_dir: Path, index_path: Path, *, max_lines: int = 256) -> dict[str, object]:
+def _single_line_text(value: object, limit: int = 255) -> str:
+    return _bounded_text(" ".join(str(value or "").split()), limit)
+
+
+def parse_linelist_output(output: str) -> tuple[bool, dict[int, dict[str, object]]]:
+    summary = LINELIST_SUMMARY_RE.search(str(output))
+    if summary is None:
+        return False, {}
+    declared_count = int(summary.group(1))
+    matched_count = 0
+    records: dict[int, dict[str, object]] = {}
+    for match in LINELIST_ROW_RE.finditer(str(output)):
+        matched_count += 1
+        line_id = int(match.group(1))
+        if line_id < 1 or line_id > 45535:
+            continue
+        title = _single_line_text(match.group(4), 255)
+        segments = [segment.strip() for segment in title.split("-") if segment.strip()]
+        records[line_id] = {
+            "line_id": line_id,
+            "title": title,
+            "catalog_ingress": _single_line_text(segments[0] if len(segments) >= 2 else "", 191),
+            "catalog_destination": _single_line_text(segments[1] if len(segments) >= 2 else "", 191),
+            "discovery_ip": _literal_ip(match.group(5)),
+        }
+    if matched_count != declared_count:
+        return False, {}
+    return True, records
+
+
+def _empty_catalog_cache() -> dict[str, object]:
+    return {"schema_version": CATALOG_SCHEMA_VERSION, "records": {}, "pairs": {}}
+
+
+def _read_catalog_cache(path: Path) -> dict[str, object]:
+    try:
+        if path.stat().st_size > MAX_INVENTORY_BYTES:
+            return _empty_catalog_cache()
+        decoded = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return _empty_catalog_cache()
+    if not isinstance(decoded, dict):
+        return _empty_catalog_cache()
+    records = decoded.get("records", {})
+    pairs = decoded.get("pairs", {})
+    return {
+        "schema_version": CATALOG_SCHEMA_VERSION,
+        "records": records if isinstance(records, dict) else {},
+        "pairs": pairs if isinstance(pairs, dict) else {},
+    }
+
+
+def _write_catalog_cache(path: Path, cache: dict[str, object]) -> None:
+    encoded = json.dumps(cache, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+    if len(encoded.encode("utf-8")) > MAX_INVENTORY_BYTES:
+        raise RuntimeError("catalog cache exceeds size limit")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(encoded, encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _line_config_groups(lines_dir: Path) -> dict[tuple[int, int], list[tuple[int, Path]]]:
+    groups: dict[tuple[int, int], list[tuple[int, Path]]] = {}
+    for path in lines_dir.glob("*.toml"):
+        try:
+            line_id = int(path.stem)
+            metadata = _parse_line_config(path.read_bytes())
+            game_id = int(metadata.get("game_id", 0) or 0)
+            area_id = int(metadata.get("area_id", 0) or 0)
+        except (OSError, TypeError, ValueError):
+            continue
+        if not (0 < line_id <= 45535 and game_id > 0 and area_id > 0):
+            continue
+        groups.setdefault((game_id, area_id), []).append((line_id, path))
+    for members in groups.values():
+        members.sort(key=lambda item: item[0])
+    return dict(sorted(groups.items()))
+
+
+def refresh_catalog_cache(
+    lines_dir: Path,
+    binary_path: Path,
+    session_path: Path | None,
+    cache_path: Path,
+    *,
+    now: int,
+    refresh_seconds: int,
+    retry_seconds: int,
+    max_queries: int,
+    timeout: float,
+) -> dict[str, int]:
+    cache = _read_catalog_cache(cache_path)
+    records = dict(cache.get("records", {}))
+    pair_states = dict(cache.get("pairs", {}))
+    groups = _line_config_groups(lines_dir)
+    due: list[tuple[tuple[int, int], list[tuple[int, Path]]]] = []
+    refresh_after = max(300, int(refresh_seconds))
+    retry_after = max(60, int(retry_seconds))
+    for pair, members in groups.items():
+        key = f"{pair[0]}:{pair[1]}"
+        state = pair_states.get(key, {})
+        state = state if isinstance(state, dict) else {}
+        last_attempt = int(state.get("last_attempt_at", 0) or 0)
+        last_success = int(state.get("last_success_at", 0) or 0)
+        if last_success > 0 and now - last_success < refresh_after:
+            continue
+        if last_success <= 0 and last_attempt > 0 and now - last_attempt < retry_after:
+            continue
+        due.append((pair, members))
+    attempted = 0
+    succeeded = 0
+    changed = 0
+    for pair, members in due[: max(1, min(64, int(max_queries)))]:
+        attempted += 1
+        key = f"{pair[0]}:{pair[1]}"
+        previous_state = pair_states.get(key, {})
+        previous_state = previous_state if isinstance(previous_state, dict) else {}
+        pair_states[key] = {
+            "last_attempt_at": now,
+            "last_success_at": int(previous_state.get("last_success_at", 0) or 0),
+        }
+        command = [str(binary_path), "linelist", "--config", str(members[0][1])]
+        if session_path is not None:
+            command.extend(["--session", str(session_path)])
+        try:
+            completed = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=max(1.0, min(30.0, float(timeout))),
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if completed.returncode != 0:
+            continue
+        valid, current = parse_linelist_output(completed.stdout)
+        if not valid:
+            continue
+        local_ids = {line_id for line_id, _path in members}
+        before = {str(line_id): records.get(str(line_id)) for line_id in local_ids if str(line_id) in records}
+        for line_id in local_ids:
+            records.pop(str(line_id), None)
+        for line_id, record in current.items():
+            if line_id in local_ids:
+                records[str(line_id)] = record
+        after = {str(line_id): records.get(str(line_id)) for line_id in local_ids if str(line_id) in records}
+        if before != after:
+            changed += 1
+        pair_states[key] = {"last_attempt_at": now, "last_success_at": now}
+        succeeded += 1
+    cache = {
+        "schema_version": CATALOG_SCHEMA_VERSION,
+        "updated_at": now,
+        "records": dict(sorted(records.items(), key=lambda item: int(item[0]))),
+        "pairs": dict(sorted(pair_states.items())),
+    }
+    if attempted > 0 or not cache_path.exists():
+        _write_catalog_cache(cache_path, cache)
+    return {"attempted": attempted, "succeeded": succeeded, "changed": changed}
+
+
+def _catalog_snapshot(
+    path: Path | None,
+    required_pairs: set[tuple[int, int]],
+) -> tuple[dict[int, dict[str, object]], bool]:
+    if path is None:
+        return {}, False
+    cache = _read_catalog_cache(path)
+    raw_records = cache.get("records", {})
+    records: dict[int, dict[str, object]] = {}
+    for raw_line_id, raw in list(raw_records.items())[:1024] if isinstance(raw_records, dict) else []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            line_id = int(raw_line_id)
+        except (TypeError, ValueError):
+            continue
+        if 0 < line_id <= 45535:
+            records[line_id] = raw
+    pair_states = cache.get("pairs", {})
+    authoritative = bool(required_pairs)
+    for game_id, area_id in required_pairs:
+        state = pair_states.get(f"{game_id}:{area_id}", {}) if isinstance(pair_states, dict) else {}
+        if not isinstance(state, dict) or int(state.get("last_success_at", 0) or 0) <= 0:
+            authoritative = False
+            break
+    return records, authoritative
+
+
+def build_inventory(
+    lines_dir: Path,
+    index_path: Path,
+    *,
+    catalog_path: Path | None = None,
+    max_lines: int = 256,
+) -> dict[str, object]:
     limit = max(1, min(256, int(max_lines)))
     index = _inventory_index(index_path)
+    config_groups = _line_config_groups(lines_dir)
+    catalog, catalog_authoritative = _catalog_snapshot(catalog_path, set(config_groups))
     candidates: list[tuple[int, Path]] = []
     for path in lines_dir.glob("*.toml"):
         try:
             line_id = int(path.stem)
         except ValueError:
             continue
-        if 0 < line_id <= 45535 and path.is_file():
+        if (0 < line_id <= 45535
+                and path.is_file()
+                and (not catalog_authoritative or line_id in catalog)):
             candidates.append((line_id, path))
     candidates.sort(key=lambda item: item[0])
     complete = len(candidates) <= limit
@@ -228,14 +452,17 @@ def build_inventory(lines_dir: Path, index_path: Path, *, max_lines: int = 256) 
         raw = path.read_bytes()
         metadata = _parse_line_config(raw)
         indexed = index.get(line_id, {})
+        cataloged = catalog.get(line_id, {})
         line: dict[str, object] = {
             "line_id": line_id,
-            "title": _bounded_text(indexed.get("title") or indexed.get("name") or indexed.get("label")),
+            "title": _bounded_text(cataloged.get("title") or indexed.get("title") or indexed.get("name") or indexed.get("label")),
             "family_key": _bounded_text(indexed.get("family_key") or indexed.get("family")),
             "game_id": _unsigned_int(metadata.get("game_id"), indexed.get("game_id")),
             "area_id": _unsigned_int(metadata.get("area_id"), indexed.get("area_id")),
             "line_type": _unsigned_int(metadata.get("line_type"), indexed.get("line_type")),
-            "discovery_ip": _literal_ip(indexed.get("speed_ip"), indexed.get("discovery_ip"), metadata.get("speed_ip")),
+            "catalog_ingress": _single_line_text(cataloged.get("catalog_ingress"), 191),
+            "catalog_destination": _single_line_text(cataloged.get("catalog_destination"), 191),
+            "discovery_ip": _literal_ip(cataloged.get("discovery_ip"), indexed.get("speed_ip"), indexed.get("discovery_ip"), metadata.get("speed_ip")),
             "config_sha256": hashlib.sha256(raw).hexdigest(),
         }
         normalized.append(line)
@@ -413,6 +640,11 @@ class SourceAgent:
         self.inventory_refresh = max(300, min(86400, int(self.config.get("inventory_refresh_seconds", 1800))))
         self.max_inventory_lines = max(1, min(256, int(self.config.get("max_inventory_lines", 256))))
         self.inventory_state_path = self.state_dir / "inventory-state.json"
+        self.catalog_path = Path(self.config.get("catalog_path", str(self.state_dir / "catalog-cache.json")))
+        self.catalog_refresh = max(1800, min(604800, int(self.config.get("catalog_refresh_seconds", 21600))))
+        self.catalog_retry = max(60, min(3600, int(self.config.get("catalog_retry_seconds", 300))))
+        self.catalog_max_queries = max(1, min(8, int(self.config.get("catalog_max_queries_per_cycle", 4))))
+        self.catalog_timeout = max(2.0, min(30.0, float(self.config.get("catalog_query_timeout_seconds", 15))))
         configured_session = str(self.config.get("session_path", "") or "").strip()
         self.session_path = Path(configured_session) if configured_session else None
         self.timeout = max(2.0, min(30.0, float(self.config.get("request_timeout_seconds", 10))))
@@ -426,6 +658,7 @@ class SourceAgent:
             inventory = build_inventory(
                 self.lines_dir,
                 self.inventory_path,
+                catalog_path=self.catalog_path,
                 max_lines=self.max_inventory_lines,
             )
             now = int(time.time())
@@ -466,6 +699,7 @@ class SourceAgent:
                 line_ids.append(line_id)
         line_ids = line_ids[: self.max_lines]
         if not line_ids:
+            self.refresh_catalog()
             return 0
         materials = []
         for line_id in line_ids:
@@ -494,7 +728,32 @@ class SourceAgent:
             {"upload_ticket": ticket, "materials": materials},
             self.timeout,
         )
-        return len(result.get("accepted_line_ids", [])) if isinstance(result.get("accepted_line_ids"), list) else 0
+        accepted = len(result.get("accepted_line_ids", [])) if isinstance(result.get("accepted_line_ids"), list) else 0
+        self.refresh_catalog()
+        return accepted
+
+    def refresh_catalog(self) -> None:
+        try:
+            result = refresh_catalog_cache(
+                self.lines_dir,
+                self.binary_path,
+                self.session_path,
+                self.catalog_path,
+                now=int(time.time()),
+                refresh_seconds=self.catalog_refresh,
+                retry_seconds=self.catalog_retry,
+                max_queries=self.catalog_max_queries,
+                timeout=self.catalog_timeout,
+            )
+            if result["attempted"] > 0:
+                logging.info(
+                    "catalog refresh completed; attempted=%s succeeded=%s changed=%s",
+                    result["attempted"],
+                    result["succeeded"],
+                    result["changed"],
+                )
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("catalog refresh failed: %s", exc)
 
     def run(self, once: bool = False) -> None:
         failures = 0

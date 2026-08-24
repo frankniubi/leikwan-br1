@@ -5,6 +5,8 @@ import argparse
 import email.message
 import email.utils
 import contextlib
+import concurrent.futures
+import datetime
 import hashlib
 import http.client
 import importlib.util
@@ -19,6 +21,7 @@ import re
 import shutil
 import socket
 import ssl
+import stat
 import struct
 import subprocess
 import sys
@@ -28,7 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.08.08.1"
+AGENT_VERSION = "2026.08.24.1"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -44,6 +47,80 @@ DEFAULT_MANAGED_CONFIG = {
     "wireguard_listen_port": 0,
     "wireguard_fallback_tcp_port": 0,
 }
+
+
+def parse_rfc3339(value: object) -> float | None:
+    text = str(value or "").strip()
+    if text == "":
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.timestamp()
+
+
+def format_rfc3339(value: float) -> str:
+    return datetime.datetime.fromtimestamp(float(value), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _stable_poll_jitter(base: float, stable_key: str) -> float:
+    digest = hashlib.sha256(stable_key.encode("utf-8", errors="ignore")).digest()
+    ratio = int.from_bytes(digest[:2], "big") / 65535.0
+    return base * (0.8 + ratio * 0.4)
+
+
+def ultra_config_poll_delay(
+    forwards: list[dict],
+    *,
+    now: float,
+    base_delay: int,
+    stable_key: str,
+) -> float:
+    normal_delay = float(max(5, int(base_delay)))
+    delay = normal_delay
+    for forward in forwards:
+        if not isinstance(forward, dict) or str(forward.get("backend_mode", "") or "").strip().lower() != "ultra":
+            continue
+        forward_id = int(forward.get("forward_id", 0) or 0)
+        access = forward.get("ultra_access")
+        if not isinstance(access, dict):
+            urgent = _stable_poll_jitter(7.5, f"{stable_key}:{forward_id}:missing")
+            delay = min(delay, max(5.0, min(10.0, urgent)))
+            continue
+        expires_at = parse_rfc3339(access.get("expires_at"))
+        renew_after = parse_rfc3339(access.get("renew_after"))
+        if expires_at is None:
+            urgent = _stable_poll_jitter(7.5, f"{stable_key}:{forward_id}:invalid")
+            delay = min(delay, max(5.0, min(10.0, urgent)))
+            continue
+        if renew_after is not None and now < renew_after:
+            continue
+        remaining = expires_at - now
+        jitter_key = f"{stable_key}:{forward_id}:{int(expires_at)}"
+        if remaining > 300:
+            candidate = _stable_poll_jitter(20.0, jitter_key)
+            candidate = max(16.0, min(24.0, candidate))
+        elif remaining > 120:
+            candidate = _stable_poll_jitter(10.0, jitter_key)
+            candidate = max(8.0, min(12.0, candidate))
+        else:
+            candidate = _stable_poll_jitter(7.5, jitter_key)
+            candidate = max(5.0, min(10.0, candidate))
+        delay = min(delay, candidate)
+    return max(5.0, delay)
+
+
+def forward_requires_panel_endpoints(forward: dict, mode: str) -> bool:
+    return str(forward.get("backend_mode", "") or "").strip().lower() != "ultra" and mode != "mptcp"
+
+
+def forward_runtime_service_name(forward: dict) -> str:
+    forward_id = int(forward.get("forward_id", 0) or 0)
+    prefix = "ultra-forward" if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra" else "leikwan-client"
+    return f"{prefix}-{forward_id}"
 MPTCP_PROTOCOL = getattr(socket, "IPPROTO_MPTCP", 262)
 MPTCP_FALSE_VALUES = {"", "0", "false", "no", "off", "disabled"}
 HELPER_CANDIDATE_KINDS = {"rented_group_leg", "donated_slave_leg"}  # donor_candidate_consumed_as_helper
@@ -413,6 +490,222 @@ def http_json_with_headers(method: str, url: str, token: str, payload: dict | No
     return json.loads(content), response_headers
 
 
+_ULTRA_RTT_CACHE: dict[str, tuple[float, list[str]]] = {}
+
+
+def control_plane_endpoints(config: dict) -> list[str]:
+    primary = str(config.get("master_url", "") or "").rstrip("/")
+    candidates = [primary] if primary else []
+    mirrors = config.get("panel_mirror_urls", [])
+    if isinstance(mirrors, list):
+        for raw_url in mirrors[:3]:
+            url = str(raw_url or "").rstrip("/")
+            parsed = urllib.parse.urlparse(url)
+            if parsed.scheme == "https" and parsed.hostname and url not in candidates:
+                candidates.append(url)
+    return candidates
+
+
+def pull_client_configs(config: dict, token: str) -> tuple[dict, dict[str, str], str]:
+    errors: list[str] = []
+    for base_url in control_plane_endpoints(config):
+        try:
+            payload, headers = http_json_with_headers("GET", f"{base_url}/api/client/configs/pull", token)
+            return payload, headers, base_url
+        except Exception as exc:  # noqa: BLE001
+            errors.append(str(exc))
+    raise RuntimeError("; ".join(errors) if errors else "no control-plane endpoint configured")
+
+
+def _ping_ultra_ip(ip: str, timeout: float = 0.8) -> float | None:
+    started = time.monotonic()
+    command = ["ping", "-n" if os.name == "nt" else "-c", "1"]
+    if os.name == "nt":
+        command.extend(["-w", str(max(100, int(timeout * 1000))), ip])
+    else:
+        command.extend(["-W", str(max(1, int(timeout + 0.999))), ip])
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=max(0.2, timeout + 0.4),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (time.monotonic() - started) * 1000.0 if completed.returncode == 0 else None
+
+
+def rank_ultra_line_ips(line_ips: list[str], now: float | None = None) -> list[str]:
+    candidates: list[str] = []
+    for raw_ip in line_ips[:8]:
+        try:
+            ip = str(ipaddress.ip_address(str(raw_ip).strip()))
+        except ValueError:
+            continue
+        if ip not in candidates:
+            candidates.append(ip)
+    if not candidates:
+        return []
+    cache_key = ",".join(candidates)
+    current = time.time() if now is None else float(now)
+    cached = _ULTRA_RTT_CACHE.get(cache_key)
+    if cached is not None and current - cached[0] < 60.0:
+        return list(cached[1])
+    measured: dict[str, float | None] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(candidates))) as pool:
+        futures = {pool.submit(_ping_ultra_ip, ip): ip for ip in candidates}
+        for future, ip in [(future, futures[future]) for future in futures]:
+            try:
+                measured[ip] = future.result(timeout=1.5)
+            except Exception:  # noqa: BLE001
+                measured[ip] = None
+    ranked = sorted(
+        candidates,
+        key=lambda ip: (measured.get(ip) is None, measured.get(ip) if measured.get(ip) is not None else float("inf"), candidates.index(ip)),
+    )
+    if len(_ULTRA_RTT_CACHE) >= 32:
+        oldest = min(_ULTRA_RTT_CACHE, key=lambda key: _ULTRA_RTT_CACHE[key][0])
+        _ULTRA_RTT_CACHE.pop(oldest, None)
+    _ULTRA_RTT_CACHE[cache_key] = (current, ranked)
+    return ranked
+
+
+def _normalize_ultra_selection(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    entry_ref = str(value.get("entry_ref", "") or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{16,128}", entry_ref) is None:
+        return None
+    try:
+        relay_ip = str(ipaddress.ip_address(str(value.get("relay_ip", "") or "").strip()))
+    except ValueError:
+        return None
+    try:
+        rtt_ms = max(0, min(60000, int(value.get("rtt_ms", 0) or 0)))
+    except (TypeError, ValueError):
+        rtt_ms = 0
+    return {
+        "entry_ref": entry_ref,
+        "relay_ip": relay_ip,
+        "rtt_ms": rtt_ms,
+        "selected_at": str(value.get("selected_at", "") or "").strip()[:40],
+    }
+
+
+def collect_ultra_status(
+    root: pathlib.Path = pathlib.Path("/run/ultra"),
+    *,
+    expected_uid: int = 0,
+) -> list[dict]:
+    try:
+        root_stat = root.lstat()
+    except OSError:
+        return []
+    if root.is_symlink() or not stat.S_ISDIR(root_stat.st_mode):
+        return []
+    statuses: list[dict] = []
+    candidates: list[tuple[int, pathlib.Path]] = []
+    for path in root.glob("forward-*.status.json"):
+        match = re.fullmatch(r"forward-(\d+)\.status\.json", path.name)
+        if match is None:
+            continue
+        forward_id = int(match.group(1))
+        if 0 < forward_id <= 2_147_483_647:
+            candidates.append((forward_id, path))
+    candidates.sort(key=lambda item: item[0])
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    for expected_forward_id, path in candidates:
+        if len(statuses) >= 32:
+            break
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, os.O_RDONLY | nofollow)
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_uid != int(expected_uid) or opened.st_size > 64 * 1024:
+                continue
+            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                descriptor = None
+                decoded = json.load(handle)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        if not isinstance(decoded, dict) or int(decoded.get("forward_id", 0) or 0) != expected_forward_id:
+            continue
+        state = str(decoded.get("state", "ready") or "ready").strip().lower()
+        if state not in {"ready", "degraded", "error", "stopped"}:
+            state = "error"
+        zone = str(decoded.get("detected_ingress_zone", "unknown") or "unknown").strip().lower()
+        if re.fullmatch(r"[a-z0-9-]{1,32}", zone) is None:
+            zone = "unknown"
+        statuses.append(
+            {
+                "forward_id": expected_forward_id,
+                "state": state,
+                "detected_ingress_zone": zone,
+                "location_source": str(decoded.get("location_source", "") or "").strip()[:32],
+                "latest_tcp": _normalize_ultra_selection(decoded.get("latest_tcp")),
+                "active_udp": _normalize_ultra_selection(decoded.get("active_udp")),
+                "updated_at": str(decoded.get("updated_at", "") or "").strip()[:40],
+                "error_code": str(decoded.get("error_code", "") or "").strip()[:64],
+            }
+        )
+    return statuses
+
+
+def resolve_ultra_materials(master: str, agent_token: str, device_id: str, forwards: list[dict]) -> list[dict]:
+    requests: list[dict] = []
+    for forward in forwards:
+        if not isinstance(forward, dict) or str(forward.get("backend_mode", "")).strip().lower() != "ultra":
+            continue
+        access = forward.get("ultra_access")
+        if not isinstance(access, dict):
+            continue
+        forward_id = int(forward.get("forward_id", 0) or 0)
+        token = str(access.get("token", "") or "").strip()
+        if forward_id <= 0 or token == "":
+            continue
+        requests.append({"forward_id": forward_id, "token": token})
+    if not requests:
+        return forwards
+    last_error: Exception | None = None
+    response: dict | None = None
+    for attempt in range(3):
+        try:
+            response = http_json(
+                "POST",
+                f"{master.rstrip('/')}/api/client/ultra/materials",
+                agent_token,
+                {"device_id": device_id, "forwards": requests},
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.5 if attempt == 0 else 1.5)
+    if response is None:
+        raise RuntimeError(f"ultra material resolution retries exhausted: {last_error}") from last_error
+    material_by_forward = {
+        int(item.get("forward_id", 0) or 0): item
+        for item in response.get("materials", [])
+        if isinstance(item, dict) and int(item.get("forward_id", 0) or 0) > 0
+    }
+    result: list[dict] = []
+    for forward in forwards:
+        if not isinstance(forward, dict):
+            continue
+        enriched = dict(forward)
+        material = material_by_forward.get(int(enriched.get("forward_id", 0) or 0))
+        access = enriched.get("ultra_access")
+        if isinstance(material, dict) and isinstance(access, dict) and str(material.get("token", "")) == str(access.get("token", "")):
+            enriched["_ultra_material"] = material
+        result.append(enriched)
+    return result
+
+
 def file_sha256(path: pathlib.Path) -> str:
     import hashlib
 
@@ -753,6 +1046,10 @@ class ClientAgent:
             "kernel_supports_mptcp": self.running_kernel_supports_mptcp(),
         }
         normalized_forward = self.strip_apply_observation_fields(forward)
+        if isinstance(normalized_forward, dict) and str(normalized_forward.get("backend_mode", "") or "").strip().lower() == "ultra":
+            normalized_forward = dict(normalized_forward)
+            normalized_forward.pop("ultra_access", None)
+            normalized_forward.pop("_ultra_material", None)
         return self.stable_json_hash(
             {
                 "forward": normalized_forward,
@@ -788,6 +1085,8 @@ class ClientAgent:
             normalized_files = []
             for file_entry in unit.get("files", []):
                 if not isinstance(file_entry, dict):
+                    continue
+                if file_entry.get("restart_on_change") is False:
                     continue
                 normalized_files.append(
                     {
@@ -835,6 +1134,29 @@ class ClientAgent:
                 if extra_path != "":
                     paths.add(extra_path)
         return paths
+
+    def apply_reload_only_files(self, rendered: dict) -> bool:
+        changed_any = False
+        units = [rendered] + [item for item in rendered.get("extra_units", []) if isinstance(item, dict)]
+        for unit in units:
+            service_name = str(unit.get("service_name", "") or "").strip()
+            for file_entry in unit.get("files", []):
+                if not isinstance(file_entry, dict) or file_entry.get("restart_on_change") is not False:
+                    continue
+                path = pathlib.Path(str(file_entry.get("path", "") or ""))
+                if str(path) in {"", "."}:
+                    continue
+                changed = self.write_text_if_changed(
+                    path,
+                    str(file_entry.get("content", "")),
+                    int(file_entry["mode"]) if file_entry.get("mode") is not None else None,
+                )
+                changed_any = changed_any or changed
+                if changed and service_name != "" and self.systemd_is_active(service_name):
+                    reload_signal = str(file_entry.get("reload_signal", "") or "").strip().upper()
+                    if reload_signal == "HUP":
+                        subprocess.run(["systemctl", "kill", "-s", "HUP", f"{service_name}.service"], check=False)
+        return changed_any
 
     @staticmethod
     def mptcp_underlay_requires_presence(underlay: dict) -> bool:
@@ -1256,7 +1578,14 @@ class ClientAgent:
                         }
                     )
                     logging.exception("sync failed: %s", exc)
-                next_sync = now + int(self.config.get("poll_interval_seconds", 30))
+                base_delay = int(self.config.get("poll_interval_seconds", 30) or 30)
+                stable_key = str(self.config.get("client_id", "") or self.config.get("agent_token", "") or "client")
+                next_sync = now + ultra_config_poll_delay(
+                    self.latest_forwards,
+                    now=now,
+                    base_delay=base_delay,
+                    stable_key=stable_key,
+                )
 
             if now >= next_health:
                 try:
@@ -1336,12 +1665,18 @@ class ClientAgent:
             self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
         return force_ids
     def sync_once(self) -> None:
-        master = self.config["master_url"].rstrip("/")
         token = self.config["agent_token"]
-        payload, response_headers = http_json_with_headers("GET", f"{master}/api/client/configs/pull", token)
+        payload, response_headers, master = pull_client_configs(self.config, token)
         forwards = payload.get("forwards", [])
         self.latest_forwards = [forward for forward in forwards if isinstance(forward, dict)]
         client_meta = payload.get("client", {})
+        device_id = str(client_meta.get("current_device_id", "") or "") if isinstance(client_meta, dict) else ""
+        try:
+            forwards = resolve_ultra_materials(master, token, device_id, self.latest_forwards)
+            self.latest_forwards = [forward for forward in forwards if isinstance(forward, dict)]
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("ultra material resolution failed; preserving existing runtimes: %s", exc)
+            forwards = self.latest_forwards
         applied_forward_ids: list[int] = []
         noop_forward_ids: list[int] = []
         skipped_invalid_forward_ids: list[int] = []
@@ -1368,7 +1703,7 @@ class ClientAgent:
                 self.stop_forward(forward_id)
                 continue
             usable_endpoints = self.usable_endpoints(validation_forward)
-            if usable_endpoints == [] and mode != "mptcp":
+            if usable_endpoints == [] and forward_requires_panel_endpoints(validation_forward, mode):
                 skipped_invalid_forward_ids.append(forward_id)
                 self.log_invalid_forward(
                     forward_id,
@@ -1422,7 +1757,11 @@ class ClientAgent:
             try:
                 contract_signature = self.effective_forward_contract_signature(forward)
                 force_runtime_restart = forward_id in force_runtime_refresh_ids
-                if not force_runtime_restart and self.forward_apply_is_noop(forward_id, contract_signature):
+                ultra_access_refresh = (
+                    str(forward.get("backend_mode", "") or "").strip().lower() == "ultra"
+                    and isinstance(forward.get("_ultra_material"), dict)
+                )
+                if not force_runtime_restart and not ultra_access_refresh and self.forward_apply_is_noop(forward_id, contract_signature):
                     noop_forward_ids.append(forward_id)
                     applied_forward_ids.append(forward_id)
                     logging.debug("forward %s unchanged; skipping no-op runtime apply", forward_id)
@@ -1480,6 +1819,7 @@ class ClientAgent:
                 "bond_leg_reputation": {
                     "forwards": self.load_bond_leg_reputation_snapshots(),
                 },
+                "ultra_status": collect_ultra_status(),
             },
         )
         now = time.time()
@@ -1657,6 +1997,7 @@ class ClientAgent:
         allowed_keys = {
             "master_url",
             "artifact_base_url",
+            "panel_mirror_urls",
             "disable_auto_update",
             "poll_interval_seconds",
             "health_check_interval_seconds",
@@ -1853,6 +2194,7 @@ class ClientAgent:
             self.cleanup_mptcp_forward_runtime(forward_id)
             previous_runtime_present = False
         if rendered_unchanged and previous_runtime_present:
+            self.apply_reload_only_files(rendered)
             if force_runtime_restart:
                 service_name = str(rendered.get("service_name", "") or f"leikwan-client-{forward_id}")
                 subprocess.run("systemctl daemon-reload", shell=True, check=False)
@@ -1920,7 +2262,8 @@ class ClientAgent:
                     str(file_entry.get("content", "")),
                     int(file_entry["mode"]) if "mode" in file_entry and file_entry.get("mode") is not None else None,
                 )
-                files_changed = files_changed or file_changed
+                restart_on_change = file_entry.get("restart_on_change") is not False
+                files_changed = files_changed or (file_changed and restart_on_change)
                 managed_paths.append(str(extra_path))
 
             service_active = self.systemd_is_active(service_name)
@@ -1975,7 +2318,10 @@ class ClientAgent:
         previous = applied.get(str(forward_id), {})
         units = previous.get("units", []) if isinstance(previous, dict) else []
         if not units:
-            units = [{"service_name": f"leikwan-client-{forward_id}", "managed_paths": []}]
+            units = [
+                {"service_name": f"leikwan-client-{forward_id}", "managed_paths": []},
+                {"service_name": f"ultra-forward-{forward_id}", "managed_paths": []},
+            ]
 
         for unit in units:
             service_name = str(unit.get("service_name", "") or "")
@@ -2080,7 +2426,7 @@ class ClientAgent:
             if forward_id <= 0:
                 continue
 
-            service_name = f"leikwan-client-{forward_id}"
+            service_name = forward_runtime_service_name(forward)
             if not self.systemd_is_active(service_name):
                 self.restart_forward_service(forward_id, service_name, "systemd inactive")
                 continue
@@ -4451,7 +4797,7 @@ class ClientAgent:
         try:
             for forward in forwards:
                 forward_id = int(forward["forward_id"])
-                local_service_name = f"leikwan-client-{forward_id}"
+                local_service_name = forward_runtime_service_name(forward)
                 local_status = subprocess.run(f"systemctl is-active {local_service_name}.service", shell=True, text=True, capture_output=True)
                 local_service_active = local_status.stdout.strip() == "active"
                 e2e_reachable, e2e_latency_ms, e2e_error = (False, None, "local service inactive")

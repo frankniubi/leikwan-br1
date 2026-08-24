@@ -21,6 +21,9 @@ use Leikwan\Master\Support\LocaleResolver;
 use Leikwan\Master\Support\MermaidSourcePolicy;
 use Leikwan\Master\Support\SslCertificateService;
 use Leikwan\Master\Support\TenantRegistrationService;
+use Leikwan\Master\Support\UltraClientStatusService;
+use Leikwan\Master\Support\UltraInventoryService;
+use Leikwan\Master\Support\UltraMode;
 
 final class AdminController extends BaseController
 {
@@ -34,6 +37,8 @@ final class AdminController extends BaseController
         \Leikwan\Master\Database\Database $db,
         private ?ProvisioningService $provisioning = null,
         array $leigodOnlyServices = [],
+        private ?UltraInventoryService $ultraInventory = null,
+        private ?UltraClientStatusService $ultraClientStatus = null,
     ) {
         $this->leigodOnlyServices = $leigodOnlyServices;
         parent::__construct($config, $db);
@@ -2580,6 +2585,10 @@ final class AdminController extends BaseController
         $sidecars = $this->provisioning?->listSidecarPoints() ?? [];
         $cfGroups = $this->provisioning?->listCfLocationGroups() ?? [];
         $leigodLines = $this->provisioning?->listLeigodLines() ?? [];
+        $ultraInventory = $this->ultraInventory ?? new UltraInventoryService($this->config, $this->db);
+        $ultraIngressZones = $ultraInventory->activeZones('ingress');
+        $ultraDestinationZones = $ultraInventory->activeZones('destination');
+        $ultraLines = $ultraInventory->listLinesForAdmin([], 200, 0);
         $editId = (int) $request->input('edit', 0);
         $editing = null;
         foreach ($combinations as $combination) {
@@ -2587,6 +2596,10 @@ final class AdminController extends BaseController
                 $editing = $combination;
                 break;
             }
+        }
+        $selectedBackendMode = strtolower(trim((string) ($editing['backend_mode'] ?? $request->input('backend_mode', 'current_mode'))));
+        if (!in_array($selectedBackendMode, ['current_mode', 'cf_mode', 'leigod_mode', UltraMode::BACKEND_MODE], true)) {
+            $selectedBackendMode = 'current_mode';
         }
 
         $candidateNodes = [];
@@ -2613,6 +2626,9 @@ final class AdminController extends BaseController
             $selected = (string) ($editing['node_group_key'] ?? '') === (string) ($group['group_key'] ?? '') ? ' selected' : '';
             $groupOptions .= '<option value="' . $this->escape((string) ($group['group_key'] ?? '')) . '"' . $selected . '>' . $this->escape((string) ($group['name'] ?? '')) . '</option>';
         }
+        $ultraGroupSelected = UltraMode::isBackendMode($selectedBackendMode)
+            || (string) ($editing['node_group_key'] ?? '') === UltraMode::CONTROL_PLANE_GROUP;
+        $groupOptions .= '<option value="' . UltraMode::CONTROL_PLANE_GROUP . '" data-ultra-control-plane' . ($ultraGroupSelected ? ' selected' : '') . '>None (Ultra control plane)</option>';
         $editingSidecarPointId = (int) ($editing['sidecar_point_id'] ?? 0);
         $sidecarOptions = '<option value=""' . ($editingSidecarPointId <= 0 ? ' selected' : '') . '>None (dedicated LeiGod forward node)</option>';
         foreach ($sidecars as $point) {
@@ -2624,6 +2640,88 @@ final class AdminController extends BaseController
             $selected = (int) ($editing['cf_location_group_id'] ?? 0) === (int) ($group['id'] ?? 0) ? ' selected' : '';
             $cfOptions .= '<option value="' . (int) ($group['id'] ?? 0) . '"' . $selected . '>' . $this->escape((string) ($group['name'] ?? '')) . ' [' . $this->escape((string) ($group['region_code'] ?? '')) . ']</option>';
         }
+
+        $selectedUltraDestination = strtolower(trim((string) ($editing['ultra_destination_zone'] ?? $request->input('ultra_destination_zone', ''))));
+        $ultraDestinationOptions = '';
+        foreach ($ultraDestinationZones as $zone) {
+            $zoneCode = strtolower(trim((string) ($zone['zone_code'] ?? '')));
+            if ($zoneCode === '' || $zoneCode === 'unknown') {
+                continue;
+            }
+            if ($selectedUltraDestination === '') {
+                $selectedUltraDestination = $zoneCode;
+            }
+            $ultraDestinationOptions .= '<option value="' . $this->escape($zoneCode) . '"'
+                . ($selectedUltraDestination === $zoneCode ? ' selected' : '') . '>'
+                . $this->escape((string) ($zone['label'] ?? $zoneCode)) . '</option>';
+        }
+        $selectedIngressZones = [];
+        $rawSelectedIngressZones = $editing['ultra_allowed_ingress_zones_json'] ?? null;
+        if (is_string($rawSelectedIngressZones)) {
+            $decodedIngressZones = json_decode($rawSelectedIngressZones, true);
+            $selectedIngressZones = is_array($decodedIngressZones) ? array_map('strval', $decodedIngressZones) : [];
+        } elseif (is_array($rawSelectedIngressZones)) {
+            $selectedIngressZones = array_map('strval', $rawSelectedIngressZones);
+        }
+        $ultraIngressChecks = '';
+        foreach ($ultraIngressZones as $zone) {
+            $zoneCode = strtolower(trim((string) ($zone['zone_code'] ?? '')));
+            if ($zoneCode === '' || $zoneCode === 'unknown') {
+                continue;
+            }
+            $checked = $editing === null || in_array($zoneCode, $selectedIngressZones, true);
+            $ultraIngressChecks .= '<label class="check-row"><input type="checkbox" name="ultra_allowed_ingress_zones[]" value="'
+                . $this->escape($zoneCode) . '"' . ($checked ? ' checked' : '') . '> '
+                . $this->escape((string) ($zone['label'] ?? $zoneCode)) . '</label>';
+        }
+        $selectedUltraLines = [];
+        foreach ((array) ($editing['ultra_lines'] ?? []) as $membership) {
+            if (is_array($membership) && (int) ($membership['ultra_line_id'] ?? 0) > 0) {
+                $selectedUltraLines[(int) $membership['ultra_line_id']] = $membership;
+            }
+        }
+        $ultraMembershipRows = '';
+        foreach ($ultraLines as $lineIndex => $line) {
+            $ultraLineId = (int) ($line['id'] ?? 0);
+            if ($ultraLineId <= 0
+                || (int) ($line['is_source_present'] ?? 0) !== 1
+                || (int) ($line['is_enabled'] ?? 0) !== 1) {
+                continue;
+            }
+            $membership = $selectedUltraLines[$ultraLineId] ?? null;
+            $checked = is_array($membership) && (int) ($membership['enabled'] ?? 1) === 1;
+            $sortOrder = (int) ($membership['sort_order'] ?? $line['sort_order'] ?? (($lineIndex + 1) * 10));
+            $expiresAt = trim((string) ($line['last_material_expires_at'] ?? ''));
+            $materialState = UltraInventoryService::materialState($expiresAt, time());
+            $materialStateLabel = UltraInventoryService::materialStateLabel($materialState);
+            $materialStateClass = UltraInventoryService::materialStateBadgeClass($materialState);
+            $label = trim((string) (($line['admin_label'] ?? '') ?: ($line['source_title'] ?? '')));
+            $ultraMembershipRows .= '<tr data-ultra-destination="' . $this->escape((string) ($line['effective_destination_zone'] ?? 'unknown')) . '">'
+                . '<td><input type="hidden" name="ultra_lines[' . $lineIndex . '][ultra_line_id]" value="' . $ultraLineId . '">'
+                . '<input type="hidden" name="ultra_lines[' . $lineIndex . '][enabled]" value="0">'
+                . '<label><input type="checkbox" name="ultra_lines[' . $lineIndex . '][enabled]" value="1"' . ($checked ? ' checked' : '') . '> '
+                . $this->escape($label !== '' ? $label : ('Line ' . (int) ($line['line_id'] ?? 0))) . '</label></td>'
+                . '<td>' . (int) ($line['line_id'] ?? 0) . '</td>'
+                . '<td>' . $this->escape((string) ($line['effective_ingress_zone'] ?? 'unknown')) . '</td>'
+                . '<td>' . $this->escape((string) ($line['effective_destination_zone'] ?? 'unknown')) . '</td>'
+                . '<td><span class="badge ' . $materialStateClass . '">' . $this->escape($materialStateLabel) . '</span></td>'
+                . '<td><input type="number" name="ultra_lines[' . $lineIndex . '][sort_order]" value="' . $sortOrder . '" style="width:90px"></td>'
+                . '</tr>';
+        }
+        if ($ultraMembershipRows === '') {
+            $ultraMembershipRows = '<tr><td colspan="6" class="muted">No enabled Ultra inventory lines.</td></tr>';
+        }
+        $ultraFallback = strtolower(trim((string) ($editing['ultra_fallback_policy'] ?? 'detected_then_any')));
+        $ultraField = '<fieldset class="field" data-mode-field="ultra" data-ultra-memberships><legend>Ultra line policy</legend>'
+            . '<div class="form-grid"><div class="field"><label>Destination zone</label><select name="ultra_destination_zone">' . $ultraDestinationOptions . '</select></div>'
+            . '<div class="field"><label>Fallback policy</label><select name="ultra_fallback_policy">'
+            . '<option value="detected_only"' . ($ultraFallback === 'detected_only' ? ' selected' : '') . '>Detected zone only</option>'
+            . '<option value="detected_then_any"' . ($ultraFallback === 'detected_then_any' ? ' selected' : '') . '>Detected zone, then any allowed zone</option>'
+            . '<option value="any"' . ($ultraFallback === 'any' ? ' selected' : '') . '>Any allowed zone</option></select></div>'
+            . '<div class="field"><label>Allowed ingress zones</label><div class="check-list">' . $ultraIngressChecks . '</div></div></div>'
+            . '<div class="table-wrap"><table><thead><tr><th>Enabled</th><th>Line ID</th><th>Ingress</th><th>Destination</th><th>Material</th><th>Priority</th></tr></thead><tbody>'
+            . $ultraMembershipRows . '</tbody></table></div></fieldset>'
+            . '<script>(function(){var s=document.querySelector(\'select[name=ultra_destination_zone]\');if(!s)return;function f(){document.querySelectorAll(\'[data-ultra-destination]\').forEach(function(r){r.style.display=r.getAttribute(\'data-ultra-destination\')===s.value?\'\':\'none\';});}s.addEventListener(\'change\',f);f();})();</script>';
 
         // LeiGod is a first-class Forward Mode; the ordered catalog memberships replace the legacy scalar.
         $leigodLineId = (int) ($editing['leigod_line_id'] ?? 0);
@@ -2667,15 +2765,18 @@ final class AdminController extends BaseController
         $leigodField = '<input type="hidden" name="leigod_line_id" value="' . $leigodLineId . '">'
             . '<fieldset class="field" data-mode-field="leigod_mode" data-leigod-memberships><legend>Managed TYO line pool</legend>'
             . '<div class="table-wrap"><table><thead><tr><th>Enabled</th><th>Line ID</th><th>Config</th><th>Priority</th></tr></thead><tbody>'
-            . $leigodMembershipRows . '</tbody></table></div></fieldset>'
+            . $leigodMembershipRows . '</tbody></table></div><p class="muted">Managed TYO transport = direct ingress (like current_mode, no Cloudflare) + an accelerated self-leg.</p></fieldset>'
             . '<div class="field" data-mode-field="leigod_mode"><label>Managed TYO carrier</label>'
             . '<select name="leigod_uot_impl"><option value="lguot"' . ($leigodUot !== 'gost' ? ' selected' : '') . '>lguot (recommended)</option>'
             . '<option value="gost"' . ($leigodUot === 'gost' ? ' selected' : '') . '>gost</option></select>'
             . '<p class="muted">CPU-efficient UDP-over-TCP carrier for the accelerated self-leg (~2.4x gost throughput at 1/3 CPU).</p></div>'
-            . '<script>(function(){var bm=document.querySelector(\'select[name=backend_mode]\');if(!bm)return;'
-            . 'function sync(){var v=bm.value;'
-            . 'document.querySelectorAll(\'[data-mode-field]\').forEach(function(e){e.style.display=(e.getAttribute(\'data-mode-field\')===v)?\'\':\'none\';});'
-            . 'var cf=document.querySelector(\'select[name=cf_location_group_id]\');if(cf){var f=cf.closest(\'.field\');if(f){f.style.display=(v===\'cf_mode\')?\'\':\'none\';}}}'
+             . '<script>(function(){var bm=document.querySelector(\'select[name=backend_mode]\');if(!bm)return;'
+             . 'function sync(){var v=bm.value;'
+             . 'document.querySelectorAll(\'[data-mode-field],[data-mode-fields]\').forEach(function(e){var one=e.getAttribute(\'data-mode-field\');var many=(e.getAttribute(\'data-mode-fields\')||\'\').split(/\\s+/);e.style.display=(one===v||many.indexOf(v)!==-1)?\'\':\'none\';});'
+             . 'var ngf=document.querySelector(\'[data-node-group-field]\');var ng=ngf?ngf.querySelector(\'select[name=node_group_key]\'):null;var uo=ng?ng.querySelector(\'[data-ultra-control-plane]\'):null;if(ngf&&ng&&uo){uo.disabled=(v!==\'ultra\');if(v===\'ultra\'){uo.disabled=false;ng.value=\'' . UltraMode::CONTROL_PLANE_GROUP . '\';ngf.style.display=\'none\';}else{ngf.style.display=\'\';if(ng.value===\'' . UltraMode::CONTROL_PLANE_GROUP . '\'){var fallback=Array.prototype.find.call(ng.options,function(o){return o.value!==\'' . UltraMode::CONTROL_PLANE_GROUP . '\';});ng.value=fallback?fallback.value:\'\';}}}'
+             . 'document.querySelectorAll(\'[data-non-ultra-field]\').forEach(function(e){e.style.display=(v===\'ultra\')?\'none\':\'\';});'
+             . 'document.querySelectorAll(\'[data-ultra-single-field]\').forEach(function(e){var s=e.querySelector(\'select\');if(v===\'ultra\'&&s){s.value=\'single\';}e.style.display=(v===\'ultra\')?\'none\':\'\';});'
+             . 'var cf=document.querySelector(\'select[name=cf_location_group_id]\');if(cf){var f=cf.closest(\'.field\');if(f){f.style.display=(v===\'cf_mode\')?\'\':\'none\';}}}'
             . 'bm.addEventListener(\'change\',sync);sync();})();</script>';
 
         $latestHeartbeats = $this->db->fetchAll(
@@ -2720,9 +2821,10 @@ final class AdminController extends BaseController
                 <td>' . $this->escape((string) ($combination['tenant_label'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($combination['tenant_description'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($combination['tenant_badge'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($combination['line_direction'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($combination['backend_mode'] ?? 'current_mode')) . '</td>
                 <td>' . $this->escape((string) ($combination['client_mode'] ?? 'single')) . '</td>
-                <td>' . $this->escape((string) ($combination['node_group_key'] ?? '')) . '</td>
+                <td>' . (UltraMode::isBackendMode($combination['backend_mode'] ?? '') ? '&ndash;' : $this->escape((string) ($combination['node_group_key'] ?? ''))) . '</td>
                 <td>' . $this->escape((string) ($combination['sidecar_point_name'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($combination['cf_location_group_name'] ?? '')) . '</td>
                 <td>' . (((int) ($combination['is_active'] ?? 1)) === 1 ? '<span class="badge success">active</span>' : '<span class="badge danger">inactive</span>') . '</td>
@@ -2777,7 +2879,7 @@ final class AdminController extends BaseController
         }
 
         $donationSection = '
-                  <div class="card" style="margin-top:16px;">
+                  <div class="card" style="margin-top:16px;" data-non-ultra-field>
                     <h3>Public donation</h3>
                     <p class="muted">Allow opted-in client self-leg capacity to become a public donated slave for this forward combination only. The donation gate is based on slave -&gt; sidecar -&gt; endpoint RTT.</p>
                     <div class="form-grid">
@@ -2791,7 +2893,7 @@ final class AdminController extends BaseController
                   </div>';
 
         $slavePickerSection = '
-                  <div class="card" style="margin-top:16px;">
+                  <div class="card" style="margin-top:16px;" data-non-ultra-field>
                     <h3>Slaves</h3>
                     <div class="field"><label>Admin-pinned rented slaves</label><select name="combination_slaves[]" multiple size="10">' . $slaveOptions . '</select><p class="muted">Default 4. The runtime keeps only the fastest N slaves in the active chain, where speed = slave -&gt; sidecar -&gt; endpoint RTT.</p></div>
                     <h3 style="margin-top:18px;">Live donations</h3>
@@ -2823,24 +2925,26 @@ final class AdminController extends BaseController
                     <div class="field"><label>Tenant Label</label><input type="text" name="tenant_label" value="' . $this->escape((string) ($editing['tenant_label'] ?? '')) . '" required></div>
                     <div class="field"><label>Tenant Description</label><input type="text" name="tenant_description" value="' . $this->escape((string) ($editing['tenant_description'] ?? '')) . '" placeholder="Best for Japan"></div>
                     <div class="field"><label>Tenant Badge</label><input type="text" name="tenant_badge" value="' . $this->escape((string) ($editing['tenant_badge'] ?? '')) . '" placeholder="Recommended"></div>
-                    <div class="field"><label>Slave Group</label><select name="node_group_key" required>' . $groupOptions . '</select></div>
-                    <div class="field"><label>Backend Mode</label><select name="backend_mode"><option value="current_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'current_mode' ? ' selected' : '') . '>current_mode</option><option value="cf_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'cf_mode' ? ' selected' : '') . '>cf_mode</option><option value="leigod_mode"' . (((string) ($editing['backend_mode'] ?? 'current_mode')) === 'leigod_mode' ? ' selected' : '') . '>Managed TYO transport</option></select><p class="muted">Managed TYO transport = direct ingress (like current_mode, no Cloudflare) + an accelerated self-leg.</p></div>
-                    <div class="field"><label>Transport Endpoint</label><select name="sidecar_point_id">' . $sidecarOptions . '</select><p class="muted">Optional for dedicated Managed TYO forward-node routes. Required for bond/MPTCP aggregation and CF mode; aggregation transport endpoints must be overseas.</p></div>
+                    <div class="field"><label>Direction</label><input type="text" name="line_direction" value="' . $this->escape((string) ($editing['line_direction'] ?? '')) . '" placeholder="Shanghai to Japan" maxlength="191"></div>
+                    <div class="field" data-node-group-field><label>Slave Group</label><select name="node_group_key">' . $groupOptions . '</select></div>
+                    <div class="field"><label>Backend Mode</label><select name="backend_mode"><option value="current_mode"' . ($selectedBackendMode === 'current_mode' ? ' selected' : '') . '>current_mode</option><option value="cf_mode"' . ($selectedBackendMode === 'cf_mode' ? ' selected' : '') . '>cf_mode</option><option value="leigod_mode"' . ($selectedBackendMode === 'leigod_mode' ? ' selected' : '') . '>Managed TYO transport</option><option value="ultra"' . ($selectedBackendMode === 'ultra' ? ' selected' : '') . '>Ultra</option></select></div>
+                    <div class="field" data-non-ultra-field><label>Transport Endpoint</label><select name="sidecar_point_id">' . $sidecarOptions . '</select><p class="muted">Optional for dedicated Managed TYO forward-node routes. Required for bond/MPTCP aggregation and CF mode; aggregation transport endpoints must be overseas.</p></div>
                     <div class="field"><label>Cloudflare Location Group</label><select name="cf_location_group_id">' . $cfOptions . '</select></div>
-                    <div class="field"><label>Client Mode</label><select name="client_mode"><option value="single"' . (((string) ($editing['client_mode'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="bond"' . (((string) ($editing['client_mode'] ?? 'single')) === 'bond' ? ' selected' : '') . '>bond</option></select></div>
-                    <div class="field"><label>Runtime Preference</label><select name="runtime_preference"><option value="single"' . (((string) ($editing['runtime_preference'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="mptcp_preferred_bond_fallback"' . (((string) ($editing['runtime_preference'] ?? 'single')) === 'mptcp_preferred_bond_fallback' ? ' selected' : '') . '>mptcp_preferred_bond_fallback</option></select></div>
-                    <div class="field"><label>Allow Private Self Leg</label><select name="allow_private_self_leg"><option value="0"' . (((int) ($editing['allow_private_self_leg'] ?? 0)) === 0 ? ' selected' : '') . '>No</option><option value="1"' . (((int) ($editing['allow_private_self_leg'] ?? 0)) === 1 ? ' selected' : '') . '>Yes</option></select></div>
-                    <div class="field"><label>Self Leg Scope</label><select name="self_leg_scope"><option value="none"' . (((string) ($editing['self_leg_scope'] ?? 'none')) === 'none' ? ' selected' : '') . '>none</option><option value="device_session"' . (((string) ($editing['self_leg_scope'] ?? 'none')) === 'device_session' ? ' selected' : '') . '>device_session</option></select></div>
-                    <div class="field"><label>Self Leg Role</label><select name="self_leg_role"><option value="none"' . (((string) ($editing['self_leg_role'] ?? 'none')) === 'none' ? ' selected' : '') . '>none</option><option value="latency_anchor"' . (((string) ($editing['self_leg_role'] ?? 'none')) === 'latency_anchor' ? ' selected' : '') . '>latency_anchor</option></select></div>
-                    <div class="field"><label>Max Legs Used (cap)</label><input type="number" name="helper_group_cap" min="0" value="' . $this->escape((string) ($editing['helper_group_cap'] ?? 4)) . '"><p class="muted">Default 4 for bond, CF Bond and MPTCP. 0 = unlimited.</p></div>
-                    <div class="field"><label>Helper Escalation Policy</label><select name="helper_escalation_policy"><option value="disabled"' . (((string) ($editing['helper_escalation_policy'] ?? 'disabled')) === 'disabled' ? ' selected' : '') . '>disabled</option><option value="desired_latency_only"' . (((string) ($editing['helper_escalation_policy'] ?? 'disabled')) === 'desired_latency_only' ? ' selected' : '') . '>desired_latency_only</option></select></div>
-                    <div class="field"><label>Self-leg CF transport</label><select name="self_leg_cf_transport"><option value="cf_direct"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_direct' ? ' selected' : '') . '>cf_direct (default)</option><option value="cf_wg"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_wg' ? ' selected' : '') . '>cf_wg (WG over CF IP)</option></select><p class="muted">Only effective when backend_mode = cf_mode. cf_wg routes the WireGuard underlay through wstunnel UDP-over-WSS to the CF IP.</p></div>
+                    <div class="field" data-ultra-single-field><label>Client Mode</label><select name="client_mode"><option value="single"' . (((string) ($editing['client_mode'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="bond"' . (((string) ($editing['client_mode'] ?? 'single')) === 'bond' ? ' selected' : '') . '>bond</option></select></div>
+                    <div class="field" data-ultra-single-field><label>Runtime Preference</label><select name="runtime_preference"><option value="single"' . (((string) ($editing['runtime_preference'] ?? 'single')) === 'single' ? ' selected' : '') . '>single</option><option value="mptcp_preferred_bond_fallback"' . (((string) ($editing['runtime_preference'] ?? 'single')) === 'mptcp_preferred_bond_fallback' ? ' selected' : '') . '>mptcp_preferred_bond_fallback</option></select></div>
+                    <div class="field" data-non-ultra-field><label>Allow Private Self Leg</label><select name="allow_private_self_leg"><option value="0"' . (((int) ($editing['allow_private_self_leg'] ?? 0)) === 0 ? ' selected' : '') . '>No</option><option value="1"' . (((int) ($editing['allow_private_self_leg'] ?? 0)) === 1 ? ' selected' : '') . '>Yes</option></select></div>
+                    <div class="field" data-non-ultra-field><label>Self Leg Scope</label><select name="self_leg_scope"><option value="none"' . (((string) ($editing['self_leg_scope'] ?? 'none')) === 'none' ? ' selected' : '') . '>none</option><option value="device_session"' . (((string) ($editing['self_leg_scope'] ?? 'none')) === 'device_session' ? ' selected' : '') . '>device_session</option></select></div>
+                    <div class="field" data-non-ultra-field><label>Self Leg Role</label><select name="self_leg_role"><option value="none"' . (((string) ($editing['self_leg_role'] ?? 'none')) === 'none' ? ' selected' : '') . '>none</option><option value="latency_anchor"' . (((string) ($editing['self_leg_role'] ?? 'none')) === 'latency_anchor' ? ' selected' : '') . '>latency_anchor</option></select></div>
+                    <div class="field" data-non-ultra-field><label>Max Legs Used (cap)</label><input type="number" name="helper_group_cap" min="0" value="' . $this->escape((string) ($editing['helper_group_cap'] ?? 4)) . '"><p class="muted">Default 4 for bond, CF Bond and MPTCP. 0 = unlimited.</p></div>
+                    <div class="field" data-non-ultra-field><label>Helper Escalation Policy</label><select name="helper_escalation_policy"><option value="disabled"' . (((string) ($editing['helper_escalation_policy'] ?? 'disabled')) === 'disabled' ? ' selected' : '') . '>disabled</option><option value="desired_latency_only"' . (((string) ($editing['helper_escalation_policy'] ?? 'disabled')) === 'desired_latency_only' ? ' selected' : '') . '>desired_latency_only</option></select></div>
+                    <div class="field" data-non-ultra-field><label>Self-leg CF transport</label><select name="self_leg_cf_transport"><option value="cf_direct"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_direct' ? ' selected' : '') . '>cf_direct (default)</option><option value="cf_wg"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_wg' ? ' selected' : '') . '>cf_wg (WG over CF IP)</option></select><p class="muted">Only effective when backend_mode = cf_mode. cf_wg routes the WireGuard underlay through wstunnel UDP-over-WSS to the CF IP.</p></div>
                     ' . $leigodField . '
-                    <div class="field"><label>Bond Ingress Mode</label><select name="bond_ingress_mode"><option value="plain_tcp_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'plain_tcp_mux' ? ' selected' : '') . '>plain_tcp_mux</option><option value="wss_path_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'wss_path_mux' ? ' selected' : '') . '>wss_path_mux</option></select></div>
+                    ' . $ultraField . '
+                    <div class="field" data-non-ultra-field><label>Bond Ingress Mode</label><select name="bond_ingress_mode"><option value="plain_tcp_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'plain_tcp_mux' ? ' selected' : '') . '>plain_tcp_mux</option><option value="wss_path_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'wss_path_mux' ? ' selected' : '') . '>wss_path_mux</option></select></div>
                     <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . $this->escape((string) ($editing['sort_order'] ?? 100)) . '"></div>
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>inactive</option></select></div>
                   </div>
-                  <div class="field" style="margin-top:14px;"><label>Helper Node Group Keys</label><textarea name="helper_node_group_keys_text" placeholder="shanghai-a&#10;shanghai-b&#10;guangzhou-a">' . $this->escape($helperNodeGroupKeysText) . '</textarea><p class="muted">One node group key per line, ordered by priority.</p></div>
+                  <div class="field" style="margin-top:14px;" data-non-ultra-field><label>Helper Node Group Keys</label><textarea name="helper_node_group_keys_text" placeholder="shanghai-a&#10;shanghai-b&#10;guangzhou-a">' . $this->escape($helperNodeGroupKeysText) . '</textarea><p class="muted">One node group key per line, ordered by priority.</p></div>
                   ' . $donationSection . '
                   ' . $slavePickerSection . '
                   <div class="field" style="margin-top:14px;"><label>Notes</label><textarea name="notes">' . $this->escape((string) ($editing['notes'] ?? '')) . '</textarea></div>
@@ -2857,7 +2961,7 @@ final class AdminController extends BaseController
                 <h3>Forward Combination List</h3>
                 <div class="table-wrap">
                   <table>
-                    <thead><tr><th>ID</th><th>Tenant Label</th><th>Description</th><th>Badge</th><th>Backend</th><th>Mode</th><th>Slave Group</th><th>Sidecar</th><th>CF Group</th><th>Status</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>ID</th><th>Tenant Label</th><th>Description</th><th>Badge</th><th>Direction</th><th>Backend</th><th>Mode</th><th>Slave Group</th><th>Sidecar</th><th>CF Group</th><th>Status</th><th>Actions</th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
@@ -2917,7 +3021,7 @@ final class AdminController extends BaseController
         $body = '<div class="grid">
               <section class="card">
                 <h3>' . ($editing !== null ? 'Edit Forward Route #' . $editId : 'New Forward Route') . '</h3>
-                <p class="muted">A route bundles forward combinations that share the client&rarr;slave ingress (same backend_mode); the slave auto-races the enabled ones and fails over (standard &harr; Managed TYO). Mixed backend_mode is rejected.</p>
+                <p class="muted">A route bundles forward combinations that share the client&rarr;slave ingress (same backend_mode); the slave auto-races the enabled ones and fails over. ultra stays isolated from standard and Managed TYO routes. Mixed backend_mode is rejected.</p>
                 <form method="post" action="/admin/forward-routes">
                   <input type="hidden" name="csrf_token" value="' . $csrf . '">
                   ' . ($editing !== null ? '<input type="hidden" name="id" value="' . $editId . '">' : '') . '
@@ -2974,17 +3078,235 @@ final class AdminController extends BaseController
                         && !in_array(strtolower(trim((string) ($row['enabled'] ?? '0'))), ['', '0', 'false', 'no', 'off'], true)
                 ));
             }
+            if (is_array($body['ultra_lines'] ?? null)) {
+                $body['ultra_lines'] = array_values(array_filter(
+                    $body['ultra_lines'],
+                    static fn(mixed $row): bool => is_array($row)
+                        && (int) ($row['ultra_line_id'] ?? 0) > 0
+                        && !in_array(strtolower(trim((string) ($row['enabled'] ?? '0'))), ['', '0', 'false', 'no', 'off'], true)
+                ));
+            }
             $saved = $this->provisioning?->saveForwardCombination($body);
             $savedId = is_array($saved) ? (int) ($saved['id'] ?? 0) : 0;
+            $savedIsUltra = UltraMode::isBackendMode($saved['backend_mode'] ?? ($body['backend_mode'] ?? ''));
             $this->provisioning?->saveCombinationAdminPinnedSlaves(
                 $savedId,
-                is_array($body['combination_slaves'] ?? null) ? $body['combination_slaves'] : []
+                !$savedIsUltra && is_array($body['combination_slaves'] ?? null) ? $body['combination_slaves'] : []
             );
             SessionAuth::flash('success', 'Forward combination saved.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to save forward combination: ' . $this->displayThrowableMessage($throwable));
         }
         return Response::redirect('/admin/forward-combinations');
+    }
+
+    public function ultraOperationsPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        $inventory = $this->ultraInventory ?? new UltraInventoryService($this->config, $this->db);
+        $statusService = $this->ultraClientStatus ?? new UltraClientStatusService($this->config, $this->db);
+        $view = strtolower(trim((string) $request->input('view', 'sessions')));
+        if (!in_array($view, ['sessions', 'lines', 'combinations', 'source'], true)) {
+            $view = 'sessions';
+        }
+        $limit = min(200, max(1, (int) $request->input('limit', 50)));
+        $pageNumber = max(1, (int) $request->input('page', 1));
+        $offset = ($pageNumber - 1) * $limit;
+        $inventoryCounts = $inventory->summaryCounts();
+        $statusCounts = $statusService->statusCounts();
+        $csrf = $this->escape(SessionAuth::csrfToken());
+
+        $summary = '';
+        foreach ([
+            'Online' => (int) ($statusCounts['online'] ?? 0),
+            'Stale' => (int) ($statusCounts['stale'] ?? 0),
+            'Available lines' => (int) ($inventoryCounts['discovered'] ?? 0),
+            'Unavailable lines' => (int) ($inventoryCounts['unavailable'] ?? 0),
+            'Material not required' => (int) ($inventoryCounts['not_required'] ?? 0),
+            'Material not acquired' => (int) ($inventoryCounts['not_acquired'] ?? 0),
+            'Material expired' => (int) ($inventoryCounts['expired'] ?? 0),
+            'Material ready' => (int) ($inventoryCounts['ready'] ?? 0),
+            'Expiring soon' => (int) ($inventoryCounts['expiring'] ?? 0),
+        ] as $label => $value) {
+            $summary .= '<section class="card"><div class="muted">' . $this->escape($label) . '</div><div class="stats">' . $value . '</div></section>';
+        }
+        $tabs = '';
+        foreach ([
+            ['view' => 'sessions', 'href' => '/admin/ultra?view=sessions', 'label' => 'Sessions'],
+            ['view' => 'lines', 'href' => '/admin/ultra?view=lines', 'label' => 'Lines'],
+            ['view' => 'combinations', 'href' => '/admin/ultra?view=combinations', 'label' => 'Combinations'],
+            ['view' => 'source', 'href' => '/admin/ultra?view=source', 'label' => 'Source'],
+        ] as $tab) {
+            $tabs .= '<a class="button ' . ($view === $tab['view'] ? '' : 'ghost') . '" href="' . $tab['href'] . '">' . $tab['label'] . '</a>';
+        }
+
+        $content = '';
+        if ($view === 'sessions') {
+            $sessions = $statusService->sessionsForAdmin([
+                'state' => $request->input('state', ''),
+                'destination_zone' => $request->input('destination_zone', ''),
+                'search' => $request->input('search', ''),
+                'forward' => $request->input('forward', ''),
+            ], $limit, $offset);
+            $rows = '';
+            foreach ($sessions as $session) {
+                $state = (string) ($session['state'] ?? 'Offline');
+                $badge = $state === 'Online' ? 'success' : ($state === 'Stale' ? 'info' : 'danger');
+                $user = trim((string) (($session['user_name'] ?? '') ?: ($session['user_email'] ?? '')));
+                $client = '#' . (int) ($session['client_id'] ?? 0) . ' ' . trim((string) ($session['client_name'] ?? ''));
+                $device = trim((string) (($session['device_name'] ?? '') ?: ($session['device_id'] ?? '')));
+                $tcp = trim((string) ($session['latest_tcp_line'] ?? ''));
+                $udp = trim((string) ($session['active_udp_line'] ?? ''));
+                $rows .= '<tr><td><span class="badge ' . $badge . '">' . $this->escape($state) . '</span></td>'
+                    . '<td>' . $this->escape($user) . '</td>'
+                    . '<td>' . $this->escape($client) . '<br><span class="muted">' . $this->escape($device) . '</span></td>'
+                    . '<td>' . $this->escape((string) ($session['client_ip'] ?? '')) . '</td>'
+                    . '<td>#' . (int) ($session['forward_id'] ?? 0) . ' ' . $this->escape((string) ($session['forward_label'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($session['destination'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($session['detected_ingress_zone'] ?? 'unknown')) . '</td>'
+                    . '<td>' . $this->escape($tcp) . '<br><span class="muted">' . $this->escape((string) ($session['latest_tcp_ip'] ?? '')) . '</span></td>'
+                    . '<td>' . $this->escape($udp) . '<br><span class="muted">' . $this->escape((string) ($session['active_udp_ip'] ?? '')) . '</span></td>'
+                    . '<td>' . $this->escape((string) ($session['last_seen_at'] ?? '')) . '</td></tr>';
+            }
+            if ($rows === '') {
+                $rows = '<tr><td colspan="10" class="muted">No Ultra sessions in the last 24 hours.</td></tr>';
+            }
+            $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Forward</th><th>Endpoint</th><th>Ingress</th><th>Latest TCP</th><th>Active UDP</th><th>Last seen</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+        } elseif ($view === 'lines') {
+            $lines = $inventory->listLinesForAdmin([
+                'ingress' => $request->input('ingress', ''),
+                'destination' => $request->input('destination_zone', ''),
+                'catalog_ingress' => $request->input('catalog_ingress', ''),
+                'catalog_destination' => $request->input('catalog_destination', ''),
+                'include_absent' => $request->input('include_absent', ''),
+            ], $limit, $offset);
+            $ingressZones = $inventory->activeZones('ingress');
+            $destinationZones = $inventory->activeZones('destination');
+            $rows = '';
+            foreach ($lines as $line) {
+                $lineId = (int) ($line['id'] ?? 0);
+                $relayIps = is_string($line['relay_ips_json'] ?? null) ? json_decode((string) $line['relay_ips_json'], true) : [];
+                $safeRelayIps = [];
+                foreach (is_array($relayIps) ? array_slice($relayIps, 0, 8) : [] as $relayIp) {
+                    if (filter_var((string) $relayIp, FILTER_VALIDATE_IP) !== false) {
+                        $safeRelayIps[] = (string) $relayIp;
+                    }
+                }
+                $expiresAt = trim((string) ($line['last_material_expires_at'] ?? ''));
+                $materialState = UltraInventoryService::materialState(
+                    $expiresAt,
+                    time(),
+                    600,
+                    (int) ($line['material_required'] ?? 0) === 1,
+                );
+                $materialStateLabel = UltraInventoryService::materialStateLabel($materialState);
+                $materialStateClass = UltraInventoryService::materialStateBadgeClass($materialState);
+                $ingressOptions = '<option value="">Auto</option>';
+                foreach ($ingressZones as $zone) {
+                    $code = (string) ($zone['zone_code'] ?? '');
+                    $ingressOptions .= '<option value="' . $this->escape($code) . '"' . ((string) ($line['admin_ingress_zone'] ?? '') === $code ? ' selected' : '') . '>' . $this->escape((string) ($zone['label'] ?? $code)) . '</option>';
+                }
+                $destinationOptions = '<option value="">Auto</option>';
+                foreach ($destinationZones as $zone) {
+                    $code = (string) ($zone['zone_code'] ?? '');
+                    $destinationOptions .= '<option value="' . $this->escape($code) . '"' . ((string) ($line['admin_destination_zone'] ?? '') === $code ? ' selected' : '') . '>' . $this->escape((string) ($zone['label'] ?? $code)) . '</option>';
+                }
+                $rows .= '<tr><td>' . (int) ($line['line_id'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape((string) ($line['source_title'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($line['catalog_ingress_label'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($line['effective_ingress_zone'] ?? 'unknown')) . '</td>'
+                    . '<td>' . $this->escape((string) ($line['catalog_destination_label'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($line['effective_destination_zone'] ?? 'unknown')) . '</td>'
+                    . '<td>' . $this->escape((string) ($line['discovery_ip'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape(implode(', ', $safeRelayIps)) . '</td>'
+                    . '<td><span class="badge ' . $materialStateClass . '">' . $this->escape($materialStateLabel) . '</span><br><span class="muted">' . $this->escape($expiresAt) . '</span></td>'
+                    . '<td>' . $this->escape((string) ($line['last_discovered_at'] ?? '')) . '</td>'
+                    . '<td><form method="post" action="/admin/ultra/lines/' . $lineId . '"><input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                    . '<input name="admin_label" value="' . $this->escape((string) ($line['admin_label'] ?? '')) . '" placeholder="Label">'
+                    . '<select name="admin_ingress_zone">' . $ingressOptions . '</select><select name="admin_destination_zone">' . $destinationOptions . '</select>'
+                    . '<label><input type="checkbox" name="is_enabled" value="1"' . ((int) ($line['is_enabled'] ?? 0) === 1 ? ' checked' : '') . '> Enabled</label>'
+                    . '<input type="number" name="sort_order" value="' . (int) ($line['sort_order'] ?? 100) . '" style="width:78px">'
+                    . '<input name="notes" value="' . $this->escape((string) ($line['notes'] ?? '')) . '" placeholder="Notes"><button class="button" type="submit">Save</button></form></td></tr>';
+            }
+            if ($rows === '') {
+                $rows = '<tr><td colspan="11" class="muted">No discovered Ultra lines.</td></tr>';
+            }
+            $catalogIngressFilter = $this->escape((string) $request->input('catalog_ingress', ''));
+            $catalogDestinationFilter = $this->escape((string) $request->input('catalog_destination', ''));
+            $includeUnavailable = !in_array(strtolower(trim((string) $request->input('include_absent', ''))), ['', '0', 'false', 'no', 'off'], true);
+            $content = '<form method="get" action="/admin/ultra" class="actions" style="margin-bottom:12px"><input type="hidden" name="view" value="lines">'
+                . '<label>Catalog ingress <input name="catalog_ingress" value="' . $catalogIngressFilter . '" maxlength="191"></label>'
+                . '<label>Catalog destination <input name="catalog_destination" value="' . $catalogDestinationFilter . '" maxlength="191"></label>'
+                . '<label><input type="checkbox" name="include_absent" value="1"' . ($includeUnavailable ? ' checked' : '') . '> Include unavailable lines</label>'
+                . '<button class="button" type="submit">Filter lines</button><a class="button ghost" href="/admin/ultra?view=lines">Clear</a></form>'
+                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+        } elseif ($view === 'combinations') {
+            $combinations = $this->provisioning?->listUltraCombinationsForAdmin() ?? [];
+            $rows = '';
+            foreach (array_slice($combinations, $offset, $limit) as $combination) {
+                $allowed = is_string($combination['ultra_allowed_ingress_zones_json'] ?? null) ? json_decode((string) $combination['ultra_allowed_ingress_zones_json'], true) : [];
+                $memberships = [];
+                foreach ((array) ($combination['ultra_lines'] ?? []) as $membership) {
+                    if (is_array($membership)) {
+                        $memberships[] = (string) ((int) ($membership['line_id'] ?? 0));
+                    }
+                }
+                $rows .= '<tr><td>' . (int) ($combination['id'] ?? 0) . '</td><td>' . $this->escape((string) ($combination['tenant_label'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($combination['ultra_destination_zone'] ?? 'unknown')) . '</td>'
+                    . '<td>' . $this->escape(implode(', ', is_array($allowed) ? array_map('strval', $allowed) : [])) . '</td>'
+                    . '<td>' . $this->escape((string) ($combination['ultra_fallback_policy'] ?? 'detected_then_any')) . '</td>'
+                    . '<td>' . $this->escape(implode(', ', $memberships)) . '</td><td>' . (int) ($combination['active_forward_count'] ?? 0) . '</td>'
+                    . '<td><a class="button ghost" href="/admin/forward-combinations?edit=' . (int) ($combination['id'] ?? 0) . '">Edit</a></td></tr>';
+            }
+            if ($rows === '') {
+                $rows = '<tr><td colspan="8" class="muted">No Ultra combinations.</td></tr>';
+            }
+            $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>ID</th><th>Combination</th><th>Destination</th><th>Ingress zones</th><th>Fallback</th><th>Lines</th><th>Forwards</th><th>Action</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+        } else {
+            $sources = $inventory->listSourcesForAdmin();
+            $rows = '';
+            foreach (array_slice($sources, $offset, $limit) as $source) {
+                $fingerprint = trim((string) ($source['inventory_fingerprint'] ?? ''));
+                $rows .= '<tr><td>' . $this->escape((string) ($source['source_id'] ?? '')) . '</td><td>' . $this->escape((string) ($source['agent_version'] ?? '')) . '</td>'
+                    . '<td>' . (int) ($source['inventory_count'] ?? 0) . '</td><td>' . $this->escape(substr($fingerprint, 0, 16)) . '</td>'
+                    . '<td>' . $this->escape((string) ($source['last_seen_at'] ?? '')) . '</td><td>' . $this->escape((string) ($source['last_inventory_at'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($source['last_jobs_at'] ?? '')) . '</td><td>' . $this->escape((string) ($source['last_material_upload_at'] ?? '')) . '</td>'
+                    . '<td>' . (int) ($source['last_requested_line_count'] ?? 0) . ' / ' . (int) ($source['last_accepted_line_count'] ?? 0) . '</td>
+                    <td>' . $this->escape((string) ($source['last_error_code'] ?? '')) . '</td></tr>';
+            }
+            if ($rows === '') {
+                $rows = '<tr><td colspan="10" class="muted">No authenticated source contact.</td></tr>';
+            }
+            $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>Source</th><th>Agent</th><th>Inventory</th><th>Fingerprint</th><th>Last contact</th><th>Inventory accepted</th><th>Jobs</th><th>Material upload</th><th>Requested / accepted</th><th>Error</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+        }
+
+        $body = '<div class="hero"><div><h2>Ultra Operations</h2></div><div class="actions"><a class="button" href="/admin/forward-combinations?backend_mode=ultra">New Ultra Combination</a></div></div>'
+            . '<div class="grid five">' . $summary . '</div><nav class="actions" style="margin:16px 0">' . $tabs . '</nav>' . $content;
+        return $this->adminPage('Ultra Operations', $body, $viewer, 'ultra');
+    }
+
+    public function saveUltraLinePolicy(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $lineId = max(0, (int) ($params['id'] ?? 0));
+            if ($lineId <= 0) {
+                throw new ApiException('ultra_line_not_found', 404);
+            }
+            $inventory = $this->ultraInventory ?? new UltraInventoryService($this->config, $this->db);
+            $inventory->updateLinePolicy($lineId, $request->body());
+            SessionAuth::flash('success', 'Ultra line policy saved.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to save Ultra line policy: ' . $this->displayThrowableMessage($throwable));
+        }
+        return Response::redirect('/admin/ultra?view=lines');
     }
 
     public function revokeDonation(Request $request, array $params): Response

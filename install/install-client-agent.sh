@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.08.10.1"
+INSTALLER_VERSION="2026.08.24.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -175,6 +175,7 @@ install_wireguard_tools
 STATE_DIR="/var/lib/leikwan-client-agent"
 INSTALLER_SHA256="$(current_installer_sha256)"
 mkdir -p "$CONFIG_DIR" "$BIN_DIR" "$STATE_DIR"
+install -d -m 0700 /etc/ultra /run/ultra /var/lib/ultra
 PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"
 : > "$PROXY_ENV_FILE"
 for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy; do
@@ -525,6 +526,7 @@ if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
   download_atomic "$ARTIFACT_BASE/artifacts/client-agent-update.sh" "$BIN_DIR/leikwan-client-agent-update"
 fi
 download_atomic "$ARTIFACT_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
+download_manifest_artifact ultra_client_runtime "$ARTIFACT_BASE/artifacts/ultra/ultra-client_linux_amd64" "$BIN_DIR/ultra-client"
 download_atomic "$ARTIFACT_BASE/artifacts/forward-strategy.py" "$BIN_DIR/forward_strategy.py"
 download_manifest_artifact tcp_race_runtime "$ARTIFACT_BASE/artifacts/leikwan-tcp-race.py" "$BIN_DIR/leikwan-tcp-race.py"
 download_manifest_artifact udp_fanout_runtime "$ARTIFACT_BASE/artifacts/leikwan-udp-fanout.py" "$BIN_DIR/leikwan-udp-fanout.py"

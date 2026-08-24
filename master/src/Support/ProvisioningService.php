@@ -592,6 +592,9 @@ final class ProvisioningService
 
     private function defaultMaxLegsUsedForCombination(string $clientMode, string $runtimePreference, string $backendMode): int
     {
+        if (UltraMode::isBackendMode($backendMode)) {
+            return 0;
+        }
         $hybrid = ['bond', 'mptcp_preferred_bond_fallback'];
         if (in_array($clientMode, ['bond'], true)) {
             return self::DEFAULT_MAX_LEGS_USED;
@@ -616,6 +619,9 @@ final class ProvisioningService
 
     private function sidecarRequiredForRuntime(string $backendMode, string $clientMode, string $runtimePreference): bool
     {
+        if (UltraMode::isBackendMode($backendMode)) {
+            return false;
+        }
         return $backendMode === 'cf_mode' || $this->combinationUsesAggregation($clientMode, $runtimePreference);
     }
 
@@ -648,6 +654,9 @@ final class ProvisioningService
 
     private function activeFamilyForRuntime(string $backendMode, string $clientMode, string $runtimePreference): string
     {
+        if (UltraMode::isBackendMode($backendMode)) {
+            return UltraMode::BACKEND_MODE;
+        }
         if ($this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference)) {
             return 'sidecar_aggregation';
         }
@@ -659,6 +668,9 @@ final class ProvisioningService
 
     private function targetContractForRuntime(string $backendMode, string $clientMode, string $runtimePreference): string
     {
+        if (UltraMode::isBackendMode($backendMode)) {
+            return UltraMode::BACKEND_MODE;
+        }
         if ($backendMode === 'leigod_mode' && !$this->combinationUsesAggregation($clientMode, $runtimePreference)) {
             return 'dedicated_forward_node';
         }
@@ -681,6 +693,151 @@ final class ProvisioningService
 
     /**
      * @param array<string, mixed> $payload
+     * @return array{destination_zone:?string,allowed_ingress_zones_json:?string,fallback_policy:string,memberships:array<int,array{ultra_line_id:int,sort_order:int}>}
+     */
+    private function normalizeUltraCombinationPolicy(array $payload, string $backendMode): array
+    {
+        $default = [
+            'destination_zone' => null,
+            'allowed_ingress_zones_json' => null,
+            'fallback_policy' => 'detected_then_any',
+            'memberships' => [],
+        ];
+        if (!UltraMode::isBackendMode($backendMode)) {
+            return $default;
+        }
+
+        $destination = strtolower(trim((string) ($payload['ultra_destination_zone'] ?? '')));
+        $fallback = strtolower(trim((string) ($payload['ultra_fallback_policy'] ?? 'detected_then_any')));
+        if (!in_array($fallback, ['detected_only', 'detected_then_any', 'any'], true)) {
+            throw new ApiException('invalid_ultra_fallback_policy', 422, ['ultra_fallback_policy' => $fallback]);
+        }
+        $destinationZones = $this->activeUltraZoneCodes('destination');
+        if ($destination === '' || $destination === 'unknown' || !in_array($destination, $destinationZones, true)) {
+            throw new ApiException('invalid_ultra_destination_zone', 422, ['ultra_destination_zone' => $destination]);
+        }
+
+        $rawIngressZones = $payload['ultra_allowed_ingress_zones'] ?? [];
+        if (!is_array($rawIngressZones)) {
+            throw new ApiException('invalid_ultra_ingress_zones', 422);
+        }
+        $activeIngressZones = $this->activeUltraZoneCodes('ingress');
+        $allowedIngressZones = [];
+        foreach ($rawIngressZones as $rawZone) {
+            $zone = strtolower(trim((string) $rawZone));
+            if ($zone === '' || $zone === 'unknown' || in_array($zone, $allowedIngressZones, true)) {
+                continue;
+            }
+            if (!in_array($zone, $activeIngressZones, true)) {
+                throw new ApiException('invalid_ultra_ingress_zone', 422, ['ultra_ingress_zone' => $zone]);
+            }
+            $allowedIngressZones[] = $zone;
+        }
+        if ($allowedIngressZones === []) {
+            throw new ApiException('ultra_ingress_zone_required', 422);
+        }
+
+        $rawMemberships = $payload['ultra_lines'] ?? [];
+        if (!is_array($rawMemberships)) {
+            throw new ApiException('invalid_ultra_line_memberships', 422);
+        }
+        $requested = [];
+        foreach (array_slice(array_values($rawMemberships), 0, 256) as $position => $rawMembership) {
+            if (!is_array($rawMembership) || !$this->configValueEnabled($rawMembership['enabled'] ?? false)) {
+                continue;
+            }
+            $ultraLineId = (int) ($rawMembership['ultra_line_id'] ?? 0);
+            if ($ultraLineId <= 0 || isset($requested[$ultraLineId])) {
+                continue;
+            }
+            $requested[$ultraLineId] = [
+                'ultra_line_id' => $ultraLineId,
+                'sort_order' => max(-100000, min(100000, (int) ($rawMembership['sort_order'] ?? (($position + 1) * 10))),),
+            ];
+        }
+
+        $eligible = [];
+        if ($requested !== []) {
+            $params = [];
+            $placeholders = [];
+            foreach (array_keys($requested) as $index => $ultraLineId) {
+                $key = 'ultra_line_' . $index;
+                $params[$key] = $ultraLineId;
+                $placeholders[] = ':' . $key;
+            }
+            $rows = $this->db->fetchAll(
+                'SELECT ul.id, ul.line_id, ul.is_source_present, ul.is_enabled,
+                        COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS effective_ingress_zone,
+                        COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS effective_destination_zone
+                 FROM ultra_lines ul
+                 WHERE ul.id IN (' . implode(', ', $placeholders) . ')',
+                $params
+            );
+            foreach ($rows as $row) {
+                $ultraLineId = (int) ($row['id'] ?? 0);
+                $ingress = strtolower(trim((string) ($row['effective_ingress_zone'] ?? 'unknown')));
+                $rowDestination = strtolower(trim((string) ($row['effective_destination_zone'] ?? 'unknown')));
+                if (!isset($requested[$ultraLineId])
+                    || (int) ($row['is_source_present'] ?? 0) !== 1
+                    || (int) ($row['is_enabled'] ?? 0) !== 1
+                    || $rowDestination !== $destination
+                    || !in_array($ingress, $allowedIngressZones, true)) {
+                    continue;
+                }
+                $eligible[] = $requested[$ultraLineId];
+            }
+        }
+        usort($eligible, static fn(array $left, array $right): int => [$left['sort_order'], $left['ultra_line_id']] <=> [$right['sort_order'], $right['ultra_line_id']]);
+
+        return [
+            'destination_zone' => $destination,
+            'allowed_ingress_zones_json' => json_encode($allowedIngressZones, JSON_UNESCAPED_SLASHES) ?: '[]',
+            'fallback_policy' => $fallback,
+            'memberships' => $eligible,
+        ];
+    }
+
+    /** @return array<int, string> */
+    private function activeUltraZoneCodes(string $role): array
+    {
+        if (!in_array($role, ['ingress', 'destination'], true)) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT zone_code FROM ultra_zones WHERE zone_role = :zone_role AND is_active = 1 ORDER BY sort_order ASC, id ASC',
+            ['zone_role' => $role]
+        );
+        $codes = [];
+        foreach ($rows as $row) {
+            $code = strtolower(trim((string) ($row['zone_code'] ?? '')));
+            if ($code !== '' && !in_array($code, $codes, true)) {
+                $codes[] = $code;
+            }
+        }
+        return $codes;
+    }
+
+    /** @param array<int, array{ultra_line_id:int,sort_order:int}> $memberships */
+    private function saveUltraLineMemberships(int $combinationId, array $memberships): void
+    {
+        $this->db->execute(
+            'DELETE FROM forward_combination_ultra_lines WHERE forward_combination_id = :forward_combination_id',
+            ['forward_combination_id' => $combinationId]
+        );
+        foreach (array_slice($memberships, 0, 256) as $membership) {
+            $this->db->insert('forward_combination_ultra_lines', [
+                'forward_combination_id' => $combinationId,
+                'ultra_line_id' => (int) $membership['ultra_line_id'],
+                'enabled' => 1,
+                'sort_order' => (int) $membership['sort_order'],
+                'created_at' => $this->now(),
+                'updated_at' => $this->now(),
+            ]);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
     public function saveForwardCombination(array $payload): array
@@ -690,12 +847,27 @@ final class ProvisioningService
         $tenantLabel = trim((string) ($payload['tenant_label'] ?? ''));
         $tenantDescription = trim((string) ($payload['tenant_description'] ?? ''));
         $tenantBadge = trim((string) ($payload['tenant_badge'] ?? ''));
+        $lineDirection = trim((string) ($payload['line_direction'] ?? ''));
+        if (strlen($lineDirection) > 191 || preg_match('/[\x00-\x1f\x7f]/', $lineDirection) === 1) {
+            throw new ApiException('invalid_forward_combination_direction', 422, ['line_direction' => $lineDirection]);
+        }
         $nodeGroupKey = trim((string) ($payload['node_group_key'] ?? ''));
         $backendMode = trim((string) ($payload['backend_mode'] ?? 'current_mode'));
+        if (UltraMode::isBackendMode($backendMode) && $nodeGroupKey === '') {
+            $nodeGroupKey = UltraMode::CONTROL_PLANE_GROUP;
+        }
         $sidecarPointId = (int) ($payload['sidecar_point_id'] ?? 0);
         $cfLocationGroupId = (int) ($payload['cf_location_group_id'] ?? 0);
         $clientMode = $this->normalizeClientMode((string) ($payload['client_mode'] ?? 'single'));
         $runtimePreference = trim((string) ($payload['runtime_preference'] ?? 'single'));
+        if (UltraMode::isBackendMode($backendMode)
+            && ($clientMode !== 'single' || $runtimePreference !== 'single')) {
+            throw new ApiException('ultra_requires_single_runtime', 422, [
+                'backend_mode' => $backendMode,
+                'client_mode' => $clientMode,
+                'runtime_preference' => $runtimePreference,
+            ]);
+        }
         if ($backendMode === 'leigod_mode' && $clientMode === 'mptcp') {
             $runtimePreference = 'single';
         }
@@ -740,7 +912,18 @@ final class ProvisioningService
         // (gost) and let leigod_mode override to the CPU-efficient lguot carrier.
         $leigodUotImpl = strtolower(trim((string) ($payload['leigod_uot_impl'] ?? 'gost'))) === 'lguot' ? 'lguot' : 'gost';
         $selfLegOuterTransport = strtolower(trim((string) ($payload['self_leg_outer_transport'] ?? 'cnix'))) ?: 'cnix';
-        if ($backendMode === 'leigod_mode') {
+        if (UltraMode::isBackendMode($backendMode)) {
+            // Ultra has no legacy self-leg carrier. Keep the persisted enum on its
+            // existing value so old node publishers cannot mistake ultra for LeiGod.
+            $selfLegOuterTransport = 'cnix';
+            $allowPrivateSelfLeg = false;
+            $helperNodeGroupKeys = [];
+            $helperGroupCap = 0;
+            $helperEscalationPolicy = 'disabled';
+            $cfLocationGroupId = 0;
+            $selfLegCfTransport = 'cf_direct';
+            $leigodUotImpl = 'gost';
+        } elseif ($backendMode === 'leigod_mode') {
             $selfLegOuterTransport = 'leigod';
             $allowPrivateSelfLeg = false;       // suppress the self-leg CF primary leg (publishedPrivateSelfLegCandidates returns null)
             $cfLocationGroupId = 0;             // direct ingress, no CF
@@ -755,9 +938,12 @@ final class ProvisioningService
             throw new ApiException('invalid_self_leg_outer_transport', 422, ['self_leg_outer_transport' => $selfLegOuterTransport]);
         }
         $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
-        $leigodLineId = max(0, (int) ($payload['leigod_line_id'] ?? 0));
+        $ultraPolicy = $this->normalizeUltraCombinationPolicy($payload, $backendMode);
+        $leigodLineId = UltraMode::isBackendMode($backendMode)
+            ? 0
+            : max(0, (int) ($payload['leigod_line_id'] ?? 0));
         $membershipPayloadProvided = array_key_exists('leigod_lines', $payload);
-        if ($membershipPayloadProvided && !is_array($payload['leigod_lines'])) {
+        if (!UltraMode::isBackendMode($backendMode) && $membershipPayloadProvided && !is_array($payload['leigod_lines'])) {
             throw new ApiException('invalid_leigod_line_memberships', 422);
         }
         $catalogMembershipsSupported = method_exists($this->db, 'transaction');
@@ -765,7 +951,8 @@ final class ProvisioningService
         $legacyScalarMembership = false;
         $membershipRequireReady = false;
 
-        if ($selfLegOuterTransport === 'leigod') {
+        $usesLineCatalog = $selfLegOuterTransport === 'leigod';
+        if ($usesLineCatalog) {
             if ($catalogMembershipsSupported && $membershipPayloadProvided) {
                 $membershipRequireReady = $isActive === 1 && !$sidecarRequired;
                 $normalizedLeigodMemberships = $this->leigodLineCatalog()->normalizeMemberships(
@@ -789,14 +976,17 @@ final class ProvisioningService
             if ($leigodLineId <= 0) {
                 throw new ApiException('leigod_line_required', 422, []);
             }
-            if ($sidecarRequired && $sidecarPointId <= 0) {
+            if ($selfLegOuterTransport === 'leigod' && $sidecarRequired && $sidecarPointId <= 0) {
                 throw new ApiException('sidecar_required_for_leigod_aggregation', 422, []);
             }
         } else {
             $leigodLineId = 0;
-            if ($catalogMembershipsSupported) {
+            if ($catalogMembershipsSupported && !UltraMode::isBackendMode($backendMode)) {
                 $normalizedLeigodMemberships = [];
             }
+        }
+        if (UltraMode::isBackendMode($backendMode) && ($ultraPolicy['memberships'] ?? []) === []) {
+            throw new ApiException('ultra_line_required', 422, []);
         }
         if ($sidecarRequired && $sidecarPointId <= 0) {
             throw new ApiException('sidecar_required_for_forward_aggregation', 422, ['client_mode' => $clientMode]);
@@ -808,7 +998,7 @@ final class ProvisioningService
         if ($name === '' || $tenantLabel === '' || $nodeGroupKey === '') {
             throw new ApiException('invalid_forward_combination_payload', 422, ['payload' => $payload]);
         }
-        if (!in_array($backendMode, ['current_mode', 'cf_mode', 'leigod_mode'], true)) {
+        if (!in_array($backendMode, ['current_mode', 'cf_mode', 'leigod_mode', UltraMode::BACKEND_MODE], true)) {
             throw new ApiException('invalid_forward_combination_backend_mode', 422, ['backend_mode' => $backendMode]);
         }
         if (!in_array($runtimePreference, ['single', 'mptcp_preferred_bond_fallback'], true)) {
@@ -869,6 +1059,7 @@ final class ProvisioningService
             'tenant_label' => $tenantLabel,
             'tenant_description' => $tenantDescription !== '' ? $tenantDescription : null,
             'tenant_badge' => $tenantBadge !== '' ? $tenantBadge : null,
+            'line_direction' => $lineDirection !== '' ? $lineDirection : null,
             'node_group_key' => $nodeGroupKey,
             'backend_mode' => $backendMode,
             'sidecar_point_id' => $sidecarPointId > 0 ? $sidecarPointId : null,
@@ -886,6 +1077,9 @@ final class ProvisioningService
             'leigod_uot_impl' => $leigodUotImpl,
             'leigod_socks_user' => $leigodSocksUser !== '' ? $leigodSocksUser : null,
             'leigod_socks_pass' => $leigodSocksPass !== '' ? $leigodSocksPass : null,
+            'ultra_destination_zone' => $ultraPolicy['destination_zone'],
+            'ultra_allowed_ingress_zones_json' => $ultraPolicy['allowed_ingress_zones_json'],
+            'ultra_fallback_policy' => $ultraPolicy['fallback_policy'],
             'desired_latency_ms' => $desiredLatencyMs,
             'allow_public_self_leg_donation' => $allowPublicSelfLegDonation,
             'donation_qualify_window_seconds' => $donationQualifyWindowSeconds,
@@ -907,6 +1101,7 @@ final class ProvisioningService
             $leigodLineId,
             $normalizedLeigodMemberships,
             $membershipRequireReady,
+            $ultraPolicy,
             $backendMode,
             $clientMode,
             $sidecarPointId,
@@ -925,6 +1120,7 @@ final class ProvisioningService
                          tenant_label = :tenant_label,
                          tenant_description = :tenant_description,
                          tenant_badge = :tenant_badge,
+                         line_direction = :line_direction,
                          node_group_key = :node_group_key,
                          backend_mode = :backend_mode,
                          sidecar_point_id = :sidecar_point_id,
@@ -942,6 +1138,9 @@ final class ProvisioningService
                          leigod_uot_impl = :leigod_uot_impl,
                          leigod_socks_user = :leigod_socks_user,
                          leigod_socks_pass = :leigod_socks_pass,
+                         ultra_destination_zone = :ultra_destination_zone,
+                         ultra_allowed_ingress_zones_json = :ultra_allowed_ingress_zones_json,
+                         ultra_fallback_policy = :ultra_fallback_policy,
                          desired_latency_ms = :desired_latency_ms,
                          allow_public_self_leg_donation = :allow_public_self_leg_donation,
                          donation_qualify_window_seconds = :donation_qualify_window_seconds,
@@ -975,13 +1174,19 @@ final class ProvisioningService
                 ]);
             }
 
-            if ($catalogMembershipsSupported) {
+            if ($catalogMembershipsSupported && !UltraMode::isBackendMode($backendMode)) {
                 $this->leigodLineCatalog()->saveCombinationMemberships(
                     $savedId,
                     $membershipPayload,
                     $membershipRequireReady
                 );
             }
+            $this->saveUltraLineMemberships(
+                $savedId,
+                UltraMode::isBackendMode($backendMode) && is_array($ultraPolicy['memberships'] ?? null)
+                    ? $ultraPolicy['memberships']
+                    : []
+            );
 
             // Keep denormalized per-forward ingress state coherent with the combination before publish.
             $this->db->execute(
@@ -1082,7 +1287,8 @@ final class ProvisioningService
             ['plan_id' => $planId]
         );
         $rows = $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
-        return $this->attachLeigodLinesToForwardCombinations($rows);
+        $rows = $this->attachLeigodLinesToForwardCombinations($rows);
+        return $this->attachUltraLinesToForwardCombinations($rows);
     }
 
     /**
@@ -1208,9 +1414,12 @@ final class ProvisioningService
         );
         $rows = $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
         $rows = $this->attachLeigodLinesToForwardCombinations($rows);
+        $rows = $this->attachUltraLinesToForwardCombinations($rows);
 
         return array_values(array_filter($rows, static function (array $row) use ($allowedGroupKeys, $allowedSidecarIds): bool {
-            $groupOk = $allowedGroupKeys === [] || in_array((string) ($row['node_group_key'] ?? ''), $allowedGroupKeys, true);
+            $groupOk = UltraMode::isBackendMode($row['backend_mode'] ?? '')
+                || $allowedGroupKeys === []
+                || in_array((string) ($row['node_group_key'] ?? ''), $allowedGroupKeys, true);
             $rowSidecarId = (int) ($row['sidecar_point_id'] ?? 0);
             $sidecarOk = $allowedSidecarIds === [] || $rowSidecarId <= 0 || in_array($rowSidecarId, $allowedSidecarIds, true);
             return $groupOk && $sidecarOk;
@@ -1231,7 +1440,8 @@ final class ProvisioningService
              ORDER BY fc.sort_order ASC, fc.id ASC'
         );
         $rows = $this->attachHelperNodeGroupKeysToForwardCombinations($rows);
-        return $this->attachLeigodLinesToForwardCombinations($rows);
+        $rows = $this->attachLeigodLinesToForwardCombinations($rows);
+        return $this->attachUltraLinesToForwardCombinations($rows);
     }
 
     /**
@@ -1257,6 +1467,7 @@ final class ProvisioningService
         }
         $rows = $this->attachHelperNodeGroupKeysToForwardCombinations([$row]);
         $rows = $this->attachLeigodLinesToForwardCombinations($rows);
+        $rows = $this->attachUltraLinesToForwardCombinations($rows);
         return $rows[0] ?? null;
     }
 
@@ -1274,6 +1485,52 @@ final class ProvisioningService
         }
         unset($row);
         return $rows;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function attachUltraLinesToForwardCombinations(array $rows): array
+    {
+        foreach ($rows as &$row) {
+            if (!UltraMode::isBackendMode($row['backend_mode'] ?? '')) {
+                $row['ultra_lines'] = [];
+                continue;
+            }
+            $combinationId = (int) ($row['id'] ?? 0);
+            $row['ultra_lines'] = $combinationId > 0
+                ? $this->db->fetchAll(
+                    'SELECT fcul.ultra_line_id, fcul.enabled, fcul.sort_order,
+                            ul.source_id, ul.line_id, ul.source_title, ul.admin_label,
+                            ul.discovery_ip, ul.relay_ips_json, ul.last_material_acquired_at,
+                            ul.last_material_expires_at, ul.is_source_present, ul.is_enabled,
+                            COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS effective_ingress_zone,
+                            COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS effective_destination_zone
+                     FROM forward_combination_ultra_lines fcul
+                     INNER JOIN ultra_lines ul ON ul.id = fcul.ultra_line_id
+                     WHERE fcul.forward_combination_id = :forward_combination_id
+                     ORDER BY fcul.sort_order ASC, fcul.id ASC',
+                    ['forward_combination_id' => $combinationId]
+                )
+                : [];
+        }
+        unset($row);
+        return $rows;
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function listUltraCombinationsForAdmin(): array
+    {
+        $rows = $this->db->fetchAll(
+            'SELECT fc.*,
+                    (SELECT COUNT(*) FROM forwards f WHERE f.forward_combination_id = fc.id) AS active_forward_count
+             FROM forward_combinations fc
+             WHERE fc.backend_mode = :backend_mode
+             ORDER BY fc.sort_order ASC, fc.id ASC',
+            ['backend_mode' => UltraMode::BACKEND_MODE]
+        );
+        return $this->attachUltraLinesToForwardCombinations($rows);
     }
 
     /**
@@ -3422,10 +3679,12 @@ final class ProvisioningService
             $maxLegs = max(0, (int) ($config['forward_combination_helper_group_cap'] ?? 0));
             $config['helper_group_cap'] = $maxLegs;
             $config['max_legs_used'] = $maxLegs;
-            $config['candidate_pool'] = $this->applyMaxLegsCapToPool(
-                $this->buildForwardCandidatePool($config, $client, $deviceSession),
-                $maxLegs
-            );
+            $config['candidate_pool'] = UltraMode::isBackendMode($config['backend_mode'] ?? '')
+                ? []
+                : $this->applyMaxLegsCapToPool(
+                    $this->buildForwardCandidatePool($config, $client, $deviceSession),
+                    $maxLegs
+                );
             $config['endpoints'] = array_values(array_filter(
                 is_array($config['endpoints'] ?? null) ? $config['endpoints'] : [],
                 static function (mixed $endpoint): bool {
@@ -3437,7 +3696,7 @@ final class ProvisioningService
                         && (int) ($endpoint['port'] ?? 0) > 0;
                 }
             ));
-            if ($config['endpoints'] === []) {
+            if ($config['endpoints'] === [] && !UltraMode::isBackendMode($config['backend_mode'] ?? '')) {
                 continue;
             }
             $matched[] = $config;
@@ -3762,6 +4021,103 @@ final class ProvisioningService
     }
 
     /**
+     * Build broker-only Ultra metadata without placing line numbers in the
+     * authenticated client response.
+     *
+     * @param array<int, array<string, mixed>> $forwards
+     * @return array<string, array<string, mixed>>
+     */
+    public function ultraLineMetadataForAssignedForwards(array $forwards): array
+    {
+        $eligible = [];
+        foreach ($forwards as $forward) {
+            if (!is_array($forward)
+                || !UltraMode::isBackendMode($forward['backend_mode'] ?? '')
+                || (string) ($forward['service_status'] ?? '') !== 'active') {
+                continue;
+            }
+            $forwardId = (int) ($forward['forward_id'] ?? 0);
+            if ($forwardId > 0) {
+                $eligible[$forwardId] = $forward;
+            }
+        }
+        if ($eligible === []) {
+            return [];
+        }
+
+        $params = [];
+        $placeholders = [];
+        foreach (array_keys($eligible) as $index => $forwardId) {
+            $key = 'ultra_forward_' . $index;
+            $params[$key] = $forwardId;
+            $placeholders[] = ':' . $key;
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT f.id AS forward_id,
+                    fc.ultra_destination_zone,
+                    fc.ultra_allowed_ingress_zones_json,
+                    fc.ultra_fallback_policy,
+                    fcul.ultra_line_id,
+                    fcul.sort_order,
+                    ul.source_id,
+                    ul.line_id,
+                    COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS ingress_zone,
+                    COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS destination_zone
+             FROM forwards f
+             INNER JOIN forward_combinations fc ON fc.id = f.forward_combination_id
+             INNER JOIN forward_combination_ultra_lines fcul
+                     ON fcul.forward_combination_id = fc.id AND fcul.enabled = 1
+             INNER JOIN ultra_lines ul
+                     ON ul.id = fcul.ultra_line_id
+                    AND ul.is_source_present = 1
+                    AND ul.is_enabled = 1
+             WHERE f.id IN (' . implode(', ', $placeholders) . ')
+               AND fc.backend_mode = :ultra_backend_mode
+               AND COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) = fc.ultra_destination_zone
+             ORDER BY f.id ASC, fcul.sort_order ASC, fcul.id ASC',
+            $params + ['ultra_backend_mode' => UltraMode::BACKEND_MODE]
+        );
+        $result = [];
+        foreach ($rows as $row) {
+            $forwardId = (int) ($row['forward_id'] ?? 0);
+            if (!isset($eligible[$forwardId]) || count($result[(string) $forwardId]['lines'] ?? []) >= 8) {
+                continue;
+            }
+            $key = (string) $forwardId;
+            if (!isset($result[$key])) {
+                $allowed = is_string($row['ultra_allowed_ingress_zones_json'] ?? null)
+                    ? json_decode((string) $row['ultra_allowed_ingress_zones_json'], true)
+                    : [];
+                $result[$key] = [
+                    'line_ids' => [],
+                    'lines' => [],
+                    'line_direction' => trim((string) ($eligible[$forwardId]['forward_combination_direction'] ?? '')),
+                    'destination_zone' => strtolower(trim((string) ($row['ultra_destination_zone'] ?? 'unknown'))),
+                    'allowed_ingress_zones' => array_values(array_filter(
+                        is_array($allowed) ? array_map('strval', $allowed) : [],
+                        static fn(string $zone): bool => $zone !== ''
+                    )),
+                    'fallback_policy' => strtolower(trim((string) ($row['ultra_fallback_policy'] ?? 'detected_then_any'))),
+                ];
+            }
+            $lineId = (int) ($row['line_id'] ?? 0);
+            if ($lineId <= 0 || in_array($lineId, $result[$key]['line_ids'], true)) {
+                continue;
+            }
+            $result[$key]['line_ids'][] = $lineId;
+            $result[$key]['lines'][] = [
+                'ultra_line_id' => (int) ($row['ultra_line_id'] ?? 0),
+                'line_id' => $lineId,
+                'source_id' => trim((string) ($row['source_id'] ?? '')),
+                'ingress_zone' => strtolower(trim((string) ($row['ingress_zone'] ?? 'unknown'))),
+                'destination_zone' => strtolower(trim((string) ($row['destination_zone'] ?? 'unknown'))),
+                'sort_order' => (int) ($row['sort_order'] ?? 100),
+            ];
+        }
+        return $result;
+    }
+
+    /**
      * tcp-accel split-TCP sidepath for assigned client forwards. The block is
      * only emitted when the operator sets TCP_ACCEL_SIDECAR_SERVER on the
      * panel host; without the env the feature stays fully off.
@@ -3943,7 +4299,7 @@ final class ProvisioningService
 
     private function tcpAccelSidecarServerEndpoint(): ?string
     {
-        $raw = trim((string) (getenv('TCP_ACCEL_SIDECAR_SERVER') ?: ''));
+        $raw = trim((string) ($this->config->get('TCP_ACCEL_SIDECAR_SERVER') ?? ''));
         if ($raw === '') {
             return null;
         }
@@ -3964,7 +4320,7 @@ final class ProvisioningService
     private function buildTcpAccelSidepathConfigBase(array $forwardIds, array $existing): array
     {
         sort($forwardIds);
-        $token = trim((string) (getenv('TCP_ACCEL_TOKEN') ?: ''));
+        $token = trim((string) ($this->config->get('TCP_ACCEL_TOKEN') ?? ''));
         $lanes = max(1, min(64, (int) ($existing['lanes'] ?? 4)));
         $minimumLanes = max(1, min($lanes, (int) ($existing['minimum_lanes'] ?? 2)));
         return [
@@ -4687,6 +5043,7 @@ final class ProvisioningService
                      sp.name AS bond_sidecar_point_name,
                      combo.name AS forward_combination_name,
                      combo.tenant_label AS forward_combination_label,
+                     combo.line_direction AS forward_combination_direction,
                      combo.runtime_preference AS forward_combination_runtime_preference,
                      combo.allow_private_self_leg AS forward_combination_allow_private_self_leg,
                      combo.self_leg_scope AS forward_combination_self_leg_scope,
@@ -4768,7 +5125,9 @@ final class ProvisioningService
         $bondIngressMode = $this->normalizeBondIngressMode((string) ($forward['bond_ingress_mode'] ?? 'wss_path_mux'));
         $runtimePreference = trim((string) ($forward['forward_combination_runtime_preference'] ?? 'single'));
         $backendMode = (string) ($forward['backend_mode'] ?? 'current_mode');
-        $aggregationEnabled = $this->combinationUsesAggregation($clientMode, $runtimePreference);
+        $ultraClient = UltraMode::isBackendMode($backendMode);
+        $aggregationEnabled = !UltraMode::isBackendMode($backendMode)
+            && $this->combinationUsesAggregation($clientMode, $runtimePreference);
         $sidecarFrontend = $this->usesSingleRaceSidecarFrontend($forward);
         $sidecarRequired = $sidecarFrontend
             || $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
@@ -4835,6 +5194,7 @@ final class ProvisioningService
             'forward_combination_id' => $forward['forward_combination_id'] !== null ? (int) $forward['forward_combination_id'] : null,
             'forward_combination_name' => (string) ($forward['forward_combination_name'] ?? ''),
             'forward_combination_label' => (string) ($forward['forward_combination_label'] ?? ''),
+            'forward_combination_direction' => (string) ($forward['forward_combination_direction'] ?? ''),
             'forward_combination_runtime_preference' => $runtimePreference,
             'forward_combination_allow_private_self_leg' => (int) ($forward['forward_combination_allow_private_self_leg'] ?? 0),
             'forward_combination_self_leg_scope' => (string) ($forward['forward_combination_self_leg_scope'] ?? 'none'),
@@ -4880,8 +5240,8 @@ final class ProvisioningService
             'endpoint_mode' => (string) $forward['endpoint_mode'],
             'forward_chain_id' => $forward['forward_chain_id'] !== null ? (int) $forward['forward_chain_id'] : null,
             'forward_chain_name' => $forward['forward_chain_name'],
-            'sni' => $resolvedSniHost,
-            'path_prefix' => (string) $forward['path_prefix'],
+            'sni' => $ultraClient ? '' : $resolvedSniHost,
+            'path_prefix' => $ultraClient ? '' : (string) $forward['path_prefix'],
             'mode' => $clientMode,
             'transport' => $this->effectiveMptcpTransport($forward),
             'service_status' => (string) $forward['service_status'],
@@ -4889,14 +5249,14 @@ final class ProvisioningService
             'bonding' => $bondConfig,
             'mptcp' => $mptcpConfig,
             'connection_policy' => [
-                'idle_pool' => ($clientMode === 'race' || $clientMode === 'bond' || $clientMode === 'mptcp') ? 1 : 5,
-                'tcp_race' => $clientMode === 'race',
-                'tcp_bond' => $clientMode === 'bond',
-                'tcp_mptcp' => $clientMode === 'mptcp',
-                'udp_fanout' => !in_array($clientMode, ['bond', 'mptcp'], true) && ((string) $forward['transport_mode']) === 'tcp+udp',
+                'idle_pool' => $ultraClient ? 1 : (($clientMode === 'race' || $clientMode === 'bond' || $clientMode === 'mptcp') ? 1 : 5),
+                'tcp_race' => !$ultraClient && $clientMode === 'race',
+                'tcp_bond' => !$ultraClient && $clientMode === 'bond',
+                'tcp_mptcp' => !$ultraClient && $clientMode === 'mptcp',
+                'udp_fanout' => !$ultraClient && !in_array($clientMode, ['bond', 'mptcp'], true) && ((string) $forward['transport_mode']) === 'tcp+udp',
                 'dup_repeat' => 1,
             ],
-            'endpoints' => array_map(function (array $endpoint) use ($resolvedSniHost, $resolvedCdnHost, $ingressGroup, $clientMode, $bondIngressMode, $publishesBondRuntime, $dedicatedLeigod, $forward): array {
+            'endpoints' => $ultraClient ? [] : array_map(function (array $endpoint) use ($resolvedSniHost, $resolvedCdnHost, $ingressGroup, $clientMode, $bondIngressMode, $publishesBondRuntime, $dedicatedLeigod, $forward): array {
                 $nodeConfig = is_string($endpoint['node_agent_config_json'] ?? null) ? json_decode((string) $endpoint['node_agent_config_json'], true) : [];
                 if (!is_array($nodeConfig)) {
                     $nodeConfig = [];
@@ -5531,6 +5891,7 @@ final class ProvisioningService
                 $nodeGroup = '';
             }
         }
+        $ultraRuntime = UltraMode::isBackendMode($backendMode);
 
         $availableClients = $this->availableClientsForService($serviceId);
         $availableClientGroups = $this->availableClientGroupsForService($serviceId);
@@ -5617,7 +5978,15 @@ final class ProvisioningService
         $allowedGroupKeys = array_map(static fn(array $group): string => (string) ($group['group_key'] ?? ''), $allowedGroups);
         $endpointGroupKeys = [];
 
-        if ($specificNodeId !== null) {
+        if ($ultraRuntime) {
+            $clientMode = 'single';
+            $endpointMode = UltraMode::BACKEND_MODE;
+            $forwardChainId = 0;
+            $specificNodeId = null;
+            $specificNode = null;
+            $nodeGroup = UltraMode::CONTROL_PLANE_GROUP;
+            $customEndpointIdsJson = null;
+        } elseif ($specificNodeId !== null) {
             $specificNode = $this->specificNodeForForward($specificNodeId, $serviceId);
             if ($specificNode === null) {
                 throw new ApiException('specific_node_not_allowed', 404, ['node_id' => $specificNodeId]);
@@ -5657,7 +6026,7 @@ final class ProvisioningService
             $endpointGroupKeys = [$nodeGroup];
         }
 
-        if ($endpointGroupKeys === [] && $candidateClients !== []) {
+        if (!$ultraRuntime && $endpointGroupKeys === [] && $candidateClients !== []) {
             foreach ($candidateClients as $client) {
                 $clientChainId = (int) ($client['default_forward_chain_id'] ?? 0);
                 if ($clientChainId > 0) {
@@ -5690,7 +6059,7 @@ final class ProvisioningService
             $endpointGroupKeys = array_values(array_unique(array_filter($endpointGroupKeys, static fn(string $value): bool => $value !== '')));
         }
 
-        if ($allowedGroups !== [] && $endpointGroupKeys !== []) {
+        if (!$ultraRuntime && $allowedGroups !== [] && $endpointGroupKeys !== []) {
             if (($nodeGroup === '' || $nodeGroup === 'default') && $endpointMode !== 'forward_chain') {
                 $nodeGroup = $allowedGroupKeys[0];
                 $endpointGroupKeys = [$nodeGroup];
@@ -5824,14 +6193,14 @@ final class ProvisioningService
             }
         }
 
-        if ($endpointMode === 'direct') {
+        if (!$ultraRuntime && $endpointMode === 'direct') {
             throw new ApiException('endpoint_mode_not_supported_yet', 422, [
                 'endpoint_mode' => 'direct',
                 'supported_modes' => ['slave_group', 'forward_chain'],
             ]);
         }
 
-        if ($endpointMode === 'slave_group' && $endpointGroupKeys === [] && $specificNodeId === null) {
+        if (!$ultraRuntime && $endpointMode === 'slave_group' && $endpointGroupKeys === [] && $specificNodeId === null) {
             throw new ApiException('node_group_required', 422, ['endpoint_mode' => 'slave_group']);
         }
 
@@ -5839,7 +6208,7 @@ final class ProvisioningService
             throw new ApiException('forward_chain_required', 422, ['endpoint_mode' => 'forward_chain']);
         }
 
-        if ($endpointMode !== 'forward_chain' && $nodeGroup !== '' && $endpointGroupKeys === []) {
+        if (!$ultraRuntime && $endpointMode !== 'forward_chain' && $nodeGroup !== '' && $endpointGroupKeys === []) {
             $endpointGroupKeys = [$nodeGroup];
         }
 
@@ -5851,7 +6220,7 @@ final class ProvisioningService
             $nodeGroup = $endpointGroupKeys[0];
         }
 
-        if ($endpointMode === 'slave_group' && $nodeGroup === '') {
+        if (!$ultraRuntime && $endpointMode === 'slave_group' && $nodeGroup === '') {
             $availableGroups = $this->availableNodeGroupsForService($serviceId);
             if ($availableGroups !== []) {
                 $nodeGroup = (string) $availableGroups[0]['group_key'];
@@ -5863,14 +6232,14 @@ final class ProvisioningService
             $endpointGroupKeys = [$nodeGroup];
         }
 
-        if ($allowedGroups !== [] && $nodeGroup !== '' && !in_array($nodeGroup, $allowedGroupKeys, true)) {
+        if (!$ultraRuntime && $allowedGroups !== [] && $nodeGroup !== '' && !in_array($nodeGroup, $allowedGroupKeys, true)) {
                 throw new ApiException('node_group_not_allowed', 422, [
                     'requested_node_group' => $nodeGroup,
                     'allowed_node_groups' => $allowedGroupKeys,
                 ]);
         }
 
-        $endpointCount = $specificNodeId !== null ? 1 : $this->panelManagedEndpointCount($clientMode, $endpointGroupKeys, $serviceId);
+        $endpointCount = $ultraRuntime ? 0 : ($specificNodeId !== null ? 1 : $this->panelManagedEndpointCount($clientMode, $endpointGroupKeys, $serviceId));
         $customEndpointIdsJson = $this->customEndpointIdsJsonWithSpecificNode($customEndpointIdsJson, $specificNodeId);
 
         if ($forwardId === null) {
@@ -5997,9 +6366,11 @@ final class ProvisioningService
         $nodeSelectionCount = is_array($eligibleLeigodNodes)
             ? max($desiredEndpointCount, $this->availableNodeCountForGroups($endpointGroupKeys, $serviceId))
             : $desiredEndpointCount;
-        $nodes = $specificNodeId !== null && is_array($specificNode)
-            ? [$specificNode]
-            : $this->pickNodesForGroups($endpointGroupKeys, $nodeSelectionCount, $serviceId);
+        $nodes = $ultraRuntime
+            ? []
+            : ($specificNodeId !== null && is_array($specificNode)
+                ? [$specificNode]
+                : $this->pickNodesForGroups($endpointGroupKeys, $nodeSelectionCount, $serviceId));
         if (is_array($eligibleLeigodNodes)) {
             $eligibleNodeIds = array_fill_keys(array_map(
                 static fn(array $node): int => (int) ($node['id'] ?? 0),
@@ -6026,14 +6397,14 @@ final class ProvisioningService
             $reachableNodes[] = $node;
         }
         $nodes = $reachableNodes;
-        if ($nodes === [] && is_array($eligibleLeigodNodes)) {
+        if ($nodes === [] && !$ultraRuntime && is_array($eligibleLeigodNodes)) {
             throw new ApiException('leigod_route_no_healthy_candidate', 409, [
                 'forward_route_id' => $forwardRouteId,
                 'forward_combination_id' => $forwardCombinationId,
                 'transport' => $this->leigodEligibilityTransport($transportMode),
             ]);
         }
-        if ($nodes === []) {
+        if ($nodes === [] && !$ultraRuntime) {
             throw new ApiException('no_available_nodes', 409, [
                 'requested_node_group' => $forward['node_group_key'],
                 'allowed_node_groups' => array_map(static fn(array $group): string => (string) $group['group_key'], $allowedGroups),
@@ -7552,7 +7923,8 @@ final class ProvisioningService
         $clientMode = $this->normalizeClientMode((string) ($forward['client_mode'] ?? 'single'));
         $runtimePreference = $this->runtimePreferenceForForward($forward);
         $serviceId = (int) ($forward['service_id'] ?? 0);
-        $desiredCount = $this->panelManagedEndpointCount($clientMode, $groupKeys, $serviceId ?: null);
+        $ultraRuntime = UltraMode::isBackendMode($forward['backend_mode'] ?? '');
+        $desiredCount = $ultraRuntime ? 0 : $this->panelManagedEndpointCount($clientMode, $groupKeys, $serviceId ?: null);
         $combinationId = (int) ($forward['forward_combination_id'] ?? 0);
         $existing = $this->db->fetchAll(
             'SELECT * FROM service_endpoints
@@ -7588,7 +7960,25 @@ final class ProvisioningService
                 $eligibleLeigodNodes
             ), true);
         }
-        if ($combinationId > 0) {
+        if ($ultraRuntime) {
+            $desiredNodes = [];
+            $this->db->execute(
+                'UPDATE forwards
+                 SET endpoint_mode = :endpoint_mode,
+                     node_group_key = :node_group_key,
+                     endpoint_count = 0,
+                     forward_chain_id = NULL,
+                     custom_endpoint_ids_json = NULL,
+                     updated_at = :updated_at
+                 WHERE id = :id',
+                [
+                    'id' => $forwardId,
+                    'endpoint_mode' => UltraMode::BACKEND_MODE,
+                    'node_group_key' => UltraMode::CONTROL_PLANE_GROUP,
+                    'updated_at' => $this->now(),
+                ]
+            );
+        } elseif ($combinationId > 0) {
             $combination = $this->forwardCombinationById($combinationId) ?? [];
             $selectorCap = $this->reconcileCombinationSelectorCap($forward, $combination);
             $selectedSlaves = $this->pickFastestSlavesForCombination($combinationId, $selectorCap);
@@ -8156,7 +8546,9 @@ final class ProvisioningService
         $bondIngressMode = $this->normalizeBondIngressMode((string) ($forward['bond_ingress_mode'] ?? 'wss_path_mux'));
         $runtimePreference = $this->runtimePreferenceForForward($forward);
         $backendMode = (string) ($forward['backend_mode'] ?? 'current_mode');
-        $aggregationEnabled = $this->combinationUsesAggregation($clientMode, $runtimePreference);
+        $ultraPublish = UltraMode::isBackendMode($backendMode);
+        $aggregationEnabled = !UltraMode::isBackendMode($backendMode)
+            && $this->combinationUsesAggregation($clientMode, $runtimePreference);
         $sidecarFrontend = $this->usesSingleRaceSidecarFrontend($forward);
         $sidecarRequired = $sidecarFrontend
             || $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
@@ -8243,7 +8635,7 @@ final class ProvisioningService
             ];
             $publishTarget = '127.0.0.1:' . $relayPort;
         }
-        return [
+        $publishPayload = [
             'listen_port' => (int) ($forward['public_port'] ?? 0),
             'target' => $publishTarget,
             'origin_group_key' => (string) ($node['node_group_key'] ?? $node['group_key'] ?? ''),
@@ -8261,30 +8653,33 @@ final class ProvisioningService
             'cf_mode' => $backendMode === 'cf_mode'
                 ? $this->buildCfModePayload($forward, $node)
                 : null,
-            'path_prefix' => (string) ($forward['path_prefix'] ?? ''),
+            'path_prefix' => $ultraPublish ? '' : (string) ($forward['path_prefix'] ?? ''),
             'route_key' => $routeKey,
-            'sni_host' => (string) ($forward['sni_host'] ?? ''),
-            'cdn_host' => (string) ($forward['cdn_host'] ?? ''),
+            'sni_host' => $ultraPublish ? '' : (string) ($forward['sni_host'] ?? ''),
+            'cdn_host' => $ultraPublish ? '' : (string) ($forward['cdn_host'] ?? ''),
             'tls_cert_ref' => (string) $this->config->get('DEFAULT_TLS_CERT_REF', 'default-edge-cert'),
             'filter_profile' => (string) ($forward['filter_profile'] ?? 'off'),
             'transport_mode' => (string) ($forward['transport_mode'] ?? 'tcp+udp'),
             'uot_sidecar_host' => $this->uotSidecarHostForForward($forward),
-            'ingress_protocol' => $plainTcpIngress ? 'plain_tcp_mux' : 'wss_path_mux',
-            'backend_protocol' => $backendProtocol,
-            'leigod_forward' => $leigodForward,
+            'ingress_protocol' => $ultraPublish ? 'ultra_binary' : ($plainTcpIngress ? 'plain_tcp_mux' : 'wss_path_mux'),
+            'backend_protocol' => $ultraPublish ? 'ultra_binary' : $backendProtocol,
             'sidecar_uplink' => $staticSidecarUplink ?? [],
             'sidecar_uplink_selector' => $staticSidecarSelector,
-            'ingress_auth_token' => $plainTcpIngress
+            'ingress_auth_token' => !$ultraPublish && $plainTcpIngress
                 ? $this->bondIngressAuthToken($forward, $endpointId, $routeKey)
                 : '',
-            'leg_relay_protocols' => $this->legRelayProtocolsForNode($clientMode, $node),
-            'mptcp_underlay' => $clientMode === 'mptcp' ? $this->buildMptcpSlaveUnderlayPayload($forward, $node, [
+            'leg_relay_protocols' => $ultraPublish ? [] : $this->legRelayProtocolsForNode($clientMode, $node),
+            'mptcp_underlay' => !$ultraPublish && $clientMode === 'mptcp' ? $this->buildMptcpSlaveUnderlayPayload($forward, $node, [
                 'id' => $endpointId,
                 'node_id' => (int) ($node['id'] ?? 0),
                 'public_port' => (int) ($forward['public_port'] ?? 0),
             ]) : null,
             'donation_policy' => $this->donationPolicyForForward($forward),
         ];
+        if (!UltraMode::isBackendMode($backendMode)) {
+            $publishPayload['leigod_forward'] = $leigodForward;
+        }
+        return $publishPayload;
     }
 
     /**

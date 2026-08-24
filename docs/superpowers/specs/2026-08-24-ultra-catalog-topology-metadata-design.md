@@ -23,10 +23,10 @@ They are not topology states and must not prevent inventory categorization.
 
 ## Approved Approach
 
-Use safe official catalog metadata as the authoritative grouping source:
+Use safe, current `linelist` output as the authoritative grouping source:
 
-- catalog ingress label from the official line title or explicit entry label;
-- catalog destination label from the official exit alias;
+- catalog ingress label from the first title segment;
+- catalog destination label from the second title segment;
 - discovery IP from catalog/TOML metadata;
 - optional observed relay IPs only after material has been acquired.
 
@@ -52,7 +52,7 @@ Each inventory line may add these bounded, non-secret fields:
 
 The source agent merges metadata in this order:
 
-1. an explicit approved catalog snapshot;
+1. a root-only cache populated by current `linelist` output;
 2. the existing line `index.json` record;
 3. safe numeric and discovery-IP fields from the TOML file.
 
@@ -61,10 +61,20 @@ ports, credentials, sessions, account identifiers, line-file contents, or
 material. Inventory remains capped at 256 lines and 256 KiB. Its normalized
 fingerprint includes the catalog labels so a metadata change triggers upload.
 
-Catalog parsing must tolerate both the source index shape and official pool
-rows such as `line_title`, `line_enter_title`, and `line_exit_alias`. Invalid,
-oversized, ambiguous, or control-character-bearing values become empty rather
-than failing the complete inventory.
+The source groups TOMLs by `(game_id, area_id)`, queries each unique pair once,
+and never invokes `startacc` for categorization. Queries are sequential,
+timeout-bounded, and spread across polling cycles after material renewal jobs.
+No city list or IP-geolocation inference is used. A successful current result
+replaces that pair's cached records; a failed request retains the last safe
+result. Invalid, oversized, ambiguous, or control-character-bearing values
+become empty rather than failing the complete inventory.
+
+Until every current `(game_id, area_id)` pair has completed at least one
+successful query, local TOML records remain visible to avoid a partial scan
+retiring valid lines. Once the scan is complete, the current catalog becomes
+the availability boundary: a local config omitted by a successful result is
+retained as Panel history with `is_source_present = 0` and is hidden from the
+default available-line view.
 
 ## Panel Storage And Classification
 
@@ -109,6 +119,12 @@ codes. Raw catalog labels remain visible when classification is `unknown`, so
 the administrator can create or apply a safe override without activating the
 line.
 
+Zone aliases are limited to geographic labels actually observed in current
+catalog output. Domestic-service category markers, game names, and generic
+backup titles are not guessed into geographic zones. A line-specific admin
+override may supply verified topology when the catalog title is
+non-geographic.
+
 ## Material Lifecycle
 
 No change is made to on-demand acquisition or renewal:
@@ -116,6 +132,9 @@ No change is made to on-demand acquisition or renewal:
 - inventory topology exists independently of material;
 - only active, enabled, assigned Ultra lines request material;
 - due material is renewed in the existing bounded refresh window;
+- unassigned or disabled lines report `not required`, even if historical
+  material has expired;
+- `expired` is reserved for material required by an active Ultra forward;
 - observed relay IPs are clearly marked as runtime observations, not catalog
   ingress or destination labels.
 
@@ -127,8 +146,8 @@ No change is made to on-demand acquisition or renewal:
 - Catalog files are size-checked and line-count bounded.
 - Source polling, acquisition concurrency, retry count, and queue bounds remain
   unchanged.
-- A missing or malformed catalog snapshot preserves numeric inventory and
-  reports empty labels instead of blocking source polling.
+- A missing, malformed, or not-yet-complete catalog snapshot preserves numeric
+  inventory instead of prematurely retiring local lines.
 
 ## Acceptance Criteria
 
@@ -137,8 +156,10 @@ No change is made to on-demand acquisition or renewal:
    is missing or ambiguous.
 3. Admin overrides survive later inventory uploads.
 4. Inventory payloads and Panel HTML contain no secret or business port.
-5. All 110 current source lines are visible; every available catalog label is
-   imported without starting a data-plane process.
+5. Every line currently returned by `linelist` is imported without starting a
+   data-plane process. A local line omitted after all catalog pairs have been
+   scanned remains available only through the explicit unavailable-history
+   view and receives no guessed metadata.
 6. Source-agent, Panel inventory, admin page, migration, and no-slave contracts
    pass focused regression tests.
 7. Production deployment preserves the outbound-only source role and passes
