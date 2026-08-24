@@ -23,7 +23,7 @@ final class UltraSourceController extends BaseController
     public function jobs(Request $request, array $params): Response
     {
         $sourceId = $this->materials->verifySourceRequest($request);
-        $lineIds = $this->materials->dueLineIds(600);
+        $lineIds = $this->materials->dueLineIds($sourceId, 600);
         $this->inventory->markSourceContact($sourceId, 'jobs', ['requested' => count($lineIds)]);
         return $this->json([
             'ok' => true,

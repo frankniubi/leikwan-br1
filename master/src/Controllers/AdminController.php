@@ -3270,7 +3270,9 @@ final class AdminController extends BaseController
             $rows = '';
             foreach (array_slice($sources, $offset, $limit) as $source) {
                 $fingerprint = trim((string) ($source['inventory_fingerprint'] ?? ''));
-                $rows .= '<tr><td>' . $this->escape((string) ($source['source_id'] ?? '')) . '</td><td>' . $this->escape((string) ($source['agent_version'] ?? '')) . '</td>'
+                $status = (int) ($source['is_active'] ?? 1) === 1 ? 'active' : 'disabled';
+                $rows .= '<tr><td>' . $this->escape((string) ($source['display_label'] ?? $source['source_id'] ?? '')) . '</td><td>'
+                    . $this->escape((string) ($source['source_id'] ?? '')) . '</td><td>' . (int) ($source['priority'] ?? 100) . '</td><td>' . $this->escape($status) . '</td><td>' . $this->escape((string) ($source['agent_version'] ?? '')) . '</td>'
                     . '<td>' . (int) ($source['inventory_count'] ?? 0) . '</td><td>' . $this->escape(substr($fingerprint, 0, 16)) . '</td>'
                     . '<td>' . $this->escape((string) ($source['last_seen_at'] ?? '')) . '</td><td>' . $this->escape((string) ($source['last_inventory_at'] ?? '')) . '</td>'
                     . '<td>' . $this->escape((string) ($source['last_jobs_at'] ?? '')) . '</td><td>' . $this->escape((string) ($source['last_material_upload_at'] ?? '')) . '</td>'
@@ -3278,9 +3280,9 @@ final class AdminController extends BaseController
                     <td>' . $this->escape((string) ($source['last_error_code'] ?? '')) . '</td></tr>';
             }
             if ($rows === '') {
-                $rows = '<tr><td colspan="10" class="muted">No authenticated source contact.</td></tr>';
+                $rows = '<tr><td colspan="13" class="muted">No authenticated source contact.</td></tr>';
             }
-            $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>Source</th><th>Agent</th><th>Inventory</th><th>Fingerprint</th><th>Last contact</th><th>Inventory accepted</th><th>Jobs</th><th>Material upload</th><th>Requested / accepted</th><th>Error</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+            $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>Point</th><th>Source ID</th><th>Priority</th><th>Status</th><th>Agent</th><th>Inventory</th><th>Fingerprint</th><th>Last contact</th><th>Inventory accepted</th><th>Jobs</th><th>Material upload</th><th>Requested / accepted</th><th>Error</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
         }
 
         $body = '<div class="hero"><div><h2>Ultra Operations</h2></div><div class="actions"><a class="button" href="/admin/forward-combinations?backend_mode=ultra">New Ultra Combination</a></div></div>'

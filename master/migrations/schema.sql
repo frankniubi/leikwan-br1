@@ -1251,6 +1251,9 @@ CREATE TABLE IF NOT EXISTS leigod_lines (
 
 CREATE TABLE IF NOT EXISTS ultra_sources (
     source_id VARCHAR(191) NOT NULL PRIMARY KEY,
+    display_label VARCHAR(191) NULL,
+    priority INT NOT NULL DEFAULT 100,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
     agent_version VARCHAR(64) NULL,
     inventory_fingerprint CHAR(64) NULL,
     inventory_count INT UNSIGNED NOT NULL DEFAULT 0,
@@ -1263,7 +1266,8 @@ CREATE TABLE IF NOT EXISTS ultra_sources (
     last_error_code VARCHAR(64) NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
-    INDEX idx_ultra_sources_seen (last_seen_at)
+    INDEX idx_ultra_sources_seen (last_seen_at),
+    INDEX idx_ultra_sources_priority (is_active, priority, source_id)
 );
 
 CREATE TABLE IF NOT EXISTS ultra_zones (

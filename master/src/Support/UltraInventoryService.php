@@ -92,7 +92,8 @@ final class UltraInventoryService
             'auto_destination_zone' => self::classifyText($catalogDestination !== '' ? $catalogDestination : $classificationText, $zonesByRole['destination'] ?? []),
             'last_discovered_at' => $timestamp,
             'is_source_present' => 1,
-            'is_enabled' => 0,
+            // Operators approved full inventory activation for registered sources.
+            'is_enabled' => 1,
             'sort_order' => $lineId,
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
@@ -296,7 +297,7 @@ final class UltraInventoryService
     /** @return array<int, array<string, mixed>> */
     public function listSourcesForAdmin(): array
     {
-        return $this->db->fetchAll('SELECT * FROM ultra_sources ORDER BY source_id ASC');
+        return $this->db->fetchAll('SELECT * FROM ultra_sources ORDER BY priority ASC, source_id ASC');
     }
 
     public static function materialState(
