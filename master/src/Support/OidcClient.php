@@ -39,6 +39,11 @@ final class OidcClient
     {
         $tokenAuthMethod = strtolower((string) $this->config->get('OIDC_TOKEN_AUTH_METHOD', 'client_secret_basic'));
         $userinfoUrl = trim((string) $this->config->get('OIDC_USERINFO_URL', ''));
+        try {
+            $this->configuredMetadata();
+        } catch (RuntimeException) {
+            return false;
+        }
         return $this->config->getBool('OIDC_ENABLED')
             && $this->httpsUrl($this->issuer())
             && $this->httpsUrl((string) $this->config->get('OIDC_REDIRECT_URI', ''))
@@ -202,6 +207,10 @@ final class OidcClient
         if (!$this->isConfigured()) {
             throw new RuntimeException('oidc_configuration_invalid');
         }
+        $configured = $this->configuredMetadata();
+        if ($configured !== null) {
+            return $this->metadata = $configured;
+        }
         $discoveryUrl = (string) $this->config->get('OIDC_DISCOVERY_URL', '');
         if ($discoveryUrl === '') {
             $discoveryUrl = rtrim($this->issuer(), '/') . '/.well-known/openid-configuration';
@@ -226,6 +235,76 @@ final class OidcClient
             $metadata['userinfo_endpoint'] = $userinfoUrl;
         }
         return $this->metadata = $metadata;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function configuredMetadata(): ?array
+    {
+        $endpoints = [
+            'authorization_endpoint' => trim((string) $this->config->get('OIDC_AUTHORIZATION_URL', '')),
+            'token_endpoint' => trim((string) $this->config->get('OIDC_TOKEN_URL', '')),
+            'jwks_uri' => trim((string) $this->config->get('OIDC_JWKS_URL', '')),
+            'userinfo_endpoint' => trim((string) $this->config->get('OIDC_USERINFO_URL', '')),
+        ];
+        $explicitCount = count(array_filter([
+            $endpoints['authorization_endpoint'],
+            $endpoints['token_endpoint'],
+            $endpoints['jwks_uri'],
+        ], static fn(string $value): bool => $value !== ''));
+        if ($explicitCount === 0) {
+            $derived = $this->whmcsMetadata($endpoints['userinfo_endpoint']);
+            if ($derived === null) {
+                return null;
+            }
+            $endpoints = $derived;
+        } elseif ($explicitCount !== 3 || $endpoints['userinfo_endpoint'] === '') {
+            throw new RuntimeException('oidc_configuration_invalid');
+        }
+        foreach ($endpoints as $endpoint) {
+            if (!$this->httpsUrl($endpoint)) {
+                throw new RuntimeException('oidc_configuration_invalid');
+            }
+        }
+        return ['issuer' => $this->issuer()] + $endpoints;
+    }
+
+    /** @return array<string, string>|null */
+    private function whmcsMetadata(string $userinfoUrl): ?array
+    {
+        if ($userinfoUrl === '') {
+            return null;
+        }
+        $issuer = rtrim($this->issuer(), '/');
+        $discoveryUrl = trim((string) $this->config->get('OIDC_DISCOVERY_URL', ''));
+        $issuerParts = parse_url($issuer);
+        $discoveryParts = parse_url($discoveryUrl);
+        if (
+            !is_array($issuerParts)
+            || !is_array($discoveryParts)
+            || ($issuerParts['scheme'] ?? null) !== 'https'
+            || ($discoveryParts['scheme'] ?? null) !== 'https'
+            || !isset($issuerParts['host'], $discoveryParts['host'])
+            || strcasecmp((string) $issuerParts['host'], (string) $discoveryParts['host']) !== 0
+            || (int) ($issuerParts['port'] ?? 443) !== (int) ($discoveryParts['port'] ?? 443)
+            || !in_array((string) ($issuerParts['path'] ?? ''), ['', '/'], true)
+            || ($discoveryParts['path'] ?? null) !== '/oauth/openid-configuration.php'
+            || isset($issuerParts['query'])
+            || isset($issuerParts['fragment'])
+            || isset($issuerParts['user'])
+            || isset($issuerParts['pass'])
+            || isset($discoveryParts['query'])
+            || isset($discoveryParts['fragment'])
+            || isset($discoveryParts['user'])
+            || isset($discoveryParts['pass'])
+        ) {
+            return null;
+        }
+        return [
+            'authorization_endpoint' => $issuer . '/oauth/authorize.php',
+            'token_endpoint' => $issuer . '/oauth/token.php',
+            'jwks_uri' => $issuer . '/oauth/certs.php',
+            'userinfo_endpoint' => $userinfoUrl,
+        ];
     }
 
     /** @param array<string, mixed> $claims */
@@ -334,13 +413,23 @@ final class OidcClient
         if (!$this->httpsUrl($url)) {
             throw new RuntimeException('oidc_configuration_invalid');
         }
+        $startedAt = microtime(true);
         try {
             $response = ($this->httpClient)($method, $url, $options);
-        } catch (Throwable) {
-            throw new RuntimeException('oidc_provider_request_failed');
+        } catch (Throwable $exception) {
+            throw new OidcProviderException(
+                'oidc_provider_request_failed',
+                $this->providerContext($method, $url, [], $startedAt, [
+                    'transport_error' => $exception::class,
+                ]),
+                $exception
+            );
         }
         if (!is_array($response) || !isset($response['status']) || (int) $response['status'] < 200 || (int) $response['status'] >= 300) {
-            throw new RuntimeException('oidc_provider_request_failed');
+            throw new OidcProviderException(
+                'oidc_provider_request_failed',
+                $this->providerContext($method, $url, is_array($response) ? $response : [], $startedAt)
+            );
         }
         $body = $response['body'] ?? null;
         if (is_array($body)) {
@@ -355,14 +444,63 @@ final class OidcClient
     /** @return array<string, mixed> */
     private function providerJson(string $failureCode, string $method, string $url, array $options): array
     {
-        try {
-            return $this->jsonResponse($method, $url, $options);
-        } catch (RuntimeException $exception) {
-            if ($exception->getMessage() === 'oidc_provider_request_failed') {
-                throw new RuntimeException($failureCode, 0, $exception);
+        $maxAttempts = strtoupper($method) === 'GET' ? 2 : 1;
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            try {
+                return $this->jsonResponse($method, $url, $options);
+            } catch (OidcProviderException $exception) {
+                $context = array_merge($exception->context(), ['attempts' => $attempt]);
+                if ($attempt < $maxAttempts && $this->isRetryableProviderContext($context)) {
+                    usleep(100_000);
+                    continue;
+                }
+                throw new OidcProviderException($failureCode, $context, $exception);
+            } catch (RuntimeException $exception) {
+                if ($exception->getMessage() === 'oidc_provider_request_failed') {
+                    throw new OidcProviderException($failureCode, ['attempts' => $attempt], $exception);
+                }
+                throw $exception;
             }
-            throw $exception;
         }
+
+        throw new OidcProviderException($failureCode, ['attempts' => $maxAttempts]);
+    }
+
+    /** @param array<string, mixed> $context */
+    private function isRetryableProviderContext(array $context): bool
+    {
+        $status = (int) ($context['status'] ?? 0);
+        return $status === 0 || $status === 408 || $status === 425 || $status === 429 || $status >= 500;
+    }
+
+    /** @param array<string, mixed> $response @param array<string, int|string> $extra @return array<string, int|string> */
+    private function providerContext(string $method, string $url, array $response, float $startedAt, array $extra = []): array
+    {
+        $parts = parse_url($url);
+        $context = [
+            'method' => strtoupper($method),
+            'host' => is_array($parts) && isset($parts['host']) ? (string) $parts['host'] : '',
+            'status' => (int) ($response['status'] ?? 0),
+            'duration_ms' => max(0, (int) round((microtime(true) - $startedAt) * 1000)),
+        ];
+        $meta = $response['_meta'] ?? null;
+        if (is_array($meta)) {
+            foreach (['curl_errno', 'curl_error'] as $key) {
+                if (isset($meta[$key]) && (is_int($meta[$key]) || is_string($meta[$key]))) {
+                    $context[$key] = $meta[$key];
+                }
+            }
+        }
+        $body = $response['body'] ?? null;
+        $providerError = is_array($body) ? ($body['error'] ?? null) : null;
+        if ($providerError === null && is_string($body) && strlen($body) <= 4096) {
+            $decoded = json_decode($body, true);
+            $providerError = is_array($decoded) ? ($decoded['error'] ?? null) : null;
+        }
+        if (is_string($providerError) && preg_match('/^[A-Za-z0-9._-]{1,64}$/', $providerError) === 1) {
+            $context['provider_error'] = $providerError;
+        }
+        return array_merge($context, $extra);
     }
 
     /** @return array<string, mixed> */
@@ -428,10 +566,12 @@ final class OidcClient
         return is_array($parts)
             && ($parts['scheme'] ?? null) === 'https'
             && isset($parts['host'])
-            && !isset($parts['user'], $parts['pass'], $parts['fragment']);
+            && !isset($parts['user'])
+            && !isset($parts['pass'])
+            && !isset($parts['fragment']);
     }
 
-    /** @return array{status:int,headers:array<string,list<string>>,body:string} */
+    /** @return array{status:int,headers:array<string,list<string>>,body:string,_meta?:array<string,int|string>} */
     private function defaultHttpClient(string $method, string $url, array $options): array
     {
         $headers = $options['headers'] ?? [];
@@ -453,17 +593,25 @@ final class OidcClient
                 CURLOPT_HTTPHEADER => $headerLines,
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_FOLLOWLOCATION => false,
-                CURLOPT_TIMEOUT => 10,
+                CURLOPT_TIMEOUT => 15,
                 CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
                 CURLOPT_POSTFIELDS => $method === 'POST' ? $body : null,
             ]);
             $responseBody = curl_exec($handle);
             $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+            $curlError = curl_errno($handle);
+            $curlErrorMessage = curl_error($handle);
             curl_close($handle);
-            if (!is_string($responseBody)) {
-                throw new RuntimeException('oidc_provider_request_failed');
-            }
-            return ['status' => $status, 'headers' => [], 'body' => $responseBody];
+            return [
+                'status' => $status,
+                'headers' => [],
+                'body' => is_string($responseBody) ? $responseBody : '',
+                '_meta' => array_filter([
+                    'curl_errno' => $curlError,
+                    'curl_error' => $this->safeTransportError($curlErrorMessage),
+                ], static fn(mixed $value): bool => $value !== '' && $value !== null),
+            ];
         }
 
         $headerLines = '';
@@ -477,7 +625,7 @@ final class OidcClient
             'ignore_errors' => true,
             'follow_location' => 0,
             'max_redirects' => 0,
-            'timeout' => 10,
+            'timeout' => 15,
         ]]);
         $responseBody = @file_get_contents($url, false, $context);
         $statusLine = $http_response_header[0] ?? '';
@@ -485,5 +633,15 @@ final class OidcClient
             throw new RuntimeException('oidc_provider_request_failed');
         }
         return ['status' => (int) $matches[1], 'headers' => [], 'body' => $responseBody];
+    }
+
+    private function safeTransportError(string $error): string
+    {
+        $error = trim($error);
+        if ($error === '') {
+            return '';
+        }
+        $error = preg_replace('/https?:\/\/\S+/i', '[url]', $error) ?? $error;
+        return substr($error, 0, 160);
     }
 }
