@@ -1224,7 +1224,10 @@ WantedBy=multi-user.target
 
 def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     forward = canonicalize_forward_runtime_contract(forward)
-    if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra":
+    backend_mode = str(forward.get("backend_mode", "") or "").strip().lower()
+    if backend_mode == "cf_mode":
+        raise RuntimeError("cf_mode_unsupported")
+    if backend_mode == "ultra":
         return render_ultra_runtime(forward, agent_config)
     forward_id = int(forward["forward_id"])
     listen_port = int(forward["listen_port"])
@@ -1241,12 +1244,6 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     mptcp = mptcp_config(forward)
     frontend_mode = sidecar_frontend_mode(forward, bond)
     bond_remote_target = str(bond.get("remote_target", "")).strip()
-    if bond_remote_target == "" and str(forward.get("backend_mode", "") or "").strip().lower() == "cf_mode":
-        fallback_port = int_or_default(forward.get("bond_sidecar_port"), 0)
-        if fallback_port <= 0:
-            fallback_port = int_or_default(forward.get("bond_remote_port"), 0)
-        if fallback_port > 0:
-            bond_remote_target = f"127.0.0.1:{fallback_port}"
     bond_session_token = str(bond.get("session_token", "")).strip()
     bond_udp_session_token = str(bond.get("udp_session_token", "")).strip()
     bond_bin = str(agent_config.get("bond_bin", "/usr/local/bin/leikwan-bond")).strip() or "/usr/local/bin/leikwan-bond"

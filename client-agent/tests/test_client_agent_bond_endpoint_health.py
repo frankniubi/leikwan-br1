@@ -692,7 +692,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
     def test_force_bond_endpoint_quarantine_holds_endpoint_for_thirty_minutes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent = self.make_agent(tmp_dir)
-            entry = agent.force_bond_endpoint_quarantine(26, 184, "cf_bond_leg_probe_failed", None, now=250.0)
+            entry = agent.force_bond_endpoint_quarantine(26, 184, "bond_leg_probe_failed", None, now=250.0)
 
             self.assertEqual(entry["role"], "quarantined")
             self.assertEqual(entry["quarantine_until"], 250.0 + (30.0 * 60.0))
@@ -861,7 +861,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                 "service_status": "active",
                 "listen_port": 11024,
                 "mode": "bond",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "path_prefix": "a43547b6350f72cd",
                 "endpoints": [
                     {"endpoint_id": 184, "host": "8.163.90.132", "port": 7001, "ingress_auth_token": "token-1"},
@@ -884,7 +884,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                     ):
                         with mock.patch.object(
                             agent,
-                            "cf_bond_one_leg_connect_probe",
+                            "bond_one_leg_connect_probe",
                             side_effect=[(True, 1.0, None), (False, None, "timeout")],
                         ):
                             with mock.patch.object(agent, "restart_forward_service") as restart_mock:
@@ -954,7 +954,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                     ):
                         with mock.patch.object(
                             agent,
-                            "cf_bond_one_leg_connect_probe",
+                            "bond_one_leg_connect_probe",
                             side_effect=[(True, 1.0, None), (False, None, "bond_hello_ack_timeout")],
                         ):
                             with mock.patch.object(agent, "restart_forward_service") as restart_mock:
@@ -981,7 +981,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                 "service_status": "active",
                 "listen_port": 11035,
                 "mode": "bond",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "runtime_preference": "mptcp_preferred_bond_fallback",
                 "path_prefix": "07289d1f5ed25399",
                 "candidate_pool": [
@@ -1011,7 +1011,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             with mock.patch.object(agent, "systemd_is_active", return_value=True):
                 with mock.patch.object(agent, "local_runtime_probe", return_value=(True, 1.0, None)):
                     with mock.patch.object(agent, "remote_plain_tcp_ready_probe", return_value=(False, None, "empty_plain_tcp_probe_response")):
-                        with mock.patch.object(agent, "cf_bond_one_leg_connect_probe", side_effect=AssertionError("failed helper should not be promoted to one-leg bond probe")):
+                        with mock.patch.object(agent, "bond_one_leg_connect_probe", side_effect=AssertionError("failed helper should not be promoted to one-leg bond probe")):
                             with mock.patch.object(agent, "restart_forward_service") as restart_mock:
                                 with mock.patch.object(agent, "refresh_bond_runtime_endpoints") as refresh_mock:
                                     with mock.patch.object(agent, "collect_live_bond_slave_connections", return_value=[]):
@@ -1020,7 +1020,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             restart_mock.assert_not_called()
             refresh_mock.assert_not_called()
             entry = agent.load_bond_endpoint_health()["47"]["316"]
-            self.assertEqual(entry["role"], "quarantined")
+            self.assertEqual(entry["role"], "healthy")
 
     def test_service_status_matches_bond_restart_rule_for_connection_reset_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1125,7 +1125,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             tcp_mock.assert_called_once_with(11024)
             listener_mock.assert_called_once_with(11024, "udp")
 
-    def test_cf_bond_one_leg_connect_probe_uses_thirty_minute_leg_cooldown_default(self) -> None:
+    def test_bond_one_leg_connect_probe_uses_thirty_minute_leg_cooldown_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent = self.make_agent(tmp_dir)
             forward = {
@@ -1165,7 +1165,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                     fake_bind_sock.getsockname.return_value = ("127.0.0.1", 31000)
                     socket_ctor.return_value = fake_bind_sock
                     with mock.patch.object(client_agent_module.subprocess, "Popen", side_effect=lambda cmd, **kwargs: created_commands.append(cmd) or FakeProcess()):
-                        ok, latency_ms, error = agent.cf_bond_one_leg_connect_probe(forward, endpoint, 0)
+                        ok, latency_ms, error = agent.bond_one_leg_connect_probe(forward, endpoint, 0)
 
             self.assertFalse(ok)
             self.assertIsNone(latency_ms)
@@ -1343,7 +1343,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             forward = {
                 "forward_id": 26,
                 "mode": "bond",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "endpoints": [
                     {"endpoint_id": 184, "host": "8.163.90.132", "port": 7001},
                     {"endpoint_id": 185, "host": "8.163.90.235", "port": 7001},
@@ -1388,7 +1388,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             forward = {
                 "forward_id": 26,
                 "mode": "bond",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "endpoints": [
                     {"endpoint_id": 184, "host": "8.163.90.132", "port": 7001},
                     {"endpoint_id": 185, "host": "8.163.90.235", "port": 7001},
@@ -1440,7 +1440,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             forward = {
                 "forward_id": 26,
                 "mode": "bond",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "endpoints": [
                     {"endpoint_id": 184, "host": "8.163.90.132", "port": 7001},
                     {"endpoint_id": 185, "host": "8.163.90.235", "port": 7001},
@@ -1455,13 +1455,13 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             self.assertEqual([item["endpoint_id"] for item in selected], [185])
             self.assertEqual(selected[0]["health_role"], "healthy")
 
-    def test_select_bond_runtime_endpoints_cf_limits_healthy_set_to_best_three_by_priority(self) -> None:
+    def test_select_bond_runtime_endpoints_returns_all_healthy_legs_by_priority(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent = self.make_agent(tmp_dir)
             forward = {
                 "forward_id": 40,
                 "mode": "bond",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "endpoints": [
                     {"endpoint_id": 254, "host": "8.163.90.132", "port": 7000},
                     {"endpoint_id": 255, "host": "8.163.69.176", "port": 7000},
@@ -1485,7 +1485,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
 
             selected = agent.select_bond_runtime_endpoints(forward, now=100.0)
 
-            self.assertEqual([item["endpoint_id"] for item in selected], [254, 256, 258])
+            self.assertEqual([item["endpoint_id"] for item in selected], [254, 256, 258, 255, 257])
 
     def test_select_bond_runtime_endpoints_non_cf_bond_ignores_cf_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1523,8 +1523,8 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             with mock.patch.object(agent, "bond_leg_snapshot_dir", return_value=snapshot_dir):
                 selected = agent.select_bond_runtime_endpoints(forward, now=100.0)
 
-            self.assertEqual([item["endpoint_id"] for item in selected], [184, 185])
-            self.assertTrue(all(item["health_role"] == "healthy" for item in selected))
+            self.assertEqual([item["endpoint_id"] for item in selected], [185])
+            self.assertEqual(selected[0]["health_role"], "healthy")
 
     def test_select_bond_runtime_endpoints_latency_first_normal_bond_marks_primary_then_helpers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1587,7 +1587,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             forward = {
                 "forward_id": 47,
                 "mode": "bond",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "endpoints": [
                     {"endpoint_id": 316, "host": "47.116.11.144", "port": 7000},
                     {"endpoint_id": 317, "host": "47.116.104.15", "port": 7000},
@@ -1601,7 +1601,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             with mock.patch.object(agent, "bond_leg_snapshot_dir", return_value=snapshot_dir):
                 selected = agent.select_bond_runtime_endpoints(forward, now=100.0)
 
-            self.assertEqual([item["endpoint_id"] for item in selected], [319, 317, 316])
+            self.assertEqual([item["endpoint_id"] for item in selected], [319, 317, 316, 318, 320])
             self.assertEqual(selected[0]["leg_role"], "primary")
             self.assertTrue(all(item["quality_score"] < 1.0 for item in selected))
 

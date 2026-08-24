@@ -427,7 +427,7 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
 
     def test_cf_direct_self_leg_bond_runtime_keeps_rented_helpers(self) -> None:
         agent = client_agent_module.ClientAgent.__new__(client_agent_module.ClientAgent)
-        agent.reconcile_cf_bond_runtime_health = lambda forward, now=None: {
+        agent.load_bond_endpoint_health = lambda: {
             "47": {
                 "320": {"role": "healthy", "one_leg_rtt_ms": 82.0, "quality_score": 0.8},
                 "317": {"role": "healthy", "one_leg_rtt_ms": 107.5, "quality_score": 0.4},
@@ -438,7 +438,7 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
             {
                 "forward_id": 47,
                 "mode": "bond",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "bonding": {"policy_mode": "latency_first", "ws_priority": 10},
                 "endpoints": [
                     {"endpoint_id": 320, "host": "8.133.170.123", "port": 7000},
@@ -462,7 +462,7 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
                 "path_prefix": "tokyo-path",
                 "transport": "tcp",
                 "mode": "bond",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "endpoints": [],
                 "candidate_pool": [
                     {
@@ -498,8 +498,9 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
         self.assertNotIn("leikwan-ingress client", script)
 
 
-    def test_cf_bond_runtime_derives_remote_target_when_panel_omits_bonding_remote_target(self) -> None:
-        rendered = install_runtime.render_forward_runtime(
+    def test_bond_runtime_rejects_missing_remote_target_without_legacy_fallback(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "bond mode missing bonding.remote_target"):
+            install_runtime.render_forward_runtime(
             {
                 "forward_id": 47,
                 "listen_port": 11035,
@@ -508,7 +509,7 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
                 "path_prefix": "tokyo-path",
                 "transport": "tcp",
                 "mode": "bond",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "bond_sidecar_port": 8899,
                 "endpoints": [
                     {"endpoint_id": 320, "host": "8.133.170.123", "port": 7000},
@@ -532,11 +533,8 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
                     "ws_priority": 10,
                 },
             },
-            {"bond_bin": "/usr/local/bin/leikwan-bond"},
-        )
-
-        self.assertIn("tcp://127.0.0.1:21739:127.0.0.1:8899", rendered["start_script"])
-        self.assertIn("tcp://127.0.0.1:21740:127.0.0.1:8899", rendered["start_script"])
+                {"bond_bin": "/usr/local/bin/leikwan-bond"},
+            )
 
     def test_bond_self_leg_uses_explicit_bond_backend_when_both_ports_published(self) -> None:
         rendered = install_runtime.render_forward_runtime(
@@ -548,7 +546,7 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
                 "path_prefix": "tokyo-path",
                 "transport": "tcp",
                 "mode": "bond",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "endpoints": [],
                 "candidate_pool": [
                     {
@@ -610,7 +608,7 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
                 "path_prefix": "tokyo-path",
                 "transport": "tcp",
                 "mode": "mptcp",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "endpoints": [
                     {"endpoint_id": 320, "host": "8.133.170.123", "port": 7000},
                 ],
@@ -676,7 +674,7 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
                 "path_prefix": "tokyo-path",
                 "transport": "tcp",
                 "mode": "mptcp",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "endpoints": [
                     {"endpoint_id": 622, "host": "111.229.217.7", "port": 7000},
                 ],
@@ -735,7 +733,7 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
                 "path_prefix": "tokyo-path",
                 "transport": "tcp",
                 "mode": "mptcp",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "endpoints": [],
                 "candidate_pool": [
                     {
@@ -805,7 +803,7 @@ class HighLossSelfLegRuntimeRegressionTests(unittest.TestCase):
                 "path_prefix": "tokyo-path",
                 "transport": "tcp",
                 "mode": "mptcp",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "endpoints": [
                     {"endpoint_id": 320, "host": "8.133.170.123", "port": 7000},
                 ],
