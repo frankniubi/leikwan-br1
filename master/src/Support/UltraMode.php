@@ -13,6 +13,7 @@ final class UltraMode
     public const TOKEN_KEY = 'ULTRA_TOKEN_KEY';
     public const SOURCE_ID_KEY = 'ULTRA_SOURCE_ID';
     public const SOURCE_AUTH_KEY = 'ULTRA_SOURCE_AUTH_TOKEN';
+    public const SOURCE_CREDENTIALS_KEY = 'ULTRA_SOURCE_CREDENTIALS_JSON';
     public const MATERIAL_MAX_TTL_KEY = 'ULTRA_MATERIAL_MAX_TTL_SECONDS';
     public const MAX_TTL_KEY = 'ULTRA_MAX_TTL_SECONDS';
     public const REFRESH_SKEW_KEY = 'ULTRA_REFRESH_SKEW_SECONDS';

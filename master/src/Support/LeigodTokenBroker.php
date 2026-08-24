@@ -48,7 +48,7 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 $result[$forwardId] = $grant;
                 continue;
             }
-            $snapshot = $this->materials->lineSnapshot($request['line_ids']);
+            $snapshot = $this->materials->lineSnapshot($request['lines']);
             if ($snapshot === null) {
                 if ($this->grantUsable($grant, $now)) {
                     $result[$forwardId] = $grant;
@@ -125,12 +125,15 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                     continue;
                 }
                 $lineId = (int) ($rawLine['line_id'] ?? 0);
-                if ($lineId <= 0 || $lineId > 45535 || isset($lineIds[$lineId])) {
+                $sourceId = trim((string) ($rawLine['source_id'] ?? ''));
+                $lineKey = ($sourceId !== '' ? $sourceId : 'legacy') . ':' . $lineId;
+                if ($lineId <= 0 || $lineId > 45535 || isset($lineIds[$lineKey])) {
                     continue;
                 }
-                $lineIds[$lineId] = $lineId;
+                $lineIds[$lineKey] = $lineId;
                 $lines[] = [
                     'line_id' => $lineId,
+                    'source_id' => $sourceId,
                     'ingress_zone' => $this->zone((string) ($rawLine['ingress_zone'] ?? 'unknown')),
                     'destination_zone' => $this->zone((string) ($rawLine['destination_zone'] ?? 'unknown')),
                 ];
@@ -141,9 +144,10 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             if ($lines === []) {
                 foreach (is_array($forward['_ultra_line_ids'] ?? null) ? $forward['_ultra_line_ids'] : [] as $rawLineId) {
                     $lineId = (int) $rawLineId;
-                    if ($lineId > 0 && $lineId <= 45535 && !isset($lineIds[$lineId])) {
-                        $lineIds[$lineId] = $lineId;
-                        $lines[] = ['line_id' => $lineId, 'ingress_zone' => 'unknown', 'destination_zone' => 'unknown'];
+                    $lineKey = 'legacy:' . $lineId;
+                    if ($lineId > 0 && $lineId <= 45535 && !isset($lineIds[$lineKey])) {
+                        $lineIds[$lineKey] = $lineId;
+                        $lines[] = ['line_id' => $lineId, 'source_id' => '', 'ingress_zone' => 'unknown', 'destination_zone' => 'unknown'];
                     }
                     if (count($lines) >= 8) {
                         break;

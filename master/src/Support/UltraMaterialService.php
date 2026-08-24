@@ -13,7 +13,8 @@ use Throwable;
 
 final class UltraMaterialService
 {
-    private const MATERIAL_PREFIX = 'ultra.material.v1.line.';
+    private const MATERIAL_PREFIX = 'ultra.material.v2.source.';
+    private const LEGACY_MATERIAL_PREFIX = 'ultra.material.v1.line.';
     private const GRANT_CACHE_PREFIX = 'ultra.access.v3.client.';
     private const CLIENT_SCOPE_PREFIX = 'ultra.client.scope.v2.';
     private const SOURCE_NONCE_PREFIX = 'ultra.source.nonces.v1.';
@@ -35,7 +36,7 @@ final class UltraMaterialService
     }
 
     /** @return array<int, int> */
-    public function requiredLineIds(): array
+    public function requiredLineIds(?string $sourceId = null): array
     {
         if ($this->db === null) {
             return [];
@@ -49,6 +50,9 @@ final class UltraMaterialService
                      ON ul.id = fcul.ultra_line_id
                     AND ul.is_source_present = 1
                     AND ul.is_enabled = 1
+             INNER JOIN ultra_sources us
+                     ON us.source_id = ul.source_id
+                    AND us.is_active = 1
              INNER JOIN forwards f ON f.forward_combination_id = fc.id
              INNER JOIN services s ON s.id = f.service_id
              WHERE fc.backend_mode = :combination_mode
@@ -56,12 +60,13 @@ final class UltraMaterialService
                AND f.backend_mode = :forward_mode
                AND f.enabled = 1
                AND s.status = :service_status
+             ' . ($sourceId !== null ? ' AND ul.source_id = :source_id' : '') . '
              ORDER BY ul.line_id ASC',
             [
                 'combination_mode' => UltraMode::BACKEND_MODE,
                 'forward_mode' => UltraMode::BACKEND_MODE,
                 'service_status' => 'active',
-            ]
+            ] + ($sourceId !== null ? ['source_id' => trim($sourceId)] : [])
         );
         $result = [];
         foreach ($rows as $row) {
@@ -75,12 +80,21 @@ final class UltraMaterialService
     }
 
     /** @return array<int, int> */
-    public function dueLineIds(int $refreshWindowSeconds = 600): array
+    public function dueLineIds(string|int $sourceIdOrRefreshWindow = '', int $refreshWindowSeconds = 600): array
     {
+        $sourceId = '';
+        if (is_int($sourceIdOrRefreshWindow)) {
+            $refreshWindowSeconds = $sourceIdOrRefreshWindow;
+        } else {
+            $sourceId = trim($sourceIdOrRefreshWindow);
+        }
+        if ($sourceId === '') {
+            $sourceId = $this->primarySourceId();
+        }
         $now = $this->now();
         $due = [];
-        foreach ($this->requiredLineIds() as $lineId) {
-            $material = $this->loadMaterial($lineId, false);
+        foreach ($this->requiredLineIds($sourceId !== '' ? $sourceId : null) as $lineId) {
+            $material = $this->loadMaterial($sourceId, $lineId, false);
             $expiresAt = $this->parseTimestamp((string) ($material['expires_at'] ?? '')) ?? 0;
             if ($expiresAt <= $now + max(60, $refreshWindowSeconds)) {
                 $due[] = $lineId;
@@ -134,7 +148,7 @@ final class UltraMaterialService
             if ($material === null || !isset($allowed[$material['line_id']])) {
                 continue;
             }
-            $existing = $this->loadMaterial($material['line_id'], false);
+            $existing = $this->loadMaterial($sourceId, $material['line_id'], false);
             $existingAcquired = $this->parseTimestamp((string) ($existing['acquired_at'] ?? '')) ?? 0;
             $newAcquired = $this->parseTimestamp((string) $material['acquired_at']) ?? 0;
             if ($existingAcquired > $newAcquired) {
@@ -144,7 +158,7 @@ final class UltraMaterialService
             if ($encoded === null) {
                 throw new RuntimeException('ultra_material_encryption_unavailable');
             }
-            $this->settingSet(self::MATERIAL_PREFIX . $material['line_id'], $encoded);
+            $this->settingSet($this->materialKey($sourceId, (int) $material['line_id']), $encoded);
             if ($this->db !== null) {
                 try {
                     (new UltraInventoryService($this->config, $this->db))->safeMaterialUpdate(
@@ -168,21 +182,23 @@ final class UltraMaterialService
     }
 
     /**
-     * @param array<int, int> $lineIds
+     * @param array<int, array{source_id:string,line_id:int}|int> $lineRefs
      * @return array{line_ips:array<int,string>,fingerprint:string,expires_at:int}|null
      */
-    public function lineSnapshot(array $lineIds): ?array
+    public function lineSnapshot(array $lineRefs): ?array
     {
-        $normalized = $this->normalizeLineIds($lineIds);
+        $normalized = $this->normalizeLineRefs($lineRefs);
         $ips = [];
         $generations = [];
         $expiresAt = PHP_INT_MAX;
-        foreach ($normalized as $lineId) {
-            $material = $this->loadMaterial($lineId, true);
+        foreach ($normalized as $lineRef) {
+            $sourceId = (string) $lineRef['source_id'];
+            $lineId = (int) $lineRef['line_id'];
+            $material = $this->loadMaterial($sourceId, $lineId, true);
             if ($material === []) {
                 continue;
             }
-            $generations[] = $lineId . ':' . (string) ($material['generation'] ?? '');
+            $generations[] = $sourceId . ':' . $lineId . ':' . (string) ($material['generation'] ?? '');
             $materialExpiry = $this->parseTimestamp((string) ($material['expires_at'] ?? '')) ?? 0;
             $expiresAt = min($expiresAt, $materialExpiry);
             foreach ((array) ($material['relays'] ?? []) as $relay) {
@@ -244,8 +260,9 @@ final class UltraMaterialService
         $scopeLines = $this->normalizeClientScopeLines($payload);
         $entries = [];
         foreach ($scopeLines as $scopeLine) {
+            $sourceId = (string) $scopeLine['source_id'];
             $lineId = (int) $scopeLine['line_id'];
-            $material = $this->loadMaterial($lineId, true);
+            $material = $this->loadMaterial($sourceId, $lineId, true);
             foreach ((array) ($material['relays'] ?? []) as $relay) {
                 if (!is_array($relay)) {
                     continue;
@@ -261,6 +278,7 @@ final class UltraMaterialService
                     (string) $clientId,
                     (string) ($payload['device_hash'] ?? ''),
                     (string) $forwardId,
+                    $sourceId,
                     (string) $lineId,
                     (string) ($material['generation'] ?? ''),
                     $ip,
@@ -269,7 +287,7 @@ final class UltraMaterialService
                 if ($entryRef === '') {
                     continue;
                 }
-                $entries[$lineId . ':' . $ip . ':' . $port . ':' . $user] = [
+                $entries[$sourceId . ':' . $lineId . ':' . $ip . ':' . $port . ':' . $user] = [
                     'entry_ref' => $entryRef,
                     'ingress_zone' => (string) $scopeLine['ingress_zone'],
                     'destination_zone' => (string) $scopeLine['destination_zone'],
@@ -332,14 +350,23 @@ final class UltraMaterialService
         $timestampText = trim((string) ($request->header('x-ultra-timestamp') ?? ''));
         $nonce = trim((string) ($request->header('x-ultra-nonce') ?? ''));
         $signature = strtolower(trim((string) ($request->header('x-ultra-signature') ?? '')));
-        $expectedId = trim((string) ($this->config->get(UltraMode::SOURCE_ID_KEY, '') ?? ''));
-        $secret = trim((string) ($this->config->get(UltraMode::SOURCE_AUTH_KEY, '') ?? ''));
+        $credentials = $this->sourceCredentials();
+        $secret = (string) ($credentials[$sourceId] ?? '');
         $timestamp = ctype_digit($timestampText) ? (int) $timestampText : 0;
-        if ($sourceId === '' || $expectedId === '' || $secret === '' || !hash_equals($expectedId, $sourceId)
+        if ($sourceId === '' || $secret === ''
             || abs($this->now() - $timestamp) > 300
             || preg_match('/^[a-f0-9]{16,128}$/i', $nonce) !== 1
             || preg_match('/^[a-f0-9]{64}$/', $signature) !== 1) {
             throw new ApiException('ultra_source_auth_failed', 401);
+        }
+        if ($this->db !== null) {
+            $registered = $this->db->fetchOne(
+                'SELECT is_active FROM ultra_sources WHERE source_id = :source_id LIMIT 1',
+                ['source_id' => $sourceId]
+            );
+            if (!is_array($registered) || (int) ($registered['is_active'] ?? 0) !== 1) {
+                throw new ApiException('ultra_source_auth_failed', 401);
+            }
         }
         $canonical = implode("\n", [
             $request->method(),
@@ -401,9 +428,14 @@ final class UltraMaterialService
     }
 
     /** @return array<string, mixed> */
-    private function loadMaterial(int $lineId, bool $requireFresh): array
+    private function loadMaterial(string $sourceId, int $lineId, bool $requireFresh): array
     {
-        $decoded = $this->open((string) $this->settingGet(self::MATERIAL_PREFIX . $lineId, ''));
+        $sourceId = trim($sourceId);
+        $encoded = $this->settingGet($this->materialKey($sourceId, $lineId), '');
+        if ($encoded === '' && $sourceId !== '' && hash_equals($this->primarySourceId(), $sourceId)) {
+            $encoded = $this->settingGet(self::LEGACY_MATERIAL_PREFIX . $lineId, '');
+        }
+        $decoded = $this->open($encoded);
         $material = is_array($decoded['material'] ?? null) ? $decoded['material'] : [];
         if (($decoded['kind'] ?? '') !== 'line-material' || $material === []) {
             return [];
@@ -414,7 +446,7 @@ final class UltraMaterialService
         return $material;
     }
 
-    /** @param array<string, mixed> $payload @return array<int, array{line_id:int,ingress_zone:string,destination_zone:string}> */
+    /** @param array<string, mixed> $payload @return array<int, array{source_id:string,line_id:int,ingress_zone:string,destination_zone:string}> */
     private function normalizeClientScopeLines(array $payload): array
     {
         $rawLines = is_array($payload['lines'] ?? null) ? $payload['lines'] : [];
@@ -430,10 +462,19 @@ final class UltraMaterialService
                 continue;
             }
             $lineId = (int) ($rawLine['line_id'] ?? 0);
-            if ($lineId <= 0 || $lineId > 45535 || isset($result[$lineId])) {
+            $sourceId = trim((string) ($rawLine['source_id'] ?? ''));
+            if ($sourceId === '') {
+                $sourceId = $this->primarySourceId();
+            }
+            if ($lineId <= 0 || $lineId > 45535 || $sourceId === '') {
                 continue;
             }
-            $result[$lineId] = [
+            $key = $sourceId . ':' . $lineId;
+            if (isset($result[$key])) {
+                continue;
+            }
+            $result[$key] = [
+                'source_id' => $sourceId,
                 'line_id' => $lineId,
                 'ingress_zone' => $this->normalizeZone((string) ($rawLine['ingress_zone'] ?? 'unknown')),
                 'destination_zone' => $this->normalizeZone((string) ($rawLine['destination_zone'] ?? $payload['destination_zone'] ?? 'unknown')),
@@ -483,6 +524,37 @@ final class UltraMaterialService
             : 'detected_then_any';
     }
 
+    /**
+     * @param array<int, mixed> $lineRefs
+     * @return array<int, array{source_id:string,line_id:int}>
+     */
+    private function normalizeLineRefs(array $lineRefs): array
+    {
+        $result = [];
+        $primary = $this->primarySourceId();
+        foreach (array_slice($lineRefs, 0, 32) as $rawRef) {
+            if (is_array($rawRef)) {
+                $lineId = (int) ($rawRef['line_id'] ?? 0);
+                $sourceId = trim((string) ($rawRef['source_id'] ?? '')) ?: $primary;
+            } else {
+                $lineId = (int) $rawRef;
+                $sourceId = $primary;
+            }
+            if ($sourceId === '' || preg_match('/^[A-Za-z0-9._:-]{1,191}$/', $sourceId) !== 1
+                || $lineId <= 0 || $lineId > 45535) {
+                continue;
+            }
+            $key = $sourceId . ':' . $lineId;
+            if (!isset($result[$key])) {
+                $result[$key] = ['source_id' => $sourceId, 'line_id' => $lineId];
+            }
+            if (count($result) >= 8) {
+                break;
+            }
+        }
+        return array_values($result);
+    }
+
     /** @param array<int, mixed> $lineIds @return array<int, int> */
     private function normalizeLineIds(array $lineIds): array
     {
@@ -495,6 +567,51 @@ final class UltraMaterialService
         }
         ksort($result, SORT_NUMERIC);
         return array_slice(array_values($result), 0, 8);
+    }
+
+    private function materialKey(string $sourceId, int $lineId): string
+    {
+        return self::MATERIAL_PREFIX . hash('sha256', trim($sourceId)) . '.line.' . $lineId;
+    }
+
+    private function primarySourceId(): string
+    {
+        $legacy = trim((string) ($this->config->get(UltraMode::SOURCE_ID_KEY, '') ?? ''));
+        if ($legacy !== '') {
+            return $legacy;
+        }
+        $credentials = $this->sourceCredentials();
+        $first = array_key_first($credentials);
+        return is_string($first) ? $first : '';
+    }
+
+    /** @return array<string, string> */
+    private function sourceCredentials(): array
+    {
+        $credentials = [];
+        $encoded = trim((string) ($this->config->get(UltraMode::SOURCE_CREDENTIALS_KEY, '') ?? ''));
+        if ($encoded !== '') {
+            try {
+                $decoded = json_decode($encoded, true, 8, JSON_THROW_ON_ERROR);
+                if (is_array($decoded)) {
+                    foreach ($decoded as $rawId => $rawSecret) {
+                        $sourceId = trim((string) $rawId);
+                        $secret = trim((string) $rawSecret);
+                        if (preg_match('/^[A-Za-z0-9._:-]{1,191}$/', $sourceId) === 1 && $secret !== '') {
+                            $credentials[$sourceId] = $secret;
+                        }
+                    }
+                }
+            } catch (Throwable) {
+                // Invalid optional map falls back to the legacy pair below.
+            }
+        }
+        $legacyId = trim((string) ($this->config->get(UltraMode::SOURCE_ID_KEY, '') ?? ''));
+        $legacySecret = trim((string) ($this->config->get(UltraMode::SOURCE_AUTH_KEY, '') ?? ''));
+        if ($legacyId !== '' && $legacySecret !== '' && !isset($credentials[$legacyId])) {
+            $credentials[$legacyId] = $legacySecret;
+        }
+        return $credentials;
     }
 
     private function consumeReplayValue(string $key, string $value, int $ttlSeconds): bool

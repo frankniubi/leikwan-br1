@@ -4071,13 +4071,18 @@ final class ProvisioningService
                      ON ul.id = fcul.ultra_line_id
                     AND ul.is_source_present = 1
                     AND ul.is_enabled = 1
+             INNER JOIN ultra_sources us
+                     ON us.source_id = ul.source_id
+                    AND us.is_active = 1
              WHERE f.id IN (' . implode(', ', $placeholders) . ')
                AND fc.backend_mode = :ultra_backend_mode
                AND COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) = fc.ultra_destination_zone
-             ORDER BY f.id ASC, fcul.sort_order ASC, fcul.id ASC',
+               AND ul.last_material_expires_at > UTC_TIMESTAMP()
+             ORDER BY f.id ASC, us.priority ASC, fcul.sort_order ASC, fcul.id ASC',
             $params + ['ultra_backend_mode' => UltraMode::BACKEND_MODE]
         );
         $result = [];
+        $seenByForward = [];
         foreach ($rows as $row) {
             $forwardId = (int) ($row['forward_id'] ?? 0);
             if (!isset($eligible[$forwardId]) || count($result[(string) $forwardId]['lines'] ?? []) >= 8) {
@@ -4101,14 +4106,17 @@ final class ProvisioningService
                 ];
             }
             $lineId = (int) ($row['line_id'] ?? 0);
-            if ($lineId <= 0 || in_array($lineId, $result[$key]['line_ids'], true)) {
+            $sourceId = trim((string) ($row['source_id'] ?? ''));
+            $lineKey = $sourceId . ':' . $lineId;
+            if ($lineId <= 0 || isset($seenByForward[$key][$lineKey])) {
                 continue;
             }
+            $seenByForward[$key][$lineKey] = true;
             $result[$key]['line_ids'][] = $lineId;
             $result[$key]['lines'][] = [
                 'ultra_line_id' => (int) ($row['ultra_line_id'] ?? 0),
                 'line_id' => $lineId,
-                'source_id' => trim((string) ($row['source_id'] ?? '')),
+                'source_id' => $sourceId,
                 'ingress_zone' => strtolower(trim((string) ($row['ingress_zone'] ?? 'unknown'))),
                 'destination_zone' => strtolower(trim((string) ($row['destination_zone'] ?? 'unknown'))),
                 'sort_order' => (int) ($row['sort_order'] ?? 100),

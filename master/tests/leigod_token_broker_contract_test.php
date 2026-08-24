@@ -14,6 +14,7 @@ spl_autoload_register(static function (string $class): void {
 });
 
 use Leikwan\Master\Config;
+use Leikwan\Master\Http\Request;
 use Leikwan\Master\Support\LeigodTokenBroker;
 use Leikwan\Master\Support\UltraMaterialService;
 use Leikwan\Master\Support\UltraMode;
@@ -42,6 +43,7 @@ file_put_contents(
     . "ULTRA_MAX_TTL_SECONDS=1800\n"
     . "ULTRA_REFRESH_SKEW_SECONDS=600\n"
     . "ULTRA_MATERIAL_MAX_TTL_SECONDS=2100\n"
+    . "ULTRA_SOURCE_CREDENTIALS_JSON={\"source-a\":\"source-a-secret\",\"source-b\":\"source-b-secret\"}\n"
 );
 
 $config = new Config($envPath);
@@ -62,6 +64,36 @@ $accepted = $materials->acceptSourceUpload('source-a', $ticket, [[
     'probe' => ['ok' => true],
 ]]);
 assertUltraContract($accepted === [453], 'fresh source material was not accepted');
+
+$ticketB = $materials->issueUploadTicket('source-b', [453]);
+$acceptedB = $materials->acceptSourceUpload('source-b', $ticketB, [[
+    'line_id' => 453,
+    'generation' => 'material-generation-b',
+    'acquired_at' => gmdate('Y-m-d\\TH:i:s\\Z', $now + 1),
+    'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $now + 1201),
+    'user' => 'line-user-b',
+    'credential' => '2234567890123456',
+    'relays' => [['ip' => '198.51.100.20', 'port' => 6438]],
+    'probe' => ['ok' => true],
+]]);
+assertUltraContract($acceptedB === [453], 'second source material was not accepted');
+$sourceASnapshot = $materials->lineSnapshot([['source_id' => 'source-a', 'line_id' => 453]]);
+$sourceBSnapshot = $materials->lineSnapshot([['source_id' => 'source-b', 'line_id' => 453]]);
+assertUltraContract(($sourceASnapshot['line_ips'] ?? []) === ['203.0.113.20', '203.0.113.21'], 'source-qualified material was overwritten');
+assertUltraContract(($sourceBSnapshot['line_ips'] ?? []) === ['198.51.100.20'], 'second source material lookup mismatch');
+
+$authBody = json_encode(['source' => 'b'], JSON_UNESCAPED_SLASHES);
+$authTimestamp = (string) $now;
+$authNonce = str_repeat('b', 32);
+$authPath = '/api/ultra/source/jobs';
+$authCanonical = implode("\n", ['GET', $authPath, 'source-b', $authTimestamp, $authNonce, hash('sha256', $authBody)]);
+$authRequest = new Request('GET', $authPath, [], [], [
+    'x-ultra-source-id' => 'source-b',
+    'x-ultra-timestamp' => $authTimestamp,
+    'x-ultra-nonce' => $authNonce,
+    'x-ultra-signature' => hash_hmac('sha256', $authCanonical, 'source-b-secret'),
+], $authBody);
+assertUltraContract($materials->verifySourceRequest($authRequest) === 'source-b', 'source credential map did not authenticate second source');
 
 $broker = new LeigodTokenBroker($config, null, $materials, static fn(): int => $now);
 $grants = $broker->grantsForClientForwards(7, 'device-a', [[
