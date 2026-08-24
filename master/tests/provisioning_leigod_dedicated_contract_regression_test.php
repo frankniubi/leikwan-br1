@@ -335,5 +335,22 @@ namespace {
     assertSame([], $payload['sidecar_uplink_selector'] ?? null, 'dedicated publish sidecar_uplink_selector');
     assertSame(null, array_key_exists('cf_mode', $payload) ? $payload['cf_mode'] : 'MISSING', 'dedicated publish cf_mode');
 
+    $ultraForward = $forward;
+    $ultraForward['backend_mode'] = 'ultra';
+    $ultraForward['client_mode'] = 'bond';
+    $ultraForward['forward_combination_runtime_preference'] = 'mptcp_preferred_bond_fallback';
+    $ultraPayload = call_private($service, 'publishTaskPayloadForForward', $ultraForward, $node, 316);
+    assertSame('ultra', $ultraPayload['backend_mode'] ?? null, 'ultra publish backend_mode');
+    assertSame('ultra', $ultraPayload['active_family'] ?? null, 'ultra publish active_family');
+    assertSame('ultra', $ultraPayload['target_contract'] ?? null, 'ultra publish target_contract');
+    assertSame(false, $ultraPayload['aggregation_enabled'] ?? null, 'ultra must suppress stale aggregation settings');
+    assertSame(false, $ultraPayload['sidecar_required'] ?? null, 'ultra publish sidecar_required');
+    assertSame(false, array_key_exists('leigod_forward', $ultraPayload), 'ultra publish must not emit legacy implementation metadata');
+    assertSame('', $ultraPayload['sni_host'] ?? null, 'ultra publish must not emit SNI');
+    assertSame('', $ultraPayload['cdn_host'] ?? null, 'ultra publish must not emit CDN host');
+    assertSame('ultra_binary', $ultraPayload['backend_protocol'] ?? null, 'ultra publish protocol');
+    assertSame('ultra_binary', $ultraPayload['ingress_protocol'] ?? null, 'ultra ingress protocol');
+    assertSame('162.245.221.78:80', $ultraPayload['target'] ?? null, 'ultra publish target');
+
     echo "ok\n";
 }

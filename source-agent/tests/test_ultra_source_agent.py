@@ -18,6 +18,261 @@ SPEC.loader.exec_module(MODULE)
 
 
 class UltraSourceAgentTests(unittest.TestCase):
+    def test_linelist_parser_uses_output_title_segments_without_city_table(self):
+        valid, records = MODULE.parse_linelist_output(
+            "\n".join(
+                [
+                    "os_type=3 game_id=6262 area_id=11796 lines=3",
+                    "  line_id=460 area_id=11796 line_type=8 title=广州-日本-BGP-腾讯云【主机】 speed_ip=42.240.152.200 pc_port=5438",
+                    "  line_id=453 area_id=11796 line_type=8 title=上海-日本-BGP-层峰【主机】 speed_ip=106.75.231.207 pc_port=5438",
+                    "  line_id=347 area_id=3757 line_type=0 title=TCP-游戏下载 speed_ip=120.232.77.32 pc_port=5438",
+                ]
+            )
+        )
+
+        self.assertTrue(valid)
+        self.assertEqual("上海", records[453]["catalog_ingress"])
+        self.assertEqual("日本", records[453]["catalog_destination"])
+        self.assertEqual("TCP", records[347]["catalog_ingress"])
+        self.assertEqual("游戏下载", records[347]["catalog_destination"])
+        encoded = json.dumps(records, ensure_ascii=False)
+        self.assertNotIn("pc_port", encoded)
+        self.assertNotIn("5438", encoded)
+
+    def test_linelist_parser_rejects_output_without_a_valid_summary(self):
+        valid, records = MODULE.parse_linelist_output(
+            "line_id=453 area_id=11796 line_type=8 title=上海-日本 speed_ip=203.0.113.20 pc_port=5438"
+        )
+        self.assertFalse(valid)
+        self.assertEqual({}, records)
+
+    def test_catalog_refresh_groups_queries_and_preserves_only_failed_pair_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            for line_id, game_id, area_id in [(453, 6262, 11796), (460, 6262, 11796), (455, 6262, 11800)]:
+                (lines / f"{line_id}.toml").write_text(
+                    "\n".join(
+                        [
+                            "[acc]",
+                            f"game_id = {game_id}",
+                            f"area_id = {area_id}",
+                            "line_type = 8",
+                            f"line_id = {line_id}",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+            cache = root / "catalog-cache.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "records": {
+                            "453": {"line_id": 453, "title": "old-a", "catalog_ingress": "old", "catalog_destination": "old", "discovery_ip": "203.0.113.1"},
+                            "460": {"line_id": 460, "title": "old-omitted", "catalog_ingress": "old", "catalog_destination": "old", "discovery_ip": "203.0.113.2"},
+                            "455": {"line_id": 455, "title": "old-b", "catalog_ingress": "old", "catalog_destination": "old", "discovery_ip": "203.0.113.3"},
+                        },
+                        "pairs": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            commands = []
+
+            def fake_run(command, **kwargs):
+                commands.append((command, kwargs))
+                config = Path(command[command.index("--config") + 1])
+                if config.name == "453.toml":
+                    return mock.Mock(
+                        returncode=0,
+                        stdout="\n".join(
+                            [
+                                "os_type=3 game_id=6262 area_id=11796 lines=1",
+                                "  line_id=453 area_id=11796 line_type=8 title=上海-日本-BGP speed_ip=203.0.113.20 pc_port=5438",
+                            ]
+                        ),
+                    )
+                return mock.Mock(returncode=1, stdout="temporary failure")
+
+            with mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run):
+                result = MODULE.refresh_catalog_cache(
+                    lines,
+                    Path("/runtime/line-client"),
+                    Path("/state/session.json"),
+                    cache,
+                    now=10_000,
+                    refresh_seconds=1800,
+                    retry_seconds=300,
+                    max_queries=8,
+                    timeout=9,
+                )
+
+            saved = json.loads(cache.read_text(encoding="utf-8"))
+            self.assertEqual({"attempted": 2, "succeeded": 1, "changed": 1}, result)
+            self.assertEqual(2, len(commands), "three local lines must collapse to two game/area queries")
+            self.assertEqual(["linelist", "--config"], commands[0][0][1:3])
+            self.assertIn("--session", commands[0][0])
+            self.assertFalse(commands[0][1].get("shell", False))
+            self.assertEqual(9, commands[0][1]["timeout"])
+            self.assertEqual("上海", saved["records"]["453"]["catalog_ingress"])
+            self.assertNotIn("460", saved["records"], "a successful current result must retire an omitted line record")
+            self.assertEqual("old-b", saved["records"]["455"]["title"], "a failed pair must preserve its prior safe metadata")
+            if os.name != "nt":
+                self.assertEqual(0o600, cache.stat().st_mode & 0o777)
+
+    def test_catalog_refresh_is_bounded_and_defers_fresh_or_recently_failed_pairs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            for offset in range(5):
+                line_id = 100 + offset
+                (lines / f"{line_id}.toml").write_text(
+                    f"[acc]\ngame_id = {1000 + offset}\narea_id = {2000 + offset}\nline_type = 8\nline_id = {line_id}\n",
+                    encoding="utf-8",
+                )
+            cache = root / "catalog-cache.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "records": {},
+                        "pairs": {
+                            "1000:2000": {"last_attempt_at": 9900, "last_success_at": 9900},
+                            "1001:2001": {"last_attempt_at": 9900, "last_success_at": 0},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            output = "os_type=3 game_id=1 area_id=1 lines=0"
+            with mock.patch.object(MODULE.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=output)) as run:
+                result = MODULE.refresh_catalog_cache(
+                    lines,
+                    Path("/runtime/line-client"),
+                    None,
+                    cache,
+                    now=10_000,
+                    refresh_seconds=1800,
+                    retry_seconds=300,
+                    max_queries=2,
+                    timeout=5,
+                )
+
+            self.assertEqual(2, run.call_count)
+            self.assertEqual(2, result["attempted"])
+            queried_configs = [Path(call.args[0][call.args[0].index("--config") + 1]).name for call in run.call_args_list]
+            self.assertEqual(["102.toml", "103.toml"], queried_configs)
+            for call in run.call_args_list:
+                self.assertNotIn("--session", call.args[0])
+
+    def test_inventory_prefers_cached_linelist_topology_over_partial_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            config = lines / "453.toml"
+            config.write_text("[acc]\ngame_id = 6262\narea_id = 11796\nline_type = 8\nline_id = 453\n", encoding="utf-8")
+            index = lines / "index.json"
+            index.write_text(json.dumps({"lines": [{"line_id": 453, "title": "stale-title", "speed_ip": "203.0.113.1"}]}), encoding="utf-8")
+            cache = root / "catalog-cache.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "records": {
+                            "453": {
+                                "line_id": 453,
+                                "title": "上海-日本-BGP-层峰【主机】",
+                                "catalog_ingress": "上海",
+                                "catalog_destination": "日本",
+                                "discovery_ip": "203.0.113.20",
+                            }
+                        },
+                        "pairs": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            inventory = MODULE.build_inventory(lines, index, catalog_path=cache, max_lines=256)
+
+        line = inventory["lines"][0]
+        self.assertEqual("上海-日本-BGP-层峰【主机】", line["title"])
+        self.assertEqual("上海", line["catalog_ingress"])
+        self.assertEqual("日本", line["catalog_destination"])
+        self.assertEqual("203.0.113.20", line["discovery_ip"])
+        encoded = json.dumps(inventory, ensure_ascii=False).lower()
+        self.assertNotIn("pc_port", encoded)
+        self.assertNotIn("credential", encoded)
+
+    def test_inventory_uses_fully_scanned_catalog_as_current_availability_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            for line_id in (453, 460):
+                (lines / f"{line_id}.toml").write_text(
+                    f"[acc]\ngame_id = 6262\narea_id = 11796\nline_type = 8\nline_id = {line_id}\n",
+                    encoding="utf-8",
+                )
+            cache = root / "catalog-cache.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "records": {
+                            "453": {
+                                "line_id": 453,
+                                "title": "上海-日本-BGP",
+                                "catalog_ingress": "上海",
+                                "catalog_destination": "日本",
+                                "discovery_ip": "203.0.113.20",
+                            }
+                        },
+                        "pairs": {"6262:11796": {"last_attempt_at": 10_000, "last_success_at": 10_000}},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            inventory = MODULE.build_inventory(lines, lines / "missing-index.json", catalog_path=cache, max_lines=256)
+
+        self.assertTrue(inventory["complete"])
+        self.assertEqual([453], [line["line_id"] for line in inventory["lines"]])
+
+    def test_inventory_keeps_local_configs_until_every_catalog_pair_has_succeeded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            for line_id, area_id in ((453, 11796), (455, 11800)):
+                (lines / f"{line_id}.toml").write_text(
+                    f"[acc]\ngame_id = 6262\narea_id = {area_id}\nline_type = 8\nline_id = {line_id}\n",
+                    encoding="utf-8",
+                )
+            cache = root / "catalog-cache.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "records": {"453": {"line_id": 453, "title": "上海-日本"}},
+                        "pairs": {"6262:11796": {"last_attempt_at": 10_000, "last_success_at": 10_000}},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            inventory = MODULE.build_inventory(lines, lines / "missing-index.json", catalog_path=cache, max_lines=256)
+
+        self.assertEqual([453, 455], [line["line_id"] for line in inventory["lines"]])
+
     def test_inventory_merges_index_and_toml_without_secret_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -141,6 +396,52 @@ class UltraSourceAgentTests(unittest.TestCase):
             )
             state = json.loads((root / "state" / "inventory-state.json").read_text(encoding="utf-8"))
             self.assertEqual(64, len(state["inventory_fingerprint"]))
+
+    def test_agent_polling_and_material_jobs_run_before_catalog_refresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            (lines / "453.toml").write_text(
+                "[acc]\ngame_id = 6262\narea_id = 11796\nline_type = 8\nline_id = 453\n",
+                encoding="utf-8",
+            )
+            (lines / "index.json").write_text(json.dumps({"lines": []}), encoding="utf-8")
+            config = root / "agent.json"
+            config.write_text(
+                json.dumps(
+                    {
+                        "panel_url": "https://panel.example",
+                        "source_id": "source-a",
+                        "source_secret": "source-secret",
+                        "binary_path": "/runtime/line-client",
+                        "lines_dir": str(lines),
+                        "inventory_path": str(lines / "index.json"),
+                        "state_dir": str(root / "state"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            events = []
+
+            def fake_request(_base_url, _source_id, _source_secret, _method, path, _payload, _timeout):
+                events.append(path)
+                if path == "/api/ultra/source/inventory":
+                    return {"ok": True, "accepted": 1}
+                return {"ok": True, "line_ids": []}
+
+            def fake_catalog(*_args, **_kwargs):
+                events.append("catalog")
+                return {"attempted": 0, "succeeded": 0, "changed": 0}
+
+            with mock.patch.object(MODULE, "request_json", side_effect=fake_request):
+                with mock.patch.object(MODULE, "refresh_catalog_cache", side_effect=fake_catalog):
+                    MODULE.SourceAgent(config).run_cycle()
+
+            self.assertEqual(
+                ["/api/ultra/source/inventory", "/api/ultra/source/jobs", "catalog"],
+                events,
+            )
 
     def test_signed_headers_bind_method_path_nonce_and_body(self):
         headers = MODULE.signed_headers(

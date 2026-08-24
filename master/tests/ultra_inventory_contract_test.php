@@ -55,6 +55,20 @@ if (($normalized['line_id'] ?? 0) !== 453
     failUltraInventory('inventory line was not normalized and categorized');
 }
 
+$catalogNormalized = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 453,
+    'title' => 'ambiguous title containing 北京 and 上海 and 美国',
+    'catalog_ingress' => '上海',
+    'catalog_destination' => '日本',
+    'config_sha256' => str_repeat('d', 64),
+], $zones, 1_893_456_000);
+if (($catalogNormalized['catalog_ingress_label'] ?? '') !== '上海'
+    || ($catalogNormalized['catalog_destination_label'] ?? '') !== '日本'
+    || ($catalogNormalized['auto_ingress_zone'] ?? '') !== 'shanghai'
+    || ($catalogNormalized['auto_destination_zone'] ?? '') !== 'tokyo') {
+    failUltraInventory('explicit linelist topology must be stored and classified independently');
+}
+
 $unknown = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 900,
     'title' => 'Unmapped route',
@@ -89,10 +103,22 @@ foreach ([
     "'is_enabled' => 0",
     'admin_ingress_zone',
     'admin_destination_zone',
+    'catalog_ingress_label',
+    'catalog_destination_label',
     'ON DUPLICATE KEY UPDATE',
 ] as $needle) {
     if (!str_contains((string) $source, $needle)) {
         failUltraInventory('missing inventory persistence boundary: ' . $needle);
+    }
+}
+foreach (["'catalog_ingress' => 'catalog_ingress_label'", "'catalog_destination' => 'catalog_destination_label'", '$column . \' = :\' . $key'] as $filterBoundary) {
+    if (!str_contains((string) $source, $filterBoundary)) {
+        failUltraInventory('missing raw catalog label filter boundary: ' . $filterBoundary);
+    }
+}
+foreach (['include_absent', 'ul.is_source_present = 1', 'AS material_required'] as $availabilityBoundary) {
+    if (!str_contains((string) $source, $availabilityBoundary)) {
+        failUltraInventory('missing current catalog availability boundary: ' . $availabilityBoundary);
     }
 }
 

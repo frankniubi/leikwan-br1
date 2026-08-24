@@ -13,5 +13,9 @@
   "material_lifetime_seconds": 1800,
   "max_lines_per_cycle": 8,
   "inventory_refresh_seconds": 1800,
-  "max_inventory_lines": 256
+  "max_inventory_lines": 256,
+  "catalog_refresh_seconds": 21600,
+  "catalog_retry_seconds": 300,
+  "catalog_max_queries_per_cycle": 4,
+  "catalog_query_timeout_seconds": 15
 }

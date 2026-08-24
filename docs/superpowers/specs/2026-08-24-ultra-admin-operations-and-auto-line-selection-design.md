@@ -2,7 +2,8 @@
 
 Date: 2026-08-24
 
-Status: Approved design. Implementation and deployment are pending.
+Status: Implemented and deployed on 2026-08-24. Production acceptance and the
+six-direction Linux canary are recorded below.
 
 ## Purpose
 
@@ -217,7 +218,7 @@ Admin-managed category definitions:
 
 ```text
 id BIGINT UNSIGNED PRIMARY KEY
-zone_code VARCHAR(32) UNIQUE
+zone_code VARCHAR(32)
 zone_role ENUM('ingress', 'destination')
 label VARCHAR(191)
 aliases_json JSON NULL
@@ -225,6 +226,7 @@ sort_order INT NOT NULL DEFAULT 100
 is_active TINYINT(1) NOT NULL DEFAULT 1
 created_at DATETIME NOT NULL
 updated_at DATETIME NOT NULL
+UNIQUE KEY (zone_role, zone_code)
 ```
 
 Initial ingress zones include `beijing`, `shanghai`, `guangzhou`, and
@@ -451,8 +453,8 @@ For each forward:
 
 1. Load and validate the scoped sealed candidate set.
 2. Load or refresh the shared Bilibili location result.
-3. Map province/city to an admin-provided ingress-zone alias snapshot included
-   in sealed policy data.
+3. Map province/city to the bounded admin-provided ingress-zone alias snapshot
+   included in the authenticated runtime configuration.
 4. Partition candidates according to the combination fallback policy.
 5. Probe at most eight candidates with at most four concurrent operations and
    fixed sub-second connect deadlines.
@@ -464,9 +466,9 @@ For each forward:
 9. Keep TCP and UDP selections independent because their best or available
    lines may differ.
 
-Probe results have a 60-second, 32-entry local cache. A process may perform
-only one selection refresh at a time. Additional refresh requests coalesce
-into one pending signal rather than creating a queue.
+A process performs one bounded selection at startup and after a material
+reload. It may perform only one selection refresh at a time; additional reload
+signals coalesce into one pending signal rather than creating a queue.
 
 Existing connections are not migrated merely because another candidate later
 measures faster. New TCP sessions use the latest valid ranking. UDP changes
@@ -484,22 +486,22 @@ Example logical shape:
 ```json
 {
   "forward_id": 42,
-  "detected_zone": "shanghai",
-  "zone_source": "bilibili-cache",
-  "tcp": {
+  "state": "ready",
+  "detected_ingress_zone": "shanghai",
+  "location_source": "cache",
+  "latest_tcp": {
     "entry_ref": "<opaque>",
     "relay_ip": "203.0.113.20",
     "rtt_ms": 18,
-    "active_connections": 3,
-    "last_success_at": "2026-08-24T02:00:00Z"
+    "selected_at": "2026-08-24T02:00:00Z"
   },
-  "udp": {
+  "active_udp": {
     "entry_ref": "<opaque>",
     "relay_ip": "203.0.113.21",
     "rtt_ms": 21,
-    "association_state": "active",
-    "last_success_at": "2026-08-24T02:00:01Z"
-  }
+    "selected_at": "2026-08-24T02:00:01Z"
+  },
+  "updated_at": "2026-08-24T02:00:01Z"
 }
 ```
 
@@ -508,9 +510,12 @@ heartbeat cycle and submits `ultra_status`. It does not start a telemetry
 thread or send a separate request per forward.
 
 The Panel accepts only status for active assigned Ultra forwards. It validates
-the opaque references and relay IP against the current scoped candidate set,
-caps text and numeric fields, and discards unknown or expired references. It
-then atomically replaces `client_device_sessions.ultra_status_json`.
+the reference shape and requires each reported relay IP to belong to the
+forward's currently approved Ultra membership, caps text and numeric fields,
+and discards unapproved selections. The admin projection resolves an accepted
+relay to its safe line label/ID server-side; it never presents `entry_ref` as a
+line. The accepted snapshot atomically replaces
+`client_device_sessions.ultra_status_json`.
 
 The latest successful TCP selection is an observation, not a claim that every
 active TCP connection uses the same line. The UI labels it accordingly. UDP
@@ -570,7 +575,8 @@ mode or account as fallback.
 - Material-resolution request: maximum 32 forwards.
 - Location lookup: one shared in-flight request per host.
 - Candidate probes: maximum four concurrent, eight total per refresh.
-- Probe cache: maximum 32 entries, 60-second TTL.
+- Selection refresh: one active operation per process; reload requests
+  coalesce into one pending signal.
 - Status files: maximum one per active Ultra forward.
 - Status writes: maximum once per five seconds per forward.
 - Heartbeat status: maximum 32 forwards, replacing one session row.
@@ -728,6 +734,30 @@ The final cleanup check must show no temporary test listener or process on
 - Source 171 remains outbound-only with no data listener.
 - Panel routes use existing HTTPS and no independent Ultra port appears.
 - The six-direction DNS report and cleanup evidence are complete.
+
+### Deployed Evidence
+
+- The Panel migration created the four additive Ultra tables and five additive
+  columns. Eleven initial zone rows are present with uniqueness by role and
+  code.
+- Authenticated browser QA confirmed both navigation entries, all four Ultra
+  tabs, the source inventory view, and the Ultra Forward Combination form on
+  mobile, tablet, and desktop viewports. Rendered admin HTML contained no
+  token, credential, relay port, or sealed-material field.
+- Source agent `2026.08.24.1` uploaded 110 inventory rows. The automatic
+  categorizer produced 14 Guangzhou, 11 Beijing, 8 Shanghai, and 77 unknown
+  ingress rows; all rows remained disabled after the canary cleanup.
+- Source 171 was audited and all legacy data-plane units and abandoned client
+  sessions were stopped and disabled. A post-enforcement listener and
+  connection check showed that it is outbound-only.
+- The Linux client canary passed 36 of 36 DNS requests: three UDP and three TCP
+  requests for each of Singapore, Hong Kong, Tokyo, Frankfurt, Los Angeles,
+  and Moscow. See
+  `docs/reports/2026-08-24-ultra-six-direction-dns-report.md`.
+- The temporary Panel service, combinations, forwards, enabled-line changes,
+  and canary listeners were removed. Expired sealed test files are retained
+  only in a root-only backup quarantine because the execution guard rejected a
+  recursive delete.
 
 ## Rollback
 

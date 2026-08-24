@@ -27,7 +27,7 @@ foreach (['pg-page-header', '&lt;unsafe&gt;', 'pg-metric-strip', 'pg-empty-state
 
 $base = (string) file_get_contents(dirname(__DIR__) . '/src/Controllers/BaseController.php');
 $navMethod = substr($base, strpos($base, 'protected function adminNavigationItems'), 3500);
-foreach (['Cloudflare Location Groups', 'Forward Combinations', 'Forward Routes', "'label' => 'Chains'"] as $retired) {
+foreach (['Cloudflare Location Groups', 'Forward Routes', "'label' => 'Chains'"] as $retired) {
     if (str_contains($navMethod, $retired)) {
         throw new RuntimeException('retired navigation returned: ' . $retired);
     }

@@ -163,9 +163,14 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     tenant_label VARCHAR(191) NOT NULL,
     tenant_description VARCHAR(255) NULL,
     tenant_badge VARCHAR(64) NULL,
+    line_direction VARCHAR(191) NULL,
+    ultra_destination_zone VARCHAR(32) NULL,
+    ultra_allowed_ingress_zones_json JSON NULL,
+    ultra_fallback_policy VARCHAR(32) NOT NULL DEFAULT 'detected_then_any',
     node_group_key VARCHAR(191) NOT NULL,
     -- Forward Mode: 'current_mode' (direct ingress) | 'cf_mode' (Cloudflare ingress) |
-    -- 'leigod_mode' (direct ingress + LeiGod self-leg; derives self_leg_outer_transport=leigod).
+    -- 'leigod_mode' (direct ingress + LeiGod self-leg; derives self_leg_outer_transport=leigod) |
+    -- 'ultra' (short-lived capability contract; separate from legacy LeiGod mode).
     backend_mode VARCHAR(32) NOT NULL DEFAULT 'current_mode',
     sidecar_point_id BIGINT UNSIGNED NULL,
     cf_location_group_id BIGINT UNSIGNED NULL,
@@ -548,6 +553,8 @@ CREATE TABLE IF NOT EXISTS client_device_sessions (
     last_seen_at DATETIME NOT NULL,
     last_pull_at DATETIME NULL,
     last_heartbeat_at DATETIME NULL,
+    ultra_status_json JSON NULL,
+    ultra_status_updated_at DATETIME NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     CONSTRAINT fk_client_device_sessions_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
@@ -1240,6 +1247,85 @@ CREATE TABLE IF NOT EXISTS leigod_lines (
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     UNIQUE KEY uniq_leigod_external_line (line_id)
+);
+
+CREATE TABLE IF NOT EXISTS ultra_sources (
+    source_id VARCHAR(191) NOT NULL PRIMARY KEY,
+    agent_version VARCHAR(64) NULL,
+    inventory_fingerprint CHAR(64) NULL,
+    inventory_count INT UNSIGNED NOT NULL DEFAULT 0,
+    last_seen_at DATETIME NULL,
+    last_inventory_at DATETIME NULL,
+    last_jobs_at DATETIME NULL,
+    last_material_upload_at DATETIME NULL,
+    last_requested_line_count INT UNSIGNED NOT NULL DEFAULT 0,
+    last_accepted_line_count INT UNSIGNED NOT NULL DEFAULT 0,
+    last_error_code VARCHAR(64) NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    INDEX idx_ultra_sources_seen (last_seen_at)
+);
+
+CREATE TABLE IF NOT EXISTS ultra_zones (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    zone_code VARCHAR(32) NOT NULL,
+    zone_role VARCHAR(16) NOT NULL,
+    label VARCHAR(191) NOT NULL,
+    aliases_json JSON NULL,
+    sort_order INT NOT NULL DEFAULT 100,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_ultra_zone_role_code (zone_role, zone_code),
+    INDEX idx_ultra_zones_active (zone_role, is_active, sort_order)
+);
+
+CREATE TABLE IF NOT EXISTS ultra_lines (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    source_id VARCHAR(191) NOT NULL,
+    line_id INT UNSIGNED NOT NULL,
+    source_title VARCHAR(255) NULL,
+    source_family_key VARCHAR(255) NULL,
+    game_id INT UNSIGNED NULL,
+    area_id INT UNSIGNED NULL,
+    line_type INT UNSIGNED NULL,
+    discovery_ip VARCHAR(64) NULL,
+    catalog_ingress_label VARCHAR(191) NULL,
+    catalog_destination_label VARCHAR(191) NULL,
+    config_sha256 CHAR(64) NOT NULL,
+    auto_ingress_zone VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    auto_destination_zone VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    admin_ingress_zone VARCHAR(32) NULL,
+    admin_destination_zone VARCHAR(32) NULL,
+    admin_label VARCHAR(191) NULL,
+    relay_ips_json JSON NULL,
+    last_material_acquired_at DATETIME NULL,
+    last_material_expires_at DATETIME NULL,
+    last_discovered_at DATETIME NOT NULL,
+    is_source_present TINYINT(1) NOT NULL DEFAULT 1,
+    is_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    sort_order INT NOT NULL DEFAULT 100,
+    notes TEXT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_ultra_lines_source FOREIGN KEY (source_id) REFERENCES ultra_sources(source_id),
+    UNIQUE KEY uniq_ultra_source_line (source_id, line_id),
+    INDEX idx_ultra_lines_policy (is_source_present, is_enabled, auto_destination_zone, auto_ingress_zone),
+    INDEX idx_ultra_lines_material_expiry (last_material_expires_at)
+);
+
+CREATE TABLE IF NOT EXISTS forward_combination_ultra_lines (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    forward_combination_id BIGINT UNSIGNED NOT NULL,
+    ultra_line_id BIGINT UNSIGNED NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 100,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_fcul_combination FOREIGN KEY (forward_combination_id) REFERENCES forward_combinations(id) ON DELETE CASCADE,
+    CONSTRAINT fk_fcul_line FOREIGN KEY (ultra_line_id) REFERENCES ultra_lines(id),
+    UNIQUE KEY uniq_combination_ultra_line (forward_combination_id, ultra_line_id),
+    INDEX idx_fcul_selection (forward_combination_id, enabled, sort_order)
 );
 
 CREATE TABLE IF NOT EXISTS forward_combination_leigod_lines (

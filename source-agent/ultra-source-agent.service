@@ -1,0 +1,18 @@
+[Unit]
+Description=Ultra Source Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/ultra-source-agent.py --config /etc/ultra-source-agent.json
+Restart=always
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ultra-source-agent
+
+[Install]
+WantedBy=multi-user.target
