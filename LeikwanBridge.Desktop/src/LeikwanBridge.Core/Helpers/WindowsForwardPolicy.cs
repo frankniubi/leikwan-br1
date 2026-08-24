@@ -6,6 +6,9 @@ public static class WindowsForwardPolicy
 {
     public static bool IsSupportedOnWindows(ForwardConfig forward)
     {
+        if (string.Equals(forward.BackendMode?.Trim(), "cf_mode", StringComparison.OrdinalIgnoreCase))
+            return false;
+
         var mode = NormalizeModeOrEmpty(FirstNonEmpty(forward.ClientMode, forward.Mode));
         if (GetSidecarFrontendMode(forward) != "")
             return true;

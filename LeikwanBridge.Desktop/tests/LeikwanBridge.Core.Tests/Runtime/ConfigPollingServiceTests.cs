@@ -170,6 +170,44 @@ public sealed class ConfigPollingServiceTests
         Assert.Equal([26], runtimeManager.AppliedForwardIds);
     }
 
+    [Fact]
+    public async Task SyncOnceAsync_StopsPreviouslyAppliedCfModeWithoutApplyingFallback()
+    {
+        using var tempDir = new TempStateDirectory();
+        var payload = BuildPullResponseJson().Replace(
+            "\"service_status\": \"active\",",
+            "\"service_status\": \"active\",\n              \"backend_mode\": \"cf_mode\",",
+            StringComparison.Ordinal);
+        using var server = new PullApiServer(payload);
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["26"] = new()
+            {
+                ForwardId = 26,
+                ContractSignature = "previous-cf-runtime",
+                UserStopped = false,
+            },
+        });
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+
+        Assert.Equal([26], runtimeManager.StoppedForwardIds);
+        Assert.Empty(runtimeManager.AppliedForwardIds);
+        Assert.Empty(service.LatestForwards);
+        Assert.Empty(stateManager.LoadPullState().AppliedForwardIds);
+    }
+
     private static string BuildPullResponseJson()
     {
         return """
@@ -329,6 +367,7 @@ public sealed class ConfigPollingServiceTests
 
         public Action<ForwardConfig>? OnApply { get; set; }
         public List<int> AppliedForwardIds { get; } = [];
+        public List<int> StoppedForwardIds { get; } = [];
 
         public override void ApplyForward(ForwardConfig forward)
         {
@@ -339,6 +378,11 @@ public sealed class ConfigPollingServiceTests
         {
             AppliedForwardIds.Add(forward.ForwardId);
             OnApply?.Invoke(forward);
+        }
+
+        public override void StopForward(int forwardId)
+        {
+            StoppedForwardIds.Add(forwardId);
         }
     }
 
