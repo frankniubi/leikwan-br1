@@ -85,13 +85,13 @@ public sealed class ForwardRuntimeManagerTests
     }
 
     [Fact]
-    public void ApplyForward_CfBondPlainTcpMux_ExcludesQuarantinedEndpointFromRuntime()
+    public void ApplyForward_PlainTcpMuxBond_ExcludesQuarantinedEndpointFromRuntime()
     {
         using var tempDir = new TempStateDirectory();
         var supervisor = new TestProcessSupervisor();
         var stateManager = new StateManager(tempDir.Path);
         var health = new BondEndpointHealthService(stateManager);
-        health.ForceQuarantine(26, 184, "cf_bond_leg_probe_failed", null, nowUnixSeconds: 1_000);
+        health.ForceQuarantine(26, 184, "bond_leg_probe_failed", null, nowUnixSeconds: 1_000);
         var manager = new ForwardRuntimeManager(
             CreateConfig(),
             supervisor,
@@ -99,7 +99,7 @@ public sealed class ForwardRuntimeManagerTests
             binaryExists: _ => true,
             portListeningProbe: _ => true);
 
-        manager.ApplyForward(CreateCfPlainTcpMuxBondForward());
+        manager.ApplyForward(CreateLatencyFirstPlainTcpMuxBondForward());
 
         Assert.Equal(["bond-ingress-leg-0", "bond-runtime"], supervisor.StartedRoles);
         var ingress = Assert.Single(supervisor.StartedCommands, command => command.role == "bond-ingress-leg-0");
@@ -566,10 +566,10 @@ public sealed class ForwardRuntimeManagerTests
         };
     }
 
-    private static ForwardConfig CreateCfPlainTcpMuxBondForward()
+    private static ForwardConfig CreateLatencyFirstPlainTcpMuxBondForward()
     {
         var forward = CreatePlainTcpMuxBondForward();
-        forward.BackendMode = "cf_mode";
+        forward.BackendMode = "current_mode";
         forward.Bonding!.PolicyMode = "latency_first";
         return forward;
     }

@@ -104,7 +104,7 @@ public sealed class HealthCheckServiceTests
     }
 
     [Fact]
-    public async Task RunCheckOnceAsync_CfBondOneLegFailure_QuarantinesEndpointAndRefreshesForward()
+    public async Task RunCheckOnceAsync_PlainTcpBondOneLegFailure_QuarantinesEndpointAndRefreshesForward()
     {
         using var tempDir = new TempStateDirectory();
         var supervisor = new TestProcessSupervisor();
@@ -120,12 +120,12 @@ public sealed class HealthCheckServiceTests
             runtimeManager,
             stateManager,
             port => port is 11024 or 20962 or 20963,
-            cfBondLegProbe: (_, endpoint, _) => endpoint.EndpointId == 184
-                ? (false, null, "cf_bond_leg_probe_failed")
+            bondLegProbe: (_, endpoint, _) => endpoint.EndpointId == 184
+                ? (false, null, "bond_leg_probe_failed")
                 : (true, 12.5, null));
 
         var forward = CreatePlainTcpMuxBondForward();
-        forward.BackendMode = "cf_mode";
+        forward.BackendMode = "current_mode";
         forward.Endpoints[0].EndpointId = 184;
         forward.Endpoints[1].EndpointId = 185;
 
@@ -134,7 +134,7 @@ public sealed class HealthCheckServiceTests
         Assert.Contains(26, runtimeManager.RestartedForwardIds);
         var entry = stateManager.LoadBondEndpointHealth()["26"]["184"];
         Assert.Equal("quarantined", entry.Role);
-        Assert.Equal("cf_bond_leg_probe_failed", entry.LastError);
+        Assert.Equal("bond_leg_probe_failed", entry.LastError);
     }
 
     [Fact]

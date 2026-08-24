@@ -85,7 +85,7 @@ public sealed class BondEndpointHealthService
         entry.ConsecutiveSuccesses = 0;
         entry.QuarantineUntil = now + QuarantineSeconds;
         entry.ProbationUntil = 0;
-        entry.LastError = string.IsNullOrWhiteSpace(error) ? "cf_bond_leg_probe_failed" : error;
+        entry.LastError = string.IsNullOrWhiteSpace(error) ? "bond_leg_probe_failed" : error;
         entry.LastLatencyMs = latencyMs;
         entry.QualityScore = 0.0;
         SaveEntry(forwardId, endpointId, entry);
@@ -136,12 +136,9 @@ public sealed class BondEndpointHealthService
         var healthy = SortEndpoints(activeEndpoints.Where(endpoint => endpoint.HealthRole == "healthy")).ToList();
         if (healthy.Count > 0)
         {
-            var selected = string.Equals(forward.BackendMode, "cf_mode", StringComparison.OrdinalIgnoreCase)
-                ? healthy.Take(3).ToList()
-                : healthy;
-            for (var index = 0; index < selected.Count; index++)
-                selected[index].LegRole = index == 0 ? "primary" : "helper";
-            return selected;
+            for (var index = 0; index < healthy.Count; index++)
+                healthy[index].LegRole = index == 0 ? "primary" : "helper";
+            return healthy;
         }
 
         var probation = SortEndpoints(activeEndpoints.Where(endpoint => endpoint.HealthRole == "probation")).ToList();
@@ -160,10 +157,9 @@ public sealed class BondEndpointHealthService
         return [];
     }
 
-    public static bool IsCfPlainTcpBond(ForwardConfig forward)
+    public static bool IsPlainTcpBond(ForwardConfig forward)
     {
         return ModeNormalizer.Normalize(forward.Mode) == "bond"
-            && string.Equals(forward.BackendMode, "cf_mode", StringComparison.OrdinalIgnoreCase)
             && string.Equals(forward.Bonding?.IngressMode ?? "wss_path_mux", "plain_tcp_mux", StringComparison.OrdinalIgnoreCase);
     }
 
