@@ -195,6 +195,10 @@ final class ProvisioningService
             $plan = $explicitPlanId > 0
                 ? ($this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id LIMIT 1', ['id' => $explicitPlanId]) ?? $this->ensurePlan($productCode, $bandwidthLimit, $trafficLimit))
                 : $this->ensurePlan($productCode, $bandwidthLimit, $trafficLimit);
+            $bandwidthLimit = $this->normalizePurchasedBandwidth($plan, $bandwidthLimit);
+            if ($explicitPlanId > 0) {
+                $trafficLimit = max(0, (int) ($plan['default_traffic_limit_gb'] ?? $trafficLimit));
+            }
 
             $service = $this->db->fetchOne('SELECT * FROM services WHERE whmcs_service_id = :id LIMIT 1', [
                 'id' => $whmcsServiceId,
@@ -312,6 +316,28 @@ final class ProvisioningService
     public function renewService(array $payload): array
     {
         $service = $this->getServiceByWhmcsId((int) $this->requiredString($payload, 'whmcs_service_id'));
+        $planId = (int) ($service['plan_id'] ?? 0);
+        if ($planId > 0) {
+            $plan = $this->db->fetchOne(
+                'SELECT is_active, feature_flags_json FROM service_plans WHERE id = :id LIMIT 1',
+                ['id' => $planId]
+            );
+            $flags = is_array($plan)
+                ? json_decode((string) ($plan['feature_flags_json'] ?? ''), true)
+                : null;
+            $renewalAllowed = is_array($flags)
+                && array_key_exists('allow_renewal', $flags)
+                ? $this->featureFlagValue($flags['allow_renewal'])
+                : true;
+            if (!is_array($plan)
+                || (int) ($plan['is_active'] ?? 0) !== 1
+                || !$renewalAllowed) {
+                throw new ApiException('service_renewal_disabled', 409, [
+                    'service_id' => (int) ($service['id'] ?? 0),
+                    'plan_id' => $planId,
+                ]);
+            }
+        }
         $this->db->execute(
             'UPDATE services
              SET status = :status,
@@ -5043,6 +5069,9 @@ final class ProvisioningService
     {
         $forward = $this->db->fetchOne(
              'SELECT f.*, s.client_token, s.status AS service_status, s.name AS service_name,
+                     s.expire_at AS service_expire_at,
+                     s.traffic_limit_gb AS service_traffic_limit_gb,
+                     s.traffic_used_bytes AS service_traffic_used_bytes,
                      s.bandwidth_limit_mbps AS service_bandwidth_limit_mbps,
                      c.name AS line_client_name, c.display_host AS line_client_host, c.speed_limit_mbps AS line_speed_limit_mbps,
                      c.agent_config_json AS line_client_agent_config_json,
@@ -5189,6 +5218,11 @@ final class ProvisioningService
         $lineSpeedLimitMbps = max(0, (int) ($forward['line_speed_limit_mbps'] ?? 0));
         $limitCandidates = array_values(array_filter([$serviceBandwidthLimitMbps, $lineSpeedLimitMbps], static fn(int $value): bool => $value > 0));
         $effectiveSpeedLimitMbps = $limitCandidates !== [] ? min($limitCandidates) : null;
+        $trafficLimitGb = max(0, (int) ($forward['service_traffic_limit_gb'] ?? 0));
+        $trafficUsedBytes = max(0, (int) ($forward['service_traffic_used_bytes'] ?? 0));
+        $quotaRemainingBytes = $trafficLimitGb > 0
+            ? max(0, ($trafficLimitGb * 1024 * 1024 * 1024) - $trafficUsedBytes)
+            : null;
 
         return [
             'service_id' => (int) $forward['service_id'],
@@ -5216,7 +5250,7 @@ final class ProvisioningService
             'donation_revoke_window_seconds' => (int) ($forward['forward_combination_donation_revoke_window_seconds'] ?? 30),
             'donation_min_open_ports' => (int) ($forward['forward_combination_donation_min_open_ports'] ?? 1),
             'forward_combination_helper_node_group_keys' => $this->forwardCombinationHelperNodeGroupKeys((int) ($forward['forward_combination_id'] ?? 0)),
-            'contract_version' => 1,
+            'contract_version' => $ultraClient ? 2 : 1,
             'backend_mode' => $backendMode,
             'active_family' => $activeFamily,
             'aggregation_enabled' => $aggregationEnabled,
@@ -5253,6 +5287,8 @@ final class ProvisioningService
             'mode' => $clientMode,
             'transport' => $this->effectiveMptcpTransport($forward),
             'service_status' => (string) $forward['service_status'],
+            'service_expire_at' => (string) ($forward['service_expire_at'] ?? ''),
+            'quota_remaining_bytes' => $quotaRemainingBytes,
             'speed_limit_mbps' => $effectiveSpeedLimitMbps,
             'bonding' => $bondConfig,
             'mptcp' => $mptcpConfig,
@@ -5296,6 +5332,147 @@ final class ProvisioningService
                 return $item;
             }, $endpoints),
         ];
+    }
+
+    /**
+     * Record one idempotent Ultra usage delta and return a credential-free
+     * stop action when the service quota is exhausted.
+     *
+     * @param array<string,mixed> $usage
+     * @return array<string,mixed>|null
+     */
+    public function recordUltraUsage(int $clientId, string $deviceId, array $usage): ?array
+    {
+        $forwardId = (int) ($usage['forward_id'] ?? 0);
+        $sequence = (int) ($usage['sequence'] ?? 0);
+        $generation = strtolower(trim((string) ($usage['policy_generation'] ?? '')));
+        $bytesIn = max(0, (int) ($usage['bytes_in'] ?? 0));
+        $bytesOut = max(0, (int) ($usage['bytes_out'] ?? 0));
+        if ($clientId <= 0 || trim($deviceId) === '' || $forwardId <= 0 || $sequence <= 0
+            || !preg_match('/^[a-f0-9]{64}$/', $generation)
+            || ($bytesIn === 0 && $bytesOut === 0)
+            || $bytesIn > UltraMode::MAX_QUOTA_LEASE_BYTES || $bytesOut > UltraMode::MAX_QUOTA_LEASE_BYTES) {
+            return null;
+        }
+        $forward = $this->db->fetchOne(
+            'SELECT f.id, f.service_id, f.line_client_id, f.line_client_group_id,
+                    f.line_client_group_ids_json, s.status AS service_status,
+                    s.traffic_limit_gb, s.billing_cycle_traffic_used_bytes,
+                    s.monthly_included_traffic_gb, s.billing_mode, s.expire_at
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id
+             WHERE f.id = :forward_id LIMIT 1',
+            ['forward_id' => $forwardId]
+        );
+        if (!is_array($forward) || (string) ($forward['service_status'] ?? '') !== 'active') {
+            return null;
+        }
+        $serviceExpiry = trim((string) ($forward['expire_at'] ?? ''));
+        if ($serviceExpiry !== '' && ($expiry = strtotime($serviceExpiry)) !== false && $expiry <= time()) {
+            return null;
+        }
+        $client = $this->db->fetchOne('SELECT group_id FROM clients WHERE id = :client_id LIMIT 1', ['client_id' => $clientId]);
+        $clientGroupId = (int) ($client['group_id'] ?? 0);
+        $belongsToClient = (int) ($forward['line_client_id'] ?? 0) === $clientId;
+        $belongsToGroup = $clientGroupId > 0
+            && ((int) ($forward['line_client_group_id'] ?? 0) === $clientGroupId
+                || $this->ultraUsageForwardIncludesGroup($forward['line_client_group_ids_json'] ?? null, $clientGroupId));
+        if (!$belongsToClient && !$belongsToGroup) {
+            return null;
+        }
+        $params = [
+            'client_id' => $clientId,
+            'device_hash' => hash('sha256', trim($deviceId)),
+            'forward_id' => $forwardId,
+            'policy_generation' => $generation,
+            'sequence_no' => $sequence,
+            'bytes_in' => $bytesIn,
+            'bytes_out' => $bytesOut,
+            'created_at' => gmdate('Y-m-d H:i:s'),
+        ];
+        try {
+            return $this->db->transaction(function () use ($params, $forwardId, $clientId, $bytesIn, $bytesOut, $forward, $generation): ?array {
+                $this->db->insert('ultra_usage_events', $params);
+                $serviceBefore = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => (int) $forward['service_id']]);
+                if (!is_array($serviceBefore)) {
+                    throw new \RuntimeException('ultra_usage_service_missing');
+                }
+                $this->syncServiceBillingCycle($serviceBefore);
+                $this->db->execute(
+                    'UPDATE services s INNER JOIN forwards f ON f.service_id = s.id
+                     SET s.traffic_used_bytes = COALESCE(s.traffic_used_bytes, 0) + :bytes_total,
+                         s.billing_cycle_traffic_used_bytes = COALESCE(s.billing_cycle_traffic_used_bytes, 0) + :bytes_total,
+                         s.updated_at = :updated_at WHERE f.id = :forward_id',
+                    [
+                        'bytes_total' => $bytesIn + $bytesOut,
+                        'updated_at' => gmdate('Y-m-d H:i:s'),
+                        'forward_id' => $forwardId,
+                    ]
+                );
+                $this->recordAgentUsage('client', $clientId, $bytesIn, $bytesOut);
+                $service = $this->db->fetchOne(
+                    'SELECT id, status, traffic_limit_gb, monthly_included_traffic_gb,
+                            billing_cycle_traffic_used_bytes, billing_mode
+                     FROM services WHERE id = :id LIMIT 1',
+                    ['id' => (int) $forward['service_id']]
+                );
+                if (!is_array($service)) {
+                    throw new \RuntimeException('ultra_usage_service_missing_after_update');
+                }
+                $limitGb = max(0, (int) ($service['monthly_included_traffic_gb'] ?? 0));
+                if ($limitGb <= 0) {
+                    $limitGb = max(0, (int) ($service['traffic_limit_gb'] ?? 0));
+                }
+                $limitBytes = $limitGb > 0 ? $limitGb * 1024 * 1024 * 1024 : 0;
+                $usedBytes = max(0, (int) ($service['billing_cycle_traffic_used_bytes'] ?? 0));
+                if (strtolower(trim((string) ($service['billing_mode'] ?? 'monthly_bundle'))) !== 'metered'
+                    && $limitBytes > 0 && $usedBytes >= $limitBytes
+                    && (string) ($service['status'] ?? '') === 'active') {
+                    $this->db->execute(
+                        'UPDATE services SET status = :status, suspend_reason = :reason, updated_at = :updated_at
+                         WHERE id = :id AND status = :active_status',
+                        [
+                            'id' => (int) $service['id'],
+                            'status' => 'traffic_suspended',
+                            'reason' => 'traffic_limit',
+                            'updated_at' => gmdate('Y-m-d H:i:s'),
+                            'active_status' => 'active',
+                        ]
+                    );
+                    $this->queueLifecycleTasks((int) $service['id'], 'suspend');
+                    return [
+                        'forward_id' => $forwardId,
+                        'policy_generation' => $generation,
+                        'action' => 'stop',
+                        'reason' => 'traffic_limit',
+                    ];
+                }
+                return null;
+            });
+        } catch (Throwable $exception) {
+            $message = strtolower($exception->getMessage());
+            if (str_contains($message, 'duplicate') || str_contains($message, 'unique') || str_contains($message, '23000')) {
+                return null;
+            }
+            throw $exception;
+        }
+    }
+
+    private function ultraUsageForwardIncludesGroup(mixed $encodedGroups, int $clientGroupId): bool
+    {
+        if ($clientGroupId <= 0 || !is_string($encodedGroups) || trim($encodedGroups) === '') {
+            return false;
+        }
+        $groups = json_decode($encodedGroups, true);
+        if (!is_array($groups)) {
+            return false;
+        }
+        foreach ($groups as $groupId) {
+            if ((int) $groupId === $clientGroupId) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -12237,6 +12414,17 @@ final class ProvisioningService
         return $defaults;
     }
 
+    private function featureFlagValue(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_numeric($value)) {
+            return (int) $value !== 0;
+        }
+        return !in_array(strtolower(trim((string) $value)), ['0', 'false', 'no', 'off', ''], true);
+    }
+
     /**
      * @param array<string, mixed> $service
      * @return array<string, bool>
@@ -12395,6 +12583,11 @@ final class ProvisioningService
 
         $stepMbps = max(0, (int) ($plan['bandwidth_step_mbps'] ?? 0));
         $stepPrice = (float) ($plan['bandwidth_step_price'] ?? 0);
+        if ($requested > $baseBandwidth && ($stepMbps <= 0 || $stepPrice <= 0)) {
+            throw new ApiException('bandwidth_upgrade_disabled', 422, [
+                'message' => 'This package has a fixed bandwidth limit of ' . $baseBandwidth . ' Mbps.',
+            ]);
+        }
         if ($requested > $baseBandwidth && $stepMbps > 0 && $stepPrice > 0) {
             $diff = $requested - $baseBandwidth;
             if ($diff % $stepMbps !== 0) {
