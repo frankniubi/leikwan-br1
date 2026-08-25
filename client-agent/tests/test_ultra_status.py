@@ -22,15 +22,13 @@ def valid_status(forward_id: int) -> dict:
         "detected_ingress_zone": "shanghai",
         "location_source": "cache",
         "latest_tcp": {
-            "entry_ref": f"tcp-entry-reference-{forward_id:04d}-abcdefghijklmnop",
-            "relay_ip": "203.0.113.20",
+            "selection_ref": f"tcp-entry-reference-{forward_id:04d}-abcdefghijklmnop",
             "rtt_ms": 18,
             "selected_at": "2030-01-01T00:00:00Z",
             "credential": "must-not-survive",
         },
         "active_udp": {
-            "entry_ref": f"udp-entry-reference-{forward_id:04d}-abcdefghijklmnop",
-            "relay_ip": "203.0.113.21",
+            "selection_ref": f"udp-entry-reference-{forward_id:04d}-abcdefghijklmnop",
             "rtt_ms": 20,
             "selected_at": "2030-01-01T00:00:01Z",
         },
@@ -54,7 +52,7 @@ class UltraStatusCollectionTests(unittest.TestCase):
         self.assertNotIn("credential", encoded)
         self.assertNotIn("token", encoded)
         self.assertEqual(
-            {"entry_ref", "relay_ip", "rtt_ms", "selected_at"},
+            {"selection_ref", "rtt_ms", "selected_at"},
             set(statuses[0]["latest_tcp"]),
         )
 
@@ -70,7 +68,7 @@ class UltraStatusCollectionTests(unittest.TestCase):
                 pass
             (root / "forward-2.status.json").write_text("x" * (64 * 1024 + 1), encoding="utf-8")
             invalid = valid_status(3)
-            invalid["latest_tcp"]["relay_ip"] = "not-an-ip"
+            invalid["latest_tcp"]["selection_ref"] = "invalid"
             (root / "forward-3.status.json").write_text(json.dumps(invalid), encoding="utf-8")
             statuses = MODULE.collect_ultra_status(root, expected_uid=getattr(os, "getuid", lambda: 0)())
         self.assertEqual(1, len(statuses))

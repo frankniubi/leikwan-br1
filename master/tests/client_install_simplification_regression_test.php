@@ -39,9 +39,6 @@ foreach ($requiredBaseSnippets as $snippet) {
     }
 }
 
-if (!str_contains($tenantSource, 'Advanced client settings')) {
-    fail('expected TenantController to contain advanced client settings behind the manage-client permission gate');
-}
 foreach (['Advanced client settings', 'Client ID + Token'] as $snippet) {
     if (!str_contains($adminSource, $snippet)) {
         fail('expected AdminController to contain snippet: ' . $snippet);
@@ -58,6 +55,9 @@ foreach (['Client ID + Token', 'Client ID:', 'Token:'] as $tenantSecretSnippet) 
     if (str_contains($tenantClientsPage, $tenantSecretSnippet)) {
         fail('tenant clientsPage should not expose raw client id/token snippet: ' . $tenantSecretSnippet);
     }
+}
+if (str_contains($tenantClientsPage, 'Advanced client settings')) {
+    fail('tenant clientsPage must not render advanced client settings');
 }
 
 $appOverviewStart = strpos($baseSource, 'protected function renderClientAppDownloadOverview(?array $client = null): string');

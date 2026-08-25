@@ -13,7 +13,7 @@ public sealed class EffectiveForwardConfigBuilderTests
         {
             ForwardId = 40,
             Mode = "bond",
-            BackendMode = "cf_mode",
+            BackendMode = "current_mode",
             Endpoints =
             [
                 new EndpointConfig { EndpointId = 254, Host = "a", Port = 1, HealthStatus = "active" },

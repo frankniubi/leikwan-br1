@@ -126,49 +126,64 @@ $grants = $broker->grantsForClientForwards(7, 'device-a', [[
 $grant = $grants['42'] ?? null;
 assertUltraContract(is_array($grant), 'active ultra forward must receive a local grant');
 assertUltraContract(!isset($grants['43']), 'current_mode forward must not receive an ultra grant');
-assertUltraContract(($grant['protocol'] ?? '') === UltraMode::CAPABILITY_PROTOCOL, 'grant protocol mismatch');
-assertUltraContract(($grant['line_ips'] ?? []) === ['203.0.113.20', '203.0.113.21'], 'grant must expose only literal line IPs');
+assertUltraContract(($grant['protocol'] ?? '') === UltraMode::POLICY_PROTOCOL, 'grant protocol mismatch');
+assertUltraContract(trim((string) ($grant['session_ticket'] ?? '')) !== '', 'policy grant ticket missing');
+assertUltraContract(preg_match('/^[a-f0-9]{64}$/', (string) ($grant['policy_generation'] ?? '')) === 1, 'policy generation missing');
+assertUltraContract(($grant['quota_remaining_bytes'] ?? 0) > 0, 'policy quota missing');
+assertUltraContract(preg_match('/^[a-f0-9]{64}$/', (string) ($grant['target_digest'] ?? '')) === 1, 'target digest missing');
+assertUltraContract(!array_key_exists('line_ips', $grant), 'policy grant exposed line IPs');
 assertUltraContract(!array_key_exists('gateway_ips', $grant), 'legacy gateway metadata must not survive');
 assertUltraContract(!array_key_exists('port', $grant), 'normal grant must not expose a business port');
 assertUltraContract(!array_key_exists('line_ids', $grant), 'normal grant must not expose line numbers');
 assertUltraContract(!str_contains(strtolower(json_encode($grant) ?: ''), 'credential'), 'normal grant exposed line material');
 
-$resolved = $materials->resolveClientToken(
-    (string) $grant['token'],
+$quotaForward = [
+    'forward_id' => 44,
+    'service_id' => 5,
+    'service_status' => 'active',
+    'backend_mode' => 'ultra',
+    'target' => '198.51.100.11:443',
+    'transport' => 'tcp',
+    'speed_limit_mbps' => 20,
+    'quota_remaining_bytes' => 1073741824,
+    '_ultra_line_ids' => [453],
+    '_ultra_lines' => [[
+        'line_id' => 453,
+        'ingress_zone' => 'shanghai',
+        'destination_zone' => 'tokyo',
+    ]],
+];
+$quotaGrant = $broker->grantsForClientForwards(7, 'device-quota', [$quotaForward]);
+assertUltraContract(isset($quotaGrant['44']), 'quota canary grant was not issued');
+$quotaForward['quota_remaining_bytes'] = 0;
+$exhaustedGrant = $broker->grantsForClientForwards(7, 'device-quota', [$quotaForward]);
+assertUltraContract(!isset($exhaustedGrant['44']), 'cached grant survived an exhausted Panel quota');
+
+$expiryForward = $quotaForward;
+$expiryForward['quota_remaining_bytes'] = 1073741824;
+$expiryForward['service_expire_at'] = gmdate('Y-m-d H:i:s', $now - 1);
+$expiredGrant = $broker->grantsForClientForwards(7, 'device-expiry', [$expiryForward]);
+assertUltraContract(!isset($expiredGrant['44']), 'expired Panel service still received an Ultra grant');
+
+$candidate = $materials->serverCandidateForClientToken(
+    (string) $grant['session_ticket'],
     7,
     'device-a',
     42,
-    ['203.0.113.21', '203.0.113.20']
+    (string) $grant['policy_generation']
 );
-assertUltraContract(($resolved['forward_id'] ?? 0) === 42, 'resolved forward scope mismatch');
+assertUltraContract(($candidate['ip'] ?? '') === '203.0.113.20', 'server candidate ordering changed');
+assertUltraContract(($candidate['port'] ?? 0) === 5438, 'server candidate port missing');
+assertUltraContract(($candidate['user'] ?? '') === 'line-user', 'server candidate user missing');
+assertUltraContract(($candidate['credential'] ?? '') === '1234567890123456', 'server candidate credential missing');
+assertUltraContract(preg_match('/^[A-Za-z0-9_-]{16,128}$/', (string) ($candidate['selection_ref'] ?? '')) === 1, 'opaque selection reference missing');
+assertUltraContract(!array_key_exists('line_id', $candidate), 'server candidate exposed line number');
 assertUltraContract(
-    str_starts_with((string) ($resolved['sealed_material'] ?? ''), 'um1.')
-        || str_starts_with((string) ($resolved['sealed_material'] ?? ''), 'umt.'),
-    'client material was not sealed'
-);
-assertUltraContract(!str_contains(json_encode($resolved) ?: '', '5438'), 'resolved response exposed a relay port');
-assertUltraContract(!str_contains(json_encode($resolved) ?: '', 'line-user'), 'resolved response exposed a line user');
-$openForClient = new ReflectionMethod(UltraMaterialService::class, 'openForClient');
-$openForClient->setAccessible(true);
-$clear = $openForClient->invoke($materials, (string) $grant['token'], (string) $resolved['sealed_material']);
-assertUltraContract(count($clear['entries'] ?? []) <= 8, 'sealed material exceeded the candidate cap');
-assertUltraContract(($clear['entries'][0]['ip'] ?? '') === '203.0.113.20', 'client ordering input changed server candidate order');
-assertUltraContract(($clear['entries'][0]['port'] ?? 0) === 5438, 'selected material port missing');
-assertUltraContract(($clear['entries'][0]['user'] ?? '') === 'line-user', 'selected material user missing');
-assertUltraContract(($clear['entries'][0]['credential'] ?? '') === '1234567890123456', 'selected material credential missing');
-assertUltraContract(preg_match('/^[A-Za-z0-9_-]{32,128}$/', (string) ($clear['entries'][0]['entry_ref'] ?? '')) === 1, 'opaque entry reference missing');
-assertUltraContract(($clear['entries'][0]['ingress_zone'] ?? '') === 'shanghai', 'entry ingress zone missing');
-assertUltraContract(($clear['entries'][0]['destination_zone'] ?? '') === 'tokyo', 'entry destination zone missing');
-assertUltraContract(($clear['policy']['destination_zone'] ?? '') === 'tokyo', 'sealed destination policy missing');
-assertUltraContract(($clear['policy']['allowed_ingress_zones'] ?? []) === ['shanghai', 'beijing'], 'sealed ingress policy missing');
-assertUltraContract(($clear['policy']['fallback_policy'] ?? '') === 'detected_then_any', 'sealed fallback policy missing');
-assertUltraContract(!array_key_exists('line_id', $clear['entries'][0]), 'client material must not expose line numbers');
-assertUltraContract(
-    $materials->resolveClientToken((string) $grant['token'], 7, 'wrong-device', 42, ['203.0.113.20']) === [],
+    $materials->serverCandidateForClientToken((string) $grant['session_ticket'], 7, 'wrong-device', 42, (string) $grant['policy_generation']) === [],
     'token must be device scoped'
 );
 assertUltraContract(
-    $materials->resolveClientToken((string) $grant['token'], 7, 'device-a', 99, ['203.0.113.20']) === [],
+    $materials->serverCandidateForClientToken((string) $grant['session_ticket'], 7, 'device-a', 99, (string) $grant['policy_generation']) === [],
     'token must be forward scoped'
 );
 
@@ -219,6 +234,7 @@ foreach ([
     assertUltraContract(str_contains($bootstrap, $route), 'integrated panel route missing: ' . $route);
 }
 assertUltraContract(str_contains($controller, 'resolveUltraMaterials'), 'client material controller integration missing');
+assertUltraContract(str_contains($controller, 'resolveUltraLease'), 'client lease controller integration missing');
 assertUltraContract(str_contains($sourceController, 'verifySourceRequest'), 'source request signature verification missing');
 assertUltraContract(!str_contains($bootstrap, '18443'), 'panel must not introduce an independent Ultra port');
 assertUltraContract(UltraMode::isBackendMode('ultra'), 'ultra mode constant mismatch');

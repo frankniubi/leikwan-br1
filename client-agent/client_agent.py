@@ -5,7 +5,6 @@ import argparse
 import email.message
 import email.utils
 import contextlib
-import concurrent.futures
 import datetime
 import hashlib
 import http.client
@@ -16,6 +15,7 @@ import ipaddress
 import logging
 import os
 import pathlib
+import secrets
 import platform
 import re
 import shutil
@@ -115,6 +115,11 @@ def ultra_config_poll_delay(
 
 def forward_requires_panel_endpoints(forward: dict, mode: str) -> bool:
     return str(forward.get("backend_mode", "") or "").strip().lower() != "ultra" and mode != "mptcp"
+
+
+def unsupported_client_backend_mode(forward: dict) -> str:
+    backend = str(forward.get("backend_mode", "") or "").strip().lower()
+    return "cf_mode" if backend == "cf_mode" else ""
 
 
 def forward_runtime_service_name(forward: dict) -> str:
@@ -490,9 +495,6 @@ def http_json_with_headers(method: str, url: str, token: str, payload: dict | No
     return json.loads(content), response_headers
 
 
-_ULTRA_RTT_CACHE: dict[str, tuple[float, list[str]]] = {}
-
-
 def control_plane_endpoints(config: dict) -> list[str]:
     primary = str(config.get("master_url", "") or "").rstrip("/")
     candidates = [primary] if primary else []
@@ -517,78 +519,18 @@ def pull_client_configs(config: dict, token: str) -> tuple[dict, dict[str, str],
     raise RuntimeError("; ".join(errors) if errors else "no control-plane endpoint configured")
 
 
-def _ping_ultra_ip(ip: str, timeout: float = 0.8) -> float | None:
-    started = time.monotonic()
-    command = ["ping", "-n" if os.name == "nt" else "-c", "1"]
-    if os.name == "nt":
-        command.extend(["-w", str(max(100, int(timeout * 1000))), ip])
-    else:
-        command.extend(["-W", str(max(1, int(timeout + 0.999))), ip])
-    try:
-        completed = subprocess.run(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=max(0.2, timeout + 0.4),
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return (time.monotonic() - started) * 1000.0 if completed.returncode == 0 else None
-
-
-def rank_ultra_line_ips(line_ips: list[str], now: float | None = None) -> list[str]:
-    candidates: list[str] = []
-    for raw_ip in line_ips[:8]:
-        try:
-            ip = str(ipaddress.ip_address(str(raw_ip).strip()))
-        except ValueError:
-            continue
-        if ip not in candidates:
-            candidates.append(ip)
-    if not candidates:
-        return []
-    cache_key = ",".join(candidates)
-    current = time.time() if now is None else float(now)
-    cached = _ULTRA_RTT_CACHE.get(cache_key)
-    if cached is not None and current - cached[0] < 60.0:
-        return list(cached[1])
-    measured: dict[str, float | None] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(candidates))) as pool:
-        futures = {pool.submit(_ping_ultra_ip, ip): ip for ip in candidates}
-        for future, ip in [(future, futures[future]) for future in futures]:
-            try:
-                measured[ip] = future.result(timeout=1.5)
-            except Exception:  # noqa: BLE001
-                measured[ip] = None
-    ranked = sorted(
-        candidates,
-        key=lambda ip: (measured.get(ip) is None, measured.get(ip) if measured.get(ip) is not None else float("inf"), candidates.index(ip)),
-    )
-    if len(_ULTRA_RTT_CACHE) >= 32:
-        oldest = min(_ULTRA_RTT_CACHE, key=lambda key: _ULTRA_RTT_CACHE[key][0])
-        _ULTRA_RTT_CACHE.pop(oldest, None)
-    _ULTRA_RTT_CACHE[cache_key] = (current, ranked)
-    return ranked
-
-
 def _normalize_ultra_selection(value: object) -> dict | None:
     if not isinstance(value, dict):
         return None
-    entry_ref = str(value.get("entry_ref", "") or "").strip()
-    if re.fullmatch(r"[A-Za-z0-9_-]{16,128}", entry_ref) is None:
-        return None
-    try:
-        relay_ip = str(ipaddress.ip_address(str(value.get("relay_ip", "") or "").strip()))
-    except ValueError:
+    selection_ref = str(value.get("selection_ref", value.get("entry_ref", "")) or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{16,128}", selection_ref) is None:
         return None
     try:
         rtt_ms = max(0, min(60000, int(value.get("rtt_ms", 0) or 0)))
     except (TypeError, ValueError):
         rtt_ms = 0
     return {
-        "entry_ref": entry_ref,
-        "relay_ip": relay_ip,
+        "selection_ref": selection_ref,
         "rtt_ms": rtt_ms,
         "selected_at": str(value.get("selected_at", "") or "").strip()[:40],
     }
@@ -651,12 +593,15 @@ def collect_ultra_status(
                 "active_udp": _normalize_ultra_selection(decoded.get("active_udp")),
                 "updated_at": str(decoded.get("updated_at", "") or "").strip()[:40],
                 "error_code": str(decoded.get("error_code", "") or "").strip()[:64],
+                "policy_generation": str(decoded.get("policy_generation", "") or "").strip().lower()[:64],
+                "bytes_in": max(0, int(decoded.get("bytes_in", 0) or 0)),
+                "bytes_out": max(0, int(decoded.get("bytes_out", 0) or 0)),
             }
         )
     return statuses
 
 
-def resolve_ultra_materials(master: str, agent_token: str, device_id: str, forwards: list[dict]) -> list[dict]:
+def resolve_ultra_leases(master: str, agent_token: str, device_id: str, forwards: list[dict]) -> list[dict]:
     requests: list[dict] = []
     for forward in forwards:
         if not isinstance(forward, dict) or str(forward.get("backend_mode", "")).strip().lower() != "ultra":
@@ -665,10 +610,22 @@ def resolve_ultra_materials(master: str, agent_token: str, device_id: str, forwa
         if not isinstance(access, dict):
             continue
         forward_id = int(forward.get("forward_id", 0) or 0)
-        token = str(access.get("token", "") or "").strip()
-        if forward_id <= 0 or token == "":
+        session_ticket = str(access.get("session_ticket", "") or "").strip()
+        generation = str(access.get("policy_generation", "") or "").strip().lower()
+        target = str(forward.get("target", "") or "").strip()
+        transport = str(access.get("transport", forward.get("transport", "tcp+udp")) or "tcp+udp").strip().lower()
+        if forward_id <= 0 or session_ticket == "" or re.fullmatch(r"[a-f0-9]{64}", generation) is None or target == "":
             continue
-        requests.append({"forward_id": forward_id, "token": token})
+        requests.append(
+            {
+                "forward_id": forward_id,
+                "session_ticket": session_ticket,
+                "policy_generation": generation,
+                "nonce": secrets.token_hex(16),
+                "target_digest": hashlib.sha256(target.encode("utf-8")).hexdigest(),
+                "transport": transport,
+            }
+        )
     if not requests:
         return forwards
     last_error: Exception | None = None
@@ -677,7 +634,7 @@ def resolve_ultra_materials(master: str, agent_token: str, device_id: str, forwa
         try:
             response = http_json(
                 "POST",
-                f"{master.rstrip('/')}/api/client/ultra/materials",
+                f"{master.rstrip('/')}/api/client/ultra/lease",
                 agent_token,
                 {"device_id": device_id, "forwards": requests},
             )
@@ -688,9 +645,9 @@ def resolve_ultra_materials(master: str, agent_token: str, device_id: str, forwa
                 time.sleep(0.5 if attempt == 0 else 1.5)
     if response is None:
         raise RuntimeError(f"ultra material resolution retries exhausted: {last_error}") from last_error
-    material_by_forward = {
+    lease_by_forward = {
         int(item.get("forward_id", 0) or 0): item
-        for item in response.get("materials", [])
+        for item in response.get("leases", [])
         if isinstance(item, dict) and int(item.get("forward_id", 0) or 0) > 0
     }
     result: list[dict] = []
@@ -698,10 +655,9 @@ def resolve_ultra_materials(master: str, agent_token: str, device_id: str, forwa
         if not isinstance(forward, dict):
             continue
         enriched = dict(forward)
-        material = material_by_forward.get(int(enriched.get("forward_id", 0) or 0))
-        access = enriched.get("ultra_access")
-        if isinstance(material, dict) and isinstance(access, dict) and str(material.get("token", "")) == str(access.get("token", "")):
-            enriched["_ultra_material"] = material
+        lease = lease_by_forward.get(int(enriched.get("forward_id", 0) or 0))
+        if isinstance(lease, dict):
+            enriched["_ultra_lease"] = lease
         result.append(enriched)
     return result
 
@@ -1050,6 +1006,7 @@ class ClientAgent:
             normalized_forward = dict(normalized_forward)
             normalized_forward.pop("ultra_access", None)
             normalized_forward.pop("_ultra_material", None)
+            normalized_forward.pop("_ultra_lease", None)
         return self.stable_json_hash(
             {
                 "forward": normalized_forward,
@@ -1505,7 +1462,7 @@ class ClientAgent:
         return payload.get("linux_profile_runtime", {}) if isinstance(payload, dict) else {}
 
     def bond_leg_snapshot_dir(self) -> pathlib.Path:
-        configured = str(self.config.get("bond_leg_snapshot_dir", "") or "").strip()
+        configured = str(getattr(self, "config", {}).get("bond_leg_snapshot_dir", "") or "").strip()
         if configured != "":
             return pathlib.Path(configured)
         return pathlib.Path("/run/leikwan")
@@ -1667,16 +1624,34 @@ class ClientAgent:
     def sync_once(self) -> None:
         token = self.config["agent_token"]
         payload, response_headers, master = pull_client_configs(self.config, token)
-        forwards = payload.get("forwards", [])
-        self.latest_forwards = [forward for forward in forwards if isinstance(forward, dict)]
+        pulled_forwards = [forward for forward in payload.get("forwards", []) if isinstance(forward, dict)]
+        unsupported_forward_ids = []
+        for forward in pulled_forwards:
+            if unsupported_client_backend_mode(forward) == "":
+                continue
+            try:
+                forward_id = int(forward.get("forward_id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if forward_id > 0:
+                unsupported_forward_ids.append(forward_id)
+        self.latest_forwards = [
+            forward
+            for forward in pulled_forwards
+            if unsupported_client_backend_mode(forward) == ""
+        ]
         client_meta = payload.get("client", {})
         device_id = str(client_meta.get("current_device_id", "") or "") if isinstance(client_meta, dict) else ""
         try:
-            forwards = resolve_ultra_materials(master, token, device_id, self.latest_forwards)
-            self.latest_forwards = [forward for forward in forwards if isinstance(forward, dict)]
+            runtime_forwards = resolve_ultra_leases(master, token, device_id, self.latest_forwards)
         except Exception as exc:  # noqa: BLE001
-            logging.warning("ultra material resolution failed; preserving existing runtimes: %s", exc)
-            forwards = self.latest_forwards
+            logging.warning("ultra lease resolution failed; stopping affected runtimes: %s", exc)
+            runtime_forwards = []
+        runtime_by_id = {
+            int(forward.get("forward_id", 0) or 0): forward
+            for forward in runtime_forwards
+            if isinstance(forward, dict)
+        }
         applied_forward_ids: list[int] = []
         noop_forward_ids: list[int] = []
         skipped_invalid_forward_ids: list[int] = []
@@ -1689,8 +1664,12 @@ class ClientAgent:
         token = self.config["agent_token"]
         desired_ids = set()
         force_runtime_refresh_ids = self.consume_local_refresh_requests()
-        for forward in forwards:
+        for forward_id in unsupported_forward_ids:
+            self.log_invalid_forward(forward_id, "stopping unsupported backend_mode=cf_mode")
+            self.stop_forward(forward_id, delete_files=True)
+        for forward in self.latest_forwards:
             forward_id = int(forward["forward_id"])
+            runtime_forward = runtime_by_id.get(forward_id, forward)
             validation_forward = dict(forward)
             candidate_pool = self.select_forward_candidates(validation_forward)
             if candidate_pool:
@@ -1701,6 +1680,11 @@ class ClientAgent:
             if str(forward.get("service_status", "active")) != "active":
                 inactive_forward_ids.append(forward_id)
                 self.stop_forward(forward_id)
+                continue
+            if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra" and not isinstance(runtime_forward.get("_ultra_lease"), dict):
+                skipped_invalid_forward_ids.append(forward_id)
+                self.log_invalid_forward(forward_id, "ultra lease missing or rejected by panel")
+                self.stop_forward(forward_id, delete_files=True)
                 continue
             usable_endpoints = self.usable_endpoints(validation_forward)
             if usable_endpoints == [] and forward_requires_panel_endpoints(validation_forward, mode):
@@ -1755,18 +1739,18 @@ class ClientAgent:
                     continue
             desired_ids.add(forward_id)
             try:
-                contract_signature = self.effective_forward_contract_signature(forward)
+                contract_signature = self.effective_forward_contract_signature(runtime_forward)
                 force_runtime_restart = forward_id in force_runtime_refresh_ids
                 ultra_access_refresh = (
-                    str(forward.get("backend_mode", "") or "").strip().lower() == "ultra"
-                    and isinstance(forward.get("_ultra_material"), dict)
+                    str(runtime_forward.get("backend_mode", "") or "").strip().lower() == "ultra"
+                    and isinstance(runtime_forward.get("_ultra_lease"), dict)
                 )
                 if not force_runtime_restart and not ultra_access_refresh and self.forward_apply_is_noop(forward_id, contract_signature):
                     noop_forward_ids.append(forward_id)
                     applied_forward_ids.append(forward_id)
                     logging.debug("forward %s unchanged; skipping no-op runtime apply", forward_id)
                     continue
-                self.apply_forward(forward, contract_signature=contract_signature, force_runtime_restart=force_runtime_restart)
+                self.apply_forward(runtime_forward, contract_signature=contract_signature, force_runtime_restart=force_runtime_restart)
                 applied_forward_ids.append(forward_id)
             except Exception as exc:  # noqa: BLE001
                 logging.exception(
@@ -1791,12 +1775,12 @@ class ClientAgent:
 
         self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
         self.reconcile_global_mptcp_state(self.latest_forwards)
-        self.run_diagnostics_if_requested(master, token, client_meta, forwards)
+        self.run_diagnostics_if_requested(master, token, client_meta, self.latest_forwards)
         usage_totals = self.collect_usage_totals()
         wireguard_public_key = self.ensure_wireguard_identity()
         local_clock = self.time_sync_state()
         cfwg_watchdog_path = pathlib.Path(__file__).with_name("cfwg_latency_watchdog.py")
-        http_json(
+        heartbeat_response = http_json(
             "POST",
             f"{master}/api/client/heartbeat",
             token,
@@ -1804,6 +1788,7 @@ class ClientAgent:
                 "agent_version": AGENT_VERSION,
                 "usage_bytes_in": usage_totals["bytes_in"],
                 "usage_bytes_out": usage_totals["bytes_out"],
+                "ultra_usage": usage_totals.get("ultra_usage", []),
                 "supports_mptcp": self.running_kernel_supports_mptcp(),
                 "mptcp_capability": self.mptcp_capability(),
                 "kernel_release": platform.release(),
@@ -1822,6 +1807,8 @@ class ClientAgent:
                 "ultra_status": collect_ultra_status(),
             },
         )
+        self.apply_ultra_actions(heartbeat_response)
+        self.commit_usage_state(usage_totals)
         now = time.time()
         self.save_pull_state(
             {
@@ -1837,11 +1824,49 @@ class ClientAgent:
                 "noop_forward_ids": noop_forward_ids,
                 "invalid_forward_ids": skipped_invalid_forward_ids,
                 "inactive_forward_ids": inactive_forward_ids,
+                "unsupported_forward_ids": unsupported_forward_ids,
                 "agent_update_request_token": str(client_meta.get("agent_update_request_token", "") or ""),
                 "diag_request_token": str(client_meta.get("diag_request_token", "") or ""),
                 "clock": self.panel_clock_state_from_headers(response_headers),
             }
         )
+
+    def apply_ultra_actions(self, response: object) -> None:
+        if not isinstance(response, dict):
+            return
+        actions = response.get("ultra_actions", [])
+        if not isinstance(actions, list):
+            return
+        policies = {
+            int(forward.get("forward_id", 0) or 0): forward
+            for forward in self.latest_forwards[:64]
+            if isinstance(forward, dict)
+            and str(forward.get("backend_mode", "") or "").strip().lower() == "ultra"
+        }
+        for raw_action in actions[:32]:
+            if not isinstance(raw_action, dict) or str(raw_action.get("action", "")) != "stop":
+                continue
+            try:
+                forward_id = int(raw_action.get("forward_id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if forward_id <= 0 or forward_id not in policies:
+                continue
+            generation = str(raw_action.get("policy_generation", "") or "").strip().lower()
+            access = policies[forward_id].get("ultra_access")
+            expected_generation = str(access.get("policy_generation", "") or "").strip().lower() if isinstance(access, dict) else ""
+            if re.fullmatch(r"[a-f0-9]{64}", generation) is None or generation != expected_generation:
+                continue
+            self.log_invalid_forward(forward_id, "Panel requested immediate Ultra stop")
+            self.stop_forward(forward_id, delete_files=True)
+
+    def commit_usage_state(self, usage_totals: object) -> None:
+        if not isinstance(usage_totals, dict):
+            return
+        state = usage_totals.get("_usage_state")
+        if not isinstance(state, dict):
+            return
+        self.usage_state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     @staticmethod
     def usable_endpoints(forward: dict) -> list[dict]:
@@ -2095,13 +2120,10 @@ class ClientAgent:
             )
         logging.info("requested client self-update token=%s", request_token)
 
-    def collect_usage_totals(self) -> dict[str, int]:
-        if not shutil.which("nft"):
-            return {"bytes_in": 0, "bytes_out": 0}
-
-        result = subprocess.run("nft -a list table inet leikwan_meter", shell=True, text=True, capture_output=True, check=False)
-        if result.returncode != 0:
-            return {"bytes_in": 0, "bytes_out": 0}
+    def collect_usage_totals(self) -> dict:
+        result = None
+        if shutil.which("nft"):
+            result = subprocess.run("nft -a list table inet leikwan_meter", shell=True, text=True, capture_output=True, check=False)
 
         usage_state: dict[str, int] = {}
         if self.usage_state_path.exists():
@@ -2113,7 +2135,7 @@ class ClientAgent:
                 usage_state = {}
 
         current_bytes: dict[str, int] = {}
-        for line in result.stdout.splitlines():
+        for line in (result.stdout.splitlines() if result is not None and result.returncode == 0 else []):
             comment_match = re.search(r'comment "([^"]+)"', line)
             bytes_match = re.search(r"bytes (\d+)", line)
             if comment_match and bytes_match:
@@ -2133,8 +2155,41 @@ class ClientAgent:
             direction = match.group(2)
             totals[f"bytes_{direction}"] += max(0, delta)
 
-        self.usage_state_path.write_text(json.dumps(usage_state, ensure_ascii=False, indent=2), encoding="utf-8")
-        return totals
+        ultra_usage: list[dict] = []
+        for status in collect_ultra_status():
+            forward_id = int(status.get("forward_id", 0) or 0)
+            generation = str(status.get("policy_generation", "") or "").strip().lower()
+            if forward_id <= 0 or re.fullmatch(r"[a-f0-9]{64}", generation) is None:
+                continue
+            current_in = max(0, int(status.get("bytes_in", 0) or 0))
+            current_out = max(0, int(status.get("bytes_out", 0) or 0))
+            key_in = f"ultra:{forward_id}:in"
+            key_out = f"ultra:{forward_id}:out"
+            previous_in = int(usage_state.get(key_in, 0))
+            previous_out = int(usage_state.get(key_out, 0))
+            delta_in = current_in - previous_in if current_in >= previous_in else current_in
+            delta_out = current_out - previous_out if current_out >= previous_out else current_out
+            usage_state[key_in] = current_in
+            usage_state[key_out] = current_out
+            if delta_in == 0 and delta_out == 0:
+                continue
+            sequence_key = f"ultra:{forward_id}:sequence"
+            sequence = int(usage_state.get(sequence_key, 0)) + 1
+            usage_state[sequence_key] = sequence
+            ultra_usage.append({
+                "forward_id": forward_id,
+                "policy_generation": generation,
+                "sequence": sequence,
+                "bytes_in": min(delta_in, 107374182400),
+                "bytes_out": min(delta_out, 107374182400),
+            })
+
+        return {
+            "bytes_in": totals["bytes_in"],
+            "bytes_out": totals["bytes_out"],
+            "ultra_usage": ultra_usage,
+            "_usage_state": usage_state,
+        }
 
     def apply_forward(self, forward: dict, contract_signature: str | None = None, force_runtime_restart: bool = False) -> None:
         from install_forward_runtime import render_forward_runtime  # local helper
@@ -2194,6 +2249,13 @@ class ClientAgent:
             self.cleanup_mptcp_forward_runtime(forward_id)
             previous_runtime_present = False
         if rendered_unchanged and previous_runtime_present:
+            if str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra":
+                lease = render_forward.get("_ultra_lease")
+                if not isinstance(lease, dict) or not self.send_ultra_lease(forward_id, lease):
+                    raise RuntimeError("ultra lease delivery failed")
+                self.persist_forward_apply_signatures(forward_id, contract_signature, rendered_signature)
+                logging.debug("forward %s static runtime unchanged; delivered fresh Ultra lease", forward_id)
+                return
             self.apply_reload_only_files(rendered)
             if force_runtime_restart:
                 service_name = str(rendered.get("service_name", "") or f"leikwan-client-{forward_id}")
@@ -2290,6 +2352,12 @@ class ClientAgent:
                 script_changed,
             )
 
+        if str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra":
+            lease = render_forward.get("_ultra_lease")
+            if not isinstance(lease, dict) or not self.send_ultra_lease(forward_id, lease):
+                self.stop_forward(forward_id, delete_files=True)
+                raise RuntimeError("ultra lease delivery failed")
+
         current_managed_paths = {path for unit in persisted_units for path in unit["managed_paths"]}
         stale_path_removed = False
         for previous_path_raw in previous_managed_paths:
@@ -2313,9 +2381,70 @@ class ClientAgent:
         }
         self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def send_ultra_lease(self, forward_id: int, lease: dict) -> bool:
+        if forward_id <= 0 or not isinstance(lease, dict):
+            return False
+        socket_path = pathlib.Path(f"/run/ultra/forward-{forward_id}.control.sock")
+        payload = json.loads(json.dumps(lease, ensure_ascii=False))
+        payload["protocol"] = str(payload.get("protocol", "") or "")
+        endpoint = payload.get("endpoint") if isinstance(payload.get("endpoint"), dict) else {}
+        credential = payload.get("credential") if isinstance(payload.get("credential"), dict) else {}
+        if not payload.get("policy_generation") or not payload.get("lease_id") or not endpoint or not credential:
+            return False
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if not 1 <= len(encoded) <= 65536:
+                return False
+            frame = struct.pack(">I", len(encoded)) + encoded
+            for attempt in range(3):
+                try:
+                    deadline = time.monotonic() + 3.0
+                    while not socket_path.exists() and time.monotonic() < deadline:
+                        time.sleep(0.1)
+                    if not socket_path.exists():
+                        raise OSError("control socket missing")
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                        connection.settimeout(3.0)
+                        connection.connect(str(socket_path))
+                        connection.sendall(frame)
+                        header = connection.recv(4)
+                        if len(header) != 4:
+                            raise OSError("control response header incomplete")
+                        size = struct.unpack(">I", header)[0]
+                        if not 1 <= size <= 65536:
+                            raise OSError("control response size invalid")
+                        response = b""
+                        while len(response) < size:
+                            chunk = connection.recv(size - len(response))
+                            if not chunk:
+                                raise OSError("control response incomplete")
+                            response += chunk
+                        decoded = json.loads(response.decode("utf-8"))
+                        if not isinstance(decoded, dict) or decoded.get("ok") is not True:
+                            raise OSError(str(decoded.get("error", "lease rejected")) if isinstance(decoded, dict) else "lease rejected")
+                        return True
+                except (OSError, json.JSONDecodeError, ValueError) as exc:
+                    if attempt == 2:
+                        logging.warning("Ultra lease delivery failed for forward %s: %s", forward_id, exc)
+                    else:
+                        time.sleep((0.1, 0.3, 0.9)[attempt])
+        finally:
+            payload.clear()
+            endpoint.clear()
+            credential.clear()
+        return False
+
     def stop_forward(self, forward_id: int, delete_files: bool = False) -> None:
         applied = self.load_applied()
         previous = applied.get(str(forward_id), {})
+        ultra_runtime = isinstance(previous, dict) and (
+            str(previous.get("runtime_mode", "") or "").strip().lower() == "ultra"
+            or any(
+                str(unit.get("service_name", "") or "").startswith("ultra-forward-")
+                for unit in (previous.get("units", []) if isinstance(previous.get("units", []), list) else [])
+                if isinstance(unit, dict)
+            )
+        )
         units = previous.get("units", []) if isinstance(previous, dict) else []
         if not units:
             units = [
@@ -2332,13 +2461,23 @@ class ClientAgent:
             service_path = pathlib.Path(f"/etc/systemd/system/{service_name}.service")
             if delete_files and service_path.exists():
                 service_path.unlink()
-            if delete_files:
+            if delete_files or ultra_runtime:
                 start_script_path = pathlib.Path(f"/usr/local/bin/leikwan-client-start-{forward_id}.sh")
                 if start_script_path.exists():
                     start_script_path.unlink()
 
         self.delete_nft_rules(forward_id)
-        if delete_files:
+        for ephemeral_path in [
+            pathlib.Path(f"/etc/ultra/forward-{forward_id}.json"),
+            pathlib.Path(f"/run/ultra/forward-{forward_id}.control.sock"),
+            pathlib.Path(f"/run/ultra/forward-{forward_id}.status.json"),
+        ]:
+            try:
+                if ephemeral_path.exists() or ephemeral_path.is_symlink():
+                    ephemeral_path.unlink()
+            except OSError:
+                pass
+        if delete_files or ultra_runtime:
             self.cleanup_mptcp_forward_runtime(forward_id)
             if isinstance(previous, dict):
                 for managed_path_raw in previous.get("managed_paths", []):
@@ -2419,6 +2558,11 @@ class ClientAgent:
             return
 
         for forward in forwards:
+            if unsupported_client_backend_mode(forward) != "":
+                forward_id = int(forward.get("forward_id", 0) or 0)
+                if forward_id > 0:
+                    self.stop_forward(forward_id, delete_files=True)
+                continue
             if str(forward.get("service_status", "active")) != "active":
                 continue
 
@@ -2536,7 +2680,6 @@ class ClientAgent:
                 bonding = {}
             bond_runtime = self.forward_uses_bond_runtime(forward)
             plain_tcp_ingress = bond_runtime and str(bonding.get("ingress_mode", "wss_path_mux")) == "plain_tcp_mux"
-            backend_mode = str(forward.get("backend_mode", "current_mode") or "current_mode")
             bond_session_token = str(bonding.get("session_token", "") or "").strip()
             self_leg_primary = bond_runtime and self.forward_has_selected_self_leg(forward_id, forward)
             for endpoint_index, endpoint in enumerate(endpoints):
@@ -2556,7 +2699,7 @@ class ClientAgent:
                         str(forward.get("path_prefix", "")),
                     )
                 if ready and bond_runtime and plain_tcp_ingress and bond_session_token != "":
-                    ready, stronger_latency_ms, stronger_error = self.cf_bond_one_leg_connect_probe(forward, endpoint, endpoint_index)
+                    ready, stronger_latency_ms, stronger_error = self.bond_one_leg_connect_probe(forward, endpoint, endpoint_index)
                     if stronger_latency_ms is not None:
                         latency_ms = stronger_latency_ms
                     if stronger_error is not None:
@@ -2571,7 +2714,7 @@ class ClientAgent:
                         .get(str(endpoint_id), {})
                         .get("role", "healthy")
                     )
-                    if not ready and plain_tcp_ingress and (backend_mode == "cf_mode" or bond_one_leg_probe_failed):
+                    if not ready and plain_tcp_ingress and bond_one_leg_probe_failed:
                         updated = self.force_bond_endpoint_quarantine(
                             forward_id,
                             endpoint_id,
@@ -2921,7 +3064,7 @@ class ClientAgent:
         entry["consecutive_successes"] = 0
         entry["quarantine_until"] = now + CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS
         entry["probation_until"] = 0.0
-        entry["last_error"] = error or "cf_bond_leg_probe_failed"
+        entry["last_error"] = error or "bond_leg_probe_failed"
         entry["last_latency_ms"] = latency_ms
         entry["quality_score"] = 0.0
         self.save_bond_endpoint_health(health)
@@ -2944,7 +3087,7 @@ class ClientAgent:
         return (rtt_value, -quality_score, dynamic_priority, endpoint_id)
 
     @staticmethod
-    def cf_bond_runtime_health_entry(leg: dict, now: float) -> tuple[str, dict] | None:
+    def bond_runtime_health_entry(leg: dict, now: float) -> tuple[str, dict] | None:
         endpoint_id = int(leg.get("endpoint_id", 0) or 0)
         tcp = leg.get("tcp", {}) if isinstance(leg.get("tcp", {}), dict) else {}
         if endpoint_id <= 0 or tcp == {}:
@@ -2952,7 +3095,6 @@ class ClientAgent:
 
         runtime_state = str(tcp.get("state", "healthy") or "healthy").strip().lower()
         runtime_reason = str(tcp.get("last_reason", "") or "").strip()
-
         role = "healthy"
         quarantine_until = 0.0
         probation_until = 0.0
@@ -2977,6 +3119,37 @@ class ClientAgent:
                 "quality_score": 0.6 if role == "healthy" else (0.4 if role == "probation" else 0.0),
             },
         )
+
+    def reconcile_bond_runtime_health(self, forward: dict, now: float | None = None) -> dict:
+        now = time.time() if now is None else now
+        if not self.forward_uses_bond_runtime(forward):
+            return self.load_bond_endpoint_health()
+
+        forward_id = int(forward.get("forward_id", 0) or 0)
+        if forward_id <= 0:
+            return self.load_bond_endpoint_health()
+
+        snapshot = self.load_forward_bond_runtime_snapshot(forward_id)
+        legs = snapshot.get("legs", []) if isinstance(snapshot.get("legs", []), list) else []
+        health = self.load_bond_endpoint_health()
+        scoped = health.setdefault(str(forward_id), {})
+        changed = False
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            mapped = self.bond_runtime_health_entry(leg, now)
+            if mapped is None:
+                continue
+            endpoint_id, entry = mapped
+            previous = scoped.get(endpoint_id)
+            if isinstance(previous, dict) and entry.get("one_leg_rtt_ms") is None and previous.get("one_leg_rtt_ms") is not None:
+                entry["one_leg_rtt_ms"] = previous.get("one_leg_rtt_ms")
+            if previous != entry:
+                scoped[endpoint_id] = entry
+                changed = True
+        if changed:
+            self.save_bond_endpoint_health(health)
+        return health
 
     @classmethod
     def latency_first_bond_enabled(cls, forward: dict) -> bool:
@@ -3345,41 +3518,6 @@ class ClientAgent:
         next_forward["mptcp"] = mptcp
         return next_forward
 
-    def reconcile_cf_bond_runtime_health(self, forward: dict, now: float | None = None) -> dict:
-        now = time.time() if now is None else now
-        if not self.forward_uses_bond_runtime(forward):
-            return self.load_bond_endpoint_health()
-        if str(forward.get("backend_mode", "current_mode") or "current_mode") != "cf_mode":
-            return self.load_bond_endpoint_health()
-
-        forward_id = int(forward.get("forward_id", 0) or 0)
-        if forward_id <= 0:
-            return self.load_bond_endpoint_health()
-
-        snapshot = self.load_forward_bond_runtime_snapshot(forward_id)
-        legs = snapshot.get("legs", []) if isinstance(snapshot.get("legs", []), list) else []
-        health = self.load_bond_endpoint_health()
-        scoped = health.setdefault(str(forward_id), {})
-        changed = False
-
-        for leg in legs:
-            if not isinstance(leg, dict):
-                continue
-            mapped = self.cf_bond_runtime_health_entry(leg, now)
-            if mapped is None:
-                continue
-            endpoint_id, entry = mapped
-            previous = scoped.get(endpoint_id)
-            if isinstance(previous, dict) and entry.get("one_leg_rtt_ms") is None and previous.get("one_leg_rtt_ms") is not None:
-                entry["one_leg_rtt_ms"] = previous.get("one_leg_rtt_ms")
-            if previous != entry:
-                scoped[endpoint_id] = entry
-                changed = True
-
-        if changed:
-            self.save_bond_endpoint_health(health)
-        return health
-
     @staticmethod
     def forward_has_mptcp_runtime_config(forward: dict) -> bool:
         mptcp = forward.get("mptcp", {}) if isinstance(forward, dict) else {}
@@ -3626,6 +3764,8 @@ class ClientAgent:
         return 999999.0
 
     def select_forward_candidates(self, forward: dict, now: float | None = None) -> list[dict]:
+        if unsupported_client_backend_mode(forward) != "":
+            return []
         candidates = [dict(item) for item in forward.get("candidate_pool", []) if isinstance(item, dict)]
         ready = [item for item in candidates if bool(item.get("ready", True))]
         for item in ready:
@@ -4624,7 +4764,7 @@ class ClientAgent:
         except Exception as exc:  # noqa: BLE001
             return False, None, str(exc)
 
-    def cf_bond_one_leg_connect_probe(
+    def bond_one_leg_connect_probe(
         self,
         forward: dict,
         endpoint: dict,
@@ -4636,7 +4776,7 @@ class ClientAgent:
         host = str(endpoint.get("host", "") or "").strip()
         token = str((forward.get("bonding", {}) or {}).get("session_token", "") or "").strip()
         if forward_id <= 0 or endpoint_id <= 0 or host == "" or token == "":
-            return False, None, "cf_bond_probe_missing_forward_fields"
+            return False, None, "bond_probe_missing_forward_fields"
 
         back_port = self.bond_runtime_endpoint_back_port(forward_id, endpoint_index, "tcp")
         ws_priority = int(((forward.get("bonding", {}) or {}).get("ws_priority", 10) or 10))
@@ -4700,7 +4840,7 @@ class ClientAgent:
 
         try:
             deadline = started + max(0.5, timeout)
-            last_error = "cf_bond_leg_probe_timeout"
+            last_error = "bond_leg_probe_timeout"
             while time.time() < deadline:
                 if process.poll() is not None:
                     return False, None, process_error()
@@ -4721,13 +4861,15 @@ class ClientAgent:
                     process.wait(timeout=1.0)
 
     def select_bond_runtime_endpoints(self, forward: dict, now: float | None = None) -> list[dict]:
+        if unsupported_client_backend_mode(forward) != "":
+            return []
         now = time.time() if now is None else now
         endpoints = [dict(endpoint) for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
         bonding = forward.get("bonding", {})
         if not isinstance(bonding, dict):
             bonding = {}
         base_priority = int(bonding.get("ws_priority", 10) or 10)
-        health = self.reconcile_cf_bond_runtime_health(forward, now).get(str(int(forward.get("forward_id", 0) or 0)), {})
+        health = self.reconcile_bond_runtime_health(forward, now).get(str(int(forward.get("forward_id", 0) or 0)), {})
 
         decorated = []
         for endpoint in endpoints:
@@ -4755,7 +4897,6 @@ class ClientAgent:
             decorated.append(endpoint)
 
         latency_first = self.latency_first_bond_enabled(forward)
-        is_cf_bond = str(forward.get("backend_mode", "current_mode") or "current_mode") == "cf_mode"
         if not latency_first:
             preferred = [item for item in decorated if item["health_role"] != "quarantined"]
             if preferred:
@@ -4773,7 +4914,7 @@ class ClientAgent:
         quarantined.sort(key=self.latency_first_primary_sort_key)
 
         if healthy:
-            selected = healthy[:3] if is_cf_bond else healthy
+            selected = healthy
         elif probation:
             selected = probation[:1]
         else:
@@ -4796,6 +4937,8 @@ class ClientAgent:
         error_message = ""
         try:
             for forward in forwards:
+                if unsupported_client_backend_mode(forward) != "":
+                    continue
                 forward_id = int(forward["forward_id"])
                 local_service_name = forward_runtime_service_name(forward)
                 local_status = subprocess.run(f"systemctl is-active {local_service_name}.service", shell=True, text=True, capture_output=True)

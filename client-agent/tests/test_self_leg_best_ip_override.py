@@ -758,7 +758,7 @@ class SelfLegBestIpOverrideTests(unittest.TestCase):
                 'path_prefix': '07289d1f5ed25399',
                 'transport': 'tcp',
                 'mode': 'mptcp',
-                'backend_mode': 'cf_mode',
+                'backend_mode': 'current_mode',
                 'endpoints': [
                     {'endpoint_id': 320, 'host': '8.133.170.123', 'port': 7000},
                 ],

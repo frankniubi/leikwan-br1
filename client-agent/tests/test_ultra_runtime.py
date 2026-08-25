@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -27,13 +28,12 @@ def sample_forward():
         "aggregation_enabled": False,
         "speed_limit_mbps": 20,
         "ultra_access": {
-            "protocol": "leikwan-ultra-capability-v1",
-            "token": "opaque-client-token",
+            "protocol": "leikwan-ultra-policy-v2",
+            "session_ticket": "opaque-client-token",
+            "policy_generation": "a" * 64,
+            "target_digest": hashlib.sha256(b"203.0.113.10:443").hexdigest(),
             "issued_at": "2030-01-01T00:00:00Z",
             "expires_at": "2030-01-01T00:30:00Z",
-            "generation": "generation-1",
-            "scope": {"client_id": 7, "forward_id": 42},
-            "line_ips": ["203.0.113.20", "203.0.113.21"],
             "transport": "tcp+udp",
             "rate_limit_mbps": 20,
             "fallback_policy": "detected_then_any",
@@ -41,12 +41,6 @@ def sample_forward():
                 "shanghai": ["Shanghai", "上海"],
                 "beijing": ["Beijing", "北京"],
             },
-        },
-        "_ultra_material": {
-            "forward_id": 42,
-            "token": "opaque-client-token",
-            "expires_at": "2030-01-01T00:30:00Z",
-            "sealed_material": "um1.opaque-material",
         },
     }
 
@@ -73,29 +67,24 @@ class UltraRuntimeTests(unittest.TestCase):
         config = json.loads(config_file["content"])
         self.assertNotIn("token", config)
         self.assertNotIn("entries", config)
-        self.assertEqual("/run/ultra/forward-42.access.json", config["access_file"])
+        self.assertEqual("/run/ultra/forward-42.control.sock", config["control_socket"])
         self.assertEqual(42, config["forward_id"])
         self.assertEqual("203.0.113.10:443", config["target"])
         self.assertEqual(64, config["udp_queue_packets"])
         self.assertEqual("/run/ultra/forward-42.status.json", config["status_path"])
         self.assertEqual("/var/lib/ultra/location.json", config["location_cache_path"])
         self.assertEqual("/run/ultra/location.lock", config["location_lock_path"])
-        self.assertEqual("detected_then_any", config["fallback_policy"])
+        self.assertNotIn("fallback_policy", config)
         self.assertEqual(["Shanghai", "上海"], config["zone_aliases"]["shanghai"])
         self.assertEqual(4, config["probe_workers"])
         self.assertEqual(800, config["probe_timeout_ms"])
         self.assertIn("ReadWritePaths=/run/ultra /var/lib/ultra", rendered["service_unit"])
-        access_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.access.json"))
-        access = json.loads(access_file["content"])
-        self.assertEqual("opaque-client-token", access["token"])
-        self.assertEqual("um1.opaque-material", access["sealed_material"])
-        self.assertNotIn("entries", access)
-        self.assertFalse(access_file["restart_on_change"])
+        self.assertFalse(any(item["path"].endswith(".access.json") for item in rendered["files"]))
 
     def test_ultra_fails_closed_without_resolved_material(self):
         forward = sample_forward()
-        del forward["_ultra_material"]
-        with self.assertRaisesRegex(RuntimeError, "ultra material missing"):
+        forward["ultra_access"]["policy_generation"] = "invalid"
+        with self.assertRaisesRegex(RuntimeError, "ultra policy scope invalid"):
             MODULE.render_forward_runtime(forward, {})
 
 

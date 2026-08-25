@@ -102,7 +102,7 @@ class UltraRenewalScheduleTests(unittest.TestCase):
             "service_unit": "unit",
             "files": [
                 {"path": "/etc/ultra/forward-42.json", "content": "static", "mode": 0o600},
-                {"path": "/run/ultra/forward-42.access.json", "content": "token-a", "mode": 0o600, "restart_on_change": False},
+                {"path": "/run/ultra/forward-42.lease", "content": "token-a", "mode": 0o600, "restart_on_change": False},
             ],
         }
         second = {**first, "files": [first["files"][0], {**first["files"][1], "content": "token-b"}]}
@@ -120,13 +120,11 @@ class UltraRenewalScheduleTests(unittest.TestCase):
             "forward_id": 42,
             "backend_mode": "ultra",
             "target": "203.0.113.10:443",
-            "ultra_access": {"token": "token-a"},
-            "_ultra_material": {"sealed_material": "um1.a"},
+            "ultra_access": {"session_ticket": "token-a", "policy_generation": "a" * 64},
         }
         second = {
             **first,
-            "ultra_access": {"token": "token-b"},
-            "_ultra_material": {"sealed_material": "um1.b"},
+            "ultra_access": {"session_ticket": "token-b", "policy_generation": "b" * 64},
         }
         self.assertEqual(agent.forward_contract_signature(first), agent.forward_contract_signature(second))
 
