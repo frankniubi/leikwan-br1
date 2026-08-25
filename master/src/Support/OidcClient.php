@@ -480,7 +480,9 @@ final class OidcClient
             }
             $curlErrno = (int) ($context['curl_errno'] ?? 0);
             $curlError = (string) ($context['curl_error'] ?? '');
-            return in_array($curlErrno, [CURLE_COULDNT_RESOLVE_HOST, CURLE_OPERATION_TIMEDOUT], true)
+            $resolveErrno = defined('CURLE_COULDNT_RESOLVE_HOST') ? (int) constant('CURLE_COULDNT_RESOLVE_HOST') : 6;
+            $timeoutErrno = defined('CURLE_OPERATION_TIMEDOUT') ? (int) constant('CURLE_OPERATION_TIMEDOUT') : 28;
+            return in_array($curlErrno, [$resolveErrno, $timeoutErrno], true)
                 && preg_match('/\bresolve|resolv/i', $curlError) === 1;
         }
         if ($method !== 'GET') {

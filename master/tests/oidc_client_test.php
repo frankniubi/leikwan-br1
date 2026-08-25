@@ -427,7 +427,7 @@ $dnsRetryClient = new OidcClient(new Config($stageConfigPath), static function (
                 'status' => 0,
                 'body' => '',
                 '_meta' => [
-                    'curl_errno' => CURLE_OPERATION_TIMEDOUT,
+                    'curl_errno' => 28,
                     'curl_error' => 'Resolving timed out after 5000 milliseconds',
                 ],
             ];
@@ -462,7 +462,7 @@ $ambiguousTimeoutClient = new OidcClient(new Config($stageConfigPath), static fu
             'status' => 0,
             'body' => '',
             '_meta' => [
-                'curl_errno' => CURLE_OPERATION_TIMEDOUT,
+                'curl_errno' => 28,
                 'curl_error' => 'Connection timed out after 5000 milliseconds',
             ],
         ];
