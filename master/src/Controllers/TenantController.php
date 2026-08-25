@@ -3346,7 +3346,6 @@ final class TenantController extends BaseController
             ['group' => 'Clients', 'href' => '/tenant/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
             ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Account', 'active' => $active === 'account'],
             ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
-            ['group' => 'Advanced', 'href' => '/tenant-transport-endpoints', 'label' => 'Target Endpoints', 'active' => $active === 'transport-endpoints'],
             ['group' => 'Advanced', 'href' => '/tenant/slave-groups', 'label' => 'Node Groups', 'active' => $active === 'slave-groups'],
         ];
     }
