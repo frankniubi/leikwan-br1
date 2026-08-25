@@ -2616,6 +2616,58 @@ final class TenantController extends BaseController
         return Response::redirect('/tenant/forwards');
     }
 
+    public function toggleForward(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+
+        $serviceId = $this->idParam($params);
+        $redirect = '/tenant/services/' . $serviceId;
+        try {
+            SessionAuth::validateCsrf($request);
+            $forwardId = (int) ($params['fid'] ?? 0);
+            if ($forwardId <= 0) {
+                throw new ApiException('forward_not_found', 404);
+            }
+            $action = strtolower(trim((string) $request->input('action', '')));
+            if (!in_array($action, ['start', 'pause'], true)) {
+                throw new ApiException('invalid_forward_action', 422);
+            }
+
+            $forward = $this->db->fetchOne(
+                'SELECT f.*, s.user_id, s.status AS service_status
+                 FROM forwards f
+                 INNER JOIN services s ON s.id = f.service_id
+                 WHERE f.id = :id AND f.service_id = :service_id LIMIT 1',
+                ['id' => $forwardId, 'service_id' => $serviceId]
+            );
+            if ($forward === null || (int) $forward['user_id'] !== (int) $user['id']) {
+                throw new ApiException('forward_not_found', 404);
+            }
+            $redirect = '/tenant/services/' . (int) $forward['service_id'];
+            $this->assertTenantServiceActive($forward);
+            $summary = $this->provisioning->serviceSummary((int) $forward['service_id']);
+            if (empty(($summary['effective_features'] ?? [])['allow_manage_forwards'])) {
+                throw new ApiException('feature_denied_manage_forwards', 403);
+            }
+
+            $this->provisioning->setForwardEnabled(
+                $forwardId,
+                $action === 'start',
+                'tenant:' . (int) $user['id'],
+                (int) ($forward['api_revision'] ?? 1),
+                ['user_id' => (int) $user['id'], 'feature' => 'allow_manage_forwards']
+            );
+            SessionAuth::flash('success', $action === 'start' ? 'Forward started.' : 'Forward paused.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', $this->forwardCreateFlashMessage($throwable));
+        }
+
+        return Response::redirect($redirect);
+    }
+
     public function regenerateClientToken(Request $request, array $params): Response
     {
         $user = SessionAuth::currentUser($this->db);
