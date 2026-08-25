@@ -9,26 +9,21 @@ function fail(string $message): never
 
 $repoRoot = dirname(__DIR__, 2);
 $tenantSource = file_get_contents($repoRoot . '/master/src/Controllers/TenantController.php');
-$baseSource = file_get_contents($repoRoot . '/master/src/Controllers/BaseController.php');
 
 if (!is_string($tenantSource) || $tenantSource === '') {
     fail('failed to read TenantController source');
 }
 
-if (!is_string($baseSource) || $baseSource === '') {
-    fail('failed to read BaseController source');
+$start = strpos($tenantSource, 'public function clientsPage(');
+$end = strpos($tenantSource, 'public function sidecarsPage(', $start ?: 0);
+if (!is_int($start) || !is_int($end) || $end <= $start) {
+    fail('failed to isolate tenant clientsPage source');
 }
-
-if (!str_contains($tenantSource, 'scopedRowsForTenant')) {
-    fail('expected TenantController to request tenant-scoped reputation rows');
-}
-
-if (!str_contains($baseSource, 'Leg Reputation')) {
-    fail('expected diagnostics dialog to render a Leg Reputation section');
-}
-
-if (!str_contains($tenantSource . $baseSource, 'Reference only. Runtime already adapts automatically when a leg degrades. You usually do not need to take action unless the line itself is failing.')) {
-    fail('expected calm tenant trust copy for reputation visibility');
+$clientsPage = substr($tenantSource, $start, $end - $start);
+foreach (['BondLegReputationService', 'scopedRowsForTenant', 'recentEvents', 'Leg Reputation'] as $forbidden) {
+    if (str_contains($clientsPage, $forbidden)) {
+        fail('tenant clientsPage still exposes reputation data: ' . $forbidden);
+    }
 }
 
 echo "ok\n";
