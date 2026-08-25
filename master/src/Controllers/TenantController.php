@@ -6,7 +6,6 @@ namespace Leikwan\Master\Controllers;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
-use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\ForwardLineApiContract;
 use Leikwan\Master\Support\PrecisionGridUi;
@@ -1037,359 +1036,75 @@ final class TenantController extends BaseController
             return Response::redirect('/login');
         }
 
-        $view = PrecisionGridUi::normalizeView(
-            (string) $request->input('view', 'list'),
-            ['list', 'install', 'detail', 'advanced'],
-            'list'
-        );
-
-        $services = $this->db->fetchAll('SELECT id FROM services WHERE user_id = :user_id', ['user_id' => $user['id']]);
-        $featureBase = $services !== [] ? $this->provisioning->serviceSummary((int) $services[0]['id']) : null;
-        $features = $featureBase['effective_features'] ?? $this->provisioning->defaultFeatureFlags();
-        $canManageClients = !empty($features['allow_manage_clients']);
-        $clients = $this->provisioning->listClientsForUser((int) $user['id']);
-        $currentClientProfiles = count($clients);
-        $maxClientProfiles = $this->provisioning->maxClientProfilesForTenantOwnedClients((int) $user['id']);
-        $clientProfileSummary = '<div class="flash info">Current Client Profiles: ' . $currentClientProfiles . ' / ' . $maxClientProfiles . '. This package allows up to ' . $maxClientProfiles . ' client profiles.</div>';
-        $allowedGroups = $this->provisioning->availableClientGroupsForUser((int) $user['id']);
-        $chains = $this->provisioning->availableForwardChainsForService((int) ($services[0]['id'] ?? 0));
-        $editId = (int) $request->input('edit', 0);
-        if ($editId > 0) {
-            $view = 'detail';
-        }
-        $editing = null;
-        foreach ($clients as $client) {
-            if ((int) $client['id'] === $editId) {
-                $editing = $client;
-                break;
-            }
-        }
-        $clientProfileCapReached = $currentClientProfiles >= $maxClientProfiles && $editing === null;
-        $overviewClient = $editing ?? ($clients[0] ?? null);
-
-        $latestClientAgentVersion = $this->artifactVersion('client_agent');
-        $onlineSessionService = new ClientOnlineSessionService($this->db);
-        $bondLegReputationService = new BondLegReputationService($this->db);
-        $tenantBondLegRows = $bondLegReputationService->scopedRowsForTenant((int) $user['id']);
-        $tenantBondLegEvents = $bondLegReputationService->recentEvents(['user_id' => (int) $user['id']], 50);
-        $bondLegRowsByForward = [];
-        foreach ($tenantBondLegRows as $row) {
-            $bondLegRowsByForward[(int) ($row['forward_id'] ?? 0)][] = $row;
-        }
-        $bondLegEventsByForward = [];
-        foreach ($tenantBondLegEvents as $event) {
-            $bondLegEventsByForward[(int) ($event['forward_id'] ?? 0)][] = $event;
-        }
-        $clientCards = '';
-        $clientRows = '';
-        $clientMobileRows = '';
-        foreach ($clients as $client) {
-            $diagStatus = strtolower(trim((string) ($client['last_diag_status'] ?? '')));
-            $diagBadgeClass = match ($diagStatus) {
-                'ok' => 'success',
-                'error' => 'danger',
-                'requested' => 'info',
-                default => 'info',
-            };
-            $diagLabel = $diagStatus !== '' ? $diagStatus : 'not run';
-            $diagDialogId = 'client-diag-' . (int) $client['id'];
-            $clientWithReputation = $client + [
-                'bond_leg_reputation_rows' => [],
-                'bond_leg_reputation_events' => [],
-            ];
-            foreach ($this->provisioning->assignedForwardConfigsForClient((int) ($client['id'] ?? 0)) as $config) {
-                $forwardId = (int) ($config['forward_id'] ?? 0);
-                foreach ($bondLegRowsByForward[$forwardId] ?? [] as $row) {
-                    $clientWithReputation['bond_leg_reputation_rows'][] = $row;
-                }
-                foreach ($bondLegEventsByForward[$forwardId] ?? [] as $event) {
-                    $clientWithReputation['bond_leg_reputation_events'][] = $event;
-                }
-            }
-            $diagDialog = $this->renderTenantClientDiagnosticsDialog($clientWithReputation, $diagDialogId);
-
-            $agentVersion = trim((string) ($client['agent_version'] ?? ''));
-            $lastSyncAt = trim((string) ($client['last_sync_at'] ?? ''));
-            $updateRequestedAt = trim((string) ($client['agent_update_requested_at'] ?? ''));
-            $updateBadgeClass = 'info';
-            $updateLabel = 'not installed';
-            if ($agentVersion !== '') {
-                if ($latestClientAgentVersion !== '' && $agentVersion === $latestClientAgentVersion) {
-                    $updateBadgeClass = 'success';
-                    $updateLabel = $updateRequestedAt !== '' ? 'updated' : 'up to date';
-                } elseif ($updateRequestedAt !== '') {
-                    $requestedTs = strtotime($updateRequestedAt) ?: 0;
-                    $syncTs = strtotime($lastSyncAt) ?: 0;
-                    if ($syncTs > 0 && $requestedTs > 0 && $syncTs >= ($requestedTs + 120)) {
-                        $updateBadgeClass = 'danger';
-                        $updateLabel = 'update not applied';
-                    } else {
-                        $updateBadgeClass = 'info';
-                        $updateLabel = 'update requested';
-                    }
-                } else {
-                    $updateBadgeClass = 'danger';
-                    $updateLabel = $latestClientAgentVersion !== '' ? 'outdated' : 'installed';
-                }
-            }
-
-            $activeSessions = $onlineSessionService->activeSessionsForClient((int) ($client['id'] ?? 0));
-            $onlineCount = count($activeSessions);
-            $onlineLimit = max(1, (int) ($client['online_device_limit'] ?? 1));
-            $onlineSummary = $onlineCount . ' / ' . $onlineLimit;
-            $onlineRows = '';
-            foreach ($activeSessions as $session) {
-                $label = trim((string) ($session['device_name'] ?? ''));
-                if ($label === '') {
-                    $label = trim((string) ($session['platform'] ?? 'Device'));
-                }
-                $onlineRows .= '<li>'
-                    . $this->escape($label)
-                    . '<span class="muted" style="margin-left:8px;">'
-                    . $this->escape((string) ($session['last_seen_at'] ?? ''))
-                    . '</span></li>';
-            }
-            if ($onlineRows === '') {
-                $onlineRows = '<li class="muted">No active device right now.</li>';
-            }
-
-            $clientId = (int) $client['id'];
-            $clientName = (string) $client['name'];
-            $displayHost = (string) $client['display_host'];
-            $clientStatus = (string) ($client['status'] ?? 'active');
-            $groupName = (string) ($client['group_name'] ?? 'No group');
-            $lastSyncLabel = $lastSyncAt !== '' ? $lastSyncAt : 'Never';
-            $commands = ($canManageClients ? '<a href="/tenant/clients?view=detail&amp;edit=' . $clientId . '">Edit</a>' : '')
-                . '<a href="/tenant/clients?view=install&amp;edit=' . $clientId . '">Install</a>'
-                . '<form class="inline" method="post" action="/tenant/clients/' . $clientId . '/diagnose"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit">Run Diagnostics</button></form>'
-                . '<form class="inline" method="post" action="/tenant/clients/' . $clientId . '/request-update"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit">Request Update</button></form>'
-                . '<button type="button" data-diag-dialog="' . $this->escape($diagDialogId) . '">View Diagnostics</button>'
-                . '<form class="inline" method="post" action="/tenant/clients/' . $clientId . '/delete"><input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '"><button type="submit" class="danger"' . (empty($features['allow_delete_clients']) ? ' disabled' : '') . '>Delete</button></form>';
-            $clientRows .= '<tr><td>' . PrecisionGridUi::resourceCell($clientName, $displayHost) . '</td><td>'
-                . $this->escape($groupName) . '</td><td>' . PrecisionGridUi::status(ucfirst($clientStatus), $clientStatus === 'active' ? 'ok' : 'error')
-                . '</td><td>' . PrecisionGridUi::resourceCell($updateLabel, $agentVersion !== '' ? $agentVersion : 'Not installed')
-                . '</td><td>' . $this->escape($onlineSummary) . '</td><td>' . $this->escape($lastSyncLabel) . '</td><td>'
-                . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . $diagDialog . '</td></tr>';
-            $clientMobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($clientName, $displayHost)
-                . PrecisionGridUi::status(ucfirst($clientStatus), $clientStatus === 'active' ? 'ok' : 'error')
-                . '</header><dl><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>App</dt><dd>' . $this->escape($updateLabel) . '</dd></div><div><dt>Online</dt><dd>' . $this->escape($onlineSummary) . '</dd></div><div><dt>Last Sync</dt><dd>' . $this->escape($lastSyncLabel) . '</dd></div></dl><footer>'
-                . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</footer></article>';
-
-            $clientCards .= '<section class="card">
-                <div class="hero" style="margin-bottom:14px;">
-                  <div>
-                    <h3 style="margin-bottom:6px;">' . $this->escape((string) $client['name']) . '</h3>
-                    <div class="muted">' . $this->escape((string) $client['display_host']) . '</div>
-                  </div>
-                  <div class="actions" style="margin-top:0;">
-                    <span class="badge ' . $updateBadgeClass . '">App: ' . $this->escape($updateLabel) . '</span>
-                    <span class="badge info">Online devices: ' . $this->escape($onlineSummary) . '</span>
-                  </div>
-                </div>
-                <div class="grid two">
-                  <div>
-                    <div><span class="muted">Group:</span> ' . $this->escape((string) ($client['group_name'] ?? '')) . '</div>
-                    <div><span class="muted">Last Sync:</span> ' . $this->escape($lastSyncAt !== '' ? $lastSyncAt : 'never') . '</div>
-                    <div><span class="muted">Installed App:</span> ' . $this->escape($agentVersion !== '' ? $agentVersion : 'not installed') . '</div>
-                  </div>
-                  <div>
-                    <div><span class="muted">Online device limit:</span> ' . $onlineLimit . '</div>
-                    <div><span class="muted">Diagnostics:</span> ' . $this->escape($diagLabel) . '</div>
-                    <div><span class="muted">Last Update Request:</span> ' . $this->escape($updateRequestedAt !== '' ? $updateRequestedAt : 'none') . '</div>
-                  </div>
-                </div>
-                <details style="margin-top:14px;">
-                  <summary>Linux Install</summary>
-                  ' . $this->renderTenantClientLinuxInstall($client) . '
-                </details>
-                <details style="margin-top:14px;">
-                  <summary>Online devices</summary>
-                  <ul class="list" style="margin-top:10px;">' . $onlineRows . '</ul>
-                </details>
-                <details style="margin-top:14px;">
-                  <summary>Advanced defaults</summary>
-                  <div class="muted" style="margin-top:10px;">These are only defaults for future forwards. They are not required for app install.</div>
-                  <div style="margin-top:12px;"><span class="muted">Default Route:</span> ' . $this->escape($this->endpointModeLabel((string) ($client['default_endpoint_mode'] ?? 'slave_group'))) . '</div>
-                  <div><span class="muted">Default Slave Group:</span> ' . $this->escape((string) ($client['default_node_group_key'] ?? '')) . '</div>
-                  <div><span class="muted">Default Chain:</span> ' . $this->escape((string) ($client['default_forward_chain_name'] ?? '')) . '</div>
-                </details>
-                <div class="actions">
-                  ' . ($canManageClients ? '<a class="button ghost" href="/tenant/clients?edit=' . (int) $client['id'] . '">Edit</a>' : '') . '
-                  <form class="inline" method="post" action="/tenant/clients/' . (int) $client['id'] . '/diagnose">
-                    <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
-                    <button type="submit" class="button secondary">Run Diagnostics</button>
-                  </form>
-                  <button type="button" class="button ghost" data-diag-dialog="' . $this->escape($diagDialogId) . '">View Diagnostics</button>
-                  <form class="inline" method="post" action="/tenant/clients/' . (int) $client['id'] . '/request-update">
-                    <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
-                    <button type="submit" class="button secondary">Request Update</button>
-                  </form>
-                  <form class="inline" method="post" action="/tenant/clients/' . (int) $client['id'] . '/delete">
-                    <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
-                    <button type="submit" class="button danger"' . (empty($features['allow_delete_clients']) ? ' disabled' : '') . '>Delete</button>
-                  </form>
-                </div>
-                <div class="muted" style="margin-top:14px;">Open <strong>View Diagnostics</strong> to check whether runtime links are healthy and whether the tunnel was established. Slave addresses are hidden in that window. Reference only. Runtime already adapts automatically when a link degrades. You usually do not need to take action unless the line itself is failing.</div>
-                ' . $diagDialog . '
-              </section>';
+        $client = $this->provisioning->defaultClientForUser((int) $user['id']);
+        if ($client === null) {
+            $client = $this->provisioning->ensureDefaultClientForUser((int) $user['id']);
         }
 
-        $groupOptions = '<option value="">Select an allowed client group</option>';
-        foreach ($allowedGroups as $group) {
-            $selected = $editing !== null && (int) ($editing['group_id'] ?? 0) === (int) $group['id'] ? ' selected' : '';
-            $groupOptions .= '<option value="' . (int) $group['id'] . '"' . $selected . '>' . $this->escape((string) $group['name']) . '</option>';
-        }
-        $chainOptions = '<option value="">No default chain</option>';
-        foreach ($chains as $chain) {
-            $selected = $editing !== null && (int) ($editing['default_forward_chain_id'] ?? 0) === (int) $chain['id'] ? ' selected' : '';
-            $chainOptions .= '<option value="' . (int) $chain['id'] . '"' . $selected . '>' . $this->escape((string) $chain['name']) . '</option>';
-        }
-        $selectedCarrierValues = implode(',', array_values(array_filter(array_map(
-            static fn(mixed $value): string => strtolower(trim((string) $value)),
-            $this->decodeJsonList($editing['selected_carriers_json'] ?? null)
-        ), static fn(string $value): bool => $value !== '')));
-        $runtimePlatformScope = strtolower(trim((string) ($editing['runtime_platform_scope'] ?? 'all')));
-
-        $notice = !$canManageClients
-            ? '<div class="flash danger">Your plan/account is not allowed to manage self-provided clients.</div>'
-            : '<div class="flash success">You can add your own client lines here. Admin-provided lines will still appear inside service pages when authorized. Installing a client app does not require route defaults.</div>';
-
-        $clientFormSection = '';
-        if ($canManageClients && $clientProfileCapReached) {
-            $clientFormSection = '<section class="card"><h3>Create Client</h3><div class="flash danger">This package allows up to ' . $maxClientProfiles . ' client profiles.</div></section>';
-        } elseif ($canManageClients) {
-            $clientFormSection = '<section class="card">
-                <h3>' . ($editing !== null ? 'Edit Client' : 'Create Client') . '</h3>
-                <p class="muted">Tenants only need a clear name, a display host, and an installable client. Keep advanced routing defaults collapsed unless you really need them.</p>
-                <form method="post" action="/tenant/clients">
-                  <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
-                  <input type="hidden" name="id" value="' . (int) ($editing['id'] ?? 0) . '">
-                  <div class="form-grid">
-                    <div class="field"><label>Name</label><input type="text" name="name" value="' . $this->escape((string) ($editing['name'] ?? '')) . '" required></div>
-                    <div class="field"><label>Display Host</label><input type="text" name="display_host" value="' . $this->escape((string) ($editing['display_host'] ?? '')) . '" required><p class="muted">Tenant-facing display label only. It does not drive slave SNI / CDN routing.</p></div>
-                    <div class="field"><label>Client Group</label><select name="group_id">' . $groupOptions . '</select></div>
-                    <div class="field"><label>Status</label><select name="status"><option value="active"' . (((string) ($editing['status'] ?? 'active')) === 'active' ? ' selected' : '') . '>active</option><option value="disabled"' . (((string) ($editing['status'] ?? '')) === 'disabled' ? ' selected' : '') . '>disabled</option></select></div>
-                    <div class="field"><label>Online device limit</label><input type="number" min="1" name="online_device_limit" value="' . $this->escape((string) ($editing['online_device_limit'] ?? '1')) . '" required><p class="muted">Limit the number of simultaneously online client devices for this client.</p></div>
-                    <div class="field"><label>Allow Paid Lines</label><input type="checkbox" name="allow_paid_lines" value="1"' . ((int) ($editing['allow_paid_lines'] ?? 0) === 1 ? ' checked' : '') . '><p class="muted">Allow runtime selection of paid lines for this profile.</p></div>
-                    <div class="field"><label>Selected Carriers</label><input type="text" name="selected_carriers[]" value="' . $this->escape($selectedCarrierValues) . '" placeholder="ct,cu"><p class="muted">Optional comma-separated carrier codes for Linux profile runtime selection.</p></div>
-                    <div class="field"><label>Runtime Platform Scope</label><select name="runtime_platform_scope"><option value="all"' . ($runtimePlatformScope === 'linux' ? '' : ' selected') . '>all</option><option value="linux"' . ($runtimePlatformScope === 'linux' ? ' selected' : '') . '>linux</option></select></div>
-                  </div>
-                  <details style="margin-top:14px;">
-                    <summary>Advanced client settings</summary>
-                    <div class="form-grid" style="margin-top:14px;">
-                      <div class="field"><label>Bind IP</label><input type="text" name="bind_ip" value="' . $this->escape((string) ($editing['bind_ip'] ?? '')) . '"></div>
-                      <div class="field"><label>NIC Name</label><input type="text" name="nic_name" value="' . $this->escape((string) ($editing['nic_name'] ?? '')) . '"></div>
-                      <div class="field"><label>Port Range Start</label><input type="number" name="port_range_start" value="' . $this->escape((string) ($editing['port_range_start'] ?? '')) . '"><p class="muted">Optional. When this range is set, the panel auto-assigns forward ports from it.</p></div>
-                      <div class="field"><label>Port Range End</label><input type="number" name="port_range_end" value="' . $this->escape((string) ($editing['port_range_end'] ?? '')) . '"><p class="muted">Optional. Keep the range wide enough for future forwards.</p></div>
-                      <div class="field"><label>Traffic Multiplier</label><input type="number" step="0.01" name="traffic_multiplier" value="' . $this->escape((string) ($editing['traffic_multiplier'] ?? '1.00')) . '"></div>
-                      <div class="field"><label>Default Route Mode</label>
-                        <select name="default_endpoint_mode">' . $this->renderEndpointModeOptions((string) ($editing['default_endpoint_mode'] ?? 'slave_group')) . '</select>
-                      </div>
-                      <div class="field"><label>Default Slave Group Key</label><input type="text" name="default_node_group_key" value="' . $this->escape((string) ($editing['default_node_group_key'] ?? '')) . '"><p class="muted">Optional. Used as the default route suggestion when you create a forward later.</p></div>
-                      <div class="field"><label>Default Forward Chain</label><select name="default_forward_chain_id">' . $chainOptions . '</select><p class="muted">Optional advanced default. Leave empty for the simplest setup.</p></div>
-                      <div class="field"><label>Agent Config JSON</label><textarea name="agent_config_json" placeholder="{&quot;poll_interval_seconds&quot;:60}">' . $this->escape((string) ($editing['agent_config_json'] ?? '')) . '</textarea><p class="muted">Merged into the installed client-agent config on the next sync. Useful for poll interval, log level or moving the panel domain.</p></div>
-                    </div>
-                  </details>
-                  <div class="actions">
-                    <button class="button" type="submit">Save Client</button>
-                    ' . ($editing !== null ? '<a class="button secondary" href="/tenant/clients">Cancel</a>' : '') . '
-                  </div>
-                </form>
-              </section>';
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = trim((string) ($client['agent_token'] ?? ''));
+        if ($clientId <= 0 || $agentToken === '') {
+            SessionAuth::flash('error', 'Client install is temporarily unavailable.');
+            return Response::redirect('/tenant');
         }
 
-        $tabs = PrecisionGridUi::viewTabs([
-            ['key' => 'list', 'label' => 'Clients', 'href' => '/tenant/clients?view=list'],
-            ['key' => 'install', 'label' => 'Install', 'href' => '/tenant/clients?view=install'],
-            ['key' => 'advanced', 'label' => 'Advanced', 'href' => '/tenant/clients?view=advanced'],
-        ], $view);
-        $listView = '<section class="pg-sheet" data-mobile-resources="true">
-            <div class="pg-sheet-toolbar"><strong>Client Profiles</strong><span class="muted">' . $currentClientProfiles . ' / ' . $maxClientProfiles . '</span></div>
-            <div class="pg-sheet-scroll"><table class="pg-sheet-table"><thead><tr><th>Client / Host</th><th>Group</th><th>Status</th><th>App</th><th>Online</th><th>Last Sync</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead><tbody>'
-            . ($clientRows !== '' ? $clientRows : '<tr><td colspan="7" class="muted">No client yet.</td></tr>')
-            . '</tbody></table></div><div class="pg-mobile-resource-list">' . $clientMobileRows . '</div></section>';
+        $installCommand = $this->clientAgentInstallCommand($client);
+        $onlineCount = (new ClientOnlineSessionService($this->db))->activeCountForClient($clientId);
+        $onlineLimit = max(1, (int) ($client['online_device_limit'] ?? 1));
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $resetForm = '<form class="inline" method="post" action="/tenant/clients/reset-token">'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<button class="button ghost" type="submit">重置</button></form>';
 
-        $body = $tabs . ($view === 'list' ? $listView : '') . ($view !== 'list' ? '
-            <div class="hero">
-              <div>
-                <h2>Client Profiles</h2>
-                <p class="muted">Keep this simple. Install Windows or Android from the top of this page; use Linux Install only for Linux hosts.</p>
-              </div>
-            </div>
-            <section class="card" style="margin-bottom:20px;">
-              <h3>Quick start</h3>
-              <p class="muted">Install the client app first. Windows and Android use app download; Linux hosts use the per-client Linux Install command below.</p>
-              <div class="actions">
-                ' . $this->renderCommandLink('Download Windows App', $this->windowsClientAppUrl()) . '
-                ' . $this->renderCommandLink('Download Android App', $this->androidClientApkUrl()) . '
-              </div>
-            </section>
-            ' . $notice . '
-            ' . $clientProfileSummary . '
-            <div class="grid two">
-              ' . $clientFormSection . '
-              <section class="card">
-                <h3>My Client List</h3>
-                <p class="muted">Each client card shows only what a tenant needs first: install state, online count, and a few actions. Open details only when needed.</p>
-                <div class="stack">' . ($clientCards !== '' ? $clientCards : '<div class="muted">No client yet.</div>') . '</div>
-              </section>
-            </div>' : '') . '
-            <script>
-              (function () {
-                document.addEventListener("click", function (event) {
-                  var button = event.target.closest("[data-diag-dialog]");
-                  if (!button) {
-                    return;
-                  }
-                  var dialogId = button.getAttribute("data-diag-dialog");
-                  var dialog = dialogId ? document.getElementById(dialogId) : null;
-                  if (!dialog) {
-                    return;
-                  }
-                  if (typeof dialog.showModal === "function") {
-                    dialog.showModal();
-                  } else {
-                    dialog.setAttribute("open", "open");
-                  }
-                });
+        $body = '<div class="tenant-client-install">'
+            . '<div class="tenant-client-install__shell">'
+            . '<div class="tenant-client-install__header"><strong>安装</strong></div>'
+            . '<div class="tenant-client-install__body"><div class="tenant-client-install__platforms">'
+            . '<section class="tenant-client-install__platform"><strong>Linux</strong>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($installCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制命令', $installCommand, 'secondary', '已复制', '复制失败')
+            . $resetForm
+            . '</div></section>'
+            . '<section class="tenant-client-install__platform"><strong>Windows App</strong>'
+            . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
+            . '</section></div>'
+            . '<div class="tenant-client-install__online"><span>最大在线</span><strong>'
+            . $onlineCount . ' / ' . $onlineLimit . '</strong></div></div></div></div>';
 
-                document.querySelectorAll("dialog.diag-dialog").forEach(function (dialog) {
-                  dialog.addEventListener("click", function (event) {
-                    var rect = dialog.getBoundingClientRect();
-                    var inside = rect.top <= event.clientY && event.clientY <= rect.bottom
-                      && rect.left <= event.clientX && event.clientX <= rect.right;
-                    if (!inside) {
-                      dialog.close();
-                    }
-                  });
-                });
-              })();
-            </script>';
-
-        return $this->page('接入点 (Client)', $body, $user, $this->tenantNav('clients'));
+        return $this->page('Client', $body, $user, $this->tenantNav('clients'));
     }
 
-
-    /**
-     * @param array<string, mixed> $client
-     */
-    protected function renderTenantClientLinuxInstall(array $client): string
+    public function resetDefaultClientToken(Request $request, array $params): Response
     {
-        $installCommand = $this->clientAgentInstallCommand($client);
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
 
-        return '<section class="card" style="margin-top:14px;">'
-            . '<h4 style="margin:0 0 8px;">Linux Install</h4>'
-            . '<div class="muted command-lead">Run this only on the Linux host that will run the client-agent.</div>'
-            . $this->renderCommandPanel(
-                'Linux Install',
-                $installCommand,
-                [
-                    $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
-                    $this->renderCopyButton('Copy Install Command', $installCommand),
-                ],
-                'Manual/local install for this client on the Linux host that will run the client-agent.'
-            )
-            . '</section>';
+        try {
+            SessionAuth::validateCsrf($request);
+            $service = $this->db->fetchOne(
+                'SELECT id FROM services
+                 WHERE user_id = :user_id AND status = :status
+                 ORDER BY id ASC LIMIT 1',
+                ['user_id' => $user['id'], 'status' => 'active']
+            );
+            if ($service === null) {
+                throw new ApiException('service_not_found', 404);
+            }
+            $features = $this->provisioning->serviceSummary((int) $service['id'])['effective_features'] ?? [];
+            if (empty($features['allow_rotate_client_token'])) {
+                throw new ApiException('feature_denied_rotate_client_token', 403);
+            }
+
+            $this->provisioning->rotateDefaultClientTokenForUser((int) $user['id']);
+            SessionAuth::flash('success', 'Client token reset.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Client token reset failed.');
+        }
+
+        return Response::redirect('/tenant/clients');
     }
 
     public function sidecarsPage(Request $request, array $params): Response

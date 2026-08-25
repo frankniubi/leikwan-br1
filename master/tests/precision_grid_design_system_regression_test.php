@@ -23,7 +23,7 @@ foreach ([':focus-visible', '.table-scroll', '.mobile-nav-toggle', '.status[data
         throw new RuntimeException('missing responsive/accessibility rule ' . $required);
     }
 }
-foreach (['/assets/leikwan-ui.css?v=20260725', '/assets/operator-console.css?v=20260725', '/assets/signal-chamber.css?v=20260725'] as $asset) {
+foreach (['/assets/leikwan-ui.css?v=20260725', '/assets/operator-console.css?v=20260825', '/assets/signal-chamber.css?v=20260725'] as $asset) {
     if (!str_contains($base, $asset)) {
         throw new RuntimeException('shell missing replacement stylesheet ' . $asset);
     }
