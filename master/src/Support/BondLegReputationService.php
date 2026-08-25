@@ -60,12 +60,41 @@ final class BondLegReputationService
         $where = [];
 
         if (isset($filters['user_id'])) {
-            $sql .= ' INNER JOIN forwards f ON f.id = e.forward_id
-                      INNER JOIN services s ON s.id = f.service_id';
-            $where[] = 's.user_id = :user_id';
-            $params['user_id'] = (int) $filters['user_id'];
-        }
-        if (isset($filters['forward_id'])) {
+            $tenantForwardRows = $this->db->fetchAll(
+                'SELECT f.id
+                 FROM forwards f
+                 INNER JOIN services s ON s.id = f.service_id
+                 WHERE s.user_id = :user_id
+                 ORDER BY f.id ASC',
+                ['user_id' => (int) $filters['user_id']]
+            );
+            $tenantForwardIds = [];
+            foreach ($tenantForwardRows as $row) {
+                $forwardId = (int) ($row['id'] ?? 0);
+                if ($forwardId > 0) {
+                    $tenantForwardIds[$forwardId] = $forwardId;
+                }
+            }
+
+            if (isset($filters['forward_id'])) {
+                $requestedForwardId = (int) $filters['forward_id'];
+                if (!isset($tenantForwardIds[$requestedForwardId])) {
+                    return [];
+                }
+                $tenantForwardIds = [$requestedForwardId => $requestedForwardId];
+            }
+            if ($tenantForwardIds === []) {
+                return [];
+            }
+
+            $placeholders = [];
+            foreach (array_values($tenantForwardIds) as $index => $forwardId) {
+                $key = 'tenant_forward_id_' . $index;
+                $placeholders[] = ':' . $key;
+                $params[$key] = $forwardId;
+            }
+            $where[] = 'e.forward_id IN (' . implode(', ', $placeholders) . ')';
+        } elseif (isset($filters['forward_id'])) {
             $where[] = 'e.forward_id = :forward_id';
             $params['forward_id'] = (int) $filters['forward_id'];
         }
