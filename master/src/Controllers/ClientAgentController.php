@@ -175,32 +175,44 @@ final class ClientAgentController extends BaseController
         $deviceSessionService = new ClientOnlineSessionService($this->db);
         $deviceId = $deviceSessionService->enforceFromRequest($client, $request, 'pull');
         $deviceSession = $deviceSessionService->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
-        $forwards = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
-        $clientAgent = $this->artifactMetadata('client_agent');
-        $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
-        $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
-        $mptcpRuntime = $this->artifactMetadata('mptcp_client_runtime');
-        $cfwgLatencyWatchdog = $this->artifactMetadata('cfwg_latency_watchdog');
-        $desiredBondSha256 = (string) ($bondBinary['binary_sha256'] ?? $bondBinary['sha256'] ?? '');
-        $updateRequestToken = trim((string) ($client['agent_update_request_token'] ?? ''));
-        if ($updateRequestToken === '') {
-            $updateRequestToken = $this->autoUpdateTokenForVersion((string) ($client['agent_version'] ?? ''), 'client_agent', 'auto-client-agent');
+
+        $sinceRevision = trim((string) $request->input('since_revision', ''));
+        $waitSeconds = max(0, min(25, (int) $request->input('wait_seconds', 0)));
+
+        $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client);
+        $configRevision = (string) $snapshot['config_revision'];
+        $forceApply = (bool) $snapshot['force_apply'];
+
+        // Bounded long-poll: only re-serve when the stable config actually changed.
+        if ($sinceRevision !== '' && hash_equals($sinceRevision, $configRevision) && !$forceApply && $waitSeconds > 0) {
+            $deadline = microtime(true) + $waitSeconds;
+            while (microtime(true) < $deadline) {
+                usleep(500000);
+                $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client);
+                if (!hash_equals($sinceRevision, (string) $snapshot['config_revision']) || (bool) $snapshot['force_apply']) {
+                    break;
+                }
+            }
         }
 
-        $agentConfig = $this->authoritativeAgentConfig($client);
-        $agentConfig['udp_uot_sidepath'] = $this->provisioning->udpUotSidepathConfigForAssignedClientForwards(
-            is_array($forwards) ? $forwards : [],
-            is_array($agentConfig['udp_uot_sidepath'] ?? null) ? $agentConfig['udp_uot_sidepath'] : []
-        );
-        $agentConfig['tcp_accel_sidepath'] = $this->provisioning->tcpAccelSidepathConfigForAssignedClientForwards(
-            is_array($forwards) ? $forwards : [],
-            is_array($agentConfig['tcp_accel_sidepath'] ?? null) ? $agentConfig['tcp_accel_sidepath'] : []
-        );
-        $linuxProfileRuntime = null;
-        $runtimePlatformScope = (string) ($client['runtime_platform_scope'] ?? 'all');
-        if (in_array($runtimePlatformScope, ['all', 'linux'], true)) {
-            $linuxProfileRuntime = $this->provisioning->linuxProfileRuntimeForClient($client, is_array($forwards) ? $forwards : []);
+        if ($sinceRevision !== '' && hash_equals($sinceRevision, (string) $snapshot['config_revision']) && !(bool) $snapshot['force_apply']) {
+            return new Response(304, [
+                'Cache-Control' => 'no-store, no-cache, must-revalidate',
+                'Pragma' => 'no-cache',
+            ], '');
         }
+
+        $forwards = $snapshot['forwards'];
+        $agentConfig = $snapshot['agent_config'];
+        $clientAgent = $snapshot['client_agent'];
+        $clientAgentInstaller = $snapshot['client_agent_installer'];
+        $bondBinary = $snapshot['bond_binary'];
+        $mptcpRuntime = $snapshot['mptcp_runtime'];
+        $cfwgLatencyWatchdog = $snapshot['cfwg_latency_watchdog'];
+        $desiredBondSha256 = (string) $snapshot['desired_bond_sha256'];
+        $updateRequestToken = (string) $snapshot['update_request_token'];
+        $linuxProfileRuntime = $snapshot['linux_profile_runtime'];
+
         $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? '')));
         $forwards = $this->attachUltraAccessGrants(
             $forwards,
@@ -211,6 +223,10 @@ final class ClientAgentController extends BaseController
 
         $response = $this->json([
             'ok' => true,
+            'config_revision' => (string) $snapshot['config_revision'],
+            'forward_revision' => (string) $snapshot['forward_revision'],
+            'force_apply' => (bool) $snapshot['force_apply'],
+            'next_poll_after_ms' => (int) $snapshot['next_poll_after_ms'],
             'client' => [
                 'id' => (int) $client['id'],
                 'name' => (string) $client['name'],
@@ -242,6 +258,118 @@ final class ClientAgentController extends BaseController
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
             'Pragma' => 'no-cache',
         ]);
+    }
+
+    /**
+     * Reads the stable (grant-free) client config and derives the revision
+     * hashes used for long-poll / 304. Ephemeral Ultra grant material is added
+     * later and is intentionally excluded from the revision.
+     *
+     * @param array<string, mixed>|null $deviceSession
+     * @param array<string, mixed> $client
+     * @return array<string, mixed>
+     */
+    private function stableConfigSnapshot(int $clientId, ?array $deviceSession, array $client): array
+    {
+        $forwards = $this->provisioning->assignedForwardConfigsForClient($clientId, $deviceSession);
+        $clientAgent = $this->artifactMetadata('client_agent');
+        $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
+        $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
+        $mptcpRuntime = $this->artifactMetadata('mptcp_client_runtime');
+        $cfwgLatencyWatchdog = $this->artifactMetadata('cfwg_latency_watchdog');
+        $desiredBondSha256 = (string) ($bondBinary['binary_sha256'] ?? $bondBinary['sha256'] ?? '');
+        $updateRequestToken = trim((string) ($client['agent_update_request_token'] ?? ''));
+        if ($updateRequestToken === '') {
+            $updateRequestToken = $this->autoUpdateTokenForVersion((string) ($client['agent_version'] ?? ''), 'client_agent', 'auto-client-agent');
+        }
+
+        $agentConfig = $this->authoritativeAgentConfig($client);
+        $agentConfig['udp_uot_sidepath'] = $this->provisioning->udpUotSidepathConfigForAssignedClientForwards(
+            is_array($forwards) ? $forwards : [],
+            is_array($agentConfig['udp_uot_sidepath'] ?? null) ? $agentConfig['udp_uot_sidepath'] : []
+        );
+        $agentConfig['tcp_accel_sidepath'] = $this->provisioning->tcpAccelSidepathConfigForAssignedClientForwards(
+            is_array($forwards) ? $forwards : [],
+            is_array($agentConfig['tcp_accel_sidepath'] ?? null) ? $agentConfig['tcp_accel_sidepath'] : []
+        );
+        $linuxProfileRuntime = null;
+        $runtimePlatformScope = (string) ($client['runtime_platform_scope'] ?? 'all');
+        if (in_array($runtimePlatformScope, ['all', 'linux'], true)) {
+            $linuxProfileRuntime = $this->provisioning->linuxProfileRuntimeForClient($client, is_array($forwards) ? $forwards : []);
+        }
+
+        $forwardRevision = self::forwardRevision($forwards);
+        $configRevision = self::configRevision($forwardRevision, $agentConfig, [
+            'client_agent' => $clientAgent,
+            'client_agent_installer' => $clientAgentInstaller,
+            'leikwan_bond_linux_amd64' => $bondBinary,
+            'mptcp_client_runtime' => $mptcpRuntime,
+            'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
+        ]);
+
+        return [
+            'forwards' => $forwards,
+            'agent_config' => $agentConfig,
+            'linux_profile_runtime' => $linuxProfileRuntime,
+            'client_agent' => $clientAgent,
+            'client_agent_installer' => $clientAgentInstaller,
+            'bond_binary' => $bondBinary,
+            'mptcp_runtime' => $mptcpRuntime,
+            'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
+            'desired_bond_sha256' => $desiredBondSha256,
+            'update_request_token' => $updateRequestToken,
+            'forward_revision' => $forwardRevision,
+            'config_revision' => $configRevision,
+            'force_apply' => false,
+            'next_poll_after_ms' => 30000,
+        ];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $forwards
+     */
+    public static function forwardRevision(array $forwards): string
+    {
+        $projection = [];
+        foreach ($forwards as $forward) {
+            if (!is_array($forward)) {
+                continue;
+            }
+            $projection[] = [
+                'forward_id' => (int) ($forward['forward_id'] ?? 0),
+                'backend_mode' => (string) ($forward['backend_mode'] ?? ''),
+                'target' => (string) ($forward['target'] ?? ''),
+                'listen_port' => (int) ($forward['listen_port'] ?? 0),
+                'target_contract' => (string) ($forward['target_contract'] ?? ''),
+                'contract_version' => (int) ($forward['contract_version'] ?? 1),
+                'mode' => (string) ($forward['mode'] ?? ''),
+                'transport' => (string) ($forward['transport'] ?? ''),
+                'service_status' => (string) ($forward['service_status'] ?? ''),
+                'speed_limit_mbps' => (int) ($forward['speed_limit_mbps'] ?? 0),
+                'quota_remaining_bytes' => (int) ($forward['quota_remaining_bytes'] ?? 0),
+            ];
+        }
+        return hash('sha256', (string) json_encode($projection, JSON_UNESCAPED_SLASHES));
+    }
+
+    /**
+     * @param array<string, mixed> $agentConfig
+     * @param array<string, array<string, mixed>> $artifactVersions
+     */
+    public static function configRevision(string $forwardRevision, array $agentConfig, array $artifactVersions): string
+    {
+        $artifacts = [];
+        foreach ($artifactVersions as $key => $artifact) {
+            $artifacts[$key] = [
+                'version' => (string) ($artifact['version'] ?? ''),
+                'sha256' => (string) ($artifact['sha256'] ?? $artifact['binary_sha256'] ?? ''),
+            ];
+        }
+        return hash('sha256', (string) json_encode([
+            'forward_revision' => $forwardRevision,
+            'agent_config' => $agentConfig,
+            'artifacts' => $artifacts,
+        ], JSON_UNESCAPED_SLASHES));
     }
 
     /**
