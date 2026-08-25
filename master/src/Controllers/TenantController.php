@@ -1749,6 +1749,15 @@ final class TenantController extends BaseController
                 $actionsHtml .= '<span class="muted">Delete disabled by policy</span>';
             }
 
+            $runtimeManagementHtml = '<div class="muted" style="margin-top:12px;">Manage client profiles and runtime installs from <a href="/tenant/clients"><strong>Client Profiles</strong></a>.</div>';
+            if (in_array($this->canonicalClientMode((string) ($forward['client_mode'] ?? 'single')), ['bond', 'mptcp'], true) && !empty($forward['bond_remote_host'])) {
+                $runtimeManagementHtml .= '<div class="muted">Current target transport endpoint: '
+                    . $this->escape((string) $forward['bond_remote_host'])
+                    . ':'
+                    . (int) (($forward['bond_remote_port'] ?? 0) ?: $this->defaultBondRemotePort())
+                    . '</div>';
+            }
+
             $rows .= '<tr>
                 <td>' . (int) $forward['id'] . '</td>
                 <td>' . (int) $forward['listen_port'] . '</td>
@@ -1758,7 +1767,7 @@ final class TenantController extends BaseController
                 <td>' . $usageCell . '</td>
                 <td>' . $statusBadge . '</td>
                 <td>' . $endpointHtml . '</td>
-                <td><div class="actions">' . $actionsHtml . '</div></td>
+                <td><div class="actions">' . $actionsHtml . '</div>' . $runtimeManagementHtml . '</td>
             </tr>';
         }
 
