@@ -1678,39 +1678,31 @@ final class TenantController extends BaseController
         if ($availableClientHtml === '') {
             $availableClientHtml = '<li class="muted">No line client is currently available for this service.</li>';
         }
+        $pausedForwards = $this->provisioning->pausedForwardsForService($serviceId);
+        $forwardRows = array_merge($summary['forwards'], $pausedForwards);
+        usort($forwardRows, static fn(array $a, array $b): int => (int) $a['id'] <=> (int) $b['id']);
+        $cycleStart = (string) (($summary['billing']['cycle_started_at'] ?? '') ?: ($service['created_at'] ?? ''));
+        $usageMap = $this->provisioning->forwardCycleUsageMap($serviceId, $cycleStart);
+        $includedBytes = max(0, (int) (($summary['billing']['included_bytes'] ?? 0) ?: 0));
+        $csrf = $this->escape(SessionAuth::csrfToken());
         $rows = '';
-        $agentBaseUrl = $this->agentBaseUrl();
-        $artifactBaseUrl = $this->artifactBaseUrl();
-        $serviceIsActive = (string) ($service['status'] ?? '') === 'active';
-        foreach ($summary['forwards'] as $forward) {
-            $configPreview = $serviceIsActive
-                ? $this->provisioning->buildClientConfig((int) $forward['id'])
-                : ['service_status' => (string) ($service['status'] ?? ''), 'endpoints' => []];
-            $configPreview['endpoints'] = array_map(static function (array $endpoint): array {
-                return [
-                    'endpoint_id' => (int) ($endpoint['endpoint_id'] ?? 0),
-                    'node' => (string) ($endpoint['node'] ?? ''),
-                    'priority' => (int) ($endpoint['priority'] ?? 0),
-                    'weight' => (int) ($endpoint['weight'] ?? 0),
-                    'health_status' => (string) ($endpoint['health_status'] ?? ''),
-                ];
-            }, (array) ($configPreview['endpoints'] ?? []));
-            $configJson = json_encode(
-                $configPreview,
-                JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
-            );
-            $runtimeManagementHtml = '<div class="muted" style="margin-top:12px;">Manage client profiles and runtime installs from <a href="/tenant/clients"><strong>Client Profiles</strong></a>.</div>';
-            if (in_array($this->canonicalClientMode((string) ($forward['client_mode'] ?? 'single')), ['bond', 'mptcp'], true) && !empty($forward['bond_remote_host'])) {
-                $runtimeManagementHtml .= '<div class="muted">Current target transport endpoint: '
-                    . $this->escape((string) $forward['bond_remote_host'])
-                    . ':'
-                    . (int) (($forward['bond_remote_port'] ?? 0) ?: $this->defaultBondRemotePort())
-                    . '</div>';
-            }
+        foreach ($forwardRows as $forward) {
+            $isRunning = (int) ($forward['enabled'] ?? 0) === 1;
+            $statusBadge = $isRunning
+                ? '<span class="badge success">运行</span>'
+                : '<span class="badge info">已暂停</span>';
+
+            $usedBytes = (int) ($usageMap[(int) $forward['id']] ?? 0);
+            $usedLabel = $this->formatTrafficBytes($usedBytes);
+            $pct = $includedBytes > 0 ? min(100, (int) round($usedBytes / $includedBytes * 100)) : 0;
+            $usageCell = '<div style="display:flex;align-items:center;gap:8px;min-width:120px;">'
+                . '<div style="flex:1;height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;">'
+                . '<div style="width:' . $pct . '%;height:100%;background:#2563eb;"></div></div>'
+                . '<span style="font-size:12px;white-space:nowrap;">' . $usedLabel . '</span></div>';
 
             $endpointHtml = '';
             $activeEndpointCount = 0;
-            foreach ($forward['endpoints'] as $endpoint) {
+            foreach (($forward['endpoints'] ?? []) as $endpoint) {
                 $healthClass = ((string) $endpoint['health_status'] === 'active') ? 'success' : 'info';
                 if ((string) $endpoint['health_status'] === 'active') {
                     $activeEndpointCount++;
@@ -1719,7 +1711,9 @@ final class TenantController extends BaseController
                     . $this->escape((string) ($endpoint['node_name'] ?? $endpoint['node'] ?? 'Slave endpoint')) . '</div>';
             }
             if ($endpointHtml === '') {
-                $endpointHtml = '<div class="muted">No endpoint assigned yet</div>';
+                $endpointHtml = $isRunning
+                    ? '<div class="muted">No endpoint assigned yet</div>'
+                    : '<div class="muted">Paused — endpoints released</div>';
             } else {
                 $endpointHtml = '<div class="muted">Total: ' . count($forward['endpoints']) . ' | Active: ' . $activeEndpointCount . '</div>' . $endpointHtml;
             }
@@ -1732,42 +1726,52 @@ final class TenantController extends BaseController
                 $targetCell .= '<div class="muted">target transport ' . $this->escape((string) $forward['bond_remote_host']) . ':' . (int) ($forward['bond_remote_port'] ?? 0) . '</div>';
             }
 
+            $actionsHtml = '';
+            if (!empty($features['allow_manage_forwards'])) {
+                $toggleAction = $isRunning ? 'pause' : 'start';
+                $toggleLabel = $isRunning ? 'Pause' : 'Start';
+                $toggleClass = $isRunning ? 'secondary' : '';
+                $actionsHtml .= '<form class="inline" method="post" action="/tenant/services/' . $serviceId . '/forward/' . (int) $forward['id'] . '/toggle">'
+                    . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                    . '<input type="hidden" name="action" value="' . $toggleAction . '">'
+                    . '<button type="submit" class="button ' . $toggleClass . '">' . $toggleLabel . '</button>'
+                    . '</form>';
+                $actionsHtml .= '<a class="button ghost" href="/tenant/services/' . $serviceId . '/forward/' . (int) $forward['id'] . '/edit">Modify</a>';
+            } else {
+                $actionsHtml .= '<span class="muted">Manage disabled by policy</span>';
+            }
+            if (!empty($features['allow_delete_forwards'])) {
+                $actionsHtml .= '<form class="inline" method="post" action="/tenant/forwards/' . (int) $forward['id'] . '/delete">'
+                    . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                    . '<button type="submit" class="button danger">Delete</button>'
+                    . '</form>';
+            } else {
+                $actionsHtml .= '<span class="muted">Delete disabled by policy</span>';
+            }
+
             $rows .= '<tr>
                 <td>' . (int) $forward['id'] . '</td>
                 <td>' . (int) $forward['listen_port'] . '</td>
                 <td>' . $this->escape((string) ($forward['forward_combination_name'] ?? '')) . '</td>
                 <td>' . $targetCell . '</td>
                 <td>' . $this->escape($this->transportModeLabel((string) $forward['transport_mode'])) . '</td>
+                <td>' . $usageCell . '</td>
+                <td>' . $statusBadge . '</td>
                 <td>' . $endpointHtml . '</td>
-                <td>
-                    <div class="actions">' .
-                        (!empty($features['allow_delete_forwards'])
-                            ? '<form class="inline" method="post" action="/tenant/forwards/' . (int) $forward['id'] . '/delete">
-                                <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
-                                <button type="submit" class="button danger">Delete</button>
-                              </form>'
-                            : '<span class="muted">Delete disabled by policy</span>') .
-                    '</div>' .
-                    $runtimeManagementHtml .
-                    (!empty($features['allow_view_client_config']) && $serviceIsActive
-                        ? '<details style="margin-top:12px;">
-                            <summary>View client config</summary>
-                            <pre>' . $this->escape($configJson) . '</pre>
-                          </details>'
-                        : '') . '
-                </td>
+                <td><div class="actions">' . $actionsHtml . '</div></td>
             </tr>';
         }
 
         if ($rows === '') {
-            $rows = '<tr><td colspan="7" class="muted">No forward rules yet. Create your first forward from the button above.</td></tr>';
+            $rows = '<tr><td colspan="9" class="muted">No forward rules yet. Create your first forward from the button above.</td></tr>';
         }
 
         $defaultHost = $this->escape((string) $this->config->get('DEFAULT_CDN_HOST', 'edge.example.com'));
         $defaultEndpointCount = 1;
         $defaultClientMode = 'single';
         $defaultBondRemotePort = $this->defaultBondRemotePort();
-        $csrf = $this->escape(SessionAuth::csrfToken());
+        $agentBaseUrl = $this->agentBaseUrl();
+        $artifactBaseUrl = $this->artifactBaseUrl();
         $createForwardNotice = $availableForwardCombinations === []
             ? '<div class="flash danger">No route package is available for this service yet. Ask admin to publish a forward combination first.</div>'
             : '<div class="flash success">Choose one route package, then fill your backend target.</div>';
@@ -1895,87 +1899,92 @@ final class TenantController extends BaseController
             <div class="grid two">
               <section class="card">
                 <h3>Service Info</h3>
-                <p class="muted">WHMCS Service ID: ' . $this->escape((string) $service['whmcs_service_id']) . '</p>
-                <p class="muted">Plan: ' . $this->escape((string) ($summary['plan_name'] ?? '')) . '</p>
-                <p class="muted">Allowed Client Groups: ' . $this->escape(implode(', ', array_map(static fn(array $group): string => (string) $group['name'], $allowedClientGroups))) . '</p>
-                <p class="muted">Bandwidth Limit: ' . (int) $service['bandwidth_limit_mbps'] . ' Mbps</p>
-                <p class="muted">Traffic Policy: ' . (((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle') ? ((int) ($billing['included_traffic_gb'] ?? 0) . ' GB restored every billing month') : 'metered by monthly cycle') . '</p>
-                <p class="muted">Current Cycle Used Traffic: ' . round(((int) ($billing['current_cycle_used_bytes'] ?? 0)) / 1024 / 1024 / 1024, 2) . ' GB</p>
-                <p class="muted">Lifetime Used Traffic: ' . round(((int) $service['traffic_used_bytes']) / 1024 / 1024 / 1024, 2) . ' GB</p>
-                <div class="flash success" style="margin-top:16px;">
-                  <strong>Flexible Package</strong><br>
-                  Base Bandwidth: ' . (int) ($billing['base_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps']) . ' Mbps<br>
-                  Current Bandwidth: ' . (int) ($billing['current_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps']) . ' Mbps<br>
-                  Bandwidth Add-on: +' . (int) ($billing['bandwidth_step_mbps'] ?? 0) . ' Mbps => ' . $this->escape((string) ($billing['bandwidth_step_price_formatted'] ?? 'CNY 0.00')) . ' each month<br>
-                  Current Extra Bandwidth: ' . (int) ($billing['extra_bandwidth_mbps'] ?? 0) . ' Mbps (' . (int) ($billing['extra_bandwidth_steps'] ?? 0) . ' step)<br>
-                  Current Bandwidth Add-on: ' . $this->escape((string) ($billing['bandwidth_addon_formatted'] ?? 'CNY 0.00')) . '<br>
-                  Included Clients: ' . (int) ($billing['included_client_count'] ?? 0) . '<br>
-                  Current Explicit Clients In Use: ' . (int) ($billing['active_client_count'] ?? 0) . '<br>
-                  Extra Client Charge: ' . $this->escape((string) ($billing['extra_client_price_formatted'] ?? 'CNY 0.00')) . ' each month<br>
-                  Current Extra Client Charge: ' . $this->escape((string) ($billing['client_addon_formatted'] ?? 'CNY 0.00')) . '
-                </div>
-                <form method="post" action="/tenant/services/' . (int) $service['id'] . '/flexible-options" style="margin-top:12px;">
-                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                  <div class="form-grid">
-                    <div class="field">
-                      <label>Bandwidth Mbps</label>
-                      <input type="number" min="' . max(1, (int) ($billing['base_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps'])) . '" name="bandwidth_limit_mbps" value="' . (int) ($billing['current_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps']) . '" required>
-                      <p class="muted">If this package uses bandwidth steps, keep the value aligned with the configured step size.</p>
+                <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
+                  <div><div class="muted">Plan</div><strong>' . $this->escape((string) ($summary['plan_name'] ?? '')) . '</strong></div>
+                  <div><div class="muted">Expires</div><strong>' . $this->escape((string) $service['expire_at']) . '</strong></div>
+                  <div><div class="muted">Bandwidth</div><strong>' . (int) $service['bandwidth_limit_mbps'] . ' Mbps</strong></div>
+                  <div style="flex:1;min-width:220px;">
+                    <div class="muted">本期已用流量</div>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                      <div style="flex:1;height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden;">
+                        <div style="width:' . (($includedBytes > 0) ? min(100, (int) round(((int) ($billing['current_cycle_used_bytes'] ?? 0)) / $includedBytes * 100)) : 0) . '%;height:100%;background:#2563eb;"></div>
+                      </div>
+                      <span style="font-size:12px;white-space:nowrap;">' . $this->formatTrafficBytes((int) ($billing['current_cycle_used_bytes'] ?? 0)) . ' / ' . $this->formatTrafficBytes($includedBytes) . '</span>
                     </div>
                   </div>
-                  <div class="actions">
-                    <button class="button secondary" type="submit">Update Flexible Options</button>
+                </div>
+                <details style="margin-top:16px;">
+                  <summary>更多详情</summary>
+                  <p class="muted">WHMCS Service ID: ' . $this->escape((string) $service['whmcs_service_id']) . '</p>
+                  <p class="muted">Allowed Client Groups: ' . $this->escape(implode(', ', array_map(static fn(array $group): string => (string) $group['name'], $allowedClientGroups))) . '</p>
+                  <p class="muted">Traffic Policy: ' . (((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle') ? ((int) ($billing['included_traffic_gb'] ?? 0) . ' GB restored every billing month') : 'metered by monthly cycle') . '</p>
+                  <p class="muted">Lifetime Used Traffic: ' . round(((int) $service['traffic_used_bytes']) / 1024 / 1024 / 1024, 2) . ' GB</p>
+                  <div class="flash success" style="margin-top:16px;">
+                    <strong>Flexible Package</strong><br>
+                    Base Bandwidth: ' . (int) ($billing['base_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps']) . ' Mbps<br>
+                    Current Bandwidth: ' . (int) ($billing['current_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps']) . ' Mbps<br>
+                    Bandwidth Add-on: +' . (int) ($billing['bandwidth_step_mbps'] ?? 0) . ' Mbps => ' . $this->escape((string) ($billing['bandwidth_step_price_formatted'] ?? 'CNY 0.00')) . ' each month<br>
+                    Current Extra Bandwidth: ' . (int) ($billing['extra_bandwidth_mbps'] ?? 0) . ' Mbps (' . (int) ($billing['extra_bandwidth_steps'] ?? 0) . ' step)<br>
+                    Current Bandwidth Add-on: ' . $this->escape((string) ($billing['bandwidth_addon_formatted'] ?? 'CNY 0.00')) . '<br>
+                    Included Clients: ' . (int) ($billing['included_client_count'] ?? 0) . '<br>
+                    Current Explicit Clients In Use: ' . (int) ($billing['active_client_count'] ?? 0) . '<br>
+                    Extra Client Charge: ' . $this->escape((string) ($billing['extra_client_price_formatted'] ?? 'CNY 0.00')) . ' each month<br>
+                    Current Extra Client Charge: ' . $this->escape((string) ($billing['client_addon_formatted'] ?? 'CNY 0.00')) . '
                   </div>
-                </form>
-                <div class="flash success" style="margin-top:16px;">
-                  <strong>Billing This Cycle</strong><br>
-                  Mode: ' . $this->escape((string) ($billing['mode_label'] ?? 'Monthly Bundle')) . '<br>
-                  Base Fee: ' . $this->escape((string) ($billing['base_fee_formatted'] ?? 'CNY 0.00')) . '<br>
-                  Traffic Charge: ' . $this->escape((string) ($billing['traffic_charge_formatted'] ?? 'CNY 0.00')) . '<br>
-                  Bandwidth Add-on: ' . $this->escape((string) ($billing['bandwidth_addon_formatted'] ?? 'CNY 0.00')) . '<br>
-                  Client Add-on: ' . $this->escape((string) ($billing['client_addon_formatted'] ?? 'CNY 0.00')) . '<br>
-                  ' . (((string) ($billing['mode'] ?? 'monthly_bundle')) === 'monthly_bundle'
-                    ? 'Included Traffic: ' . (int) ($billing['included_traffic_gb'] ?? 0) . ' GB / month<br>Remaining Included Traffic: ' . $this->escape((string) (($billing['remaining_included_gb'] ?? 0))) . ' GB<br>'
-                    : 'Usage Price: ' . $this->escape((string) ($billing['traffic_price_per_gb_formatted'] ?? 'CNY 0.0000 / GB')) . '<br>Billable Traffic: ' . $this->escape((string) ($billing['billable_gb'] ?? 0)) . ' GB<br>') . '
-                  Current Estimate: ' . $this->escape((string) ($billing['estimated_total_formatted'] ?? 'CNY 0.00')) . '<br>
-                  Billing Cycle: ' . $this->escape((string) ($billing['cycle_started_at'] ?? '')) . ' -> ' . $this->escape((string) ($billing['cycle_ends_at'] ?? '')) . '
-                </div>
-                <div class="flash success" style="margin-top:16px;">
-                  <strong>Traffic Reset</strong><br>
-                  Reset Price: ' . $this->escape($trafficResetCurrency) . ' ' . $this->escape(number_format($trafficResetPrice, 2)) . '<br>
-                  This action resets <code>Current Cycle Used Traffic</code> back to 0 for this service. Lifetime traffic stays unchanged.
-                </div>
-                <form method="post" action="/tenant/services/' . (int) $service['id'] . '/reset-traffic" style="margin-top:12px;">
-                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                  <div class="actions">
-                    <button class="button secondary" type="submit">Reset Traffic</button>
-                  </div>
-                </form>
-                <div class="table-wrap" style="margin-top:16px;">
-                  <table>
-                    <thead><tr><th>Cycle Start</th><th>Cycle End</th><th>Mode</th><th>Usage</th><th>Total</th></tr></thead>
-                    <tbody>' . $billingHistoryRows . '</tbody>
-                  </table>
-                </div>
-                <h3 style="margin-top:18px;">Available Lines</h3>
-                <ul class="list">' . $availableClientHtml . '</ul>
-                <p class="muted">If there is no line here, admin still needs to create a client and authorize it through your plan.</p>
-                <div class="flash success" style="margin-top:16px;">
-                  <strong>Fastest way to get your first forward working:</strong><br>
-                  1. Open <code>Create Forward</code>.<br>
-                  2. Pick one published <code>Forward Combination</code>.<br>
-                  3. Fill target host and target port.<br>
-                  4. Save. The panel keeps the backend route package fixed.
-                </div>
-                <div class="actions">
-                  <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Create New Forward</a>
-                  <a class="button ghost" href="/knowledgebase?thread=getting-started-first-forward-checklist">Knowledgebase</a>
-                  <form class="inline" method="post" action="/tenant/services/' . (int) $service['id'] . '/regenerate-client-token">
+                  <form method="post" action="/tenant/services/' . (int) $service['id'] . '/flexible-options" style="margin-top:12px;">
                     <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                    <button class="button secondary" type="submit" ' . (empty($features['allow_rotate_client_token']) ? 'disabled' : '') . '>Rotate Client Token</button>
+                    <div class="form-grid">
+                      <div class="field">
+                        <label>Bandwidth Mbps</label>
+                        <input type="number" min="' . max(1, (int) ($billing['base_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps'])) . '" name="bandwidth_limit_mbps" value="' . (int) ($billing['current_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps']) . '" required>
+                        <p class="muted">If this package uses bandwidth steps, keep the value aligned with the configured step size.</p>
+                      </div>
+                    </div>
+                    <div class="actions">
+                      <button class="button secondary" type="submit">Update Flexible Options</button>
+                    </div>
                   </form>
-                </div>
-                <pre>' . $this->escape((string) $service['client_token']) . '</pre>
+                  <div class="flash success" style="margin-top:16px;">
+                    <strong>Billing This Cycle</strong><br>
+                    Mode: ' . $this->escape((string) ($billing['mode_label'] ?? 'Monthly Bundle')) . '<br>
+                    Base Fee: ' . $this->escape((string) ($billing['base_fee_formatted'] ?? 'CNY 0.00')) . '<br>
+                    Traffic Charge: ' . $this->escape((string) ($billing['traffic_charge_formatted'] ?? 'CNY 0.00')) . '<br>
+                    Bandwidth Add-on: ' . $this->escape((string) ($billing['bandwidth_addon_formatted'] ?? 'CNY 0.00')) . '<br>
+                    Client Add-on: ' . $this->escape((string) ($billing['client_addon_formatted'] ?? 'CNY 0.00')) . '<br>
+                    ' . (((string) ($billing['mode'] ?? 'monthly_bundle')) === 'monthly_bundle'
+                      ? 'Included Traffic: ' . (int) ($billing['included_traffic_gb'] ?? 0) . ' GB / month<br>Remaining Included Traffic: ' . $this->escape((string) (($billing['remaining_included_gb'] ?? 0))) . ' GB<br>'
+                      : 'Usage Price: ' . $this->escape((string) ($billing['traffic_price_per_gb_formatted'] ?? 'CNY 0.0000 / GB')) . '<br>Billable Traffic: ' . $this->escape((string) ($billing['billable_gb'] ?? 0)) . ' GB<br>') . '
+                    Current Estimate: ' . $this->escape((string) ($billing['estimated_total_formatted'] ?? 'CNY 0.00')) . '<br>
+                    Billing Cycle: ' . $this->escape((string) ($billing['cycle_started_at'] ?? '')) . ' -> ' . $this->escape((string) ($billing['cycle_ends_at'] ?? '')) . '
+                  </div>
+                  <div class="flash success" style="margin-top:16px;">
+                    <strong>Traffic Reset</strong><br>
+                    Reset Price: ' . $this->escape($trafficResetCurrency) . ' ' . $this->escape(number_format($trafficResetPrice, 2)) . '<br>
+                    This action resets <code>Current Cycle Used Traffic</code> back to 0 for this service. Lifetime traffic stays unchanged.
+                  </div>
+                  <form method="post" action="/tenant/services/' . (int) $service['id'] . '/reset-traffic" style="margin-top:12px;">
+                    <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                    <div class="actions">
+                      <button class="button secondary" type="submit">Reset Traffic</button>
+                    </div>
+                  </form>
+                  <div class="table-wrap" style="margin-top:16px;">
+                    <table>
+                      <thead><tr><th>Cycle Start</th><th>Cycle End</th><th>Mode</th><th>Usage</th><th>Total</th></tr></thead>
+                      <tbody>' . $billingHistoryRows . '</tbody>
+                    </table>
+                  </div>
+                  <h3 style="margin-top:18px;">Available Lines</h3>
+                  <ul class="list">' . $availableClientHtml . '</ul>
+                  <p class="muted">If there is no line here, admin still needs to create a client and authorize it through your plan.</p>
+                  <div class="actions">
+                    <a class="button ghost" href="/knowledgebase?thread=getting-started-first-forward-checklist">Knowledgebase</a>
+                    <form class="inline" method="post" action="/tenant/services/' . (int) $service['id'] . '/regenerate-client-token">
+                      <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                      <button class="button secondary" type="submit" ' . (empty($features['allow_rotate_client_token']) ? 'disabled' : '') . '>Rotate Client Token</button>
+                    </form>
+                  </div>
+                </details>
               </section>
               <section class="card">
                 <h3>Create Forward</h3>
@@ -1994,7 +2003,7 @@ final class TenantController extends BaseController
               <div class="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>ID</th><th>Local Listen</th><th>Forward Combination</th><th>Target</th><th>Transport</th><th>Endpoint Status</th><th>Actions</th></tr>
+                    <tr><th>ID</th><th>Local Listen</th><th>Forward Combination</th><th>Target</th><th>Transport</th><th>本期用量</th><th>Status</th><th>Endpoint Status</th><th>Actions</th></tr>
                   </thead>
                   <tbody>' . $rows . '</tbody>
                 </table>
@@ -2640,7 +2649,7 @@ final class TenantController extends BaseController
                 'SELECT f.*, s.user_id, s.status AS service_status
                  FROM forwards f
                  INNER JOIN services s ON s.id = f.service_id
-                 WHERE f.id = :id AND f.service_id = :service_id LIMIT 1',
+                 WHERE f.id = :id AND f.service_id = :service_id AND f.user_deleted_at IS NULL LIMIT 1',
                 ['id' => $forwardId, 'service_id' => $serviceId]
             );
             if ($forward === null || (int) $forward['user_id'] !== (int) $user['id']) {
