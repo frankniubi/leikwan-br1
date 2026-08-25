@@ -19,7 +19,7 @@ public sealed class HealthCheckService
     private readonly StateManager _stateManager;
     private readonly AgentConfig _config;
     private readonly Func<int, bool> _portListeningProbe;
-    private readonly Func<ForwardConfig, EndpointConfig, int, (bool ok, double? latencyMs, string? error)> _cfBondLegProbe;
+    private readonly Func<ForwardConfig, EndpointConfig, int, (bool ok, double? latencyMs, string? error)> _bondLegProbe;
     private readonly Func<string, int, bool> _relayHealthProbe;
     private readonly BondEndpointHealthService _bondEndpointHealth;
     private readonly Dictionary<int, DateTime> _restartCooldown = [];
@@ -35,7 +35,7 @@ public sealed class HealthCheckService
         ForwardRuntimeManager runtimeManager,
         StateManager stateManager,
         Func<int, bool>? portListeningProbe = null,
-        Func<ForwardConfig, EndpointConfig, int, (bool ok, double? latencyMs, string? error)>? cfBondLegProbe = null,
+        Func<ForwardConfig, EndpointConfig, int, (bool ok, double? latencyMs, string? error)>? bondLegProbe = null,
         AgentConfig? config = null,
         Func<string, int, bool>? relayHealthProbe = null)
     {
@@ -44,7 +44,7 @@ public sealed class HealthCheckService
         _stateManager = stateManager;
         _config = config ?? new AgentConfig();
         _portListeningProbe = portListeningProbe ?? NetworkProbe.IsPortListening;
-        _cfBondLegProbe = cfBondLegProbe ?? RunDefaultCfBondOneLegProbe;
+        _bondLegProbe = bondLegProbe ?? RunDefaultBondOneLegProbe;
         _relayHealthProbe = relayHealthProbe ?? ProbeRelayHealth;
         _bondEndpointHealth = new BondEndpointHealthService(stateManager);
         _supervisor.ProcessExited += HandleProcessExited;
@@ -128,9 +128,9 @@ public sealed class HealthCheckService
                 }
             }
 
-            if (BondEndpointHealthService.IsCfPlainTcpBond(forward))
+            if (BondEndpointHealthService.IsPlainTcpBond(forward))
             {
-                CheckCfBondEndpointHealth(forward);
+                CheckBondEndpointHealth(forward);
             }
 
             if (IsMptcpPreconnectRelayUnhealthy(forward))
@@ -144,7 +144,7 @@ public sealed class HealthCheckService
         return Task.CompletedTask;
     }
 
-    private void CheckCfBondEndpointHealth(ForwardConfig forward)
+    private void CheckBondEndpointHealth(ForwardConfig forward)
     {
         var forwardId = forward.ForwardId;
         var changed = false;
@@ -156,7 +156,7 @@ public sealed class HealthCheckService
                 continue;
 
             var previousRole = CurrentEndpointRole(forwardId, endpoint.EndpointId);
-            var (ok, latencyMs, error) = _cfBondLegProbe(forward, endpoint, index);
+            var (ok, latencyMs, error) = _bondLegProbe(forward, endpoint, index);
             BondEndpointHealthEntry updated;
             if (ok)
             {
@@ -173,7 +173,7 @@ public sealed class HealthCheckService
                 updated = _bondEndpointHealth.ForceQuarantine(
                     forwardId,
                     endpoint.EndpointId,
-                    error ?? "cf_bond_leg_probe_failed",
+                    error ?? "bond_leg_probe_failed",
                     latencyMs);
             }
 
@@ -184,13 +184,13 @@ public sealed class HealthCheckService
         if (!anyReady)
         {
             if (ShouldRestart(forwardId))
-                RequestRestart(forward, "all_cf_bond_legs_failed_probe", force: true);
+                RequestRestart(forward, "all_bond_legs_failed_probe", force: true);
             return;
         }
 
         if (changed && ShouldRestart(forwardId))
         {
-            RequestRestart(forward, "cf_bond_endpoint_health_changed", force: true);
+            RequestRestart(forward, "bond_endpoint_health_changed", force: true);
         }
     }
 
@@ -207,7 +207,7 @@ public sealed class HealthCheckService
         return "healthy";
     }
 
-    private (bool ok, double? latencyMs, string? error) RunDefaultCfBondOneLegProbe(
+    private (bool ok, double? latencyMs, string? error) RunDefaultBondOneLegProbe(
         ForwardConfig forward,
         EndpointConfig endpoint,
         int endpointIndex)
@@ -215,7 +215,7 @@ public sealed class HealthCheckService
         var forwardId = forward.ForwardId;
         var token = forward.Bonding?.SessionToken ?? "";
         if (forwardId <= 0 || endpoint.EndpointId <= 0 || string.IsNullOrWhiteSpace(token))
-            return (false, null, "cf_bond_probe_missing_forward_fields");
+            return (false, null, "bond_probe_missing_forward_fields");
 
         var bondBin = _config.GetEffectiveBondBin();
         if (!File.Exists(bondBin))
@@ -265,7 +265,7 @@ public sealed class HealthCheckService
         {
             process.Start();
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
-            var lastError = "cf_bond_leg_probe_timeout";
+            var lastError = "bond_leg_probe_timeout";
             while (DateTime.UtcNow < deadline)
             {
                 if (process.HasExited)

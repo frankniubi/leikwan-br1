@@ -17,15 +17,16 @@ public sealed class InstalledRuntimeCleanupServiceTests
                 new InstalledRuntimeCleanupService.RunningProcessInfo(11, $@"{installRoot}\bin\leikwan-bond.exe"),
                 new InstalledRuntimeCleanupService.RunningProcessInfo(12, $@"{installRoot}\bin\leikwan-ingress.exe"),
                 new InstalledRuntimeCleanupService.RunningProcessInfo(13, $@"{installRoot}\bin\leikwan-mptcp-relay.exe"),
-                new InstalledRuntimeCleanupService.RunningProcessInfo(14, @"C:\Windows\System32\notepad.exe"),
+                new InstalledRuntimeCleanupService.RunningProcessInfo(14, $@"{installRoot}\bin\ultra-client.exe"),
+                new InstalledRuntimeCleanupService.RunningProcessInfo(16, @"C:\Windows\System32\notepad.exe"),
                 new InstalledRuntimeCleanupService.RunningProcessInfo(15, null),
             ],
             processId => killed.Add(processId));
 
         var count = service.KillProcessesUnderInstallRoot(installRoot, currentProcessId: 10);
 
-        Assert.Equal(3, count);
-        Assert.Equal([11, 12, 13], killed);
+        Assert.Equal(4, count);
+        Assert.Equal([11, 12, 13, 14], killed);
     }
 
     [Fact]

@@ -1119,28 +1119,20 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         raise RuntimeError("ultra runtime identity is invalid")
     access = forward.get("ultra_access")
     if not isinstance(access, dict):
-        raise RuntimeError("ultra capability missing")
-    if str(access.get("protocol", "") or "") != "leikwan-ultra-capability-v1":
-        raise RuntimeError("ultra capability protocol invalid")
-    token = str(access.get("token", "") or "").strip()
-    if token == "" or any(char.isspace() for char in token) or len(token) > 4096:
-        raise RuntimeError("ultra capability token invalid")
-    material = forward.get("_ultra_material")
-    if not isinstance(material, dict):
-        raise RuntimeError("ultra material missing")
-    if str(material.get("token", "") or "").strip() != token:
-        raise RuntimeError("ultra material scope invalid")
-    sealed_material = str(material.get("sealed_material", "") or "").strip()
-    if not sealed_material.startswith("um1.") or len(sealed_material) > 65536:
-        raise RuntimeError("ultra material invalid")
+        raise RuntimeError("ultra policy missing")
+    if str(access.get("protocol", "") or "") != "leikwan-ultra-policy-v2":
+        raise RuntimeError("ultra policy protocol invalid")
+    session_ticket = str(access.get("session_ticket", "") or "").strip()
+    policy_generation = str(access.get("policy_generation", "") or "").strip().lower()
+    target_digest = str(access.get("target_digest", "") or "").strip().lower()
+    if session_ticket == "" or len(session_ticket) > 8192 or any(char.isspace() for char in session_ticket):
+        raise RuntimeError("ultra policy ticket invalid")
+    if re.fullmatch(r"[a-f0-9]{64}", policy_generation) is None or re.fullmatch(r"[a-f0-9]{64}", target_digest) is None:
+        raise RuntimeError("ultra policy scope invalid")
     transport = str(access.get("transport", forward.get("transport", "tcp+udp")) or "tcp+udp").strip().lower()
     if transport not in {"tcp", "udp", "tcp+udp"}:
         raise RuntimeError("ultra transport invalid")
-    rate_limit = max(0, int_or_default(access.get("rate_limit_mbps"), normalize_speed_limit(forward.get("speed_limit_mbps")) or 0))
-    access_path = f"/run/ultra/forward-{forward_id}.access.json"
-    fallback_policy = str(access.get("fallback_policy", "detected_then_any") or "detected_then_any").strip().lower()
-    if fallback_policy not in {"detected_only", "detected_then_any", "any"}:
-        fallback_policy = "detected_then_any"
+    control_socket = f"/run/ultra/forward-{forward_id}.control.sock"
     zone_aliases: dict[str, list[str]] = {}
     raw_aliases = access.get("zone_aliases", {})
     if isinstance(raw_aliases, dict):
@@ -1148,39 +1140,30 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
             code = str(raw_code or "").strip().lower()
             if re.fullmatch(r"[a-z0-9-]{1,32}", code) is None or not isinstance(raw_values, list):
                 continue
-            aliases: list[str] = []
-            for raw_value in raw_values[:16]:
-                value = str(raw_value or "").strip()[:64]
-                if value and value not in aliases:
-                    aliases.append(value)
+            aliases = [str(value or "").strip()[:64] for value in raw_values[:16] if str(value or "").strip()]
             if aliases:
                 zone_aliases[code] = aliases
     config_payload = {
         "forward_id": forward_id,
-        "listen_host": "0.0.0.0",
+        "listen_host": "127.0.0.1",
         "listen_port": listen_port,
         "target": str(forward.get("target", "") or "").strip(),
-        "access_file": access_path,
+        "control_socket": control_socket,
         "transport": transport,
-        "rate_limit_mbps": rate_limit,
         "max_tcp_connections": 512,
         "udp_queue_packets": 64,
         "connect_timeout_seconds": 5,
         "location_cache_path": "/var/lib/ultra/location.json",
         "location_lock_path": "/run/ultra/location.lock",
         "status_path": f"/run/ultra/forward-{forward_id}.status.json",
-        "fallback_policy": fallback_policy,
+        "policy_generation": policy_generation,
+        "target_digest": target_digest,
         "zone_aliases": zone_aliases,
         "probe_timeout_ms": 800,
         "probe_workers": 4,
     }
     if config_payload["target"] == "":
         raise RuntimeError("ultra target missing")
-    access_payload = {
-        "token": token,
-        "expires_at": str(material.get("expires_at", access.get("expires_at", "")) or ""),
-        "sealed_material": sealed_material,
-    }
     config_path = f"/etc/ultra/forward-{forward_id}.json"
     service_name = f"ultra-forward-{forward_id}"
     service_path = f"/etc/systemd/system/{service_name}.service"
@@ -1194,11 +1177,14 @@ Type=simple
 ExecStart={helper_path} --config {config_path}
 Restart=always
 RestartSec=5
+KillMode=control-group
+LimitCORE=0
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadWritePaths=/run/ultra /var/lib/ultra
+ExecStopPost=/usr/bin/rm -f {control_socket} /run/ultra/forward-{forward_id}.status.json
 
 [Install]
 WantedBy=multi-user.target
@@ -1211,20 +1197,16 @@ WantedBy=multi-user.target
         "start_script": "",
         "files": [
             {"path": config_path, "content": json.dumps(config_payload, ensure_ascii=False, indent=2) + "\n", "mode": 0o600},
-            {
-                "path": access_path,
-                "content": json.dumps(access_payload, ensure_ascii=False, indent=2) + "\n",
-                "mode": 0o600,
-                "restart_on_change": False,
-                "reload_signal": "HUP",
-            },
         ],
     }
 
 
 def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     forward = canonicalize_forward_runtime_contract(forward)
-    if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra":
+    backend_mode = str(forward.get("backend_mode", "") or "").strip().lower()
+    if backend_mode == "cf_mode":
+        raise RuntimeError("cf_mode_unsupported")
+    if backend_mode == "ultra":
         return render_ultra_runtime(forward, agent_config)
     forward_id = int(forward["forward_id"])
     listen_port = int(forward["listen_port"])
@@ -1241,12 +1223,6 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     mptcp = mptcp_config(forward)
     frontend_mode = sidecar_frontend_mode(forward, bond)
     bond_remote_target = str(bond.get("remote_target", "")).strip()
-    if bond_remote_target == "" and str(forward.get("backend_mode", "") or "").strip().lower() == "cf_mode":
-        fallback_port = int_or_default(forward.get("bond_sidecar_port"), 0)
-        if fallback_port <= 0:
-            fallback_port = int_or_default(forward.get("bond_remote_port"), 0)
-        if fallback_port > 0:
-            bond_remote_target = f"127.0.0.1:{fallback_port}"
     bond_session_token = str(bond.get("session_token", "")).strip()
     bond_udp_session_token = str(bond.get("udp_session_token", "")).strip()
     bond_bin = str(agent_config.get("bond_bin", "/usr/local/bin/leikwan-bond")).strip() or "/usr/local/bin/leikwan-bond"

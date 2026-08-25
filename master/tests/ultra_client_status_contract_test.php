@@ -131,15 +131,12 @@ namespace {
         failUltraStatus('status persistence retained unknown material fields');
     }
 
-    $spoofed = $status;
-    $spoofed['latest_tcp']['relay_ip'] = '203.0.113.99';
-    $service->ingest(7, 'device-a', [$spoofed]);
-    $spoofedEncoded = json_decode((string) (Database::$lastUpdate['ultra_status_json'] ?? '[]'), true);
-    if (!is_array($spoofedEncoded)
-        || !array_key_exists('latest_tcp', $spoofedEncoded[0] ?? [])
-        || $spoofedEncoded[0]['latest_tcp'] !== null
-        || ($spoofedEncoded[0]['active_udp']['relay_ip'] ?? '') !== '203.0.113.21') {
-        failUltraStatus('status persistence accepted a relay outside the approved memberships');
+    $encodedStatus = json_decode((string) (Database::$lastUpdate['ultra_status_json'] ?? '[]'), true);
+    if (!is_array($encodedStatus)
+        || ($encodedStatus[0]['latest_tcp']['selection_ref'] ?? '') !== $status['latest_tcp']['entry_ref']
+        || array_key_exists('relay_ip', $encodedStatus[0]['latest_tcp'] ?? [])
+        || array_key_exists('relay_ip', $encodedStatus[0]['active_udp'] ?? [])) {
+        failUltraStatus('status persistence retained provider relay identity');
     }
     $service->ingest(7, 'device-a', [$status]);
 
@@ -151,10 +148,10 @@ namespace {
         }
         if (($rows[0]['destination'] ?? '') !== '8.8.8.8:53'
             || ($rows[0]['destination_zone'] ?? '') !== 'tokyo'
-            || ($rows[0]['latest_tcp_ip'] ?? '') !== '203.0.113.20'
-            || ($rows[0]['active_udp_ip'] ?? '') !== '203.0.113.21'
-            || ($rows[0]['latest_tcp_line'] ?? '') !== '#453 Shanghai to Tokyo'
-            || ($rows[0]['active_udp_line'] ?? '') !== '#453 Shanghai to Tokyo') {
+            || ($rows[0]['latest_tcp_selection_ref'] ?? '') !== $status['latest_tcp']['entry_ref']
+            || ($rows[0]['active_udp_selection_ref'] ?? '') !== $status['active_udp']['entry_ref']
+            || ($rows[0]['latest_tcp_ip'] ?? '') !== ''
+            || ($rows[0]['active_udp_ip'] ?? '') !== '') {
             failUltraStatus('admin session projection is not server authoritative');
         }
     }

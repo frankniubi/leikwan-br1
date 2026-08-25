@@ -109,7 +109,7 @@ class RuntimePreferenceTests(unittest.TestCase):
             {
                 "mode": "mptcp",
                 "runtime_preference": "mptcp_preferred_bond_fallback",
-                "backend_mode": "cf_mode",
+                "backend_mode": "current_mode",
                 "candidate_pool": [
                     {
                         "candidate_kind": "self_leg",

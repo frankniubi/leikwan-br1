@@ -28,9 +28,9 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "1329f5460c25ffe04823aa80a4db975138d1e34ec838b3ba07a95c2d6ce5af13",
-    "size": 259022,
-    "size_bytes": 259022,
+    "sha256": "3c498b7293d55e11dfd9a9fbe8738518526471b9653e4f637b7a77fad8016f96",
+    "size": 267520,
+    "size_bytes": 267520,
     "version": "2026.08.24.1"
   },
   "client_agent_installer": {
@@ -79,17 +79,24 @@
   "install_forward_runtime": {
     "artifact_url": "/artifacts/install-forward-runtime.py",
     "path": "client-agent/install_forward_runtime.py",
-    "sha256": "2c646252fb19a1bea88cbf15acb5ec0cf45cfff07bb863abc57d50929a448a70",
-    "size": 95425,
-    "size_bytes": 95425,
+    "sha256": "5b772786c33f16572e298d9d7be42e2500a3ba140fccf37d5aed6310ece5979c",
+    "size": 94246,
+    "size_bytes": 94246,
     "version": "2026.08.24.1"
   },
   "ultra_client_runtime": {
     "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
     "path": "artifacts/ultra/ultra-client_linux_amd64",
-    "sha256": "0076156a838099ec958fd8f60b1b79ac1d707d114cbf4629b614ef9c0fb7c825",
-    "size_bytes": 6410366,
-    "version": "2026.08.24.1"
+    "sha256": "f3d00004dd854ec994f5fd8084ba9e2dfa78961557cdfdfb333f2e3c5e27de0a",
+    "size_bytes": 7106826,
+    "version": "2026.08.25.1"
+  },
+  "ultra_client_runtime_windows": {
+    "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
+    "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
+    "sha256": "cd7a5b4debc63c254060bef469e05720ba229535c05a1f4c3f67aed2e00f9494",
+    "size_bytes": 6603776,
+    "version": "2026.08.25.1"
   },
   "ultra_client_runtime_windows": {
     "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
@@ -241,10 +248,10 @@
   "slave_agent": {
     "artifact_url": "/artifacts/slave-agent.py",
     "path": "slave-agent/slave_agent.py",
-    "sha256": "a1d5b0d99a2d22bce6326742ca96b140231eb01f1f2a90232b643e769d78c1f9",
-    "size": 342221,
-    "size_bytes": 342221,
-    "version": "2026.08.13.1"
+    "sha256": "2fc5048da36113192ada79e89dcd21ec5f9ff2fbf0afafb8783f557cca510f86",
+    "size": 350493,
+    "size_bytes": 350493,
+    "version": "2026.08.13.2"
   },
   "slave_installer": {
     "install_url": "/artifacts/install-slave.sh",
@@ -330,8 +337,8 @@
   "windows_client_app": {
     "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
     "path": "artifacts/windows/leikwan-bridge-setup.exe",
-    "sha256": "e152f578e90f01b91d0bc0f8e8b3402c15037566edf6736424c1e7c895820977",
-    "size_bytes": 8609924,
+    "sha256": "8a7e6738afac1ddf7d402609f6745dccba57d1c8fb62506f1b6f1f7056abcab0",
+    "size_bytes": 10853728,
     "version": "0.1.18.1"
   },
   "wstunnel_linux_amd64": {

@@ -8,7 +8,7 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class BondEndpointHealthServiceTests
 {
     [Fact]
-    public void SelectRuntimeEndpoints_CfBond_ExcludesInactiveEndpointEvenWhenItsQualityIsBest()
+    public void SelectRuntimeEndpoints_PlainTcpBond_ExcludesInactiveEndpointEvenWhenItsQualityIsBest()
     {
         using var tempDir = new TempStateDirectory();
         var stateManager = new StateManager(tempDir.Path);
@@ -23,7 +23,7 @@ public sealed class BondEndpointHealthServiceTests
             }
         });
 
-        var selected = service.SelectRuntimeEndpoints(CreateCfBondForwardWithInactiveBestLeg(), nowUnixSeconds: 1_001);
+        var selected = service.SelectRuntimeEndpoints(CreatePlainTcpBondForwardWithInactiveBestLeg(), nowUnixSeconds: 1_001);
 
         Assert.Equal([317], selected.Select(endpoint => endpoint.EndpointId).ToList());
     }
@@ -61,7 +61,7 @@ public sealed class BondEndpointHealthServiceTests
         var stateManager = new StateManager(tempDir.Path);
         var service = new BondEndpointHealthService(stateManager);
 
-        var forward = CreateCfBondForward();
+        var forward = CreatePlainTcpBondForward();
         foreach (var endpoint in forward.Endpoints)
             endpoint.HealthStatus = "inactive";
 
@@ -71,21 +71,21 @@ public sealed class BondEndpointHealthServiceTests
     }
 
     [Fact]
-    public void SelectRuntimeEndpoints_CfBond_ExcludesQuarantinedEndpointWhenHealthyExists()
+    public void SelectRuntimeEndpoints_PlainTcpBond_ExcludesQuarantinedEndpointWhenHealthyExists()
     {
         using var tempDir = new TempStateDirectory();
         var stateManager = new StateManager(tempDir.Path);
         var service = new BondEndpointHealthService(stateManager);
-        service.ForceQuarantine(47, 316, "cf_bond_leg_probe_failed", 1200, nowUnixSeconds: 1_000);
+        service.ForceQuarantine(47, 316, "bond_leg_probe_failed", 1200, nowUnixSeconds: 1_000);
 
-        var selected = service.SelectRuntimeEndpoints(CreateCfBondForward(), nowUnixSeconds: 1_001);
+        var selected = service.SelectRuntimeEndpoints(CreatePlainTcpBondForward(), nowUnixSeconds: 1_001);
 
         Assert.Equal([317], selected.Select(endpoint => endpoint.EndpointId).ToList());
         Assert.All(selected, endpoint => Assert.Equal("healthy", endpoint.HealthRole));
     }
 
     [Fact]
-    public void SelectRuntimeEndpoints_CfBond_UsesSingleProbationEndpointWhenOnlyOlderQuarantineHasExpired()
+    public void SelectRuntimeEndpoints_PlainTcpBond_UsesSingleProbationEndpointWhenOnlyOlderQuarantineHasExpired()
     {
         using var tempDir = new TempStateDirectory();
         var stateManager = new StateManager(tempDir.Path);
@@ -93,7 +93,7 @@ public sealed class BondEndpointHealthServiceTests
         service.ForceQuarantine(47, 316, "failed-a", null, nowUnixSeconds: 1_000);
         service.ForceQuarantine(47, 317, "failed-b", null, nowUnixSeconds: 900);
 
-        var selected = service.SelectRuntimeEndpoints(CreateCfBondForward(), nowUnixSeconds: 2_701);
+        var selected = service.SelectRuntimeEndpoints(CreatePlainTcpBondForward(), nowUnixSeconds: 2_701);
 
         Assert.Single(selected);
         Assert.Equal(317, selected[0].EndpointId);
@@ -147,7 +147,7 @@ public sealed class BondEndpointHealthServiceTests
     }
 
     [Fact]
-    public void SelectRuntimeEndpoints_CfBond_FallbackDoesNotSelectInactiveEndpoint()
+    public void SelectRuntimeEndpoints_PlainTcpBond_FallbackDoesNotSelectInactiveEndpoint()
     {
         using var tempDir = new TempStateDirectory();
         var stateManager = new StateManager(tempDir.Path);
@@ -173,7 +173,7 @@ public sealed class BondEndpointHealthServiceTests
             },
         });
 
-        var selected = service.SelectRuntimeEndpoints(CreateCfBondForwardWithInactiveBestLeg(), nowUnixSeconds: 1_000);
+        var selected = service.SelectRuntimeEndpoints(CreatePlainTcpBondForwardWithInactiveBestLeg(), nowUnixSeconds: 1_000);
 
         Assert.Single(selected);
         Assert.Equal(317, selected[0].EndpointId);
@@ -182,7 +182,7 @@ public sealed class BondEndpointHealthServiceTests
     }
 
     [Fact]
-    public void RecordProbeResult_ThirdCfFailureQuarantinesEndpointForThirtyMinutes()
+    public void RecordProbeResult_ThirdFailureQuarantinesEndpointForThirtyMinutes()
     {
         using var tempDir = new TempStateDirectory();
         var stateManager = new StateManager(tempDir.Path);
@@ -205,7 +205,7 @@ public sealed class BondEndpointHealthServiceTests
         var stateManager = new StateManager(tempDir.Path);
         var service = new BondEndpointHealthService(stateManager);
 
-        var entry = service.ForceQuarantine(47, 316, "cf_bond_leg_probe_failed", null, nowUnixSeconds: 10_000);
+        var entry = service.ForceQuarantine(47, 316, "bond_leg_probe_failed", null, nowUnixSeconds: 10_000);
 
         Assert.Equal("quarantined", entry.Role);
         Assert.Equal(11_800, entry.QuarantineUntil);
@@ -227,7 +227,7 @@ public sealed class BondEndpointHealthServiceTests
     }
 
     [Fact]
-    public void SelectRuntimeEndpoints_CfBond_LimitsHealthySetToBestThreeByPriority()
+    public void SelectRuntimeEndpoints_PlainTcpBond_ReturnsAllHealthyEndpointsByPriority()
     {
         using var tempDir = new TempStateDirectory();
         var stateManager = new StateManager(tempDir.Path);
@@ -245,9 +245,9 @@ public sealed class BondEndpointHealthServiceTests
             }
         });
 
-        var selected = service.SelectRuntimeEndpoints(CreateCfBondForwardWithFiveHealthyLegs(), nowUnixSeconds: 5_000);
+        var selected = service.SelectRuntimeEndpoints(CreatePlainTcpBondForwardWithFiveHealthyLegs(), nowUnixSeconds: 5_000);
 
-        Assert.Equal([254, 256, 258], selected.Select(endpoint => endpoint.EndpointId).ToList());
+        Assert.Equal([254, 256, 258, 255, 257], selected.Select(endpoint => endpoint.EndpointId).ToList());
     }
 
     [Fact]
@@ -274,12 +274,12 @@ public sealed class BondEndpointHealthServiceTests
         Assert.Equal(new[] { "primary", "helper", "helper" }, selected.Select(endpoint => endpoint.LegRole).ToArray());
     }
 
-    private static ForwardConfig CreateCfBondForward()
+    private static ForwardConfig CreatePlainTcpBondForward()
     {
         return new ForwardConfig
         {
             ForwardId = 47,
-            BackendMode = "cf_mode",
+            BackendMode = "current_mode",
             Mode = "bond",
             ListenPort = 11035,
             Transport = "tcp",
@@ -316,19 +316,19 @@ public sealed class BondEndpointHealthServiceTests
         };
     }
 
-    private static ForwardConfig CreateCfBondForwardWithInactiveBestLeg()
+    private static ForwardConfig CreatePlainTcpBondForwardWithInactiveBestLeg()
     {
-        var forward = CreateCfBondForward();
+        var forward = CreatePlainTcpBondForward();
         forward.Endpoints[0].HealthStatus = "inactive";
         return forward;
     }
 
-    private static ForwardConfig CreateCfBondForwardWithFiveHealthyLegs()
+    private static ForwardConfig CreatePlainTcpBondForwardWithFiveHealthyLegs()
     {
         return new ForwardConfig
         {
             ForwardId = 40,
-            BackendMode = "cf_mode",
+            BackendMode = "current_mode",
             Mode = "bond",
             ListenPort = 11030,
             Transport = "tcp",

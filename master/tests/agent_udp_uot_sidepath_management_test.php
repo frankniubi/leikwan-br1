@@ -252,8 +252,29 @@ namespace {
         'node' => $nodeSidepath,
         'sidecar' => $sidecarSidepath,
     ] as $label => $actual) {
-        if ($actual !== $sidepath) {
-            fail('expected ' . $label . ' scheduler contract to remain byte-for-value identical');
+        if (!is_array($actual)
+            || ($actual['enabled_forward_ids'] ?? null) !== [26]
+            || ($actual['scheduler_mode'] ?? null) !== 'feedback_drr'
+            || ($actual['delivery_mode'] ?? null) !== 'unordered'
+            || ($actual['wireguard_latency_sensitive_max_bytes'] ?? null) !== 256
+            || ($actual['wireguard_latency_sensitive_copies'] ?? null) !== 2
+        ) {
+            fail('expected ' . $label . ' scheduler contract to preserve the enabled and first-wins policy');
+        }
+
+        // Legacy feedback_drr profiles are upgraded to the current bounded
+        // queue defaults by the provisioning normalizer.
+        foreach ([
+            'aggregate_rate_bps' => 450000000,
+            'queue_deadline_ms' => 30,
+            'global_queue_bytes' => 4194304,
+            'per_session_queue_bytes' => 1048576,
+            'max_total_outstanding_bytes' => 16777216,
+            'finish_skew_budget_ms' => 20,
+        ] as $key => $expected) {
+            if (($actual[$key] ?? null) !== $expected) {
+                fail('expected ' . $label . ' scheduler normalizer to publish ' . $key);
+            }
         }
     }
 

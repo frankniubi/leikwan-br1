@@ -8,6 +8,30 @@ public sealed class WindowsForwardPolicyTests
 {
     [Theory]
     [InlineData("single")]
+    [InlineData("bond")]
+    [InlineData("mptcp")]
+    public void IsSupportedOnWindows_RejectsCfModeWithoutFallback(string mode)
+    {
+        var forward = CreateForward(47, mode);
+        forward.BackendMode = "cf_mode";
+        forward.ContractVersion = 1;
+        forward.ClientMode = mode;
+        forward.ActiveFamily = "sidecar_aggregation";
+        forward.TargetContract = "sidecar_aggregation";
+        forward.AggregationEnabled = true;
+        forward.SidecarRequired = true;
+        forward.BondSidecarPointId = 10;
+        forward.Bonding = new BondingConfig
+        {
+            FrontendMode = mode == "single" ? "single" : "",
+            RemoteTarget = "10.240.10.1:18501",
+        };
+
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(forward));
+    }
+
+    [Theory]
+    [InlineData("single")]
     [InlineData("race")]
     public void IsSupportedOnWindows_AcceptsExplicitSidecarFrontend(string mode)
     {
