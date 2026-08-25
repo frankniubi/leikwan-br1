@@ -24,11 +24,14 @@ if ($start === false || $end === false || $end <= $start) {
 
 $dashboard = substr($source, $start, $end - $start);
 
-if (!str_contains($dashboard, 'LEFT JOIN forwards f ON f.service_id = s.id AND f.enabled = 1')) {
-    fail('dashboard must filter enabled forwards in the LEFT JOIN so services with only disabled forwards remain visible');
+if (str_contains($dashboard, 'LEFT JOIN forwards')) {
+    fail('dashboard must not LEFT JOIN forwards onto the services list; each service is listed independently so a service with only disabled forwards stays visible');
 }
-if (str_contains($dashboard, 'f.id IS NULL OR f.enabled = 1')) {
-    fail('dashboard must not filter forwards in WHERE because that removes services with only disabled forwards');
+if (!str_contains($dashboard, 'SELECT service_id, COUNT(*) AS cnt')) {
+    fail('dashboard must count forwards per service via a separate COUNT query');
+}
+if (!str_contains($dashboard, 'enabled = 1 AND user_deleted_at IS NULL')) {
+    fail('dashboard forward count must only count enabled, non-deleted forwards');
 }
 
 foreach ([
@@ -39,6 +42,17 @@ foreach ([
 ] as $required) {
     if (!str_contains($dashboard, $required)) {
         fail('dashboard service-row snippet missing: ' . $required);
+    }
+}
+
+foreach ([
+    '我的服务',
+    '个 forward',
+    '本期已用流量',
+    '新建 Forward',
+] as $marker) {
+    if (!str_contains($dashboard, $marker)) {
+        fail('dashboard service-card marker missing: ' . $marker);
     }
 }
 
