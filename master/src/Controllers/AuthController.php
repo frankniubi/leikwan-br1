@@ -944,7 +944,6 @@ final class AuthController extends BaseController
             ['group' => 'Clients', 'href' => '/tenant/clients', 'label' => 'Clients'],
             ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Account'],
             ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase / Docs', 'active' => true],
-            ['group' => 'Advanced', 'href' => '/tenant-transport-endpoints', 'label' => 'Target Endpoints'],
             ['group' => 'Advanced', 'href' => '/tenant/slave-groups', 'label' => 'Node Groups'],
         ];
     }
