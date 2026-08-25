@@ -13,7 +13,7 @@ if (!is_string($source) || $source === '') {
 }
 
 $start = strpos($source, 'public function clientsPage(Request $request, array $params): Response');
-$end = strpos($source, 'public function sidecarsPage(Request $request, array $params): Response');
+$end = strpos($source, 'public function resetDefaultClientToken(Request $request, array $params): Response');
 if (!is_int($start) || !is_int($end) || $end <= $start) {
     fail('failed to isolate tenant clientsPage source');
 }
@@ -21,80 +21,72 @@ if (!is_int($start) || !is_int($end) || $end <= $start) {
 $clientsPage = substr($source, $start, $end - $start);
 
 foreach ([
-    'Quick start',
-    'Download Windows App',
-    'Download Android App',
-    'Online device limit',
-    'Linux Install',
-    'Online devices',
-    'These are only defaults for future forwards. They are not required for app install.',
-    'Keep this simple. Install Windows or Android from the top of this page; use Linux Install only for Linux hosts.',
+    'defaultClientForUser(',
+    'ensureDefaultClientForUser(',
+    'activeCountForClient(',
+    'clientAgentInstallCommand(',
+    'windowsClientAppUrl()',
+    '最大在线',
+    '复制命令',
+    '下载 installer',
+    '/tenant/clients/reset-token',
 ] as $required) {
     if (!str_contains($clientsPage, $required)) {
-        fail('missing simplified tenant client page snippet: ' . $required);
+        fail('missing compact tenant client page snippet: ' . $required);
     }
 }
 
 foreach ([
-    'Install details',
-    'Client ID:',
-    'Token:',
-    'Usage Calendar',
-    'Assigned Forwards',
-    'renderClientAppDownloadOverview(',
-    'renderAssignedForwardSummary(',
-    'renderUsageOverviewPanel(',
-    'Latest Panel Version:',
+    'listClientsForUser(',
+    'maxClientProfilesForTenantOwnedClients(',
+    'availableClientGroupsForUser(',
+    'availableForwardChainsForService(',
+    'BondLegReputationService',
+    'scopedRowsForTenant(',
+    'recentEvents(',
+    'assignedForwardConfigsForClient(',
+    'activeSessionsForClient(',
+    'fetchAll(',
+    'serviceSummary(',
+    'defaultClientOnlineDeviceLimitForTenant(',
+    'viewTabs(',
+    '?view=',
+    'Android',
+    'Client Profiles',
+    'System distribution',
+    'system distribution',
+    '安装次数',
+    '/diagnose',
+    '/request-update',
+    '/delete',
 ] as $forbidden) {
     if (str_contains($clientsPage, $forbidden)) {
-        fail('stale tenant client complexity still present: ' . $forbidden);
+        fail('legacy tenant client page surface remains: ' . $forbidden);
     }
 }
 
-if (!str_contains($clientsPage, '$canManageClients = !empty($features[\'allow_manage_clients\']);')) {
-    fail('tenant clientsPage does not compute canManageClients from allow_manage_clients');
+if (substr_count($clientsPage, '最大在线') !== 1) {
+    fail('expected exactly one global online label');
 }
-if (!str_contains($clientsPage, '$clientFormSection = \'\';')
-    || !str_contains($clientsPage, 'if ($canManageClients) {')
-    || !str_contains($clientsPage, '$clientFormSection = \'')
-    || !str_contains($clientsPage, "<h3>' . (\$editing !== null ? 'Edit Client' : 'Create Client') . '</h3>")
-    || !str_contains($clientsPage, '$clientFormSection .')) {
-    fail('tenant create/edit client form is not rendered only through a canManageClients-gated section');
+if (substr_count($clientsPage, 'activeCountForClient(') !== 1) {
+    fail('tenant Client page must use exactly one active online count query');
 }
-
-$clientCardsStart = strpos($clientsPage, '$clientCards .=');
-$clientCardsEnd = strpos($clientsPage, '$groupOptions =', $clientCardsStart ?: 0);
-if (!is_int($clientCardsStart) || !is_int($clientCardsEnd) || $clientCardsEnd <= $clientCardsStart) {
-    fail('failed to isolate tenant client card source');
-}
-$clientCardsBlock = substr($clientsPage, $clientCardsStart, $clientCardsEnd - $clientCardsStart);
-if (!str_contains($clientCardsBlock, '<summary>Linux Install</summary>')) {
-    fail('missing Linux Install details summary in client cards');
-}
-foreach (['Download Windows App', 'Download Android App', 'Windows App', 'Android App', 'renderClientAgentInstallDetails('] as $staleInstallSnippet) {
-    if (str_contains($clientCardsBlock, $staleInstallSnippet)) {
-        fail('per-client Linux Install/card still includes non-Linux app install snippet: ' . $staleInstallSnippet);
-    }
+if (substr_count($clientsPage, 'defaultClientForUser(') !== 1
+    || substr_count($clientsPage, 'ensureDefaultClientForUser(') !== 1) {
+    fail('tenant Client page default resolution budget changed');
 }
 
-$bodyStart = strpos($clientsPage, '$body =');
-$bodyEnd = strpos($clientsPage, '<script>', $bodyStart ?: 0);
-if (!is_int($bodyStart) || !is_int($bodyEnd) || $bodyEnd <= $bodyStart) {
-    fail('failed to isolate tenant body source');
+$resetStart = strpos($source, 'public function resetDefaultClientToken(Request $request, array $params): Response');
+$resetEnd = strpos($source, 'public function sidecarsPage(Request $request, array $params): Response', $resetStart ?: 0);
+if (!is_int($resetStart) || !is_int($resetEnd) || $resetEnd <= $resetStart) {
+    fail('failed to isolate reset route method');
 }
-$bodyBlock = substr($clientsPage, $bodyStart, $bodyEnd - $bodyStart);
-$quickStartPos = strpos($bodyBlock, '<h3>Quick start</h3>');
-$windowsButtonPos = strpos($bodyBlock, 'Download Windows App');
-$androidButtonPos = strpos($bodyBlock, 'Download Android App');
-$clientListPos = strpos($bodyBlock, 'My Client List');
-if ($quickStartPos === false || $windowsButtonPos === false || $androidButtonPos === false) {
-    fail('missing top quick-start app install buttons');
-}
-if (!($quickStartPos < $windowsButtonPos && $windowsButtonPos < $clientListPos)) {
-    fail('Windows install button must be in the top quick-start area before the client list');
-}
-if (!($quickStartPos < $androidButtonPos && $androidButtonPos < $clientListPos)) {
-    fail('Android install button must be in the top quick-start area before the client list');
+$resetMethod = substr($source, $resetStart, $resetEnd - $resetStart);
+if (str_contains($resetMethod, "input('client_id'")
+    || str_contains($resetMethod, 'input("client_id"')
+    || str_contains($resetMethod, "input('agent_token'")
+    || str_contains($resetMethod, 'input("agent_token"')) {
+    fail('reset route must not trust browser client id or token');
 }
 
 echo "ok\n";
