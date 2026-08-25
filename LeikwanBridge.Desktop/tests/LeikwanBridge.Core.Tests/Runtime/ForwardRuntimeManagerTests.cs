@@ -111,6 +111,83 @@ public sealed class ForwardRuntimeManagerTests
     }
 
     [Fact]
+    public void ApplyForward_UltraStartsOnlyTheUltraRuntime()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
+        var now = DateTimeOffset.UtcNow;
+        const string target = "198.51.100.10:443";
+        var generation = new string('a', 64);
+        var digest = UltraPolicy.ComputeTargetDigest(target);
+        var forward = new ForwardConfig
+        {
+            ForwardId = 880,
+            BackendMode = "ultra",
+            ContractVersion = 2,
+            ClientMode = "single",
+            ActiveFamily = "ultra",
+            TargetContract = "ultra_direct",
+            Mode = "single",
+            ListenPort = 11880,
+            Target = target,
+            Transport = "tcp",
+            Endpoints = [],
+            UltraAccess = new UltraPolicy
+            {
+                ProtocolValue = UltraPolicy.Protocol,
+                ForwardId = 880,
+                PolicyGeneration = generation,
+                SessionTicket = "ticket-a",
+                IssuedAt = now,
+                RenewAfter = now.AddMinutes(2),
+                ExpiresAt = now.AddMinutes(4),
+                ServiceState = "active",
+                Transport = "tcp",
+                RateLimitMbps = 20,
+                QuotaRemainingBytes = 1024 * 1024,
+                TargetDigest = digest,
+            },
+            RuntimeLease = new UltraLease
+            {
+                Protocol = UltraPolicy.Protocol,
+                LeaseId = "lease-a",
+                SessionTicket = "ticket-a",
+                ForwardId = 880,
+                PolicyGeneration = generation,
+                TargetDigest = digest,
+                ExpiresAt = now.AddMinutes(3),
+                Transport = "tcp",
+                RateLimitMbps = 20,
+                QuotaRemainingBytes = 1024 * 1024,
+                SelectionRef = new string('r', 43),
+                NonceHash = new string('b', 64),
+                ProviderIp = "203.0.113.20",
+                ProviderPort = 5438,
+                User = "line-user"u8.ToArray(),
+                Password = "line-password"u8.ToArray(),
+            },
+        };
+        var manager = new ForwardRuntimeManager(
+            config,
+            supervisor,
+            new StateManager(tempDir.Path),
+            binaryExists: _ => true,
+            portListeningProbe: _ => true,
+            ultraLeaseSender: (_, _, _) => Task.FromResult(true));
+
+        manager.ApplyForward(forward);
+
+        Assert.Equal(["ultra-runtime"], supervisor.StartedRoles);
+        Assert.Equal("ultra", new StateManager(tempDir.Path).LoadApplied()["880"].Mode);
+        var runtimeConfig = File.ReadAllText(Path.Combine(tempDir.Path, "runtime", "ultra-forward-880.json"));
+        Assert.Contains("\"control_socket\"", runtimeConfig);
+        Assert.DoesNotContain("line-user", runtimeConfig);
+        Assert.DoesNotContain("line-password", runtimeConfig);
+    }
+
+    [Fact]
     public void ApplyForward_DoesNotThrow_WhenSupervisorSnapshotContainsUnassociatedProcesses()
     {
         using var tempDir = new TempStateDirectory();

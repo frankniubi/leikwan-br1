@@ -3,10 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -19,7 +15,6 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -31,9 +26,10 @@ type Config struct {
 	ListenHost         string              `json:"listen_host"`
 	ListenPort         int                 `json:"listen_port"`
 	Target             string              `json:"target"`
-	AccessFile         string              `json:"access_file"`
+	ControlSocket      string              `json:"control_socket"`
+	PolicyGeneration   string              `json:"policy_generation"`
+	TargetDigest       string              `json:"target_digest"`
 	Transport          string              `json:"transport"`
-	RateLimitMbps      int                 `json:"rate_limit_mbps"`
 	MaxTCPConnections  int                 `json:"max_tcp_connections"`
 	UDPQueuePackets    int                 `json:"udp_queue_packets"`
 	ConnectTimeoutSecs int                 `json:"connect_timeout_seconds"`
@@ -46,178 +42,13 @@ type Config struct {
 }
 
 type Entry struct {
-	EntryRef        string `json:"entry_ref"`
-	IngressZone     string `json:"ingress_zone"`
-	DestinationZone string `json:"destination_zone"`
-	IP              string `json:"ip"`
-	Port            int    `json:"port"`
-	User            string `json:"user"`
-	Credential      string `json:"credential"`
-}
-
-type Access struct {
-	Token          string         `json:"token"`
-	ExpiresAt      string         `json:"expires_at"`
-	SealedMaterial string         `json:"sealed_material"`
-	Entries        []Entry        `json:"-"`
-	Policy         MaterialPolicy `json:"-"`
-	Location       LocationResult `json:"-"`
-}
-
-type SealedPayload struct {
-	Entries []Entry        `json:"entries"`
-	Policy  MaterialPolicy `json:"policy"`
-}
-
-func (a Access) validate() error {
-	if strings.TrimSpace(a.Token) == "" || len(a.Token) > 8192 {
-		return errors.New("access token invalid")
-	}
-	expires, err := time.Parse(time.RFC3339, a.ExpiresAt)
-	if err != nil || !expires.After(time.Now()) {
-		return errors.New("access expired")
-	}
-	if !strings.HasPrefix(a.SealedMaterial, "um1.") || len(a.SealedMaterial) > 65536 {
-		return errors.New("sealed material invalid")
-	}
-	payload, err := decryptMaterial(a.Token, a.SealedMaterial)
-	if err != nil || len(payload.Entries) == 0 || len(payload.Entries) > 8 {
-		return errors.New("access entries invalid")
-	}
-	if payload.Policy.FallbackPolicy != "detected_only" && payload.Policy.FallbackPolicy != "detected_then_any" && payload.Policy.FallbackPolicy != "any" {
-		return errors.New("access policy invalid")
-	}
-	for _, entry := range payload.Entries {
-		if len(entry.EntryRef) < 16 || len(entry.EntryRef) > 128 || !validZoneCode(entry.IngressZone) || !validZoneCode(entry.DestinationZone) || net.ParseIP(entry.IP) == nil || entry.Port < 1 || entry.Port > 65535 || entry.User == "" || entry.Credential == "" || len(entry.User) > 255 || len(entry.Credential) > 255 {
-			return errors.New("access entry invalid")
-		}
-	}
-	return nil
-}
-
-func decodeURLBase64(value string) ([]byte, error) {
-	if remainder := len(value) % 4; remainder != 0 {
-		value += strings.Repeat("=", 4-remainder)
-	}
-	return base64.URLEncoding.DecodeString(value)
-}
-
-func decryptMaterial(token, encoded string) (SealedPayload, error) {
-	if token == "" || !strings.HasPrefix(encoded, "um1.") {
-		return SealedPayload{}, errors.New("sealed material invalid")
-	}
-	raw, err := decodeURLBase64(strings.TrimPrefix(encoded, "um1."))
-	if err != nil || len(raw) <= 28 {
-		return SealedPayload{}, errors.New("sealed material invalid")
-	}
-	key := sha256.Sum256([]byte(token))
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		return SealedPayload{}, err
-	}
-	gcm, err := cipher.NewGCMWithTagSize(block, 16)
-	if err != nil {
-		return SealedPayload{}, err
-	}
-	combined := append(append([]byte(nil), raw[28:]...), raw[12:28]...)
-	plain, err := gcm.Open(nil, raw[:12], combined, nil)
-	if err != nil {
-		return SealedPayload{}, err
-	}
-	var payload SealedPayload
-	if err := json.Unmarshal(plain, &payload); err != nil {
-		return SealedPayload{}, err
-	}
-	return payload, nil
-}
-
-type AccessStore struct {
-	path string
-	mu   sync.RWMutex
-	data Access
-}
-
-func (s *AccessStore) Load() error {
-	raw, err := os.ReadFile(s.path)
-	if err != nil {
-		return err
-	}
-	var access Access
-	if err := json.Unmarshal(raw, &access); err != nil {
-		return err
-	}
-	if err := access.validate(); err != nil {
-		return err
-	}
-	payload, err := decryptMaterial(access.Token, access.SealedMaterial)
-	if err != nil {
-		return err
-	}
-	access.Entries = payload.Entries
-	access.Policy = payload.Policy
-	s.mu.Lock()
-	s.data = access
-	s.mu.Unlock()
-	return nil
-}
-
-func (s *AccessStore) Snapshot() Access {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	copyValue := s.data
-	copyValue.Entries = append([]Entry(nil), s.data.Entries...)
-	copyValue.Policy.AllowedIngressZones = append([]string(nil), s.data.Policy.AllowedIngressZones...)
-	if expires, err := time.Parse(time.RFC3339, copyValue.ExpiresAt); err != nil || !expires.After(time.Now()) {
-		copyValue.Entries = nil
-	}
-	return copyValue
-}
-
-func (s *AccessStore) SetRanked(entries []Entry, location LocationResult) {
-	s.mu.Lock()
-	s.data.Entries = append([]Entry(nil), entries...)
-	s.data.Location = location
-	s.mu.Unlock()
-}
-
-type ByteLimiter struct {
-	mu       sync.Mutex
-	rate     float64
-	capacity float64
-	tokens   float64
-	last     time.Time
-}
-
-func newByteLimiter(mbps int) *ByteLimiter {
-	if mbps <= 0 {
-		return &ByteLimiter{}
-	}
-	rate := float64(mbps) * 1_000_000 / 8
-	return &ByteLimiter{rate: rate, capacity: rate, tokens: rate, last: time.Now()}
-}
-
-func (l *ByteLimiter) Wait(n int) {
-	if l.rate <= 0 || n <= 0 {
-		return
-	}
-	for {
-		l.mu.Lock()
-		now := time.Now()
-		l.tokens += now.Sub(l.last).Seconds() * l.rate
-		if l.tokens > l.capacity {
-			l.tokens = l.capacity
-		}
-		l.last = now
-		if l.tokens >= float64(n) {
-			l.tokens -= float64(n)
-			l.mu.Unlock()
-			return
-		}
-		missing := float64(n) - l.tokens
-		l.tokens = 0
-		l.mu.Unlock()
-		time.Sleep(time.Duration(missing/l.rate*float64(time.Second)) + time.Millisecond)
-	}
+	EntryRef        string
+	IngressZone     string
+	DestinationZone string
+	IP              string
+	Port            int
+	User            string
+	Credential      string
 }
 
 func parseTarget(value string) (string, int, error) {
@@ -306,12 +137,12 @@ func xorOne(value []byte) []byte {
 	return result
 }
 
-func dialStream(entry Entry, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(entry.IP, fmt.Sprint(entry.Port)), timeout)
+func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port)), timeout)
 	if err != nil {
 		return nil, err
 	}
-	handshake, err := buildHandshake(entry.User, entry.Credential, 1, targetHost, targetPort)
+	handshake, err := buildHandshake(string(lease.User), string(lease.Password), 1, targetHost, targetPort)
 	if err == nil {
 		_, err = conn.Write(handshake)
 	}
@@ -325,12 +156,15 @@ func dialStream(entry Entry, targetHost string, targetPort int, timeout time.Dur
 	return conn, nil
 }
 
-func copyOutbound(destination net.Conn, source net.Conn, limiter *ByteLimiter) error {
+func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) error {
 	buffer := make([]byte, 32*1024)
 	for {
 		count, readErr := source.Read(buffer)
 		if count > 0 {
-			limiter.Wait(count)
+			if err := limiter.Consume(count); err != nil {
+				return err
+			}
+			status.AddUsage(0, count)
 			if _, err := destination.Write(xorOne(buffer[:count])); err != nil {
 				return err
 			}
@@ -341,12 +175,15 @@ func copyOutbound(destination net.Conn, source net.Conn, limiter *ByteLimiter) e
 	}
 }
 
-func copyInbound(destination net.Conn, source net.Conn, limiter *ByteLimiter) error {
+func copyInbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) error {
 	buffer := make([]byte, 32*1024)
 	for {
 		count, readErr := source.Read(buffer)
 		if count > 0 {
-			limiter.Wait(count)
+			if err := limiter.Consume(count); err != nil {
+				return err
+			}
+			status.AddUsage(count, 0)
 			if _, err := destination.Write(buffer[:count]); err != nil {
 				return err
 			}
@@ -357,12 +194,20 @@ func copyInbound(destination net.Conn, source net.Conn, limiter *ByteLimiter) er
 	}
 }
 
-func serveTCP(config Config, store *AccessStore, limiter *ByteLimiter, targetHost string, targetPort int, status *StatusWriter) error {
+func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *StatusWriter) error {
+	targetHost, targetPort, err := parseTarget(config.Target)
+	if err != nil {
+		return err
+	}
 	listener, err := net.Listen("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(config.ListenPort)))
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
+	go func() {
+		<-ctx.Done()
+		_ = listener.Close()
+	}()
 	limit := config.MaxTCPConnections
 	if limit < 1 || limit > 4096 {
 		limit = 512
@@ -371,6 +216,9 @@ func serveTCP(config Config, store *AccessStore, limiter *ByteLimiter, targetHos
 	for {
 		local, err := listener.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
 		select {
@@ -378,25 +226,35 @@ func serveTCP(config Config, store *AccessStore, limiter *ByteLimiter, targetHos
 			go func() {
 				defer func() { <-semaphore }()
 				defer local.Close()
-				access := store.Snapshot()
-				if len(access.Entries) == 0 {
+				snapshot, ok := store.Snapshot()
+				if !ok {
+					status.UpdateError("policy_stopped")
 					return
 				}
-				for _, entry := range access.Entries {
-					started := time.Now()
-					remote, dialErr := dialStream(entry, targetHost, targetPort, time.Duration(config.ConnectTimeoutSecs)*time.Second)
-					if dialErr != nil {
-						continue
+				lease := snapshot.Lease
+				defer lease.wipe()
+				started := time.Now()
+				remote, dialErr := dialStream(lease, targetHost, targetPort, time.Duration(config.ConnectTimeoutSecs)*time.Second)
+				if dialErr != nil {
+					status.UpdateError("tcp_connect_failed")
+					return
+				}
+				defer remote.Close()
+				connectionDone := make(chan struct{})
+				go func() {
+					select {
+					case <-ctx.Done():
+						_ = local.Close()
+						_ = remote.Close()
+					case <-connectionDone:
 					}
-					status.UpdateTCP(entry, time.Since(started))
-					defer remote.Close()
-					done := make(chan struct{}, 2)
-					go func() { _ = copyOutbound(remote, local, limiter); done <- struct{}{} }()
-					go func() { _ = copyInbound(local, remote, limiter); done <- struct{}{} }()
-					<-done
-					return
-				}
-				status.UpdateError("tcp_connect_failed")
+				}()
+				defer close(connectionDone)
+				status.UpdateTCP(lease.SelectionRef, time.Since(started))
+				done := make(chan struct{}, 2)
+				go func() { _ = copyOutbound(remote, local, store.Limiter(), status); done <- struct{}{} }()
+				go func() { _ = copyInbound(local, remote, store.Limiter(), status); done <- struct{}{} }()
+				<-done
 			}()
 		default:
 			local.Close()
@@ -464,14 +322,14 @@ func unwrapDatagram(packet []byte) ([]byte, bool) {
 	return packet[10:], true
 }
 
-func armDatagram(entry Entry, timeout time.Duration) (*DatagramSession, error) {
-	address := net.JoinHostPort(entry.IP, fmt.Sprint(entry.Port))
+func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, error) {
+	address := net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port))
 	conn, err := net.DialTimeout("tcp", address, timeout)
 	if err != nil {
 		return nil, err
 	}
 	control := conn.(*net.TCPConn)
-	handshake, err := buildHandshake(entry.User, entry.Credential, 3, entry.IP, entry.Port)
+	handshake, err := buildHandshake(string(lease.User), string(lease.Password), 3, lease.IP, lease.Port)
 	if err == nil {
 		_, err = control.Write(handshake)
 	}
@@ -490,7 +348,7 @@ func armDatagram(entry Entry, timeout time.Duration) (*DatagramSession, error) {
 	}
 	reply3 := reply[marker+5 : marker+8]
 	remotePort := int(binary.BigEndian.Uint16(reply[marker+8:marker+10]) ^ 0x0101)
-	remoteAddress, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(entry.IP, fmt.Sprint(remotePort)))
+	remoteAddress, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(lease.IP, fmt.Sprint(remotePort)))
 	if err != nil {
 		control.Close()
 		return nil, err
@@ -540,7 +398,18 @@ func resolveIPv4(host string) (string, error) {
 	return "", errors.New("datagram target has no IPv4 address")
 }
 
-func serveUDP(config Config, store *AccessStore, limiter *ByteLimiter, targetHost string, targetPort int, reload <-chan struct{}, status *StatusWriter) error {
+type udpAssociation struct {
+	session   *DatagramSession
+	client    *net.UDPAddr
+	lastSeen  time.Time
+	packetCnt int
+}
+
+func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *StatusWriter) error {
+	targetHost, targetPort, err := parseTarget(config.Target)
+	if err != nil {
+		return err
+	}
 	localAddress, err := net.ResolveUDPAddr("udp", net.JoinHostPort(config.ListenHost, fmt.Sprint(config.ListenPort)))
 	if err != nil {
 		return err
@@ -554,68 +423,57 @@ func serveUDP(config Config, store *AccessStore, limiter *ByteLimiter, targetHos
 	if err != nil {
 		return err
 	}
-	var session *DatagramSession
-	var lastClient atomic.Pointer[net.UDPAddr]
-	sessionMu := sync.RWMutex{}
-	arm := func() error {
-		access := store.Snapshot()
-		if len(access.Entries) == 0 {
-			return errors.New("access expired")
+	associations := make(map[string]*udpAssociation)
+	const maxAssociations = 64
+	const maxAssociationPackets = 100000
+	const associationIdle = 2 * time.Minute
+	var associationMu sync.Mutex
+	closeAssociation := func(key string) {
+		associationMu.Lock()
+		association := associations[key]
+		delete(associations, key)
+		associationMu.Unlock()
+		if association != nil && association.session != nil {
+			association.session.Close()
 		}
-		var next *DatagramSession
-		var armErr error
-		var selected Entry
-		var selectedRTT time.Duration
-		for _, entry := range access.Entries {
-			started := time.Now()
-			next, armErr = armDatagram(entry, time.Duration(config.ConnectTimeoutSecs)*time.Second)
-			if armErr == nil {
-				selected = entry
-				selectedRTT = time.Since(started)
-				break
-			}
-		}
-		if next == nil {
-			status.UpdateError("udp_association_failed")
-			return armErr
-		}
-		sessionMu.Lock()
-		previous := session
-		session = next
-		sessionMu.Unlock()
-		if previous != nil {
-			previous.Close()
-		}
-		status.UpdateUDP(selected, selectedRTT)
-		go func(current *DatagramSession) {
-			buffer := make([]byte, 65535)
-			for {
-				count, readErr := current.remote.Read(buffer)
-				if readErr != nil {
-					return
-				}
-				payload, ok := unwrapDatagram(buffer[:count])
-				client := lastClient.Load()
-				if ok && client != nil {
-					limiter.Wait(len(payload))
-					_, _ = local.WriteToUDP(payload, client)
-				}
-			}
-		}(next)
-		return nil
-	}
-	if err := arm(); err != nil {
-		return err
 	}
 	defer func() {
-		if session != nil {
+		associationMu.Lock()
+		all := make([]*DatagramSession, 0, len(associations))
+		for key, association := range associations {
+			delete(associations, key)
+			if association != nil && association.session != nil {
+				all = append(all, association.session)
+			}
+		}
+		associationMu.Unlock()
+		for _, session := range all {
 			session.Close()
 		}
 	}()
 	go func() {
-		for range reload {
-			if err := arm(); err != nil {
-				log.Printf("datagram reload failed: %v", err)
+		<-ctx.Done()
+		_ = local.Close()
+	}()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				associationMu.Lock()
+				stale := make([]string, 0)
+				for key, association := range associations {
+					if now.Sub(association.lastSeen) > associationIdle {
+						stale = append(stale, key)
+					}
+				}
+				associationMu.Unlock()
+				for _, key := range stale {
+					closeAssociation(key)
+				}
 			}
 		}
 	}()
@@ -623,45 +481,96 @@ func serveUDP(config Config, store *AccessStore, limiter *ByteLimiter, targetHos
 	for {
 		count, client, readErr := local.ReadFromUDP(buffer)
 		if readErr != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			return readErr
 		}
-		clientCopy := *client
-		lastClient.Store(&clientCopy)
-		limiter.Wait(count)
-		sessionMu.RLock()
-		current := session
-		if current != nil {
-			packet, packetErr := makeDatagramEnvelope(current.mode, current.sid, targetIP, targetPort, buffer[:count])
-			if packetErr == nil {
-				_, _ = current.remote.Write(packet)
+		if err := store.Limiter().Consume(count); err != nil {
+			status.UpdateError("policy_stopped")
+			continue
+		}
+		snapshot, ok := store.Snapshot()
+		if !ok {
+			status.UpdateError("policy_stopped")
+			continue
+		}
+		key := client.String()
+		associationMu.Lock()
+		association := associations[key]
+		if association != nil {
+			association.lastSeen = time.Now()
+			association.packetCnt++
+			if association.packetCnt > maxAssociationPackets {
+				associationMu.Unlock()
+				closeAssociation(key)
+				continue
 			}
 		}
-		sessionMu.RUnlock()
+		associationMu.Unlock()
+		if association == nil {
+			started := time.Now()
+			lease := snapshot.Lease
+			next, armErr := armDatagram(lease, time.Duration(config.ConnectTimeoutSecs)*time.Second)
+			lease.wipe()
+			if armErr != nil {
+				status.UpdateError("udp_association_failed")
+				continue
+			}
+			clientCopy := *client
+			association = &udpAssociation{session: next, client: &clientCopy, lastSeen: time.Now(), packetCnt: 1}
+			associationMu.Lock()
+			if len(associations) >= maxAssociations {
+				oldestKey := ""
+				oldest := time.Now()
+				for candidateKey, candidate := range associations {
+					if candidate.lastSeen.Before(oldest) {
+						oldestKey, oldest = candidateKey, candidate.lastSeen
+					}
+				}
+				if oldestKey != "" {
+					if old := associations[oldestKey]; old != nil && old.session != nil {
+						old.session.Close()
+					}
+					delete(associations, oldestKey)
+				}
+			}
+			associations[key] = association
+			associationMu.Unlock()
+			status.UpdateUDP(snapshot.Lease.SelectionRef, time.Since(started))
+			go func(key string, current *udpAssociation) {
+				readBuffer := make([]byte, 65535)
+				for {
+					responseCount, responseErr := current.session.remote.Read(readBuffer)
+					if responseErr != nil {
+						closeAssociation(key)
+						return
+					}
+					payload, valid := unwrapDatagram(readBuffer[:responseCount])
+					if !valid || store.Limiter().Consume(len(payload)) != nil {
+						continue
+					}
+					status.AddUsage(len(payload), 0)
+					_, _ = local.WriteToUDP(payload, current.client)
+				}
+			}(key, association)
+		}
+		associationMu.Lock()
+		current := associations[key]
+		if current != nil {
+			current.lastSeen = time.Now()
+		}
+		associationMu.Unlock()
+		if current == nil {
+			continue
+		}
+		packet, packetErr := makeDatagramEnvelope(current.session.mode, current.session.sid, targetIP, targetPort, buffer[:count])
+		if packetErr == nil {
+			if _, writeErr := current.session.remote.Write(packet); writeErr != nil {
+				closeAssociation(key)
+			}
+		}
 	}
-}
-
-func loadAndRankAccess(config Config, store *AccessStore) (LocationResult, error) {
-	if err := store.Load(); err != nil {
-		return LocationResult{}, err
-	}
-	locationContext, cancelLocation := context.WithTimeout(context.Background(), locationRequestTimeout+time.Second)
-	location := DetectLocation(locationContext, config.LocationCachePath, config.LocationLockPath, config.ZoneAliases)
-	cancelLocation()
-	access := store.Snapshot()
-	probeTimeout := time.Duration(config.ProbeTimeoutMillis) * time.Millisecond
-	probeContext, cancelProbe := context.WithTimeout(context.Background(), probeTimeout*3)
-	defer cancelProbe()
-	probe := func(parent context.Context, entry Entry) (time.Duration, error) {
-		entryContext, cancel := context.WithTimeout(parent, probeTimeout)
-		defer cancel()
-		return probeEntry(entryContext, entry)
-	}
-	ranked := rankEntries(probeContext, access.Entries, access.Policy, location.Code, config.ProbeWorkers, probe)
-	if len(ranked) == 0 {
-		return location, errors.New("no eligible access entries")
-	}
-	store.SetRanked(ranked, location)
-	return location, nil
 }
 
 func main() {
@@ -672,14 +581,19 @@ func main() {
 		log.Fatal(err)
 	}
 	var config Config
-	if err := json.Unmarshal(raw, &config); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil {
 		log.Fatal(err)
 	}
 	if config.ListenHost == "" {
-		config.ListenHost = "0.0.0.0"
+		config.ListenHost = "127.0.0.1"
 	}
-	if config.ListenPort < 1 || config.ListenPort > 65535 || config.AccessFile == "" {
+	if config.ForwardID <= 0 || config.ListenPort < 1 || config.ListenPort > 65535 || strings.TrimSpace(config.Target) == "" {
 		log.Fatal("runtime configuration invalid")
+	}
+	if config.ControlSocket == "" {
+		config.ControlSocket = fmt.Sprintf("/run/ultra/forward-%d.control.sock", config.ForwardID)
 	}
 	if config.ConnectTimeoutSecs < 1 || config.ConnectTimeoutSecs > 30 {
 		config.ConnectTimeoutSecs = 5
@@ -699,60 +613,94 @@ func main() {
 	if config.ProbeWorkers < 1 || config.ProbeWorkers > 4 {
 		config.ProbeWorkers = 4
 	}
-	targetHost, targetPort, err := parseTarget(config.Target)
-	if err != nil {
+	if _, _, err := parseTarget(config.Target); err != nil {
 		log.Fatal(err)
 	}
-	store := &AccessStore{path: config.AccessFile}
+	store := NewPolicyStore(config)
 	status := newStatusWriter(config.StatusPath, config.ForwardID, 5*time.Second)
-	location, err := loadAndRankAccess(config, store)
-	if err != nil {
-		status.UpdateError("access_load_failed")
+	status.UpdateError("awaiting_policy")
+	control := NewControlServer(config.ControlSocket, config, store)
+	if err := control.Listen(); err != nil {
+		status.UpdateError("control_socket_failed")
 		status.Close()
 		log.Fatal(err)
 	}
-	status.UpdateLocation(location)
-	reloadRequests := make(chan struct{}, 1)
-	datagramReload := make(chan struct{}, 1)
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGHUP)
+	rootContext, cancelRoot := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer cancelRoot()
 	go func() {
-		for range signals {
-			select {
-			case reloadRequests <- struct{}{}:
-			default:
-			}
+		if err := control.Serve(); err != nil && rootContext.Err() == nil {
+			log.Printf("control socket stopped: %v", err)
+			cancelRoot()
 		}
 	}()
-	go func() {
-		for range reloadRequests {
-			location, err := loadAndRankAccess(config, store)
-			if err != nil {
-				status.UpdateError("access_reload_failed")
-				log.Printf("access reload failed: %v", err)
-				continue
-			}
-			status.UpdateLocation(location)
-			select {
-			case datagramReload <- struct{}{}:
-			default:
-			}
-		}
+	defer func() {
+		store.Revoke("")
+		control.Close()
+		status.UpdateError("runtime_stopped")
+		status.Close()
 	}()
-	limiter := newByteLimiter(config.RateLimitMbps)
-	transport := strings.ToLower(config.Transport)
-	errorsOut := make(chan error, 2)
-	if transport == "tcp" || transport == "tcp+udp" {
-		go func() { errorsOut <- serveTCP(config, store, limiter, targetHost, targetPort, status) }()
+
+	for rootContext.Err() == nil {
+		snapshot, err := store.WaitValid(rootContext)
+		if err != nil {
+			break
+		}
+		locationContext, cancelLocation := context.WithTimeout(rootContext, locationRequestTimeout+time.Second)
+		location := DetectLocation(locationContext, config.LocationCachePath, config.LocationLockPath, config.ZoneAliases)
+		cancelLocation()
+		status.UpdateLocation(location)
+		status.UpdatePolicy(snapshot.Policy.PolicyGeneration)
+		runtimeContext, cancelRuntime := context.WithCancel(rootContext)
+		runtimeErrors := make(chan error, 2)
+		var runtimeWait sync.WaitGroup
+		transport := strings.ToLower(snapshot.Policy.Transport)
+		if transport == "tcp" || transport == "tcp+udp" {
+			runtimeWait.Add(1)
+			go func() {
+				defer runtimeWait.Done()
+				runtimeErrors <- serveTCP(runtimeContext, config, store, status)
+			}()
+		}
+		if transport == "udp" || transport == "tcp+udp" {
+			runtimeWait.Add(1)
+			go func() {
+				defer runtimeWait.Done()
+				runtimeErrors <- serveUDP(runtimeContext, config, store, status)
+			}()
+		}
+		go func(generation string) {
+			ticker := time.NewTicker(250 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-runtimeContext.Done():
+					return
+				case <-store.Updates():
+					current, ok := store.Snapshot()
+					if !ok || current.Policy.PolicyGeneration != generation {
+						cancelRuntime()
+						return
+					}
+				case <-ticker.C:
+					store.ClearExpired()
+					if _, ok := store.Snapshot(); !ok {
+						cancelRuntime()
+						return
+					}
+				}
+			}
+		}(snapshot.Policy.PolicyGeneration)
+		select {
+		case <-rootContext.Done():
+		case <-runtimeContext.Done():
+		case err := <-runtimeErrors:
+			if err != nil && rootContext.Err() == nil {
+				status.UpdateError("runtime_stopped")
+			}
+			cancelRuntime()
+		}
+		cancelRuntime()
+		runtimeWait.Wait()
+		store.ClearExpired()
 	}
-	if transport == "udp" || transport == "tcp+udp" {
-		go func() { errorsOut <- serveUDP(config, store, limiter, targetHost, targetPort, datagramReload, status) }()
-	}
-	if transport != "tcp" && transport != "udp" && transport != "tcp+udp" {
-		log.Fatal("transport invalid")
-	}
-	runtimeErr := <-errorsOut
-	status.UpdateError("runtime_stopped")
-	status.Close()
-	log.Fatal(runtimeErr)
 }

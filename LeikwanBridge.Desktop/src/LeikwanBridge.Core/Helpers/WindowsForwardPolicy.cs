@@ -6,7 +6,25 @@ public static class WindowsForwardPolicy
 {
     public static bool IsSupportedOnWindows(ForwardConfig forward)
     {
+        var backendMode = (forward.BackendMode ?? string.Empty).Trim().ToLowerInvariant();
+        if (backendMode == "cf_mode")
+            return false;
+
         var mode = NormalizeModeOrEmpty(FirstNonEmpty(forward.ClientMode, forward.Mode));
+        if (backendMode == "ultra")
+        {
+            return mode == "single"
+                && !forward.SidecarRequired
+                && !forward.AggregationEnabled
+                && !forward.BondSidecarPointId.HasValue
+                && string.IsNullOrWhiteSpace(forward.BondIngressMode)
+                && !string.IsNullOrWhiteSpace(forward.Target)
+                && (string.IsNullOrWhiteSpace(forward.TargetContract)
+                    || string.Equals(forward.TargetContract, "ultra", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(forward.TargetContract, "ultra_direct", StringComparison.OrdinalIgnoreCase))
+                && forward.Endpoints.Count == 0;
+        }
+
         if (GetSidecarFrontendMode(forward) != "")
             return true;
         if (mode is not ("single" or "bond" or "mptcp"))

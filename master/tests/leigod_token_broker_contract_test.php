@@ -172,6 +172,42 @@ assertUltraContract(
     'token must be forward scoped'
 );
 
+$policyGrants = $broker->grantsForClientForwards(7, 'windows-device-a', [[
+    'forward_id' => 42,
+    'service_id' => 5,
+    'service_status' => 'active',
+    'backend_mode' => 'ultra',
+    'target' => '198.51.100.10:443',
+    'transport' => 'tcp+udp',
+    'speed_limit_mbps' => 20,
+    'quota_remaining_bytes' => 1024 * 1024,
+    '_ultra_lines' => [[
+        'line_id' => 453,
+        'source_id' => 'source-a',
+        'ingress_zone' => 'shanghai',
+        'destination_zone' => 'tokyo',
+    ]],
+]], true);
+$policyGrant = $policyGrants['42'] ?? null;
+assertUltraContract(is_array($policyGrant), 'Windows Ultra policy grant missing');
+assertUltraContract(($policyGrant['protocol'] ?? '') === UltraMode::POLICY_PROTOCOL, 'Windows policy protocol mismatch');
+assertUltraContract(trim((string) ($policyGrant['session_ticket'] ?? '')) !== '', 'Windows policy ticket missing');
+assertUltraContract(preg_match('/^[a-f0-9]{64}$/', (string) ($policyGrant['policy_generation'] ?? '')) === 1, 'Windows policy generation missing');
+assertUltraContract(($policyGrant['quota_remaining_bytes'] ?? 0) === 1024 * 1024, 'Windows policy quota mismatch');
+assertUltraContract(!array_key_exists('line_ips', $policyGrant), 'Windows policy exposed provider IPs');
+assertUltraContract(!array_key_exists('token', $policyGrant), 'Windows policy exposed legacy token field');
+$candidate = $materials->serverCandidateForClientToken(
+    (string) $policyGrant['session_ticket'],
+    7,
+    'windows-device-a',
+    42,
+    (string) $policyGrant['policy_generation']
+);
+assertUltraContract(($candidate['ip'] ?? '') === '203.0.113.20', 'Windows policy candidate did not preserve source priority');
+assertUltraContract(($candidate['port'] ?? 0) === 5438, 'Windows policy candidate port missing');
+assertUltraContract(($candidate['user'] ?? '') === 'line-user', 'Windows policy candidate user missing');
+assertUltraContract(!array_key_exists('line_id', $candidate), 'Windows policy candidate exposed line ID');
+
 $bootstrap = (string) file_get_contents(__DIR__ . '/../src/Bootstrap.php');
 $controller = (string) file_get_contents(__DIR__ . '/../src/Controllers/ClientAgentController.php');
 $sourceController = (string) file_get_contents(__DIR__ . '/../src/Controllers/UltraSourceController.php');

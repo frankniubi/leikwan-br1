@@ -29,6 +29,8 @@ public static class EffectiveForwardConfigBuilder
             SpeedLimitMbps = forward.SpeedLimitMbps,
             Bonding = forward.Bonding,
             Mptcp = forward.Mptcp,
+            UltraAccess = forward.UltraAccess,
+            RuntimeLease = forward.RuntimeLease,
             Endpoints = forward.Endpoints
                 .Where(endpoint => string.Equals(endpoint.HealthStatus, "active", StringComparison.OrdinalIgnoreCase))
                 .Select(endpoint => endpoint.Clone())

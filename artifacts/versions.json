@@ -91,6 +91,13 @@
     "size_bytes": 6410366,
     "version": "2026.08.24.1"
   },
+  "ultra_client_runtime_windows": {
+    "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
+    "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
+    "sha256": "b184fbbd942460537a073a94a8a3a8a6eb6eab87938ba5c3acc684946b6ab739",
+    "size_bytes": 6603776,
+    "version": "2026.08.25.1-local"
+  },
   "leigod_forward_relay": {
     "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
     "path": "slave-agent/leigod_forward_relay.py",

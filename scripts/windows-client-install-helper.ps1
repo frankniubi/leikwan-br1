@@ -66,7 +66,8 @@ function Get-CompatibilityFileNames {
         "leikwan-bond.exe",
         "leikwan-ingress.exe",
         "leikwan-uot-bond.exe",
-        "leikwan-mptcp-relay.exe"
+        "leikwan-mptcp-relay.exe",
+        "ultra-client.exe"
     )
 }
 
@@ -229,7 +230,10 @@ function Copy-StagedPayload {
     foreach ($entry in Get-ChildItem -LiteralPath $PayloadRoot -Force) {
         $destination = Join-Path $TargetDir $entry.Name
         if ($entry.PSIsContainer) {
-            Copy-Item -LiteralPath $entry.FullName -Destination $destination -Recurse -Force
+            New-Item -ItemType Directory -Path $destination -Force | Out-Null
+            foreach ($child in Get-ChildItem -LiteralPath $entry.FullName -Force) {
+                Copy-Item -LiteralPath $child.FullName -Destination (Join-Path $destination $child.Name) -Recurse -Force
+            }
         } else {
             Copy-Item -LiteralPath $entry.FullName -Destination $destination -Force
         }
@@ -397,6 +401,7 @@ function Write-InstallManifest {
         ingress_sha256 = (Get-FileHash (Join-Path $targetBinDir "leikwan-ingress.exe") -Algorithm SHA256).Hash
         uot_bond_sha256 = (Get-FileHash (Join-Path $targetBinDir "leikwan-uot-bond.exe") -Algorithm SHA256).Hash
         mptcp_relay_sha256 = (Get-FileHash (Join-Path $targetBinDir "leikwan-mptcp-relay.exe") -Algorithm SHA256).Hash
+        ultra_client_sha256 = (Get-FileHash (Join-Path $targetBinDir "ultra-client.exe") -Algorithm SHA256).Hash
         wstunnel_sha256 = (Get-FileHash (Join-Path $targetBinDir "wstunnel.exe") -Algorithm SHA256).Hash
         backup_dir = $BackupDir
         installed_files = $InstalledFiles
@@ -444,11 +449,13 @@ function Get-FallbackInstalledFiles {
         "leikwan-ingress.exe",
         "leikwan-uot-bond.exe",
         "leikwan-mptcp-relay.exe",
+        "ultra-client.exe",
         "bin\wstunnel.exe",
         "bin\leikwan-bond.exe",
         "bin\leikwan-ingress.exe",
         "bin\leikwan-uot-bond.exe",
         "bin\leikwan-mptcp-relay.exe",
+        "bin\ultra-client.exe",
         $InstalledHelperRelativePath,
         "install-manifest.json",
         "install-state.json"

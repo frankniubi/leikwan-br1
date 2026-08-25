@@ -1,0 +1,195 @@
+//go:build windows
+
+package main
+
+import (
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+	"unsafe"
+)
+
+const maxControlPayload = 64 * 1024
+
+func readFrame(reader io.Reader) ([]byte, error) {
+	var header [4]byte
+	if _, err := io.ReadFull(reader, header[:]); err != nil {
+		return nil, err
+	}
+	length := binary.BigEndian.Uint32(header[:])
+	if length == 0 || length > maxControlPayload {
+		return nil, ErrFrameTooLarge
+	}
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func writeFrame(writer io.Writer, payload []byte) error {
+	if len(payload) == 0 || len(payload) > maxControlPayload {
+		return ErrFrameTooLarge
+	}
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
+	if _, err := writer.Write(header[:]); err != nil {
+		return err
+	}
+	_, err := writer.Write(payload)
+	return err
+}
+
+var (
+	kernel32            = syscall.NewLazyDLL("kernel32.dll")
+	createNamedPipe     = kernel32.NewProc("CreateNamedPipeW")
+	connectNamedPipe    = kernel32.NewProc("ConnectNamedPipe")
+	disconnectNamedPipe = kernel32.NewProc("DisconnectNamedPipe")
+	closeHandle         = kernel32.NewProc("CloseHandle")
+	pipeRejectRemote    = uint32(0x00000008)
+	pipeAccessDuplex    = uint32(0x00000003)
+	pipeTypeByte        = uint32(0x00000000)
+	pipeReadModeByte    = uint32(0x00000000)
+	pipeWait            = uint32(0x00000000)
+	pipeUnlimited       = uint32(255)
+)
+
+type ControlServer struct {
+	path      string
+	config    Config
+	store     *PolicyStore
+	close     chan struct{}
+	done      chan struct{}
+	once      sync.Once
+	mu        sync.Mutex
+	active    syscall.Handle
+	listening bool
+}
+
+func NewControlServer(path string, config Config, store *PolicyStore) *ControlServer {
+	return &ControlServer{path: path, config: config, store: store, close: make(chan struct{}), done: make(chan struct{})}
+}
+
+func (server *ControlServer) Listen() error {
+	if server.store == nil || !strings.HasPrefix(strings.ToLower(server.path), `\\.\pipe\`) {
+		return ErrFrameInvalid
+	}
+	server.mu.Lock()
+	server.listening = true
+	server.mu.Unlock()
+	return nil
+}
+
+func (server *ControlServer) Serve() error {
+	defer close(server.done)
+	for {
+		select {
+		case <-server.close:
+			return nil
+		default:
+		}
+		handle, err := server.createPipe()
+		if err != nil {
+			return err
+		}
+		server.mu.Lock()
+		server.active = handle
+		server.mu.Unlock()
+		_, _, connectErr := connectNamedPipe.Call(uintptr(handle), 0)
+		connected := connectErr == nil || connectErr == syscall.Errno(535) // ERROR_PIPE_CONNECTED
+		if connected {
+			server.handlePipe(handle)
+		}
+		if connected {
+			_, _, _ = disconnectNamedPipe.Call(uintptr(handle))
+		} else {
+			_, _, _ = closeHandle.Call(uintptr(handle))
+		}
+		server.mu.Lock()
+		server.active = 0
+		server.mu.Unlock()
+	}
+}
+
+func (server *ControlServer) createPipe() (syscall.Handle, error) {
+	name, err := syscall.UTF16PtrFromString(server.path)
+	if err != nil {
+		return 0, err
+	}
+	result, _, callErr := createNamedPipe.Call(
+		uintptr(unsafe.Pointer(name)), uintptr(pipeAccessDuplex), uintptr(pipeTypeByte|pipeReadModeByte|pipeWait|pipeRejectRemote), uintptr(pipeUnlimited),
+		uintptr(maxControlPayload+4), uintptr(maxControlPayload+4), uintptr(2000), 0)
+	if result == uintptr(syscall.InvalidHandle) {
+		return 0, callErr
+	}
+	return syscall.Handle(result), nil
+}
+
+func (server *ControlServer) handlePipe(handle syscall.Handle) {
+	file := os.NewFile(uintptr(handle), server.path)
+	if file == nil {
+		return
+	}
+	defer file.Close()
+	_ = file.SetDeadline(time.Now().Add(2 * time.Second))
+	payload, err := readFrame(file)
+	if err != nil {
+		_ = writeJSONFrame(file, map[string]any{"ok": false, "error": "frame_invalid"})
+		return
+	}
+	policy, lease, err := decodeLeaseFrame(payload, server.config)
+	if err == nil {
+		err = server.store.Replace(policy, lease)
+	}
+	lease.wipe()
+	if err != nil {
+		_ = writeJSONFrame(file, map[string]any{"ok": false, "error": controlErrorName(err)})
+		return
+	}
+	_ = writeJSONFrame(file, map[string]any{"ok": true, "forward_id": policy.ForwardID, "policy_generation": policy.PolicyGeneration})
+}
+
+func writeJSONFrame(writer io.Writer, value any) error {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return writeFrame(writer, payload)
+}
+
+func controlErrorName(err error) string {
+	switch {
+	case errors.Is(err, ErrPolicyRollback):
+		return "policy_generation_invalid"
+	case errors.Is(err, ErrLeaseReplay):
+		return "lease_replayed"
+	case errors.Is(err, ErrPolicyExpired):
+		return "policy_expired"
+	case errors.Is(err, ErrPolicyInvalid), errors.Is(err, ErrLeaseInvalid):
+		return "lease_invalid"
+	default:
+		return "control_rejected"
+	}
+}
+
+func (server *ControlServer) Close() {
+	server.once.Do(func() {
+		close(server.close)
+		server.mu.Lock()
+		active := server.active
+		server.mu.Unlock()
+		if active != 0 {
+			_, _, _ = closeHandle.Call(uintptr(active))
+		}
+		select {
+		case <-server.done:
+		case <-time.After(2 * time.Second):
+		}
+	})
+}

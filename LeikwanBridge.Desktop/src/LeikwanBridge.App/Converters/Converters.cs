@@ -54,7 +54,7 @@ public class ModeToColorConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        return new SolidColorBrush(MediaColor.FromRgb(0x16, 0xA3, 0x4A)); // LeiGod green
+        return new SolidColorBrush(MediaColor.FromRgb(0x16, 0xA3, 0x4A));
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)

@@ -10,7 +10,7 @@ public partial class ForwardViewModel : ObservableObject
     private readonly ForwardStrategyStore? _strategyStore;
     [ObservableProperty] private int _forwardId;
     [ObservableProperty] private string _mode = "single";
-    [ObservableProperty] private string _modeDisplay = "LeiGod";
+    [ObservableProperty] private string _modeDisplay = "Direct";
     [ObservableProperty] private int _listenPort;
     [ObservableProperty] private string _target = "";
     [ObservableProperty] private string _transport = "tcp+udp";
@@ -41,7 +41,9 @@ public partial class ForwardViewModel : ObservableObject
         }
 
         IsMptcpFallback = false;
-        ModeDisplay = ModeNormalizer.DisplayName(Mode, IsMptcpFallback);
+        ModeDisplay = string.Equals(config.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+            ? "Ultra"
+            : ModeNormalizer.DisplayName(Mode, IsMptcpFallback);
         SelectedStrategy = strategyStore?.Get(config.ForwardId) ?? ForwardStrategy.LatencyBest;
     }
 
@@ -76,6 +78,8 @@ public partial class ForwardViewModel : ObservableObject
 
     public bool MatchesModeFilter(string filter)
     {
-        return true;
+        return string.IsNullOrWhiteSpace(filter)
+            || string.Equals(filter, "All", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(filter, ModeDisplay, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -12,5 +12,5 @@ interface LeigodTokenProvider
      * @param array<int, array<string, mixed>> $forwards
      * @return array<string, array<string, mixed>> keyed by forward ID
      */
-    public function grantsForClientForwards(int $clientId, string $deviceId, array $forwards): array;
+    public function grantsForClientForwards(int $clientId, string $deviceId, array $forwards, bool $policyV2 = false): array;
 }

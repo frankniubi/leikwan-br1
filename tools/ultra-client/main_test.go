@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"testing"
+	"time"
 )
 
 func TestBuildStreamHandshake(t *testing.T) {
@@ -46,13 +47,30 @@ func TestDatagramEnvelopeRoundTrip(t *testing.T) {
 	}
 }
 
-func TestAccessValidationRejectsExpiredAndUnboundedEntries(t *testing.T) {
-	access := Access{Token: "token", ExpiresAt: "2000-01-01T00:00:00Z", SealedMaterial: "um1.invalid"}
-	if err := access.validate(); err == nil {
-		t.Fatal("expired access must be rejected")
+func TestRuntimePolicyRequiresValidLeaseBeforeDataPlane(t *testing.T) {
+	config := Config{ForwardID: 42, Target: "1.1.1.1:443"}
+	store := NewPolicyStore(config)
+	policy := Policy{
+		Protocol: policyProtocol, ForwardID: 42, PolicyGeneration: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SessionTicket: "ticket", ExpiresAt: time.Now().Add(time.Minute), Transport: "tcp",
+		RateLimitMbps: 10, QuotaRemainingBytes: 1024, TargetDigest: targetDigest(config.Target),
 	}
-	access = Access{Token: "token", ExpiresAt: "2099-01-01T00:00:00Z", SealedMaterial: "um1.invalid"}
-	if err := access.validate(); err == nil {
-		t.Fatal("invalid sealed material must be rejected")
+	lease := ProviderLease{
+		LeaseID: "ul2_test", PolicyGeneration: policy.PolicyGeneration, ExpiresAt: policy.ExpiresAt,
+		Transport: "tcp", SelectionRef: "selection-reference-abcdefghijklmnop", NonceHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		IP: "203.0.113.20", Port: 5438, User: []byte("user"), Password: []byte("password"),
+	}
+	if _, ok := store.Snapshot(); ok {
+		t.Fatal("runtime must not have a data-plane snapshot before lease")
+	}
+	if err := store.Replace(policy, lease); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Snapshot(); !ok {
+		t.Fatal("valid policy and lease were not accepted")
+	}
+	store.Revoke(policy.PolicyGeneration)
+	if _, ok := store.Snapshot(); ok {
+		t.Fatal("revoked lease remained usable")
 	}
 }

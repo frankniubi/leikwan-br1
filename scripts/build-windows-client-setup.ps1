@@ -4,6 +4,7 @@ param(
     [string]$IngressExe = "wstunnel-main/target/release/leikwan-ingress.exe",
     [string]$UotBondExe = "artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
     [string]$MptcpRelayExe = "wstunnel-main/target/x86_64-pc-windows-msvc/release/leikwan-mptcp-relay.exe",
+    [string]$UltraExe = "artifacts/ultra/ultra-client_windows_amd64.exe",
     [string]$WstunnelExe = "wstunnel.exe",
     [string]$OutputSetup = "artifacts/windows/leikwan-bridge-setup.exe",
     [string]$StageDir = "artifacts/windows/_setup_stage"
@@ -125,6 +126,9 @@ $MptcpRelayExe = Resolve-InputFile -ConfiguredPath $MptcpRelayExe -WasExplicitly
     "artifacts/wstunnel/leikwan-mptcp-relay_windows_amd64.exe",
     "artifacts/windows/rebuild_payload/leikwan-mptcp-relay.exe"
 )
+$UltraExe = Resolve-InputFile -ConfiguredPath $UltraExe -WasExplicitlyProvided $PSBoundParameters.ContainsKey('UltraExe') -Fallbacks @(
+    "artifacts/ultra/ultra-client_windows_amd64.exe"
+)
 $WstunnelExe = Resolve-InputFile -ConfiguredPath $WstunnelExe -WasExplicitlyProvided $PSBoundParameters.ContainsKey('WstunnelExe') -Fallbacks @(
     "artifacts/wstunnel/wstunnel_windows_amd64.exe",
     "artifacts/windows/rebuild_payload/wstunnel.exe",
@@ -134,6 +138,14 @@ $WstunnelExe = Resolve-InputFile -ConfiguredPath $WstunnelExe -WasExplicitlyProv
 $versionsPath = "artifacts/versions.json"
 Require-File $versionsPath
 $versions = Get-Content -LiteralPath $versionsPath -Raw | ConvertFrom-Json
+$ultraManifest = $versions.ultra_client_runtime_windows
+if (-not $ultraManifest -or [string]::IsNullOrWhiteSpace([string]$ultraManifest.sha256)) {
+    throw "missing ultra_client_runtime_windows manifest metadata"
+}
+$actualUltraSha256 = (Get-FileHash -LiteralPath $UltraExe -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualUltraSha256 -ne ([string]$ultraManifest.sha256).ToLowerInvariant()) {
+    throw "Ultra Windows binary sha256 does not match manifest"
+}
 $uotManifest = $versions.leikwan_uot_bond_windows_amd64
 if (-not $uotManifest -or [string]::IsNullOrWhiteSpace([string]$uotManifest.sha256)) {
     throw "missing leikwan_uot_bond_windows_amd64 manifest metadata"
@@ -168,7 +180,9 @@ Require-File $helperScript
 Copy-Item -LiteralPath $helperScript -Destination (Join-Path $StageDir "windows-client-install-helper.ps1") -Force
 
 Copy-Item -LiteralPath $appExe -Destination (Join-Path $appStageDir "leikwan-client-win.exe") -Force
-Get-ChildItem -LiteralPath $appBuildDir -File | Where-Object { $_.Name -ne "LeikwanBridge.App.exe" } | ForEach-Object {
+Get-ChildItem -LiteralPath $appBuildDir -File | Where-Object {
+    $_.Name -ne "LeikwanBridge.App.exe" -and $_.Extension -ne ".pdb"
+} | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $appStageDir $_.Name) -Force
 }
 Copy-Item -LiteralPath $WstunnelExe -Destination (Join-Path $appBinStageDir "wstunnel.exe") -Force
@@ -176,6 +190,7 @@ Copy-Item -LiteralPath $BondExe -Destination (Join-Path $appBinStageDir "leikwan
 Copy-Item -LiteralPath $IngressExe -Destination (Join-Path $appBinStageDir "leikwan-ingress.exe") -Force
 Copy-Item -LiteralPath $UotBondExe -Destination (Join-Path $appBinStageDir "leikwan-uot-bond.exe") -Force
 Copy-Item -LiteralPath $MptcpRelayExe -Destination (Join-Path $appBinStageDir "leikwan-mptcp-relay.exe") -Force
+Copy-Item -LiteralPath $UltraExe -Destination (Join-Path $appBinStageDir "ultra-client.exe") -Force
 
 $innoScript = Join-Path "scripts" "windows-client-setup.iss"
 if (-not (Test-Path -LiteralPath $innoScript)) {

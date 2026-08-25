@@ -20,13 +20,13 @@
     <system:String x:Key="DashBytesOut">流出字节</system:String>
     <system:String x:Key="DashUptime">运行时间</system:String>
     <system:String x:Key="DashSummaryTitle">控制中心</system:String>
-    <system:String x:Key="DashSummarySubtitle">监控雷神转发状态，并在同一处控制运行时恢复。</system:String>
+    <system:String x:Key="DashSummarySubtitle">监控转发状态，并在同一处控制运行时恢复。</system:String>
     <system:String x:Key="DashQuickActions">快捷操作</system:String>
     <system:String x:Key="DashForwardControls">转发控制</system:String>
     <system:String x:Key="DashRecentLogs">最近运行日志</system:String>
     <system:String x:Key="DashVisibleForwards">{0} 个转发已显示</system:String>
     <system:String x:Key="DashModeFilter">线路方式</system:String>
-    <system:String x:Key="DashLeiGodMethod">雷神转发会自动选择。</system:String>
+    <system:String x:Key="DashMethodSummary">转发方式会自动选择。</system:String>
     <system:String x:Key="DashOpenLogs">打开完整日志</system:String>
     <system:String x:Key="DashOpenSettings">打开设置</system:String>
     <system:String x:Key="DashNoVisibleForwards">当前没有可显示的转发。</system:String>
@@ -60,26 +60,18 @@
     <system:String x:Key="SetupMasterUrl">主控面板地址</system:String>
     <system:String x:Key="SetupClientId">客户端 ID</system:String>
     <system:String x:Key="SetupAgentToken">认证令牌</system:String>
-    <system:String x:Key="SetupEmail">邮箱</system:String>
-    <system:String x:Key="SetupPassword">密码</system:String>
     <system:String x:Key="SetupFieldsRequired">请填写全部字段。</system:String>
     <system:String x:Key="SetupConnecting">连接中...</system:String>
     <system:String x:Key="SetupSuccess">连接成功！</system:String>
     <system:String x:Key="SetupFailed">连接失败，请检查设置。</system:String>
 
     <!-- Client picker / updates -->
-    <system:String x:Key="ClientPickerTitle">选择客户端</system:String>
-    <system:String x:Key="ClientPickerSubtitle">请选择此设备要使用的客户端配置。</system:String>
-    <system:String x:Key="ActionContinue">继续</system:String>
     <system:String x:Key="UpdateAvailableTitle">有可用更新</system:String>
     <system:String x:Key="UpdateVersionReady">版本 {0} 已准备好安装。</system:String>
     <system:String x:Key="ActionInstallNow">立即安装</system:String>
     <system:String x:Key="ActionDeferUpdate">下次启动时再安装</system:String>
     <system:String x:Key="ActionCheckUpdates">检查更新</system:String>
-    <system:String x:Key="ActionSwitchClient">切换客户端</system:String>
     <system:String x:Key="ActionSignOut">退出登录</system:String>
-    <system:String x:Key="SettingsSignedInEmail">已登录邮箱</system:String>
-    <system:String x:Key="SettingsActiveClient">当前客户端</system:String>
 
     <!-- Settings -->
     <system:String x:Key="SettingsConnection">连接设置</system:String>
@@ -106,9 +98,9 @@
     <system:String x:Key="TrayForwardsActive">{0} 个转发运行中</system:String>
 
     <!-- Method Labels -->
-    <system:String x:Key="ModeMptcpFallback">雷神</system:String>
-    <system:String x:Key="ModeMptcp">雷神</system:String>
-    <system:String x:Key="ModeBond">雷神</system:String>
+    <system:String x:Key="ModeMptcpFallback">回退</system:String>
+    <system:String x:Key="ModeMptcp">多路径</system:String>
+    <system:String x:Key="ModeBond">聚合</system:String>
     <system:String x:Key="StrategyHeading">连接策略</system:String>
     <system:String x:Key="StrategySpeedMax">Speed max</system:String>
     <system:String x:Key="StrategySpeedMaxDescription">聚合健康 Slave 路径，优先获得最大吞吐。</system:String>
@@ -116,6 +108,6 @@
     <system:String x:Key="StrategyLatencyBestDescription">每个新连接固定使用本机测得延迟最低的健康 Slave。</system:String>
     <system:String x:Key="StrategyRandom">Random</system:String>
     <system:String x:Key="StrategyRandomDescription">每个新连接随机固定到一个健康 Slave。</system:String>
-    <system:String x:Key="ModeRace">雷神</system:String>
-    <system:String x:Key="ModeSingle">雷神</system:String>
+    <system:String x:Key="ModeRace">竞速</system:String>
+    <system:String x:Key="ModeSingle">直连</system:String>
 </ResourceDictionary>

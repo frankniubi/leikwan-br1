@@ -144,6 +144,60 @@ public sealed class MasterApiClientDesktopLoginTests
         Assert.Contains("1 / 1", api.LastErrorMessage);
     }
 
+    [Fact]
+    public async Task ResolveUltraLeaseAsync_UsesPolicyTicketAndKeepsProviderMaterialOutOfRequest()
+    {
+        const string target = "198.51.100.10:443";
+        var generation = new string('a', 64);
+        var now = DateTimeOffset.UtcNow;
+        var policy = new UltraPolicy
+        {
+            ProtocolValue = UltraPolicy.Protocol,
+            ForwardId = 42,
+            PolicyGeneration = generation,
+            SessionTicket = "ticket-a",
+            IssuedAt = now,
+            RenewAfter = now.AddMinutes(1),
+            ExpiresAt = now.AddMinutes(4),
+            ServiceState = "active",
+            Transport = "tcp",
+            RateLimitMbps = 20,
+            QuotaRemainingBytes = 1024 * 1024,
+            TargetDigest = UltraPolicy.ComputeTargetDigest(target),
+        };
+        var forward = new ForwardConfig
+        {
+            ForwardId = 42,
+            BackendMode = "ultra",
+            Mode = "single",
+            Target = target,
+            Transport = "tcp",
+            UltraAccess = policy,
+        };
+        using var http = new HttpClient(new UltraLeaseHandler(generation, target)) { Timeout = TimeSpan.FromSeconds(5) };
+        string? requestBody = null;
+        using var api = new MasterApiClient(
+            "https://v3.leikwanhost.com",
+            "agent-token",
+            "windows-client-42-device",
+            httpClientFactory: () => http,
+            ownsHttpClient: false,
+            onRequestForTest: request =>
+            {
+                if (request.Content is not null)
+                    requestBody = request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            });
+
+        var lease = await api.ResolveUltraLeaseAsync(forward);
+
+        Assert.NotNull(lease);
+        Assert.Equal("203.0.113.20", lease!.ProviderIp);
+        Assert.Equal(5438, lease.ProviderPort);
+        Assert.DoesNotContain("line-password", requestBody, StringComparison.Ordinal);
+        Assert.Contains("ticket-a", requestBody, StringComparison.Ordinal);
+        Assert.Contains("policy_generation", requestBody, StringComparison.Ordinal);
+    }
+
     private sealed class StubPullResponseHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -160,6 +214,45 @@ public sealed class MasterApiClientDesktopLoginTests
                     """, Encoding.UTF8, "application/json"),
             };
             return Task.FromResult(response);
+        }
+    }
+
+    private sealed class UltraLeaseHandler(string generation, string target) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Assert.Equal("/api/client/ultra/lease", request.RequestUri?.AbsolutePath);
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            Assert.Contains("ticket-a", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("line-password", body, StringComparison.Ordinal);
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent($$"""
+                    {
+                      "ok": true,
+                      "leases": [
+                        {
+                          "protocol": "leikwan-ultra-policy-v2",
+                          "forward_id": 42,
+                          "session_ticket": "ticket-a",
+                          "lease_id": "lease-a",
+                          "policy_generation": "{{generation}}",
+                          "expires_at": "{{DateTimeOffset.UtcNow.AddMinutes(3):yyyy-MM-dd'T'HH:mm:ss'Z'}}",
+                          "transport": "tcp",
+                          "rate_limit_mbps": 20,
+                          "quota_remaining_bytes": 1048576,
+                          "target_digest": "{{UltraPolicy.ComputeTargetDigest(target)}}",
+                          "selection_ref": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+                          "nonce_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                          "endpoint": { "ip": "203.0.113.20", "port": 5438 },
+                          "credential": { "user": "line-user", "password": "line-password" }
+                        }
+                      ]
+                    }
+                    """, Encoding.UTF8, "application/json"),
+            };
+            return response;
         }
     }
 

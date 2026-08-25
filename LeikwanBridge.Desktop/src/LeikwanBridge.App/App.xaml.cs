@@ -50,6 +50,12 @@ public partial class App : System.Windows.Application
 
         var stateManager = new StateManager(configDir);
         Config = stateManager.LoadConfig(ConfigPath);
+        var normalizedMasterUrl = AppDefaults.NormalizeMasterUrl(Config.MasterUrl);
+        if (!string.Equals(normalizedMasterUrl, Config.MasterUrl, StringComparison.Ordinal))
+        {
+            Config.MasterUrl = normalizedMasterUrl;
+            stateManager.SaveConfig(ConfigPath, Config);
+        }
 
         // Apply language
         SwitchLanguage(Config.Language);
