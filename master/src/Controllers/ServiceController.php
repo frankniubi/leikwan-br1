@@ -9,6 +9,7 @@ use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\ForwardLineApiContract;
 use Leikwan\Master\Support\ProvisioningService;
+use Leikwan\Master\Support\UltraMode;
 
 final class ServiceController extends BaseController
 {
@@ -211,6 +212,31 @@ final class ServiceController extends BaseController
             }
         } catch (ApiException $exception) {
             Auth::requireClientToken($request, $this->db, $forwardId);
+        }
+
+        // Ultra v2 never returns the legacy full forward config. The client
+        // must obtain a policy-bound one-shot lease through the device session
+        // endpoint, so line metadata cannot bypass that boundary here.
+        $backendMode = strtolower(trim((string) ($forward['backend_mode'] ?? '')));
+        if ($backendMode === '') {
+            $backend = $this->db->fetchOne(
+                'SELECT f.backend_mode
+                 FROM forwards f
+                 INNER JOIN services s ON s.id = f.service_id
+                 WHERE f.id = :id
+                   AND f.enabled = 1
+                   AND s.status = :active_status
+                 LIMIT 1',
+                ['id' => $forwardId, 'active_status' => 'active']
+            );
+            $backendMode = strtolower(trim((string) ($backend['backend_mode'] ?? '')));
+        }
+        if ($backendMode === UltraMode::BACKEND_MODE) {
+            return $this->json(['ok' => false, 'error' => 'ultra_material_v1_retired'], 410)->withHeaders([
+                'Cache-Control' => 'no-store, no-cache, must-revalidate',
+                'Pragma' => 'no-cache',
+                'X-Content-Type-Options' => 'nosniff',
+            ]);
         }
 
         return $this->json([

@@ -1,5 +1,8 @@
 # Ultra Panel Policy and Ephemeral Line Lease Control Plane Implementation Plan
 
+> **Status:** Implemented on `codex/ultra-policy-v2`; lease, scrub, revocation,
+> and policy-contract verification completed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Make the Panel issue policy-only grants and one-time provider leases without exposing persistent line material to Clients.

@@ -44,18 +44,44 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         $result = [];
         foreach ($requested as $forwardId => $request) {
             $grant = $cached[$forwardId] ?? null;
-            if ($this->grantUsable($grant, $now) && $this->parseTimestamp((string) ($grant['renew_after'] ?? '')) > $now) {
-                $result[$forwardId] = $grant;
-                continue;
-            }
             $snapshot = $this->materials->lineSnapshot($request['line_ids']);
             if ($snapshot === null) {
-                if ($this->grantUsable($grant, $now)) {
+                $serviceExpiresAt = $this->parseServiceExpiry((string) ($request['service_expire_at'] ?? ''));
+                $currentQuota = $this->quotaBytes($request);
+                $currentRate = max(0, min(100000, (int) ($request['speed_limit_mbps'] ?? 0)));
+                $grantRate = max(0, (int) ($grant['rate_limit_mbps'] ?? 0));
+                if ($this->grantUsable($grant, $now)
+                    && ($serviceExpiresAt === null || $serviceExpiresAt > $now)
+                    && (int) ($grant['quota_remaining_bytes'] ?? 0) > 0
+                    && $currentQuota >= (int) ($grant['quota_remaining_bytes'] ?? 0)
+                    && ($currentRate <= 0 || $grantRate <= 0 || $currentRate >= $grantRate)) {
                     $result[$forwardId] = $grant;
                 }
                 continue;
             }
-            $expiresAt = min($now + $this->maxTtlSeconds(), (int) $snapshot['expires_at']);
+            $quotaBytes = $this->quotaBytes($request);
+            $serviceExpiresAt = $this->parseServiceExpiry((string) ($request['service_expire_at'] ?? ''));
+            $currentRate = max(0, min(100000, (int) ($request['speed_limit_mbps'] ?? 0)));
+            $grantRate = max(0, (int) ($grant['rate_limit_mbps'] ?? 0));
+            $policyGeneration = $this->policyGeneration($request, (string) $snapshot['fingerprint'], $quotaBytes);
+            if ($this->grantUsable($grant, $now)
+                && hash_equals($policyGeneration, (string) ($grant['policy_generation'] ?? ''))
+                && $this->parseTimestamp((string) ($grant['renew_after'] ?? '')) > $now
+                && $quotaBytes > 0
+                && $quotaBytes >= (int) ($grant['quota_remaining_bytes'] ?? 0)
+                && ($serviceExpiresAt === null || $serviceExpiresAt > $now)
+                && ($currentRate <= 0 || $grantRate <= 0 || $currentRate >= $grantRate)) {
+                $result[$forwardId] = $grant;
+                continue;
+            }
+            if ($quotaBytes <= 0 || ($serviceExpiresAt !== null && $serviceExpiresAt <= $now)) {
+                continue;
+            }
+            $expiryCandidates = [$now + $this->maxTtlSeconds(), (int) $snapshot['expires_at']];
+            if ($serviceExpiresAt !== null) {
+                $expiryCandidates[] = $serviceExpiresAt;
+            }
+            $expiresAt = min(...$expiryCandidates);
             if ($expiresAt <= $now + 30) {
                 continue;
             }
@@ -78,24 +104,25 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 'allowed_ingress_zones' => $request['allowed_ingress_zones'],
                 'fallback_policy' => $request['fallback_policy'],
                 'material_fingerprint' => $snapshot['fingerprint'],
+                'policy_generation' => $policyGeneration,
+                'target_digest' => hash('sha256', (string) $request['target']),
             ], $expiresAt);
             if ($token === '') {
                 continue;
             }
             $result[$forwardId] = [
-                'protocol' => UltraMode::CAPABILITY_PROTOCOL,
-                'token' => $token,
+                'protocol' => UltraMode::POLICY_PROTOCOL,
+                'session_ticket' => $token,
+                'forward_id' => $request['forward_id'],
+                'policy_generation' => $policyGeneration,
                 'issued_at' => $this->formatTimestamp($now),
                 'renew_after' => $this->formatTimestamp($renewAfter),
                 'expires_at' => $this->formatTimestamp($expiresAt),
-                'generation' => substr((string) $snapshot['fingerprint'], 0, 32),
-                'scope' => ['client_id' => $clientId, 'forward_id' => $request['forward_id']],
-                'line_ips' => $snapshot['line_ips'],
+                'service_state' => 'active',
                 'transport' => $request['transport'],
                 'rate_limit_mbps' => $request['speed_limit_mbps'],
-                'destination_zone' => $request['destination_zone'],
-                'allowed_ingress_zones' => $request['allowed_ingress_zones'],
-                'fallback_policy' => $request['fallback_policy'],
+                'quota_remaining_bytes' => $quotaBytes,
+                'target_digest' => hash('sha256', (string) $request['target']),
             ];
         }
         try {
@@ -154,12 +181,15 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             if ($forwardId <= 0 || $target === '' || $lineIds === [] || !in_array($transport, ['tcp', 'udp', 'tcp+udp'], true)) {
                 continue;
             }
-            $result[(string) $forwardId] = [
+            $eligible = [
                 'forward_id' => $forwardId,
                 'service_id' => max(0, (int) ($forward['service_id'] ?? 0)),
                 'target' => $target,
                 'transport' => $transport,
                 'speed_limit_mbps' => max(0, min(100000, (int) ($forward['speed_limit_mbps'] ?? 0))),
+                'service_expire_at' => trim((string) ($forward['service_expire_at'] ?? '')),
+                'service_traffic_limit_gb' => max(0, (int) ($forward['service_traffic_limit_gb'] ?? 0)),
+                'service_traffic_used_bytes' => max(0, (int) ($forward['service_traffic_used_bytes'] ?? 0)),
                 'line_ids' => array_slice(array_values($lineIds), 0, 8),
                 'lines' => $lines,
                 'line_direction' => substr(trim((string) ($forward['_ultra_line_direction'] ?? '')), 0, 191),
@@ -167,6 +197,13 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 'allowed_ingress_zones' => $this->zones((array) ($forward['_ultra_allowed_ingress_zones'] ?? [])),
                 'fallback_policy' => $this->fallbackPolicy((string) ($forward['_ultra_fallback_policy'] ?? 'detected_then_any')),
             ];
+            foreach (['quota_remaining_bytes', 'quota_bytes', 'traffic_limit_bytes'] as $quotaKey) {
+                if (array_key_exists($quotaKey, $forward)) {
+                    $eligible[$quotaKey] = max(0, min(UltraMode::MAX_QUOTA_LEASE_BYTES, (int) $forward[$quotaKey]));
+                    break;
+                }
+            }
+            $result[(string) $forwardId] = $eligible;
         }
         ksort($result, SORT_NUMERIC);
         return $result;
@@ -176,10 +213,11 @@ final class LeigodTokenBroker implements LeigodTokenProvider
     private function grantUsable(mixed $grant, int $now): bool
     {
         if (!is_array($grant)
-            || ($grant['protocol'] ?? '') !== UltraMode::CAPABILITY_PROTOCOL
-            || trim((string) ($grant['token'] ?? '')) === ''
-            || !is_array($grant['line_ips'] ?? null)
-            || $grant['line_ips'] === []
+            || ($grant['protocol'] ?? '') !== UltraMode::POLICY_PROTOCOL
+            || trim((string) ($grant['session_ticket'] ?? '')) === ''
+            || trim((string) ($grant['policy_generation'] ?? '')) === ''
+            || trim((string) ($grant['target_digest'] ?? '')) === ''
+            || !array_key_exists('quota_remaining_bytes', $grant)
             || !in_array((string) ($grant['transport'] ?? ''), ['tcp', 'udp', 'tcp+udp'], true)) {
             return false;
         }
@@ -215,12 +253,55 @@ final class LeigodTokenBroker implements LeigodTokenProvider
 
     private function maxTtlSeconds(): int
     {
-        return max(60, min(3600, $this->config->getInt(UltraMode::MAX_TTL_KEY, 1800)));
+        return max(
+            UltraMode::MIN_POLICY_TTL_SECONDS,
+            min(UltraMode::MAX_POLICY_TTL_SECONDS, $this->config->getInt(UltraMode::MAX_TTL_KEY, UltraMode::MAX_POLICY_TTL_SECONDS))
+        );
     }
 
     private function refreshSkewSeconds(): int
     {
-        return max(30, min($this->maxTtlSeconds() - 1, $this->config->getInt(UltraMode::REFRESH_SKEW_KEY, 600)));
+        return max(30, min($this->maxTtlSeconds() - 1, $this->config->getInt(UltraMode::REFRESH_SKEW_KEY, 60)));
+    }
+
+    /** @param array<string, mixed> $request */
+    private function quotaBytes(array $request): int
+    {
+        $keys = ['quota_remaining_bytes', 'quota_bytes', 'traffic_limit_bytes'];
+        $provided = false;
+        $value = UltraMode::MAX_QUOTA_LEASE_BYTES;
+        foreach ($keys as $key) {
+            if (!array_key_exists($key, $request)) {
+                continue;
+            }
+            $provided = true;
+            $value = max(0, (int) $request[$key]);
+            break;
+        }
+        if (!$provided) {
+            $limitGb = max(0, (int) ($request['service_traffic_limit_gb'] ?? 0));
+            $usedBytes = max(0, (int) ($request['service_traffic_used_bytes'] ?? 0));
+            if ($limitGb > 0) {
+                return min(UltraMode::MAX_QUOTA_LEASE_BYTES, max(0, ($limitGb * 1024 * 1024 * 1024) - $usedBytes));
+            }
+            return UltraMode::MAX_QUOTA_LEASE_BYTES;
+        }
+        return min(UltraMode::MAX_QUOTA_LEASE_BYTES, $value);
+    }
+
+    /** @param array<string, mixed> $request */
+    private function policyGeneration(array $request, string $materialFingerprint, int $quotaBytes): string
+    {
+        return hash('sha256', implode("\n", [
+            (string) ($request['forward_id'] ?? 0),
+            'active',
+            hash('sha256', (string) ($request['target'] ?? '')),
+            (string) ($request['transport'] ?? ''),
+            (string) ($request['speed_limit_mbps'] ?? 0),
+            (string) $quotaBytes,
+            (string) ($request['service_expire_at'] ?? ''),
+            $materialFingerprint,
+        ]));
     }
 
     private function parseTimestamp(string $value): ?int
@@ -234,6 +315,16 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         } catch (Throwable) {
             return null;
         }
+    }
+
+    private function parseServiceExpiry(string $value): ?int
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        $timestamp = strtotime($value);
+        return $timestamp === false ? null : (int) $timestamp;
     }
 
     private function formatTimestamp(int $timestamp): string

@@ -24,4 +24,30 @@ public sealed class HeartbeatPayload
 
     [JsonPropertyName("wireguard_fallback_tcp_port")]
     public int WireguardFallbackTcpPort { get; set; }
+
+    [JsonPropertyName("ultra_usage")]
+    public List<UltraUsageSnapshot> UltraUsage { get; set; } = [];
+}
+
+public sealed class UltraUsageSnapshot
+{
+    [JsonPropertyName("forward_id")] public int ForwardId { get; set; }
+    [JsonPropertyName("policy_generation")] public string PolicyGeneration { get; set; } = "";
+    [JsonPropertyName("sequence")] public long Sequence { get; set; }
+    [JsonPropertyName("bytes_in")] public long BytesIn { get; set; }
+    [JsonPropertyName("bytes_out")] public long BytesOut { get; set; }
+}
+
+public sealed class HeartbeatResponse
+{
+    [JsonPropertyName("ok")] public bool Ok { get; set; }
+    [JsonPropertyName("ultra_actions")] public List<UltraPolicyAction> UltraActions { get; set; } = [];
+}
+
+public sealed class UltraPolicyAction
+{
+    [JsonPropertyName("forward_id")] public int ForwardId { get; set; }
+    [JsonPropertyName("policy_generation")] public string PolicyGeneration { get; set; } = "";
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("reason")] public string Reason { get; set; } = "";
 }

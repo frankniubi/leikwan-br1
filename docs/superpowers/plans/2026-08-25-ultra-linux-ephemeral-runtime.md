@@ -1,5 +1,8 @@
 # Ultra Linux Ephemeral Runtime Implementation Plan
 
+> **Status:** Implemented on `codex/ultra-policy-v2`; focused Go/Python tests and
+> Linux artifact rebuild completed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (\`- [ ]\`) syntax.
 
 **Goal:** Make the Linux Ultra runtime consume Panel policy and one-time provider leases through an authenticated local control socket without writing line information to disk.

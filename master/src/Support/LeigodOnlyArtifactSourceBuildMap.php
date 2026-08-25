@@ -34,8 +34,13 @@ final class LeigodOnlyArtifactSourceBuildMap
             'slave_agent_update' => ['paths' => ['install/leikwan-slave-update'], 'route_path' => '/artifacts/slave-agent-update.sh'],
             'forward_strategy' => ['paths' => ['client-agent/forward_strategy.py', 'artifacts/forward-strategy.py'], 'route_path' => '/artifacts/forward-strategy.py'],
             'ultra_client_runtime' => [
-                'paths' => ['tools/ultra-client/go.mod', 'tools/ultra-client/main.go', 'artifacts/ultra/ultra-client_linux_amd64'],
+                'paths' => ['tools/ultra-client', 'artifacts/ultra/ultra-client_linux_amd64'],
                 'route_path' => '/artifacts/ultra/ultra-client_linux_amd64',
+            ],
+            'ultra_client_runtime_windows' => [
+                'paths' => ['tools/ultra-client', 'artifacts/ultra/ultra-client_windows_amd64.exe'],
+                'route_path' => '/artifacts/ultra/ultra-client_windows_amd64.exe',
+                'platform_family' => 'windows-bond',
             ],
             'tcp_accel_runtime' => ['paths' => ['tools/tcp-accel/tcp_accel.py'], 'route_path' => '/artifacts/leikwan-tcp-accel.py'],
             'tcp_accel_bridge_runtime' => ['paths' => ['slave-agent/leigod_tcp_accel_bridge.py'], 'route_path' => '/artifacts/leikwan-tcp-accel-bridge.py'],

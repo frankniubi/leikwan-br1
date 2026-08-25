@@ -303,6 +303,74 @@ final class UltraMaterialService
         ];
     }
 
+    /**
+     * Resolve exactly one approved provider candidate for server-side lease
+     * issuance. This method deliberately returns clear material only inside
+     * the Panel process; callers must never serialize its result wholesale.
+     *
+     * @return array<string, mixed>
+     */
+    public function serverCandidateForClientToken(
+        string $token,
+        int $clientId,
+        string $deviceId,
+        int $forwardId,
+        string $policyGeneration = '',
+    ): array {
+        $payload = str_starts_with($token, 'u2')
+            ? $this->open($token)
+            : $this->open((string) $this->settingGet(self::CLIENT_SCOPE_PREFIX . hash('sha256', $token), ''));
+        $now = $this->now();
+        if (($payload['kind'] ?? '') !== 'client-access'
+            || (int) ($payload['client_id'] ?? 0) !== $clientId
+            || (int) ($payload['forward_id'] ?? 0) !== $forwardId
+            || !hash_equals((string) ($payload['device_hash'] ?? ''), hash('sha256', $deviceId !== '' ? $deviceId : 'none'))
+            || ($policyGeneration !== '' && !hash_equals($policyGeneration, (string) ($payload['policy_generation'] ?? '')))
+            || (int) ($payload['expires_at'] ?? 0) <= $now) {
+            return [];
+        }
+
+        foreach ($this->normalizeClientScopeLines($payload) as $scopeLine) {
+            $lineId = (int) $scopeLine['line_id'];
+            $material = $this->loadMaterial($lineId, true);
+            foreach ((array) ($material['relays'] ?? []) as $relay) {
+                if (!is_array($relay)) {
+                    continue;
+                }
+                $ip = trim((string) ($relay['ip'] ?? ''));
+                $port = (int) ($relay['port'] ?? 0);
+                $user = trim((string) ($material['user'] ?? ''));
+                $credential = trim((string) ($material['credential'] ?? ''));
+                if ($ip === '' || filter_var($ip, FILTER_VALIDATE_IP) === false
+                    || $port <= 0 || $port > 65535 || $user === '' || $credential === '') {
+                    continue;
+                }
+                $selectionRef = $this->entryReference($token, [
+                    (string) $clientId,
+                    (string) ($payload['device_hash'] ?? ''),
+                    (string) $forwardId,
+                    (string) $lineId,
+                    (string) ($material['generation'] ?? ''),
+                    $ip,
+                    (string) ($payload['transport'] ?? 'tcp+udp'),
+                ]);
+                if ($selectionRef === '') {
+                    continue;
+                }
+                return [
+                    'selection_ref' => $selectionRef,
+                    'policy_generation' => (string) ($payload['policy_generation'] ?? ''),
+                    'ip' => $ip,
+                    'port' => $port,
+                    'user' => $user,
+                    'credential' => $credential,
+                    'transport' => (string) ($payload['transport'] ?? 'tcp+udp'),
+                ];
+            }
+        }
+        return [];
+    }
+
     /** @return array<string, array<string, mixed>> */
     public function loadGrantCache(int $clientId, string $deviceId): array
     {

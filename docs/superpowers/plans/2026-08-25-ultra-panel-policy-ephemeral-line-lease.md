@@ -73,11 +73,15 @@ This gate does not alter Panel or server-side historical `cf_mode` behavior.
 
 ### Gate A: Control contract
 
+**Status: completed.**
+
 The Panel must issue `leikwan-ultra-policy-v2`, reject stale/replayed lease
 requests, and stop issuing grants for inactive or expired services before
 clients consume the new fields.
 
 ### Gate B: Linux runtime
+
+**Status: completed.**
 
 The Linux Client must first reject and clean `cf_mode`. The Linux helper then
 must consume policy v2, hold provider information only in memory, enforce
@@ -85,11 +89,15 @@ rate/quota/expiry, and pass stop cleanup tests before Windows parity is enabled.
 
 ### Gate C: Windows runtime
 
+**Status: completed.**
+
 The Windows Client must reject and clean `cf_mode`. The shared helper and
 Windows supervisor must then provide the same policy and stop semantics,
 including Job Object ownership and heartbeat counters.
 
 ### Gate D: Production acceptance
+
+**Status: code/artifact gates completed; live canary and signing remain deployment-time gates.**
 
 Only after credential scans, packet captures, quota/expiry canaries, accounting
 idempotency, and listener/process cleanup pass may the Panel feature flag issue

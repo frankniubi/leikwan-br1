@@ -3158,8 +3158,8 @@ final class AdminController extends BaseController
                 $user = trim((string) (($session['user_name'] ?? '') ?: ($session['user_email'] ?? '')));
                 $client = '#' . (int) ($session['client_id'] ?? 0) . ' ' . trim((string) ($session['client_name'] ?? ''));
                 $device = trim((string) (($session['device_name'] ?? '') ?: ($session['device_id'] ?? '')));
-                $tcp = trim((string) ($session['latest_tcp_line'] ?? ''));
-                $udp = trim((string) ($session['active_udp_line'] ?? ''));
+                $tcp = trim((string) ($session['latest_tcp_selection_ref'] ?? ''));
+                $udp = trim((string) ($session['active_udp_selection_ref'] ?? ''));
                 $rows .= '<tr><td><span class="badge ' . $badge . '">' . $this->escape($state) . '</span></td>'
                     . '<td>' . $this->escape($user) . '</td>'
                     . '<td>' . $this->escape($client) . '<br><span class="muted">' . $this->escape($device) . '</span></td>'
@@ -3167,8 +3167,8 @@ final class AdminController extends BaseController
                     . '<td>#' . (int) ($session['forward_id'] ?? 0) . ' ' . $this->escape((string) ($session['forward_label'] ?? '')) . '</td>'
                     . '<td>' . $this->escape((string) ($session['destination'] ?? '')) . '</td>'
                     . '<td>' . $this->escape((string) ($session['detected_ingress_zone'] ?? 'unknown')) . '</td>'
-                    . '<td>' . $this->escape($tcp) . '<br><span class="muted">' . $this->escape((string) ($session['latest_tcp_ip'] ?? '')) . '</span></td>'
-                    . '<td>' . $this->escape($udp) . '<br><span class="muted">' . $this->escape((string) ($session['active_udp_ip'] ?? '')) . '</span></td>'
+                    . '<td>' . $this->escape($tcp) . '</td>'
+                    . '<td>' . $this->escape($udp) . '</td>'
                     . '<td>' . $this->escape((string) ($session['last_seen_at'] ?? '')) . '</td></tr>';
             }
             if ($rows === '') {

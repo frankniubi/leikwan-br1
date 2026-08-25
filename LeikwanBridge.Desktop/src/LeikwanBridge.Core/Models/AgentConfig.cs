@@ -77,6 +77,9 @@ public sealed class AgentConfig
     [JsonPropertyName("mptcp_relay_bin")]
     public string MptcpRelayBin { get; set; } = "";
 
+    [JsonPropertyName("ultra_bin")]
+    public string UltraBin { get; set; } = "";
+
     [JsonPropertyName("wg_bin")]
     public string WgBin { get; set; } = "";
 
@@ -143,6 +146,13 @@ public sealed class AgentConfig
         if (!string.IsNullOrWhiteSpace(MptcpRelayBin))
             return MptcpRelayBin;
         return Path.Combine(AppContext.BaseDirectory, "bin", "leikwan-mptcp-relay.exe");
+    }
+
+    public string GetEffectiveUltraBin()
+    {
+        if (!string.IsNullOrWhiteSpace(UltraBin))
+            return UltraBin;
+        return Path.Combine(AppContext.BaseDirectory, "bin", "ultra-client.exe");
     }
 
     public string GetEffectiveWgBin()

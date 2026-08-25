@@ -2,7 +2,7 @@
 
 Date: 2026-08-25
 
-Status: Approved for implementation planning
+Status: Implemented on `codex/ultra-policy-v2`; production canary and signing are deployment-time gates.
 
 ## Decision
 

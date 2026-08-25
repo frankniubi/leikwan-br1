@@ -28,9 +28,9 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "3c267cc73be6f4604047abae2449415db57eb2d5ce50191735d3ab43e9df4bf0",
-    "size": 260130,
-    "size_bytes": 260130,
+    "sha256": "3c498b7293d55e11dfd9a9fbe8738518526471b9653e4f637b7a77fad8016f96",
+    "size": 267520,
+    "size_bytes": 267520,
     "version": "2026.08.24.1"
   },
   "client_agent_installer": {
@@ -79,17 +79,24 @@
   "install_forward_runtime": {
     "artifact_url": "/artifacts/install-forward-runtime.py",
     "path": "client-agent/install_forward_runtime.py",
-    "sha256": "21b2bc5e2f3063eb721fce36c68e8509ee3be4353ee6fc0b29b6bef4163aa67e",
-    "size": 95154,
-    "size_bytes": 95154,
+    "sha256": "5b772786c33f16572e298d9d7be42e2500a3ba140fccf37d5aed6310ece5979c",
+    "size": 94246,
+    "size_bytes": 94246,
     "version": "2026.08.24.1"
   },
   "ultra_client_runtime": {
     "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
     "path": "artifacts/ultra/ultra-client_linux_amd64",
-    "sha256": "0076156a838099ec958fd8f60b1b79ac1d707d114cbf4629b614ef9c0fb7c825",
-    "size_bytes": 6410366,
-    "version": "2026.08.24.1"
+    "sha256": "f3d00004dd854ec994f5fd8084ba9e2dfa78961557cdfdfb333f2e3c5e27de0a",
+    "size_bytes": 7106826,
+    "version": "2026.08.25.1"
+  },
+  "ultra_client_runtime_windows": {
+    "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
+    "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
+    "sha256": "cd7a5b4debc63c254060bef469e05720ba229535c05a1f4c3f67aed2e00f9494",
+    "size_bytes": 6603776,
+    "version": "2026.08.25.1"
   },
   "leigod_forward_relay": {
     "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
@@ -323,8 +330,8 @@
   "windows_client_app": {
     "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
     "path": "artifacts/windows/leikwan-bridge-setup.exe",
-    "sha256": "e152f578e90f01b91d0bc0f8e8b3402c15037566edf6736424c1e7c895820977",
-    "size_bytes": 8609924,
+    "sha256": "3a3c9c526d8cdc92b52e1c45484db0a52182cc2936ea251287f45775898a2523",
+    "size_bytes": 10853680,
     "version": "0.1.18.1"
   },
   "wstunnel_linux_amd64": {

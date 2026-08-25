@@ -1,5 +1,9 @@
 # Ultra Accounting, Stop Cleanup, Release, and Acceptance Implementation Plan
 
+> **Status:** Implemented on `codex/ultra-policy-v2`; accounting, immediate stop
+> actions, cleanup, and artifact gates are in place. Live canary/signing remain
+> deployment-time gates.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended; fresh worker per task) or superpowers:executing-plans. Steps use checkbox (- [ ]) syntax.
 
 **Goal:** Make Panel accounting and lifecycle enforcement authoritative across Linux and Windows, then prove no persistent line information, no SOCKS listener, correct stop cleanup, and reproducible signed artifacts.
