@@ -364,14 +364,20 @@ abstract class BaseController
             . '</a>';
     }
 
-    protected function renderCopyButton(string $label, string $text, string $variant = 'secondary'): string
+    protected function renderCopyButton(
+        string $label,
+        string $text,
+        string $variant = 'secondary',
+        string $successLabel = 'Copied',
+        string $errorLabel = 'Copy failed'
+    ): string
     {
         $class = 'button';
         if ($variant !== '') {
             $class .= ' ' . $variant;
         }
 
-        return '<button type="button" class="' . $this->escape($class) . '" data-copy-text="' . $this->escape($text) . '" data-copy-success="Copied" data-copy-error="Copy failed">'
+        return '<button type="button" class="' . $this->escape($class) . '" data-copy-text="' . $this->escape($text) . '" data-copy-success="' . $this->escape($successLabel) . '" data-copy-error="' . $this->escape($errorLabel) . '">'
             . $this->escape($label)
             . '</button>';
     }
@@ -1321,7 +1327,7 @@ HTML;
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{$escapedTitle}</title>
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
-  <link rel="stylesheet" href="/assets/operator-console.css?v=20260725">
+  <link rel="stylesheet" href="/assets/operator-console.css?v=20260825">
   <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260729a">
 </head>
 <body class="pg-app">
