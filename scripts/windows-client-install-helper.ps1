@@ -389,6 +389,12 @@ function Write-InstallManifest {
     )
 
     $targetBinDir = Join-Path $TargetDir "bin"
+    $ultraClientPath = Join-Path $targetBinDir "ultra-client.exe"
+    $ultraClientSha256 = if (Test-Path -LiteralPath $ultraClientPath) {
+        (Get-FileHash $ultraClientPath -Algorithm SHA256).Hash
+    } else {
+        ""
+    }
     $manifest = [ordered]@{
         installed_at = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
         source = "leikwan-bridge-setup.exe"
@@ -397,7 +403,7 @@ function Write-InstallManifest {
         ingress_sha256 = (Get-FileHash (Join-Path $targetBinDir "leikwan-ingress.exe") -Algorithm SHA256).Hash
         uot_bond_sha256 = (Get-FileHash (Join-Path $targetBinDir "leikwan-uot-bond.exe") -Algorithm SHA256).Hash
         mptcp_relay_sha256 = (Get-FileHash (Join-Path $targetBinDir "leikwan-mptcp-relay.exe") -Algorithm SHA256).Hash
-        ultra_client_sha256 = (Get-FileHash (Join-Path $targetBinDir "ultra-client.exe") -Algorithm SHA256).Hash
+        ultra_client_sha256 = $ultraClientSha256
         wstunnel_sha256 = (Get-FileHash (Join-Path $targetBinDir "wstunnel.exe") -Algorithm SHA256).Hash
         backup_dir = $BackupDir
         installed_files = $InstalledFiles
