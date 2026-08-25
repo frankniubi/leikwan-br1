@@ -4915,6 +4915,121 @@ final class ProvisioningService
         });
     }
 
+    /**
+     * Enable or pause a forward. Pause revokes its endpoints so the relay
+     * nodes stop carrying traffic; start reconciles them back. Distinct from
+     * delete (which sets user_deleted_at) and from balance suspension.
+     *
+     * @return array<string, mixed>
+     */
+    public function setForwardEnabled(
+        int $forwardId,
+        bool $enabled,
+        string $actor = 'user',
+        ?int $expectedRevision = null,
+        ?array $mutationPolicy = null
+    ): array {
+        return $this->db->transaction(function () use ($forwardId, $enabled, $actor, $expectedRevision, $mutationPolicy): array {
+            $forward = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1 FOR UPDATE', ['id' => $forwardId]);
+            if ($forward === null) {
+                throw new ApiException('forward_not_found', 404);
+            }
+            $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
+            $this->assertExpectedForwardRevision($forward, $expectedRevision);
+            $nextRevision = max(1, (int) ($forward['api_revision'] ?? 1)) + 1;
+            $now = $this->now();
+
+            if ($enabled) {
+                $this->db->execute(
+                    'UPDATE forwards
+                     SET enabled = 1,
+                         balance_suspended_at = NULL,
+                         api_revision = :api_revision,
+                         updated_at = :updated_at
+                     WHERE id = :id',
+                    ['id' => $forwardId, 'api_revision' => $nextRevision, 'updated_at' => $now]
+                );
+                $this->audit('forward.started', [
+                    'forward_id' => $forwardId,
+                    'service_id' => (int) ($forward['service_id'] ?? 0),
+                    'actor' => $actor,
+                    'revision' => $nextRevision,
+                ]);
+                $this->reconcileForwardEndpoints($forwardId);
+            } else {
+                $this->revokeForwardEndpoints($forwardId, 'pause');
+                $this->db->execute(
+                    'UPDATE forwards
+                     SET enabled = 0,
+                         balance_suspended_at = NULL,
+                         api_revision = :api_revision,
+                         updated_at = :updated_at
+                     WHERE id = :id',
+                    ['id' => $forwardId, 'api_revision' => $nextRevision, 'updated_at' => $now]
+                );
+                $this->audit('forward.paused', [
+                    'forward_id' => $forwardId,
+                    'service_id' => (int) ($forward['service_id'] ?? 0),
+                    'actor' => $actor,
+                    'revision' => $nextRevision,
+                ]);
+            }
+
+            return $this->buildClientConfig($forwardId);
+        });
+    }
+
+    /**
+     * Per-forward traffic used within the current billing cycle, keyed by
+     * forward_id. Approximation for display only; see design spec.
+     *
+     * @return array<int, int>
+     */
+    public function forwardCycleUsageMap(int $serviceId, string $cycleStartedAt): array
+    {
+        $map = [];
+        if ($serviceId <= 0 || trim($cycleStartedAt) === '') {
+            return $map;
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT se.forward_id, COALESCE(SUM(tuh.bytes_in + tuh.bytes_out), 0) AS used_bytes
+             FROM traffic_usage_hourly tuh
+             INNER JOIN service_endpoints se ON se.id = tuh.endpoint_id
+             WHERE tuh.service_id = :service_id
+               AND tuh.period_start >= :cycle_started_at
+             GROUP BY se.forward_id',
+            ['service_id' => $serviceId, 'cycle_started_at' => $cycleStartedAt]
+        );
+        foreach ($rows as $row) {
+            $map[(int) $row['forward_id']] = (int) $row['used_bytes'];
+        }
+        return $map;
+    }
+
+    /**
+     * Paused (user-disabled, not deleted, not balance-suspended) forwards for
+     * the service page, so they remain visible with a Start action.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function pausedForwardsForService(int $serviceId): array
+    {
+        if ($serviceId <= 0) {
+            return [];
+        }
+        return $this->db->fetchAll(
+            'SELECT f.*, combo.name AS forward_combination_name, combo.tenant_label AS forward_combination_label
+             FROM forwards f
+             LEFT JOIN forward_combinations combo ON combo.id = f.forward_combination_id
+             WHERE f.service_id = :service_id
+               AND f.enabled = 0
+               AND f.user_deleted_at IS NULL
+               AND f.balance_suspended_at IS NULL
+             ORDER BY f.id ASC',
+            ['service_id' => $serviceId]
+        );
+    }
+
     public function reactivateEligibleForwardsForUser(int $userId, int $activeForwardLimit): int
     {
         if ($userId <= 0) {
