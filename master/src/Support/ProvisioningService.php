@@ -2034,6 +2034,20 @@ final class ProvisioningService
             $displayHostBase = 'tenant-' . $userId;
         }
         $displayHost = strtolower($displayHostBase . '-' . $userId . '.client.local');
+        $updatedAt = $this->now();
+
+        // A newly created default must be the sole owner marker, including
+        // when the legacy owner row is grouped and cannot be reused.
+        $this->db->execute(
+            'UPDATE clients
+             SET is_default_for_owner = 0,
+                 updated_at = :updated_at
+             WHERE owner_user_id = :owner_user_id',
+            [
+                'owner_user_id' => $userId,
+                'updated_at' => $updatedAt,
+            ]
+        );
 
         $clientId = $this->db->insert('clients', [
             'group_id' => null,
@@ -2044,8 +2058,8 @@ final class ProvisioningService
             'display_host' => $displayHost,
             'online_device_limit' => $this->defaultClientOnlineDeviceLimitForTenant($userId),
             'status' => 'active',
-            'created_at' => $this->now(),
-            'updated_at' => $this->now(),
+            'created_at' => $updatedAt,
+            'updated_at' => $updatedAt,
         ]);
 
         return $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]) ?? [];
