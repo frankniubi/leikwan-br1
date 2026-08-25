@@ -33,7 +33,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _totalBytesOut = "0 B";
     [ObservableProperty] private string _currentView = "Dashboard";
     [ObservableProperty] private bool _showSetupWizard = true;
-    [ObservableProperty] private string _activeModeFilter = "LeiGod";
+    [ObservableProperty] private string _activeModeFilter = "All";
     [ObservableProperty] private bool _showClientPicker;
     [ObservableProperty] private int _pendingClientSelectionId;
     [ObservableProperty] private string _signedInUsername = "";
@@ -46,7 +46,7 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<ForwardViewModel> Forwards { get; } = [];
     public ObservableCollection<ForwardViewModel> VisibleForwards { get; } = [];
     public ObservableCollection<ConnectionQualityForwardViewModel> ConnectionQualityForwards { get; } = [];
-    public ObservableCollection<string> AvailableModeFilters { get; } = ["LeiGod"];
+    public ObservableCollection<string> AvailableModeFilters { get; } = ["All"];
     public ObservableCollection<DesktopClientChoice> AvailableClientChoices { get; } = [];
     public ObservableCollection<string> LogEntries { get; } = [];
     public bool ShouldAutoConnectOnStartup => !ShowSetupWizard && !IsConnected;
@@ -59,6 +59,11 @@ public partial class MainViewModel : ObservableObject
     public void Initialize(AgentConfig config)
     {
         _config = config;
+        _config.MasterUrl = AppDefaults.NormalizeMasterUrl(_config.MasterUrl);
+        if (config.ClientId <= 0 && config.ActiveClientId > 0)
+            config.ClientId = config.ActiveClientId;
+        if (config.ActiveClientId <= 0 && config.ClientId > 0)
+            config.ActiveClientId = config.ClientId;
         SignedInUsername = config.SignedInUsername;
         SignedInEmail = config.SignedInEmail;
         ActiveClientName = config.ActiveClientName;
@@ -67,7 +72,6 @@ public partial class MainViewModel : ObservableObject
             AvailableClientChoices.Add(client);
 
         ShowSetupWizard = string.IsNullOrWhiteSpace(config.MasterUrl)
-                       || string.IsNullOrWhiteSpace(config.DesktopSessionToken)
                        || string.IsNullOrWhiteSpace(config.AgentToken)
                        || config.ActiveClientId <= 0;
         ShowClientPicker = false;
@@ -217,7 +221,8 @@ public partial class MainViewModel : ObservableObject
             _api, _stateManager,
             _wgManager.PublicKey,
             _config.GetEffectiveWireguardListenPort(),
-            _config.GetEffectiveWireguardFallbackTcpPort());
+            _config.GetEffectiveWireguardFallbackTcpPort(),
+            ApplyUltraPolicyActions);
 
         _pollingService.ForwardsUpdated += OnForwardsUpdated;
         _pollingService.PullStateChanged += OnPullStateChanged;
@@ -255,7 +260,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void ApplyModeFilter(string filter)
     {
-        ActiveModeFilter = "LeiGod";
+        ActiveModeFilter = string.IsNullOrWhiteSpace(filter) ? "All" : filter;
     }
 
     [RelayCommand]
@@ -346,7 +351,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         RebuildAvailableModeFilters();
-        ActiveModeFilter = "LeiGod";
+        ActiveModeFilter = "All";
         RebuildVisibleForwards();
         ActiveForwardCount = Forwards.Count;
     }
@@ -357,7 +362,9 @@ public partial class MainViewModel : ObservableObject
         var result = new ConnectionQualityForwardViewModel
         {
             ForwardId = forward.ForwardId,
-            ModeDisplay = ModeNormalizer.DisplayName(normalizedMode, false),
+            ModeDisplay = string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+                ? "Ultra"
+                : ModeNormalizer.DisplayName(normalizedMode, false),
             StatusText = isRunning ? "Running" : "Stopped",
             SummaryText = BuildQualitySummary(forward, normalizedMode, stateManager),
         };
@@ -524,6 +531,24 @@ public partial class MainViewModel : ObservableObject
         });
     }
 
+    private void ApplyUltraPolicyActions(IReadOnlyList<UltraPolicyAction> actions)
+    {
+        foreach (var action in actions.Take(32))
+        {
+            if (!string.Equals(action.Action, "stop", StringComparison.OrdinalIgnoreCase)
+                || action.ForwardId <= 0
+                || !System.Text.RegularExpressions.Regex.IsMatch(action.PolicyGeneration ?? "", "^[a-f0-9]{64}$"))
+                continue;
+            var forward = _pollingService?.LatestForwards.FirstOrDefault(item => item.ForwardId == action.ForwardId);
+            if (forward?.UltraAccess is null
+                || !string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(forward.UltraAccess.PolicyGeneration, action.PolicyGeneration, StringComparison.Ordinal))
+                continue;
+            _runtimeManager?.StopForwardForPolicy(action.ForwardId);
+            InvokeOnUiThread(() => AddLog($"Panel stopped Ultra forward {action.ForwardId}: {action.Reason}"));
+        }
+    }
+
     private void OnPullStateChanged(PullState state)
     {
         InvokeOnUiThread(() =>
@@ -580,7 +605,7 @@ public partial class MainViewModel : ObservableObject
     private void RebuildAvailableModeFilters()
     {
         AvailableModeFilters.Clear();
-        AvailableModeFilters.Add("LeiGod");
+        AvailableModeFilters.Add("All");
     }
 
     private void RebuildVisibleForwards()

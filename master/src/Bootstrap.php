@@ -35,8 +35,10 @@ use Leikwan\Master\Support\WhmcsClient;
 use Leikwan\Master\Support\WhmcsIdentityService;
 use Leikwan\Master\Support\AppSettings;
 use Leikwan\Master\Support\UltraClientStatusService;
+use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMaterialService;
 use Leikwan\Master\Support\UltraInventoryService;
+use Leikwan\Master\Support\UltraMode;
 
 final class Bootstrap
 {
@@ -148,6 +150,7 @@ final class Bootstrap
         $forwardApi = new ForwardLineApiController($this->config, $this->db, $this->provisioning);
         $nodes = new NodeController($this->config, $this->db, $this->provisioning);
         $ultraMaterials = new UltraMaterialService($this->config, $this->db, new AppSettings($this->db));
+        $ultraLeases = new UltraLeaseService($this->config, $this->db, $ultraMaterials);
         $clientAgent = new ClientAgentController(
             $this->config,
             $this->db,
@@ -155,6 +158,7 @@ final class Bootstrap
             null,
             $ultraMaterials,
             $ultraClientStatus,
+            $ultraLeases,
         );
         $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
@@ -327,6 +331,7 @@ final class Bootstrap
 $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopClient']);
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
         $this->router->add('POST', '/api/client/ultra/materials', [$clientAgent, 'resolveUltraMaterials']);
+        $this->router->add('POST', UltraMode::LEASE_ENDPOINT, [$clientAgent, 'resolveUltraLease']);
         $this->router->add('POST', '/api/client/heartbeat', [$clientAgent, 'heartbeat']);
         $this->router->add('POST', '/api/client/diagnostics/result', [$clientAgent, 'diagnosticsResult']);
         $this->router->add('GET', '/api/ultra/source/jobs', [$ultraSource, 'jobs']);
@@ -349,6 +354,7 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/lguot/lguot_linux_amd64', [$artifacts, 'lguotBinary']);
         $this->router->add('GET', '/artifacts/install-forward-runtime.py', [$artifacts, 'installForwardRuntime']);
         $this->router->add('GET', '/artifacts/ultra/ultra-client_linux_amd64', [$artifacts, 'ultraClient']);
+        $this->router->add('GET', '/artifacts/ultra/ultra-client_windows_amd64.exe', [$artifacts, 'ultraClientWindows']);
         $this->router->add('GET', '/artifacts/forward-strategy.py', [$artifacts, 'forwardStrategyHelper']);
         $this->router->add('GET', '/artifacts/leikwan-tcp-race.py', [$artifacts, 'tcpRaceRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-udp-fanout.py', [$artifacts, 'udpFanoutRuntime']);

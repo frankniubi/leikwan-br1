@@ -59,6 +59,21 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void Initialize_WithTokenOnlyConfig_HidesSetupWizard()
+    {
+        var vm = new MainViewModel();
+
+        vm.Initialize(new AgentConfig
+        {
+            MasterUrl = "https://v3.leikwanhost.com",
+            ClientId = 1,
+            AgentToken = "agent-token",
+        });
+
+        Assert.False(vm.ShowSetupWizard);
+    }
+
+    [Fact]
     public void Initialize_WithoutDesktopSession_ShowsLoginScreen()
     {
         var vm = new MainViewModel();
@@ -73,9 +88,12 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public void AppDefaults_UsesMirrorMasterUrl()
+    public void AppDefaults_UsesAuthoritativeMasterUrl()
     {
-        Assert.Equal("https://v3-mirror.leikwanhost.com", AppDefaults.DefaultMasterUrl);
+        Assert.Equal("https://v3.leikwanhost.com", AppDefaults.DefaultMasterUrl);
+        Assert.Equal(
+            AppDefaults.DefaultMasterUrl,
+            AppDefaults.NormalizeMasterUrl(AppDefaults.LegacyMasterUrl + "/"));
     }
 
     [Fact]
@@ -229,7 +247,7 @@ public sealed class MainViewModelTests
 
         var quality = Assert.Single(vm.ConnectionQualityForwards);
         Assert.Equal(47, quality.ForwardId);
-        Assert.Equal("LeiGod", quality.ModeDisplay);
+        Assert.Equal("Multi-path", quality.ModeDisplay);
         Assert.Equal("Running", quality.StatusText);
         Assert.Contains("1 WG leg", quality.SummaryText);
         var leg = Assert.Single(quality.Legs);
@@ -272,7 +290,7 @@ public sealed class MainViewModelTests
 
             var quality = Assert.Single(vm.ConnectionQualityForwards);
             Assert.Equal(59, quality.ForwardId);
-            Assert.Equal("LeiGod", quality.ModeDisplay);
+        Assert.Equal("Bond", quality.ModeDisplay);
             Assert.Contains("2 legs", quality.SummaryText);
             Assert.Contains("best 12.4 ms", quality.SummaryText);
             Assert.Equal(2, quality.Legs.Count);
@@ -290,7 +308,7 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public void ApplyForwardSnapshot_ShowsAllForwardsWithLeiGodMethod_WhenMixedRuntimeModesExist()
+    public void ApplyForwardSnapshot_ShowsAllForwardsWithNeutralMethodLabels_WhenMixedRuntimeModesExist()
     {
         var vm = new MainViewModel();
 
@@ -300,10 +318,10 @@ public sealed class MainViewModelTests
             CreateForward(26, "bond"),
         ], _ => false);
 
-        Assert.Equal("LeiGod", vm.ActiveModeFilter);
-        Assert.Equal(["LeiGod"], vm.AvailableModeFilters.ToArray());
+        Assert.Equal("All", vm.ActiveModeFilter);
+        Assert.Equal(["All"], vm.AvailableModeFilters.ToArray());
         Assert.Equal(2, vm.VisibleForwards.Count);
-        Assert.All(vm.VisibleForwards, forward => Assert.Equal("LeiGod", forward.ModeDisplay));
+        Assert.Equal(["Multi-path", "Bond"], vm.VisibleForwards.Select(forward => forward.ModeDisplay).ToArray());
         Assert.False(vm.VisibleForwards[0].IsMptcpFallback);
         Assert.NotNull(vm.SelectedForward);
         Assert.Equal(24, vm.SelectedForward!.ForwardId);
@@ -320,8 +338,8 @@ public sealed class MainViewModelTests
             CreateForward(27, "single"),
         ], _ => false);
 
-        Assert.Equal("LeiGod", vm.ActiveModeFilter);
-        Assert.Equal(["LeiGod"], vm.AvailableModeFilters.ToArray());
+        Assert.Equal("All", vm.ActiveModeFilter);
+        Assert.Equal(["All"], vm.AvailableModeFilters.ToArray());
         Assert.Equal(2, vm.VisibleForwards.Count);
         Assert.NotNull(vm.SelectedForward);
     }

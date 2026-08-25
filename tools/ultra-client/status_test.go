@@ -17,10 +17,10 @@ func TestStatusWriterCoalescesAndWritesSafeAtomicState(t *testing.T) {
 	if writer.writeCountValue() != 1 {
 		t.Fatalf("initial writes=%d", writer.writeCountValue())
 	}
-	entry := Entry{EntryRef: "entry-reference-abcdefghijklmnopqrstuvwxyz", IP: "203.0.113.20"}
-	writer.UpdateTCP(entry, 18*time.Millisecond)
-	writer.UpdateTCP(entry, 17*time.Millisecond)
-	writer.UpdateUDP(entry, 20*time.Millisecond)
+	selectionRef := "entry-reference-abcdefghijklmnopqrstuvwxyz"
+	writer.UpdateTCP(selectionRef, 18*time.Millisecond)
+	writer.UpdateTCP(selectionRef, 17*time.Millisecond)
+	writer.UpdateUDP(selectionRef, 20*time.Millisecond)
 	if writer.writeCountValue() != 1 {
 		t.Fatalf("uncoalesced writes=%d", writer.writeCountValue())
 	}
@@ -40,10 +40,10 @@ func TestStatusWriterCoalescesAndWritesSafeAtomicState(t *testing.T) {
 	if status.ForwardID != 42 || status.DetectedIngressZone != "shanghai" {
 		t.Fatalf("status=%+v", status)
 	}
-	if status.LatestTCP == nil || status.LatestTCP.EntryRef != entry.EntryRef || status.LatestTCP.RelayIP != entry.IP {
+	if status.LatestTCP == nil || status.LatestTCP.SelectionRef != selectionRef {
 		t.Fatalf("tcp=%+v", status.LatestTCP)
 	}
-	if status.ActiveUDP == nil || status.ActiveUDP.EntryRef != entry.EntryRef || status.ActiveUDP.RelayIP != entry.IP {
+	if status.ActiveUDP == nil || status.ActiveUDP.SelectionRef != selectionRef {
 		t.Fatalf("udp=%+v", status.ActiveUDP)
 	}
 	lower := strings.ToLower(string(raw))
@@ -67,13 +67,13 @@ func TestStatusWriterCoalescesAndWritesSafeAtomicState(t *testing.T) {
 func TestStatusWriterKeepsTCPAndUDPIndependent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "status.json")
 	writer := newStatusWriter(path, 7, time.Millisecond)
-	tcp := Entry{EntryRef: "tcp-entry-reference-abcdefghijklmnop", IP: "192.0.2.10"}
-	udp := Entry{EntryRef: "udp-entry-reference-abcdefghijklmnop", IP: "192.0.2.20"}
+	tcp := "tcp-entry-reference-abcdefghijklmnop"
+	udp := "udp-entry-reference-abcdefghijklmnop"
 	writer.UpdateTCP(tcp, 10*time.Millisecond)
 	time.Sleep(2 * time.Millisecond)
 	writer.UpdateUDP(udp, 20*time.Millisecond)
 	writer.Close()
-	if writer.status.LatestTCP == nil || writer.status.ActiveUDP == nil || writer.status.LatestTCP.EntryRef == writer.status.ActiveUDP.EntryRef {
+	if writer.status.LatestTCP == nil || writer.status.ActiveUDP == nil || writer.status.LatestTCP.SelectionRef == writer.status.ActiveUDP.SelectionRef {
 		t.Fatalf("status selections are not independent: %+v", writer.status)
 	}
 }

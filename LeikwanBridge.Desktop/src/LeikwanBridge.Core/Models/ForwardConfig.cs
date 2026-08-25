@@ -69,4 +69,10 @@ public sealed class ForwardConfig
 
     [JsonPropertyName("mptcp")]
     public MptcpConfig? Mptcp { get; set; }
+
+    [JsonPropertyName("ultra_access")]
+    public UltraPolicy? UltraAccess { get; set; }
+
+    [JsonIgnore]
+    public UltraLease? RuntimeLease { get; set; }
 }

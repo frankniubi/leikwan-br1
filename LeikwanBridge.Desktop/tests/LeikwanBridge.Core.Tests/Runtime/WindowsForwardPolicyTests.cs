@@ -65,6 +65,51 @@ public sealed class WindowsForwardPolicyTests
     }
 
     [Fact]
+    public void IsSupportedOnWindows_AcceptsUltraDirectForward()
+    {
+        var forward = CreateForward(51, "single");
+        forward.BackendMode = "ultra";
+        forward.ContractVersion = 2;
+        forward.ClientMode = "single";
+        forward.ActiveFamily = "ultra";
+        forward.AggregationEnabled = false;
+        forward.TargetContract = "ultra_direct";
+        forward.SidecarRequired = false;
+        forward.BondSidecarPointId = null;
+        forward.Bonding = null;
+        forward.Mptcp = null;
+        forward.Endpoints = [];
+
+        Assert.True(WindowsForwardPolicy.IsSupportedOnWindows(forward));
+    }
+
+    [Fact]
+    public void IsSupportedOnWindows_RejectsUltraThatRequiresSidecarOrEndpoints()
+    {
+        var forward = CreateForward(52, "single");
+        forward.BackendMode = "ultra";
+        forward.ContractVersion = 2;
+        forward.ClientMode = "single";
+        forward.ActiveFamily = "ultra";
+        forward.TargetContract = "ultra_direct";
+        forward.SidecarRequired = true;
+
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(forward));
+
+        forward.SidecarRequired = false;
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(forward));
+    }
+
+    [Fact]
+    public void IsSupportedOnWindows_RejectsRetiredCfMode()
+    {
+        var forward = CreateForward(53, "single");
+        forward.BackendMode = "cf_mode";
+
+        Assert.False(WindowsForwardPolicy.IsSupportedOnWindows(forward));
+    }
+
+    [Fact]
     public void IsSupportedOnWindows_RequiresSidecarTargetForAggregationContract()
     {
         var missingSidecar = CreateForward(48, "bond");

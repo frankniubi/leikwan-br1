@@ -88,4 +88,13 @@ public sealed class UsageState
 
     [JsonPropertyName("last_reported_bytes_out")]
     public long LastReportedBytesOut { get; set; }
+
+    [JsonPropertyName("ultra_last_bytes_in")]
+    public Dictionary<int, long> UltraLastBytesIn { get; set; } = [];
+
+    [JsonPropertyName("ultra_last_bytes_out")]
+    public Dictionary<int, long> UltraLastBytesOut { get; set; } = [];
+
+    [JsonPropertyName("ultra_sequences")]
+    public Dictionary<int, long> UltraSequences { get; set; } = [];
 }

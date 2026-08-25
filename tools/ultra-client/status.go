@@ -11,10 +11,9 @@ import (
 )
 
 type SelectionStatus struct {
-	EntryRef   string `json:"entry_ref"`
-	RelayIP    string `json:"relay_ip"`
-	RTTMillis  int64  `json:"rtt_ms"`
-	SelectedAt string `json:"selected_at"`
+	SelectionRef string `json:"selection_ref"`
+	RTTMillis    int64  `json:"rtt_ms"`
+	SelectedAt   string `json:"selected_at"`
 }
 
 type RuntimeStatus struct {
@@ -26,6 +25,9 @@ type RuntimeStatus struct {
 	ActiveUDP           *SelectionStatus `json:"active_udp,omitempty"`
 	UpdatedAt           string           `json:"updated_at"`
 	ErrorCode           string           `json:"error_code,omitempty"`
+	PolicyGeneration    string           `json:"policy_generation,omitempty"`
+	BytesIn             int64            `json:"bytes_in,omitempty"`
+	BytesOut            int64            `json:"bytes_out,omitempty"`
 }
 
 type StatusWriter struct {
@@ -65,17 +67,33 @@ func (writer *StatusWriter) UpdateLocation(location LocationResult) {
 	})
 }
 
-func (writer *StatusWriter) UpdateTCP(entry Entry, rtt time.Duration) {
+func (writer *StatusWriter) UpdatePolicy(generation string) {
 	writer.update(func(status *RuntimeStatus) {
-		status.LatestTCP = selectionStatus(entry, rtt)
+		status.PolicyGeneration = boundedStatusText(generation, 64)
+	})
+}
+
+func (writer *StatusWriter) AddUsage(bytesIn, bytesOut int) {
+	if bytesIn <= 0 && bytesOut <= 0 {
+		return
+	}
+	writer.update(func(status *RuntimeStatus) {
+		status.BytesIn += int64(maxInt(bytesIn, 0))
+		status.BytesOut += int64(maxInt(bytesOut, 0))
+	})
+}
+
+func (writer *StatusWriter) UpdateTCP(selectionRef string, rtt time.Duration) {
+	writer.update(func(status *RuntimeStatus) {
+		status.LatestTCP = selectionStatus(selectionRef, rtt)
 		status.State = "ready"
 		status.ErrorCode = ""
 	})
 }
 
-func (writer *StatusWriter) UpdateUDP(entry Entry, rtt time.Duration) {
+func (writer *StatusWriter) UpdateUDP(selectionRef string, rtt time.Duration) {
 	writer.update(func(status *RuntimeStatus) {
-		status.ActiveUDP = selectionStatus(entry, rtt)
+		status.ActiveUDP = selectionStatus(selectionRef, rtt)
 		status.State = "ready"
 		status.ErrorCode = ""
 	})
@@ -189,7 +207,7 @@ func (writer *StatusWriter) writeCountValue() int64 {
 	return writer.writeCount.Load()
 }
 
-func selectionStatus(entry Entry, rtt time.Duration) *SelectionStatus {
+func selectionStatus(selectionRef string, rtt time.Duration) *SelectionStatus {
 	millis := rtt.Milliseconds()
 	if millis < 0 {
 		millis = 0
@@ -198,10 +216,9 @@ func selectionStatus(entry Entry, rtt time.Duration) *SelectionStatus {
 		millis = 60000
 	}
 	return &SelectionStatus{
-		EntryRef:   boundedStatusText(entry.EntryRef, 128),
-		RelayIP:    entry.IP,
-		RTTMillis:  millis,
-		SelectedAt: time.Now().UTC().Format(time.RFC3339),
+		SelectionRef: boundedStatusText(selectionRef, 128),
+		RTTMillis:    millis,
+		SelectedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
 }
 
@@ -209,6 +226,13 @@ func boundedStatusText(value string, limit int) string {
 	runes := []rune(value)
 	if len(runes) > limit {
 		return string(runes[:limit])
+	}
+	return value
+}
+
+func maxInt(value, minimum int) int {
+	if value < minimum {
+		return minimum
 	}
 	return value
 }

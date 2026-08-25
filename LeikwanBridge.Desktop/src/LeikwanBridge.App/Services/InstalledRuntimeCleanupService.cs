@@ -14,6 +14,7 @@ public sealed class InstalledRuntimeCleanupService
         "leikwan-ingress.exe",
         "leikwan-uot-bond.exe",
         "leikwan-mptcp-relay.exe",
+        "ultra-client.exe",
         "wstunnel.exe",
     };
 

@@ -20,13 +20,13 @@
     <system:String x:Key="DashBytesOut">Bytes Out</system:String>
     <system:String x:Key="DashUptime">Uptime</system:String>
     <system:String x:Key="DashSummaryTitle">Control Center</system:String>
-    <system:String x:Key="DashSummarySubtitle">Monitor LeiGod forwarding state and control runtime recovery from one place.</system:String>
+    <system:String x:Key="DashSummarySubtitle">Monitor forwarding state and control runtime recovery from one place.</system:String>
     <system:String x:Key="DashQuickActions">Quick Actions</system:String>
     <system:String x:Key="DashForwardControls">Forward Controls</system:String>
     <system:String x:Key="DashRecentLogs">Recent Runtime Logs</system:String>
     <system:String x:Key="DashVisibleForwards">{0} forwards shown</system:String>
     <system:String x:Key="DashModeFilter">Method</system:String>
-    <system:String x:Key="DashLeiGodMethod">LeiGod forwarding is selected automatically.</system:String>
+    <system:String x:Key="DashMethodSummary">Forwarding method is selected automatically.</system:String>
     <system:String x:Key="DashOpenLogs">Open Full Log</system:String>
     <system:String x:Key="DashOpenSettings">Open Settings</system:String>
     <system:String x:Key="DashNoVisibleForwards">No forwards match the current filter.</system:String>
@@ -60,26 +60,18 @@
     <system:String x:Key="SetupMasterUrl">Master URL</system:String>
     <system:String x:Key="SetupClientId">Client ID</system:String>
     <system:String x:Key="SetupAgentToken">Agent Token</system:String>
-    <system:String x:Key="SetupEmail">Email</system:String>
-    <system:String x:Key="SetupPassword">Password</system:String>
     <system:String x:Key="SetupFieldsRequired">All fields are required.</system:String>
     <system:String x:Key="SetupConnecting">Connecting...</system:String>
     <system:String x:Key="SetupSuccess">Connection successful!</system:String>
     <system:String x:Key="SetupFailed">Connection failed. Please check your settings.</system:String>
 
     <!-- Client picker / updates -->
-    <system:String x:Key="ClientPickerTitle">Select Client</system:String>
-    <system:String x:Key="ClientPickerSubtitle">Choose which client profile to use on this device.</system:String>
-    <system:String x:Key="ActionContinue">Continue</system:String>
     <system:String x:Key="UpdateAvailableTitle">Update Available</system:String>
     <system:String x:Key="UpdateVersionReady">Version {0} is ready to install.</system:String>
     <system:String x:Key="ActionInstallNow">Install now</system:String>
     <system:String x:Key="ActionDeferUpdate">Wait until next restart</system:String>
     <system:String x:Key="ActionCheckUpdates">Check for Updates</system:String>
-    <system:String x:Key="ActionSwitchClient">Switch Client</system:String>
     <system:String x:Key="ActionSignOut">Sign Out</system:String>
-    <system:String x:Key="SettingsSignedInEmail">Signed In Email</system:String>
-    <system:String x:Key="SettingsActiveClient">Active Client</system:String>
 
     <!-- Settings -->
     <system:String x:Key="SettingsConnection">Connection</system:String>
@@ -106,9 +98,9 @@
     <system:String x:Key="TrayForwardsActive">{0} forwards active</system:String>
 
     <!-- Method Labels -->
-    <system:String x:Key="ModeMptcpFallback">LeiGod</system:String>
-    <system:String x:Key="ModeMptcp">LeiGod</system:String>
-    <system:String x:Key="ModeBond">LeiGod</system:String>
+    <system:String x:Key="ModeMptcpFallback">Fallback</system:String>
+    <system:String x:Key="ModeMptcp">Multi-path</system:String>
+    <system:String x:Key="ModeBond">Bond</system:String>
     <system:String x:Key="StrategyHeading">Connection strategy</system:String>
     <system:String x:Key="StrategySpeedMax">Speed max</system:String>
     <system:String x:Key="StrategySpeedMaxDescription">Combine healthy Slave paths for maximum throughput.</system:String>
@@ -116,8 +108,8 @@
     <system:String x:Key="StrategyLatencyBestDescription">Keep each new connection on the lowest-latency healthy Slave.</system:String>
     <system:String x:Key="StrategyRandom">Random</system:String>
     <system:String x:Key="StrategyRandomDescription">Assign each new connection to one healthy Slave at random.</system:String>
-    <system:String x:Key="ModeRace">LeiGod</system:String>
-    <system:String x:Key="ModeSingle">LeiGod</system:String>
-    <system:String x:Key="ModeFilterAll">LeiGod</system:String>
-    <system:String x:Key="ModeFilterMptcp">LeiGod</system:String>
+    <system:String x:Key="ModeRace">Race</system:String>
+    <system:String x:Key="ModeSingle">Direct</system:String>
+    <system:String x:Key="ModeFilterAll">All</system:String>
+    <system:String x:Key="ModeFilterMptcp">Multi-path</system:String>
 </ResourceDictionary>

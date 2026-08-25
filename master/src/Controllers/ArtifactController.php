@@ -185,6 +185,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('artifacts/ultra/ultra-client_linux_amd64', 'application/octet-stream', $request);
     }
 
+    public function ultraClientWindows(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/ultra/ultra-client_windows_amd64.exe', 'application/octet-stream', $request);
+    }
+
     public function forwardStrategyHelper(Request $request, array $params): Response
     {
         return $this->serveRepoFile('artifacts/forward-strategy.py', 'text/x-python; charset=utf-8', $request);
@@ -362,6 +367,7 @@ final class ArtifactController extends BaseController
             'cfwg_latency_watchdog',
             'client_agent_installer',
             'ultra_client_runtime',
+            'ultra_client_runtime_windows',
             'mptcp_client_runtime',
             'uot_runtime',
             'uot_bond_runtime',
