@@ -609,7 +609,7 @@ Expected: both pass without exposing a literal token or private network IP.
 - Test: all files listed in Tasks 1-5
 - Documentation: `docs/superpowers/plans/2026-08-25-tenant-client-install-only.md`
 
-- [ ] **Step 1: Run the complete related PHP regression set.**
+- [x] **Step 1: Run the complete related PHP regression set.**
 
 ```powershell
 $tests = @(
@@ -639,7 +639,7 @@ foreach ($test in $tests) {
 Expected: every test prints its existing `ok`/`OK` line and the loop exits
 without throwing.
 
-- [ ] **Step 2: Run static, syntax, and secret-surface checks.**
+- [x] **Step 2: Run static, syntax, and secret-surface checks.**
 
 ```powershell
 git diff --check
@@ -659,7 +659,7 @@ no `fetchAll(` call. Confirm the normal GET calls
 inside the null branch. Run the online count test to prove stale rows are
 excluded at 180 seconds.
 
-- [ ] **Step 4: Render the page in a local canary and inspect both viewports.**
+- [x] **Step 4: Render the page in a local canary and inspect both viewports.**
 
 Start the existing PHP entry point with a test database/config on an unused
 local port, authenticate a seeded tenant, and open `/tenant/clients` in the
@@ -669,7 +669,21 @@ download the Windows installer link, and submit `重置`; verify the redirect,
 changed command token, and zero online sessions. Do not capture or store the
 full token in screenshots or logs.
 
-- [ ] **Step 5: Commit the implementation in reviewable checkpoints.**
+- Evidence: the read-only fake-PDO canary returned HTTP 200 with exactly three
+  SELECTs (auth, default client, active online count). The browser preview was
+checked at 375x812, 768x1024, and 1280x720; the compact surface stayed
+non-empty, wrapped the command without horizontal overflow, and kept the
+global online row outside both platform blocks. The browser also exposed the
+copy action and token-free Windows URL. Reset redirect, token rotation, audit
+redaction, and session revocation are covered by the route/provisioning/session
+tests; the read-only browser fixture was not mutated. The redacted preview
+output lives under `.superpowers/brainstorm/client-page-preview/` and is
+ignored.
+
+- [x] **Step 5: Commit the implementation in reviewable checkpoints.**
+
+Completed checkpoints: `c676af5`, `7c3d8d3`, `1b845d3`, `0cbe603`, and
+`4d134ab`.
 
 Use these commits, keeping unrelated worktree changes untouched:
 
