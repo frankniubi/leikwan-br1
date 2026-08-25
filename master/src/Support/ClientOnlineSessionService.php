@@ -111,6 +111,18 @@ final class ClientOnlineSessionService
         return max(0, (int) ($row['total'] ?? 0));
     }
 
+    public function revokeAllForClient(int $clientId): int
+    {
+        if ($clientId <= 0) {
+            return 0;
+        }
+
+        return $this->db->execute(
+            'DELETE FROM client_device_sessions WHERE client_id = :client_id',
+            ['client_id' => $clientId]
+        );
+    }
+
     /**
      * @return array<int, array<string, mixed>>
      */

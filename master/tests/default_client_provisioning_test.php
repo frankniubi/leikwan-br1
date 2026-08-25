@@ -66,12 +66,23 @@ namespace Leikwan\Master\Database {
 
             if (str_contains($normalized, 'FROM clients') && str_contains($normalized, 'is_default_for_owner = 1')) {
                 $ownerUserId = (int) ($params['owner_user_id'] ?? 0);
-                foreach ($this->rows('clients') as $row) {
-                    if ((int) ($row['owner_user_id'] ?? 0) === $ownerUserId && (int) ($row['is_default_for_owner'] ?? 0) === 1) {
-                        return $row;
+                $status = (string) ($params['status'] ?? '');
+                $rows = array_values(array_filter($this->rows('clients'), static function (array $row) use ($ownerUserId, $status, $normalized): bool {
+                    if ((int) ($row['owner_user_id'] ?? 0) !== $ownerUserId
+                        || (int) ($row['is_default_for_owner'] ?? 0) !== 1) {
+                        return false;
                     }
-                }
-                return null;
+                    if (str_contains($normalized, 'status = :status') && (string) ($row['status'] ?? '') !== $status) {
+                        return false;
+                    }
+                    return !str_contains($normalized, 'group_id IS NULL') || ($row['group_id'] ?? null) === null;
+                }));
+                usort($rows, static fn(array $left, array $right): int => (int) ($left['id'] ?? 0) <=> (int) ($right['id'] ?? 0));
+                return $rows[0] ?? null;
+            }
+
+            if (str_contains($normalized, 'SELECT * FROM service_plans WHERE id = :id LIMIT 1')) {
+                return $this->findById('service_plans', (int) ($params['id'] ?? 0));
             }
 
             if (str_contains($normalized, 'SELECT p.default_client_online_device_limit FROM services s')) {
@@ -103,13 +114,30 @@ namespace Leikwan\Master\Database {
 
             if (str_contains($normalized, 'SELECT * FROM clients') && str_contains($normalized, 'WHERE owner_user_id = :owner_user_id')) {
                 $ownerUserId = (int) ($params['owner_user_id'] ?? 0);
-                $rows = array_values(array_filter($this->rows('clients'), static fn(array $row): bool => (int) ($row['owner_user_id'] ?? 0) === $ownerUserId));
+                $status = (string) ($params['active'] ?? '');
+                $rows = array_values(array_filter($this->rows('clients'), static function (array $row) use ($ownerUserId, $normalized, $status): bool {
+                    if ((int) ($row['owner_user_id'] ?? 0) !== $ownerUserId) {
+                        return false;
+                    }
+                    if (str_contains($normalized, 'group_id IS NULL') && ($row['group_id'] ?? null) !== null) {
+                        return false;
+                    }
+                    return !str_contains($normalized, 'status = :active') || (string) ($row['status'] ?? '') === $status;
+                }));
                 usort($rows, static function (array $left, array $right): int {
                     $leftRank = ((string) ($left['status'] ?? '')) === 'active' ? 0 : 1;
                     $rightRank = ((string) ($right['status'] ?? '')) === 'active' ? 0 : 1;
                     return [$leftRank, (int) ($left['id'] ?? 0)] <=> [$rightRank, (int) ($right['id'] ?? 0)];
                 });
                 return $rows;
+            }
+
+            if (str_contains($normalized, 'FROM client_device_sessions')) {
+                return $this->rows('client_device_sessions');
+            }
+
+            if (str_contains($normalized, 'FROM audit_logs')) {
+                return $this->rows('audit_logs');
             }
 
             return [];
@@ -152,6 +180,31 @@ namespace Leikwan\Master\Database {
                 }
                 unset($row);
                 return $count;
+            }
+
+            if (str_contains($normalized, 'UPDATE clients SET agent_token = :agent_token')) {
+                $count = 0;
+                foreach ($this->tables['clients'] as &$row) {
+                    if ((int) ($row['id'] ?? 0) !== (int) ($params['id'] ?? 0)
+                        || (int) ($row['owner_user_id'] ?? 0) !== (int) ($params['owner_user_id'] ?? 0)) {
+                        continue;
+                    }
+                    $row['agent_token'] = $params['agent_token'];
+                    $row['updated_at'] = $params['updated_at'] ?? $row['updated_at'] ?? null;
+                    $count++;
+                }
+                unset($row);
+                return $count;
+            }
+
+            if (str_contains($normalized, 'DELETE FROM client_device_sessions WHERE client_id = :client_id')) {
+                $before = count($this->tables['client_device_sessions'] ?? []);
+                $clientId = (int) ($params['client_id'] ?? 0);
+                $this->tables['client_device_sessions'] = array_values(array_filter(
+                    $this->tables['client_device_sessions'] ?? [],
+                    static fn(array $row): bool => (int) ($row['client_id'] ?? 0) !== $clientId
+                ));
+                return $before - count($this->tables['client_device_sessions']);
             }
 
             return 0;
@@ -218,13 +271,25 @@ namespace {
         ['id' => 20, 'name' => 'Tenant B', 'email' => 'tenant-b@example.com', 'role' => 'tenant', 'status' => 'active'],
         ['id' => 30, 'name' => 'Tenant C', 'email' => 'tenant-c@example.com', 'role' => 'tenant', 'status' => 'active'],
         ['id' => 40, 'name' => 'Tenant D', 'email' => 'tenant-d@example.com', 'role' => 'tenant', 'status' => 'active'],
+        ['id' => 50, 'name' => 'Tenant E', 'email' => 'tenant-e@example.com', 'role' => 'tenant', 'status' => 'active'],
+        ['id' => 60, 'name' => 'Tenant F', 'email' => 'tenant-f@example.com', 'role' => 'tenant', 'status' => 'active'],
+        ['id' => 70, 'name' => 'Tenant G', 'email' => 'tenant-g@example.com', 'role' => 'tenant', 'status' => 'active'],
     ]);
     $db->seed('clients', [
         ['id' => 101, 'owner_user_id' => 20, 'group_id' => null, 'is_default_for_owner' => 0, 'agent_token' => 'tok-101', 'name' => 'Older Active', 'display_host' => 'older.example.com', 'status' => 'active', 'created_at' => '2026-04-25 00:00:00', 'updated_at' => '2026-04-25 00:00:00'],
         ['id' => 102, 'owner_user_id' => 20, 'group_id' => null, 'is_default_for_owner' => 0, 'agent_token' => 'tok-102', 'name' => 'Newer Active', 'display_host' => 'newer.example.com', 'status' => 'active', 'created_at' => '2026-04-25 00:00:01', 'updated_at' => '2026-04-25 00:00:01'],
         ['id' => 201, 'owner_user_id' => 30, 'group_id' => null, 'is_default_for_owner' => 1, 'agent_token' => 'tok-201', 'name' => 'First Wrong Default', 'display_host' => 'first.example.com', 'status' => 'active', 'created_at' => '2026-04-25 00:00:00', 'updated_at' => '2026-04-25 00:00:00'],
         ['id' => 202, 'owner_user_id' => 30, 'group_id' => null, 'is_default_for_owner' => 1, 'agent_token' => 'tok-202', 'name' => 'Second Wrong Default', 'display_host' => 'second.example.com', 'status' => 'active', 'created_at' => '2026-04-25 00:00:01', 'updated_at' => '2026-04-25 00:00:01'],
+        ['id' => 501, 'owner_user_id' => 50, 'group_id' => 77, 'is_default_for_owner' => 1, 'agent_token' => 'tok-501', 'name' => 'Grouped Legacy Default', 'display_host' => 'grouped.example.com', 'status' => 'active', 'created_at' => '2026-04-25 00:00:00', 'updated_at' => '2026-04-25 00:00:00'],
+        ['id' => 502, 'owner_user_id' => 50, 'group_id' => null, 'is_default_for_owner' => 0, 'agent_token' => 'tok-502', 'name' => 'Ungrouped Client', 'display_host' => 'ungrouped.example.com', 'status' => 'active', 'created_at' => '2026-04-25 00:00:01', 'updated_at' => '2026-04-25 00:00:01'],
+        ['id' => 601, 'owner_user_id' => 60, 'group_id' => 88, 'is_default_for_owner' => 1, 'agent_token' => 'tok-601', 'name' => 'Grouped Only Default', 'display_host' => 'grouped-only.example.com', 'status' => 'active', 'created_at' => '2026-04-25 00:00:00', 'updated_at' => '2026-04-25 00:00:00'],
+        ['id' => 701, 'owner_user_id' => 70, 'group_id' => null, 'is_default_for_owner' => 0, 'agent_token' => 'tok-701', 'name' => 'Disabled Legacy Client', 'display_host' => 'disabled.example.com', 'status' => 'disabled', 'created_at' => '2026-04-25 00:00:00', 'updated_at' => '2026-04-25 00:00:00'],
     ]);
+    $db->seed('client_device_sessions', [
+        ['id' => 1, 'client_id' => 502, 'device_id' => 'linux-a', 'last_seen_at' => gmdate('Y-m-d H:i:s')],
+        ['id' => 2, 'client_id' => 502, 'device_id' => 'windows-b', 'last_seen_at' => gmdate('Y-m-d H:i:s')],
+    ]);
+    $db->seed('audit_logs', []);
     $db->seed('service_plans', [
         ['id' => 501, 'default_client_online_device_limit' => 3],
     ]);
@@ -233,6 +298,50 @@ namespace {
     ]);
 
     $service = new ProvisioningService(new Config(), $db);
+
+    $repaired = $service->ensureDefaultClientForUser(50);
+    if ((int) ($repaired['id'] ?? 0) !== 502
+        || ($repaired['group_id'] ?? null) !== null
+        || (int) ($repaired['is_default_for_owner'] ?? 0) !== 1) {
+        fail('expected tenant 50 to select the active ungrouped client as default');
+    }
+    $legacyGrouped = $db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => 501]);
+    if ((int) ($legacyGrouped['group_id'] ?? 0) !== 77
+        || (int) ($legacyGrouped['is_default_for_owner'] ?? 0) !== 0) {
+        fail('grouped legacy client was changed incorrectly');
+    }
+    $stableToken = (string) (($service->defaultClientForUser(50) ?? [])['agent_token'] ?? '');
+    if ($stableToken !== 'tok-502') {
+        fail('expected default client token to remain stable before reset');
+    }
+
+    $rotated = $service->rotateDefaultClientTokenForUser(50);
+    if ((string) ($rotated['agent_token'] ?? '') === '' || (string) ($rotated['agent_token'] ?? '') === $stableToken) {
+        fail('expected reset to rotate the default client token');
+    }
+    if ($db->fetchAll('SELECT * FROM client_device_sessions WHERE client_id = :client_id', ['client_id' => 502]) !== []) {
+        fail('expected reset to revoke default client device sessions');
+    }
+    $auditRows = $db->fetchAll('SELECT * FROM audit_logs WHERE action = :action', ['action' => 'client.default_token_rotated']);
+    if ($auditRows === [] || str_contains((string) ($auditRows[0]['context_json'] ?? ''), (string) ($rotated['agent_token'] ?? ''))) {
+        fail('expected token reset audit to omit the new secret');
+    }
+
+    $groupedOnlyBackfill = $service->backfillDefaultClientsForUsers(60, true);
+    $defaultF = $service->defaultClientForUser(60);
+    if ((int) ($groupedOnlyBackfill['created'] ?? 0) !== 1
+        || $defaultF === null
+        || ($defaultF['group_id'] ?? null) !== null
+        || (int) ($defaultF['id'] ?? 0) === 601) {
+        fail('expected grouped-only backfill to create an ungrouped default');
+    }
+
+    $disabledOnly = $service->ensureDefaultClientForUser(70);
+    if ((int) ($disabledOnly['id'] ?? 0) === 701
+        || (string) ($disabledOnly['status'] ?? '') !== 'active'
+        || ($disabledOnly['group_id'] ?? null) !== null) {
+        fail('expected disabled-only tenant repair to create an active ungrouped default');
+    }
 
     $created = $service->ensureDefaultClientForUser(10);
     if ((int) ($created['owner_user_id'] ?? 0) !== 10 || (int) ($created['is_default_for_owner'] ?? 0) !== 1) {
