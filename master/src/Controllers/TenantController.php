@@ -1018,12 +1018,53 @@ final class TenantController extends BaseController
         }
 
         $installCommand = $this->clientAgentInstallCommand($client);
-        $onlineCount = (new ClientOnlineSessionService($this->db))->activeCountForClient($clientId);
+        $sessionService = new ClientOnlineSessionService($this->db);
+        $onlineCount = $sessionService->activeCountForClient($clientId);
         $onlineLimit = max(1, (int) ($client['online_device_limit'] ?? 1));
+        $sessions = $sessionService->activeSessionsForClient($clientId);
         $csrf = $this->escape(SessionAuth::csrfToken());
         $resetForm = '<form class="inline" method="post" action="/tenant/clients/reset-token">'
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
             . '<button class="button ghost" type="submit">重置</button></form>';
+
+        $onlineRows = '';
+        foreach ($sessions as $session) {
+            $ip = trim((string) ($session['last_ip'] ?? ''));
+            $os = trim((string) ($session['os_release'] ?? ''));
+            if ($os === '') {
+                $platform = trim((string) ($session['platform'] ?? ''));
+                $os = ($platform !== '' && $platform !== 'unknown') ? $platform : '';
+            }
+            $version = trim((string) ($session['client_version'] ?? ''));
+            if ($version === '') {
+                $ua = trim((string) ($session['user_agent'] ?? ''));
+                if (preg_match('/Leikwan-Client-Agent\/([A-Za-z0-9._-]+)/', $ua, $matches) === 1) {
+                    $version = $matches[1];
+                }
+            }
+            $deviceId = trim((string) ($session['device_id'] ?? ''));
+            $kickForm = '<form class="inline" method="post" action="/tenant/clients/kick" onsubmit="return confirm(\'确定要踢走这个客户端吗？\');">'
+                . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
+                . '<button class="button ghost" type="submit">踢走</button></form>';
+            $onlineRows .= '<tr>'
+                . '<td>' . $this->escape($ip !== '' ? $ip : '—') . '</td>'
+                . '<td>' . $this->escape($os !== '' ? $os : '—') . '</td>'
+                . '<td>' . $this->escape($version !== '' ? $version : '—') . '</td>'
+                . '<td class="actions">' . $kickForm . '</td>'
+                . '</tr>';
+        }
+
+        $onlineList = '<div class="tenant-client-install__online-list">'
+            . '<div class="tenant-client-install__online-list-head"><strong>在线客户端</strong>'
+            . '<span class="muted">' . count($sessions) . ' 个在线</span></div>';
+        if ($sessions === []) {
+            $onlineList .= '<div class="muted">当前没有在线客户端。</div>';
+        } else {
+            $onlineList .= '<table class="table"><thead><tr><th>IP</th><th>系统</th><th>客户端版本</th><th></th></tr></thead><tbody>'
+                . $onlineRows . '</tbody></table>';
+        }
+        $onlineList .= '</div>';
 
         $body = '<div class="tenant-client-install">'
             . '<div class="tenant-client-install__shell">'
@@ -1039,9 +1080,11 @@ final class TenantController extends BaseController
             . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
             . '</section></div>'
             . '<div class="tenant-client-install__online"><span>最大在线</span><strong>'
-            . $onlineCount . ' / ' . $onlineLimit . '</strong></div></div></div></div>';
+            . $onlineCount . ' / ' . $onlineLimit . '</strong></div></div></div>'
+            . $onlineList
+            . '</div>';
 
-        return $this->page('Client', $body, $user, $this->tenantNav('clients'));
+        return $this->page('客户端', $body, $user, $this->tenantNav('clients'));
     }
 
     public function resetDefaultClientToken(Request $request, array $params): Response
@@ -1071,6 +1114,34 @@ final class TenantController extends BaseController
             SessionAuth::flash('success', 'Client token reset.');
         } catch (\Throwable) {
             SessionAuth::flash('error', 'Client token reset failed.');
+        }
+
+        return Response::redirect('/tenant/clients');
+    }
+
+    public function kickClientDevice(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $client = $this->provisioning->defaultClientForUser((int) $user['id']);
+            if ($client === null) {
+                $client = $this->provisioning->ensureDefaultClientForUser((int) $user['id']);
+            }
+            $clientId = (int) ($client['id'] ?? 0);
+            $deviceId = trim((string) $request->input('device_id', ''));
+            if ($clientId <= 0 || $deviceId === '') {
+                throw new ApiException('invalid_device', 400);
+            }
+
+            (new ClientOnlineSessionService($this->db))->revokeDevice($clientId, $deviceId);
+            SessionAuth::flash('success', '客户端已踢下线。');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', '踢下线失败。');
         }
 
         return Response::redirect('/tenant/clients');
@@ -3027,7 +3098,7 @@ final class TenantController extends BaseController
             ['group' => 'Overview', 'href' => '/tenant', 'label' => 'Overview', 'active' => $active === 'intro'],
             ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'Forwards', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
             ['group' => 'Services', 'href' => '/tenant/plans', 'label' => 'Packages', 'active' => $active === 'plans'],
-            ['group' => 'Clients', 'href' => '/tenant/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
+            ['group' => '客户端', 'href' => '/tenant/clients', 'label' => '客户端', 'active' => $active === 'clients'],
             ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Account', 'active' => $active === 'account'],
             ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
             ['group' => 'Advanced', 'href' => '/tenant/slave-groups', 'label' => 'Node Groups', 'active' => $active === 'slave-groups'],

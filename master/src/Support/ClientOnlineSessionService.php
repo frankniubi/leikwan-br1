@@ -55,6 +55,8 @@ final class ClientOnlineSessionService
                 'device_id' => $deviceId,
                 'device_name' => $this->trimOrNull($metadata['device_name'] ?? null),
                 'platform' => $this->trimOrNull($metadata['platform'] ?? null),
+                'client_version' => $this->trimOrNull($metadata['client_version'] ?? null),
+                'os_release' => $this->trimOrNull($metadata['os_release'] ?? null),
                 'user_agent' => $this->trimOrNull($metadata['user_agent'] ?? null),
                 'last_ip' => $this->trimOrNull($metadata['last_ip'] ?? null),
                 'first_seen_at' => $now,
@@ -72,6 +74,8 @@ final class ClientOnlineSessionService
             'UPDATE client_device_sessions
              SET device_name = :device_name,
                  platform = :platform,
+                 client_version = :client_version,
+                 os_release = :os_release,
                  user_agent = :user_agent,
                  last_ip = :last_ip,
                  last_seen_at = :last_seen_at,
@@ -83,6 +87,8 @@ final class ClientOnlineSessionService
                 'id' => $existing['id'],
                 'device_name' => $this->trimOrNull($metadata['device_name'] ?? ($existing['device_name'] ?? null)),
                 'platform' => $this->trimOrNull($metadata['platform'] ?? ($existing['platform'] ?? null)),
+                'client_version' => $this->trimOrNull($metadata['client_version'] ?? ($existing['client_version'] ?? null)),
+                'os_release' => $this->trimOrNull($metadata['os_release'] ?? ($existing['os_release'] ?? null)),
                 'user_agent' => $this->trimOrNull($metadata['user_agent'] ?? ($existing['user_agent'] ?? null)),
                 'last_ip' => $this->trimOrNull($metadata['last_ip'] ?? ($existing['last_ip'] ?? null)),
                 'last_seen_at' => $now,
@@ -120,6 +126,19 @@ final class ClientOnlineSessionService
         return $this->db->execute(
             'DELETE FROM client_device_sessions WHERE client_id = :client_id',
             ['client_id' => $clientId]
+        );
+    }
+
+    public function revokeDevice(int $clientId, string $deviceId): int
+    {
+        $deviceId = trim($deviceId);
+        if ($clientId <= 0 || $deviceId === '') {
+            return 0;
+        }
+
+        return $this->db->execute(
+            'DELETE FROM client_device_sessions WHERE client_id = :client_id AND device_id = :device_id',
+            ['client_id' => $clientId, 'device_id' => $deviceId]
         );
     }
 
@@ -188,6 +207,7 @@ final class ClientOnlineSessionService
         $userAgent = trim((string) ($request->header('user-agent') ?? ''));
         $platform = trim((string) ($request->header('x-device-platform') ?? (string) $request->input('platform', '')));
         $deviceName = trim((string) ($request->header('x-device-name') ?? (string) $request->input('device_name', '')));
+        $osRelease = trim((string) $request->input('kernel_release', ''));
 
         if ($deviceName === '' && $userAgent !== '') {
             $deviceName = $userAgent;
@@ -196,9 +216,23 @@ final class ClientOnlineSessionService
         return [
             'device_name' => $deviceName,
             'platform' => $platform !== '' ? $platform : 'unknown',
+            'client_version' => $this->clientVersionFromRequest($request, $userAgent),
+            'os_release' => $osRelease !== '' ? $osRelease : null,
             'user_agent' => $userAgent !== '' ? $userAgent : null,
             'last_ip' => $this->requestIp($request),
         ];
+    }
+
+    private function clientVersionFromRequest(Request $request, string $userAgent): ?string
+    {
+        $version = trim((string) ($request->header('x-client-version') ?? (string) $request->input('agent_version', '')));
+        if ($version !== '') {
+            return $version;
+        }
+        if ($userAgent !== '' && preg_match('/Leikwan-Client-Agent\/([A-Za-z0-9._-]+)/', $userAgent, $matches) === 1) {
+            return $matches[1];
+        }
+        return null;
     }
 
     private function requestIp(Request $request): ?string

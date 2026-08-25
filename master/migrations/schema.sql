@@ -547,6 +547,8 @@ CREATE TABLE IF NOT EXISTS client_device_sessions (
     device_id VARCHAR(191) NOT NULL,
     device_name VARCHAR(191) NULL,
     platform VARCHAR(64) NULL,
+    client_version VARCHAR(64) NULL,
+    os_release VARCHAR(191) NULL,
     user_agent VARCHAR(255) NULL,
     last_ip VARCHAR(64) NULL,
     first_seen_at DATETIME NOT NULL,
