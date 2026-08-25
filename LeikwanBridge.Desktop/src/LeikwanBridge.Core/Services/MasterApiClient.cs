@@ -78,12 +78,25 @@ public sealed class MasterApiClient : IDisposable
                ?? throw new InvalidOperationException("null client selection response");
     }
 
-    public async Task<PullResponse> PullConfigsAsync(CancellationToken ct = default)
+    public async Task<PullResponse> PullConfigsAsync(string? sinceRevision = null, int waitSeconds = 0, CancellationToken ct = default)
     {
+        var query = new List<string>();
+        if (!string.IsNullOrWhiteSpace(sinceRevision))
+            query.Add($"since_revision={Uri.EscapeDataString(sinceRevision)}");
+        if (waitSeconds > 0)
+            query.Add($"wait_seconds={waitSeconds}");
+
         var url = $"{_masterUrl}/api/client/configs/pull";
+        if (query.Count > 0)
+            url += "?" + string.Join("&", query);
+
         Log.Debug("pulling configs from {Url}", url);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         var response = await SendAsync(request, ct);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.NotModified)
+            return new PullResponse { Ok = true, NotModified = true, ConfigRevision = sinceRevision ?? "" };
+
         await EnsureSuccessOrThrowAsync(response, ct);
         var json = await response.Content.ReadAsStringAsync(ct);
         return JsonSerializer.Deserialize<PullResponse>(json, JsonOptions)
@@ -225,7 +238,7 @@ public sealed class MasterApiClient : IDisposable
         try
         {
             LastErrorMessage = "";
-            var result = await PullConfigsAsync(ct);
+            var result = await PullConfigsAsync(ct: ct);
             return result.Ok;
         }
         catch (MasterApiException ex)

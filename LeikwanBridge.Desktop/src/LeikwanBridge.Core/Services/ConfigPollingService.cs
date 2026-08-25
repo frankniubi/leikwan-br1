@@ -5,11 +5,15 @@ using Serilog;
 namespace LeikwanBridge.Core.Services;
 
 /// <summary>
-/// Polls master for forward configs every N seconds.
-/// Port of client_agent.py sync_once() + run() loop.
+/// Polls master for forward configs. Revision-aware: sends the last known
+/// revision, short-circuits on 304 Not Modified, and reconciles only changed
+/// forwards. Port of client_agent.py sync_once() + run() loop.
 /// </summary>
 public sealed class ConfigPollingService
 {
+    private const int LongPollWaitSeconds = 10;
+    private const int ReArmDelayMs = 500;
+
     private readonly MasterApiClient _api;
     private readonly ForwardRuntimeManager _runtimeManager;
     private readonly StateManager _stateManager;
@@ -17,6 +21,10 @@ public sealed class ConfigPollingService
     private List<ForwardConfig> _latestForwards = [];
     private CancellationTokenSource? _cts;
     private Task? _pollingTask;
+    private string _lastConfigRevision = "";
+    private int _nextPollAfterMs;
+    private int _syncInProgress;
+    private volatile bool _pendingResync;
 
     public event Action<List<ForwardConfig>>? ForwardsUpdated;
     public event Action<PullState>? PullStateChanged;
@@ -51,7 +59,14 @@ public sealed class ConfigPollingService
                     SyncError?.Invoke(ex);
                     SavePullError(ex);
                 }
-                try { await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), ct); }
+
+                // Steady-state uses a short re-arm because the server long-poll
+                // already waits for a change; before the first revision we fall
+                // back to the Panel-provided or configured interval.
+                var delayMs = _lastConfigRevision == ""
+                    ? (_nextPollAfterMs > 0 ? _nextPollAfterMs : intervalSeconds * 1000)
+                    : ReArmDelayMs;
+                try { await Task.Delay(TimeSpan.FromMilliseconds(delayMs), ct); }
                 catch (OperationCanceledException) { break; }
             }
         }, ct);
@@ -62,14 +77,55 @@ public sealed class ConfigPollingService
         _cts?.Cancel();
     }
 
+    /// <summary>Immediate revision-aware pull for reconnect / window-foreground / user Start.</summary>
+    public void TriggerImmediateSync()
+    {
+        _ = SyncOnceAsync();
+    }
+
     public async Task SyncOnceAsync(CancellationToken ct = default)
     {
-        var pull = await _api.PullConfigsAsync(ct);
+        if (Interlocked.CompareExchange(ref _syncInProgress, 1, 0) != 0)
+        {
+            _pendingResync = true;
+            return;
+        }
+
+        try
+        {
+            do
+            {
+                _pendingResync = false;
+                await SyncOnceCoreAsync(ct);
+            }
+            while (_pendingResync && !ct.IsCancellationRequested);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _syncInProgress, 0);
+        }
+    }
+
+    private async Task SyncOnceCoreAsync(CancellationToken ct)
+    {
+        var sinceRevision = string.IsNullOrWhiteSpace(_lastConfigRevision) ? null : _lastConfigRevision;
+        var pull = await _api.PullConfigsAsync(sinceRevision, LongPollWaitSeconds, ct);
         if (!pull.Ok)
         {
             Log.Warning("pull response ok=false");
             return;
         }
+
+        if (pull.NotModified)
+        {
+            Log.Debug("config unchanged (revision {Revision})", pull.ConfigRevision);
+            SavePullState("ok", _latestForwards.Count);
+            return;
+        }
+
+        _lastConfigRevision = pull.ConfigRevision;
+        if (pull.NextPollAfterMs > 0)
+            _nextPollAfterMs = pull.NextPollAfterMs;
 
         _runtimeManager.ApplyAuthoritativeAgentConfig(pull.Client?.AgentConfigJson);
 
@@ -78,17 +134,7 @@ public sealed class ConfigPollingService
             .ToList();
         _latestForwards = forwards;
 
-        var pullState = new PullState
-        {
-            Status = "ok",
-            LastAttemptAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
-            LastSuccessAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
-            AgentVersion = MasterApiClient.AgentVersion,
-            ForwardsTotal = forwards.Count,
-            AppliedForwardIds = forwards.Select(f => f.ForwardId).ToList(),
-        };
-        _stateManager.SavePullState(pullState);
-        PullStateChanged?.Invoke(pullState);
+        SavePullState("ok", forwards.Count);
 
         // Determine which forwards to apply/remove
         var applied = _stateManager.LoadApplied();
@@ -170,6 +216,21 @@ public sealed class ConfigPollingService
         }
 
         ForwardsUpdated?.Invoke(forwards);
+    }
+
+    private void SavePullState(string status, int forwardsTotal)
+    {
+        var pullState = new PullState
+        {
+            Status = status,
+            LastAttemptAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            LastSuccessAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            AgentVersion = MasterApiClient.AgentVersion,
+            ForwardsTotal = forwardsTotal,
+            AppliedForwardIds = _latestForwards.Select(f => f.ForwardId).ToList(),
+        };
+        _stateManager.SavePullState(pullState);
+        PullStateChanged?.Invoke(pullState);
     }
 
     private void SavePullError(Exception ex)

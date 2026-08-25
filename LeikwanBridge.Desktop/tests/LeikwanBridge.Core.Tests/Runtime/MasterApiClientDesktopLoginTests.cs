@@ -102,6 +102,27 @@ public sealed class MasterApiClientDesktopLoginTests
     }
 
     [Fact]
+    public async Task PullConfigsAsync_ReturnsNotModified_On304_AndThreadsRevision()
+    {
+        using var http = new HttpClient(new NotModifiedHandler()) { Timeout = TimeSpan.FromSeconds(5) };
+        string? requestedUrl = null;
+        using var api = new MasterApiClient(
+            "https://v3.leikwanhost.com",
+            "agent-token-27",
+            httpClientFactory: () => http,
+            ownsHttpClient: false,
+            onRequestForTest: request => requestedUrl = request.RequestUri!.ToString());
+
+        var response = await api.PullConfigsAsync("rev-abc", 10);
+
+        Assert.True(response.Ok);
+        Assert.True(response.NotModified);
+        Assert.Equal("rev-abc", response.ConfigRevision);
+        Assert.Contains("since_revision=rev-abc", requestedUrl);
+        Assert.Contains("wait_seconds=10", requestedUrl);
+    }
+
+    [Fact]
     public void BuildWindowsDeviceId_IsStableForSameClientAndMachine()
     {
         var first = MasterApiClient.BuildWindowsDeviceId(27, "DEVBOX");
@@ -196,6 +217,15 @@ public sealed class MasterApiClientDesktopLoginTests
         Assert.DoesNotContain("line-password", requestBody, StringComparison.Ordinal);
         Assert.Contains("ticket-a", requestBody, StringComparison.Ordinal);
         Assert.Contains("policy_generation", requestBody, StringComparison.Ordinal);
+    }
+
+    private sealed class NotModifiedHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.NotModified) { RequestMessage = request };
+            return Task.FromResult(response);
+        }
     }
 
     private sealed class StubPullResponseHandler : HttpMessageHandler
