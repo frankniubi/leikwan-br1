@@ -13,7 +13,7 @@ if (!is_string($source) || $source === '') {
 }
 
 $start = strpos($source, 'public function clientsPage(Request $request, array $params): Response');
-$end = strpos($source, 'public function sidecarsPage(Request $request, array $params): Response');
+$end = strpos($source, 'public function resetDefaultClientToken(Request $request, array $params): Response');
 if (!is_int($start) || !is_int($end) || $end <= $start) {
     fail('failed to isolate tenant clientsPage source');
 }
@@ -46,6 +46,9 @@ foreach ([
     'recentEvents(',
     'assignedForwardConfigsForClient(',
     'activeSessionsForClient(',
+    'fetchAll(',
+    'serviceSummary(',
+    'defaultClientOnlineDeviceLimitForTenant(',
     'viewTabs(',
     '?view=',
     'Android',
@@ -64,6 +67,13 @@ foreach ([
 
 if (substr_count($clientsPage, '最大在线') !== 1) {
     fail('expected exactly one global online label');
+}
+if (substr_count($clientsPage, 'activeCountForClient(') !== 1) {
+    fail('tenant Client page must use exactly one active online count query');
+}
+if (substr_count($clientsPage, 'defaultClientForUser(') !== 1
+    || substr_count($clientsPage, 'ensureDefaultClientForUser(') !== 1) {
+    fail('tenant Client page default resolution budget changed');
 }
 
 $resetStart = strpos($source, 'public function resetDefaultClientToken(Request $request, array $params): Response');
