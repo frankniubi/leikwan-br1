@@ -13,11 +13,18 @@ $admin = (string) file_get_contents(__DIR__ . '/../src/Controllers/AdminControll
 $tenant = (string) file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php');
 foreach ([
     [$admin, 'tenantsPage'], [$admin, 'servicesPage'], [$admin, 'clientsPage'], [$admin, 'nodesPage'], [$admin, 'sidecarsPage'],
-    [$tenant, 'dashboard'], [$tenant, 'clientsPage'], [$tenant, 'sidecarsPage'],
+    [$tenant, 'dashboard'], [$tenant, 'sidecarsPage'],
 ] as [$source, $method]) {
     if (!str_contains(methodSource($source, $method), 'pg-mobile-resource-row')) {
         throw new RuntimeException($method . ' lacks a mobile resource row');
     }
+}
+
+// The tenant Client page is intentionally install-only and no longer renders a
+// resource list. Its compact responsive contract is covered separately.
+$tenantClients = methodSource($tenant, 'clientsPage');
+if (!str_contains($tenantClients, 'tenant-client-install')) {
+    throw new RuntimeException('tenant clientsPage lacks the compact install surface');
 }
 
 $ui = (string) file_get_contents(__DIR__ . '/../src/Support/PrecisionGridUi.php');

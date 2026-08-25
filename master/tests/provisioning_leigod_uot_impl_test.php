@@ -51,7 +51,7 @@ foreach ([
 $requiredPayloadSnippets = [
     "'sidecar_uplink' => \$staticSidecarUplink ?? []",
     "'sidecar_uplink_selector' => \$staticSidecarSelector",
-    "'mptcp_underlay' => \$clientMode === 'mptcp' ? \$this->buildMptcpSlaveUnderlayPayload",
+    "'mptcp_underlay' => !\$ultraPublish && \$clientMode === 'mptcp' ? \$this->buildMptcpSlaveUnderlayPayload",
     "\$publishTarget = (string) \$staticSidecarUplink['relay_target'];",
 ];
 foreach ($requiredPayloadSnippets as $snippet) {
