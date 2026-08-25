@@ -199,7 +199,7 @@
                             <StackPanel>
                                 <DockPanel Margin="0,0,0,12">
                                     <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource DashForwardControls}" DockPanel.Dock="Left" Margin="0"/>
-                                    <TextBlock Text="{Binding VisibleForwardCount, StringFormat={}{0} forwards shown}"
+                                    <TextBlock Text="{Binding ForwardCount, StringFormat={}{0} forwards shown}"
                                                DockPanel.Dock="Right" VerticalAlignment="Center"
                                                Foreground="{StaticResource MutedTextBrush}"/>
                                 </DockPanel>
@@ -214,7 +214,7 @@
                                         <Style TargetType="TextBlock">
                                             <Setter Property="Visibility" Value="Collapsed"/>
                                             <Style.Triggers>
-                                                <DataTrigger Binding="{Binding VisibleForwardCount}" Value="0">
+                                                <DataTrigger Binding="{Binding ForwardCount}" Value="0">
                                                     <Setter Property="Visibility" Value="Visible"/>
                                                 </DataTrigger>
                                             </Style.Triggers>
@@ -222,7 +222,7 @@
                                     </TextBlock.Style>
                                 </TextBlock>
 
-                                <ItemsControl ItemsSource="{Binding VisibleForwards}">
+                                <ItemsControl ItemsSource="{Binding Forwards}">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
                                             <WrapPanel/>
@@ -236,58 +236,35 @@
                                                     <DockPanel Margin="0,0,0,10">
                                                         <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
                                                             <Ellipse Style="{StaticResource StatusDot}"
-                                                                     Fill="{Binding IsRunning, Converter={StaticResource StatusBrush}}"/>
-                                                            <TextBlock Text="{Binding ForwardId, StringFormat='Forward #{0}'}"
+                                                                     Fill="{Binding Summary.CanStop, Converter={StaticResource StatusBrush}}"/>
+                                                            <TextBlock Text="{Binding DisplayName}"
                                                                        FontSize="15" FontWeight="SemiBold"
                                                                        Foreground="{StaticResource TextBrush}"/>
                                                         </StackPanel>
                                                         <Border DockPanel.Dock="Right" Style="{StaticResource ModeBadge}"
-                                                                Background="{Binding Mode, Converter={StaticResource ModeColor}}"
+                                                                Background="{StaticResource PrimaryBrush}"
                                                                 HorizontalAlignment="Right">
-                                                            <TextBlock Text="{Binding ModeDisplay}" FontSize="11"
+                                                            <TextBlock Text="{Binding Summary.QualityText}" FontSize="11"
                                                                        Foreground="White" FontWeight="SemiBold"/>
                                                         </Border>
                                                     </DockPanel>
 
-                                                    <Grid Margin="0,0,0,10">
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="Auto"/>
-                                                            <ColumnDefinition Width="*"/>
-                                                        </Grid.ColumnDefinitions>
-                                                        <Grid.RowDefinitions>
-                                                            <RowDefinition/>
-                                                            <RowDefinition/>
-                                                            <RowDefinition/>
-                                                            <RowDefinition/>
-                                                        </Grid.RowDefinitions>
-                                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="{DynamicResource FwdListenPort}" FontSize="12"
-                                                                   Foreground="{StaticResource MutedTextBrush}" Margin="0,0,8,4"/>
-                                                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding ListenPort}" FontSize="12"
-                                                                   Foreground="{StaticResource TextBrush}"/>
-                                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="{DynamicResource FwdTarget}" FontSize="12"
-                                                                   Foreground="{StaticResource MutedTextBrush}" Margin="0,0,8,4"/>
-                                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Target}" FontSize="12"
-                                                                   Foreground="{StaticResource TextBrush}" TextWrapping="Wrap"/>
-                                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="{DynamicResource FwdTransport}" FontSize="12"
-                                                                   Foreground="{StaticResource MutedTextBrush}" Margin="0,0,8,4"/>
-                                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Transport}" FontSize="12"
-                                                                   Foreground="{StaticResource TextBrush}"/>
-                                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="{DynamicResource FwdEndpoints}" FontSize="12"
-                                                                   Foreground="{StaticResource MutedTextBrush}" Margin="0,0,8,0"/>
-                                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding EndpointCount}" FontSize="12"
-                                                                   Foreground="{StaticResource TextBrush}"/>
-                                                    </Grid>
+                                                    <TextBlock Text="{Binding Summary.Lifecycle}" FontSize="12"
+                                                               FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"
+                                                               Margin="0,0,0,4"/>
+                                                    <TextBlock Text="{Binding Summary.FriendlyMessage}" FontSize="12"
+                                                               Foreground="{StaticResource WarningBrush}" TextWrapping="Wrap"
+                                                               Margin="0,0,0,8"/>
 
                                                     <WrapPanel HorizontalAlignment="Right">
-                                                        <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionStart}" Margin="0,0,6,6"
-                                                                Command="{Binding DataContext.StartForwardCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                CommandParameter="{Binding}"/>
                                                         <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionStop}" Margin="0,0,6,6"
                                                                 Command="{Binding DataContext.StopForwardCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                CommandParameter="{Binding}"/>
-                                                        <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionRestart}" Margin="0,0,0,6"
-                                                                Command="{Binding DataContext.RestartForwardCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                CommandParameter="{Binding}"/>
+                                                                CommandParameter="{Binding}"
+                                                                Visibility="{Binding Summary.CanStop, Converter={StaticResource BoolToVis}}"/>
+                                                        <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionStart}" Margin="0,0,0,6"
+                                                                Command="{Binding DataContext.StartForwardCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                CommandParameter="{Binding}"
+                                                                Visibility="{Binding Summary.CanStart, Converter={StaticResource BoolToVis}}"/>
                                                     </WrapPanel>
                                                 </StackPanel>
                                             </Border>
@@ -298,14 +275,7 @@
                                 <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0"
                                         Visibility="{Binding SelectedForward, Converter={StaticResource NullToVis}}">
                                     <StackPanel>
-                                        <DockPanel Margin="0,0,0,12">
-                                            <TextBlock Style="{StaticResource SectionHeader}" Text="Forward Details" DockPanel.Dock="Left" Margin="0"/>
-                                            <Border DockPanel.Dock="Right" Style="{StaticResource ModeBadge}"
-                                                    Background="{Binding SelectedForward.Mode, Converter={StaticResource ModeColor}}">
-                                                <TextBlock Text="{Binding SelectedForward.ModeDisplay}" FontSize="11"
-                                                           Foreground="White" FontWeight="SemiBold"/>
-                                            </Border>
-                                        </DockPanel>
+                                        <TextBlock Style="{StaticResource SectionHeader}" Text="Forward Details" Margin="0,0,0,12"/>
 
                                         <Grid Margin="0,0,0,12">
                                             <Grid.ColumnDefinitions>
@@ -317,75 +287,30 @@
                                                 <RowDefinition/>
                                                 <RowDefinition/>
                                                 <RowDefinition/>
-                                                <RowDefinition/>
-                                                <RowDefinition/>
                                             </Grid.RowDefinitions>
 
                                             <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="Forward"/>
-                                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedForward.ForwardId, StringFormat=Forward #{0}}" FontSize="14" FontWeight="SemiBold"/>
+                                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedForward.DisplayName}" FontSize="14" FontWeight="SemiBold"/>
 
-                                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource FwdStatus}"/>
-                                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedForward.StatusText}" FontSize="14"/>
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="Status"/>
+                                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedForward.Summary.Lifecycle}" FontSize="14"/>
 
-                                            <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource FwdListenPort}"/>
-                                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedForward.ListenPort}" FontSize="14"/>
+                                            <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="Quality"/>
+                                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedForward.Summary.QualityText}" FontSize="14"/>
 
-                                            <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource FwdTransport}"/>
-                                            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedForward.Transport}" FontSize="14"/>
-
-                                            <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource FwdEndpoints}"/>
-                                            <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding SelectedForward.EndpointCount}" FontSize="14"/>
-
-                                            <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource FwdTarget}"/>
-                                            <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding SelectedForward.Target}" FontSize="14" TextWrapping="Wrap"/>
+                                            <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="Message"/>
+                                            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedForward.Summary.FriendlyMessage}" FontSize="14" TextWrapping="Wrap"/>
                                         </Grid>
 
-                                        <StackPanel Margin="0,0,0,16">
-                                            <TextBlock Text="{DynamicResource StrategyHeading}"
-                                                       FontSize="12" FontWeight="SemiBold"
-                                                       Foreground="{StaticResource MutedTextBrush}"
-                                                       Margin="0,0,0,8"/>
-                                            <RadioButton GroupName="ForwardStrategy"
-                                                         IsChecked="{Binding SelectedForward.IsSpeedMax, Mode=TwoWay}"
-                                                         Margin="0,0,0,8">
-                                                <StackPanel Margin="6,0,0,0">
-                                                    <TextBlock Text="{DynamicResource StrategySpeedMax}" FontWeight="SemiBold"/>
-                                                    <TextBlock Text="{DynamicResource StrategySpeedMaxDescription}"
-                                                               Foreground="{StaticResource MutedTextBrush}"
-                                                               TextWrapping="Wrap"/>
-                                                </StackPanel>
-                                            </RadioButton>
-                                            <RadioButton GroupName="ForwardStrategy"
-                                                         IsChecked="{Binding SelectedForward.IsLatencyBest, Mode=TwoWay}"
-                                                         Margin="0,0,0,8">
-                                                <StackPanel Margin="6,0,0,0">
-                                                    <TextBlock Text="{DynamicResource StrategyLatencyBest}" FontWeight="SemiBold"/>
-                                                    <TextBlock Text="{DynamicResource StrategyLatencyBestDescription}"
-                                                               Foreground="{StaticResource MutedTextBrush}"
-                                                               TextWrapping="Wrap"/>
-                                                </StackPanel>
-                                            </RadioButton>
-                                            <RadioButton GroupName="ForwardStrategy"
-                                                         IsChecked="{Binding SelectedForward.IsRandom, Mode=TwoWay}">
-                                                <StackPanel Margin="6,0,0,0">
-                                                    <TextBlock Text="{DynamicResource StrategyRandom}" FontWeight="SemiBold"/>
-                                                    <TextBlock Text="{DynamicResource StrategyRandomDescription}"
-                                                               Foreground="{StaticResource MutedTextBrush}"
-                                                               TextWrapping="Wrap"/>
-                                                </StackPanel>
-                                            </RadioButton>
-                                        </StackPanel>
-
                                         <WrapPanel HorizontalAlignment="Right">
-                                            <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionStart}" Margin="0,0,6,6"
-                                                    Command="{Binding StartForwardCommand}"
-                                                    CommandParameter="{Binding SelectedForward}"/>
                                             <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionStop}" Margin="0,0,6,6"
                                                     Command="{Binding StopForwardCommand}"
-                                                    CommandParameter="{Binding SelectedForward}"/>
-                                            <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionRestart}" Margin="0,0,0,6"
-                                                    Command="{Binding RestartForwardCommand}"
-                                                    CommandParameter="{Binding SelectedForward}"/>
+                                                    CommandParameter="{Binding SelectedForward}"
+                                                    Visibility="{Binding SelectedForward.Summary.CanStop, Converter={StaticResource BoolToVis}}"/>
+                                            <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionStart}" Margin="0,0,0,6"
+                                                    Command="{Binding StartForwardCommand}"
+                                                    CommandParameter="{Binding SelectedForward}"
+                                                    Visibility="{Binding SelectedForward.Summary.CanStart, Converter={StaticResource BoolToVis}}"/>
                                         </WrapPanel>
                                     </StackPanel>
                                 </Border>
