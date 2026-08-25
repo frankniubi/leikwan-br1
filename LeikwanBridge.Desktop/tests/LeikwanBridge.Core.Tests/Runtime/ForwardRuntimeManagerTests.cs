@@ -188,6 +188,105 @@ public sealed class ForwardRuntimeManagerTests
     }
 
     [Fact]
+    public void ApplyForward_UltraQuiescesManagedOldOwner()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
+        var manager = new ForwardRuntimeManager(
+            config,
+            supervisor,
+            new StateManager(tempDir.Path),
+            binaryExists: _ => true,
+            portListeningProbe: _ => true,
+            ultraLeaseSender: (_, _, _) => Task.FromResult(true),
+            portPreflight: _ => new PortPreflightResult(false, "", 0, [23156]));
+
+        manager.ApplyForward(CreateUltraForward());
+
+        Assert.Equal(["ultra-runtime"], supervisor.StartedRoles);
+    }
+
+    [Fact]
+    public void ApplyForward_UltraBlocksOnForeignPortOwner()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
+        var manager = new ForwardRuntimeManager(
+            config,
+            supervisor,
+            new StateManager(tempDir.Path),
+            binaryExists: _ => true,
+            portListeningProbe: _ => true,
+            ultraLeaseSender: (_, _, _) => Task.FromResult(true),
+            portPreflight: _ => new PortPreflightResult(true, "FOREIGN_PORT_IN_USE", 999, []));
+
+        manager.ApplyForward(CreateUltraForward());
+
+        Assert.Empty(supervisor.StartedRoles);
+        Assert.False(manager.IsForwardRunning(880));
+    }
+
+    private static ForwardConfig CreateUltraForward(int forwardId = 880, int listenPort = 11880)
+    {
+        var now = DateTimeOffset.UtcNow;
+        const string target = "198.51.100.10:443";
+        var generation = new string('a', 64);
+        var digest = UltraPolicy.ComputeTargetDigest(target);
+        return new ForwardConfig
+        {
+            ForwardId = forwardId,
+            BackendMode = "ultra",
+            ContractVersion = 2,
+            ClientMode = "single",
+            ActiveFamily = "ultra",
+            TargetContract = "ultra_direct",
+            Mode = "single",
+            ListenPort = listenPort,
+            Target = target,
+            Transport = "tcp",
+            Endpoints = [],
+            UltraAccess = new UltraPolicy
+            {
+                ProtocolValue = UltraPolicy.Protocol,
+                ForwardId = forwardId,
+                PolicyGeneration = generation,
+                SessionTicket = "ticket-a",
+                IssuedAt = now,
+                RenewAfter = now.AddMinutes(2),
+                ExpiresAt = now.AddMinutes(4),
+                ServiceState = "active",
+                Transport = "tcp",
+                RateLimitMbps = 20,
+                QuotaRemainingBytes = 1024 * 1024,
+                TargetDigest = digest,
+            },
+            RuntimeLease = new UltraLease
+            {
+                Protocol = UltraPolicy.Protocol,
+                LeaseId = "lease-a",
+                SessionTicket = "ticket-a",
+                ForwardId = forwardId,
+                PolicyGeneration = generation,
+                TargetDigest = digest,
+                ExpiresAt = now.AddMinutes(3),
+                Transport = "tcp",
+                RateLimitMbps = 20,
+                QuotaRemainingBytes = 1024 * 1024,
+                SelectionRef = new string('r', 43),
+                NonceHash = new string('b', 64),
+                ProviderIp = "203.0.113.20",
+                ProviderPort = 5438,
+                User = "line-user"u8.ToArray(),
+                Password = "line-password"u8.ToArray(),
+            },
+        };
+    }
+
+    [Fact]
     public void ApplyForward_DoesNotThrow_WhenSupervisorSnapshotContainsUnassociatedProcesses()
     {
         using var tempDir = new TempStateDirectory();
