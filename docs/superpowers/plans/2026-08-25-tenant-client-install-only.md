@@ -18,6 +18,7 @@
 | `master/src/Support/ClientOnlineSessionService.php` | Delete all sessions for a client when its token is reset. |
 | `master/src/Controllers/TenantController.php` | Render the install-only page and handle the reset-token POST. Remove page-only list, group, forward, reputation, diagnostics, and Android reads. |
 | `master/src/Controllers/BaseController.php` | Allow localized copy-button success/error labels without changing existing callers. |
+| `master/public/assets/operator-console.css` | Provide the approved two-column platform layout, compact command block, and responsive global online row. |
 | `master/src/Bootstrap.php` | Register `POST /tenant/clients/reset-token` before the legacy tenant client routes. |
 | `master/tests/tenant_client_page_simplification_regression_test.php` | Assert the new page contract and forbidden legacy surface. |
 | `master/tests/focused_tenant_resource_views_regression_test.php` | Update the Client method view contract from tabs/resource rows to the compact surface. |
@@ -26,6 +27,8 @@
 | `master/tests/tenant_client_reset_route_regression_test.php` | Cover the route, CSRF, tenant ownership, feature gate, and browser-id rejection contract. |
 | `master/tests/default_client_provisioning_test.php` | Extend default-client lifecycle coverage for grouped legacy rows, ungrouped invariant, and token rotation. |
 | `master/tests/client_online_session_revoke_test.php` | Cover session deletion and the zero-online result after reset. |
+| `master/tests/client_copy_button_labels_regression_test.php` | Cover localized copy-button success/error labels. |
+| `master/tests/tenant_client_install_style_regression_test.php` | Lock the approved responsive platform layout classes and CSS boundary. |
 | `docs/user/AI-SETUP-HANDOFF.zh-CN.md` | Point the tenant runbook at the canonical install-only page and remove obsolete Android/tab/diagnostics instructions. |
 | `master/tests/ai_setup_handoff_regression_test.php` | Match the revised runbook contract. |
 | `master/migrations/20260825_refresh_tenant_client_install_surface.sql` | Guarded update of the published `install-client` knowledgebase article in `en`, `zh-Hans`, and `zh-TW`. |
@@ -40,10 +43,11 @@
 - Modify: `master/tests/tenant_client_profile_limit_regression_test.php`
 - Create: `master/tests/tenant_client_reset_route_regression_test.php`
 
-- [ ] **Step 1: Replace the old positive page assertions with the approved compact contract.**
+- [x] **Step 1: Replace the old positive page assertions with the approved compact contract.**
 
-Isolate the substring from `public function clientsPage(` to the next
-`public function sidecarsPage(`. Require these exact page-owned snippets:
+Isolate the GET substring from `public function clientsPage(` to the next
+`public function resetDefaultClientToken(`. Require these exact page-owned snippets;
+inspect the reset POST method separately for its authorization contract:
 
 ```php
 foreach ([
@@ -97,7 +101,7 @@ if (substr_count($clientsPage, '最大在线') !== 1) {
 }
 ```
 
-- [ ] **Step 2: Change the focused resource-view contract.**
+- [x] **Step 2: Change the focused resource-view contract.**
 
 Keep the existing forward/dashboard assertions. Replace the Client entry with
 `'views' => []`, then isolate the Client method and require `Linux`, `Windows
@@ -105,14 +109,14 @@ App`, `最大在线`, and `/tenant/clients/reset-token`; forbid `pg-sheet`,
 `pg-mobile-resource-row`, `/diagnose`, `/request-update`, `/delete`, and
 `viewTabs` in that method.
 
-- [ ] **Step 3: Turn the reputation test into a negative page assertion.**
+- [x] **Step 3: Turn the reputation test into a negative page assertion.**
 
 Keep the source read and method isolation, but fail if the Client method
 contains `BondLegReputationService`, `scopedRowsForTenant`, `recentEvents`, or
 `Leg Reputation`. Do not remove the shared BaseController diagnostics helper
 in this task.
 
-- [ ] **Step 4: Preserve the server-side cap test while removing page coupling.**
+- [x] **Step 4: Preserve the server-side cap test while removing page coupling.**
 
 Assert that the isolated Client method does not contain
 `maxClientProfilesForTenantOwnedClients(`, `Current Client Profiles`, or
@@ -121,7 +125,7 @@ Assert that the isolated Client method does not contain
 `maxClientProfilesForTenantOwnedClients(`, `tenant_client_profile_limit_reached`,
 and the `saveClient` create-cap branch.
 
-- [ ] **Step 5: Add the reset route contract before implementation.**
+- [x] **Step 5: Add the reset route contract before implementation.**
 
 Create `tenant_client_reset_route_regression_test.php` with these concrete
 assertions:
@@ -158,7 +162,7 @@ foreach (["input('client_id'", 'input("client_id"', 'agent_token']) as $forbidde
 Also require `Response::redirect('/tenant/clients')` and a fixed generic error
 flash; forbid concatenating `$throwable->getMessage()` into the reset error.
 
-- [ ] **Step 6: Run the new/updated tests and confirm RED for the intended reason.**
+- [x] **Step 6: Run the new/updated tests and confirm RED for the intended reason.**
 
 Run:
 
@@ -180,7 +184,7 @@ these tests have demonstrated the missing behavior.
 - Modify: `master/tests/default_client_provisioning_test.php`
 - Modify: `master/src/Support/ProvisioningService.php`
 
-- [ ] **Step 1: Add failing lifecycle cases to the existing provisioning test.**
+- [x] **Step 1: Add failing lifecycle cases to the existing provisioning test.**
 
 Extend its seeded `clients` rows with a grouped default and an ungrouped
 non-default row. Assert that repair chooses the ungrouped row, demotes the
@@ -204,7 +208,7 @@ Add a stable-token assertion for two successive `defaultClientForUser(50)`
 calls, and a missing-default case that creates exactly one `group_id = null`
 row after two `ensureDefaultClientForUser()` calls.
 
-- [ ] **Step 2: Run the lifecycle test and verify RED.**
+- [x] **Step 2: Run the lifecycle test and verify RED.**
 
 ```powershell
 php master/tests/default_client_provisioning_test.php
@@ -213,7 +217,7 @@ php master/tests/default_client_provisioning_test.php
 Expected: the grouped-default case fails because the current helper returns a
 grouped marker or selects the first owned row.
 
-- [ ] **Step 3: Make default lookup return only the runtime-valid default.**
+- [x] **Step 3: Make default lookup return only the runtime-valid default.**
 
 Change `defaultClientForUser()` to use the existing owner/default/status index
 and require both `status = 'active'` and `group_id IS NULL`:
@@ -232,10 +236,10 @@ $row = $this->db->fetchOne(
 );
 ```
 
-- [ ] **Step 4: Make missing-default repair transactional and ungrouped.**
+- [x] **Step 4: Make missing-default repair transactional and ungrouped.**
 
 Update `ensureDefaultClientForUser()` to lock the tenant row with
-`SELECT id, email, role, status FROM users WHERE id = :id FOR UPDATE`, then:
+`SELECT * FROM users WHERE id = :id LIMIT 1 FOR UPDATE`, then:
 
 1. return the existing active ungrouped default if present;
 2. select the oldest active ungrouped owned client and pass it to
@@ -250,7 +254,7 @@ using `ApiException('default_client_must_be_ungrouped', 422)` before clearing
 other markers. Existing grouped clients are demoted only as markers; their
 group assignments and forwards are not rewritten.
 
-- [ ] **Step 5: Add the default-client token rotation method.**
+- [x] **Step 5: Add the default-client token rotation method.**
 
 Add this public method to `ProvisioningService`:
 
@@ -298,7 +302,7 @@ public function rotateDefaultClientTokenForUser(int $userId): array
 The audit context must contain no token. Do not reuse
 `regenerateClientToken()`, which rotates the legacy service-level token.
 
-- [ ] **Step 6: Run the provisioning test and the existing default-client hooks.**
+- [x] **Step 6: Run the provisioning test and the existing default-client hooks.**
 
 ```powershell
 php master/tests/default_client_provisioning_test.php
@@ -315,7 +319,7 @@ regression in registration/admin-created tenant hooks.
 - Modify: `master/src/Support/ClientOnlineSessionService.php`
 - Modify: `master/tests/client_online_device_limit_test.php`
 
-- [ ] **Step 1: Write the failing revoke test.**
+- [x] **Step 1: Write the failing revoke test.**
 
 Add a fake-database case that inserts two sessions for client `1`, calls the
 new method, and asserts both rows are gone and `activeCountForClient(1) === 0`:
@@ -333,7 +337,7 @@ if ($service->activeCountForClient(1) !== 0) {
 Extend the fake `execute()` implementation only for the exact
 `DELETE FROM client_device_sessions WHERE client_id = :client_id` statement.
 
-- [ ] **Step 2: Run the revoke test and verify RED.**
+- [x] **Step 2: Run the revoke test and verify RED.**
 
 ```powershell
 php master/tests/client_online_session_revoke_test.php
@@ -341,7 +345,7 @@ php master/tests/client_online_session_revoke_test.php
 
 Expected: `Call to undefined method ...::revokeAllForClient()`.
 
-- [ ] **Step 3: Implement the minimal service method.**
+- [x] **Step 3: Implement the minimal service method.**
 
 Add:
 
@@ -363,7 +367,7 @@ The method deliberately removes session history because this product surface
 tracks concurrent online state only. The foreign key already cascades sessions
 when a client is deleted.
 
-- [ ] **Step 4: Run the online-session tests.**
+- [x] **Step 4: Run the online-session tests.**
 
 ```powershell
 php master/tests/client_online_session_revoke_test.php
@@ -378,9 +382,10 @@ Expected: all pass, including the existing 180-second stale-session boundary.
 **Files:**
 - Modify: `master/src/Controllers/TenantController.php`
 - Modify: `master/src/Controllers/BaseController.php`
+- Modify: `master/public/assets/operator-console.css`
 - Modify: `master/src/Bootstrap.php`
 
-- [ ] **Step 1: Add the localized copy-button parameters.**
+- [x] **Step 1: Add the localized copy-button parameters.**
 
 Change `BaseController::renderCopyButton()` to accept optional labels while
 preserving all existing call sites:
@@ -405,7 +410,7 @@ protected function renderCopyButton(
 The implementation must retain the current `button`/variant classes and HTML
 escaping; only the two data attributes become configurable.
 
-- [ ] **Step 2: Replace only `clientsPage()` with the compact GET.**
+- [x] **Step 2: Replace only `clientsPage()` with the compact GET.**
 
 Keep the role check and existing page/nav helpers. Use this control flow:
 
@@ -432,20 +437,21 @@ $csrf = $this->escape(SessionAuth::csrfToken());
 $resetForm = '<form class="inline" method="post" action="/tenant/clients/reset-token">'
     . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
     . '<button class="button ghost" type="submit">重置</button></form>';
-$body = '<div class="client-install-only">'
-    . '<h1>Client</h1><h2>安装</h2>'
-    . $this->renderCommandPanel(
-        'Linux',
-        $installCommand,
-        [
-            $this->renderCopyButton('复制命令', $installCommand, 'secondary', '已复制', '复制失败'),
-            $resetForm,
-        ]
-    )
-    . '<section class="command-card"><div class="command-card-header"><div class="command-card-title">Windows App</div>'
-    . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div></div></section>'
-    . '<div class="client-online-summary"><span>最大在线</span><strong>'
-    . $onlineCount . ' / ' . $onlineLimit . '</strong></div></div>';
+$body = '<div class="tenant-client-install">'
+    . '<div class="tenant-client-install__shell">'
+    . '<div class="tenant-client-install__header"><strong>安装</strong></div>'
+    . '<div class="tenant-client-install__body"><div class="tenant-client-install__platforms">'
+    . '<section class="tenant-client-install__platform"><strong>Linux</strong>'
+    . '<pre class="tenant-client-install__command">' . $this->escape($installCommand) . '</pre>'
+    . '<div class="actions">'
+    . $this->renderCopyButton('复制命令', $installCommand, 'secondary', '已复制', '复制失败')
+    . $resetForm
+    . '</div></section>'
+    . '<section class="tenant-client-install__platform"><strong>Windows App</strong>'
+    . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
+    . '</section></div>'
+    . '<div class="tenant-client-install__online"><span>最大在线</span><strong>'
+    . $onlineCount . ' / ' . $onlineLimit . '</strong></div></div></div></div>';
 
 return $this->page('Client', $body, $user, $this->tenantNav('clients'));
 ```
@@ -456,7 +462,7 @@ copy. Remove the now-unused `renderTenantClientLinuxInstall()` helper and the
 page-local `BondLegReputationService` import; leave `PrecisionGridUi` for the
 other tenant pages.
 
-- [ ] **Step 3: Add the reset POST handler.**
+- [x] **Step 3: Add the reset POST handler.**
 
 Add immediately after `clientsPage()`:
 
@@ -498,7 +504,7 @@ Do not read `client_id` or `agent_token` from the request. Do not echo an
 exception message. The service method owns token generation, session deletion,
 and audit logging.
 
-- [ ] **Step 4: Register the route and preserve legacy routes.**
+- [x] **Step 4: Register the route and preserve legacy routes.**
 
 Insert this line before the existing `POST /tenant/clients` registration:
 
@@ -509,7 +515,7 @@ $this->router->add('POST', '/tenant/clients/reset-token', [$tenant, 'resetDefaul
 Do not remove `POST /tenant/clients` or the Admin/legacy diagnostic routes in
 this task; they are backend compatibility surfaces, not tenant-page markup.
 
-- [ ] **Step 5: Run PHP lint and the page/route contracts.**
+- [x] **Step 5: Run PHP lint and the page/route contracts.**
 
 ```powershell
 php -l master/src/Support/ProvisioningService.php
@@ -517,6 +523,8 @@ php -l master/src/Support/ClientOnlineSessionService.php
 php -l master/src/Controllers/BaseController.php
 php -l master/src/Controllers/TenantController.php
 php -l master/src/Bootstrap.php
+php master/tests/client_copy_button_labels_regression_test.php
+php master/tests/tenant_client_install_style_regression_test.php
 php master/tests/tenant_client_page_simplification_regression_test.php
 php master/tests/focused_tenant_resource_views_regression_test.php
 php master/tests/tenant_bond_leg_reputation_visibility_test.php
@@ -536,7 +544,7 @@ must be POST-only.
 - Create: `master/migrations/20260825_refresh_tenant_client_install_surface.sql`
 - Create: `master/tests/tenant_client_install_knowledgebase_migration_test.php`
 
-- [ ] **Step 1: Rewrite the runbook's Client step.**
+- [x] **Step 1: Rewrite the runbook's Client step.**
 
 Replace the old `/tenant/clients?view=install`/Android/diagnostics sequence with
 the exact rules below:
@@ -552,7 +560,7 @@ Keep the existing password/token redaction and real-application verification
 rules. Remove the obsolete Android and `Run Diagnostics` instructions from the
 document, then update the regression test's required paths/labels accordingly.
 
-- [ ] **Step 2: Add a guarded knowledgebase refresh migration.**
+- [x] **Step 2: Add a guarded knowledgebase refresh migration.**
 
 Create a migration that updates only the three published `install-client`
 articles when `updated_at < '2026-08-25 00:00:00'`. Each locale's body must
@@ -577,7 +585,7 @@ WHERE topic_id IN (SELECT id FROM knowledgebase_topics WHERE topic_key = 'instal
 Use the same guarded shape for `zh-Hans` and `zh-TW`, with their approved
 localized labels. Do not add a table or modify the schema.
 
-- [ ] **Step 3: Add a migration-shape regression test.**
+- [x] **Step 3: Add a migration-shape regression test.**
 
 The test must require the filename, the `install-client` topic key, all three
 locale predicates, `下载 installer`/`Download installer`, `复制命令`/`Copy
@@ -586,7 +594,7 @@ App`, `Android App`, `?view=install`, `Run Diagnostics`, `View Diagnostics`,
 and `Client Profiles` in the new migration. It must also assert that no
 `CREATE TABLE`, `DROP TABLE`, or `ALTER TABLE` statement appears.
 
-- [ ] **Step 4: Run documentation tests.**
+- [x] **Step 4: Run documentation tests.**
 
 ```powershell
 php master/tests/ai_setup_handoff_regression_test.php
@@ -615,6 +623,8 @@ $tests = @(
   'client_online_session_revoke_test.php',
   'client_online_device_limit_test.php',
   'client_online_limit_wiring_regression_test.php',
+  'client_copy_button_labels_regression_test.php',
+  'tenant_client_install_style_regression_test.php',
   'tenant_client_save_route_regression_test.php',
   'client_install_simplification_regression_test.php',
   'ai_setup_handoff_regression_test.php',
@@ -641,7 +651,7 @@ helpers; the isolated `clientsPage()` substring must produce no matches. The
 Linux token may appear only in the escaped command generated for the approved
 install action, never in logs, audit context, URLs, or hidden metadata.
 
-- [ ] **Step 3: Verify the query boundary by source and fake-database tests.**
+- [x] **Step 3: Verify the query boundary by source and fake-database tests.**
 
 Confirm the Client method contains exactly one `activeCountForClient(` call and
 no `fetchAll(` call. Confirm the normal GET calls
@@ -667,13 +677,16 @@ Use these commits, keeping unrelated worktree changes untouched:
 git add master/tests/tenant_client_page_simplification_regression_test.php master/tests/focused_tenant_resource_views_regression_test.php master/tests/tenant_bond_leg_reputation_visibility_test.php master/tests/tenant_client_profile_limit_regression_test.php master/tests/tenant_client_reset_route_regression_test.php
 git commit -m "test: lock tenant client install-only contract"
 
-git add master/src/Support/ProvisioningService.php master/src/Support/ClientOnlineSessionService.php master/tests/default_client_provisioning_test.php master/tests/client_online_session_revoke_test.php master/tests/client_online_device_limit_test.php
+git add master/src/Support/ProvisioningService.php master/src/Support/ClientOnlineSessionService.php master/tests/default_client_provisioning_test.php master/tests/client_online_session_revoke_test.php
 git commit -m "feat: enforce ungrouped default client lifecycle"
 
-git add master/src/Controllers/BaseController.php master/src/Controllers/TenantController.php master/src/Bootstrap.php
+git add master/src/Controllers/BaseController.php master/src/Controllers/TenantController.php master/src/Bootstrap.php master/public/assets/operator-console.css master/tests/client_copy_button_labels_regression_test.php master/tests/tenant_client_install_style_regression_test.php master/tests/leikwan_ui_asset_regression_test.php master/tests/precision_grid_design_system_regression_test.php
 git commit -m "feat: simplify tenant client install page"
 
-git add docs/user/AI-SETUP-HANDOFF.zh-CN.md master/migrations/20260825_refresh_tenant_client_install_surface.sql master/tests/ai_setup_handoff_regression_test.php master/tests/tenant_client_install_knowledgebase_migration_test.php
+git add master/tests/tenant_client_page_simplification_regression_test.php
+git commit -m "test: enforce tenant client page query boundary"
+
+git add docs/user/AI-SETUP-HANDOFF.zh-CN.md master/migrations/20260825_refresh_tenant_client_install_surface.sql master/tests/ai_setup_handoff_regression_test.php master/tests/tenant_client_install_knowledgebase_migration_test.php docs/superpowers/plans/2026-08-25-tenant-client-install-only.md
 git commit -m "docs: align tenant client install guidance"
 ```
 

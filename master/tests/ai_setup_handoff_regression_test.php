@@ -15,10 +15,11 @@ if (!is_string($handoff) || trim($handoff) === '') {
 
 foreach ([
     '/tenant/getting-started',
-    '/tenant/clients?view=install',
+    '/tenant/clients',
     '/tenant/forwards',
-    'Run Diagnostics',
-    'View Diagnostics',
+    '下载 installer',
+    '复制命令',
+    '最大在线',
     '127.0.0.1',
     'Target Host',
     'Target Port',
@@ -30,6 +31,12 @@ foreach ([
 ] as $required) {
     if (!str_contains($handoff, $required)) {
         failAiHandoff('missing required handoff rule: ' . $required);
+    }
+}
+
+foreach (['/tenant/clients?view=install', 'Android App', 'Download Android App', 'Run Diagnostics', 'View Diagnostics'] as $forbidden) {
+    if (str_contains($handoff, $forbidden)) {
+        failAiHandoff('handoff contains retired Client guidance: ' . $forbidden);
     }
 }
 
