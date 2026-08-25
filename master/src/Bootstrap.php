@@ -269,6 +269,7 @@ final class Bootstrap
         $this->router->add('GET', '/tenant/forwards', [$tenant, 'dashboard']);
         $this->router->add('GET', '/tenant/clients', [$tenant, 'clientsPage']);
         $this->router->add('POST', '/tenant/clients/reset-token', [$tenant, 'resetDefaultClientToken']);
+        $this->router->add('POST', '/tenant/clients/kick', [$tenant, 'kickClientDevice']);
         $this->router->add('POST', '/tenant/clients', [$tenant, 'saveClient']);
         $this->router->add('GET', '/tenant-transport-endpoints', [$tenant, 'sidecarsPage']);
         $this->router->add('POST', '/tenant-transport-endpoints', [$tenant, 'saveSidecarPoint']);
