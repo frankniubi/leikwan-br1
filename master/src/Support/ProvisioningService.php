@@ -1987,11 +1987,13 @@ final class ProvisioningService
              FROM clients
              WHERE owner_user_id = :owner_user_id
                AND is_default_for_owner = 1
-             ORDER BY CASE WHEN status = :active THEN 0 ELSE 1 END, id ASC
+               AND status = :status
+               AND group_id IS NULL
+             ORDER BY id ASC
              LIMIT 1',
             [
                 'owner_user_id' => $userId,
-                'active' => 'active',
+                'status' => 'active',
             ]
         );
 
@@ -2003,30 +2005,44 @@ final class ProvisioningService
      */
     public function ensureDefaultClientForUser(int $userId): array
     {
-        $user = $this->tenantUserById($userId);
-        $existingDefault = $this->defaultClientForUser($userId);
-        if ($existingDefault !== null) {
-            return $existingDefault;
-        }
+        return $this->db->transaction(function () use ($userId): array {
+            $user = $this->db->fetchOne(
+                'SELECT * FROM users WHERE id = :id LIMIT 1 FOR UPDATE',
+                ['id' => $userId]
+            );
+            if ($user === null || (string) ($user['role'] ?? '') !== 'tenant') {
+                throw new ApiException('tenant_not_found', 404);
+            }
+            if ((string) ($user['status'] ?? '') !== 'active') {
+                throw new ApiException('tenant_not_active', 422, ['message' => 'This tenant account is not active right now.']);
+            }
 
-        $owned = $this->db->fetchAll(
-            'SELECT *
-             FROM clients
-             WHERE owner_user_id = :owner_user_id
-             ORDER BY CASE WHEN status = :active THEN 0 ELSE 1 END, id ASC',
-            [
-                'owner_user_id' => $userId,
-                'active' => 'active',
-            ]
-        );
+            $existingDefault = $this->defaultClientForUser($userId);
+            if ($existingDefault !== null) {
+                return $existingDefault;
+            }
 
-        if ($owned !== []) {
-            $clientId = (int) ($owned[0]['id'] ?? 0);
-            $this->markClientAsDefaultForUser($userId, $clientId);
-            return $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]) ?? [];
-        }
+            $owned = $this->db->fetchAll(
+                'SELECT *
+                 FROM clients
+                 WHERE owner_user_id = :owner_user_id
+                   AND group_id IS NULL
+                   AND status = :active
+                 ORDER BY id ASC',
+                [
+                    'owner_user_id' => $userId,
+                    'active' => 'active',
+                ]
+            );
 
-        return $this->createDefaultClientForUser($userId, $user);
+            if ($owned !== []) {
+                $clientId = (int) ($owned[0]['id'] ?? 0);
+                $this->markClientAsDefaultForUser($userId, $clientId);
+                return $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]) ?? [];
+            }
+
+            return $this->createDefaultClientForUser($userId, $user);
+        });
     }
 
     /**
@@ -2071,6 +2087,12 @@ final class ProvisioningService
         if ($client === null || (int) ($client['owner_user_id'] ?? 0) !== $userId) {
             throw new ApiException('default_client_not_owned', 422, ['message' => 'The selected client is not owned by this tenant.']);
         }
+        if (($client['group_id'] ?? null) !== null) {
+            throw new ApiException('default_client_must_be_ungrouped', 422);
+        }
+        if ((string) ($client['status'] ?? '') !== 'active') {
+            throw new ApiException('default_client_must_be_active', 422);
+        }
 
         $updatedAt = $this->now();
         $this->db->execute(
@@ -2087,12 +2109,15 @@ final class ProvisioningService
         $this->db->execute(
             'UPDATE clients
              SET is_default_for_owner = 1,
-                 updated_at = :updated_at
+                  updated_at = :updated_at
              WHERE id = :id
-               AND owner_user_id = :owner_user_id',
+               AND owner_user_id = :owner_user_id
+               AND status = :status
+               AND group_id IS NULL',
             [
                 'id' => $clientId,
                 'owner_user_id' => $userId,
+                'status' => 'active',
                 'updated_at' => $updatedAt,
             ]
         );
@@ -2127,6 +2152,16 @@ final class ProvisioningService
                 ]
             );
             $defaults = array_values(array_filter($owned, static fn(array $client): bool => (int) ($client['is_default_for_owner'] ?? 0) === 1));
+            $ungrouped = array_values(array_filter(
+                $owned,
+                static fn(array $client): bool => ($client['group_id'] ?? null) === null
+                    && (string) ($client['status'] ?? '') === 'active'
+            ));
+            $validDefaults = array_values(array_filter(
+                $defaults,
+                static fn(array $client): bool => ($client['group_id'] ?? null) === null
+                    && (string) ($client['status'] ?? '') === 'active'
+            ));
 
             if ($owned === []) {
                 $summary['created']++;
@@ -2136,18 +2171,26 @@ final class ProvisioningService
                 continue;
             }
 
-            if ($defaults === []) {
-                $summary['marked_existing']++;
+            if ($ungrouped === []) {
+                $summary['created']++;
                 if ($apply) {
-                    $this->markClientAsDefaultForUser($tenantId, (int) ($owned[0]['id'] ?? 0));
+                    $this->createDefaultClientForUser($tenantId, $tenant);
                 }
                 continue;
             }
 
-            if (count($defaults) > 1) {
+            if ($validDefaults === []) {
+                $summary['marked_existing']++;
+                if ($apply) {
+                    $this->markClientAsDefaultForUser($tenantId, (int) ($ungrouped[0]['id'] ?? 0));
+                }
+                continue;
+            }
+
+            if (count($defaults) !== 1 || count($validDefaults) !== count($defaults)) {
                 $summary['normalized_duplicates']++;
                 if ($apply) {
-                    $this->markClientAsDefaultForUser($tenantId, (int) ($owned[0]['id'] ?? 0));
+                    $this->markClientAsDefaultForUser($tenantId, (int) ($validDefaults[0]['id'] ?? $ungrouped[0]['id'] ?? 0));
                 }
             }
         }
@@ -5175,6 +5218,56 @@ final class ProvisioningService
             'service_id' => $serviceId,
             'client_token' => $token,
         ];
+    }
+
+    /**
+     * Rotate the authenticated tenant's default client token and revoke all
+     * device sessions that were authenticated with the previous token.
+     *
+     * @return array<string, mixed>
+     */
+    public function rotateDefaultClientTokenForUser(int $userId): array
+    {
+        return $this->db->transaction(function () use ($userId): array {
+            $client = $this->defaultClientForUser($userId);
+            if ($client === null) {
+                $client = $this->ensureDefaultClientForUser($userId);
+            }
+
+            $clientId = (int) ($client['id'] ?? 0);
+            if ($clientId <= 0) {
+                throw new ApiException('default_client_not_found', 404);
+            }
+
+            $token = bin2hex(random_bytes(24));
+            $updated = $this->db->execute(
+                'UPDATE clients
+                 SET agent_token = :agent_token,
+                     updated_at = :updated_at
+                 WHERE id = :id
+                   AND owner_user_id = :owner_user_id
+                   AND is_default_for_owner = 1
+                   AND group_id IS NULL
+                   AND status = :status',
+                [
+                    'id' => $clientId,
+                    'owner_user_id' => $userId,
+                    'status' => 'active',
+                    'agent_token' => $token,
+                    'updated_at' => $this->now(),
+                ]
+            );
+            if ($updated !== 1) {
+                throw new ApiException('default_client_token_rotation_conflict', 409);
+            }
+            (new ClientOnlineSessionService($this->db))->revokeAllForClient($clientId);
+            $this->audit('client.default_token_rotated', [
+                'user_id' => $userId,
+                'client_id' => $clientId,
+            ]);
+
+            return $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]) ?? [];
+        });
     }
 
     /**
