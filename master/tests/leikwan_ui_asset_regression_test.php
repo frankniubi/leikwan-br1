@@ -12,7 +12,7 @@ foreach (['leikwan-ui.css', 'operator-console.css', 'signal-chamber.css'] as $as
         throw new RuntimeException('missing UI asset ' . $asset);
     }
 }
-foreach (['/assets/leikwan-ui.css?v=20260725', '/assets/operator-console.css?v=20260725'] as $href) {
+foreach (['/assets/leikwan-ui.css?v=20260725', '/assets/operator-console.css?v=20260825'] as $href) {
     if (!str_contains($base, $href)) {
         throw new RuntimeException('application shell missing ' . $href);
     }
