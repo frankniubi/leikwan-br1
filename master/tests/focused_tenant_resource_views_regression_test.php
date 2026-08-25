@@ -4,7 +4,7 @@ declare(strict_types=1);
 $source = (string) file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php');
 $contracts = [
     'dashboard' => ['next' => 'billingPage', 'views' => ['list']],
-    'clientsPage' => ['next' => 'sidecarsPage', 'views' => ['list', 'install', 'detail', 'advanced']],
+    'clientsPage' => ['next' => 'sidecarsPage', 'views' => []],
     'serviceDetail' => ['next' => 'editForward', 'views' => ['overview', 'forwards']],
     'editForward' => ['next' => 'saveForwardEdit', 'views' => ['detail']],
 ];
@@ -38,11 +38,16 @@ foreach (['pg-sheet', 'pg-mobile-resource-row', 'resourceCell', 'status(', 'rowM
 }
 
 $clientsStart = strpos($source, 'public function clientsPage(');
-$clientsEnd = strpos($source, 'protected function renderTenantClientLinuxInstall', $clientsStart ?: 0);
+$clientsEnd = strpos($source, 'public function sidecarsPage(', $clientsStart ?: 0);
 $clients = substr($source, $clientsStart ?: 0, ($clientsEnd ?: 0) - ($clientsStart ?: 0));
-foreach (['pg-sheet', 'pg-mobile-resource-row', '/tenant/clients', '/diagnose', '/request-update', '/delete'] as $marker) {
-    if (!str_contains($clients, $marker)) {
-        throw new RuntimeException('tenant client workspace missing ' . $marker);
+foreach (['Linux', 'Windows App', '最大在线', '/tenant/clients/reset-token'] as $required) {
+    if (!str_contains($clients, $required)) {
+        throw new RuntimeException('tenant client install surface missing ' . $required);
+    }
+}
+foreach (['pg-sheet', 'pg-mobile-resource-row', '/diagnose', '/request-update', '/delete', 'viewTabs'] as $forbidden) {
+    if (str_contains($clients, $forbidden)) {
+        throw new RuntimeException('tenant client install surface contains legacy ' . $forbidden);
     }
 }
 

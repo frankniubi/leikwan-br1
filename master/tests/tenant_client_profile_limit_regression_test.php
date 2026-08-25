@@ -13,12 +13,19 @@ if (!is_string($tenant) || $tenant === '' || !is_string($provisioning) || $provi
     fail('failed to read tenant/provisioning source');
 }
 
+$pageStart = strpos($tenant, 'public function clientsPage(');
+$pageEnd = strpos($tenant, 'public function sidecarsPage(', $pageStart ?: 0);
+if (!is_int($pageStart) || !is_int($pageEnd) || $pageEnd <= $pageStart) {
+    fail('failed to isolate tenant clientsPage source');
+}
+$clientsPage = substr($tenant, $pageStart, $pageEnd - $pageStart);
+foreach (['Current Client Profiles', 'This package allows up to', 'maxClientProfilesForTenantOwnedClients('] as $forbidden) {
+    if (str_contains($clientsPage, $forbidden)) {
+        fail('tenant Client page exposes profile-count policy: ' . $forbidden);
+    }
+}
+
 foreach ([
-    'Client Profiles:',
-    'Devices per Client:',
-    'plan_max_client_profiles',
-    'Current Client Profiles',
-    'This package allows up to',
     'maxClientProfilesForTenantOwnedClients(',
     'if ($currentClientProfiles >= $maxClientProfiles) {',
     "'message' => 'This package allows up to '",
