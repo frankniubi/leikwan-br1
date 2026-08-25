@@ -313,12 +313,6 @@ final class TenantController extends BaseController
             return Response::redirect('/login');
         }
 
-        $view = PrecisionGridUi::normalizeView(
-            (string) $request->input('view', 'list'),
-            ['list'],
-            'list'
-        );
-
         $services = $this->db->fetchAll(
             'SELECT s.id, s.name, s.status, s.expire_at, s.bandwidth_limit_mbps, s.traffic_limit_gb, s.traffic_used_bytes, s.whmcs_service_id, p.name AS plan_name
              FROM services s
@@ -327,24 +321,34 @@ final class TenantController extends BaseController
              ORDER BY s.id DESC',
             ['user_id' => $user['id']]
         );
-        $forwards = $this->db->fetchAll(
-            'SELECT s.id AS service_id, s.name AS service_name, s.status AS service_status,
-                    f.id AS forward_id, f.listen_port, f.target_host, f.target_port, f.enabled
-              FROM services s
-              LEFT JOIN forwards f ON f.service_id = s.id AND f.enabled = 1
-              WHERE s.user_id = :user_id
-              ORDER BY s.id DESC, f.id DESC',
-            ['user_id' => $user['id']]
-        );
+
+        $forwardCounts = [];
+        if ($services !== []) {
+            $serviceIds = implode(',', array_map(static fn(array $row): int => (int) $row['id'], $services));
+            foreach ($this->db->fetchAll(
+                'SELECT service_id, COUNT(*) AS cnt
+                 FROM forwards
+                 WHERE service_id IN (' . $serviceIds . ') AND enabled = 1 AND user_deleted_at IS NULL
+                 GROUP BY service_id'
+            ) as $row) {
+                $forwardCounts[(int) $row['service_id']] = (int) $row['cnt'];
+            }
+        }
 
         $totalUsedBytes = 0;
         $totalLimitBytes = 0;
-        $totalEstimatedBilling = 0.0;
-        $rows = '';
+        $serviceCards = '';
         foreach ($services as $service) {
+            $statusLabel = match ((string) $service['status']) {
+                'active' => '运行中',
+                'pending' => '待激活',
+                'suspended' => '已暂停',
+                'traffic_suspended' => '流量用尽',
+                'expired' => '已过期',
+                default => (string) $service['status'],
+            };
             $statusClass = ((string) $service['status'] === 'active') ? 'success' : 'danger';
             $billing = $this->provisioning->serviceBillingOverview((int) $service['id']);
-            $totalEstimatedBilling += (float) ($billing['estimated_total_amount'] ?? 0);
             $trafficUsedBytes = max(0, (int) ($billing['current_cycle_used_bytes'] ?? 0));
             $trafficLimitGb = ((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle')
                 ? max(0, (int) ($billing['included_traffic_gb'] ?? 0))
@@ -352,70 +356,45 @@ final class TenantController extends BaseController
             $trafficLimitBytes = $trafficLimitGb > 0 ? $trafficLimitGb * 1024 * 1024 * 1024 : 0;
             $trafficRemainingBytes = ((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle')
                 ? max(0, $trafficLimitBytes - $trafficUsedBytes)
-                : 0;
-            $usageLabel = ((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle')
-                ? $this->formatTrafficPercent($trafficUsedBytes, $trafficLimitBytes)
-                : 'metered';
+                : null;
+            $pct = $trafficLimitBytes > 0 ? min(100, (int) round($trafficUsedBytes / $trafficLimitBytes * 100)) : 0;
             $totalUsedBytes += $trafficUsedBytes;
             $totalLimitBytes += $trafficLimitBytes;
-            $rows .= '<tr>
-                <td>' . (int) $service['id'] . '</td>
-                <td><a href="/tenant/services/' . (int) $service['id'] . '"><strong>' . $this->escape((string) $service['name']) . '</strong></a></td>
-                <td><span class="badge ' . $statusClass . '">' . $this->escape((string) $service['status']) . '</span></td>
-                <td>' . $this->escape((string) $service['whmcs_service_id']) . '</td>
-                <td>' . $this->escape((string) ($service['plan_name'] ?? '')) . '</td>
-                <td>' . $this->escape((string) ($billing['mode_label'] ?? '')) . '</td>
-                <td>' . $this->escape((string) ($billing['estimated_total_formatted'] ?? '')) . '</td>
-                <td>' . $this->escape((string) $service['expire_at']) . '</td>
-                <td>' . (int) $service['bandwidth_limit_mbps'] . ' Mbps</td>
-                <td>' . (((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle') ? ((int) ($billing['included_traffic_gb'] ?? 0) . ' GB / month') : 'metered') . '</td>
-                <td>' . $this->formatTrafficBytes($trafficUsedBytes) . '</td>
-                <td>' . (((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle') ? $this->formatTrafficBytes($trafficRemainingBytes) : '-') . '</td>
-                <td>' . $this->escape($usageLabel) . '</td>
-                <td>
-                    <div class="actions">
-                        <a class="button" href="/tenant/services/' . (int) $service['id'] . '/create-forward">Add Forward</a>
-                        <a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '">Manage</a>
-                    </div>
-                </td>
-            </tr>';
-        }
+            $forwardCount = (int) ($forwardCounts[(int) $service['id']] ?? 0);
 
-        $forwardRows = '';
-        $forwardMobileRows = '';
-        foreach ($forwards as $forward) {
-            $serviceId = (int) $forward['service_id'];
-            $forwardId = (int) ($forward['forward_id'] ?? 0);
-            $serviceName = (string) $forward['service_name'];
-            $forwardLabel = $forwardId > 0 ? 'Forward #' . $forwardId : 'No forward yet';
-            $target = $forwardId > 0
-                ? (string) $forward['target_host'] . ':' . (int) $forward['target_port']
-                : 'Not configured';
-            $statusLabel = $forwardId > 0
-                ? ((int) $forward['enabled'] === 1 ? 'Active' : 'Disabled')
-                : ucfirst((string) $forward['service_status']);
-            $statusState = ($forwardId > 0 ? (int) $forward['enabled'] === 1 : (string) $forward['service_status'] === 'active') ? 'ok' : 'warning';
-            $commands = '<a href="/tenant/services/' . $serviceId . '/create-forward">Add Forward</a>'
-                . ($forwardId > 0 ? '<a href="/tenant/services/' . $serviceId . '/forward/' . $forwardId . '/edit">Edit Forward</a>' : '')
-                . '<a href="/tenant/services/' . $serviceId . '">Service Details</a>';
-            $forwardRows .= '<tr><td>' . PrecisionGridUi::resourceCell($serviceName, $forwardLabel) . '</td>'
-                . '<td>' . ($forwardId > 0 ? (int) $forward['listen_port'] : '-') . '</td>'
-                . '<td>' . $this->escape($target) . '</td><td>' . PrecisionGridUi::status($statusLabel, $statusState) . '</td>'
-                . '<td>' . PrecisionGridUi::rowMenu($serviceName . ' forward actions', $commands) . '</td></tr>';
-            $forwardMobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($serviceName, $forwardLabel)
-                . PrecisionGridUi::status($statusLabel, $statusState) . '</header><dl><div><dt>Local Port</dt><dd>'
-                . ($forwardId > 0 ? (int) $forward['listen_port'] : '-') . '</dd></div><div><dt>Target</dt><dd>' . $this->escape($target)
-                . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($serviceName . ' forward actions', $commands) . '</footer></article>';
-        }
-        if ($forwardRows === '') {
-            $forwardRows = '<tr><td colspan="5" class="muted">No service or Forward is available yet.</td></tr>';
+            $usageText = $trafficRemainingBytes !== null
+                ? $this->formatTrafficBytes($trafficUsedBytes) . ' / ' . $this->formatTrafficBytes($trafficLimitBytes) . ' · 剩余 ' . $this->formatTrafficBytes($trafficRemainingBytes)
+                : $this->formatTrafficBytes($trafficUsedBytes) . ' (按量)';
+
+            $serviceCards .= '<section class="card">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+                  <div>
+                    <h3 style="margin:0 0 4px;">' . $this->escape((string) $service['name']) . '</h3>
+                    <div class="muted">' . $this->escape((string) ($service['plan_name'] ?? '—')) . '</div>
+                  </div>
+                  <span class="badge ' . $statusClass . '">' . $this->escape($statusLabel) . '</span>
+                </div>
+                <div class="muted" style="margin-top:8px;">到期 ' . $this->escape((string) $service['expire_at']) . ' · 带宽 ' . (int) $service['bandwidth_limit_mbps'] . ' Mbps</div>
+                <div class="muted" style="margin-top:10px;">本期已用流量</div>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+                  <div style="flex:1;height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden;">
+                    <div style="width:' . $pct . '%;height:100%;background:#2563eb;"></div>
+                  </div>
+                  <span style="font-size:12px;white-space:nowrap;">' . $this->escape($usageText) . '</span>
+                </div>
+                <div class="muted" style="margin-top:10px;">' . $forwardCount . ' 个 forward</div>
+                <div class="actions" style="margin-top:12px;">
+                  <a class="button" href="/tenant/services/' . (int) $service['id'] . '">管理</a>
+                  <a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '/create-forward">新建 Forward</a>
+                </div>
+              </section>';
         }
 
         $emptyState = $services === []
             ? '<section class="card">
                 <h3>No Service Yet</h3>
                 <p class="muted">There is nothing to configure yet because no service has been activated for this tenant.</p>
-                <p class="muted">Ask the admin to activate a service first. After that, this page will show an <strong>Add Forward</strong> entry for each service.</p>
+                <p class="muted">Ask the admin to activate a service first.</p>
               </section>'
             : '';
 
@@ -423,31 +402,21 @@ final class TenantController extends BaseController
         $body = '
             <div class="hero">
               <div>
-                <h2>转发配置</h2>
-                <p class="muted">这里集中管理服务、Forward 和当前流量占用。每个服务都可以继续进入详情页做更细的调整。</p>
+                <h2>我的服务</h2>
+                <p class="muted">一个套餐 = 一个服务，多个 forward 合并计费到这一个套餐。点「管理」进入服务查看和操作里面的 forward。</p>
               </div>
             </div>
             <div class="grid three">
-              <section class="card"><div class="muted">Services</div><div class="stats">' . count($services) . '</div></section>
-              <section class="card"><div class="muted">Used Traffic</div><div class="stats">' . $this->escape($this->formatTrafficBytes($totalUsedBytes)) . '</div></section>
-              <section class="card"><div class="muted">Remaining Traffic</div><div class="stats">' . $this->escape($this->formatTrafficBytes($totalRemainingBytes)) . '</div></section>
-              <section class="card"><div class="muted">Estimated This Cycle</div><div class="stats">CNY ' . $this->escape(number_format($totalEstimatedBilling, 2)) . '</div></section>
+              <section class="card"><div class="muted">套餐数</div><div class="stats">' . count($services) . '</div></section>
+              <section class="card"><div class="muted">本期已用</div><div class="stats">' . $this->escape($this->formatTrafficBytes($totalUsedBytes)) . '</div></section>
+              <section class="card"><div class="muted">本期剩余</div><div class="stats">' . $this->escape($this->formatTrafficBytes($totalRemainingBytes)) . '</div></section>
             </div>
             ' . $emptyState . '
-            <section class="pg-sheet" data-mobile-resources="true" style="margin-top:20px;">
-              <h3>服务与 Forward 入口</h3>
-              <div class="pg-sheet-scroll">
-                <table class="pg-sheet-table">
-                  <thead>
-                    <tr><th>Service / Forward</th><th>Local Port</th><th>Target</th><th>Status</th><th><span class="pg-visually-hidden">Actions</span></th></tr>
-                  </thead>
-                  <tbody>' . $forwardRows . '</tbody>
-                </table>
-              </div>
-              <div class="pg-mobile-resource-list">' . $forwardMobileRows . '</div>
-            </section>';
+            <div class="grid two" style="margin-top:20px;">
+              ' . $serviceCards . '
+            </div>';
 
-        return $this->page('转发配置', $body, $user, $this->tenantNav('forwards'));
+        return $this->page('我的服务', $body, $user, $this->tenantNav('forwards'));
     }
 
     public function billingPage(Request $request, array $params): Response
