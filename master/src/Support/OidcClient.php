@@ -444,13 +444,17 @@ final class OidcClient
     /** @return array<string, mixed> */
     private function providerJson(string $failureCode, string $method, string $url, array $options): array
     {
-        $maxAttempts = strtoupper($method) === 'GET' ? 2 : 1;
+        $normalizedMethod = strtoupper($method);
+        // A DNS lookup can fail before a POST reaches the provider. Retry only that
+        // pre-request transport failure; never replay an authorization code after an
+        // HTTP response or an ambiguous connection timeout.
+        $maxAttempts = 2;
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             try {
                 return $this->jsonResponse($method, $url, $options);
             } catch (OidcProviderException $exception) {
                 $context = array_merge($exception->context(), ['attempts' => $attempt]);
-                if ($attempt < $maxAttempts && $this->isRetryableProviderContext($context)) {
+                if ($attempt < $maxAttempts && $this->isRetryableProviderContext($context, $normalizedMethod)) {
                     usleep(100_000);
                     continue;
                 }
@@ -467,10 +471,22 @@ final class OidcClient
     }
 
     /** @param array<string, mixed> $context */
-    private function isRetryableProviderContext(array $context): bool
+    private function isRetryableProviderContext(array $context, string $method): bool
     {
         $status = (int) ($context['status'] ?? 0);
-        return $status === 0 || $status === 408 || $status === 425 || $status === 429 || $status >= 500;
+        if ($status === 0) {
+            if ($method === 'GET') {
+                return true;
+            }
+            $curlErrno = (int) ($context['curl_errno'] ?? 0);
+            $curlError = (string) ($context['curl_error'] ?? '');
+            return in_array($curlErrno, [CURLE_COULDNT_RESOLVE_HOST, CURLE_OPERATION_TIMEDOUT], true)
+                && preg_match('/\bresolve|resolv/i', $curlError) === 1;
+        }
+        if ($method !== 'GET') {
+            return false;
+        }
+        return $status === 408 || $status === 425 || $status === 429 || $status >= 500;
     }
 
     /** @param array<string, mixed> $response @param array<string, int|string> $extra @return array<string, int|string> */
