@@ -335,6 +335,18 @@ namespace {
         || (int) ($defaultF['id'] ?? 0) === 601) {
         fail('expected grouped-only backfill to create an ungrouped default');
     }
+    $groupedOnlyLegacy = $db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => 601]);
+    if ((int) ($groupedOnlyLegacy['is_default_for_owner'] ?? 0) !== 0) {
+        fail('expected grouped-only legacy marker to be demoted');
+    }
+    $groupedOnlyRows = $db->fetchAll('SELECT * FROM clients WHERE owner_user_id = :owner_user_id ORDER BY id ASC', ['owner_user_id' => 60]);
+    $groupedOnlyMarkerCount = count(array_filter(
+        $groupedOnlyRows,
+        static fn(array $row): bool => (int) ($row['is_default_for_owner'] ?? 0) === 1
+    ));
+    if ($groupedOnlyMarkerCount !== 1) {
+        fail('expected grouped-only repair to leave exactly one default marker');
+    }
 
     $disabledOnly = $service->ensureDefaultClientForUser(70);
     if ((int) ($disabledOnly['id'] ?? 0) === 701
