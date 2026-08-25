@@ -409,6 +409,73 @@ try {
     assertSame(1, $tokenAttempts, 'token POST must not retry a one-time authorization code');
 }
 
+$dnsRetryAttempts = 0;
+$dnsRetryClient = new OidcClient(new Config($stageConfigPath), static function (string $method, string $url) use (&$dnsRetryAttempts): array {
+    if ($url === 'https://issuer.example/.well-known/openid-configuration') {
+        return ['status' => 200, 'body' => json_encode([
+            'issuer' => 'https://issuer.example',
+            'authorization_endpoint' => 'https://issuer.example/authorize',
+            'token_endpoint' => 'https://issuer.example/token',
+            'jwks_uri' => 'https://issuer.example/keys',
+            'userinfo_endpoint' => 'https://issuer.example/userinfo',
+        ], JSON_THROW_ON_ERROR)];
+    }
+    if ($url === 'https://issuer.example/token') {
+        $dnsRetryAttempts++;
+        if ($dnsRetryAttempts === 1) {
+            return [
+                'status' => 0,
+                'body' => '',
+                '_meta' => [
+                    'curl_errno' => CURLE_OPERATION_TIMEDOUT,
+                    'curl_error' => 'Resolving timed out after 5000 milliseconds',
+                ],
+            ];
+        }
+        return ['status' => 503, 'body' => '{"error":"invalid_grant"}'];
+    }
+    fail('unexpected DNS retry request to ' . $url);
+});
+try {
+    $dnsRetryClient->authenticateCallback('authorization-code', ['nonce' => 'retry-nonce']);
+    fail('DNS retry token request must still fail on the second provider response');
+} catch (OidcProviderException $error) {
+    assertSame(2, $dnsRetryAttempts, 'pre-request DNS failure must retry a token request once');
+    assertSame(2, $error->context()['attempts'] ?? null, 'DNS retry attempt count');
+    assertSame('invalid_grant', $error->context()['provider_error'] ?? null, 'second token response must be retained');
+}
+
+$ambiguousTimeoutAttempts = 0;
+$ambiguousTimeoutClient = new OidcClient(new Config($stageConfigPath), static function (string $method, string $url) use (&$ambiguousTimeoutAttempts): array {
+    if ($url === 'https://issuer.example/.well-known/openid-configuration') {
+        return ['status' => 200, 'body' => json_encode([
+            'issuer' => 'https://issuer.example',
+            'authorization_endpoint' => 'https://issuer.example/authorize',
+            'token_endpoint' => 'https://issuer.example/token',
+            'jwks_uri' => 'https://issuer.example/keys',
+            'userinfo_endpoint' => 'https://issuer.example/userinfo',
+        ], JSON_THROW_ON_ERROR)];
+    }
+    if ($url === 'https://issuer.example/token') {
+        $ambiguousTimeoutAttempts++;
+        return [
+            'status' => 0,
+            'body' => '',
+            '_meta' => [
+                'curl_errno' => CURLE_OPERATION_TIMEDOUT,
+                'curl_error' => 'Connection timed out after 5000 milliseconds',
+            ],
+        ];
+    }
+    fail('unexpected ambiguous timeout request to ' . $url);
+});
+try {
+    $ambiguousTimeoutClient->authenticateCallback('authorization-code', ['nonce' => 'retry-nonce']);
+    fail('ambiguous token timeout must fail');
+} catch (OidcProviderException $error) {
+    assertSame(1, $ambiguousTimeoutAttempts, 'ambiguous token timeout must not replay an authorization code');
+}
+
 $clientSource = (string) file_get_contents(__DIR__ . '/../src/Support/OidcClient.php');
 assertTrue(str_contains($clientSource, "'follow_location' => 0"), 'stream HTTP fallback must reject redirects');
 assertTrue(str_contains($clientSource, 'CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4'), 'cURL provider requests must use IPv4');
