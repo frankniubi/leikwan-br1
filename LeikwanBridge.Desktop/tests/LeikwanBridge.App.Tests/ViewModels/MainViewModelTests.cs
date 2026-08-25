@@ -9,33 +9,30 @@ namespace LeikwanBridge.App.Tests.ViewModels;
 public sealed class MainViewModelTests
 {
     [Fact]
-    public void StrategySelectionPersistsLocallyWithoutRuntimeRestart()
+    public void ApplyForwardSnapshot_BuildsFriendlyForwardSummary()
     {
-        var stateDir = Path.Combine(Path.GetTempPath(), $"leikwan-ui-strategy-{Guid.NewGuid():N}");
-        try
-        {
-            var config = new AgentConfig
-            {
-                MasterUrl = "https://panel-a.example.test",
-                ClientId = 9,
-                ActiveClientId = 9,
-                StateDir = stateDir,
-            };
-            var vm = new MainViewModel();
-            vm.Initialize(config);
-            vm.ApplyForwardSnapshot([CreateBondForwardWithEndpoints()], _ => true);
+        var vm = new MainViewModel();
+        vm.ApplyForwardSnapshot([CreateBondForwardWithEndpoints()], _ => true);
 
-            vm.Forwards[0].SelectedStrategy = ForwardStrategy.Random;
+        var forward = Assert.Single(vm.Forwards);
+        Assert.Equal(59, forward.ForwardId);
+        Assert.Equal("Forward #59", forward.DisplayName);
+        Assert.Equal(ForwardLifecycleState.Connected, forward.Summary.Lifecycle);
+        Assert.Equal(ForwardQualityState.Good, forward.Summary.Quality);
+        Assert.True(forward.Summary.CanStop);
+        Assert.False(forward.Summary.CanStart);
+    }
 
-            var store = new ForwardStrategyStore(stateDir, config.MasterUrl, config.ClientId);
-            Assert.Equal(ForwardStrategy.Random, store.Get(59));
-            Assert.True(vm.Forwards[0].IsRunning);
-        }
-        finally
-        {
-            if (Directory.Exists(stateDir))
-                Directory.Delete(stateDir, recursive: true);
-        }
+    [Fact]
+    public void ApplyForwardSnapshot_StoppedForward_IsNotReportedRunning()
+    {
+        var vm = new MainViewModel();
+        vm.ApplyForwardSnapshot([CreateForward(26, "bond")], _ => false);
+
+        var forward = Assert.Single(vm.Forwards);
+        Assert.Equal(ForwardLifecycleState.Unavailable, forward.Summary.Lifecycle);
+        Assert.False(forward.Summary.CanStop);
+        Assert.True(forward.Summary.CanStart);
     }
 
     [Fact]
@@ -308,40 +305,16 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public void ApplyForwardSnapshot_ShowsAllForwardsWithNeutralMethodLabels_WhenMixedRuntimeModesExist()
+    public void ApplyForwardSnapshot_SelectsFirstForwardAndShowsAll()
     {
         var vm = new MainViewModel();
 
-        vm.ApplyForwardSnapshot(
-        [
-            CreateForward(24, "mptcp"),
-            CreateForward(26, "bond"),
-        ], _ => false);
+        vm.ApplyForwardSnapshot([CreateForward(24, "mptcp"), CreateForward(26, "bond")], _ => false);
 
-        Assert.Equal("All", vm.ActiveModeFilter);
-        Assert.Equal(["All"], vm.AvailableModeFilters.ToArray());
-        Assert.Equal(2, vm.VisibleForwards.Count);
-        Assert.Equal(["Multi-path", "Bond"], vm.VisibleForwards.Select(forward => forward.ModeDisplay).ToArray());
-        Assert.False(vm.VisibleForwards[0].IsMptcpFallback);
+        Assert.Equal(2, vm.Forwards.Count);
+        Assert.Equal(2, vm.ForwardCount);
         Assert.NotNull(vm.SelectedForward);
         Assert.Equal(24, vm.SelectedForward!.ForwardId);
-    }
-
-    [Fact]
-    public void ApplyForwardSnapshot_DoesNotExposeOldModeSelection_WhenNoMptcpForwardExists()
-    {
-        var vm = new MainViewModel();
-
-        vm.ApplyForwardSnapshot(
-        [
-            CreateForward(26, "bond"),
-            CreateForward(27, "single"),
-        ], _ => false);
-
-        Assert.Equal("All", vm.ActiveModeFilter);
-        Assert.Equal(["All"], vm.AvailableModeFilters.ToArray());
-        Assert.Equal(2, vm.VisibleForwards.Count);
-        Assert.NotNull(vm.SelectedForward);
     }
 
     [Fact]
@@ -354,7 +327,7 @@ public sealed class MainViewModelTests
             CreateForward(26, "bond"),
         ], _ => false);
 
-        var target = vm.VisibleForwards.Last();
+        var target = vm.Forwards.Last();
         vm.SelectForwardCommand.Execute(target);
 
         Assert.Equal(target.ForwardId, vm.SelectedForward?.ForwardId);

@@ -33,7 +33,6 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _totalBytesOut = "0 B";
     [ObservableProperty] private string _currentView = "Dashboard";
     [ObservableProperty] private bool _showSetupWizard = true;
-    [ObservableProperty] private string _activeModeFilter = "All";
     [ObservableProperty] private bool _showClientPicker;
     [ObservableProperty] private int _pendingClientSelectionId;
     [ObservableProperty] private string _signedInUsername = "";
@@ -44,11 +43,11 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private ForwardViewModel? _selectedForward;
 
     public ObservableCollection<ForwardViewModel> Forwards { get; } = [];
-    public ObservableCollection<ForwardViewModel> VisibleForwards { get; } = [];
     public ObservableCollection<ConnectionQualityForwardViewModel> ConnectionQualityForwards { get; } = [];
-    public ObservableCollection<string> AvailableModeFilters { get; } = ["All"];
     public ObservableCollection<DesktopClientChoice> AvailableClientChoices { get; } = [];
     public ObservableCollection<string> LogEntries { get; } = [];
+
+    private readonly HashSet<int> _busyForwards = [];
     public bool ShouldAutoConnectOnStartup => !ShowSetupWizard && !IsConnected;
 
     public MainViewModel()
@@ -134,7 +133,6 @@ public partial class MainViewModel : ObservableObject
         ActiveClientName = string.Empty;
         SelectedForward = null;
         Forwards.Clear();
-        VisibleForwards.Clear();
         ShowClientPicker = false;
         ShowSetupWizard = true;
     }
@@ -209,7 +207,11 @@ public partial class MainViewModel : ObservableObject
         // Initialize services
         _stateManager = new StateManager(_config.GetEffectiveStateDir());
         _supervisor = new ProcessSupervisor(OnProcessOutput);
-        _runtimeManager = new ForwardRuntimeManager(_config, _supervisor, _stateManager);
+        _runtimeManager = new ForwardRuntimeManager(
+            _config,
+            _supervisor,
+            _stateManager,
+            portPreflight: PortConflictPreflight.Bind(_supervisor, AppDefaults.GetInstallRoot()));
         _pollingService = new ConfigPollingService(_api, _runtimeManager, _stateManager);
         _healthCheckService = new HealthCheckService(_supervisor, _runtimeManager, _stateManager, config: _config);
         _installedRuntimeCleanup = new InstalledRuntimeCleanupService();
@@ -258,12 +260,6 @@ public partial class MainViewModel : ObservableObject
     private void NavigateTo(string view) => CurrentView = view;
 
     [RelayCommand]
-    private void ApplyModeFilter(string filter)
-    {
-        ActiveModeFilter = string.IsNullOrWhiteSpace(filter) ? "All" : filter;
-    }
-
-    [RelayCommand]
     private void SelectForward(ForwardViewModel? forward)
     {
         if (forward == null)
@@ -274,30 +270,64 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private async Task ToggleForward(ForwardViewModel? vm)
+    {
+        if (vm == null)
+            return;
+
+        if (vm.Summary.CanStop)
+            await StopForward(vm);
+        else if (vm.Summary.CanStart)
+            await StartForward(vm);
+    }
+
+    [RelayCommand]
     private async Task StartForward(ForwardViewModel? vm)
     {
-        if (vm?.Config == null || _runtimeManager == null) return;
-        await Task.Run(() => _runtimeManager.ApplyForward(vm.Config));
-        vm.IsRunning = true;
-        AddLog($"Started forward {vm.ForwardId}.");
+        if (vm?.Config == null || _runtimeManager == null || _busyForwards.Contains(vm.ForwardId))
+            return;
+
+        _busyForwards.Add(vm.ForwardId);
+        SetLifecycle(vm.ForwardId, ForwardLifecycleState.Connecting);
+        try
+        {
+            var succeeded = false;
+            try
+            {
+                succeeded = await Task.Run(() =>
+                {
+                    _runtimeManager.ApplyForward(vm.Config);
+                    return _runtimeManager.IsForwardRunning(vm.ForwardId);
+                }).WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            catch (TimeoutException)
+            {
+                succeeded = false;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "failed applying forward {ForwardId} from UI", vm.ForwardId);
+                succeeded = false;
+            }
+
+            SetLifecycle(vm.ForwardId, succeeded ? ForwardLifecycleState.Connected : ForwardLifecycleState.Unavailable);
+            AddLog(succeeded ? $"Started forward {vm.ForwardId}." : $"Forward {vm.ForwardId} failed to start.");
+        }
+        finally
+        {
+            _busyForwards.Remove(vm.ForwardId);
+        }
     }
 
     [RelayCommand]
     private async Task StopForward(ForwardViewModel? vm)
     {
-        if (vm == null || _runtimeManager == null) return;
-        await Task.Run(() => _runtimeManager.StopForward(vm.ForwardId));
-        vm.IsRunning = false;
-        AddLog($"Stopped forward {vm.ForwardId}.");
-    }
+        if (vm == null || _runtimeManager == null)
+            return;
 
-    [RelayCommand]
-    private async Task RestartForward(ForwardViewModel? vm)
-    {
-        if (vm?.Config == null || _runtimeManager == null) return;
-        await Task.Run(() => _runtimeManager.RestartForward(vm.Config));
-        vm.IsRunning = true;
-        AddLog($"Restarted forward {vm.ForwardId}.");
+        await Task.Run(() => _runtimeManager.StopForward(vm.ForwardId));
+        SetLifecycle(vm.ForwardId, ForwardLifecycleState.Stopped);
+        AddLog($"Stopped forward {vm.ForwardId}.");
     }
 
     [RelayCommand]
@@ -305,9 +335,8 @@ public partial class MainViewModel : ObservableObject
     {
         foreach (var fwd in Forwards)
         {
-            if (fwd.Config != null && !fwd.IsRunning)
-                await Task.Run(() => _runtimeManager?.ApplyForward(fwd.Config));
-            fwd.IsRunning = true;
+            if (fwd.Config != null && fwd.Summary.CanStart)
+                await StartForward(fwd);
         }
         AddLog("Started all forwards.");
     }
@@ -317,7 +346,7 @@ public partial class MainViewModel : ObservableObject
     {
         await Task.Run(() => _runtimeManager?.StopAll());
         foreach (var fwd in Forwards)
-            fwd.IsRunning = false;
+            SetLifecycle(fwd.ForwardId, ForwardLifecycleState.Stopped);
         AddLog("Stopped all forwards.");
     }
 
@@ -326,34 +355,83 @@ public partial class MainViewModel : ObservableObject
 
     public AgentConfig Config => _config;
     public WindowsClientAppArtifact? AvailableUpdateArtifact => _availableUpdateArtifact;
-    public int VisibleForwardCount => VisibleForwards.Count;
+    public int ForwardCount => Forwards.Count;
 
     public void ApplyForwardSnapshot(IEnumerable<ForwardConfig> forwards, Func<int, bool> isRunning, StateManager? stateManager = null)
     {
         var snapshot = forwards.ToList();
         var qualityStateManager = stateManager ?? _stateManager;
+        var applied = qualityStateManager?.LoadApplied() ?? new Dictionary<string, AppliedForwardState>();
 
         Forwards.Clear();
         ConnectionQualityForwards.Clear();
-        var strategyStore = new ForwardStrategyStore(
-            _config.GetEffectiveStateDir(),
-            _config.MasterUrl,
-            _config.ClientId > 0 ? _config.ClientId : _config.ActiveClientId);
         foreach (var forward in snapshot)
         {
             var running = isRunning(forward.ForwardId);
-            var vm = new ForwardViewModel(forward, strategyStore)
-            {
-                IsRunning = running,
-            };
+            var busy = _busyForwards.Contains(forward.ForwardId);
+            var userStopped = applied.TryGetValue(forward.ForwardId.ToString(), out var appliedState) && appliedState!.UserStopped;
+            var degraded = HasDegradedLeg(qualityStateManager, forward);
+            var vm = new ForwardViewModel(forward, BuildSummary(forward, running, busy, userStopped, degraded));
             Forwards.Add(vm);
             ConnectionQualityForwards.Add(BuildConnectionQuality(forward, running, qualityStateManager));
         }
 
-        RebuildAvailableModeFilters();
-        ActiveModeFilter = "All";
-        RebuildVisibleForwards();
+        SelectedForward = Forwards.FirstOrDefault();
         ActiveForwardCount = Forwards.Count;
+    }
+
+    private static ForwardSummary BuildSummary(ForwardConfig forward, bool running, bool busy, bool userStopped, bool degraded)
+    {
+        var lifecycle = busy ? ForwardLifecycleState.Connecting
+            : running ? ForwardLifecycleState.Connected
+            : userStopped ? ForwardLifecycleState.Stopped
+            : ForwardLifecycleState.Unavailable;
+
+        var quality = !running ? ForwardQualityState.Unavailable
+            : degraded ? ForwardQualityState.Degraded
+            : ForwardQualityState.Good;
+
+        var friendly = lifecycle == ForwardLifecycleState.Unavailable ? "Unavailable" : "";
+
+        return new ForwardSummary(
+            forward.ForwardId,
+            $"Forward #{forward.ForwardId}",
+            lifecycle,
+            quality,
+            quality.ToString(),
+            friendly,
+            busy,
+            CanStart: lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
+            CanStop: lifecycle is ForwardLifecycleState.Connected,
+            LastTransitionAt: DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    }
+
+    private void SetLifecycle(int forwardId, ForwardLifecycleState lifecycle)
+    {
+        var vm = Forwards.FirstOrDefault(f => f.ForwardId == forwardId);
+        if (vm?.Config == null)
+            return;
+
+        var running = lifecycle == ForwardLifecycleState.Connected;
+        var busy = _busyForwards.Contains(forwardId);
+        vm.Summary = new ForwardSummary(
+            forwardId,
+            vm.DisplayName,
+            lifecycle,
+            running ? ForwardQualityState.Good : ForwardQualityState.Unavailable,
+            running ? ForwardQualityState.Good.ToString() : ForwardQualityState.Unavailable.ToString(),
+            lifecycle == ForwardLifecycleState.Unavailable ? "Unavailable" : "",
+            busy,
+            CanStart: lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
+            CanStop: lifecycle is ForwardLifecycleState.Connected,
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    }
+
+    private static bool HasDegradedLeg(StateManager? stateManager, ForwardConfig forward)
+    {
+        if (stateManager == null || !stateManager.LoadBondEndpointHealth().TryGetValue(forward.ForwardId.ToString(), out var health))
+            return false;
+        return health.Values.Any(entry => !string.IsNullOrWhiteSpace(entry.LastError));
     }
 
     private static ConnectionQualityForwardViewModel BuildConnectionQuality(ForwardConfig forward, bool isRunning, StateManager? stateManager)
@@ -595,35 +673,6 @@ public partial class MainViewModel : ObservableObject
         LogEntries.Add(entry);
         while (LogEntries.Count > 5000)
             LogEntries.RemoveAt(0);
-    }
-
-    partial void OnActiveModeFilterChanged(string value)
-    {
-        RebuildVisibleForwards();
-    }
-
-    private void RebuildAvailableModeFilters()
-    {
-        AvailableModeFilters.Clear();
-        AvailableModeFilters.Add("All");
-    }
-
-    private void RebuildVisibleForwards()
-    {
-        VisibleForwards.Clear();
-        foreach (var forward in Forwards.Where(forward => forward.MatchesModeFilter(ActiveModeFilter)))
-            VisibleForwards.Add(forward);
-
-        if (VisibleForwards.Count == 0)
-        {
-            SelectedForward = null;
-        }
-        else if (SelectedForward == null || VisibleForwards.All(forward => forward.ForwardId != SelectedForward.ForwardId))
-        {
-            SelectedForward = VisibleForwards[0];
-        }
-
-        OnPropertyChanged(nameof(VisibleForwardCount));
     }
 
     private static string GetString(string key)
