@@ -682,8 +682,8 @@ ignored.
 
 - [x] **Step 5: Commit the implementation in reviewable checkpoints.**
 
-Completed checkpoints: `c676af5`, `7c3d8d3`, `1b845d3`, `0cbe603`, and
-`4d134ab`.
+Completed checkpoints: `c676af5`, `7c3d8d3`, `1b845d3`, `0cbe603`, `4d134ab`,
+and `4811b57`.
 
 Use these commits, keeping unrelated worktree changes untouched:
 
