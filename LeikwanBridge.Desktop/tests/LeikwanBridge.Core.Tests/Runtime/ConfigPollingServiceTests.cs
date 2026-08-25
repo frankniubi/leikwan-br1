@@ -232,6 +232,34 @@ public sealed class ConfigPollingServiceTests
         Assert.Single(service.LatestForwards);
     }
 
+    [Fact]
+    public async Task SyncOnceAsync_NotModified_ShortCircuitsReconcile()
+    {
+        using var tempDir = new TempStateDirectory();
+        var payload = BuildPullResponseJson().Replace(
+            "\"ok\": true,",
+            "\"ok\": true,\n  \"config_revision\": \"rev-1\",",
+            StringComparison.Ordinal);
+        using var server = new PullApiServer(payload) { NotModifiedRevision = "rev-1" };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+        Assert.Equal([26], runtimeManager.AppliedForwardIds);
+
+        await service.SyncOnceAsync();
+        Assert.Equal([26], runtimeManager.AppliedForwardIds);
+    }
+
     private static string BuildPullResponseJson()
     {
         return """
@@ -481,6 +509,8 @@ public sealed class ConfigPollingServiceTests
 
         public string BaseUrl { get; }
 
+        public string NotModifiedRevision { get; set; } = "";
+
         private async Task ServeLoopAsync()
         {
             while (!_cts.IsCancellationRequested)
@@ -511,6 +541,13 @@ public sealed class ConfigPollingServiceTests
 
                 if (context.Request.Url?.AbsolutePath == "/api/client/configs/pull")
                 {
+                    if (NotModifiedRevision != ""
+                        && (context.Request.Url.Query ?? "").Contains($"since_revision={Uri.EscapeDataString(NotModifiedRevision)}"))
+                    {
+                        context.Response.StatusCode = 304;
+                        context.Response.OutputStream.Close();
+                        continue;
+                    }
                     var bytes = Encoding.UTF8.GetBytes(_payload);
                     context.Response.StatusCode = 200;
                     context.Response.ContentType = "application/json";
