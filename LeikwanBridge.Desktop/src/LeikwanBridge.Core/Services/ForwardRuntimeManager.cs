@@ -20,6 +20,7 @@ public class ForwardRuntimeManager : IDisposable
     private readonly Func<string, bool> _binaryExists;
     private readonly Func<int, bool> _portListeningProbe;
     private readonly Func<int, UltraLease, CancellationToken, Task<bool>> _ultraLeaseSender;
+    private readonly Func<int, PortPreflightResult>? _portPreflight;
 
     public ForwardRuntimeManager(
         AgentConfig config,
@@ -27,7 +28,8 @@ public class ForwardRuntimeManager : IDisposable
         StateManager stateManager,
         Func<string, bool>? binaryExists = null,
         Func<int, bool>? portListeningProbe = null,
-        Func<int, UltraLease, CancellationToken, Task<bool>>? ultraLeaseSender = null)
+        Func<int, UltraLease, CancellationToken, Task<bool>>? ultraLeaseSender = null,
+        Func<int, PortPreflightResult>? portPreflight = null)
     {
         _config = config;
         _supervisor = supervisor;
@@ -38,6 +40,7 @@ public class ForwardRuntimeManager : IDisposable
         _binaryExists = binaryExists ?? File.Exists;
         _portListeningProbe = portListeningProbe ?? NetworkProbe.IsPortListening;
         _ultraLeaseSender = ultraLeaseSender ?? UltraLeaseClient.SendAsync;
+        _portPreflight = portPreflight;
     }
 
     public virtual void ApplyForward(ForwardConfig forward)
@@ -218,6 +221,22 @@ public class ForwardRuntimeManager : IDisposable
             CleanupUltraRuntimeFiles(forward.ForwardId);
             StopForwardForPolicy(forward.ForwardId);
             return;
+        }
+        if (_portPreflight is not null)
+        {
+            var preflight = _portPreflight(forward.ListenPort);
+            if (preflight.Blocked)
+            {
+                Log.Warning("Ultra forward {ForwardId} blocked by port conflict ({ConflictCode}); foreign pid={ForeignPid}; not starting",
+                    forward.ForwardId, preflight.ConflictCode, preflight.ForeignPid);
+                lease.Dispose();
+                forward.RuntimeLease = null;
+                CleanupUltraRuntimeFiles(forward.ForwardId);
+                StopForwardForPolicy(forward.ForwardId);
+                return;
+            }
+            if (preflight.QuiescedPids.Count > 0)
+                Log.Information("Ultra forward {ForwardId}: quiesced managed-old owners {Pids}", forward.ForwardId, preflight.QuiescedPids);
         }
         _supervisor.StartProcess(forward.ForwardId, "ultra-runtime", "Ultra direct runtime", ultraBin, $"--config \"{configPath}\"");
         if (!_ultraLeaseSender(forward.ForwardId, lease, CancellationToken.None).GetAwaiter().GetResult())
