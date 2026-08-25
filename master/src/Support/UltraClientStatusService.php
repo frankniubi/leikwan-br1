@@ -29,7 +29,6 @@ final class UltraClientStatusService
         }
         $assignments = $this->assignmentsForClients([$clientId]);
         $allowed = $assignments[$clientId] ?? [];
-        $lineLabels = $this->lineLabelsForAssignments([$clientId => $allowed]);
         $normalized = [];
         foreach (array_slice(array_values($statuses), 0, self::MAX_STATUSES) as $status) {
             if (!is_array($status)) {
@@ -39,7 +38,7 @@ final class UltraClientStatusService
             if (!isset($allowed[$forwardId]) || isset($normalized[$forwardId])) {
                 continue;
             }
-            $entry = $this->normalizeStatus($status, $forwardId, $lineLabels[$forwardId] ?? []);
+            $entry = $this->normalizeStatus($status, $forwardId);
             if ($entry !== null) {
                 $normalized[$forwardId] = $entry;
             }
@@ -93,7 +92,6 @@ final class UltraClientStatusService
             }
         }
         $assignments = $this->assignmentsForClients(array_values($clientIds));
-        $lineLabels = $this->lineLabelsForAssignments($assignments);
         $stateFilter = strtolower(trim((string) ($filters['state'] ?? '')));
         $zoneFilter = strtolower(trim((string) ($filters['destination_zone'] ?? '')));
         $search = strtolower(trim((string) ($filters['search'] ?? '')));
@@ -139,15 +137,8 @@ final class UltraClientStatusService
                 }
                 $tcp = is_array($status['latest_tcp'] ?? null) ? $status['latest_tcp'] : [];
                 $udp = is_array($status['active_udp'] ?? null) ? $status['active_udp'] : [];
-                $tcpIp = self::ip($tcp['relay_ip'] ?? '');
-                $udpIp = self::ip($udp['relay_ip'] ?? '');
-                $forwardLineLabels = $lineLabels[$forwardId] ?? [];
-                if (!isset($forwardLineLabels[$tcpIp])) {
-                    $tcpIp = '';
-                }
-                if (!isset($forwardLineLabels[$udpIp])) {
-                    $udpIp = '';
-                }
+                $tcpRef = self::selectionRef($tcp['selection_ref'] ?? $tcp['entry_ref'] ?? '');
+                $udpRef = self::selectionRef($udp['selection_ref'] ?? $udp['entry_ref'] ?? '');
                 $rows[] = [
                     'state' => $state,
                     'user_name' => self::text($session['user_name'] ?? '', 191),
@@ -162,10 +153,13 @@ final class UltraClientStatusService
                     'destination' => self::text($assignment['target_host'] ?? '', 255) . ':' . (int) ($assignment['target_port'] ?? 0),
                     'destination_zone' => $destinationZone,
                     'detected_ingress_zone' => self::zone($status['detected_ingress_zone'] ?? 'unknown'),
-                    'latest_tcp_line' => self::lineLabelForRelay($forwardLineLabels, $tcpIp),
-                    'latest_tcp_ip' => $tcpIp,
-                    'active_udp_line' => self::lineLabelForRelay($forwardLineLabels, $udpIp),
-                    'active_udp_ip' => $udpIp,
+                    'latest_tcp_selection_ref' => $tcpRef,
+                    'active_udp_selection_ref' => $udpRef,
+                    // Compatibility keys stay empty so no provider line/IP is serialized.
+                    'latest_tcp_line' => '',
+                    'latest_tcp_ip' => '',
+                    'active_udp_line' => '',
+                    'active_udp_ip' => '',
                     'last_seen_at' => (string) ($session['last_seen_at'] ?? ''),
                     'status_updated_at' => (string) ($session['ultra_status_updated_at'] ?? ''),
                     'error_code' => self::text($status['error_code'] ?? '', 64),
@@ -234,81 +228,10 @@ final class UltraClientStatusService
     }
 
     /**
-     * Resolve an observed relay only within the line memberships approved for
-     * that forward. The client continues to report an opaque entry reference.
-     *
-     * @param array<int, array<int, array<string, mixed>>> $assignments
-     * @return array<int, array<string, string>>
-     */
-    private function lineLabelsForAssignments(array $assignments): array
-    {
-        $forwardIds = [];
-        foreach ($assignments as $clientAssignments) {
-            foreach (array_keys($clientAssignments) as $forwardId) {
-                $forwardId = (int) $forwardId;
-                if ($forwardId > 0) {
-                    $forwardIds[$forwardId] = $forwardId;
-                }
-            }
-        }
-        if ($forwardIds === []) {
-            return [];
-        }
-
-        $rows = $this->db->fetchAll(
-            'SELECT f.id AS forward_id, ul.line_id, ul.admin_label, ul.source_title, ul.relay_ips_json
-             FROM forward_combination_ultra_lines fcul
-             INNER JOIN forwards f ON f.forward_combination_id = fcul.forward_combination_id
-             INNER JOIN ultra_lines ul ON ul.id = fcul.ultra_line_id
-             WHERE f.id IN (' . implode(',', array_values($forwardIds)) . ')
-               AND fcul.enabled = 1
-               AND ul.is_source_present = 1
-               AND ul.is_enabled = 1
-             ORDER BY f.id ASC, fcul.sort_order ASC, fcul.id ASC'
-        );
-        $labels = [];
-        foreach ($rows as $row) {
-            $forwardId = (int) ($row['forward_id'] ?? 0);
-            $lineId = (int) ($row['line_id'] ?? 0);
-            if (!isset($forwardIds[$forwardId]) || $lineId <= 0) {
-                continue;
-            }
-            $title = trim((string) (($row['admin_label'] ?? '') ?: ($row['source_title'] ?? '')));
-            $label = self::text('#' . $lineId . ($title !== '' ? ' ' . $title : ''), 128);
-            $relayIps = is_string($row['relay_ips_json'] ?? null)
-                ? json_decode((string) $row['relay_ips_json'], true)
-                : [];
-            foreach (array_slice(is_array($relayIps) ? $relayIps : [], 0, 8) as $rawIp) {
-                $ip = self::ip($rawIp);
-                if ($ip === '') {
-                    continue;
-                }
-                $existing = $labels[$forwardId][$ip] ?? '';
-                if ($existing === '') {
-                    $labels[$forwardId][$ip] = $label;
-                } elseif (!str_contains(' / ' . $existing . ' / ', ' / ' . $label . ' / ')) {
-                    $labels[$forwardId][$ip] = self::text($existing . ' / ' . $label, 128);
-                }
-            }
-        }
-        return $labels;
-    }
-
-    /** @param array<string, string> $labels */
-    private static function lineLabelForRelay(array $labels, string $relayIp): string
-    {
-        if ($relayIp !== '' && trim((string) ($labels[$relayIp] ?? '')) !== '') {
-            return self::text($labels[$relayIp], 128);
-        }
-        return '';
-    }
-
-    /**
      * @param array<string, mixed> $status
-     * @param array<string, string> $allowedRelays
      * @return array<string, mixed>|null
      */
-    private function normalizeStatus(array $status, int $forwardId, array $allowedRelays): ?array
+    private function normalizeStatus(array $status, int $forwardId): ?array
     {
         $state = strtolower(trim((string) ($status['state'] ?? 'ready')));
         if (!in_array($state, ['ready', 'degraded', 'error', 'stopped'], true)) {
@@ -318,32 +241,34 @@ final class UltraClientStatusService
             'forward_id' => $forwardId,
             'state' => $state,
             'detected_ingress_zone' => self::zone($status['detected_ingress_zone'] ?? 'unknown'),
-            'latest_tcp' => $this->normalizeSelection($status['latest_tcp'] ?? null, $allowedRelays),
-            'active_udp' => $this->normalizeSelection($status['active_udp'] ?? null, $allowedRelays),
+            'latest_tcp' => $this->normalizeSelection($status['latest_tcp'] ?? null),
+            'active_udp' => $this->normalizeSelection($status['active_udp'] ?? null),
             'updated_at' => self::text($status['updated_at'] ?? '', 40),
             'error_code' => self::text($status['error_code'] ?? '', 64),
         ];
     }
 
-    /** @param array<string, string> $allowedRelays @return array<string, mixed>|null */
-    private function normalizeSelection(mixed $selection, array $allowedRelays): ?array
+    /** @return array<string, mixed>|null */
+    private function normalizeSelection(mixed $selection): ?array
     {
         if (!is_array($selection)) {
             return null;
         }
-        $reference = trim((string) ($selection['entry_ref'] ?? ''));
-        $relayIp = self::ip($selection['relay_ip'] ?? '');
-        if (preg_match('/^[A-Za-z0-9_-]{16,128}$/', $reference) !== 1
-            || $relayIp === ''
-            || !isset($allowedRelays[$relayIp])) {
+        $reference = self::selectionRef($selection['selection_ref'] ?? $selection['entry_ref'] ?? '');
+        if ($reference === '') {
             return null;
         }
         return [
-            'entry_ref' => $reference,
-            'relay_ip' => $relayIp,
+            'selection_ref' => $reference,
             'rtt_ms' => max(0, min(60000, (int) ($selection['rtt_ms'] ?? 0))),
             'selected_at' => self::text($selection['selected_at'] ?? '', 40),
         ];
+    }
+
+    private static function selectionRef(mixed $value): string
+    {
+        $reference = trim((string) $value);
+        return preg_match('/^[A-Za-z0-9_-]{16,128}$/', $reference) === 1 ? $reference : '';
     }
 
     private function sessionState(int $lastSeen): string

@@ -14,6 +14,7 @@ public class ProcessSupervisor : IDisposable
         DateTime StartedAt);
 
     private readonly ConcurrentDictionary<int, List<ManagedProcess>> _processes = new();
+    private readonly ConcurrentDictionary<int, WindowsJobGroup> _jobGroups = new();
     private readonly Action<int, string, string>? _onOutput;
     private bool _disposed;
 
@@ -68,6 +69,13 @@ public class ProcessSupervisor : IDisposable
         };
 
         process.Start();
+        var job = _jobGroups.GetOrAdd(forwardId, WindowsJobGroup.Create);
+        if (!job.Attach(process))
+        {
+            process.Kill(entireProcessTree: true);
+            process.Dispose();
+            throw new InvalidOperationException("process could not be attached to forward job group");
+        }
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
@@ -81,6 +89,11 @@ public class ProcessSupervisor : IDisposable
 
     public virtual void StopAll(int forwardId)
     {
+        if (_jobGroups.TryRemove(forwardId, out var job))
+        {
+            job.Terminate();
+            job.Dispose();
+        }
         if (!_processes.TryRemove(forwardId, out var list)) return;
         foreach (var mp in list)
         {
@@ -91,6 +104,12 @@ public class ProcessSupervisor : IDisposable
 
     public virtual void StopAll()
     {
+        foreach (var job in _jobGroups.Values)
+        {
+            job.Terminate();
+            job.Dispose();
+        }
+        _jobGroups.Clear();
         foreach (var kvp in _processes)
         {
             foreach (var mp in kvp.Value)

@@ -51,6 +51,8 @@ public sealed class StateManager
         return LoadJson<UsageState>(path) ?? new UsageState();
     }
 
+    public string EffectiveStateDir => _stateDir;
+
     public void SaveUsageState(UsageState state)
     {
         var path = Path.Combine(_stateDir, "usage_state.json");

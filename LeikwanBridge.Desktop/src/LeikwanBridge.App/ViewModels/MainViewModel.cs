@@ -217,7 +217,8 @@ public partial class MainViewModel : ObservableObject
             _api, _stateManager,
             _wgManager.PublicKey,
             _config.GetEffectiveWireguardListenPort(),
-            _config.GetEffectiveWireguardFallbackTcpPort());
+            _config.GetEffectiveWireguardFallbackTcpPort(),
+            ApplyUltraPolicyActions);
 
         _pollingService.ForwardsUpdated += OnForwardsUpdated;
         _pollingService.PullStateChanged += OnPullStateChanged;
@@ -522,6 +523,24 @@ public partial class MainViewModel : ObservableObject
             try { await _heartbeatService!.SendHeartbeatAsync(); }
             catch (Exception ex) { Log.Error(ex, "heartbeat failed"); }
         });
+    }
+
+    private void ApplyUltraPolicyActions(IReadOnlyList<UltraPolicyAction> actions)
+    {
+        foreach (var action in actions.Take(32))
+        {
+            if (!string.Equals(action.Action, "stop", StringComparison.OrdinalIgnoreCase)
+                || action.ForwardId <= 0
+                || !System.Text.RegularExpressions.Regex.IsMatch(action.PolicyGeneration ?? "", "^[a-f0-9]{64}$"))
+                continue;
+            var forward = _pollingService?.LatestForwards.FirstOrDefault(item => item.ForwardId == action.ForwardId);
+            if (forward?.UltraAccess is null
+                || !string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(forward.UltraAccess.PolicyGeneration, action.PolicyGeneration, StringComparison.Ordinal))
+                continue;
+            _runtimeManager?.StopForwardForPolicy(action.ForwardId);
+            InvokeOnUiThread(() => AddLog($"Panel stopped Ultra forward {action.ForwardId}: {action.Reason}"));
+        }
     }
 
     private void OnPullStateChanged(PullState state)

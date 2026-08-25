@@ -14,7 +14,7 @@ use Leikwan\Master\Support\LeigodTokenBroker;
 use Leikwan\Master\Support\LeigodTokenProvider;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\UltraClientStatusService;
-use Leikwan\Master\Support\UltraInventoryService;
+use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMode;
 use Leikwan\Master\Support\UltraMaterialService;
 
@@ -22,6 +22,7 @@ final class ClientAgentController extends BaseController
 {
     private LeigodTokenProvider $ultraTokenProvider;
     private UltraMaterialService $ultraMaterials;
+    private UltraLeaseService $ultraLeases;
     private UltraClientStatusService $ultraClientStatus;
 
     public function __construct(
@@ -31,53 +32,104 @@ final class ClientAgentController extends BaseController
         ?LeigodTokenProvider $leigodTokenProvider = null,
         ?UltraMaterialService $ultraMaterials = null,
         ?UltraClientStatusService $ultraClientStatus = null,
+        ?UltraLeaseService $ultraLeases = null,
     ) {
         parent::__construct($config, $db);
         $this->ultraMaterials = $ultraMaterials
             ?? new UltraMaterialService($config, $db, new AppSettings($db));
         $this->ultraTokenProvider = $leigodTokenProvider
             ?? new LeigodTokenBroker($config, new AppSettings($db), $this->ultraMaterials);
+        $this->ultraLeases = $ultraLeases ?? new UltraLeaseService($config, $db, $this->ultraMaterials);
         $this->ultraClientStatus = $ultraClientStatus ?? new UltraClientStatusService($config, $db);
     }
 
     public function resolveUltraMaterials(Request $request, array $params): Response
     {
+        Auth::requireClientAgent($request, $this->db);
+        return $this->json(['ok' => false, 'error' => 'ultra_material_v1_retired'], 410)->withHeaders([
+            'Cache-Control' => 'no-store, no-cache, must-revalidate',
+            'Pragma' => 'no-cache',
+        ]);
+    }
+
+    /**
+     * Issue one-shot Ultra v2 leases after re-reading the Panel policy.
+     * Provider line material is resolved only inside the server-side lease
+     * service and is never returned as a reusable materials collection.
+     */
+    public function resolveUltraLease(Request $request, array $params): Response
+    {
         $client = Auth::requireClientAgent($request, $this->db);
         $deviceSessions = new ClientOnlineSessionService($this->db);
-        $deviceId = $deviceSessions->enforceFromRequest($client, $request, 'pull');
+        $deviceId = $deviceSessions->enforceFromRequest($client, $request, 'lease');
         $deviceSession = $deviceSessions->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
         $assigned = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
-        $allowed = [];
-        foreach ($assigned as $forward) {
-            if (is_array($forward)
-                && UltraMode::isBackendMode($forward['backend_mode'] ?? '')
-                && (string) ($forward['service_status'] ?? '') === 'active') {
-                $allowed[(int) ($forward['forward_id'] ?? 0)] = true;
+        $assignedById = [];
+        foreach (is_array($assigned) ? $assigned : [] as $forward) {
+            if (is_array($forward)) {
+                $assignedById[(int) ($forward['forward_id'] ?? 0)] = $forward;
             }
         }
-        $resolved = [];
-        $requests = $request->input('forwards', []);
-        foreach (array_slice(is_array($requests) ? $requests : [], 0, 32) as $item) {
+        $forwards = $request->input('forwards', []);
+        if (!is_array($forwards) || $forwards === []) {
+            $forwards = [$request->body()];
+        }
+        $forwards = array_slice(array_values($forwards), 0, 4);
+        $granted = $this->attachUltraAccessGrants($assigned, (int) $client['id'], $deviceId);
+        $grantsById = [];
+        foreach ($granted as $grantedForward) {
+            if (!is_array($grantedForward)) {
+                continue;
+            }
+            $grantedId = (int) ($grantedForward['forward_id'] ?? 0);
+            if ($grantedId > 0 && is_array($grantedForward[UltraMode::ACCESS_FIELD] ?? null)) {
+                $grantsById[$grantedId] = $grantedForward[UltraMode::ACCESS_FIELD];
+            }
+        }
+        $leases = [];
+        $lastError = 'lease_scope_invalid';
+        foreach ($forwards as $item) {
             if (!is_array($item)) {
                 continue;
             }
             $forwardId = (int) ($item['forward_id'] ?? 0);
-            $token = trim((string) ($item['token'] ?? ''));
-            if ($forwardId <= 0 || $token === '' || !isset($allowed[$forwardId])) {
+            $forward = $assignedById[$forwardId] ?? null;
+            $grant = $grantsById[$forwardId] ?? null;
+            if (!is_array($forward) || !is_array($grant)) {
+                $lastError = 'policy_unavailable';
                 continue;
             }
-            $material = $this->ultraMaterials->resolveClientToken(
-                $token,
-                (int) $client['id'],
-                $deviceId,
-                $forwardId,
-                []
-            );
-            if ($material !== []) {
-                $resolved[] = $material;
+            $ticket = trim((string) ($item['session_ticket'] ?? ''));
+            if ($ticket === '' || !hash_equals($ticket, (string) ($grant['session_ticket'] ?? ''))) {
+                $lastError = 'lease_scope_invalid';
+                continue;
             }
+            $target = trim((string) ($forward['target'] ?? ''));
+            $policy = [
+                'forward_id' => $forwardId,
+                'device_hash' => hash('sha256', $deviceId),
+                'service_state' => (string) ($forward['service_status'] ?? 'suspended'),
+                'policy_generation' => (string) ($grant['policy_generation'] ?? ''),
+                'target' => $target,
+                'transport' => (string) ($grant['transport'] ?? $forward['transport'] ?? 'tcp+udp'),
+                'rate_limit_mbps' => (int) ($grant['rate_limit_mbps'] ?? $forward['speed_limit_mbps'] ?? 0),
+                'quota_remaining_bytes' => (int) ($grant['quota_remaining_bytes'] ?? 0),
+                'expires_at' => (string) ($grant['expires_at'] ?? ''),
+            ];
+            $result = $this->ultraLeases->issueLease($item, (int) $client['id'], $deviceId, $policy);
+            if (($result['ok'] ?? false) === true && is_array($result['lease'] ?? null)) {
+                $leases[] = $result['lease'];
+                continue;
+            }
+            $lastError = (string) ($result['error'] ?? $lastError);
         }
-        return $this->json(['ok' => true, 'materials' => $resolved])->withHeaders([
+        if ($leases === []) {
+            return $this->json(['ok' => false, 'error' => $lastError], 409)->withHeaders([
+                'Cache-Control' => 'no-store, no-cache, must-revalidate',
+                'Pragma' => 'no-cache',
+            ]);
+        }
+        return $this->json(['ok' => true, 'leases' => $leases])->withHeaders([
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
             'Pragma' => 'no-cache',
         ]);
@@ -185,23 +237,7 @@ final class ClientAgentController extends BaseController
         try {
             $grants = $this->ultraTokenProvider->grantsForClientForwards($clientId, $deviceId, $brokerForwards);
         } catch (\Throwable) {
-            return $forwards;
-        }
-        if ($grants === []) {
-            return $forwards;
-        }
-
-        $zoneAliases = [];
-        try {
-            foreach ((new UltraInventoryService($this->config, $this->db))->activeZones('ingress') as $zone) {
-                $code = strtolower(trim((string) ($zone['zone_code'] ?? '')));
-                $aliases = is_array($zone['aliases'] ?? null) ? array_values(array_map('strval', $zone['aliases'])) : [];
-                if ($code !== '' && $code !== 'unknown' && $aliases !== []) {
-                    $zoneAliases[$code] = array_slice($aliases, 0, 16);
-                }
-            }
-        } catch (\Throwable) {
-            $zoneAliases = [];
+            $grants = [];
         }
 
         foreach ($forwards as $index => $forward) {
@@ -210,15 +246,38 @@ final class ClientAgentController extends BaseController
                 || (string) ($forward['service_status'] ?? '') !== 'active') {
                 continue;
             }
+            $forwards[$index] = $this->scrubUltraClientForward($forward);
             $forwardId = (string) ((int) ($forward['forward_id'] ?? 0));
             $grant = $grants[$forwardId] ?? null;
-            if (!is_array($grant) || trim((string) ($grant['token'] ?? '')) === '') {
+            if (!is_array($grant) || trim((string) ($grant['session_ticket'] ?? '')) === '') {
                 continue;
             }
-            $grant['zone_aliases'] = $zoneAliases;
+            unset($grant['zone_aliases']);
             $forwards[$index][UltraMode::ACCESS_FIELD] = $grant;
         }
         return $forwards;
+    }
+
+    /** @param array<string,mixed> $forward @return array<string,mixed> */
+    private function scrubUltraClientForward(array $forward): array
+    {
+        foreach ([
+            'client_token',
+            'line_client_id', 'line_client_name', 'line_client_host',
+            'line_client_group_id', 'line_client_group_name', 'line_client_group_ids',
+            'line_client_groups', 'line_group_mode', 'line_client_agent_config_json',
+            'forward_combination_direction', 'forward_combination_label',
+            'forward_combination_name', 'bond_sidecar_point_id', 'bond_sidecar_point_name',
+            'bond_sidecar_host', 'bond_sidecar_port', 'mptcp_sidecar_port',
+            'bond_sidecar_cf_listen_port', 'bond_sidecar_cf_sni_host',
+            'bond_sidecar_approved_upstream_realizations', 'bond_sidecar_point_agent_config_json',
+            'bond_remote_host', 'bond_remote_port', 'cf_location_group_id',
+            '_ultra_line_ids', '_ultra_lines', '_ultra_line_direction',
+            '_ultra_destination_zone', '_ultra_allowed_ingress_zones', '_ultra_fallback_policy',
+        ] as $field) {
+            unset($forward[$field]);
+        }
+        return $forward;
     }
 
     public function heartbeat(Request $request, array $params): Response
@@ -297,11 +356,37 @@ final class ClientAgentController extends BaseController
             );
         }
         $this->provisioning->recordAgentUsage('client', (int) $client['id'], $usageBytesIn, $usageBytesOut);
+        $ultraUsage = $request->input('ultra_usage', []);
+        $ultraActions = [];
+        if (is_array($ultraUsage)) {
+            foreach (array_slice($ultraUsage, 0, 32) as $usage) {
+                if (is_array($usage)) {
+                    try {
+                        $action = $this->provisioning->recordUltraUsage((int) $client['id'], $deviceId, $usage);
+                        if (is_array($action)
+                            && (int) ($action['forward_id'] ?? 0) > 0
+                            && (string) ($action['action'] ?? '') === 'stop') {
+                            $ultraActions[(int) $action['forward_id']] = [
+                                'forward_id' => (int) $action['forward_id'],
+                                'policy_generation' => (string) ($action['policy_generation'] ?? ''),
+                                'action' => 'stop',
+                                'reason' => (string) ($action['reason'] ?? 'policy'),
+                            ];
+                        }
+                    } catch (\Throwable) {
+                        // Usage is retried from the client; never interrupt heartbeat policy refresh.
+                    }
+                }
+            }
+        }
         if ($shouldRepublish) {
             $this->provisioning->republishActiveForwardsForClient((int) $client['id']);
         }
 
-        return $this->json(['ok' => true]);
+        return $this->json([
+            'ok' => true,
+            'ultra_actions' => array_values($ultraActions),
+        ]);
     }
 
     public function diagnosticsResult(Request $request, array $params): Response

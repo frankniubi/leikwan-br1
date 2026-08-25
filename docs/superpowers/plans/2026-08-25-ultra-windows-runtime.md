@@ -1,5 +1,8 @@
 # Ultra Windows Runtime Parity Implementation Plan
 
+> **Status:** Implemented on `codex/ultra-policy-v2`; Core/App tests and Windows
+> helper cross-build completed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (- [ ]) syntax.
 
 **Goal:** Add Windows Ultra support using the same policy, one-time lease, direct provider, quota, expiry, and cleanup contract as Linux.

@@ -23,6 +23,9 @@ foreach ([
     's.status = :active_status',
     'legacyForwardErrorResponse(',
     "'Cache-Control' => 'no-store'",
+    "UltraMode::BACKEND_MODE",
+    "'ultra_material_v1_retired'",
+    "], 410)",
 ] as $required) {
     if (!str_contains($clientConfig, $required)) {
         failClientConfigBoundary('legacy client-config boundary missing: ' . $required);

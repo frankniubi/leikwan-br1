@@ -14,6 +14,7 @@ public sealed class MasterApiClient : IDisposable
     private readonly HttpClient _http;
     private readonly string _masterUrl;
     private readonly string _agentToken;
+    private readonly string _deviceId;
     private readonly bool _ownsHttpClient;
     private readonly Action<HttpRequestMessage>? _onRequestForTest;
 
@@ -37,6 +38,7 @@ public sealed class MasterApiClient : IDisposable
     {
         _masterUrl = masterUrl.TrimEnd('/');
         _agentToken = agentToken;
+        _deviceId = deviceId.Trim();
         _http = httpClientFactory?.Invoke() ?? LeikwanHttpClientFactory.CreateFor(new Uri(_masterUrl));
         _ownsHttpClient = ownsHttpClient;
         _onRequestForTest = onRequestForTest;
@@ -88,7 +90,109 @@ public sealed class MasterApiClient : IDisposable
                ?? throw new InvalidOperationException("null pull response");
     }
 
-    public async Task SendHeartbeatAsync(HeartbeatPayload payload, CancellationToken ct = default)
+    public async Task<UltraLease?> ResolveUltraLeaseAsync(ForwardConfig forward, CancellationToken ct = default)
+    {
+        var policy = forward.UltraAccess;
+        if (policy is null || !policy.IsUsable(forward, DateTimeOffset.UtcNow))
+            return null;
+        var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        var payload = new
+        {
+            device_id = _deviceId,
+            forwards = new[]
+            {
+                new
+                {
+                    forward_id = forward.ForwardId,
+                    session_ticket = policy.SessionTicket,
+                    policy_generation = policy.PolicyGeneration,
+                    nonce,
+                    target_digest = policy.TargetDigest,
+                    transport = policy.Transport,
+                },
+            },
+        };
+        byte[] requestBytes = [];
+        try
+        {
+            requestBytes = JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions);
+            using var content = new ByteArrayContent(requestBytes);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{_masterUrl}/api/client/ultra/lease") { Content = content };
+            var response = await SendAsync(request, ct);
+            await EnsureSuccessOrThrowAsync(response, ct);
+            var responseBytes = await response.Content.ReadAsByteArrayAsync(ct);
+            try
+            {
+                using var document = JsonDocument.Parse(responseBytes);
+                if (!document.RootElement.TryGetProperty("leases", out var leases)
+                    || leases.ValueKind != JsonValueKind.Array
+                    || leases.GetArrayLength() != 1)
+                    return null;
+                var item = leases[0];
+                var returnedForward = item.GetProperty("forward_id").GetInt32();
+                var returnedGeneration = item.GetProperty("policy_generation").GetString() ?? "";
+                var returnedTicket = item.GetProperty("session_ticket").GetString() ?? "";
+                var protocol = item.GetProperty("protocol").GetString() ?? "";
+                if (!string.Equals(protocol, UltraPolicy.Protocol, StringComparison.Ordinal)
+                    || returnedForward != forward.ForwardId
+                    || !string.Equals(returnedGeneration, policy.PolicyGeneration, StringComparison.Ordinal)
+                    || !string.Equals(returnedTicket, policy.SessionTicket, StringComparison.Ordinal))
+                    return null;
+                var endpoint = item.GetProperty("endpoint");
+                var credential = item.GetProperty("credential");
+                return new UltraLease
+                {
+                    Protocol = item.GetProperty("protocol").GetString() ?? "",
+                    LeaseId = item.GetProperty("lease_id").GetString() ?? "",
+                    SessionTicket = returnedTicket,
+                    ForwardId = returnedForward,
+                    PolicyGeneration = returnedGeneration,
+                    TargetDigest = item.GetProperty("target_digest").GetString() ?? "",
+                    ExpiresAt = item.GetProperty("expires_at").GetDateTimeOffset(),
+                    Transport = item.GetProperty("transport").GetString() ?? "",
+                    RateLimitMbps = item.GetProperty("rate_limit_mbps").GetInt64(),
+                    QuotaRemainingBytes = item.GetProperty("quota_remaining_bytes").GetInt64(),
+                    SelectionRef = item.GetProperty("selection_ref").GetString() ?? "",
+                    NonceHash = item.GetProperty("nonce_hash").GetString() ?? "",
+                    ProviderIp = endpoint.GetProperty("ip").GetString() ?? "",
+                    ProviderPort = endpoint.GetProperty("port").GetInt32(),
+                    User = Encoding.UTF8.GetBytes(credential.GetProperty("user").GetString() ?? ""),
+                    Password = Encoding.UTF8.GetBytes(credential.GetProperty("password").GetString() ?? ""),
+                };
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(responseBytes);
+            }
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        catch (KeyNotFoundException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+        catch (OverflowException)
+        {
+            return null;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(requestBytes);
+        }
+    }
+
+    public async Task<HeartbeatResponse> SendHeartbeatAsync(HeartbeatPayload payload, CancellationToken ct = default)
     {
         var url = $"{_masterUrl}/api/client/heartbeat";
         var json = JsonSerializer.Serialize(payload, JsonOptions);
@@ -97,6 +201,11 @@ public sealed class MasterApiClient : IDisposable
         Log.Debug("sending heartbeat to {Url}", url);
         var response = await SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (string.IsNullOrWhiteSpace(body))
+            return new HeartbeatResponse { Ok = true };
+        return JsonSerializer.Deserialize<HeartbeatResponse>(body, JsonOptions)
+               ?? new HeartbeatResponse { Ok = true };
     }
 
     public async Task SubmitDiagnosticsAsync(string requestToken, List<object> results, string error, CancellationToken ct = default)

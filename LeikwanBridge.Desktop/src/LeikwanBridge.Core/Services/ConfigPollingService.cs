@@ -102,7 +102,7 @@ public sealed class ConfigPollingService
             {
                 try
                 {
-                    _runtimeManager.StopForward(fid);
+                    _runtimeManager.StopForwardForPolicy(fid);
                 }
                 catch (Exception ex)
                 {
@@ -120,13 +120,44 @@ public sealed class ConfigPollingService
                 continue;
 
             var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+            if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
+            {
+                UltraLease? lease;
+                try
+                {
+                    lease = await _api.ResolveUltraLeaseAsync(effectiveForward, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning("Ultra lease refresh failed for forward {ForwardId}; stopping by Panel policy (error={ErrorType})", forward.ForwardId, ex.GetType().Name);
+                    _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+                    continue;
+                }
+                if (lease is null)
+                {
+                    _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+                    continue;
+                }
+                effectiveForward.RuntimeLease = lease;
+            }
             var contractSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
             var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
             var signatureMatches = hasAppliedState
                 && string.Equals(appliedState!.ContractSignature, contractSignature, StringComparison.Ordinal);
 
             if (hasAppliedState && isRunning && signatureMatches)
+            {
+                if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!_runtimeManager.RefreshUltraLease(effectiveForward))
+                        _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+                }
                 continue;
+            }
 
             try
             {
