@@ -1,5 +1,6 @@
 using Avalonia;
 using Serilog;
+using System.Diagnostics;
 
 namespace LeikwanBridge.Mac;
 
@@ -11,6 +12,11 @@ internal static class Program
     public static int Main(string[] args)
     {
         MacProcessSecurity.DisableCoreDumps();
+        if (OperatingSystem.IsMacOS() && !OperatingSystem.IsMacOSVersionAtLeast(12))
+        {
+            ShowUnsupportedOsNotice();
+            return 1;
+        }
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var paths = new Services.MacPlatformPaths(home, ResolveBundleDirectory());
         if (args.Length == 2 && string.Equals(args[0], "--apply-update", StringComparison.Ordinal))
@@ -60,5 +66,26 @@ internal static class Program
             current = current.Parent;
         }
         return AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private static void ShowUnsupportedOsNotice()
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "/usr/bin/osascript",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            startInfo.ArgumentList.Add("-e");
+            startInfo.ArgumentList.Add("display alert \"LeiKwan Bridge requires macOS 12 or later.\"");
+            using var process = Process.Start(startInfo);
+            process?.WaitForExit(10_000);
+        }
+        catch
+        {
+            Console.Error.WriteLine("LeiKwan Bridge requires macOS 12 or later.");
+        }
     }
 }

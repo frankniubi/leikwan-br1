@@ -104,7 +104,7 @@ public sealed class MacBundleValidator
         {
             var settings = new XmlReaderSettings
             {
-                DtdProcessing = DtdProcessing.Prohibit,
+                DtdProcessing = DtdProcessing.Ignore,
                 XmlResolver = null,
                 MaxCharactersInDocument = 256 * 1024,
             };
