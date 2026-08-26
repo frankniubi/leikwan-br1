@@ -14,6 +14,8 @@ import com.leikwan.bridge.runtime.ForwardCatalog
 import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardContractParser
 import com.leikwan.bridge.runtime.ForwardFilter
+import com.leikwan.bridge.runtime.UltraLease
+import com.leikwan.bridge.runtime.UltraPolicy
 import com.leikwan.bridge.net.AppDns
 import com.leikwan.bridge.net.MirrorNoSni
 import com.leikwan.bridge.security.AndroidAttestationProofFactory
@@ -36,6 +38,7 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.net.URI
 import java.time.Instant
+import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
 
 class PanelRepository(
@@ -61,6 +64,11 @@ class PanelRepository(
     private var cachedForwardConfigs = mutableMapOf<Long, JsonElement>()
     private var cachedForwardContracts = mutableMapOf<Long, ForwardContract>()
     private var cachedEffectiveForwards = mutableMapOf<Long, AndroidEffectiveForward>()
+
+    data class TerminalDeviceAcknowledgement internal constructor(
+        val deviceId: String,
+        val authorization: String,
+    )
 
     private fun buildApi(baseUrl: String): PanelApi {
         val url = baseUrl.trimEnd('/') + "/"
@@ -154,9 +162,24 @@ class PanelRepository(
     }
 
     suspend fun acknowledgeDevice(commandVersion: Long): Boolean {
-        val deviceId = prefs.enrolledDeviceId?.takeIf { it.isNotBlank() } ?: return false
-        if (prefs.agentToken.isNullOrBlank()) return false
-        val response = api.acknowledgeDevice(DeviceAckRequest(deviceId, commandVersion.coerceAtLeast(0L)))
+        val acknowledgement = captureTerminalAcknowledgement() ?: return false
+        return acknowledgeTerminal(acknowledgement, commandVersion)
+    }
+
+    fun captureTerminalAcknowledgement(): TerminalDeviceAcknowledgement? {
+        val deviceId = prefs.enrolledDeviceId?.takeIf { it.isNotBlank() } ?: return null
+        val token = prefs.agentToken?.takeIf { it.isNotBlank() } ?: return null
+        return TerminalDeviceAcknowledgement(deviceId = deviceId, authorization = "Bearer $token")
+    }
+
+    suspend fun acknowledgeTerminal(
+        acknowledgement: TerminalDeviceAcknowledgement,
+        commandVersion: Long,
+    ): Boolean {
+        val response = api.acknowledgeDevice(
+            acknowledgement.authorization,
+            DeviceAckRequest(acknowledgement.deviceId, commandVersion.coerceAtLeast(0L)),
+        )
         return response.isSuccessful && response.body()?.ok == true
     }
 
@@ -343,6 +366,46 @@ class PanelRepository(
         } catch (_: Exception) {
             false
         }
+    }
+
+    /** Resolves one ephemeral Ultra lease for the currently trusted device session. */
+    suspend fun resolveUltraLease(policy: UltraPolicy): UltraLease {
+        val session = requireActiveSession()
+        val nonce = ByteArray(16).also(SecureRandom()::nextBytes)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        val response = try {
+            api.resolveUltraLease(
+                authHeader(),
+                UltraLeaseRequest(
+                    deviceId = session.deviceId,
+                    forwards = listOf(
+                        UltraLeaseForwardRequest(
+                            forwardId = policy.forwardId,
+                            sessionTicket = policy.sessionTicket,
+                            policyGeneration = policy.policyGeneration,
+                            nonce = nonce,
+                            targetDigest = policy.targetDigest,
+                            transport = policy.transport,
+                        )
+                    ),
+                ),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: PanelControlException) {
+            throw e
+        }
+        val body = if (response.isSuccessful) response.body() else null
+        if (body?.ok != true) {
+            throw IllegalStateException(
+                body?.error?.takeIf { it.isNotBlank() }
+                    ?: PanelErrorParser.messageFromHttp(response.code(), response.message(), response.errorBody()?.string()),
+            )
+        }
+        val rawLease = body.leases.singleOrNull()
+            ?: throw IllegalStateException("ultra_lease_invalid")
+        return UltraLease.from(rawLease, policy, Instant.ofEpochMilli(nowMs()))
+            ?: throw IllegalStateException("ultra_lease_invalid")
     }
 
     suspend fun createClientRule(draft: ClientRuleWriteDraft): ClientRouteRule {

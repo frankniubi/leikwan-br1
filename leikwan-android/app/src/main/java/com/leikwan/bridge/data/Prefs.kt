@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.security.AndroidDeviceIdentity
 import com.leikwan.bridge.service.ProxyConnectionMode
@@ -14,8 +15,14 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
     }
 
     var panelUrl: String
-        get() = prefs.getString("panel_url", "https://v3-mirror.leikwanhost.com") ?: "https://v3-mirror.leikwanhost.com"
-        set(v) = prefs.edit().putString("panel_url", v).apply()
+        get() = if (BuildConfig.DEBUG) {
+            prefs.getString("panel_url", BuildConfig.PANEL_URL) ?: BuildConfig.PANEL_URL
+        } else {
+            BuildConfig.PANEL_URL
+        }
+        set(v) {
+            if (BuildConfig.DEBUG) prefs.edit().putString("panel_url", v).apply()
+        }
 
     var agentToken: String?
         get() = prefs.getString("agent_token", null)

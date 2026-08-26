@@ -8,6 +8,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
 
 class AndroidEffectiveForwardBuilderTest {
 
@@ -18,7 +19,7 @@ class AndroidEffectiveForwardBuilderTest {
             mode = ForwardMode.ULTRA,
             backendMode = "ultra",
             clientMode = "ultra",
-            ultraAccess = ultraAccess(90L, "2099-01-01T00:00:00Z"),
+            ultraAccess = ultraAccess(90L),
         )
         val expired = valid.copy(
             forwardId = 91L,
@@ -287,17 +288,28 @@ class AndroidEffectiveForwardBuilderTest {
         )
     }
 
-    private fun ultraAccess(forwardId: Long, expiresAt: String): JsonObject = JsonParser.parseString(
+    private fun ultraAccess(forwardId: Long, expiresAt: String? = null): JsonObject {
+        val now = Instant.now()
+        val effectiveExpiry = expiresAt ?: now.plusSeconds(240).toString()
+        return JsonParser.parseString(
         """
         {
           "protocol":"leikwan-ultra-policy-v2",
           "forward_id":$forwardId,
           "session_ticket":"ticket",
-          "policy_generation":"generation",
-          "expires_at":"$expiresAt"
+          "policy_generation":"${"a".repeat(64)}",
+          "issued_at":"${now.minusSeconds(10)}",
+          "renew_after":"${now.plusSeconds(120)}",
+          "expires_at":"$effectiveExpiry",
+          "service_state":"active",
+          "transport":"tcp",
+          "rate_limit_mbps":0,
+          "quota_remaining_bytes":1048576,
+          "target_digest":"${UltraPolicy.targetDigest("example.com:443")}"
         }
         """.trimIndent(),
-    ).asJsonObject
+        ).asJsonObject
+    }
 
     private fun sampleBonding(
         quicServerName: String? = null,

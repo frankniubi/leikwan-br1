@@ -19,6 +19,7 @@ android {
         ndk {
             abiFilters += "arm64-v8a"
         }
+        buildConfigField("String", "PANEL_URL", "\"https://v3-mirror.leikwanhost.com\"")
     }
 
     buildTypes {

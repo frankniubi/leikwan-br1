@@ -4,6 +4,7 @@ enum class RuntimeProcessRole {
     SINGLE,
     INGRESS,
     BOND,
+    ULTRA,
 }
 
 data class RuntimeProcessPlan(
@@ -16,6 +17,7 @@ data class RuntimeBinaryPaths(
     val wstunnelBinary: String?,
     val ingressBinary: String?,
     val bondBinary: String?,
+    val ultraBinary: String? = null,
 )
 
 data class NodeLeg(
@@ -54,6 +56,8 @@ data class RuntimeContext(
     val protectedConnectivity: ProtectedConnectivitySet = ProtectedConnectivitySet.fromEndpoints(bypassHosts),
     val nodeLegs: Map<Long, NodeLeg> = emptyMap(),
     val routeRuleProcessKey: Long? = null,
+    /** App-private runtime files that must disappear when a forward stops or fails to start. */
+    val privateRuntimePaths: List<String> = emptyList(),
 ) {
     fun relayListenPortForNode(nodeId: Long): Int? =
         nodeLegs[nodeId]?.localListenPort ?: localListenPort

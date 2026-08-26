@@ -14,6 +14,7 @@ data class RuntimeIntent(
     val bypassHosts: Set<String>,
     val protectedConnectivity: ProtectedConnectivitySet = ProtectedConnectivitySet.fromEndpoints(bypassHosts),
     val nodeLegs: Map<Long, NodeLeg> = emptyMap(),
+    val privateRuntimePaths: List<String> = emptyList(),
 )
 
 fun RuntimeContext.toRuntimeIntent(): RuntimeIntent {
@@ -26,5 +27,6 @@ fun RuntimeContext.toRuntimeIntent(): RuntimeIntent {
         bypassHosts = bypassHosts,
         protectedConnectivity = protectedConnectivity,
         nodeLegs = nodeLegs,
+        privateRuntimePaths = privateRuntimePaths,
     )
 }

@@ -18,7 +18,15 @@ data class DeviceControlEnvelope(
 class PanelControlException(
     val code: String,
     val command: DeviceCommand? = null,
-) : IOException(code)
+) : IOException(code) {
+    companion object {
+        fun kicked(version: Long, reason: String = ""): PanelControlException =
+            PanelControlException("device_kicked", DeviceCommand(version, "kick", reason))
+
+        fun banned(version: Long, reason: String = ""): PanelControlException =
+            PanelControlException("device_banned", DeviceCommand(version, "ban", reason))
+    }
+}
 
 data class EnrollmentResult(
     val clientId: Long,

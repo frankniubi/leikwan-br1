@@ -207,17 +207,8 @@ object ForwardContractParser {
     }
 }
 
-internal fun ForwardContract.hasValidUltraAccess(now: Instant = Instant.now()): Boolean {
-    val access = ultraAccess ?: return false
-    if (!backendMode.equals("ultra", ignoreCase = true)) return false
-    if (!serviceStatus.equals("active", ignoreCase = true)) return false
-    if (access.stringOrNull("protocol") != "leikwan-ultra-policy-v2") return false
-    if (access.longOrNull("forward_id") != forwardId) return false
-    if (access.stringOrNull("session_ticket").isNullOrBlank()) return false
-    if (access.stringOrNull("policy_generation").isNullOrBlank()) return false
-    val expiresAt = access.stringOrNull("expires_at") ?: return false
-    return runCatching { Instant.parse(expiresAt).isAfter(now) }.getOrDefault(false)
-}
+internal fun ForwardContract.hasValidUltraAccess(now: Instant = Instant.now()): Boolean =
+    UltraPolicy.from(this, now) != null
 
 private fun JsonObject.toBondingContract(topLevelIngressMode: String?): BondingContract {
     return BondingContract(
