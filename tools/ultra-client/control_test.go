@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -24,6 +25,14 @@ func TestControlFrameBoundsAndPartialReads(t *testing.T) {
 	binary.BigEndian.PutUint32(oversized[:], maxControlPayload+1)
 	if _, err := readFrame(bytes.NewReader(oversized[:])); !errors.Is(err, ErrFrameTooLarge) {
 		t.Fatalf("oversized read err=%v", err)
+	}
+	var partial bytes.Buffer
+	var partialHeader [4]byte
+	binary.BigEndian.PutUint32(partialHeader[:], 8)
+	partial.Write(partialHeader[:])
+	partial.WriteString("no")
+	if _, err := readFrame(&partial); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("partial read err=%v", err)
 	}
 	if err := writeFrame(&buffer, make([]byte, maxControlPayload+1)); !errors.Is(err, ErrFrameTooLarge) {
 		t.Fatalf("oversized write err=%v", err)

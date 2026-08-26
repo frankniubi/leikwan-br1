@@ -334,7 +334,7 @@ git commit -m "feat(mac): issue scrubbed Ultra v2 policies"
 - Produces: `sameUserPeer(*net.UnixConn) bool` with OS-specific implementation.
 - Produces: `applyProcessSecurity() error` and best-effort `lockSecret/clearSecret`.
 
-- [ ] **Step 1: Write failing bounded-stdin tests.**
+- [x] **Step 1: Write failing bounded-stdin tests.**
 
 ```go
 func TestLoadConfigFromStdinNeverCreatesAFile(t *testing.T) {
@@ -350,7 +350,7 @@ func TestLoadConfigFromStdinRejectsMoreThan64KiB(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 Push-Location tools/ultra-client
@@ -360,21 +360,21 @@ Pop-Location
 
 Expected: FAIL because the stdin loader and peer validation do not exist.
 
-- [ ] **Step 3: Implement mutually exclusive `--config` and `--config-stdin`.**
+- [x] **Step 3: Implement mutually exclusive `--config` and `--config-stdin`.**
 
 Read at most 64 KiB plus one byte, reject trailing JSON values, zero the raw
 buffer after decode, and never echo the config in errors. `main` calls
 `applyProcessSecurity` before reading either source. File mode remains for Linux
 and Windows compatibility; the Mac launcher uses stdin exclusively.
 
-- [ ] **Step 4: Enforce same-user Unix control connections.**
+- [x] **Step 4: Enforce same-user Unix control connections.**
 
 `control.go` calls `sameUserPeer` before reading the frame. Linux uses
 `SO_PEERCRED`; Darwin uses `getpeereid` through `golang.org/x/sys/unix`. Reject
 unknown credentials, keep the socket in a `0700` parent, chmod it `0600`, and
 unlink it on every exit path.
 
-- [ ] **Step 5: Apply process and secret-memory hardening.**
+- [x] **Step 5: Apply process and secret-memory hardening.**
 
 On Unix set both soft and hard `RLIMIT_CORE` to zero. `ProviderLease` calls
 `lockSecret` on credential slices when accepted, zeros every old/snapshot
@@ -382,14 +382,14 @@ credential copy before `Munlock`, clears the provider IP string reference on
 revoke, and never logs a lease payload. A failed `mlock` records only
 `secret_memory_unlocked` and continues with the same lease validation.
 
-- [ ] **Step 6: Add lifecycle and output tests.**
+- [x] **Step 6: Add lifecycle and output tests.**
 
 Cover same-UID accept, wrong-UID reject through an injected peer checker,
 duplicate nonce, oversized/partial frame, expiry cleanup, replacement cleanup,
 metadata-only status, and stdout/stderr containing zero canary endpoint or
 credential matches.
 
-- [ ] **Step 7: Run native tests and Darwin compile gates.**
+- [x] **Step 7: Run native tests and Darwin compile gates.**
 
 ```powershell
 Push-Location tools/ultra-client
@@ -402,7 +402,7 @@ Pop-Location
 
 Expected: tests PASS and both Mach-O test binaries compile. The `.tmp` outputs remain ignored.
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```powershell
 git add tools/ultra-client

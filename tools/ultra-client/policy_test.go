@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,5 +70,95 @@ func TestPolicyLimiterEnforcesQuotaAndRevocation(t *testing.T) {
 	limiter.Revoke(generation)
 	if !errors.Is(limiter.Consume(1), ErrPolicyStopped) {
 		t.Fatal("revoked policy remained usable")
+	}
+}
+
+func TestProviderSecretsAreClearedOnSnapshotReplacementAndRevoke(t *testing.T) {
+	now := time.Now()
+	store := NewPolicyStore(testPolicyConfig())
+	firstPolicy := testPolicy(now, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err := store.Replace(firstPolicy, testLease(firstPolicy, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, ok := store.Snapshot()
+	if !ok {
+		t.Fatal("snapshot missing")
+	}
+	snapshotUser := snapshot.Lease.User
+	snapshotPassword := snapshot.Lease.Password
+	snapshot.Lease.wipe()
+	assertZeroed(t, snapshotUser, "snapshot user")
+	assertZeroed(t, snapshotPassword, "snapshot password")
+	if snapshot.Lease.IP != "" {
+		t.Fatal("snapshot provider IP reference was retained")
+	}
+
+	oldLease := store.lease
+	oldUser := oldLease.User
+	oldPassword := oldLease.Password
+	nextPolicy := testPolicy(now, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+	if err := store.Replace(nextPolicy, testLease(nextPolicy, "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")); err != nil {
+		t.Fatal(err)
+	}
+	assertZeroed(t, oldUser, "replaced user")
+	assertZeroed(t, oldPassword, "replaced password")
+	if oldLease.IP != "" {
+		t.Fatal("replaced provider IP reference was retained")
+	}
+
+	currentLease := store.lease
+	currentUser := currentLease.User
+	currentPassword := currentLease.Password
+	store.Revoke(nextPolicy.PolicyGeneration)
+	assertZeroed(t, currentUser, "revoked user")
+	assertZeroed(t, currentPassword, "revoked password")
+	if currentLease.IP != "" {
+		t.Fatal("revoked provider IP reference was retained")
+	}
+}
+
+func assertZeroed(t *testing.T, value []byte, label string) {
+	t.Helper()
+	for _, item := range value {
+		if item != 0 {
+			t.Fatalf("%s was not cleared", label)
+		}
+	}
+}
+
+func TestExpiredProviderSecretsAreCleared(t *testing.T) {
+	now := time.Now()
+	policy := testPolicy(now, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	policy.ExpiresAt = now.Add(100 * time.Millisecond)
+	lease := testLease(policy, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	store := NewPolicyStore(testPolicyConfig())
+	if err := store.Replace(policy, lease); err != nil {
+		t.Fatal(err)
+	}
+	stored := store.lease
+	storedUser := stored.User
+	storedPassword := stored.Password
+	time.Sleep(150 * time.Millisecond)
+	store.ClearExpired()
+	assertZeroed(t, storedUser, "expired user")
+	assertZeroed(t, storedPassword, "expired password")
+	if stored.IP != "" || store.HasValid() {
+		t.Fatal("expired provider material remained available")
+	}
+}
+
+func TestLeaseErrorsDoNotEchoProviderCanaries(t *testing.T) {
+	endpointCanary := "203.0.113.249"
+	credentialCanary := "provider-password-canary"
+	raw := []byte(`{"protocol":"wrong","forward_id":42,"session_ticket":"ticket","policy_generation":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","lease_id":"ul2_test","expires_at":"` + time.Now().Add(time.Minute).UTC().Format(time.RFC3339) + `","transport":"tcp","rate_limit_mbps":20,"quota_remaining_bytes":1024,"target_digest":"` + targetDigest(testPolicyConfig().Target) + `","selection_ref":"selection-reference-abcdefghijklmnop","nonce_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","endpoint":{"ip":"` + endpointCanary + `","port":5438},"credential":{"user":"user","password":"` + credentialCanary + `"}}`)
+	_, lease, err := decodeLeaseFrame(raw, testPolicyConfig())
+	lease.wipe()
+	if err == nil {
+		t.Fatal("invalid lease was accepted")
+	}
+	output := err.Error() + controlErrorName(err)
+	if strings.Contains(output, endpointCanary) || strings.Contains(output, credentialCanary) {
+		t.Fatalf("provider material leaked in error output: %q", output)
 	}
 }

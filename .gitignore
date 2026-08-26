@@ -15,6 +15,7 @@
 # Scratch files from live debugging and handoff planning.
 /.codex-tmp/
 /.tmp*
+**/.tmp/
 /tmp_*.sh
 /tmp_*.py
 
