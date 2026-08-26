@@ -76,7 +76,8 @@ final class ServiceController extends BaseController
         $this->assertServiceActive($service);
         $features = $this->serviceFeatures($serviceId);
         $this->assertFeature($features, 'allow_manage_forwards', 'feature_denied_manage_forwards');
-        $this->assertForwardQuota($serviceId);
+        $forwardLimit = $this->provisioning->forwardLimitForService($serviceId);
+        $this->assertForwardQuota($serviceId, $forwardLimit);
 
         $payload = $this->normalizeLegacyCreatePayload($request->body());
         $runtime = $this->safeForwardMutation(fn(): array => $this->provisioning->createForward(
@@ -85,7 +86,7 @@ final class ServiceController extends BaseController
             'user_legacy:' . (int) $user['id'],
             null,
             null,
-            max(1, $this->config->getInt('USER_FORWARD_LIMIT_PER_SERVICE', 64)),
+            $forwardLimit,
             ['user_id' => (int) $user['id'], 'feature' => 'allow_manage_forwards']
         ));
         $forwardId = (int) ($runtime['forward_id'] ?? 0);
@@ -391,13 +392,14 @@ final class ServiceController extends BaseController
         return is_array($features) ? $features : [];
     }
 
-    private function assertForwardQuota(int $serviceId): void
+    private function assertForwardQuota(int $serviceId, ?int $limit = null): void
     {
+        $limit ??= $this->provisioning->forwardLimitForService($serviceId);
         $rows = $this->db->fetchAll(
             'SELECT id FROM forwards WHERE service_id = :service_id AND enabled = 1',
             ['service_id' => $serviceId]
         );
-        if (count($rows) >= max(1, $this->config->getInt('USER_FORWARD_LIMIT_PER_SERVICE', 64))) {
+        if (count($rows) >= $limit) {
             throw new ApiException('forward_quota_exceeded', 409);
         }
     }
@@ -480,7 +482,7 @@ final class ServiceController extends BaseController
                 'allow_delete_forwards' => !empty($features['allow_delete_forwards']),
             ],
             'active_forward_count' => max(0, (int) ($activeForwardCount['active_forward_count'] ?? 0)),
-            'forward_limit' => max(1, $this->config->getInt('USER_FORWARD_LIMIT_PER_SERVICE', 64)),
+            'forward_limit' => $this->provisioning->forwardLimitForService($serviceId),
         ];
     }
 

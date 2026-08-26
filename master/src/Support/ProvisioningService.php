@@ -2712,6 +2712,31 @@ final class ProvisioningService
     }
 
     /**
+     * @return int
+     */
+    public function forwardLimitForService(int $serviceId): int
+    {
+        $service = $this->db->fetchOne(
+            'SELECT p.max_forward_rule_quantity
+             FROM services s
+             LEFT JOIN service_plans p ON p.id = s.plan_id
+             WHERE s.id = :service_id
+             LIMIT 1',
+            ['service_id' => $serviceId]
+        );
+        if ($service === null) {
+            throw new ApiException('service_not_found', 404);
+        }
+
+        $planLimit = (int) ($service['max_forward_rule_quantity'] ?? 0);
+        if ($planLimit > 0) {
+            return max(1, min(100000, $planLimit));
+        }
+
+        return max(1, min(100000, $this->config->getInt('USER_FORWARD_LIMIT_PER_SERVICE', 64)));
+    }
+
+    /**
      * @return array<int, array<string, mixed>>
      */
     public function listPlans(): array
@@ -2987,6 +3012,7 @@ final class ProvisioningService
         $bandwidthStepPrice = $this->normalizeMoney($payload['bandwidth_step_price'] ?? '0');
         $includedClientCount = max(0, (int) ($payload['included_client_count'] ?? 0));
         $extraClientPrice = $this->normalizeMoney($payload['extra_client_price'] ?? '0');
+        $maxForwardRuleQuantity = max(1, min(100000, (int) ($payload['max_forward_rule_quantity'] ?? 64)));
         $isActive = (int) (($payload['is_active'] ?? '1') ? 1 : 0);
         $featureFlagsJson = $this->normalizeJsonField($payload['feature_flags_json'] ?? $payload['feature_flags'] ?? null);
         $groupIds = [];
@@ -3087,7 +3113,7 @@ final class ProvisioningService
             );
         }
 
-        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $forwardRouteIds, $payload): array {
+        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $maxForwardRuleQuantity, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $forwardRouteIds, $payload): array {
             if ($id > 0) {
                 $this->db->execute(
                     'UPDATE service_plans
@@ -3108,6 +3134,7 @@ final class ProvisioningService
                          extra_client_price = :extra_client_price,
                          default_client_online_device_limit = :default_client_online_device_limit,
                          max_client_profiles = :max_client_profiles,
+                         max_forward_rule_quantity = :max_forward_rule_quantity,
                          is_active = :is_active,
                          is_tenant_visible = :is_tenant_visible,
                          feature_flags_json = :feature_flags_json,
@@ -3132,6 +3159,7 @@ final class ProvisioningService
                         'extra_client_price' => $extraClientPrice,
                         'default_client_online_device_limit' => max(1, (int) ($payload['default_client_online_device_limit'] ?? 1)),
                         'max_client_profiles' => max(1, (int) ($payload['max_client_profiles'] ?? 1)),
+                        'max_forward_rule_quantity' => $maxForwardRuleQuantity,
                         'is_active' => $isActive,
                         'is_tenant_visible' => (int) (($payload['is_tenant_visible'] ?? '1') ? 1 : 0),
                         'feature_flags_json' => $featureFlagsJson,
@@ -3157,6 +3185,7 @@ final class ProvisioningService
                     'extra_client_price' => $extraClientPrice,
                     'default_client_online_device_limit' => max(1, (int) ($payload['default_client_online_device_limit'] ?? 1)),
                     'max_client_profiles' => max(1, (int) ($payload['max_client_profiles'] ?? 1)),
+                    'max_forward_rule_quantity' => $maxForwardRuleQuantity,
                     'is_active' => $isActive,
                     'is_tenant_visible' => (int) (($payload['is_tenant_visible'] ?? '1') ? 1 : 0),
                     'feature_flags_json' => $featureFlagsJson,
@@ -9394,6 +9423,7 @@ final class ProvisioningService
             'bandwidth_step_price' => 0,
             'included_client_count' => 0,
             'extra_client_price' => 0,
+            'max_forward_rule_quantity' => 64,
             'is_active' => 1,
             'feature_flags_json' => null,
             'created_at' => $this->now(),

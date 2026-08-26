@@ -38,6 +38,8 @@ namespace Leikwan\Master\Support {
 
         public function availableForwardRoutesForService(int $serviceId): array { return []; }
 
+        public function forwardLimitForService(int $serviceId): int { return 64; }
+
         public function createForward(int $serviceId, array $payload, string $actor = 'user', ?string $idempotencyKeyHash = null, ?string $requestHash = null, ?int $activeForwardLimit = null, ?array $mutationPolicy = null): array
         {
             if ($this->nextException instanceof ApiException) {

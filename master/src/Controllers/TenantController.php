@@ -1066,6 +1066,13 @@ final class TenantController extends BaseController
         }
         $onlineList .= '</div>';
 
+        $credentialPanel = '<section class="tenant-client-install__credentials">'
+            . '<div><strong>Client ID</strong><code>' . $clientId . '</code>'
+            . '<div class="actions">' . $this->renderCopyButton('Copy Client ID', (string) $clientId) . '</div></div>'
+            . '<div><strong>Agent Token</strong><code>' . $this->escape($agentToken) . '</code>'
+            . '<div class="actions">' . $this->renderCopyButton('Copy Agent Token', $agentToken) . '</div></div>'
+            . '</section>';
+
         $body = '<div class="tenant-client-install">'
             . '<div class="tenant-client-install__shell">'
             . '<div class="tenant-client-install__header"><strong>安装</strong></div>'
@@ -1081,6 +1088,7 @@ final class TenantController extends BaseController
             . '</section></div>'
             . '<div class="tenant-client-install__online"><span>最大在线</span><strong>'
             . $onlineCount . ' / ' . $onlineLimit . '</strong></div></div></div>'
+            . $credentialPanel
             . $onlineList
             . '</div>';
 
@@ -1807,6 +1815,7 @@ final class TenantController extends BaseController
             $summary = $this->provisioning->serviceSummary($serviceId);
             $features = $summary['effective_features'] ?? [];
             $availableForwardCombinations = is_array($summary['available_forward_combinations'] ?? null) ? $summary['available_forward_combinations'] : [];
+            $forwardLimit = $this->provisioning->forwardLimitForService($serviceId);
         } catch (\Throwable $throwable) {
             error_log('tenant forward preflight failed: ' . $throwable::class);
             SessionAuth::flash('error', $this->forwardCreateFlashMessage($throwable));
@@ -1819,7 +1828,7 @@ final class TenantController extends BaseController
                 if (empty($features['allow_manage_forwards'])) {
                     throw new ApiException('feature_denied_manage_forwards', 403);
                 }
-                $this->assertTenantForwardQuota($serviceId);
+                $this->assertTenantForwardQuota($serviceId, $forwardLimit);
                 $payload = ForwardLineApiContract::normalizeLegacyCreate(
                     $this->normalizeTenantForwardPayload($request->body())
                 );
@@ -1829,7 +1838,7 @@ final class TenantController extends BaseController
                     'tenant',
                     null,
                     null,
-                    max(1, $this->config->getInt('USER_FORWARD_LIMIT_PER_SERVICE', 64)),
+                    $forwardLimit,
                     ['user_id' => (int) $user['id'], 'feature' => 'allow_manage_forwards']
                 );
                 SessionAuth::flash('success', 'Forward created.');
@@ -2247,7 +2256,8 @@ final class TenantController extends BaseController
             if (empty(($summary['effective_features'] ?? [])['allow_manage_forwards'])) {
                 throw new ApiException('feature_denied_manage_forwards', 403);
             }
-            $this->assertTenantForwardQuota($serviceId);
+            $forwardLimit = $this->provisioning->forwardLimitForService($serviceId);
+            $this->assertTenantForwardQuota($serviceId, $forwardLimit);
 
             $payload = ForwardLineApiContract::normalizeLegacyCreate(
                 $this->normalizeTenantForwardPayload($request->body())
@@ -2258,7 +2268,7 @@ final class TenantController extends BaseController
                 'tenant',
                 null,
                 null,
-                max(1, $this->config->getInt('USER_FORWARD_LIMIT_PER_SERVICE', 64)),
+                $forwardLimit,
                 ['user_id' => (int) $user['id'], 'feature' => 'allow_manage_forwards']
             );
             SessionAuth::flash('success', 'Forward created and queued for provisioning.');
@@ -2729,15 +2739,16 @@ final class TenantController extends BaseController
         }
     }
 
-    private function assertTenantForwardQuota(int $serviceId): void
+    private function assertTenantForwardQuota(int $serviceId, ?int $limit = null): void
     {
+        $limit ??= $this->provisioning->forwardLimitForService($serviceId);
         $active = $this->db->fetchOne(
             'SELECT COUNT(*) AS active_forward_count
              FROM forwards
              WHERE service_id = :service_id AND enabled = 1',
             ['service_id' => $serviceId]
         );
-        if ((int) ($active['active_forward_count'] ?? 0) >= max(1, $this->config->getInt('USER_FORWARD_LIMIT_PER_SERVICE', 64))) {
+        if ((int) ($active['active_forward_count'] ?? 0) >= $limit) {
             throw new ApiException('forward_quota_exceeded', 409);
         }
     }
