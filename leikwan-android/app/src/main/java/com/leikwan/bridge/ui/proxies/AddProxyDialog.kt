@@ -167,6 +167,7 @@ private fun ProxyProtocolEditor(
         is ProxyProtocolDraft.Vless -> VlessEditor(protocol, onProtocolChange)
         is ProxyProtocolDraft.Vmess -> VmessEditor(protocol, onProtocolChange)
         is ProxyProtocolDraft.WireGuard -> WireGuardEditor(protocol, onProtocolChange)
+        is ProxyProtocolDraft.Socks5 -> Socks5Editor(protocol, onProtocolChange)
         is ProxyProtocolDraft.Unknown -> UnknownEditor(protocol, onProtocolChange)
     }
 }
@@ -416,6 +417,28 @@ private fun WireGuardEditor(
         value = details.reserved,
         onValueChange = { onChange(details.copy(reserved = it)) },
         label = { Text(stringResource(R.string.field_reserved_bytes_optional)) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
+}
+
+@Composable
+private fun Socks5Editor(
+    details: ProxyProtocolDraft.Socks5,
+    onChange: (ProxyProtocolDraft) -> Unit,
+) {
+    Text(stringResource(R.string.protocol_socks5))
+    OutlinedTextField(
+        value = details.username,
+        onValueChange = { onChange(details.copy(username = it)) },
+        label = { Text(stringResource(R.string.field_username_optional)) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
+    OutlinedTextField(
+        value = details.password,
+        onValueChange = { onChange(details.copy(password = it)) },
+        label = { Text(stringResource(R.string.field_password_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )

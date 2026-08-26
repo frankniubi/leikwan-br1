@@ -2,6 +2,7 @@ package com.leikwan.bridge.runtime
 
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
+import java.time.Instant
 
 data class ForwardEndpoint(
     val endpointId: Int,
@@ -65,6 +66,7 @@ data class ForwardContract(
     val target: String,
     val listenPort: Int,
     val mode: ForwardMode,
+    val rawMode: String = "",
     val backendMode: String = "",
     val contractVersion: Int = 0,
     val clientMode: String = "",
@@ -84,9 +86,10 @@ data class ForwardContract(
     val endpoints: List<ForwardEndpoint>,
     val bonding: BondingContract?,
     val mptcp: MptcpContract?,
+    val ultraAccess: JsonObject? = null,
     val routeRuleHelperOnly: Boolean = false,
 ) {
-    fun toListItem(methodDisplay: String = "LeiGod", runtimeMode: ForwardMode = mode): ForwardListItem {
+    fun toListItem(methodDisplay: String = "Host", runtimeMode: ForwardMode = mode): ForwardListItem {
         return ForwardListItem(
             forwardId = forwardId,
             serviceName = serviceName,
@@ -139,8 +142,6 @@ data class ForwardListItem(
 
 data class ForwardCatalog(
     val visibleForwards: List<ForwardListItem>,
-    val hiddenUnsupportedMptcpCount: Int,
-    val hiddenForwardIds: Set<Long>,
     val selectedForwardId: Long?,
 )
 
@@ -148,7 +149,8 @@ object ForwardContractParser {
     fun parse(raw: JsonElement): ForwardContract? {
         val obj = raw.takeIf { it.isJsonObject }?.asJsonObject ?: return null
         val forwardId = obj.longOrNull("forward_id") ?: return null
-        val mode = ForwardMode.normalize(obj.stringOrEmpty("mode"))
+        val rawMode = obj.stringOrEmpty("mode")
+        val mode = ForwardMode.normalize(rawMode)
         val endpoints = obj.arrayOrEmpty("endpoints").mapNotNull { endpoint ->
             val item = endpoint.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
             val host = item.stringOrEmpty("host")
@@ -179,6 +181,7 @@ object ForwardContractParser {
             target = obj.stringOrEmpty("target"),
             listenPort = obj.intOrNull("listen_port") ?: 0,
             mode = mode,
+            rawMode = rawMode,
             backendMode = obj.stringOrEmpty("backend_mode"),
             contractVersion = obj.intOrNull("contract_version") ?: 0,
             clientMode = obj.stringOrEmpty("client_mode"),
@@ -198,9 +201,22 @@ object ForwardContractParser {
             endpoints = endpoints,
             bonding = obj.objectOrNull("bonding")?.toBondingContract(obj.stringOrNull("bond_ingress_mode")),
             mptcp = obj.objectOrNull("mptcp")?.toMptcpContract(),
+            ultraAccess = obj.objectOrNull("ultra_access")?.deepCopy(),
             routeRuleHelperOnly = obj.boolOrNull("route_rule_helper_only") ?: false,
         )
     }
+}
+
+internal fun ForwardContract.hasValidUltraAccess(now: Instant = Instant.now()): Boolean {
+    val access = ultraAccess ?: return false
+    if (!backendMode.equals("ultra", ignoreCase = true)) return false
+    if (!serviceStatus.equals("active", ignoreCase = true)) return false
+    if (access.stringOrNull("protocol") != "leikwan-ultra-policy-v2") return false
+    if (access.longOrNull("forward_id") != forwardId) return false
+    if (access.stringOrNull("session_ticket").isNullOrBlank()) return false
+    if (access.stringOrNull("policy_generation").isNullOrBlank()) return false
+    val expiresAt = access.stringOrNull("expires_at") ?: return false
+    return runCatching { Instant.parse(expiresAt).isAfter(now) }.getOrDefault(false)
 }
 
 private fun JsonObject.toBondingContract(topLevelIngressMode: String?): BondingContract {

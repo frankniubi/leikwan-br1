@@ -4,16 +4,19 @@ enum class ForwardMode(val wireValue: String) {
     SINGLE("single"),
     RACE("race"),
     BOND("bond"),
-    MPTCP("mptcp");
+    MPTCP("mptcp"),
+    ULTRA("ultra"),
+    UNKNOWN("unknown");
 
     companion object {
         fun normalize(raw: String?): ForwardMode {
             return when (raw?.trim()?.lowercase()) {
-                null, "", "single" -> SINGLE
+                "single" -> SINGLE
                 "race", "failover", "multi-path", "lb" -> RACE
                 "bond", "bonding", "aggregate", "aggregated" -> BOND
                 "mptcp", "mptcp-wireguard", "mptcp-ipsec", "multipath-tcp" -> MPTCP
-                else -> SINGLE
+                "ultra" -> ULTRA
+                else -> UNKNOWN
             }
         }
     }

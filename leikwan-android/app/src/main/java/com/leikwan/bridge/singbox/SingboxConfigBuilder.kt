@@ -16,6 +16,7 @@ import com.leikwan.bridge.routing.RoutingPolicySnapshot
 import com.leikwan.bridge.routing.SafePathRegistry
 import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.runtime.ClientRuleSingboxBinding
+import com.leikwan.bridge.runtime.ProtectedConnectivitySet
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.service.ProxyConnectionMode
 import java.net.URI
@@ -71,6 +72,8 @@ class SingboxConfigBuilder(
         runtimeOnlyProxy: Boolean = false,
     ): CompiledConfigResult {
         val activeProxyNodes = activeProxyNodes(proxyNodes, runtimeContext, connectionMode)
+        val protectedConnectivity = (runtimeContext?.allProtectedConnectivity() ?: ProtectedConnectivitySet.empty())
+            .merge(protectedProxyConnectivity(activeProxyNodes))
         val finalProxyTag = when {
             activeProxyNodes.isEmpty() -> "proxy"
             activeProxyNodes.size == 1 -> "proxy-${activeProxyNodes.first().id}"
@@ -81,14 +84,7 @@ class SingboxConfigBuilder(
             addProperty("level", "debug")
         })
         val dnsProxyDetourTag = finalProxyTag.takeIf { activeProxyNodes.isNotEmpty() }
-        val dnsBootstrapDomains = if (connectionMode == ProxyConnectionMode.DIRECT || activeProxyNodes.any { it.type.equals("wireguard", ignoreCase = true) }) {
-            activeProxyNodes
-                .filter { connectionMode == ProxyConnectionMode.DIRECT || it.type.equals("wireguard", ignoreCase = true) }
-                .mapNotNull { it.originalServer.trim().lowercase().takeIf { host -> host.isNotEmpty() && !isIpLike(host) } }
-                .toSet()
-        } else {
-            emptySet()
-        }
+        val dnsBootstrapDomains = protectedConnectivity.hosts
         root.add("dns", buildDns(dnsProxyDetourTag, dnsBootstrapDomains, enableIpv6Tun))
         root.add("inbounds", buildInbounds(enableIpv6Tun))
         root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode, runtimeOnlyProxy, routeRuleRuntimeBindings))
@@ -96,7 +92,7 @@ class SingboxConfigBuilder(
         root.add(
             "route",
             buildRoute(
-                runtimeContext?.allBypassHosts() ?: emptySet(),
+                protectedConnectivity,
                 finalProxyTag,
                 routingPolicySnapshot,
                 routeRuleSnapshot,
@@ -278,6 +274,31 @@ class SingboxConfigBuilder(
         }
     }
 
+    private fun protectedProxyConnectivity(nodes: List<ProxyNode>): ProtectedConnectivitySet {
+        val endpoints = linkedSetOf<String>()
+        nodes.forEach { node ->
+            node.originalServer.takeIf { it.isNotBlank() }?.let(endpoints::add)
+            val config = runCatching { gson.fromJson(node.configJson, JsonObject::class.java) }.getOrNull()
+                ?: return@forEach
+            when (node.type.lowercase()) {
+                "vless", "vmess" -> {
+                    listOf("server", "sni", "host").forEach { field ->
+                        config.stringOrNull(field)?.let(endpoints::add)
+                    }
+                }
+                "wireguard" -> {
+                    config.getAsJsonArray("peers")?.forEach { peerElement ->
+                        peerElement.takeIf { it.isJsonObject }
+                            ?.asJsonObject
+                            ?.stringOrNull("address")
+                            ?.let(endpoints::add)
+                    }
+                }
+            }
+        }
+        return ProtectedConnectivitySet.fromEndpoints(endpoints)
+    }
+
     private fun buildProxyOutbound(
         node: ProxyNode,
         runtimeContext: RuntimeContext?,
@@ -381,12 +402,25 @@ class SingboxConfigBuilder(
                     })
                 }
             }
+            "socks", "socks5" -> JsonObject().apply {
+                addProperty("type", "socks")
+                addProperty("tag", "proxy-${node.id}")
+                addProperty("server", outboundServer)
+                addProperty("server_port", outboundPort)
+                addProperty("version", "5")
+                config.get("username")?.asString?.takeIf { it.isNotBlank() }?.let {
+                    addProperty("username", it)
+                }
+                config.get("password")?.asString?.takeIf { it.isNotBlank() }?.let {
+                    addProperty("password", it)
+                }
+            }
             else -> null
         }
     }
 
     private fun buildRoute(
-        runtimeBypassHosts: Set<String>,
+        protectedConnectivity: ProtectedConnectivitySet,
         finalProxyTag: String,
         snapshot: RoutingPolicySnapshot?,
         routeRuleSnapshot: ClientRouteRuleSnapshot?,
@@ -425,24 +459,15 @@ class SingboxConfigBuilder(
 
         // (2) Runtime slave/sidecar reachability (non-overridable), before user rules so a user TUNNEL
         //     rule can never capture the slave egress and create a loop.
-        val bypassIps = JsonArray()
-        val bypassDomains = JsonArray()
-        runtimeBypassHosts.forEach { host ->
-            if (isIpLike(host)) {
-                bypassIps.add(normalizeIpCidr(host))
-            } else if (host.isNotBlank()) {
-                bypassDomains.add(host)
-            }
-        }
-        if (bypassIps.size() > 0) {
+        if (protectedConnectivity.ipCidrs.isNotEmpty()) {
             rules.add(JsonObject().apply {
-                add("ip_cidr", bypassIps)
+                add("ip_cidr", JsonArray().apply { protectedConnectivity.ipCidrs.forEach(::add) })
                 addProperty("outbound", "direct")
             })
         }
-        if (bypassDomains.size() > 0) {
+        if (protectedConnectivity.hosts.isNotEmpty()) {
             rules.add(JsonObject().apply {
-                add("domain", bypassDomains)
+                add("domain", JsonArray().apply { protectedConnectivity.hosts.forEach(::add) })
                 addProperty("outbound", "direct")
             })
         }

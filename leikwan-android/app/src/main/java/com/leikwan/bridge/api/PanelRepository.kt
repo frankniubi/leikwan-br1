@@ -274,7 +274,7 @@ class PanelRepository(
                 serviceName = item.serviceName,
                 target = item.target,
                 listenPort = item.listenPort,
-                mode = "leigod",
+                mode = item.mode.wireValue,
                 transport = item.transport,
                 serviceStatus = item.serviceStatus,
                 endpointMode = item.endpointMode,
@@ -311,12 +311,11 @@ class PanelRepository(
         for (raw in resp.forwards) {
             try {
                 val contract = ForwardContractParser.parse(raw) ?: continue
+                val effective = AndroidEffectiveForwardBuilder.build(contract) ?: continue
                 contracts += contract
                 cachedForwardConfigs[contract.forwardId] = raw
                 cachedForwardContracts[contract.forwardId] = contract
-                AndroidEffectiveForwardBuilder.build(contract)?.let { effective ->
-                    cachedEffectiveForwards[effective.forwardId] = effective
-                }
+                cachedEffectiveForwards[effective.forwardId] = effective
             } catch (_: Exception) {
                 // skip unparseable forwards
             }

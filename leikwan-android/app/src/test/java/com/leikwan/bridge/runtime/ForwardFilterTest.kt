@@ -10,10 +10,40 @@ class ForwardFilterTest {
     @Test
     fun `normalize matches linux aliases`() {
         assertEquals(ForwardMode.SINGLE, ForwardMode.normalize("single"))
-        assertEquals(ForwardMode.SINGLE, ForwardMode.normalize("unknown"))
+        assertEquals(ForwardMode.UNKNOWN, ForwardMode.normalize("unknown"))
         assertEquals(ForwardMode.RACE, ForwardMode.normalize("failover"))
         assertEquals(ForwardMode.BOND, ForwardMode.normalize("aggregated"))
         assertEquals(ForwardMode.MPTCP, ForwardMode.normalize("multipath-tcp"))
+    }
+
+    @Test
+    fun `only current single and bond contracts are accepted`() {
+        val currentSingle = sampleContract(
+            forwardId = 1L,
+            mode = ForwardMode.SINGLE,
+            serviceName = "current-single",
+            backendMode = "current_mode",
+            clientMode = "single",
+        )
+        val currentBond = sampleContract(
+            forwardId = 2L,
+            mode = ForwardMode.BOND,
+            serviceName = "current-bond",
+            backendMode = "current_mode",
+            clientMode = "bond",
+        )
+        val rejected = listOf(
+            sampleContract(3L, ForwardMode.SINGLE, "cf", backendMode = "cf_mode", clientMode = "single"),
+            sampleContract(4L, ForwardMode.SINGLE, "legacy", backendMode = "leigod_mode", clientMode = "single"),
+            sampleContract(5L, ForwardMode.SINGLE, "unknown", backendMode = "unknown", clientMode = "single"),
+            sampleContract(6L, ForwardMode.RACE, "race", backendMode = "current_mode", clientMode = "race"),
+            sampleContract(7L, ForwardMode.MPTCP, "mptcp", backendMode = "current_mode", clientMode = "mptcp"),
+            sampleContract(8L, ForwardMode.SINGLE, "bogus", backendMode = "current_mode", clientMode = "bogus"),
+        )
+
+        assertTrue(AndroidEffectiveForwardBuilder.build(currentSingle) != null)
+        assertTrue(AndroidEffectiveForwardBuilder.build(currentBond) != null)
+        rejected.forEach { contract -> assertNull(AndroidEffectiveForwardBuilder.build(contract)) }
     }
 
     @Test
@@ -40,13 +70,11 @@ class ForwardFilterTest {
         )
 
         assertEquals(listOf(11L, 33L), catalog.visibleForwards.map { it.forwardId })
-        assertEquals(0, catalog.hiddenUnsupportedMptcpCount)
         assertNull(catalog.selectedForwardId)
-        assertTrue(catalog.hiddenForwardIds.contains(22L))
     }
 
     @Test
-    fun `canonical dedicated leigod appears as leigod method`() {
+    fun `legacy leigod contracts are silently absent from catalog`() {
         val dedicated = sampleContract(
             forwardId = 44L,
             mode = ForwardMode.MPTCP,
@@ -63,15 +91,12 @@ class ForwardFilterTest {
             selectedForwardId = 44L,
         )
 
-        assertEquals(listOf(44L), catalog.visibleForwards.map { it.forwardId })
-        assertEquals(44L, catalog.selectedForwardId)
-        assertEquals("LeiGod", catalog.visibleForwards.single().methodDisplay)
-        assertEquals(ForwardMode.SINGLE, catalog.visibleForwards.single().mode)
-        assertEquals(0, catalog.hiddenUnsupportedMptcpCount)
+        assertTrue(catalog.visibleForwards.isEmpty())
+        assertNull(catalog.selectedForwardId)
     }
 
     @Test
-    fun `selecting a hidden mptcp forward clears selection and reports only hidden ids`() {
+    fun `selecting a dropped forward clears selection without exposing it`() {
         val single = sampleContract(
             forwardId = 11L,
             mode = ForwardMode.SINGLE,
@@ -89,17 +114,19 @@ class ForwardFilterTest {
         )
 
         assertNull(catalog.selectedForwardId)
-        assertTrue(catalog.hiddenForwardIds.contains(22L))
-        assertEquals(0, catalog.hiddenUnsupportedMptcpCount)
     }
 
     private fun sampleContract(
         forwardId: Long,
         mode: ForwardMode,
         serviceName: String,
-        backendMode: String = "",
+        backendMode: String = "current_mode",
         contractVersion: Int = 0,
-        clientMode: String = "",
+        clientMode: String = when (mode) {
+            ForwardMode.SINGLE -> "single"
+            ForwardMode.BOND -> "bond"
+            else -> mode.wireValue
+        },
         activeFamily: String = "",
         targetContract: String = "",
     ): ForwardContract {
