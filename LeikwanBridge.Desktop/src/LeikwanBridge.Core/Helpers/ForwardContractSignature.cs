@@ -32,7 +32,6 @@ public static class ForwardContractSignature
             forward.SidecarRequired,
             forward.BondSidecarPointId,
             forward.SpeedLimitMbps,
-            UltraPolicyGeneration = forward.UltraAccess?.PolicyGeneration ?? "",
             UltraTargetDigest = forward.UltraAccess?.TargetDigest ?? "",
             UltraTransport = forward.UltraAccess?.Transport ?? "",
             UdpUotSidepath = udpUotSidepath is null ? null : new

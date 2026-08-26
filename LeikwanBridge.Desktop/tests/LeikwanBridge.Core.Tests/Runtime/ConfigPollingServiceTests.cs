@@ -375,6 +375,46 @@ public sealed class ConfigPollingServiceTests
         Assert.True(service.LatestForwards[0].UltraAccess!.ExpiresAt > DateTimeOffset.UtcNow.AddMinutes(2));
     }
 
+    [Fact]
+    public async Task SyncOnceAsync_HotRefreshesLeaseWhenOnlyUltraPolicyGenerationChanges()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildUltraPullResponseJson(), ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+        };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["42"] = new AppliedForwardState
+            {
+                ForwardId = 42,
+                Mode = "ultra",
+                ListenPort = 12042,
+                ProcessRoles = ["ultra-runtime"],
+                ContractSignature = runtimeManager.ComputeContractSignature(service.LatestForwards[0]),
+            },
+        });
+        server.SetPayload(BuildUltraPullResponseJson(generationCharacter: 'b'));
+
+        await service.SyncOnceAsync();
+
+        Assert.Equal([42], runtimeManager.AppliedForwardIds);
+        Assert.Equal([42], runtimeManager.RefreshedForwardIds);
+    }
+
     private static string BuildPullResponseJson()
     {
         return """
@@ -459,10 +499,10 @@ public sealed class ConfigPollingServiceTests
         """;
     }
 
-    private static string BuildUltraPullResponseJson(int expiryMinutes = 4)
+    private static string BuildUltraPullResponseJson(int expiryMinutes = 4, char generationCharacter = 'a')
     {
         const string target = "198.51.100.10:443";
-        var generation = new string('a', 64);
+        var generation = new string(generationCharacter, 64);
         var targetDigest = UltraPolicy.ComputeTargetDigest(target);
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(expiryMinutes).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
         return $$"""
