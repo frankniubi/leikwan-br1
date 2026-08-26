@@ -29,7 +29,7 @@ final class ForwardLineApiController extends BaseController
             $service = $this->loadService($serviceId, (int) $user['id']);
             $service['effective_features'] = $this->effectiveFeatures($service);
             $service['active_forward_count'] = $this->activeForwardCount($serviceId);
-            $service['forward_limit'] = $this->forwardLimit();
+            $service['forward_limit'] = $this->provisioning->forwardLimitForService($serviceId);
 
             $routes = array_map(
                 static fn(array $route): array => ForwardLineApiContract::presentRoute($route),
@@ -108,7 +108,8 @@ final class ForwardLineApiController extends BaseController
                 return $this->replayOrConflict($existing, $requestHash, (int) $user['id']);
             }
 
-            if ($this->activeForwardCount($serviceId) >= $this->forwardLimit()) {
+            $forwardLimit = $this->provisioning->forwardLimitForService($serviceId);
+            if ($this->activeForwardCount($serviceId) >= $forwardLimit) {
                 throw new ApiException('forward_quota_exceeded', 409);
             }
 
@@ -119,7 +120,7 @@ final class ForwardLineApiController extends BaseController
                     'user_api:' . (int) $user['id'],
                     $idempotencyKeyHash,
                     $requestHash,
-                    $this->forwardLimit(),
+                    $forwardLimit,
                     ['user_id' => (int) $user['id'], 'feature' => 'allow_manage_forwards']
                 );
             } catch (ApiException $exception) {
@@ -387,11 +388,6 @@ final class ForwardLineApiController extends BaseController
             ['service_id' => $serviceId]
         );
         return max(0, (int) ($rows[0]['active_count'] ?? 0));
-    }
-
-    private function forwardLimit(): int
-    {
-        return max(1, min(100000, $this->config->getInt('USER_FORWARD_LIMIT_PER_SERVICE', 64)));
     }
 
     /** @param array<string, mixed> $payload */
