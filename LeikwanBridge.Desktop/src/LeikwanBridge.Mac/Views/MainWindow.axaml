@@ -1,0 +1,398 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:LeikwanBridge.Mac.ViewModels"
+        xmlns:lucide="using:Lucide.Avalonia"
+        x:Class="LeikwanBridge.Mac.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        x:Name="Root"
+        Title="LeiKwan Bridge"
+        Icon="avares://LeikwanBridge.Mac/Assets/app-icon.png"
+        Width="1100"
+        Height="720"
+        MinWidth="900"
+        MinHeight="620"
+        WindowStartupLocation="CenterScreen">
+  <Grid ColumnDefinitions="220,*">
+    <Border Grid.Column="0" Background="{DynamicResource RailBrush}">
+      <Grid Margin="18,24,18,18" RowDefinitions="Auto,32,*,Auto">
+        <StackPanel Grid.Row="0" Spacing="5">
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Border Width="32" Height="32" CornerRadius="6" Background="#FFFFFF">
+              <Image Source="avares://LeikwanBridge.Mac/Assets/app-icon.png" Margin="3" />
+            </Border>
+            <TextBlock Text="{DynamicResource AppName}"
+                       VerticalAlignment="Center"
+                       Foreground="White"
+                       FontSize="16"
+                       FontWeight="SemiBold" />
+          </StackPanel>
+          <TextBlock Text="macOS client" Foreground="{DynamicResource RailMutedBrush}" FontSize="12" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Spacing="6" IsVisible="{Binding IsSignedIn}">
+          <Button Classes="nav" Command="{Binding ShowDashboardCommand}">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <lucide:LucideIcon Kind="LayoutDashboard" Size="18" />
+              <TextBlock Text="{DynamicResource DashboardLabel}" />
+            </StackPanel>
+          </Button>
+          <Button Classes="nav" Command="{Binding ShowLogsCommand}">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <lucide:LucideIcon Kind="ScrollText" Size="18" />
+              <TextBlock Text="{DynamicResource LogsLabel}" />
+            </StackPanel>
+          </Button>
+          <Button Classes="nav" Command="{Binding ShowSettingsCommand}">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <lucide:LucideIcon Kind="Settings" Size="18" />
+              <TextBlock Text="{DynamicResource SettingsLabel}" />
+            </StackPanel>
+          </Button>
+        </StackPanel>
+
+        <StackPanel Grid.Row="3" Spacing="6">
+          <TextBlock Text="{Binding ActiveClientName}"
+                     Foreground="White"
+                     FontWeight="SemiBold"
+                     TextTrimming="CharacterEllipsis"
+                     IsVisible="{Binding IsSignedIn}" />
+          <TextBlock Text="{Binding SignedInUsername}"
+                     Foreground="{DynamicResource RailMutedBrush}"
+                     FontSize="12"
+                     TextTrimming="CharacterEllipsis"
+                     IsVisible="{Binding IsSignedIn}" />
+          <TextBlock Text="{Binding VersionLabel}" Foreground="{DynamicResource RailMutedBrush}" FontSize="11" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Column="1" RowDefinitions="Auto,*">
+      <Border Grid.Row="0"
+              Background="{DynamicResource WarningSurfaceBrush}"
+              BorderBrush="#E7C878"
+              BorderThickness="0,0,0,1"
+              Padding="20,12"
+              IsVisible="{Binding IsNoticeVisible}">
+        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+          <lucide:LucideIcon Grid.Column="0"
+                             Kind="CircleAlert"
+                             Size="19"
+                             Foreground="{DynamicResource WarningBrush}"
+                             VerticalAlignment="Top" />
+          <TextBlock Grid.Column="1"
+                     Text="{Binding NoticeText}"
+                     TextWrapping="Wrap"
+                     Foreground="#6E4B08"
+                     VerticalAlignment="Center" />
+          <Button Grid.Column="2"
+                  Classes="icon"
+                  Command="{Binding DismissNoticeCommand}"
+                  ToolTip.Tip="Dismiss notice">
+            <lucide:LucideIcon Kind="X" Size="17" />
+          </Button>
+        </Grid>
+      </Border>
+
+      <Grid Grid.Row="1" RowDefinitions="*,Auto">
+        <Grid Grid.Row="0">
+          <ScrollViewer IsVisible="{Binding IsLoginVisible}">
+            <Grid Margin="48,36" MinHeight="500">
+              <Border Classes="surface"
+                      Width="440"
+                      Padding="34"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center">
+                <StackPanel Spacing="12">
+                  <Border Width="54" Height="54" CornerRadius="8" HorizontalAlignment="Left">
+                    <Image Source="avares://LeikwanBridge.Mac/Assets/app-icon.png" />
+                  </Border>
+                  <TextBlock Classes="heading" Text="Sign in" Margin="0,6,0,0" />
+                  <TextBlock Classes="muted" Text="Use your LeiKwan account to open this Mac client." TextWrapping="Wrap" />
+
+                  <TextBlock Classes="label" Text="PANEL URL" Margin="0,8,0,0" />
+                  <TextBox Text="{Binding PanelUrl, Mode=TwoWay}" Watermark="https://panel.example.com" />
+                  <TextBlock Classes="label" Text="EMAIL" Margin="0,4,0,0" />
+                  <TextBox Text="{Binding Email, Mode=TwoWay}" Watermark="name@example.com" />
+                  <TextBlock Classes="label" Text="PASSWORD" Margin="0,4,0,0" />
+                  <TextBox Text="{Binding Password, Mode=TwoWay}"
+                           PasswordChar="●"
+                           Watermark="Password" />
+                  <TextBlock Text="{Binding ValidationMessage}"
+                             Foreground="{DynamicResource DangerBrush}"
+                             TextWrapping="Wrap"
+                             MinHeight="20" />
+                  <Button Classes="primary" Command="{Binding LoginCommand}" HorizontalContentAlignment="Center">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <lucide:LucideIcon Kind="LogIn" Size="18" />
+                      <TextBlock Text="Sign in" />
+                    </StackPanel>
+                  </Button>
+                </StackPanel>
+              </Border>
+            </Grid>
+          </ScrollViewer>
+
+          <ScrollViewer IsVisible="{Binding IsClientPickerVisible}">
+            <StackPanel Margin="48" MaxWidth="720" HorizontalAlignment="Center" Spacing="18">
+              <StackPanel Spacing="5">
+                <TextBlock Classes="heading" Text="Choose a client" />
+                <TextBlock Classes="muted" Text="Select the client configuration to use on this Mac." />
+              </StackPanel>
+              <ItemsControl ItemsSource="{Binding Clients}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Button Classes="secondary"
+                            Margin="0,0,0,8"
+                            Padding="16,14"
+                            HorizontalContentAlignment="Stretch"
+                            Click="OnClientClick">
+                      <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                        <lucide:LucideIcon Grid.Column="0" Kind="Monitor" Size="20" />
+                        <TextBlock Grid.Column="1" Text="{Binding Name}" FontWeight="SemiBold" />
+                        <lucide:LucideIcon Grid.Column="2" Kind="ChevronRight" Size="18" />
+                      </Grid>
+                    </Button>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </ScrollViewer>
+
+          <Grid IsVisible="{Binding IsDashboardVisible}" RowDefinitions="Auto,Auto,*" Margin="28">
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,18">
+              <StackPanel Grid.Column="0" Spacing="3">
+                <TextBlock Classes="heading" Text="Dashboard" />
+                <TextBlock Classes="muted" Text="{Binding ActiveClientName}" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <Button Classes="secondary" Command="{Binding StopAllCommand}">
+                  <StackPanel Orientation="Horizontal" Spacing="7">
+                    <lucide:LucideIcon Kind="Square" Size="16" />
+                    <TextBlock Text="{DynamicResource StopAllLabel}" />
+                  </StackPanel>
+                </Button>
+                <Button Classes="primary" Command="{Binding StartAllCommand}">
+                  <StackPanel Orientation="Horizontal" Spacing="7">
+                    <lucide:LucideIcon Kind="Play" Size="16" />
+                    <TextBlock Text="{DynamicResource StartAllLabel}" />
+                  </StackPanel>
+                </Button>
+              </StackPanel>
+            </Grid>
+
+            <Border Grid.Row="1" Classes="surface" Margin="0,0,0,18">
+              <Grid ColumnDefinitions="*,1,*,1,*" Height="82">
+                <StackPanel Grid.Column="0" Margin="18" Spacing="2">
+                  <TextBlock Classes="label" Text="CONNECTION" />
+                  <TextBlock Text="{Binding ConnectionLabel}" FontSize="17" FontWeight="SemiBold" />
+                </StackPanel>
+                <Border Grid.Column="1" Background="{DynamicResource BorderBrush}" />
+                <StackPanel Grid.Column="2" Margin="18" Spacing="2">
+                  <TextBlock Classes="label" Text="RUNNING" />
+                  <TextBlock Text="{Binding RunningForwardCount}" FontSize="17" FontWeight="SemiBold" />
+                </StackPanel>
+                <Border Grid.Column="3" Background="{DynamicResource BorderBrush}" />
+                <StackPanel Grid.Column="4" Margin="18" Spacing="2">
+                  <TextBlock Classes="label" Text="FORWARDS" />
+                  <TextBlock Text="{Binding ForwardCount}" FontSize="17" FontWeight="SemiBold" />
+                </StackPanel>
+              </Grid>
+            </Border>
+
+            <Grid Grid.Row="2" RowDefinitions="Auto,*">
+              <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,10">
+                <TextBlock Text="Forwards" FontSize="16" FontWeight="SemiBold" />
+                <Button Grid.Column="1" Classes="icon secondary" Command="{Binding ConnectCommand}" ToolTip.Tip="Refresh connection">
+                  <lucide:LucideIcon Kind="RefreshCw" Size="17" />
+                </Button>
+              </Grid>
+              <ScrollViewer Grid.Row="1">
+                <Grid>
+                  <Border Classes="surface"
+                          Padding="24"
+                          IsVisible="{Binding !HasForwards}">
+                    <StackPanel HorizontalAlignment="Center" Spacing="8">
+                      <lucide:LucideIcon Kind="Network" Size="28" Foreground="{DynamicResource MutedTextBrush}" />
+                      <TextBlock Text="No supported forwards are assigned." FontWeight="SemiBold" />
+                    </StackPanel>
+                  </Border>
+                  <ItemsControl ItemsSource="{Binding Forwards}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:ForwardRowViewModel">
+                        <Border Classes="surface" Margin="0,0,0,8" Padding="16,12">
+                          <Grid ColumnDefinitions="*,100,170,100,84" ColumnSpacing="14">
+                            <StackPanel Grid.Column="0" Spacing="1" VerticalAlignment="Center">
+                              <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                              <TextBlock Text="Local listener" Classes="muted" FontSize="11" />
+                            </StackPanel>
+                            <Border Grid.Column="1"
+                                    Background="{DynamicResource QuietBrush}"
+                                    CornerRadius="4"
+                                    Padding="8,4"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center">
+                              <TextBlock Text="{Binding Mode}" FontSize="12" FontWeight="SemiBold" />
+                            </Border>
+                            <TextBlock Grid.Column="2" Text="{Binding PortText}" FontFamily="Menlo,Consolas" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
+                              <Border Width="8"
+                                      Height="8"
+                                      CornerRadius="4"
+                                      Classes="status-dot"
+                                      Classes.running="{Binding IsRunning}" />
+                              <TextBlock Text="{Binding Status}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
+                              <Button Classes="icon primary"
+                                      Command="{Binding StartCommand}"
+                                      IsVisible="{Binding CanStart}"
+                                      ToolTip.Tip="Start forward">
+                                <lucide:LucideIcon Kind="Play" Size="16" />
+                              </Button>
+                              <Button Classes="icon danger"
+                                      Command="{Binding StopCommand}"
+                                      IsVisible="{Binding CanStop}"
+                                      ToolTip.Tip="Stop forward">
+                                <lucide:LucideIcon Kind="Square" Size="15" />
+                              </Button>
+                            </StackPanel>
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </Grid>
+              </ScrollViewer>
+            </Grid>
+          </Grid>
+
+          <Grid IsVisible="{Binding IsLogsVisible}" RowDefinitions="Auto,*" Margin="28">
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,18">
+              <StackPanel>
+                <TextBlock Classes="heading" Text="Activity" />
+                <TextBlock Classes="muted" Text="Recent client lifecycle events" />
+              </StackPanel>
+            </Grid>
+            <Border Grid.Row="1" Classes="surface" Padding="16">
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding Logs}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Text="{Binding}"
+                                 FontFamily="Menlo,Consolas"
+                                 FontSize="12"
+                                 Margin="0,0,0,8"
+                                 TextWrapping="Wrap" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </Border>
+          </Grid>
+
+          <ScrollViewer IsVisible="{Binding IsSettingsVisible}">
+            <StackPanel Margin="28" MaxWidth="720" HorizontalAlignment="Left" Spacing="18">
+              <StackPanel>
+                <TextBlock Classes="heading" Text="Settings" />
+                <TextBlock Classes="muted" Text="Client preferences" />
+              </StackPanel>
+
+              <Border Classes="surface" Padding="20">
+                <StackPanel Spacing="12">
+                  <TextBlock Text="Connection" FontSize="16" FontWeight="SemiBold" />
+                  <TextBlock Classes="label" Text="PANEL URL" />
+                  <TextBox Text="{Binding PanelUrl, Mode=TwoWay}" />
+                  <TextBlock Classes="label" Text="LANGUAGE" Margin="0,4,0,0" />
+                  <ComboBox ItemsSource="{Binding Languages}" SelectedItem="{Binding Language, Mode=TwoWay}" Width="180" HorizontalAlignment="Left" />
+                  <Button Classes="primary" Command="{Binding SavePreferencesCommand}" HorizontalAlignment="Left">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                      <lucide:LucideIcon Kind="Save" Size="16" />
+                      <TextBlock Text="Save preferences" />
+                    </StackPanel>
+                  </Button>
+                </StackPanel>
+              </Border>
+
+              <Border Classes="surface" Padding="20">
+                <StackPanel Spacing="14">
+                  <TextBlock Text="Startup and window" FontSize="16" FontWeight="SemiBold" />
+                  <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel Grid.Column="0">
+                      <TextBlock Text="Open at login" FontWeight="SemiBold" />
+                      <TextBlock Classes="muted" Text="Start this client for the current macOS user." FontSize="12" />
+                    </StackPanel>
+                    <ToggleSwitch Grid.Column="1"
+                                  IsChecked="{Binding AutoStartEnabled, Mode=TwoWay}"
+                                  Command="{Binding ToggleAutostartCommand}" />
+                  </Grid>
+                  <Border Height="1" Background="{DynamicResource BorderBrush}" />
+                  <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel Grid.Column="0">
+                      <TextBlock Text="Keep in menu bar" FontWeight="SemiBold" />
+                      <TextBlock Classes="muted" Text="Closing the window keeps active forwards running." FontSize="12" />
+                    </StackPanel>
+                    <ToggleSwitch Grid.Column="1" IsChecked="{Binding CloseToTray, Mode=TwoWay}" />
+                  </Grid>
+                </StackPanel>
+              </Border>
+
+              <Border Classes="surface" Padding="20">
+                <Grid ColumnDefinitions="*,Auto">
+                  <StackPanel Grid.Column="0">
+                    <TextBlock Text="Updates" FontSize="16" FontWeight="SemiBold" />
+                    <TextBlock Classes="muted" Text="Check for a newer build for this Mac architecture." FontSize="12" />
+                  </StackPanel>
+                  <Button Grid.Column="1" Classes="secondary" Command="{Binding CheckForUpdatesCommand}">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                      <lucide:LucideIcon Kind="RefreshCw" Size="16" />
+                      <TextBlock Text="Check now" />
+                    </StackPanel>
+                  </Button>
+                </Grid>
+              </Border>
+
+              <Border Classes="surface" Padding="20" IsVisible="{Binding IsDebugVisible}">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="Debug" FontSize="16" FontWeight="SemiBold" />
+                  <TextBlock Classes="muted" Text="Runtime paths are available only while LEIKWAN_DEBUG=1." />
+                </StackPanel>
+              </Border>
+
+              <Button Classes="danger" Command="{Binding SignOutCommand}" HorizontalAlignment="Left">
+                <StackPanel Orientation="Horizontal" Spacing="7">
+                  <lucide:LucideIcon Kind="LogOut" Size="16" />
+                  <TextBlock Text="Sign out" />
+                </StackPanel>
+              </Button>
+            </StackPanel>
+          </ScrollViewer>
+
+          <Border Background="#B3FFFFFF" IsVisible="{Binding IsBusy}">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12">
+              <ProgressBar Width="180" IsIndeterminate="True" />
+              <TextBlock Text="Working…" FontWeight="SemiBold" />
+            </StackPanel>
+          </Border>
+        </Grid>
+
+        <Border Grid.Row="1"
+                Background="#EAF6F3"
+                BorderBrush="#A9D8CE"
+                BorderThickness="1,1,0,0"
+                Padding="20,12"
+                IsVisible="{Binding IsUpdateVisible}">
+          <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+            <lucide:LucideIcon Grid.Column="0" Kind="Download" Size="19" Foreground="{DynamicResource AccentBrush}" />
+            <StackPanel Grid.Column="1">
+              <TextBlock Text="Update available" FontWeight="SemiBold" />
+              <TextBlock Classes="muted" Text="{Binding UpdateVersion, StringFormat='Version {0} is ready.'}" />
+            </StackPanel>
+            <Button Grid.Column="2" Classes="icon secondary" Command="{Binding DismissUpdateCommand}" ToolTip.Tip="Dismiss update">
+              <lucide:LucideIcon Kind="X" Size="17" />
+            </Button>
+          </Grid>
+        </Border>
+      </Grid>
+    </Grid>
+  </Grid>
+</Window>

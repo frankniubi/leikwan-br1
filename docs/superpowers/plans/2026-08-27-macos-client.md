@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the panel wire contract and `LeikwanBridge.Core` as the source of truth, but inject platform policy and platform services into the lifecycle coordinator. The macOS Avalonia shell composes Unix process, Keychain, LaunchAgent, updater, and port-probe implementations. Ultra uses policy-v2 pulls, a maximum-300-second selected lease, anonymous bootstrap input, and a private Unix socket; provider material never enters static configuration or persisted state.
 
-**Tech Stack:** .NET 8, Avalonia 11.3.20, CommunityToolkit.Mvvm 8.4.2, Lucide.Avalonia 0.2.19, xUnit, Go 1.22, Rust stable, PHP 8, Bash, GitHub Actions, macOS `hdiutil`/`ditto`.
+**Tech Stack:** .NET 8, Avalonia 11.3.20, CommunityToolkit.Mvvm 8.4.2, Lucide.Avalonia 0.1.64, xUnit, Go 1.22, Rust stable, PHP 8, Bash, GitHub Actions, macOS `hdiutil`/`ditto`.
 
 **Spec:** `docs/superpowers/specs/2026-08-27-macos-client-design.md`
 
@@ -675,9 +675,9 @@ git commit -m "refactor: share desktop client lifecycle"
 - Consumes only `DesktopClientController` commands/events and platform services.
 - Produces no API/runtime decisions inside views.
 
-- [ ] **Step 1: Add the projects and failing headless view-model tests.**
+- [x] **Step 1: Add the projects and failing headless view-model tests.**
 
-Pin Avalonia packages to `11.3.20` and Lucide.Avalonia to `0.2.19`. Test login
+Pin Avalonia packages to `11.3.20` and the latest .NET 8-compatible Lucide.Avalonia (`0.1.64`). Test login
 validation, client picker, forward row commands, busy states, update prompt,
 close-to-tray preference, and immediate unsupported notice.
 
@@ -689,20 +689,20 @@ controller.RaiseForwards([single, bond, ultra]);
 Assert.Equal(new[] { "single", "bond", "ultra" }, vm.Forwards.Select(x => x.Mode));
 ```
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj --filter FullyQualifiedName~MainWindowViewModelTests
 ```
 
-- [ ] **Step 3: Implement the app composition root.**
+- [x] **Step 3: Implement the app composition root.**
 
 `Program.cs` enables `RLIMIT_CORE=0` on macOS before Avalonia starts, enforces a
 single user instance, configures redacted rolling logs, creates platform
 services/controller, and supports `--apply-update <request-file>` without opening
 the main window.
 
-- [ ] **Step 4: Implement the work-focused window.**
+- [x] **Step 4: Implement the work-focused window.**
 
 Use a fixed 220 px navigation rail and responsive content region. First launch
 shows the real login form, not a landing page. The dashboard shows connection
@@ -711,7 +711,7 @@ local port, lifecycle, health, and icon controls. Use Lucide icons with tooltips
 for start, stop, refresh, logs, settings, and update. Use no nested cards,
 negative letter spacing, decorative gradients, or oversized headings.
 
-- [ ] **Step 5: Implement client selection, settings, log, notice, and update surfaces.**
+- [x] **Step 5: Implement client selection, settings, log, notice, and update surfaces.**
 
 Passwords never enter view-model logs or persisted bindings. The unsupported
 notice is a top-level transient banner/dialog shown as soon as the event arrives.
@@ -719,14 +719,14 @@ Settings cover panel URL, language, autostart, close-to-tray, update check, and
 sign-out. Keep advanced runtime paths hidden unless a `LEIKWAN_DEBUG` environment
 flag is set.
 
-- [ ] **Step 6: Implement the menu-bar lifecycle.**
+- [x] **Step 6: Implement the menu-bar lifecycle.**
 
 Use Avalonia `TrayIcon` and `NativeMenu` for Show, Start All, Stop All, and Quit.
 Window close hides only when close-to-tray is enabled; Quit awaits
 `DisconnectAsync` before terminating. A missing tray implementation leaves the
 window closable and never traps the user in a hidden process.
 
-- [ ] **Step 7: Run headless tests and a cross-platform build.**
+- [x] **Step 7: Run headless tests and a cross-platform build.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj
@@ -735,7 +735,7 @@ dotnet build LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.cspro
 
 Expected: PASS/build exit 0 on Windows; native rendering remains a macOS CI gate.
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Mac LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests LeikwanBridge.Desktop/LeikwanBridge.Desktop.sln
