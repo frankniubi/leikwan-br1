@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
@@ -260,6 +261,120 @@ public sealed class ConfigPollingServiceTests
         Assert.Equal([26], runtimeManager.AppliedForwardIds);
     }
 
+    [Fact]
+    public async Task SyncOnceAsync_NotModified_RefreshesRunningUltraLease()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildUltraPullResponseJson(), ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+            NotModifiedRevision = "rev-ultra",
+        };
+        var payload = BuildUltraPullResponseJson().Replace(
+            "\"ok\": true,",
+            "\"ok\": true,\n  \"config_revision\": \"rev-ultra\",",
+            StringComparison.Ordinal);
+        server.SetPayload(payload);
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var supervisor = new AlwaysRunningProcessSupervisor();
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, supervisor);
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+        var updates = 0;
+        service.ForwardsUpdated += _ => updates++;
+
+        await service.SyncOnceAsync();
+        Assert.Single(service.LatestForwards);
+        Assert.Equal("ultra", service.LatestForwards[0].BackendMode);
+        Assert.Equal([42], runtimeManager.AppliedForwardIds);
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["42"] = new AppliedForwardState
+            {
+                ForwardId = 42,
+                Mode = "ultra",
+                ListenPort = 12042,
+                ProcessRoles = ["ultra-runtime"],
+                ContractSignature = runtimeManager.ComputeContractSignature(service.LatestForwards[0]),
+            },
+        });
+
+        await service.SyncOnceAsync();
+
+        Assert.Equal([42], runtimeManager.RefreshedForwardIds);
+        Assert.Equal([42], runtimeManager.AppliedForwardIds);
+        Assert.Equal(2, updates);
+
+        supervisor.Running = false;
+        await service.SyncOnceAsync();
+
+        Assert.Equal([42, 42], runtimeManager.AppliedForwardIds);
+        Assert.Equal([42], runtimeManager.RefreshedForwardIds);
+        Assert.Equal(3, updates);
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_NotModified_ForcesFullPullWhenUltraPolicyNearExpiry()
+    {
+        using var tempDir = new TempStateDirectory();
+        var initialPayload = BuildUltraPullResponseJson(expiryMinutes: 1).Replace(
+            "\"ok\": true,",
+            "\"ok\": true,\n  \"config_revision\": \"rev-ultra\",",
+            StringComparison.Ordinal);
+        using var server = new PullApiServer(initialPayload, ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+            NotModifiedRevision = "rev-ultra",
+            SuccessfulUltraLeaseExpiryMinutes = 1,
+        };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var supervisor = new AlwaysRunningProcessSupervisor();
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, supervisor);
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+        Assert.Equal([42], runtimeManager.AppliedForwardIds);
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["42"] = new AppliedForwardState
+            {
+                ForwardId = 42,
+                Mode = "ultra",
+                ListenPort = 12042,
+                ProcessRoles = ["ultra-runtime"],
+                ContractSignature = runtimeManager.ComputeContractSignature(service.LatestForwards[0]),
+            },
+        });
+
+        server.SetPayload(BuildUltraPullResponseJson(expiryMinutes: 4).Replace(
+            "\"ok\": true,",
+            "\"ok\": true,\n  \"config_revision\": \"rev-ultra\",",
+            StringComparison.Ordinal));
+        await service.SyncOnceAsync();
+
+        server.SuccessfulUltraLeaseExpiryMinutes = 3;
+        await service.SyncOnceAsync();
+
+        Assert.Equal([42], runtimeManager.AppliedForwardIds);
+        Assert.Equal([42], runtimeManager.RefreshedForwardIds);
+        Assert.True(service.LatestForwards[0].UltraAccess!.ExpiresAt > DateTimeOffset.UtcNow.AddMinutes(2));
+    }
+
     private static string BuildPullResponseJson()
     {
         return """
@@ -344,12 +459,12 @@ public sealed class ConfigPollingServiceTests
         """;
     }
 
-    private static string BuildUltraPullResponseJson()
+    private static string BuildUltraPullResponseJson(int expiryMinutes = 4)
     {
         const string target = "198.51.100.10:443";
         var generation = new string('a', 64);
         var targetDigest = UltraPolicy.ComputeTargetDigest(target);
-        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(4).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(expiryMinutes).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
         return $$"""
         {
           "ok": true,
@@ -465,6 +580,15 @@ public sealed class ConfigPollingServiceTests
         public Action<ForwardConfig>? OnApply { get; set; }
         public List<int> AppliedForwardIds { get; } = [];
         public List<int> StoppedForwardIds { get; } = [];
+        public List<int> RefreshedForwardIds { get; } = [];
+
+        public override bool RefreshUltraLease(ForwardConfig forward)
+        {
+            RefreshedForwardIds.Add(forward.ForwardId);
+            forward.RuntimeLease?.Dispose();
+            forward.RuntimeLease = null;
+            return true;
+        }
 
         public override void ApplyForward(ForwardConfig forward)
         {
@@ -485,7 +609,9 @@ public sealed class ConfigPollingServiceTests
 
     private sealed class AlwaysRunningProcessSupervisor : ProcessSupervisor
     {
-        public override bool IsRunning(int forwardId) => true;
+        public bool Running { get; set; } = true;
+
+        public override bool IsRunning(int forwardId) => Running;
     }
 
     private sealed class PullApiServer : IDisposable
@@ -493,7 +619,7 @@ public sealed class ConfigPollingServiceTests
         private readonly HttpListener _listener = new();
         private readonly CancellationTokenSource _cts = new();
         private readonly Task _serveTask;
-        private readonly string _payload;
+        private string _payload;
         private readonly int _ultraLeaseStatus;
 
         public PullApiServer(string payload, int ultraLeaseStatus = 404)
@@ -510,6 +636,12 @@ public sealed class ConfigPollingServiceTests
         public string BaseUrl { get; }
 
         public string NotModifiedRevision { get; set; } = "";
+
+        public bool SuccessfulUltraLease { get; set; }
+
+        public int SuccessfulUltraLeaseExpiryMinutes { get; set; } = 3;
+
+        public void SetPayload(string payload) => _payload = payload;
 
         private async Task ServeLoopAsync()
         {
@@ -531,7 +663,10 @@ public sealed class ConfigPollingServiceTests
 
                 if (context.Request.Url?.AbsolutePath == "/api/client/ultra/lease")
                 {
-                    var bytes = Encoding.UTF8.GetBytes("{\"ok\":false,\"error\":\"quota_exhausted\"}");
+                    var body = SuccessfulUltraLease
+                        ? BuildSuccessfulUltraLease(context.Request, SuccessfulUltraLeaseExpiryMinutes)
+                        : "{\"ok\":false,\"error\":\"quota_exhausted\"}";
+                    var bytes = Encoding.UTF8.GetBytes(body);
                     context.Response.StatusCode = _ultraLeaseStatus;
                     context.Response.ContentType = "application/json";
                     context.Response.OutputStream.Write(bytes, 0, bytes.Length);
@@ -559,6 +694,42 @@ public sealed class ConfigPollingServiceTests
                 context.Response.StatusCode = 404;
                 context.Response.OutputStream.Close();
             }
+        }
+
+        private static string BuildSuccessfulUltraLease(HttpListenerRequest request, int expiryMinutes)
+        {
+            using var document = JsonDocument.Parse(request.InputStream);
+            var item = document.RootElement.GetProperty("forwards")[0];
+            var forwardId = item.GetProperty("forward_id").GetInt32();
+            var ticket = item.GetProperty("session_ticket").GetString() ?? "";
+            var generation = item.GetProperty("policy_generation").GetString() ?? "";
+            var targetDigest = item.GetProperty("target_digest").GetString() ?? "";
+            var transport = item.GetProperty("transport").GetString() ?? "tcp";
+            var expiresAt = DateTimeOffset.UtcNow.AddMinutes(expiryMinutes).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+            return JsonSerializer.Serialize(new
+            {
+                ok = true,
+                leases = new[]
+                {
+                    new
+                    {
+                        protocol = "leikwan-ultra-policy-v2",
+                        forward_id = forwardId,
+                        session_ticket = ticket,
+                        lease_id = "ul2_test",
+                        policy_generation = generation,
+                        expires_at = expiresAt,
+                        transport,
+                        rate_limit_mbps = 20,
+                        quota_remaining_bytes = 1048576,
+                        target_digest = targetDigest,
+                        selection_ref = "selection-reference-abcdefghijklmnop",
+                        nonce_hash = new string('b', 64),
+                        endpoint = new { ip = "203.0.113.10", port = 443 },
+                        credential = new { user = "user", password = "password" },
+                    },
+                },
+            });
         }
 
         private static int GetFreePort()

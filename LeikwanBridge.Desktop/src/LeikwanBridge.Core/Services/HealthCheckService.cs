@@ -435,6 +435,14 @@ public sealed class HealthCheckService
         if (!state.ProcessRoles.Contains(role, StringComparer.Ordinal))
             return;
 
+        if (string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
+        {
+            // Ultra restarts require a freshly issued one-shot lease. Config polling
+            // owns that exchange and will reconcile the stopped runtime safely.
+            Log.Warning("forward {ForwardId}: Ultra runtime role exited [{Role}], waiting for lease-aware config sync", forwardId, role);
+            return;
+        }
+
         if (!ShouldRestart(forwardId))
             return;
 

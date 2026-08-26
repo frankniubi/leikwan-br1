@@ -92,8 +92,9 @@
                             <TextBlock Text="{Binding ConnectionStatus}" FontSize="12"
                                        Foreground="{StaticResource SidebarTextBrush}"/>
                         </StackPanel>
-                        <TextBlock Text="{Binding Config.ClientId, StringFormat=Client ID: {0}}" FontSize="11"
-                                   Foreground="{StaticResource SidebarTextBrush}" Margin="0,10,0,0"/>
+                        <TextBlock Text="{Binding SignedInEmail}" FontSize="11"
+                                   Foreground="{StaticResource SidebarTextBrush}" Margin="0,10,0,0"
+                                   Visibility="{Binding HasSignedInEmail, Converter={StaticResource BoolToVis}}"/>
                     </StackPanel>
 
                     <!-- Nav Buttons -->
