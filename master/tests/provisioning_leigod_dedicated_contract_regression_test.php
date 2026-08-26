@@ -34,6 +34,12 @@ namespace Leikwan\Master\Database {
                     'client_token' => (string) ($service['client_token'] ?? ''),
                     'service_status' => (string) ($service['status'] ?? ''),
                     'service_name' => (string) ($service['name'] ?? ''),
+                    'service_expire_at' => $service['expire_at'] ?? null,
+                    'service_traffic_limit_gb' => (int) ($service['traffic_limit_gb'] ?? 0),
+                    'service_traffic_used_bytes' => (int) ($service['traffic_used_bytes'] ?? 0),
+                    'service_billing_mode' => (string) ($service['billing_mode'] ?? 'monthly_bundle'),
+                    'service_monthly_included_traffic_gb' => (int) ($service['monthly_included_traffic_gb'] ?? 0),
+                    'service_billing_cycle_traffic_used_bytes' => (int) ($service['billing_cycle_traffic_used_bytes'] ?? 0),
                     'service_bandwidth_limit_mbps' => (int) ($service['bandwidth_limit_mbps'] ?? 0),
                     'line_client_name' => null,
                     'line_client_host' => null,
@@ -192,6 +198,11 @@ namespace {
         'status' => 'active',
         'name' => 'Dedicated LeiGod',
         'bandwidth_limit_mbps' => 0,
+        'traffic_limit_gb' => 88,
+        'traffic_used_bytes' => 108366593968,
+        'billing_mode' => 'monthly_bundle',
+        'monthly_included_traffic_gb' => 88,
+        'billing_cycle_traffic_used_bytes' => 0,
     ]]);
     $db->seed('forward_combinations', [[
         'id' => 9,
@@ -297,6 +308,7 @@ namespace {
     assertSame(null, array_key_exists('bond_remote_port', $config) ? $config['bond_remote_port'] : 'MISSING', 'dedicated config must ignore stale/env remote port');
     assertSame(null, array_key_exists('bonding', $config) ? $config['bonding'] : 'MISSING', 'dedicated config must not publish bonding');
     assertSame(null, array_key_exists('mptcp', $config) ? $config['mptcp'] : 'MISSING', 'dedicated config must not publish mptcp');
+    assertSame(88 * 1024 * 1024 * 1024, $config['quota_remaining_bytes'] ?? null, 'client quota must use current billing-cycle usage');
 
     $forward = [
         'id' => 47,

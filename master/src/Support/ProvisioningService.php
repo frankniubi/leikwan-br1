@@ -5280,6 +5280,9 @@ final class ProvisioningService
                      s.expire_at AS service_expire_at,
                      s.traffic_limit_gb AS service_traffic_limit_gb,
                      s.traffic_used_bytes AS service_traffic_used_bytes,
+                     s.billing_mode AS service_billing_mode,
+                     s.monthly_included_traffic_gb AS service_monthly_included_traffic_gb,
+                     s.billing_cycle_traffic_used_bytes AS service_billing_cycle_traffic_used_bytes,
                      s.bandwidth_limit_mbps AS service_bandwidth_limit_mbps,
                      c.name AS line_client_name, c.display_host AS line_client_host, c.speed_limit_mbps AS line_speed_limit_mbps,
                      c.agent_config_json AS line_client_agent_config_json,
@@ -5426,9 +5429,13 @@ final class ProvisioningService
         $lineSpeedLimitMbps = max(0, (int) ($forward['line_speed_limit_mbps'] ?? 0));
         $limitCandidates = array_values(array_filter([$serviceBandwidthLimitMbps, $lineSpeedLimitMbps], static fn(int $value): bool => $value > 0));
         $effectiveSpeedLimitMbps = $limitCandidates !== [] ? min($limitCandidates) : null;
-        $trafficLimitGb = max(0, (int) ($forward['service_traffic_limit_gb'] ?? 0));
-        $trafficUsedBytes = max(0, (int) ($forward['service_traffic_used_bytes'] ?? 0));
-        $quotaRemainingBytes = $trafficLimitGb > 0
+        $billingMode = $this->normalizeBillingMode((string) ($forward['service_billing_mode'] ?? 'monthly_bundle'));
+        $trafficLimitGb = max(0, (int) ($forward['service_monthly_included_traffic_gb'] ?? 0));
+        if ($trafficLimitGb <= 0) {
+            $trafficLimitGb = max(0, (int) ($forward['service_traffic_limit_gb'] ?? 0));
+        }
+        $trafficUsedBytes = max(0, (int) ($forward['service_billing_cycle_traffic_used_bytes'] ?? 0));
+        $quotaRemainingBytes = $billingMode === 'monthly_bundle' && $trafficLimitGb > 0
             ? max(0, ($trafficLimitGb * 1024 * 1024 * 1024) - $trafficUsedBytes)
             : null;
 

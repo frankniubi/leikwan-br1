@@ -121,7 +121,7 @@ $grants = $broker->grantsForClientForwards(7, 'device-a', [[
     'forward_id' => 43,
     'service_status' => 'active',
     'backend_mode' => 'current_mode',
-]]);
+]], true);
 
 $grant = $grants['42'] ?? null;
 assertUltraContract(is_array($grant), 'active ultra forward must receive a local grant');
@@ -153,17 +153,24 @@ $quotaForward = [
         'destination_zone' => 'tokyo',
     ]],
 ];
-$quotaGrant = $broker->grantsForClientForwards(7, 'device-quota', [$quotaForward]);
+$quotaGrant = $broker->grantsForClientForwards(7, 'device-quota', [$quotaForward], true);
 assertUltraContract(isset($quotaGrant['44']), 'quota canary grant was not issued');
 $quotaForward['quota_remaining_bytes'] = 0;
-$exhaustedGrant = $broker->grantsForClientForwards(7, 'device-quota', [$quotaForward]);
+$exhaustedGrant = $broker->grantsForClientForwards(7, 'device-quota', [$quotaForward], true);
 assertUltraContract(!isset($exhaustedGrant['44']), 'cached grant survived an exhausted Panel quota');
 
 $expiryForward = $quotaForward;
 $expiryForward['quota_remaining_bytes'] = 1073741824;
 $expiryForward['service_expire_at'] = gmdate('Y-m-d H:i:s', $now - 1);
-$expiredGrant = $broker->grantsForClientForwards(7, 'device-expiry', [$expiryForward]);
+$expiredGrant = $broker->grantsForClientForwards(7, 'device-expiry', [$expiryForward], true);
 assertUltraContract(!isset($expiredGrant['44']), 'expired Panel service still received an Ultra grant');
+
+$unlimitedForward = $quotaForward;
+$unlimitedForward['forward_id'] = 45;
+$unlimitedForward['quota_remaining_bytes'] = null;
+$unlimitedGrant = $broker->grantsForClientForwards(7, 'device-unlimited', [$unlimitedForward], true);
+assertUltraContract(isset($unlimitedGrant['45']), 'an unspecified quota was treated as exhausted');
+assertUltraContract(($unlimitedGrant['45']['quota_remaining_bytes'] ?? 0) > 0, 'unlimited policy grant must receive a bounded lease quota');
 
 $candidate = $materials->serverCandidateForClientToken(
     (string) $grant['session_ticket'],
