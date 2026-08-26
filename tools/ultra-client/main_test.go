@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"testing"
 	"time"
@@ -72,5 +73,51 @@ func TestRuntimePolicyRequiresValidLeaseBeforeDataPlane(t *testing.T) {
 	store.Revoke(policy.PolicyGeneration)
 	if _, ok := store.Snapshot(); ok {
 		t.Fatal("revoked lease remained usable")
+	}
+}
+
+func TestRuntimePolicyGenerationRotationKeepsListenersAlive(t *testing.T) {
+	config := Config{ForwardID: 42, Target: "1.1.1.1:443"}
+	store := NewPolicyStore(config)
+	now := time.Now()
+	first := Policy{
+		Protocol: policyProtocol, ForwardID: 42, PolicyGeneration: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SessionTicket: "ticket-a", ExpiresAt: now.Add(time.Minute), Transport: "tcp",
+		RateLimitMbps: 10, QuotaRemainingBytes: 1024, TargetDigest: targetDigest(config.Target),
+	}
+	if err := store.Replace(first, ProviderLease{
+		LeaseID: "ul2_first", PolicyGeneration: first.PolicyGeneration, ExpiresAt: first.ExpiresAt,
+		Transport: "tcp", SelectionRef: "selection-reference-abcdefghijklmnop",
+		NonceHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		IP:        "203.0.113.20", Port: 5438, User: []byte("user"), Password: []byte("password"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeContext, cancelRuntime := context.WithCancel(context.Background())
+	defer cancelRuntime()
+	go watchRuntimePolicy(runtimeContext, cancelRuntime, store)
+	next := first
+	next.PolicyGeneration = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	next.SessionTicket = "ticket-b"
+	if err := store.Replace(next, ProviderLease{
+		LeaseID: "ul2_next", PolicyGeneration: next.PolicyGeneration, ExpiresAt: next.ExpiresAt,
+		Transport: "tcp", SelectionRef: "selection-reference-abcdefghijklmnop",
+		NonceHash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		IP:        "203.0.113.20", Port: 5438, User: []byte("user"), Password: []byte("password"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-runtimeContext.Done():
+		t.Fatal("policy generation rotation canceled active listeners")
+	case <-time.After(100 * time.Millisecond):
+	}
+	store.Revoke(next.PolicyGeneration)
+	select {
+	case <-runtimeContext.Done():
+	case <-time.After(time.Second):
+		t.Fatal("policy revocation did not cancel active listeners")
 	}
 }

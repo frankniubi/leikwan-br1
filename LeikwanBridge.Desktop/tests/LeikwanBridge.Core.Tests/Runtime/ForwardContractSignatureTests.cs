@@ -149,6 +149,38 @@ public sealed class ForwardContractSignatureTests
     }
 
     [Fact]
+    public void Compute_UltraPolicyGenerationRotationDoesNotRestartStaticRuntime()
+    {
+        const string target = "198.51.100.10:443";
+        var forward = new ForwardConfig
+        {
+            ForwardId = 158,
+            Mode = "single",
+            BackendMode = "ultra",
+            ListenPort = 30522,
+            Target = target,
+            Transport = "tcp+udp",
+            UltraAccess = new UltraPolicy
+            {
+                PolicyGeneration = new string('a', 64),
+                TargetDigest = UltraPolicy.ComputeTargetDigest(target),
+                Transport = "tcp+udp",
+            },
+        };
+
+        var before = ForwardContractSignature.Compute(forward);
+        forward.UltraAccess = new UltraPolicy
+        {
+            PolicyGeneration = new string('b', 64),
+            TargetDigest = UltraPolicy.ComputeTargetDigest(target),
+            Transport = "tcp+udp",
+        };
+        var after = ForwardContractSignature.Compute(forward);
+
+        Assert.Equal(before, after);
+    }
+
+    [Fact]
     public void Compute_ChangesWhenUotSchedulerOrNativeIdentityChanges()
     {
         var forward = new ForwardConfig

@@ -398,6 +398,28 @@ func resolveIPv4(host string) (string, error) {
 	return "", errors.New("datagram target has no IPv4 address")
 }
 
+func watchRuntimePolicy(ctx context.Context, cancel context.CancelFunc, store *PolicyStore) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-store.Updates():
+			if _, ok := store.Snapshot(); !ok {
+				cancel()
+				return
+			}
+		case <-ticker.C:
+			store.ClearExpired()
+			if _, ok := store.Snapshot(); !ok {
+				cancel()
+				return
+			}
+		}
+	}
+}
+
 type udpAssociation struct {
 	session   *DatagramSession
 	client    *net.UDPAddr
@@ -668,28 +690,7 @@ func main() {
 				runtimeErrors <- serveUDP(runtimeContext, config, store, status)
 			}()
 		}
-		go func(generation string) {
-			ticker := time.NewTicker(250 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-runtimeContext.Done():
-					return
-				case <-store.Updates():
-					current, ok := store.Snapshot()
-					if !ok || current.Policy.PolicyGeneration != generation {
-						cancelRuntime()
-						return
-					}
-				case <-ticker.C:
-					store.ClearExpired()
-					if _, ok := store.Snapshot(); !ok {
-						cancelRuntime()
-						return
-					}
-				}
-			}
-		}(snapshot.Policy.PolicyGeneration)
+		go watchRuntimePolicy(runtimeContext, cancelRuntime, store)
 		select {
 		case <-rootContext.Done():
 		case <-runtimeContext.Done():
