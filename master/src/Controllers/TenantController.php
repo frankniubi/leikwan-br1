@@ -1241,7 +1241,8 @@ final class TenantController extends BaseController
                 (int) ($client['id'] ?? 0),
                 (int) $user['id'],
             );
-            $link = $this->agentBaseUrl() . '/android/enroll?code=' . rawurlencode((string) $issued['code']);
+            $link = $this->agentBaseUrl() . '/android/enroll?client_id=' . (int) ($client['id'] ?? 0)
+                . '&code=' . rawurlencode((string) $issued['code']);
             SessionAuth::flash('success', 'Enrollment link (valid 5 minutes): ' . $link);
         } catch (\Throwable) {
             SessionAuth::flash('error', 'Enrollment code creation failed.');

@@ -19,11 +19,10 @@
     <string name="clipboard_import">Import</string>
     <string name="login_sign_in_failed">Sign in failed</string>
     <string name="login_subtitle">Connect to your network</string>
-    <string name="login_panel_url">Panel URL</string>
-    <string name="login_email">Email</string>
-    <string name="login_password">Password</string>
-    <string name="login_signing_in">Signing in...</string>
-    <string name="login_sign_in">Sign In</string>
+    <string name="login_client_id">Client ID</string>
+    <string name="login_agent_token">Agent Token</string>
+    <string name="login_signing_in">Enrolling...</string>
+    <string name="login_sign_in">Enroll</string>
     <string name="login_select_client_title">Select Client</string>
     <string name="login_multiple_clients">Multiple clients found. Choose one:</string>
     <string name="login_client_id_format">ID: %1$d</string>
@@ -31,6 +30,7 @@
     <string name="login_error_generic">Login failed</string>
     <string name="login_error_switch_failed">Switch failed</string>
     <string name="login_error_select_client">Select a client to continue</string>
+    <string name="login_error_credentials_required">Enter a valid Client ID and Agent Token</string>
     <string name="proxies_title">Proxies</string>
     <string name="proxies_connection_mode">Method</string>
     <string name="proxy_mode_services">LeiGod</string>
@@ -205,8 +205,6 @@
     <string name="settings_rules_update">Update rules</string>
     <string name="settings_rules_rollback">Rollback</string>
     <string name="settings_account">Account</string>
-    <string name="settings_logged_in_as_format">Logged in as: %1$s</string>
-    <string name="settings_client_name_format">Client: %1$s</string>
     <string name="settings_logout">Logout</string>
     <string name="settings_about">About</string>
     <string name="settings_app_version">LeiKwan Bridge v0.1.0</string>

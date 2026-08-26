@@ -5,7 +5,6 @@ import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.leikwan.bridge.R
-import com.leikwan.bridge.api.ClientInfo
 import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
@@ -16,25 +15,18 @@ import com.leikwan.bridge.data.routing.RulePackSnapshot
 import com.leikwan.bridge.routing.RoutingDiagnosticsSource
 import com.leikwan.bridge.service.LeikwanVpnService
 import com.leikwan.bridge.ui.shared.RoutingDiagnosticsUiModel
-import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 data class SettingsUiState(
+    val clientId: Long = 0L,
     val dnsServer: String = "1.1.1.1",
     val dnsFallback: String = "8.8.8.8",
     val dnsStrategy: String = "prefer_ipv4",
     val bypassLan: Boolean = true,
     val bypassChina: Boolean = false,
     val customBypassRules: String = "",
-    val username: String = "",
-    val clientId: Long = 0L,
-    val clientName: String = "",
-    val clients: List<ClientInfo> = emptyList(),
-    val isSwitchingClient: Boolean = false,
-    val switchError: String? = null,
     val routingDiagnostics: RoutingDiagnosticsUiModel? = null,
     val rulePackLabel: String = "none",
     val rulePackStale: Boolean = false,
@@ -50,22 +42,18 @@ class SettingsViewModel @JvmOverloads constructor(
     private val prefs = prefsOverride ?: Prefs.get(app)
     private val db = AppDatabase.get(app)
     private val repo = PanelRepository(app, prefsOverride = prefs)
-    private val gson = Gson()
     private val rulePackManager = RulePackManager(db, prefs)
     private val rulePackFetcher = RulePackFetcher(manager = rulePackManager)
 
     private val _state = MutableStateFlow(
         SettingsUiState(
+            clientId = prefs.clientId,
             dnsServer = prefs.dnsServer,
             dnsFallback = prefs.dnsFallback,
             dnsStrategy = prefs.dnsStrategy,
             bypassLan = prefs.bypassLan,
             bypassChina = prefs.bypassChina,
             customBypassRules = prefs.customBypassRules,
-            username = prefs.username ?: "",
-            clientId = prefs.clientId,
-            clientName = prefs.clientName ?: "",
-            clients = parseClients(),
             routingDiagnostics = runCatching {
                 RoutingDiagnosticsSource.from(app).latest()
             }.getOrNull(),
@@ -74,36 +62,6 @@ class SettingsViewModel @JvmOverloads constructor(
         ),
     )
     val state = _state.asStateFlow()
-
-    private fun parseClients(): List<ClientInfo> {
-        val json = prefs.clientsJson ?: return emptyList()
-        return try {
-            val type = object : TypeToken<List<ClientInfo>>() {}.type
-            gson.fromJson(json, type)
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    fun switchClient(clientId: Long) {
-        if (clientId == prefs.clientId) return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(isSwitchingClient = true, switchError = null)
-            try {
-                repo.switchClient(clientId)
-                _state.value = _state.value.copy(
-                    isSwitchingClient = false,
-                    clientId = prefs.clientId,
-                    clientName = prefs.clientName ?: "",
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    isSwitchingClient = false,
-                    switchError = e.message,
-                )
-            }
-        }
-    }
 
     fun updateDnsServer(value: String) {
         prefs.dnsServer = value

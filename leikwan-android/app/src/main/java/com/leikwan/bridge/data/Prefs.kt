@@ -33,38 +33,9 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
         get() = prefs.getString("enrolled_device_id", null)
         set(v) = putNullableString("enrolled_device_id", v)
 
-    @Deprecated("Use agentToken")
-    var token: String?
-        get() = agentToken
-        set(v) {
-            agentToken = v
-        }
-
-    var username: String?
-        get() = prefs.getString("username", null)
-        set(v) = prefs.edit().putString("username", v).apply()
-
-    var email: String?
-        get() = prefs.getString("email", null)
-        set(v) = prefs.edit().putString("email", v).apply()
-
-    /** Stored in EncryptedSharedPreferences for client switching */
-    var password: String?
-        get() = prefs.getString("password", null)
-        set(v) = prefs.edit().putString("password", v).apply()
-
     var clientId: Long
         get() = prefs.getLong("client_id", 0L)
         set(v) = prefs.edit().putLong("client_id", v).apply()
-
-    var clientName: String?
-        get() = prefs.getString("client_name", null)
-        set(v) = prefs.edit().putString("client_name", v).apply()
-
-    /** JSON array of {id, name} objects — cached from login response */
-    var clientsJson: String?
-        get() = prefs.getString("clients_json", null)
-        set(v) = prefs.edit().putString("clients_json", v).apply()
 
     var selectedForwardId: Long
         get() = prefs.getLong("selected_forward_id", 0L)
@@ -192,6 +163,15 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
         if (clearIdentity) {
             runCatching { AndroidDeviceIdentity().clear() }
         }
+    }
+
+    fun clearDeviceSession() {
+        check(
+            prefs.edit()
+                .remove("device_session_token")
+                .remove("device_session_expires_at_ms")
+                .commit(),
+        ) { "failed to clear device session" }
     }
 
     fun logout() {
