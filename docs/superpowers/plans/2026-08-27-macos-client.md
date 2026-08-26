@@ -996,13 +996,13 @@ git commit -m "ci(mac): verify dual architecture client artifacts"
 - Create: `docs/handoffs/2026-08-27-macos-client-handoff.md`
 - Modify only defects exposed by the gates below, each with a failing regression test first.
 
-- [ ] **Step 1: Run the full local Core/App/Mac suite.**
+- [x] **Step 1: Run the full local Core/App/Mac suite.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/LeikwanBridge.Desktop.sln -c Release
 ```
 
-- [ ] **Step 2: Run runtime suites.**
+- [x] **Step 2: Run runtime suites.**
 
 ```powershell
 Push-Location tools/ultra-client
@@ -1013,7 +1013,7 @@ cargo test -p leikwan-bond -p leikwan-ingress -p leikwan-uot --locked
 Pop-Location
 ```
 
-- [ ] **Step 3: Run focused panel gates.**
+- [x] **Step 3: Run focused panel gates.**
 
 ```powershell
 php master/tests/client_agent_macos_ultra_policy_v2_contract_test.php
@@ -1023,7 +1023,7 @@ php master/tests/macos_client_install_surface_test.php
 php master/tests/windows_client_app_version_manifest_regression_test.php
 ```
 
-- [ ] **Step 4: Run security/static acceptance.**
+- [x] **Step 4: Run security/static acceptance.**
 
 ```powershell
 git diff --check
@@ -1043,14 +1043,14 @@ receive the unsupported-mode notice, run one single/bond/Ultra fixture, quit,
 and confirm no child process/listener remains. An unrun native gate is recorded
 as unproven; it is never described as passing.
 
-- [ ] **Step 6: Write the handoff.**
+- [x] **Step 6: Write the handoff.**
 
 Record purpose, commits, exact artifact names/hashes/sizes, supported modes,
 fixed notice, tests run and outcomes, unsigned Gatekeeper behavior, known
 privileged-memory limitation, update behavior, artifact publication status,
 rollback, and the explicit statement that production was not deployed.
 
-- [ ] **Step 7: Commit the verified handoff.**
+- [x] **Step 7: Commit the verified handoff.**
 
 ```powershell
 git add docs/handoffs/2026-08-27-macos-client-handoff.md
