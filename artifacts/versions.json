@@ -28,10 +28,10 @@
  "client_agent": {
   "artifact_url": "/artifacts/client-agent.py",
   "path": "client-agent/client_agent.py",
-  "sha256": "3c498b7293d55e11dfd9a9fbe8738518526471b9653e4f637b7a77fad8016f96",
-  "size": 267520,
-  "size_bytes": 267520,
-  "version": "2026.08.24.1"
+  "sha256": "a836e17bb760f5674f356aa57e595f2e070310fad80b4580a2d1cb8ab7f2cbbd",
+  "size": 268125,
+  "size_bytes": 268125,
+  "version": "2026.08.27.1"
  },
  "client_agent_installer": {
   "artifact_url": "/artifacts/install-client-agent.sh",
@@ -86,10 +86,22 @@
  },
  "ultra_client_runtime": {
   "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
+  "hardening": [
+   "cgo-disabled",
+   "pie",
+   "relro",
+   "nx-stack",
+   "trimpath",
+   "stripped",
+   "garble-identifiers",
+   "garble-literals",
+   "garble-tiny"
+  ],
+  "obfuscator": "garble-v0.17.0",
   "path": "artifacts/ultra/ultra-client_linux_amd64",
-  "sha256": "632fd36ae67261fe78e403dc969d5e7f89c1f048cd567822de25489bd5d652ab",
-  "size_bytes": 6443134,
-  "version": "2026.08.26.1"
+  "sha256": "089645ce20ba5495fbfa9f28c5cd4a10c9fe99ab16fc1f1abd84e556f7a4e955",
+  "size_bytes": 14627082,
+  "version": "2026.08.27.1"
  },
  "ultra_client_runtime_windows": {
   "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
