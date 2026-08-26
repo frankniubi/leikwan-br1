@@ -174,6 +174,26 @@ final class UltraLeaseService
         return ['ok' => true, 'revoked' => $count];
     }
 
+    public function revokeDevice(int $clientId, string $deviceId): int
+    {
+        $deviceId = trim($deviceId);
+        if ($this->db === null || $clientId <= 0 || $deviceId === '') {
+            return 0;
+        }
+        $now = gmdate('Y-m-d H:i:s', $this->now());
+        return $this->db->execute(
+            'UPDATE ultra_client_leases
+             SET revoked_at = :revoked_at, updated_at = :updated_at
+             WHERE client_id = :client_id AND device_hash = :device_hash AND revoked_at IS NULL',
+            [
+                'client_id' => $clientId,
+                'device_hash' => hash('sha256', $deviceId),
+                'revoked_at' => $now,
+                'updated_at' => $now,
+            ]
+        );
+    }
+
     /** @param array<string,mixed> $request @return array<string,mixed>|null */
     private function normalizeRequest(array $request): ?array
     {

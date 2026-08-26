@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Leikwan\Master\Support;
 
+use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Request;
 
@@ -15,6 +16,34 @@ final class DeviceControlService
         private Database $db,
         private DeviceAttestationVerifier $attestationVerifier,
     ) {
+    }
+
+    public static function fromConfig(Config $config, Database $db): self
+    {
+        $signingDigests = self::configDigests((string) ($config->get('ANDROID_ATTESTATION_SIGNING_CERT_SHA256', '') ?? ''));
+        $rootDigests = self::configDigests((string) ($config->get('ANDROID_ATTESTATION_ROOT_CERT_SHA256', '') ?? ''));
+        return new self(
+            $db,
+            new AndroidDeviceAttestationVerifier(
+                (string) ($config->get('ANDROID_ATTESTATION_PACKAGE_NAME', 'com.leikwan.bridge') ?? 'com.leikwan.bridge'),
+                $signingDigests,
+                $rootDigests,
+            )
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function controlsForClient(int $clientId): array
+    {
+        if ($clientId <= 0) {
+            return [];
+        }
+        return $this->db->fetchAll(
+            'SELECT * FROM client_device_controls WHERE client_id = :client_id ORDER BY updated_at DESC, id DESC',
+            ['client_id' => $clientId]
+        );
     }
 
     /**
@@ -409,5 +438,15 @@ final class DeviceControlService
             'actor_id' => $actorId,
             'created_at' => gmdate('Y-m-d H:i:s'),
         ]);
+    }
+
+    /** @return array<int, string> */
+    private static function configDigests(string $value): array
+    {
+        $parts = preg_split('/[\s,;]+/', trim($value)) ?: [];
+        return array_values(array_filter(array_map(
+            static fn(string $item): string => strtolower(trim($item)),
+            $parts
+        ), static fn(string $item): bool => preg_match('/^[a-f0-9]{64}$/', $item) === 1));
     }
 }

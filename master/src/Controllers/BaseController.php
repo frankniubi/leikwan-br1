@@ -267,17 +267,6 @@ abstract class BaseController
             . ' --agent-token ' . (string) ($client['agent_token'] ?? '');
     }
 
-    /**
-     * @param array<string, mixed> $client
-     */
-    protected function clientAgentAndroidImportCommand(array $client): string
-    {
-        return 'leikwan-android://install?master_url='
-            . rawurlencode($this->agentBaseUrl())
-            . '&client_id=' . (int) ($client['id'] ?? 0)
-            . '&agent_token=' . rawurlencode((string) ($client['agent_token'] ?? ''));
-    }
-
     protected function androidClientApkUrl(): string
     {
         return $this->artifactBaseUrl() . '/artifacts/leikwan-android-client.apk';
@@ -514,7 +503,6 @@ abstract class BaseController
         $windowsInstallerUrl = $this->clientWindowsInstallerUrl();
         $windowsManagerCommand = $this->clientWindowsManagerCommand($client);
         $windowsManagerUrl = $this->clientWindowsManagerUrlForClient($client);
-        $androidImportCommand = $this->clientAgentAndroidImportCommand($client);
         $androidApkUrl = $this->androidClientApkUrl();
         $windowsAppUrl = $this->windowsClientAppUrl();
         $uninstallCommand = $this->clientAgentUninstallCommand();
@@ -575,14 +563,6 @@ abstract class BaseController
             . '<summary>More install tools</summary>'
             . '<div class="muted" style="margin:10px 0 12px;">These secondary tools stay available for local management and compatibility flows, but the primary install story is now app download or Linux install.</div>'
             . $windowsInstallPanels
-            . $this->renderCommandPanel(
-                'Android Import String',
-                $androidImportCommand,
-                [
-                    $this->renderCopyButton('Copy Android Import', $androidImportCommand),
-                ],
-                'Optional helper to prefill the Android app with panel URL and this client token.'
-            )
             . $this->renderCommandPanel(
                 'Uninstall',
                 $uninstallCommand,
