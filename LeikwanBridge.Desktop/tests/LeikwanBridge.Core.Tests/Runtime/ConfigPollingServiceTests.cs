@@ -210,6 +210,50 @@ public sealed class ConfigPollingServiceTests
     }
 
     [Fact]
+    public async Task SyncOnceAsync_MacRejectsUnsupportedModeBeforeStateOrRuntimeSideEffects()
+    {
+        using var tempDir = new TempStateDirectory();
+        var payload = BuildPullResponseJson()
+            .Replace(
+                "\"service_status\": \"active\",",
+                "\"service_status\": \"active\",\n              \"backend_mode\": \"current_mode\",",
+                StringComparison.Ordinal)
+            .Replace("\"mode\": \"bond\"", "\"mode\": \"mptcp\"", StringComparison.Ordinal);
+        using var server = new PullApiServer(payload);
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["26"] = new()
+            {
+                ForwardId = 26,
+                ContractSignature = "previous-unsupported-runtime",
+                UserStopped = false,
+            },
+        });
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager, MacForwardPolicy.Instance);
+        var rejected = new List<(int ForwardId, string Notice)>();
+        service.ForwardRejected += (forwardId, notice) => rejected.Add((forwardId, notice));
+
+        await service.SyncOnceAsync();
+
+        Assert.Equal([(26, MacForwardPolicy.UnsupportedModeNotice)], rejected);
+        Assert.Equal([26], runtimeManager.StoppedForwardIds);
+        Assert.Empty(runtimeManager.AppliedForwardIds);
+        Assert.Empty(service.LatestForwards);
+        Assert.Empty(stateManager.LoadPullState().AppliedForwardIds);
+        Assert.DoesNotContain("26", stateManager.LoadApplied());
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_StopsUltraWhenLeaseEndpointFailsWithoutAbortingSync()
     {
         using var tempDir = new TempStateDirectory();

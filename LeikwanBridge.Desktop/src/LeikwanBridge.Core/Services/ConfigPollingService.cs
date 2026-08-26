@@ -17,6 +17,7 @@ public sealed class ConfigPollingService
     private readonly MasterApiClient _api;
     private readonly ForwardRuntimeManager _runtimeManager;
     private readonly StateManager _stateManager;
+    private readonly IForwardAcceptancePolicy _forwardPolicy;
 
     private List<ForwardConfig> _latestForwards = [];
     private CancellationTokenSource? _cts;
@@ -29,14 +30,20 @@ public sealed class ConfigPollingService
     public event Action<List<ForwardConfig>>? ForwardsUpdated;
     public event Action<PullState>? PullStateChanged;
     public event Action<Exception>? SyncError;
+    public event Action<int, string>? ForwardRejected;
 
     public List<ForwardConfig> LatestForwards => _latestForwards;
 
-    public ConfigPollingService(MasterApiClient api, ForwardRuntimeManager runtimeManager, StateManager stateManager)
+    public ConfigPollingService(
+        MasterApiClient api,
+        ForwardRuntimeManager runtimeManager,
+        StateManager stateManager,
+        IForwardAcceptancePolicy? forwardPolicy = null)
     {
         _api = api;
         _runtimeManager = runtimeManager;
         _stateManager = stateManager;
+        _forwardPolicy = forwardPolicy ?? WindowsForwardAcceptancePolicy.Instance;
     }
 
     public void Start(int intervalSeconds = 30)
@@ -143,9 +150,18 @@ public sealed class ConfigPollingService
 
         _runtimeManager.ApplyAuthoritativeAgentConfig(pull.Client?.AgentConfigJson);
 
-        var forwards = WindowsForwardPolicy.FilterSupportedForwards(pull.Forwards)
-            .Where(f => f.ServiceStatus == "active")
-            .ToList();
+        var forwards = new List<ForwardConfig>();
+        foreach (var forward in pull.Forwards)
+        {
+            var acceptance = _forwardPolicy.Evaluate(forward);
+            if (!acceptance.Accepted)
+            {
+                ForwardRejected?.Invoke(forward.ForwardId, acceptance.Notice);
+                continue;
+            }
+            if (forward.ServiceStatus == "active")
+                forwards.Add(forward);
+        }
         _latestForwards = forwards;
 
         SavePullState("ok", forwards.Count);
@@ -163,6 +179,7 @@ public sealed class ConfigPollingService
                 try
                 {
                     _runtimeManager.StopForwardForPolicy(fid);
+                    _stateManager.RemoveApplied(fid);
                 }
                 catch (Exception ex)
                 {

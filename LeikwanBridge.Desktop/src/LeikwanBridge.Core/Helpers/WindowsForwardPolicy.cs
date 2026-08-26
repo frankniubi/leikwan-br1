@@ -12,18 +12,7 @@ public static class WindowsForwardPolicy
 
         var mode = NormalizeModeOrEmpty(FirstNonEmpty(forward.ClientMode, forward.Mode));
         if (backendMode == "ultra")
-        {
-            return mode == "single"
-                && !forward.SidecarRequired
-                && !forward.AggregationEnabled
-                && !forward.BondSidecarPointId.HasValue
-                && string.IsNullOrWhiteSpace(forward.BondIngressMode)
-                && !string.IsNullOrWhiteSpace(forward.Target)
-                && (string.IsNullOrWhiteSpace(forward.TargetContract)
-                    || string.Equals(forward.TargetContract, "ultra", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(forward.TargetContract, "ultra_direct", StringComparison.OrdinalIgnoreCase))
-                && forward.Endpoints.Count == 0;
-        }
+            return UltraForwardPolicy.IsSupported(forward, mode);
 
         if (GetSidecarFrontendMode(forward) != "")
             return true;
