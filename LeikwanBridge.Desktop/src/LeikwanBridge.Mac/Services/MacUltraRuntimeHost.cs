@@ -90,6 +90,8 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 udp_queue_packets = 64,
                 connect_timeout_seconds = 5,
                 status_path = statusPath,
+                location_cache_path = Path.Combine(runtimeDirectory, "location.json"),
+                location_lock_path = Path.Combine(runtimeDirectory, "location.lock"),
             });
             _supervisor.StartProcess(
                 forward.ForwardId,
@@ -104,7 +106,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 throw new InvalidOperationException("ultra_control_socket_not_ready");
             if (!_leaseSender(socketPath, forward.ForwardId, lease, CancellationToken.None).GetAwaiter().GetResult())
                 throw new InvalidOperationException("ultra_lease_delivery_failed");
-            if (!_portListeningProbe(forward.ListenPort))
+            if (!WaitForPort(forward.ListenPort, TimeSpan.FromSeconds(6)))
                 throw new InvalidOperationException("ultra_listener_not_ready");
 
             var applied = _stateManager.LoadApplied();
@@ -176,6 +178,18 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             Thread.Sleep(25);
         }
         return _socketExists(socketPath);
+    }
+
+    private bool WaitForPort(int port, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (_portListeningProbe(port))
+                return true;
+            Thread.Sleep(25);
+        }
+        return _portListeningProbe(port);
     }
 
     private static void DeletePrivateDirectory(string directory, string allowedRoot, string requiredPrefix)

@@ -26,13 +26,14 @@ public sealed class MacUltraRuntimeHostTests
         var lease = CreateLease(canaryIp);
         var socketRoot = Path.Combine(temp.Path, "sockets");
         string? sentSocket = null;
+        var portProbeAttempts = 0;
         var host = new MacUltraRuntimeHost(
             config,
             supervisor,
             state,
             binaryExists: _ => true,
             socketExists: _ => true,
-            portListeningProbe: _ => true,
+            portListeningProbe: _ => ++portProbeAttempts >= 3,
             leaseSender: (socketPath, forwardId, currentLease, _) =>
             {
                 sentSocket = socketPath;
@@ -47,8 +48,15 @@ public sealed class MacUltraRuntimeHostTests
         var launch = Assert.Single(supervisor.Launches);
         Assert.Equal("--config-stdin", launch.Arguments);
         Assert.False(launch.LogArguments);
-        Assert.Contains(canaryTarget, Encoding.UTF8.GetString(launch.StandardInput));
+        var bootstrapText = Encoding.UTF8.GetString(launch.StandardInput);
+        Assert.Contains(canaryTarget, bootstrapText);
+        Assert.DoesNotContain(canaryIp, bootstrapText);
+        Assert.DoesNotContain("line-user", bootstrapText);
+        Assert.DoesNotContain("line-password", bootstrapText);
+        Assert.Contains("location_cache_path", bootstrapText);
+        Assert.Contains("location_lock_path", bootstrapText);
         Assert.NotNull(sentSocket);
+        Assert.Equal(3, portProbeAttempts);
         Assert.StartsWith(socketRoot, sentSocket, StringComparison.Ordinal);
         var diskText = string.Concat(Directory.EnumerateFiles(temp.Path, "*", SearchOption.AllDirectories)
             .Select(path => File.ReadAllText(path)));

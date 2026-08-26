@@ -21,6 +21,9 @@ public sealed partial class App : Application
     private ClientAppArtifact? _availableUpdate;
 
     public static MacPlatformPaths PlatformPaths { get; set; } = null!;
+    public static string UiFixtureState { get; set; } = string.Empty;
+    public static int UiFixtureWidth { get; set; } = 1100;
+    public static int UiFixtureHeight { get; set; } = 720;
 
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
@@ -28,10 +31,37 @@ public sealed partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            if (!string.IsNullOrEmpty(UiFixtureState))
+            {
+                InitializeUiFixture(desktop);
+                base.OnFrameworkInitializationCompleted();
+                return;
+            }
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
             _ = InitializeDesktopAsync(desktop);
         }
         base.OnFrameworkInitializationCompleted();
+    }
+
+    private static void InitializeUiFixture(IClassicDesktopStyleApplicationLifetime desktop)
+    {
+        desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
+        var controller = new MacUiFixtureController(UiFixtureState);
+        var viewModel = new MainWindowViewModel(
+            controller,
+            closeToTray: false,
+            dispatch: action => action());
+        if (string.Equals(UiFixtureState, "settings", StringComparison.Ordinal))
+            viewModel.ShowSettingsCommand.Execute(null);
+        var window = new MainWindow
+        {
+            DataContext = viewModel,
+            Width = UiFixtureWidth,
+            Height = UiFixtureHeight,
+            AllowClose = true,
+        };
+        desktop.MainWindow = window;
+        window.Show();
     }
 
     private async Task InitializeDesktopAsync(IClassicDesktopStyleApplicationLifetime desktop)

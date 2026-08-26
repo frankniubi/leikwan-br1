@@ -943,20 +943,20 @@ git commit -m "build(mac): package dual architecture clients"
 - Create: `scripts/test-macos-ultra-leaks.sh`
 - Modify: Mac/Go tests to expose a test-only canary lifecycle command.
 
-- [ ] **Step 1: Write the failing leak script fixture.**
+- [x] **Step 1: Write the failing leak script fixture.**
 
 Create unique fake values at runtime, run start/refresh/stop, and fail if any
 value appears in app state, logs, argv/environment snapshots taken while
 running, update cache, crash directory, app bundle, DMG mount, or update ZIP.
 Never use a real node or credential.
 
-- [ ] **Step 2: Run the fixture and verify RED until the test command exists.**
+- [x] **Step 2: Run the fixture and verify RED until the test command exists.**
 
 ```bash
 CANARY_IP=192.0.2.231 CANARY_USER=lk_canary_7f4a CANARY_PASS=lk_secret_91bc +  bash scripts/test-macos-ultra-leaks.sh --fixture
 ```
 
-- [ ] **Step 3: Add CI jobs with native smoke tests.**
+- [x] **Step 3: Add CI jobs with native smoke tests.**
 
 Each Intel/Apple Silicon job restores exact NuGet/Go/Cargo locks, runs PHP
 contracts, all Core/Mac tests, Go tests, Rust tests, native publish, helper
@@ -966,14 +966,14 @@ and screenshots; never upload app state or raw diagnostic bodies. Capture the
 login, dashboard, forwards, and settings states at 1440x900 and 1024x768; fail
 the smoke test for blank frames, clipped fixed controls, or overlapping text.
 
-- [ ] **Step 4: Add workflow artifact assertions.**
+- [x] **Step 4: Add workflow artifact assertions.**
 
 The final job downloads both matrix outputs and rejects equal architecture
 labels, missing files, zero sizes, duplicate SHA values for unlike binaries,
 manifest/file mismatch, or forbidden high-risk literals. It produces a
 credential-free combined metadata file for later publishing.
 
-- [ ] **Step 5: Run local workflow/static validation.**
+- [x] **Step 5: Run local workflow/static validation.**
 
 ```powershell
 git diff --check
@@ -983,7 +983,7 @@ wsl bash -n scripts/test-macos-ultra-leaks.sh
 
 Expected: no credential-file references and all shell syntax checks pass.
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```powershell
 git add .github/workflows/macos-client.yml scripts/test-macos-ultra-leaks.sh LeikwanBridge.Desktop/tests tools/ultra-client
