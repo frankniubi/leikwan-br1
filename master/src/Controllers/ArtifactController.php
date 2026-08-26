@@ -12,10 +12,14 @@ final class ArtifactController extends BaseController
 
     /** @var array<string, mixed>|null */
     private ?array $versions = null;
+    private string $repoRoot;
 
-    public function __construct(\Leikwan\Master\Config $config)
+    /** @param array<string, mixed>|null $versions */
+    public function __construct(\Leikwan\Master\Config $config, ?array $versions = null, ?string $repoRoot = null)
     {
         parent::__construct($config, new \Leikwan\Master\Database\Database($config));
+        $this->versions = $versions;
+        $this->repoRoot = rtrim($repoRoot ?? dirname(__DIR__, 3), '/\\');
     }
 
     public function slaveAgent(Request $request, array $params): Response
@@ -130,7 +134,6 @@ final class ArtifactController extends BaseController
      */
     public function versionsManifest(Request $request, array $params): Response
     {
-        $repoRoot = dirname(__DIR__, 3);
         $manifest = [];
         foreach ($this->versions() as $key => $entry) {
             if (!is_array($entry)) {
@@ -139,8 +142,8 @@ final class ArtifactController extends BaseController
             }
             $normalized = $entry;
             if (isset($normalized['path']) && is_string($normalized['path']) && $normalized['path'] !== '') {
-                $absolute = $repoRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $normalized['path']);
-                if (is_file($absolute)) {
+                $absolute = $this->resolveRepoFile($normalized['path']);
+                if ($absolute !== null) {
                     $sha = hash_file('sha256', $absolute);
                     $size = filesize($absolute);
                     $normalized['sha256'] = $sha;
@@ -280,6 +283,46 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('artifacts/windows/leikwan-bridge-setup.exe', 'application/octet-stream', $request);
     }
 
+    public function macosClientArm64Dmg(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/macos/leikwan-bridge-arm64.dmg',
+            'application/x-apple-diskimage',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="leikwan-bridge-arm64.dmg"']
+        );
+    }
+
+    public function macosClientX64Dmg(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/macos/leikwan-bridge-x64.dmg',
+            'application/x-apple-diskimage',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="leikwan-bridge-x64.dmg"']
+        );
+    }
+
+    public function macosClientArm64Update(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/macos/leikwan-bridge-update-arm64.zip',
+            'application/zip',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="leikwan-bridge-update-arm64.zip"']
+        );
+    }
+
+    public function macosClientX64Update(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/macos/leikwan-bridge-update-x64.zip',
+            'application/zip',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="leikwan-bridge-update-x64.zip"']
+        );
+    }
+
     public function gostBinary(Request $request, array $params): Response
     {
         return $this->serveRepoFile('artifacts/gost/gost_linux_amd64', 'application/octet-stream', $request);
@@ -307,7 +350,7 @@ final class ArtifactController extends BaseController
             return Response::json(404, ['error' => 'artifact_not_found', 'path' => 'artifacts/wstunnel/' . $filename]);
         }
 
-        $path = dirname(__DIR__, 3)
+        $path = $this->repoRoot
             . DIRECTORY_SEPARATOR
             . str_replace('/', DIRECTORY_SEPARATOR, self::WSTUNNEL_ARTIFACT_DIR)
             . DIRECTORY_SEPARATOR
@@ -382,6 +425,10 @@ final class ArtifactController extends BaseController
             'tcp_accel_installer',
             'android_client_apk',
             'windows_client_app',
+            'macos_client_app_arm64',
+            'macos_client_app_x64',
+            'macos_client_update_arm64',
+            'macos_client_update_x64',
             'legacy_client',
             'wstunnel_linux_amd64',
             'wstunnel_windows_amd64',
@@ -390,17 +437,23 @@ final class ArtifactController extends BaseController
             'leikwan_bond_android_arm64',
             'leikwan_mptcp_relay_linux_amd64'
         );
-        if (isset($manifest['windows_client_app']) && is_array($manifest['windows_client_app'])) {
-            $manifest['windows_client_app']['artifact_url'] = (string) (($this->versions()['windows_client_app']['artifact_url'] ?? '') ?: $manifest['windows_client_app']['artifact_url']);
-            $artifactUrl = $manifest['windows_client_app']['artifact_url'];
-            $version = rawurlencode((string) ($manifest['windows_client_app']['version'] ?? ''));
-            $sha256 = rawurlencode((string) ($manifest['windows_client_app']['sha256'] ?? ''));
-            if ($version !== '' || $sha256 !== '') {
-                $separator = str_contains($artifactUrl, '?') ? '&' : '?';
-                $artifactUrl .= $separator . 'v=' . $version . '&sha256=' . $sha256;
+        $macKeys = [
+            'macos_client_app_arm64',
+            'macos_client_app_x64',
+            'macos_client_update_arm64',
+            'macos_client_update_x64',
+        ];
+        foreach ($macKeys as $key) {
+            if (!isset($manifest[$key])
+                || !is_array($manifest[$key])
+                || $this->artifactEntryPath($manifest[$key]) === null) {
+                unset($manifest[$key]);
             }
-            $manifest['windows_client_app']['artifact_url'] = $artifactUrl;
         }
+        $manifest = $this->normalizeClientAppArtifactUrls(
+            $manifest,
+            array_merge(['windows_client_app'], $macKeys)
+        );
 
         return Response::json(200, [
             'component' => 'client',
@@ -411,9 +464,8 @@ final class ArtifactController extends BaseController
     /** @param array<string, string> $extraHeaders */
     private function serveRepoFile(string $relativePath, string $contentType, Request $request, array $extraHeaders = []): Response
     {
-        $repoRoot = dirname(__DIR__, 3);
-        $path = $repoRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
-        if (!is_file($path)) {
+        $path = $this->resolveRepoFile($relativePath);
+        if ($path === null) {
             return Response::json(404, ['error' => 'artifact_not_found', 'path' => $relativePath]);
         }
 
@@ -530,8 +582,8 @@ final class ArtifactController extends BaseController
                 }
             }
             if (isset($normalized['path']) && is_string($normalized['path'])) {
-                $absolute = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $normalized['path']);
-                if (is_file($absolute)) {
+                $absolute = $this->resolveRepoFile($normalized['path']);
+                if ($absolute !== null) {
                     $normalized['sha256'] = hash_file('sha256', $absolute);
                     $normalized['size_bytes'] = filesize($absolute);
                 }
@@ -550,8 +602,7 @@ final class ArtifactController extends BaseController
             return $this->versions;
         }
 
-        $repoRoot = dirname(__DIR__, 3);
-        $path = $repoRoot . DIRECTORY_SEPARATOR . 'artifacts' . DIRECTORY_SEPARATOR . 'versions.json';
+        $path = $this->repoRoot . DIRECTORY_SEPARATOR . 'artifacts' . DIRECTORY_SEPARATOR . 'versions.json';
         if (!is_file($path)) {
             $this->versions = [];
             return $this->versions;
@@ -560,5 +611,101 @@ final class ArtifactController extends BaseController
         $decoded = json_decode((string) file_get_contents($path), true);
         $this->versions = is_array($decoded) ? $decoded : [];
         return $this->versions;
+    }
+
+    /**
+     * @param array<string, mixed> $manifest
+     * @param array<int, string> $keys
+     * @return array<string, mixed>
+     */
+    private function normalizeClientAppArtifactUrls(array $manifest, array $keys): array
+    {
+        $versions = $this->versions();
+        foreach ($keys as $key) {
+            if (!isset($manifest[$key]) || !is_array($manifest[$key])) {
+                continue;
+            }
+            $configuredUrl = trim((string) ($versions[$key]['artifact_url'] ?? ''));
+            $artifactUrl = $configuredUrl !== ''
+                ? $configuredUrl
+                : trim((string) ($manifest[$key]['artifact_url'] ?? ''));
+            if ($artifactUrl === '') {
+                continue;
+            }
+            $manifest[$key]['artifact_url'] = $this->appendArtifactCacheBust(
+                $this->absoluteArtifactUrl($artifactUrl),
+                (string) ($manifest[$key]['version'] ?? ''),
+                (string) ($manifest[$key]['sha256'] ?? '')
+            );
+        }
+        return $manifest;
+    }
+
+    private function absoluteArtifactUrl(string $url): string
+    {
+        if (preg_match('#^https?://#i', $url) === 1) {
+            return $url;
+        }
+        return $this->artifactBaseUrl() . '/' . ltrim($url, '/');
+    }
+
+    private function appendArtifactCacheBust(string $url, string $version, string $sha256): string
+    {
+        $fragment = '';
+        if (str_contains($url, '#')) {
+            [$url, $fragmentValue] = explode('#', $url, 2);
+            $fragment = '#' . $fragmentValue;
+        }
+        $base = $url;
+        $query = '';
+        if (str_contains($url, '?')) {
+            [$base, $query] = explode('?', $url, 2);
+        }
+        $pairs = [];
+        foreach (explode('&', $query) as $pair) {
+            if ($pair === '') {
+                continue;
+            }
+            $queryKey = rawurldecode(explode('=', $pair, 2)[0]);
+            if (in_array(strtolower($queryKey), ['v', 'sha256'], true)) {
+                continue;
+            }
+            $pairs[] = $pair;
+        }
+        if ($version !== '') {
+            $pairs[] = 'v=' . rawurlencode($version);
+        }
+        if ($sha256 !== '') {
+            $pairs[] = 'sha256=' . rawurlencode($sha256);
+        }
+        return $base . ($pairs === [] ? '' : '?' . implode('&', $pairs)) . $fragment;
+    }
+
+    /** @param array<string, mixed> $entry */
+    private function artifactEntryPath(array $entry): ?string
+    {
+        $relativePath = trim((string) ($entry['path'] ?? ''));
+        return $relativePath === '' ? null : $this->resolveRepoFile($relativePath);
+    }
+
+    private function resolveRepoFile(string $relativePath): ?string
+    {
+        if ($relativePath === '' || str_contains($relativePath, "\0")) {
+            return null;
+        }
+        $root = realpath($this->repoRoot);
+        if ($root === false) {
+            return null;
+        }
+        $candidate = $this->repoRoot . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $relativePath);
+        $resolved = realpath($candidate);
+        if ($resolved === false || !is_file($resolved)) {
+            return null;
+        }
+        $rootPrefix = rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        if (!str_starts_with($resolved, $rootPrefix)) {
+            return null;
+        }
+        return $resolved;
     }
 }

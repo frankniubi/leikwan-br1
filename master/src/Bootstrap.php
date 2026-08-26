@@ -390,6 +390,10 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/uninstall-client-agent.sh', [$artifacts, 'uninstallClientAgent']);
         $this->router->add('GET', '/artifacts/leikwan-android-client.apk', [$artifacts, 'androidClientApk']);
         $this->router->add('GET', '/artifacts/leikwan-bridge-setup.exe', [$artifacts, 'windowsClientApp']);
+        $this->router->add('GET', '/artifacts/macos/leikwan-bridge-arm64.dmg', [$artifacts, 'macosClientArm64Dmg']);
+        $this->router->add('GET', '/artifacts/macos/leikwan-bridge-x64.dmg', [$artifacts, 'macosClientX64Dmg']);
+        $this->router->add('GET', '/artifacts/macos/leikwan-bridge-update-arm64.zip', [$artifacts, 'macosClientArm64Update']);
+        $this->router->add('GET', '/artifacts/macos/leikwan-bridge-update-x64.zip', [$artifacts, 'macosClientX64Update']);
         $this->router->add('GET', '/artifacts/leikwan-wg-watchdog.sh', [$artifacts, 'wgWatchdog']);
         $this->router->add('GET', '/artifacts/wstunnel/{filename}', [$artifacts, 'wstunnelPackage']);
         $this->router->add('GET', '/artifacts/client.sh', [$artifacts, 'legacyClient']);
