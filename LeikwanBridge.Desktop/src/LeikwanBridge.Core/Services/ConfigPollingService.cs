@@ -26,13 +26,16 @@ public sealed class ConfigPollingService
     private int _nextPollAfterMs;
     private int _syncInProgress;
     private volatile bool _pendingResync;
+    private ClientMeta? _latestClient;
 
     public event Action<List<ForwardConfig>>? ForwardsUpdated;
     public event Action<PullState>? PullStateChanged;
     public event Action<Exception>? SyncError;
     public event Action<int, string>? ForwardRejected;
+    public event Action<ClientMeta>? ClientUpdated;
 
     public List<ForwardConfig> LatestForwards => _latestForwards;
+    public ClientMeta? LatestClient => _latestClient;
 
     public ConfigPollingService(
         MasterApiClient api,
@@ -82,6 +85,21 @@ public sealed class ConfigPollingService
     public void Stop()
     {
         _cts?.Cancel();
+    }
+
+    public async Task StopAsync()
+    {
+        Stop();
+        var pollingTask = _pollingTask;
+        if (pollingTask is null)
+            return;
+        try
+        {
+            await pollingTask;
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     /// <summary>Immediate revision-aware pull for reconnect / window-foreground / user Start.</summary>
@@ -148,6 +166,10 @@ public sealed class ConfigPollingService
         if (pull.NextPollAfterMs > 0)
             _nextPollAfterMs = pull.NextPollAfterMs;
 
+        if (pull.Client is not null)
+        {
+            _latestClient = pull.Client;
+        }
         _runtimeManager.ApplyAuthoritativeAgentConfig(pull.Client?.AgentConfigJson);
 
         var forwards = new List<ForwardConfig>();
@@ -246,6 +268,8 @@ public sealed class ConfigPollingService
             }
         }
 
+        if (_latestClient is not null)
+            ClientUpdated?.Invoke(_latestClient);
         ForwardsUpdated?.Invoke(forwards);
     }
 
