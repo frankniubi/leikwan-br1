@@ -119,7 +119,21 @@ public sealed class ConfigPollingService
         if (pull.NotModified)
         {
             Log.Debug("config unchanged (revision {Revision})", pull.ConfigRevision);
+            if (NeedsUltraPolicyRefresh())
+            {
+                // Ultra grants carry a short-lived session ticket. Refresh the
+                // full policy before its renewal window so the next lease request
+                // uses the current ticket rather than a stale one.
+                _lastConfigRevision = "";
+            }
+            else
+            {
+                await RefreshUltraForwardsAsync(ct);
+            }
             SavePullState("ok", _latestForwards.Count);
+            // Re-publish the current snapshot so the GUI reflects liveness changes
+            // discovered during lease refresh/reconciliation.
+            ForwardsUpdated?.Invoke(_latestForwards);
             return;
         }
 
@@ -216,6 +230,75 @@ public sealed class ConfigPollingService
         }
 
         ForwardsUpdated?.Invoke(forwards);
+    }
+
+    private async Task RefreshUltraForwardsAsync(CancellationToken ct)
+    {
+        var applied = _stateManager.LoadApplied();
+        foreach (var forward in _latestForwards)
+        {
+            if (forward.ServiceStatus != "active"
+                || !string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var key = forward.ForwardId.ToString();
+            if (applied.TryGetValue(key, out var appliedState) && appliedState.UserStopped)
+                continue;
+
+            var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+            UltraLease? lease;
+            try
+            {
+                lease = await _api.ResolveUltraLeaseAsync(effectiveForward, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Keep a currently-running runtime alive through transient API failures;
+                // retry on the next long-poll cycle rather than revoking it immediately.
+                Log.Warning("Ultra lease refresh failed for forward {ForwardId}; preserving current runtime (error={ErrorType})", forward.ForwardId, ex.GetType().Name);
+                continue;
+            }
+
+            if (lease is null)
+            {
+                _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+                continue;
+            }
+
+            effectiveForward.RuntimeLease = lease;
+            var contractSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
+            var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
+            var signatureMatches = appliedState != null
+                && string.Equals(appliedState.ContractSignature, contractSignature, StringComparison.Ordinal);
+
+            if (appliedState != null && isRunning && signatureMatches)
+            {
+                if (!_runtimeManager.RefreshUltraLease(effectiveForward))
+                    _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+                continue;
+            }
+
+            try
+            {
+                _runtimeManager.ApplyForward(effectiveForward, contractSignature, "config_sync");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "failed applying forward {ForwardId} after lease refresh", forward.ForwardId);
+            }
+        }
+    }
+
+    private bool NeedsUltraPolicyRefresh()
+    {
+        var refreshBefore = DateTimeOffset.UtcNow.AddMinutes(2);
+        return _latestForwards.Any(forward =>
+            string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+            && (forward.UltraAccess is null || forward.UltraAccess.ExpiresAt <= refreshBefore));
     }
 
     private void SavePullState(string status, int forwardsTotal)

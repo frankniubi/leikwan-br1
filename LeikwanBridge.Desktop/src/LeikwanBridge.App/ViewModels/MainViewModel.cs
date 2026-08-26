@@ -8,6 +8,7 @@ using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using Serilog;
+using System.Windows.Threading;
 
 namespace LeikwanBridge.App.ViewModels;
 
@@ -24,6 +25,8 @@ public partial class MainViewModel : ObservableObject
     private WireGuardManager? _wgManager;
     private InstalledRuntimeCleanupService? _installedRuntimeCleanup;
     private WindowsClientAppArtifact? _availableUpdateArtifact;
+    private DispatcherTimer? _usageTimer;
+    private readonly RuntimeUsageReader _usageReader = new();
 
     [ObservableProperty] private bool _isConnected;
     [ObservableProperty] private string _connectionStatus = "Disconnected";
@@ -37,6 +40,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private int _pendingClientSelectionId;
     [ObservableProperty] private string _signedInUsername = "";
     [ObservableProperty] private string _signedInEmail = "";
+    [ObservableProperty] private bool _hasSignedInEmail;
     [ObservableProperty] private string _activeClientName = "";
     [ObservableProperty] private bool _showUpdatePrompt;
     [ObservableProperty] private string _availableUpdateVersion = "";
@@ -65,6 +69,7 @@ public partial class MainViewModel : ObservableObject
             config.ActiveClientId = config.ClientId;
         SignedInUsername = config.SignedInUsername;
         SignedInEmail = config.SignedInEmail;
+        HasSignedInEmail = !string.IsNullOrWhiteSpace(SignedInEmail);
         ActiveClientName = config.ActiveClientName;
         AvailableClientChoices.Clear();
         foreach (var client in config.AvailableClients)
@@ -88,6 +93,7 @@ public partial class MainViewModel : ObservableObject
 
         SignedInUsername = login.Username;
         SignedInEmail = login.Email;
+        HasSignedInEmail = !string.IsNullOrWhiteSpace(SignedInEmail);
 
         AvailableClientChoices.Clear();
         foreach (var client in login.Clients)
@@ -130,6 +136,7 @@ public partial class MainViewModel : ObservableObject
         AvailableClientChoices.Clear();
         SignedInUsername = string.Empty;
         SignedInEmail = string.Empty;
+        HasSignedInEmail = false;
         ActiveClientName = string.Empty;
         SelectedForward = null;
         Forwards.Clear();
@@ -206,6 +213,7 @@ public partial class MainViewModel : ObservableObject
 
         // Initialize services
         _stateManager = new StateManager(_config.GetEffectiveStateDir());
+        StartUsageRefresh();
         _supervisor = new ProcessSupervisor(OnProcessOutput);
         _runtimeManager = new ForwardRuntimeManager(
             _config,
@@ -244,6 +252,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void Disconnect()
     {
+        StopUsageRefresh();
         _pollingService?.Stop();
         _healthCheckService?.Stop();
         _runtimeManager?.StopAll();
@@ -607,6 +616,52 @@ public partial class MainViewModel : ObservableObject
             try { await _heartbeatService!.SendHeartbeatAsync(); }
             catch (Exception ex) { Log.Error(ex, "heartbeat failed"); }
         });
+    }
+
+    public void ApplyUsageSnapshot(RuntimeUsageSnapshot snapshot)
+    {
+        TotalBytesIn = FormatBytes(snapshot.BytesIn);
+        TotalBytesOut = FormatBytes(snapshot.BytesOut);
+    }
+
+    private void StartUsageRefresh()
+    {
+        StopUsageRefresh();
+        ApplyUsageSnapshot(_usageReader.Read(_stateManager?.EffectiveStateDir ?? ""));
+        _usageTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromSeconds(1),
+        };
+        _usageTimer.Tick += OnUsageTimerTick;
+        _usageTimer.Start();
+    }
+
+    private void StopUsageRefresh()
+    {
+        if (_usageTimer == null)
+            return;
+        _usageTimer.Stop();
+        _usageTimer.Tick -= OnUsageTimerTick;
+        _usageTimer = null;
+    }
+
+    private void OnUsageTimerTick(object? sender, EventArgs e)
+    {
+        ApplyUsageSnapshot(_usageReader.Read(_stateManager?.EffectiveStateDir ?? ""));
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        var value = Math.Max(0, bytes);
+        var units = new[] { "B", "KB", "MB", "GB", "TB" };
+        var index = 0;
+        var scaled = (double)value;
+        while (scaled >= 1024 && index < units.Length - 1)
+        {
+            scaled /= 1024;
+            index++;
+        }
+        return $"{scaled:F1} {units[index]}";
     }
 
     private void ApplyUltraPolicyActions(IReadOnlyList<UltraPolicyAction> actions)

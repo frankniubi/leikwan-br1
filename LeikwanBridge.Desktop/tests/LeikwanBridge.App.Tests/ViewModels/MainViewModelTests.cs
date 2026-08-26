@@ -53,6 +53,8 @@ public sealed class MainViewModelTests
 
         Assert.False(vm.ShowSetupWizard);
         Assert.True(vm.ShouldAutoConnectOnStartup);
+        Assert.True(vm.HasSignedInEmail);
+        Assert.Equal("ops@example.com", vm.SignedInEmail);
     }
 
     [Fact]
@@ -82,6 +84,18 @@ public sealed class MainViewModelTests
 
         Assert.True(vm.ShowSetupWizard);
         Assert.False(vm.ShouldAutoConnectOnStartup);
+        Assert.False(vm.HasSignedInEmail);
+    }
+
+    [Fact]
+    public void ApplyUsageSnapshot_FormatsDashboardCounters()
+    {
+        var vm = new MainViewModel();
+
+        vm.ApplyUsageSnapshot(new RuntimeUsageSnapshot(1536, 2048));
+
+        Assert.Equal("1.5 KB", vm.TotalBytesIn);
+        Assert.Equal("2.0 KB", vm.TotalBytesOut);
     }
 
     [Fact]

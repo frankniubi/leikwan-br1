@@ -80,6 +80,46 @@ public sealed class HealthCheckServiceTests
     }
 
     [Fact]
+    public void ProcessExited_UltraRuntimeExit_WaitsForConfigSyncInsteadOfRestartingWithoutLease()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new ForceRecordingForwardRuntimeManager(stateManager, supervisor);
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["42"] = new AppliedForwardState
+            {
+                ForwardId = 42,
+                Mode = "ultra",
+                ListenPort = 12042,
+                ProcessRoles = ["ultra-runtime"],
+            },
+        });
+        supervisor.RunningRoles.Add("ultra-runtime");
+        var service = new HealthCheckService(
+            supervisor,
+            runtimeManager,
+            stateManager,
+            _ => true);
+
+        service.UpdateForwards([
+            new ForwardConfig
+            {
+                ForwardId = 42,
+                ServiceStatus = "active",
+                BackendMode = "ultra",
+                ListenPort = 12042,
+                Target = "198.51.100.10:443",
+                Transport = "tcp",
+            },
+        ]);
+        supervisor.TriggerExit(42, "ultra-runtime");
+
+        Assert.Empty(runtimeManager.RestartRequests);
+    }
+
+    [Fact]
     public async Task RunCheckOnceAsync_UserStoppedForward_DoesNotRestart()
     {
         using var tempDir = new TempStateDirectory();
