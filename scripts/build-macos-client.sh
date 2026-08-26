@@ -116,14 +116,19 @@ cargo build \
 (
   cd "$repo_root/tools/ultra-client"
   GOOS=darwin GOARCH="$go_arch" CGO_ENABLED=0 \
-    go build -trimpath -ldflags='-s -w' -o "$helper_dir/ultra-client" .
+    go build -mod=readonly -trimpath -ldflags='-s -w' -o "$helper_dir/ultra-client" .
 )
 
+dotnet restore \
+  "$repo_root/LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.csproj" \
+  --runtime "$rid" \
+  --locked-mode
 dotnet publish \
   "$repo_root/LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.csproj" \
   -c Release \
   -r "$rid" \
   --self-contained true \
+  --no-restore \
   -p:Version="$version" \
   -p:DebugType=None \
   -p:DebugSymbols=false \

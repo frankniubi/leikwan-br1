@@ -17,6 +17,13 @@ internal static class Program
             ShowUnsupportedOsNotice();
             return 1;
         }
+        if (args.Length > 0 && string.Equals(args[0], "--ultra-leak-fixture", StringComparison.Ordinal))
+            return Services.MacUltraLeakFixture.RunAsync(args[1..]).GetAwaiter().GetResult();
+        if (TryConfigureUiFixture(args))
+        {
+            BuildAvaloniaApp().StartWithClassicDesktopLifetime([]);
+            return 0;
+        }
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var paths = new Services.MacPlatformPaths(home, ResolveBundleDirectory());
         if (args.Length == 2 && string.Equals(args[0], "--apply-update", StringComparison.Ordinal))
@@ -87,5 +94,25 @@ internal static class Program
         {
             Console.Error.WriteLine("LeiKwan Bridge requires macOS 12 or later.");
         }
+    }
+
+    private static bool TryConfigureUiFixture(string[] args)
+    {
+        if (args.Length == 0 || !string.Equals(args[0], "--ui-fixture", StringComparison.Ordinal))
+            return false;
+        if (!string.Equals(Environment.GetEnvironmentVariable("LEIKWAN_TEST_UI"), "1", StringComparison.Ordinal)
+            || args.Length != 6
+            || !int.TryParse(args[3], out var width)
+            || !int.TryParse(args[5], out var height)
+            || args[2] != "--window-width"
+            || args[4] != "--window-height"
+            || width is < 900 or > 1600
+            || height is < 620 or > 1000
+            || args[1] is not ("login" or "dashboard" or "forwards" or "settings"))
+            throw new InvalidOperationException("ui_fixture_invalid");
+        App.UiFixtureState = args[1];
+        App.UiFixtureWidth = width;
+        App.UiFixtureHeight = height;
+        return true;
     }
 }
