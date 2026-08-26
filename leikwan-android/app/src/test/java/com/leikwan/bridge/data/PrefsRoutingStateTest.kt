@@ -39,8 +39,13 @@ class PrefsRoutingStateTest {
     }
 
     @Test
-    fun `logout preserves routing metadata but clears auth fields and selector switch`() {
-        prefs.token = "token-123"
+    fun `clear enrollment preserves routing metadata but clears device credentials`() {
+        prefs.agentToken = "token-123"
+        prefs.clientId = 17L
+        prefs.deviceSessionToken = "device-session"
+        prefs.deviceSessionExpiresAtMs = Long.MAX_VALUE
+        prefs.enrolledDeviceId = "android-client-17-aabbccddeeff00112233445566778899"
+        prefs.selectedForwardId = 42L
         prefs.routingDefaultOutcome = UserTrafficOutcome.DIRECT
         prefs.routingSelectorEnabled = true
         prefs.activeRulePackCountryVersion = "country-2026-05-30a"
@@ -51,11 +56,15 @@ class PrefsRoutingStateTest {
         prefs.latestExplainabilityRevision = 7L
         prefs.latestExplainabilityCompiledAtMs = 1717027300000L
 
-        prefs.logout()
+        prefs.clearEnrollment(clearIdentity = false)
 
-        assertNull(prefs.token)
+        assertNull(prefs.agentToken)
+        assertNull(prefs.deviceSessionToken)
+        assertNull(prefs.enrolledDeviceId)
+        assertEquals(0L, prefs.clientId)
+        assertEquals(0L, prefs.selectedForwardId)
         assertEquals(UserTrafficOutcome.DIRECT, prefs.routingDefaultOutcome)
-        assertEquals(false, prefs.routingSelectorEnabled)
+        assertEquals(true, prefs.routingSelectorEnabled)
         assertEquals("country-2026-05-30a", prefs.activeRulePackCountryVersion)
         assertEquals("category-2026-05-30a", prefs.activeRulePackCategoryVersion)
         assertEquals("panel://routing/rule-packs", prefs.activeRulePackSourceLabel)
@@ -63,5 +72,28 @@ class PrefsRoutingStateTest {
         assertEquals(true, prefs.activeRulePackStale)
         assertEquals(7L, prefs.latestExplainabilityRevision)
         assertEquals(1717027300000L, prefs.latestExplainabilityCompiledAtMs)
+    }
+
+    @Test
+    fun `legacy password and desktop session keys are removed atomically`() {
+        val shared = ApplicationProvider.getApplicationContext<Context>()
+            .getSharedPreferences("prefs-legacy-migration-test", Context.MODE_PRIVATE)
+        shared.edit().clear()
+            .putString("token", "desktop-session")
+            .putString("username", "legacy-user")
+            .putString("email", "legacy@example.com")
+            .putString("password", "legacy-password")
+            .putString("clients_json", "[]")
+            .putString("active_rule_pack_country_version", "country-stays")
+            .commit()
+
+        Prefs(shared)
+
+        assertEquals(false, shared.contains("token"))
+        assertEquals(false, shared.contains("username"))
+        assertEquals(false, shared.contains("email"))
+        assertEquals(false, shared.contains("password"))
+        assertEquals(false, shared.contains("clients_json"))
+        assertEquals("country-stays", shared.getString("active_rule_pack_country_version", null))
     }
 }
