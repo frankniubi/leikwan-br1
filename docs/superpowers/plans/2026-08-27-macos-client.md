@@ -245,7 +245,7 @@ git commit -m "feat(mac): enforce supported forward modes"
 - Consumes: `X-Device-Platform: macos-desktop`.
 - Produces: scrubbed `ultra_access` policy plus one lease from `POST /api/client/ultra/lease`.
 
-- [ ] **Step 1: Add a failing panel contract test.**
+- [x] **Step 1: Add a failing panel contract test.**
 
 The fixture must issue the same assigned Ultra forward to `windows-desktop`,
 `linux`, and `macos-desktop`. For Mac, assert:
@@ -263,7 +263,7 @@ if (($payload['forwards'][0]['ultra_access']['protocol'] ?? '') !== 'leikwan-ult
 }
 ```
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 php master/tests/client_agent_macos_ultra_policy_v2_contract_test.php
@@ -271,7 +271,7 @@ php master/tests/client_agent_macos_ultra_policy_v2_contract_test.php
 
 Expected: FAIL because `macos-desktop` does not select the policy-v2 scrub path.
 
-- [ ] **Step 3: Centralize the platform decision and scrub before response serialization.**
+- [x] **Step 3: Centralize the platform decision and scrub before response serialization.**
 
 Add:
 
@@ -289,13 +289,13 @@ Pass its result to `attachUltraAccessGrants`. Keep
 `scrubUltraClientForward` authoritative and do not add a Mac legacy-material
 fallback when the broker fails.
 
-- [ ] **Step 4: Assert lease scope and TTL.**
+- [x] **Step 4: Assert lease scope and TTL.**
 
 Extend the lease test to assert one returned endpoint, no candidate list,
 `expires_at <= now + 300`, mismatched device/forward/generation rejection,
 nonce replay rejection, and `Cache-Control: no-store`.
 
-- [ ] **Step 5: Run panel tests.**
+- [x] **Step 5: Run panel tests.**
 
 ```powershell
 php master/tests/client_agent_macos_ultra_policy_v2_contract_test.php
@@ -305,7 +305,7 @@ php master/tests/ultra_policy_lease_contract_test.php
 
 Expected: all print `ok` and exit 0.
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```powershell
 git add master/src/Controllers/ClientAgentController.php master/tests/client_agent_macos_ultra_policy_v2_contract_test.php master/tests/ultra_policy_lease_contract_test.php
