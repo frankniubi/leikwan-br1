@@ -69,10 +69,19 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
-    public void SnapshotBusyUpdateAndPreferencesDriveExpectedSurfaces()
+    public async Task SnapshotBusyUpdateAndPreferencesDriveExpectedSurfaces()
     {
         var controller = new FakeController(new DesktopClientSnapshot());
-        var vm = new MainWindowViewModel(controller, closeToTray: true, dispatch: action => action());
+        var installCalls = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            closeToTray: true,
+            installUpdate: _ =>
+            {
+                installCalls++;
+                return Task.CompletedTask;
+            },
+            dispatch: action => action());
 
         controller.RaiseSnapshot(new DesktopClientSnapshot { IsSignedIn = true, IsConnected = true, IsBusy = true });
         controller.RaiseUpdate("2.0.0");
@@ -82,6 +91,8 @@ public sealed class MainWindowViewModelTests
         Assert.True(vm.IsUpdateVisible);
         Assert.Equal("2.0.0", vm.UpdateVersion);
         Assert.True(vm.CloseToTray);
+        await vm.InstallUpdateCommand.ExecuteAsync(null);
+        Assert.Equal(1, installCalls);
     }
 
     private sealed class FakeController(DesktopClientSnapshot initial) : IDesktopClientController

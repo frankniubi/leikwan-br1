@@ -755,34 +755,34 @@ git commit -m "feat(mac): add Avalonia desktop shell"
 - `Task<AppUpdateLaunchResult> IAppUpdater.ApplyAsync(PreparedAppUpdate update, bool deferUntilRestart, CancellationToken ct)`.
 - `ClientAppArtifact` includes `Version`, `ArtifactUrl`, `Sha256`, `SizeBytes`, `Architecture`, and `Format`.
 
-- [ ] **Step 1: Write failing manifest and updater tests.**
+- [x] **Step 1: Write failing manifest and updater tests.**
 
 Cover architecture selection, version comparison, size/hash mismatch, ZIP path
 traversal, wrong bundle ID, missing executable, wrong Mach-O architecture,
 helper hash mismatch, writable atomic swap rollback, unwritable bundle DMG
 fallback, immediate apply, and deferred restart.
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj --filter FullyQualifiedName~MacAppUpdateServiceTests
 ```
 
-- [ ] **Step 3: Implement manifest selection and verified download.**
+- [x] **Step 3: Implement manifest selection and verified download.**
 
 `arm64` selects `macos_client_update_arm64` and `macos_client_app_arm64`;
 `x64` selects the x64 pair. Require HTTPS or the configured panel origin,
 positive size, 64-lower/upper-hex SHA, exact downloaded size, then SHA-256 before
 opening an archive.
 
-- [ ] **Step 4: Validate and stage without path traversal.**
+- [x] **Step 4: Validate and stage without path traversal.**
 
 Inspect every ZIP entry with `ZipArchive` before extraction; reject rooted paths,
 `..` segments, symlinks outside the root, and multiple app bundles. Validate
 `CFBundleIdentifier=com.leikwan.bridge`, version, main executable, runtime helper
 manifest, helper hashes, and the expected `arm64`/`x86_64` Mach-O slice.
 
-- [ ] **Step 5: Implement apply/rollback and DMG fallback.**
+- [x] **Step 5: Implement apply/rollback and DMG fallback.**
 
 Write a mode-`0600` request containing only PID, paths, version, size, and hashes.
 The updater waits for exit, renames the current bundle to a sibling backup,
@@ -791,14 +791,14 @@ only after launch. Any failure restores backup. If the bundle parent is not
 writable, retain the verified DMG and open it for manual replacement; do not
 claim automatic success.
 
-- [ ] **Step 6: Run Mac and Windows update tests.**
+- [x] **Step 6: Run Mac and Windows update tests.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj --filter FullyQualifiedName~MacAppUpdateServiceTests
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter FullyQualifiedName~WindowsAppUpdateServiceTests
 ```
 
-- [ ] **Step 7: Commit.**
+- [x] **Step 7: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Core LeikwanBridge.Desktop/src/LeikwanBridge.Mac/Services LeikwanBridge.Desktop/tests
