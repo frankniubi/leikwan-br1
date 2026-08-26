@@ -816,33 +816,33 @@ git commit -m "feat(mac): add verified desktop updates"
 - Create: `master/tests/macos_client_install_surface_test.php`
 - Modify: `artifacts/versions.json` only through the metadata merge script after real artifacts exist.
 
-- [ ] **Step 1: Write failing routed-manifest tests.**
+- [x] **Step 1: Write failing routed-manifest tests.**
 
 Provide fixture metadata for four app entries and assert absolute/cached URLs,
 version, SHA, size, architecture, format, and correct content types. Assert a
 missing file is not advertised as downloadable.
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 php master/tests/macos_client_artifact_manifest_test.php
 php master/tests/macos_client_install_surface_test.php
 ```
 
-- [ ] **Step 3: Add explicit routes and a shared cache-busting normalizer.**
+- [x] **Step 3: Add explicit routes and a shared cache-busting normalizer.**
 
 Add DMG/update routes for arm64 and x64. Reuse one method to append `v` and
 `sha256` to Windows and Mac app entries. Keep `serveRepoFile` path confinement
 and range/cache behavior unchanged.
 
-- [ ] **Step 4: Add the Mac tenant download band.**
+- [x] **Step 4: Add the Mac tenant download band.**
 
 Render a macOS section beside Windows/Linux with two clearly named downloads:
 `Apple Silicon` and `Intel`. Show only the short unsigned first-open note. Do not
 embed client IDs, agent tokens, provider nodes, or helper URLs in download
 links.
 
-- [ ] **Step 5: Run panel artifact/install regressions.**
+- [x] **Step 5: Run panel artifact/install regressions.**
 
 ```powershell
 php master/tests/macos_client_artifact_manifest_test.php
@@ -852,7 +852,7 @@ php master/tests/client_install_simplification_regression_test.php
 php master/tests/artifact_versions_manifest_consistency_test.php
 ```
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```powershell
 git add master/src/Controllers/ArtifactController.php master/src/Bootstrap.php master/src/Controllers/BaseController.php master/src/Controllers/TenantController.php master/tests/macos_client_artifact_manifest_test.php master/tests/macos_client_install_surface_test.php

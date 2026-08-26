@@ -288,6 +288,16 @@ abstract class BaseController
         return $this->artifactBaseUrl() . '/artifacts/leikwan-bridge-setup.exe';
     }
 
+    protected function macosClientArm64AppUrl(): string
+    {
+        return $this->artifactBaseUrl() . '/artifacts/macos/leikwan-bridge-arm64.dmg';
+    }
+
+    protected function macosClientX64AppUrl(): string
+    {
+        return $this->artifactBaseUrl() . '/artifacts/macos/leikwan-bridge-x64.dmg';
+    }
+
     protected function clientWindowsInstallerUrl(): string
     {
         return $this->artifactBaseUrl() . '/artifacts/install-client.ps1';

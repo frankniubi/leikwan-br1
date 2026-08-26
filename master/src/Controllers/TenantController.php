@@ -1085,6 +1085,13 @@ final class TenantController extends BaseController
             . '</div></section>'
             . '<section class="tenant-client-install__platform"><strong>Windows App</strong>'
             . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
+            . '</section>'
+            . '<section class="tenant-client-install__platform"><strong>macOS</strong>'
+            . '<div class="muted">Unsigned build. macOS may show a security prompt on first open.</div>'
+            . '<div class="actions">'
+            . $this->renderCommandLink('Apple Silicon', $this->macosClientArm64AppUrl(), 'secondary')
+            . $this->renderCommandLink('Intel', $this->macosClientX64AppUrl(), 'secondary')
+            . '</div>'
             . '</section></div>'
             . '<div class="tenant-client-install__online"><span>最大在线</span><strong>'
             . $onlineCount . ' / ' . $onlineLimit . '</strong></div></div></div>'
