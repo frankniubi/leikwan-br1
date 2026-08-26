@@ -49,16 +49,8 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
         string? workingDirectory = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (logArguments)
-        {
-            Log.Information("starting macOS process for forward {ForwardId} [{Label}]: {Exe} {Args}",
-                forwardId, label, exePath, arguments);
-        }
-        else
-        {
-            Log.Information("starting macOS process for forward {ForwardId} [{Role}]: {Exe}",
-                forwardId, role, Path.GetFileName(exePath));
-        }
+        Log.Information("starting macOS process for forward {ForwardId} [{Role}]: {Exe}",
+            forwardId, role, Path.GetFileName(exePath));
 
         Process? process = null;
         try
@@ -83,15 +75,15 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
             {
                 if (eventArgs.Data is null)
                     return;
-                Log.Debug("[fwd-{ForwardId}/{Label}] {Line}", forwardId, label, eventArgs.Data);
-                _onOutput?.Invoke(forwardId, label, eventArgs.Data);
+                Log.Debug("process_output for forward {ForwardId} [{Role}]", forwardId, role);
+                _onOutput?.Invoke(forwardId, label, "process_output");
             };
             process.ErrorDataReceived += (_, eventArgs) =>
             {
                 if (eventArgs.Data is null)
                     return;
-                Log.Warning("[fwd-{ForwardId}/{Label}] stderr: {Line}", forwardId, label, eventArgs.Data);
-                _onOutput?.Invoke(forwardId, label, $"[stderr] {eventArgs.Data}");
+                Log.Warning("process_stderr for forward {ForwardId} [{Role}]", forwardId, role);
+                _onOutput?.Invoke(forwardId, label, "process_stderr");
             };
             process.Exited += (_, _) => ProcessExited?.Invoke(forwardId, role);
 
