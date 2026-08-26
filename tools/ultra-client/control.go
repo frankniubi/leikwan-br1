@@ -46,26 +46,38 @@ func writeFrame(writer io.Writer, payload []byte) error {
 }
 
 type ControlServer struct {
-	path   string
-	config Config
-	store  *PolicyStore
-	ln     *net.UnixListener
-	sem    chan struct{}
-	close  chan struct{}
-	done   chan struct{}
-	once   sync.Once
+	path        string
+	config      Config
+	store       *PolicyStore
+	ln          *net.UnixListener
+	sem         chan struct{}
+	close       chan struct{}
+	done        chan struct{}
+	once        sync.Once
+	peerAllowed func(*net.UnixConn) bool
 }
 
 func NewControlServer(path string, config Config, store *PolicyStore) *ControlServer {
-	return &ControlServer{path: path, config: config, store: store, sem: make(chan struct{}, 4), close: make(chan struct{}), done: make(chan struct{})}
+	return &ControlServer{
+		path: path, config: config, store: store,
+		sem: make(chan struct{}, 4), close: make(chan struct{}), done: make(chan struct{}),
+		peerAllowed: sameUserPeer,
+	}
 }
 
 func (server *ControlServer) Listen() error {
 	if server.path == "" || server.store == nil {
 		return ErrFrameInvalid
 	}
-	if err := os.MkdirAll(filepath.Dir(server.path), 0o700); err != nil {
+	parent := filepath.Dir(server.path)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return err
+	}
+	if err := os.Chmod(parent, 0o700); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(parent); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("control socket parent is not private")
 	}
 	if info, err := os.Lstat(server.path); err == nil {
 		if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&0o077 != 0 {
@@ -95,6 +107,7 @@ func (server *ControlServer) Serve() error {
 		return ErrFrameInvalid
 	}
 	defer close(server.done)
+	defer os.Remove(server.path)
 	for {
 		connection, err := server.ln.AcceptUnix()
 		if err != nil {
@@ -123,11 +136,16 @@ func (server *ControlServer) Serve() error {
 func (server *ControlServer) handle(connection *net.UnixConn) {
 	defer connection.Close()
 	_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
+	if server.peerAllowed == nil || !server.peerAllowed(connection) {
+		_ = writeJSONFrame(connection, map[string]any{"ok": false, "error": "peer_rejected"})
+		return
+	}
 	payload, err := readFrame(connection)
 	if err != nil {
 		_ = writeJSONFrame(connection, map[string]any{"ok": false, "error": "frame_invalid"})
 		return
 	}
+	defer clearBytes(payload)
 	policy, lease, err := decodeLeaseFrame(payload, server.config)
 	if err == nil {
 		err = server.store.Replace(policy, lease)
