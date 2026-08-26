@@ -202,6 +202,7 @@ class WindowsClientInstallHelperTests(unittest.TestCase):
             "leikwan-ingress.exe",
             "leikwan-uot-bond.exe",
             "leikwan-mptcp-relay.exe",
+            "ultra-client.exe",
         ):
             (bin_dir / name).write_bytes(name.encode("utf-8"))
 
