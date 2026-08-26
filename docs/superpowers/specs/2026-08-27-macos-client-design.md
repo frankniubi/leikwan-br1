@@ -1,7 +1,7 @@
 # LeiKwan macOS Client Design
 
 Date: 2026-08-27
-Status: Revised after scope clarification; pending written-spec review
+Status: Approved in chat with Ultra material-security conditions
 
 ## 1. Problem and baseline
 
@@ -40,7 +40,9 @@ It must provide separate packages for Apple Silicon (`arm64`) and Intel
 6. automatic and manual update checks, hash-verified download, immediate install,
    and deferred install on the next restart;
 7. tray/menu-bar operation, close-to-tray, and per-user LaunchAgent autostart;
-8. an unsigned DMG that runs after the normal macOS Gatekeeper confirmation.
+8. an unsigned DMG that runs after the normal macOS Gatekeeper confirmation;
+9. ephemeral Ultra line/lease handling that does not write provider material to
+   disk, logs, arguments, environment variables, or update archives.
 
 The client must preserve the topology `client -> slave -> sidecar -> target`.
 It must never turn a public sidecar address into a direct client path.
@@ -58,6 +60,11 @@ It must never turn a public sidecar address into a direct client path.
 
   The forward is then discarded before state, runtime, or health processing.
   There is no fallback or migration for discarded modes.
+- The client cannot prevent a local administrator, debugger, or compromised
+  operating system from reading a live process that must use an active line.
+  The security boundary for this release is protection against static binary
+  extraction, accidental disk/log/archive leakage, and ordinary crash-dump
+  exposure; it is not a promise of secrecy from a privileged local observer.
 - No forward creation or billing workflow is added to the desktop app.
 - No production panel deployment is part of implementation. Artifact publication
   remains a separately authorized operation.
@@ -88,7 +95,9 @@ calling WPF or Windows APIs directly:
 - `IPortOwnershipProbe` for ownership-aware port preflight;
 - `IAutostartService` for enable/disable and status;
 - `IAppUpdater` for package download, hash verification, and replacement;
-- `ISecretStore` for optional OS-backed token storage.
+- `ISecretStore` for optional OS-backed token storage;
+- `IEphemeralMaterialChannel` for bounded, in-memory Ultra bootstrap and lease
+  delivery, with explicit zeroization after handoff.
 
 The existing `LeikwanBridge.Core` models and HTTP services remain the wire
 contract source of truth. The WPF shell is adapted to call the controller, and
@@ -123,7 +132,11 @@ The macOS implementation supplies:
 - local file permissions: state and credential files created with user-only
   permissions where the platform permits it;
 - stable device identity: a generated random identifier persisted in state and
-  prefixed with `macos-client-` (no raw hardware serial is uploaded).
+  prefixed with `macos-client-` (no raw hardware serial is uploaded);
+- ephemeral secret buffers: provider IP/port, username/password, session ticket,
+  and target are held only in memory; buffers are zeroed after each handoff;
+  the app/runtime set `RLIMIT_CORE=0`, and `mlock` is best-effort rather than a
+  hard confidentiality guarantee.
 
 The macOS shell uses the system Keychain through `ISecretStore` when available.
 If Keychain access is unavailable, it falls back to the existing config schema
@@ -157,8 +170,10 @@ the app bundle or an explicit user override from settings.
   metadata remain relay-first; the client does not configure a sidecar-facing
   WireGuard interface.
 - `ultra`: direct provider runtime with one-shot panel leases, local-only
-  listener, status file, and per-forward control IPC. On macOS the control
-  endpoint is a Unix domain socket rather than a Windows named pipe.
+  listener, metadata-only status file, and per-forward control IPC. On macOS
+  the control endpoint is a Unix domain socket rather than a Windows named
+  pipe. The runtime is started with a `--config-stdin` (or equivalent anonymous
+  pipe) bootstrap; no file contains the target or provider material.
 
 `MacForwardPolicy` is a strict allowlist and must inspect the raw mode strings
 before any permissive mode normalizer runs. It accepts a forward only when
@@ -170,7 +185,43 @@ starting processes, or running health checks. The notice is an immediate
 transient toast/banner (and may also be copied to the log); it does not create a
 persisted forward record.
 
-### 5.3 Shutdown and recovery
+### 5.3 Ultra material confidentiality
+
+The Mac client uses the policy-v2 lease path only. A `macos-desktop` config pull
+must be scrubbed before serialization so `_ultra_lines`, `_ultra_line_ids`,
+reusable client tokens, provider credentials, and equivalent legacy fields never
+reach the Mac process. The Mac client never calls `/api/client/ultra/materials`.
+`/api/client/ultra/lease` remains the only provider-material ingress and returns
+one selected endpoint in a nonce-bound, device/forward-bound lease over TLS. A
+lease is valid for no more than 300 seconds and reveals no candidate inventory.
+
+The controller parses lease fields into an ephemeral material object. Provider
+material is never added to `ForwardConfig`, `AgentConfig`,
+`AppliedForwardState`, or revision state; the Ultra destination target is held
+only in the active in-memory runtime contract. Neither the lease nor target may
+be serialized into `applied.json`, `config_pull_state.json`, `usage_state.json`,
+crash reports, diagnostics, or update staging files. The existing status file is
+metadata-only: forward ID, state, policy generation, selection references,
+timestamps, error code, and byte counters. It must not contain a target, provider
+IP, username, password, session ticket, or reusable line ID.
+
+Sensitive values use bounded mutable byte buffers rather than long-lived .NET
+strings wherever the HTTP/IPC/runtime APIs permit it. Any unavoidable managed or
+OS copy has the shortest practical lifetime and is never cached. Disposal wipes
+the owned buffers; this reduces remnants but is not represented as protection
+from a privileged memory reader.
+
+The app launches `ultra-client` with no sensitive argv or environment values and
+writes a bounded bootstrap document through an anonymous pipe/stdin. Lease
+frames travel over a per-forward Unix socket with owner-only permissions and a
+randomized path inside a `0700` runtime directory. The runtime verifies the
+peer's UID with `getpeereid` before accepting a lease. Both sides wipe temporary
+byte buffers after parse/send, reject oversized frames, and avoid logging
+payloads. The app and runtime set `RLIMIT_CORE=0` and use best-effort `mlock` for
+live credential buffers; tests must verify that inability to lock memory is
+reported without writing secrets and does not bypass lease validation.
+
+### 5.4 Shutdown and recovery
 
 Before a replacement or update, the controller stops polling, heartbeat, and
 all forward process groups, flushes state/logs, and verifies listeners are gone.
@@ -209,6 +260,10 @@ forward contracts. Heartbeats include:
 The panel must treat `macos-desktop` like `windows-desktop` for Ultra grant
 attachment. This is a required server-side change; otherwise a macOS client
 can pull ordinary forwards but cannot obtain an Ultra lease.
+
+For `macos-desktop`, grant attachment must use policy-v2 scrubbing. Regression
+coverage must assert that a pull response contains no `_ultra_lines`,
+`_ultra_line_ids`, reusable token, or provider credential fields.
 
 ### 6.3 Diagnostics
 
@@ -279,7 +334,14 @@ Linux, and Android blocks unchanged. Add regression tests for:
 - relative URLs expanded to the artifact base URL;
 - SHA/size metadata matching the served files;
 - macOS install links rendered without exposing credentials;
-- Ultra grants attached for `macos-desktop` pulls.
+- Ultra grants attached for `macos-desktop` pulls;
+- policy-v2 Mac pulls and lease responses contain no legacy line material;
+- Ultra bootstrap/IPC payloads are never written to disk, argv, environment,
+  logs, diagnostics, or update archives;
+- cleanup zeroizes lease buffers and removes temporary sockets after stop/crash.
+- a canary lease containing unique fake provider IP/credential values completes
+  a start/refresh/stop cycle, after which scans of state, logs, argv/environment,
+  update cache, crash outputs, and packaged artifacts find zero canary matches.
 
 ## 9. Build and distribution
 
@@ -306,6 +368,8 @@ the authority for final Mach-O and DMG smoke tests.
 - macOS paths and helper resolution without `.exe` suffixes;
 - strict three-mode filtering, fixed notice text, and proof that discarded modes
   have no side effects;
+- Ultra material redaction, anonymous bootstrap, bounded lease IPC, zeroization,
+  metadata-only status files, and no-secret crash/update artifacts;
 - Unix process-group cleanup and port-owner classification;
 - login/select/switch/sign-out state transitions;
 - pull `304`, revision change, failed pull backoff, and no-op apply;
@@ -329,7 +393,7 @@ On each macOS runner:
 2. `cargo test` for all bundled Rust helper crates;
 3. self-contained publish and helper SHA verification;
 4. DMG attach, app-bundle inspection, and launch/exit smoke;
-5. manifest generation and a redacted artifact scan.
+5. manifest generation, a redacted artifact scan, and the Ultra canary-leak scan.
 
 Acceptance is not complete until both architecture packages pass those gates,
 the Windows Core/App suites remain green, and the panel PHP regression tests
@@ -341,6 +405,10 @@ pass. No live production release is implied by CI success.
   substitute a Linux or Windows binary.
 - **Unexpected panel mode:** discard it before reconciliation and keep the
   accepted-mode filter covered by regression tests.
+- **Local reverse engineering or line leakage:** never embed lines in the
+  binary; use policy-v2 one-shot leases, anonymous bootstrap, redacted logs and
+  status, bounded memory lifetime, zeroization, and explicit privileged-observer
+  limits in the product documentation.
 - **Gatekeeper warning:** document the unsigned first-open confirmation; do not
   disguise or bypass system security controls.
 - **Bundle permissions:** retain a verified archive and open the DMG when an
@@ -352,10 +420,12 @@ pass. No live production release is implied by CI success.
 
 1. Add shared platform interfaces and extract controller behavior without
    changing Windows semantics.
-2. Add macOS path/process/port/autostart/secret/update services and unit tests.
-3. Add the Avalonia macOS shell and shell tests.
-4. Add macOS runtime helper resolution and the strict three-mode filter.
-5. Add panel manifest/routes, Ultra platform grant handling, install UI, and PHP
+2. Add the macOS path/process/port/autostart/secret/update services, ephemeral
+   material channel, and unit tests.
+3. Add macOS runtime helper resolution, anonymous Ultra bootstrap/IPC, and the
+   strict three-mode filter.
+4. Add the Avalonia macOS shell and shell tests.
+5. Add panel manifest/routes, policy-v2 Mac grant scrubbing, install UI, and PHP
    regression tests.
 6. Add dual-architecture helper builds, app publishing, DMG/update packaging,
    and CI smoke jobs.
