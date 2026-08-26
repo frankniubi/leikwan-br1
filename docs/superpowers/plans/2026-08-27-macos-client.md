@@ -868,13 +868,13 @@ git commit -m "feat(mac): expose desktop client artifacts"
 - Create: `LeikwanBridge.Desktop/src/LeikwanBridge.Mac/helper-manifest.schema.json`
 - Modify: `artifacts/versions.json` via a deterministic metadata merge mode.
 
-- [ ] **Step 1: Add shell static tests before implementation.**
+- [x] **Step 1: Add shell static tests before implementation.**
 
 Use `bash -n` and a `--dry-run` fixture that fails for a missing helper, wrong
 architecture, mismatched SHA, PDB/source inclusion, or unexpected bundle path.
 The dry run must list no credential/environment files.
 
-- [ ] **Step 2: Build helpers at pinned inputs.**
+- [x] **Step 2: Build helpers at pinned inputs.**
 
 For the matrix target:
 
@@ -889,7 +889,7 @@ The pinned wstunnel commit is upstream tag `v10.5.2`. Copy only
 `wstunnel`, `leikwan-bond`, `leikwan-ingress`, `leikwan-uot-bond`, and
 `ultra-client`. `wg` is optional and is not a supported-mode build dependency.
 
-- [ ] **Step 3: Publish and assemble the app bundle.**
+- [x] **Step 3: Publish and assemble the app bundle.**
 
 `dotnet publish` self-contained for `osx-arm64` or `osx-x64`. Assemble:
 
@@ -907,20 +907,20 @@ Set app/helper executables `0755`, data `0644`, and directories `0755`.
 `Info.plist` contains bundle ID, version, icon, minimum macOS version, and no
 privileged entitlement/signature claims.
 
-- [ ] **Step 4: Validate Mach-O and package.**
+- [x] **Step 4: Validate Mach-O and package.**
 
 Use `file` and `lipo -archs` to require exactly the matrix architecture for the
 main executable and every native helper. Create a compressed DMG with `hdiutil`
 and a `ditto` ZIP preserving modes. Emit JSON containing version, URLs, SHA-256,
 size, architecture, format, helper hashes, source commit, Go/Rust/.NET versions.
 
-- [ ] **Step 5: Merge only real metadata.**
+- [x] **Step 5: Merge only real metadata.**
 
 `--merge-versions artifacts/versions.json` refuses missing files, recomputes
 hash/size from bytes, writes through a temp file, and adds the four app/update
 keys plus architecture-specific helper keys. Never prefill fake hashes.
 
-- [ ] **Step 6: Run shell checks on Windows through WSL and commit.**
+- [x] **Step 6: Run shell checks on Windows through WSL and commit.**
 
 ```powershell
 wsl bash -n scripts/build-macos-client.sh

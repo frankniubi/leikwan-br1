@@ -333,6 +333,7 @@ public sealed class MacAppUpdateServiceTests
         Directory.CreateDirectory(helpers);
         File.WriteAllText(Path.Combine(bundle, "Contents", "Info.plist"), $$"""
         <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0"><dict>
           <key>CFBundleIdentifier</key><string>{{bundleId}}</string>
           <key>CFBundleShortVersionString</key><string>{{version}}</string>

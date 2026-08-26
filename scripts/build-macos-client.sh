@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+rid=""
+version="1.0.0"
+output_root=""
+wstunnel_src="${WSTUNNEL_SRC:-}"
+dry_run=0
+package_after_build=1
+wstunnel_commit="15372e44f2606f8e2e22a8a90d2e01cc60889836"
+wstunnel_repository="https://github.com/erebe/wstunnel.git"
+
+fail() {
+  printf 'build-macos-client: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/build-macos-client.sh --rid <osx-arm64|osx-x64> [options]
+  --version <version>       App version (default: 1.0.0)
+  --output-root <path>      Intermediate output directory
+  --wstunnel-src <path>     Upstream wstunnel checkout/cache
+  --no-package              Build publish/helpers only
+  --dry-run                 Print the pinned build plan without compiling
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --rid) rid="${2:-}"; shift 2 ;;
+    --version) version="${2:-}"; shift 2 ;;
+    --output-root) output_root="${2:-}"; shift 2 ;;
+    --wstunnel-src) wstunnel_src="${2:-}"; shift 2 ;;
+    --no-package) package_after_build=0; shift ;;
+    --dry-run) dry_run=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "unknown argument: $1" ;;
+  esac
+done
+
+case "$rid" in
+  osx-arm64)
+    rust_target="aarch64-apple-darwin"
+    go_arch="arm64"
+    architecture="arm64"
+    ;;
+  osx-x64)
+    rust_target="x86_64-apple-darwin"
+    go_arch="amd64"
+    architecture="x86_64"
+    ;;
+  *) fail "--rid must be osx-arm64 or osx-x64" ;;
+esac
+
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || fail "version must be numeric"
+output_root="${output_root:-$repo_root/.build/macos-client/$rid}"
+wstunnel_src="${wstunnel_src:-$repo_root/.build/tool-sources/wstunnel-v10.5.2}"
+publish_dir="$output_root/publish"
+helper_dir="$output_root/helpers"
+helper_hashes="$output_root/helper-hashes.txt"
+
+if [[ "$dry_run" -eq 1 ]]; then
+  printf 'rid=%s\narchitecture=%s\nrust_target=%s\ngo_arch=%s\n' "$rid" "$architecture" "$rust_target" "$go_arch"
+  printf 'wstunnel_commit=%s\n' "$wstunnel_commit"
+  printf 'dotnet publish LeikwanBridge.Mac -r %s --self-contained true\n' "$rid"
+  printf 'cargo build --locked -p leikwan-bond -p leikwan-ingress -p leikwan-uot --target %s\n' "$rust_target"
+  printf 'go build GOOS=darwin GOARCH=%s ./tools/ultra-client\n' "$go_arch"
+  printf 'package=%s\n' "$package_after_build"
+  exit 0
+fi
+
+[[ "$(uname -s)" == "Darwin" ]] || fail "real builds require macOS"
+for command in dotnet cargo rustup go git shasum; do
+  command -v "$command" >/dev/null 2>&1 || fail "required command missing: $command"
+done
+
+python3 - "$repo_root" "$output_root" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+output = pathlib.Path(sys.argv[2]).resolve()
+if output == root or root not in output.parents:
+    raise SystemExit("output-root must stay inside the repository")
+if ".build" not in output.parts:
+    raise SystemExit("output-root must stay under .build")
+PY
+
+rm -rf "$output_root"
+mkdir -p "$publish_dir" "$helper_dir" "$(dirname "$wstunnel_src")"
+
+rustup target add "$rust_target"
+cargo build \
+  --manifest-path "$repo_root/wstunnel-main/Cargo.toml" \
+  --locked \
+  --release \
+  --target "$rust_target" \
+  -p leikwan-bond \
+  -p leikwan-ingress \
+  -p leikwan-uot
+
+if [[ ! -d "$wstunnel_src/.git" ]]; then
+  git clone --filter=blob:none "$wstunnel_repository" "$wstunnel_src"
+fi
+git -C "$wstunnel_src" fetch --depth=1 origin "$wstunnel_commit"
+git -C "$wstunnel_src" checkout --detach "$wstunnel_commit"
+[[ "$(git -C "$wstunnel_src" rev-parse HEAD)" == "$wstunnel_commit" ]] || fail "wstunnel pin mismatch"
+cargo build \
+  --manifest-path "$wstunnel_src/Cargo.toml" \
+  --locked \
+  --release \
+  --target "$rust_target"
+
+(
+  cd "$repo_root/tools/ultra-client"
+  GOOS=darwin GOARCH="$go_arch" CGO_ENABLED=0 \
+    go build -trimpath -ldflags='-s -w' -o "$helper_dir/ultra-client" .
+)
+
+dotnet publish \
+  "$repo_root/LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.csproj" \
+  -c Release \
+  -r "$rid" \
+  --self-contained true \
+  -p:Version="$version" \
+  -p:DebugType=None \
+  -p:DebugSymbols=false \
+  -o "$publish_dir"
+
+cp "$repo_root/wstunnel-main/target/$rust_target/release/leikwan-bond" "$helper_dir/leikwan-bond"
+cp "$repo_root/wstunnel-main/target/$rust_target/release/leikwan-ingress" "$helper_dir/leikwan-ingress"
+cp "$repo_root/wstunnel-main/target/$rust_target/release/leikwan-uot" "$helper_dir/leikwan-uot-bond"
+cp "$wstunnel_src/target/$rust_target/release/wstunnel" "$helper_dir/wstunnel"
+chmod 0755 "$helper_dir"/* "$publish_dir/LeikwanBridge.Mac"
+
+(
+  cd "$helper_dir"
+  shasum -a 256 wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client >"$helper_hashes"
+)
+
+if [[ "$package_after_build" -eq 1 ]]; then
+  bash "$repo_root/scripts/package-macos-client.sh" \
+    --rid "$rid" \
+    --version "$version" \
+    --publish-dir "$publish_dir" \
+    --helper-dir "$helper_dir" \
+    --helper-hashes "$helper_hashes" \
+    --output-dir "$repo_root/artifacts/macos" \
+    --source-commit "$(git -C "$repo_root" rev-parse HEAD)"
+fi
+
+printf 'build complete: %s\n' "$output_root"
