@@ -54,6 +54,26 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
     if ($status < 400 || $status >= 500) {
         $status = 500;
     }
+    $path = $request?->path() ?? (parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH) ?: '/');
+    if (in_array($exception->getMessage(), ['device_kicked', 'device_banned', 'device_untrusted'], true)
+        && str_starts_with($path, '/api/client/')) {
+        $payload = [
+            'ok' => false,
+            'error' => $exception->getMessage(),
+        ];
+        $command = $exception instanceof ApiException ? ($exception->details()['command'] ?? null) : null;
+        if (is_array($command)) {
+            $payload['command'] = [
+                'version' => max(0, (int) ($command['version'] ?? 0)),
+                'action' => (string) ($command['action'] ?? ''),
+                'reason' => (string) ($command['reason'] ?? ''),
+            ];
+        }
+        return Response::json($status, $payload)->withHeaders([
+            'Cache-Control' => 'no-store',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
+    }
     $error = match ($status) {
         400 => ['invalid_request', 'The request could not be processed.'],
         401 => ['unauthorized', 'Authentication is required.'],
@@ -72,7 +92,6 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
         'X-Content-Type-Options' => 'nosniff',
     ];
 
-    $path = $request?->path() ?? (parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH) ?: '/');
     if (str_starts_with($path, '/api/')) {
         return Response::json($status, [
             'error' => [

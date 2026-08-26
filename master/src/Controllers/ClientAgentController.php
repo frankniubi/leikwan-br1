@@ -7,8 +7,11 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\AppSettings;
+use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\AndroidEnrollmentCodeService;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
+use Leikwan\Master\Support\DeviceControlService;
 use Leikwan\Master\Support\DesktopClientSessionService;
 use Leikwan\Master\Support\LeigodTokenBroker;
 use Leikwan\Master\Support\LeigodTokenProvider;
@@ -18,6 +21,7 @@ use Leikwan\Master\Support\UltraInventoryService;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMode;
 use Leikwan\Master\Support\UltraMaterialService;
+use Leikwan\Master\Support\TrustedClientIpResolver;
 
 final class ClientAgentController extends BaseController
 {
@@ -25,6 +29,8 @@ final class ClientAgentController extends BaseController
     private UltraMaterialService $ultraMaterials;
     private UltraLeaseService $ultraLeases;
     private UltraClientStatusService $ultraClientStatus;
+    private DeviceControlService $deviceControls;
+    private AndroidEnrollmentCodeService $enrollmentCodes;
 
     public function __construct(
         \Leikwan\Master\Config $config,
@@ -34,6 +40,8 @@ final class ClientAgentController extends BaseController
         ?UltraMaterialService $ultraMaterials = null,
         ?UltraClientStatusService $ultraClientStatus = null,
         ?UltraLeaseService $ultraLeases = null,
+        ?DeviceControlService $deviceControls = null,
+        ?AndroidEnrollmentCodeService $enrollmentCodes = null,
     ) {
         parent::__construct($config, $db);
         $this->ultraMaterials = $ultraMaterials
@@ -42,13 +50,101 @@ final class ClientAgentController extends BaseController
             ?? new LeigodTokenBroker($config, new AppSettings($db), $this->ultraMaterials);
         $this->ultraLeases = $ultraLeases ?? new UltraLeaseService($config, $db, $this->ultraMaterials);
         $this->ultraClientStatus = $ultraClientStatus ?? new UltraClientStatusService($config, $db);
+        $this->deviceControls = $deviceControls ?? DeviceControlService::fromConfig($config, $db);
+        $this->enrollmentCodes = $enrollmentCodes ?? new AndroidEnrollmentCodeService($db);
+    }
+
+    public function deviceChallenge(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $this->assertRequestedClientId($client, $request);
+        $challenge = $this->deviceControls->issueChallenge($client, $this->requestedDeviceId($request));
+        return $this->noStoreJson(['ok' => true] + $challenge);
+    }
+
+    public function enrollDevice(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $this->assertRequestedClientId($client, $request);
+        $proof = $request->input('attestation_proof', []);
+        if (!is_array($proof)) {
+            throw new ApiException('attestation_proof_invalid', 422);
+        }
+        $enrollment = $this->deviceControls->enroll(
+            $client,
+            $this->requestedDeviceId($request),
+            (string) $request->input('nonce', ''),
+            $proof,
+        );
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+        ] + $enrollment);
+    }
+
+    public function acknowledgeDevice(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $this->deviceControls->acknowledge(
+            $client,
+            $this->requestedDeviceId($request),
+            max(0, (int) $request->input('command_version', 0)),
+        );
+        return $this->noStoreJson(['ok' => true]);
+    }
+
+    public function enrollmentCodeChallenge(Request $request, array $params): Response
+    {
+        $this->requireAndroidRequest($request);
+        $client = $this->activeClientForEnrollmentCode((string) $request->input('enrollment_code', ''));
+        $challenge = $this->deviceControls->issueChallenge($client, $this->requestedDeviceId($request));
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+        ] + $challenge);
+    }
+
+    public function enrollmentCodeEnroll(Request $request, array $params): Response
+    {
+        $this->requireAndroidRequest($request);
+        $code = (string) $request->input('enrollment_code', '');
+        $proof = $request->input('attestation_proof', []);
+        if (!is_array($proof)) {
+            throw new ApiException('attestation_proof_invalid', 422);
+        }
+        [$client, $enrollment] = $this->db->transaction(function () use ($code, $request, $proof): array {
+            $codeRow = $this->enrollmentCodes->findActive($code);
+            if ($codeRow === null) {
+                throw new ApiException('android_enrollment_code_invalid', 403);
+            }
+            $client = $this->activeClientForEnrollmentCodeRow($codeRow);
+            $enrollment = $this->deviceControls->enroll(
+                $client,
+                $this->requestedDeviceId($request),
+                (string) $request->input('nonce', ''),
+                $proof,
+            );
+            if ($this->enrollmentCodes->consume($code) === null) {
+                throw new ApiException('android_enrollment_code_invalid', 403);
+            }
+            return [$client, $enrollment];
+        });
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+            'agent_token' => (string) $client['agent_token'],
+        ] + $enrollment);
     }
 
     public function resolveUltraMaterials(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
-        $deviceSessions = new ClientOnlineSessionService($this->db);
-        $deviceId = $deviceSessions->enforceFromRequest($client, $request, 'pull');
+        [$deviceSessions, $deviceId] = $this->enforceClientRequest($client, $request, 'pull');
         $deviceSession = $deviceSessions->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
         $assigned = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
         $allowed = [];
@@ -95,8 +191,7 @@ final class ClientAgentController extends BaseController
     public function resolveUltraLease(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
-        $deviceSessions = new ClientOnlineSessionService($this->db);
-        $deviceId = $deviceSessions->enforceFromRequest($client, $request, 'lease');
+        [$deviceSessions, $deviceId] = $this->enforceClientRequest($client, $request, 'lease');
         $deviceSession = $deviceSessions->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
         $assigned = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
         $assignedById = [];
@@ -172,8 +267,7 @@ final class ClientAgentController extends BaseController
     public function pullConfigs(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
-        $deviceSessionService = new ClientOnlineSessionService($this->db);
-        $deviceId = $deviceSessionService->enforceFromRequest($client, $request, 'pull');
+        [$deviceSessionService, $deviceId] = $this->enforceClientRequest($client, $request, 'pull');
         $deviceSession = $deviceSessionService->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
 
         $sinceRevision = trim((string) $request->input('since_revision', ''));
@@ -495,9 +589,7 @@ final class ClientAgentController extends BaseController
     public function heartbeat(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
-        $deviceSessionService = new ClientOnlineSessionService($this->db);
-        $deviceId = $deviceSessionService->deviceIdFromRequest($request);
-        $deviceSessionService->recordAndEnforce($client, $deviceId, $deviceSessionService->deviceMetadataFromRequest($request), 'heartbeat');
+        [$deviceSessionService, $deviceId] = $this->enforceClientRequest($client, $request, 'heartbeat');
         $ultraStatuses = $request->input('ultra_status', []);
         if (is_array($ultraStatuses)) {
             try {
@@ -603,6 +695,7 @@ final class ClientAgentController extends BaseController
     public function diagnosticsResult(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
+        $this->enforceClientRequest($client, $request, 'pull');
         $requestToken = (string) $request->input('request_token', '');
         $results = is_array($request->input('results', [])) ? $request->input('results', []) : [];
         $error = (string) $request->input('error', '');
@@ -705,6 +798,94 @@ final class ClientAgentController extends BaseController
             'client_id' => (int) $client['id'],
             'client_name' => (string) $client['name'],
             'agent_token' => (string) $client['agent_token'],
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $client
+     * @return array{0:ClientOnlineSessionService,1:string}
+     */
+    private function enforceClientRequest(array $client, Request $request, string $touchType): array
+    {
+        if ($this->isAndroidRequest($request)) {
+            $this->deviceControls->requireActive($client, $request);
+        }
+        $sessions = $this->clientOnlineSessions();
+        return [$sessions, $sessions->enforceFromRequest($client, $request, $touchType)];
+    }
+
+    private function clientOnlineSessions(): ClientOnlineSessionService
+    {
+        return new ClientOnlineSessionService(
+            $this->db,
+            new TrustedClientIpResolver((string) ($this->config->get('TRUSTED_PROXY_CIDRS', '') ?? '')),
+        );
+    }
+
+    private function isAndroidRequest(Request $request): bool
+    {
+        return str_starts_with(strtolower(trim((string) ($request->header('x-device-platform') ?? ''))), 'android');
+    }
+
+    private function requireAndroidRequest(Request $request): void
+    {
+        if (!$this->isAndroidRequest($request)) {
+            throw new ApiException('android_platform_required', 403);
+        }
+    }
+
+    /** @param array<string, mixed> $client */
+    private function assertRequestedClientId(array $client, Request $request): void
+    {
+        $requestedClientId = (int) $request->input('client_id', 0);
+        if ($requestedClientId <= 0 || $requestedClientId !== (int) ($client['id'] ?? 0)
+            || (string) ($client['status'] ?? '') !== 'active') {
+            throw new ApiException('client_id_mismatch', 403);
+        }
+    }
+
+    private function requestedDeviceId(Request $request): string
+    {
+        $header = trim((string) ($request->header('x-device-id') ?? ''));
+        $body = trim((string) $request->input('device_id', ''));
+        if ($header !== '' && $body !== '' && !hash_equals($header, $body)) {
+            throw new ApiException('device_id_invalid', 422);
+        }
+        return $header !== '' ? $header : $body;
+    }
+
+    /** @return array<string, mixed> */
+    private function activeClientForEnrollmentCode(string $code): array
+    {
+        $codeRow = $this->enrollmentCodes->findActive($code);
+        if ($codeRow === null) {
+            throw new ApiException('android_enrollment_code_invalid', 403);
+        }
+        return $this->activeClientForEnrollmentCodeRow($codeRow);
+    }
+
+    /** @param array<string, mixed> $codeRow @return array<string, mixed> */
+    private function activeClientForEnrollmentCodeRow(array $codeRow): array
+    {
+        $client = $this->db->fetchOne(
+            'SELECT * FROM clients WHERE id = :id AND status = :status LIMIT 1',
+            [
+                'id' => (int) ($codeRow['client_id'] ?? 0),
+                'status' => 'active',
+            ]
+        );
+        if ($client === null) {
+            throw new ApiException('android_enrollment_code_invalid', 403);
+        }
+        return $client;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function noStoreJson(array $payload, int $status = 200): Response
+    {
+        return $this->json($payload, $status)->withHeaders([
+            'Cache-Control' => 'no-store, no-cache, must-revalidate',
+            'Pragma' => 'no-cache',
         ]);
     }
 
