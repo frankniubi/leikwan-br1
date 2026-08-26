@@ -13,8 +13,38 @@ assert SPEC.loader is not None
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
+RUNTIME_SPEC = importlib.util.spec_from_file_location(
+    "install_forward_runtime_ultra_listener",
+    ROOT / "client-agent" / "install_forward_runtime.py",
+)
+RUNTIME_MODULE = importlib.util.module_from_spec(RUNTIME_SPEC)
+assert RUNTIME_SPEC.loader is not None
+sys.modules[RUNTIME_SPEC.name] = RUNTIME_MODULE
+RUNTIME_SPEC.loader.exec_module(RUNTIME_MODULE)
+
 
 class UltraClientLeaseTests(unittest.TestCase):
+    def test_linux_ultra_listener_is_publicly_reachable(self) -> None:
+        rendered = RUNTIME_MODULE.render_ultra_runtime(
+            {
+                "forward_id": 42,
+                "listen_port": 32469,
+                "target": "203.0.113.10:443",
+                "transport": "tcp+udp",
+                "ultra_access": {
+                    "protocol": "leikwan-ultra-policy-v2",
+                    "session_ticket": "opaque-ticket",
+                    "policy_generation": "a" * 64,
+                    "target_digest": "b" * 64,
+                    "transport": "tcp+udp",
+                },
+            },
+            {},
+        )
+
+        config = json.loads(rendered["files"][0]["content"])
+        self.assertEqual("0.0.0.0", config["listen_host"])
+
     def test_linux_pull_declares_platform_to_panel(self):
         with mock.patch.object(MODULE, "http_json_with_headers", return_value=({"forwards": []}, {})) as request:
             payload, headers, master = MODULE.pull_client_configs(

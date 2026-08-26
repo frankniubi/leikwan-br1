@@ -206,6 +206,7 @@ final class ClientAgentController extends BaseController
         $agentConfig = $snapshot['agent_config'];
         $clientAgent = $snapshot['client_agent'];
         $clientAgentInstaller = $snapshot['client_agent_installer'];
+        $installForwardRuntime = $snapshot['install_forward_runtime'];
         $bondBinary = $snapshot['bond_binary'];
         $mptcpRuntime = $snapshot['mptcp_runtime'];
         $cfwgLatencyWatchdog = $snapshot['cfwg_latency_watchdog'];
@@ -241,6 +242,8 @@ final class ClientAgentController extends BaseController
                 'desired_agent_sha256' => (string) ($clientAgent['sha256'] ?? ''),
                 'desired_installer_version' => (string) ($clientAgentInstaller['version'] ?? ''),
                 'desired_installer_sha256' => (string) ($clientAgentInstaller['sha256'] ?? ''),
+                'desired_install_forward_runtime_version' => (string) ($installForwardRuntime['version'] ?? ''),
+                'desired_install_forward_runtime_sha256' => (string) ($installForwardRuntime['sha256'] ?? ''),
                 'desired_bond_version' => (string) ($bondBinary['version'] ?? ''),
                 'desired_bond_sha256' => $desiredBondSha256,
                 'desired_mptcp_runtime_version' => (string) ($mptcpRuntime['version'] ?? ''),
@@ -274,6 +277,7 @@ final class ClientAgentController extends BaseController
         $forwards = $this->provisioning->assignedForwardConfigsForClient($clientId, $deviceSession);
         $clientAgent = $this->artifactMetadata('client_agent');
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
+        $installForwardRuntime = $this->artifactMetadata('install_forward_runtime');
         $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
         $mptcpRuntime = $this->artifactMetadata('mptcp_client_runtime');
         $cfwgLatencyWatchdog = $this->artifactMetadata('cfwg_latency_watchdog');
@@ -302,6 +306,7 @@ final class ClientAgentController extends BaseController
         $configRevision = self::configRevision($forwardRevision, $agentConfig, [
             'client_agent' => $clientAgent,
             'client_agent_installer' => $clientAgentInstaller,
+            'install_forward_runtime' => $installForwardRuntime,
             'leikwan_bond_linux_amd64' => $bondBinary,
             'mptcp_client_runtime' => $mptcpRuntime,
             'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
@@ -313,6 +318,7 @@ final class ClientAgentController extends BaseController
             'linux_profile_runtime' => $linuxProfileRuntime,
             'client_agent' => $clientAgent,
             'client_agent_installer' => $clientAgentInstaller,
+            'install_forward_runtime' => $installForwardRuntime,
             'bond_binary' => $bondBinary,
             'mptcp_runtime' => $mptcpRuntime,
             'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
