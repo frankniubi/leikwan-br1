@@ -28,10 +28,10 @@
  "client_agent": {
   "artifact_url": "/artifacts/client-agent.py",
   "path": "client-agent/client_agent.py",
-  "sha256": "a836e17bb760f5674f356aa57e595f2e070310fad80b4580a2d1cb8ab7f2cbbd",
-  "size": 268125,
-  "size_bytes": 268125,
-  "version": "2026.08.27.1"
+  "sha256": "8a8db93852a8596e844ab1b612aed59bf9bf2f2f59a25009617fc7e8710c058e",
+  "size": 268643,
+  "size_bytes": 268643,
+  "version": "2026.08.27.2"
  },
  "client_agent_installer": {
   "artifact_url": "/artifacts/install-client-agent.sh",
@@ -79,10 +79,10 @@
  "install_forward_runtime": {
   "artifact_url": "/artifacts/install-forward-runtime.py",
   "path": "client-agent/install_forward_runtime.py",
-  "sha256": "5b772786c33f16572e298d9d7be42e2500a3ba140fccf37d5aed6310ece5979c",
-  "size": 94246,
-  "size_bytes": 94246,
-  "version": "2026.08.24.1"
+  "sha256": "f01c5edfdb4bdecf429e4be9da115344224b1992c6afa02b28119e6ed30fbf16",
+  "size": 94244,
+  "size_bytes": 94244,
+  "version": "2026.08.27.2"
  },
  "ultra_client_runtime": {
   "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",

@@ -122,6 +122,28 @@ class ClientAgentMptcpHealthGraceTests(unittest.TestCase):
 
         self.assertEqual("", token)
 
+    def test_auto_update_request_token_checks_install_forward_runtime_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "client_id": 123,
+                        "agent_token": "token",
+                        "state_dir": str(pathlib.Path(tmp_dir) / "state"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = client_agent_module.ClientAgent(config_path)
+
+            token = agent.auto_update_request_token(
+                {"desired_install_forward_runtime_sha256": "0" * 64}
+            )
+
+        self.assertIn("install_forward_runtime=", token)
+
     def test_apply_management_state_ignores_stale_explicit_update_when_versions_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = pathlib.Path(tmp_dir) / "config.json"

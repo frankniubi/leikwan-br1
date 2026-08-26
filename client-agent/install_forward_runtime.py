@@ -1145,7 +1145,7 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
                 zone_aliases[code] = aliases
     config_payload = {
         "forward_id": forward_id,
-        "listen_host": "127.0.0.1",
+        "listen_host": "0.0.0.0",
         "listen_port": listen_port,
         "target": str(forward.get("target", "") or "").strip(),
         "control_socket": control_socket,

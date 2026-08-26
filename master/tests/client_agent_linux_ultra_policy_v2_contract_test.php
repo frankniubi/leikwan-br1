@@ -21,4 +21,12 @@ if (!str_contains($source, "str_starts_with(\$platform, 'windows')")
     failLinuxUltraPolicy('Windows and Linux platform gates must both select Ultra v2');
 }
 
+if (!str_contains($source, "artifactMetadata('install_forward_runtime')")) {
+    failLinuxUltraPolicy('client config snapshot must load install_forward_runtime metadata');
+}
+
+if (!str_contains($source, "'desired_install_forward_runtime_sha256'")) {
+    failLinuxUltraPolicy('client pull must publish the install_forward_runtime hash');
+}
+
 echo "ok\n";

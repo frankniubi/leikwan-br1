@@ -31,7 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.08.27.1"
+AGENT_VERSION = "2026.08.27.2"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -1990,6 +1990,9 @@ class ClientAgent:
         desired_agent_sha256 = str(client_meta.get("desired_agent_sha256", "") or "").strip().lower()
         desired_installer_version = str(client_meta.get("desired_installer_version", "") or "").strip()
         desired_installer_sha256 = str(client_meta.get("desired_installer_sha256", "") or "").strip().lower()
+        desired_install_forward_runtime_sha256 = str(
+            client_meta.get("desired_install_forward_runtime_sha256", "") or ""
+        ).strip().lower()
         desired_bond_sha256 = str(client_meta.get("desired_bond_sha256", "") or "").strip().lower()
         desired_mptcp_runtime_sha256 = str(client_meta.get("desired_mptcp_runtime_sha256", "") or "").strip().lower()
         desired_cfwg_watchdog_sha256 = str(client_meta.get("desired_cfwg_watchdog_sha256", "") or "").strip().lower()
@@ -2010,6 +2013,11 @@ class ClientAgent:
         local_installer_sha256 = str(self.config.get("installer_sha256", "") or "").strip().lower()
         if desired_installer_sha256 and local_installer_sha256 != desired_installer_sha256:
             mismatches.append(f"installer_sha256={desired_installer_sha256}")
+
+        if desired_install_forward_runtime_sha256:
+            local_install_forward_runtime_sha256 = file_sha256(self.install_forward_runtime_path()).lower()
+            if local_install_forward_runtime_sha256 != desired_install_forward_runtime_sha256:
+                mismatches.append(f"install_forward_runtime={desired_install_forward_runtime_sha256}")
 
         if desired_bond_sha256:
             local_bond_sha256 = file_sha256(self.bond_binary_path()).lower()

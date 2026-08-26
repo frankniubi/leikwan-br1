@@ -86,9 +86,17 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             agent = client_agent_module.ClientAgent(config_path)
             captured: dict[str, object] = {}
 
-            def fake_pull(method: str, url: str, token: str, payload: dict | None = None):
+            def fake_pull(
+                method: str,
+                url: str,
+                token: str,
+                payload: dict | None = None,
+                *,
+                extra_headers: dict[str, str] | None = None,
+            ):
                 self.assertEqual(method, "GET")
                 self.assertTrue(url.endswith("/api/client/configs/pull"))
+                self.assertEqual({"x-device-platform": "linux"}, extra_headers)
                 return ({"forwards": [], "client": {"id": 123}}, {"date": "Sun, 19 Apr 2026 12:00:00 GMT"})
 
             def fake_post(method: str, url: str, token: str, payload: dict | None = None):
