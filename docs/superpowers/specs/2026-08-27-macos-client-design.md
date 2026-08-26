@@ -1,7 +1,7 @@
 # LeiKwan macOS Client Design
 
 Date: 2026-08-27
-Status: Approved in chat; pending written-spec review
+Status: Revised after scope clarification; pending written-spec review
 
 ## 1. Problem and baseline
 
@@ -33,7 +33,8 @@ It must provide separate packages for Apple Silicon (`arm64`) and Intel
 
 1. email/password login, owned-client selection, client switching, and sign out;
 2. revision-aware config pulling, incremental reconciliation, and `304` handling;
-3. `single`, `bond`, and Ultra forwards using the current panel contract;
+3. `current_mode` forwards whose client mode is `single` or `bond`, plus Ultra
+   forwards using the current panel contract;
 4. start, stop, restart, health state, logs, and local usage counters;
 5. heartbeat, usage accounting, Ultra status/actions, and diagnostics upload;
 6. automatic and manual update checks, hash-verified download, immediate install,
@@ -47,9 +48,16 @@ It must never turn a public sidecar address into a direct client path.
 ## 3. Non-goals and explicit platform limits
 
 - No Apple Developer signing or notarization is assumed for this release.
-- No native macOS kernel MPTCP implementation is promised. Native `mptcp`
-  assignments are rejected unless the panel explicitly marks a supported TCP
-  fallback; the fallback result is visible in the forward status.
+- Only these effective modes are in scope: `current_mode + single`,
+  `current_mode + bond`, and `ultra`. Any other mode received from the panel
+  immediately shows this fixed user-facing notice:
+
+  ```text
+  The mode of this forward is not supported in MacOS binary. 此转发的模式尚未在MacOS客户端支援.
+  ```
+
+  The forward is then discarded before state, runtime, or health processing.
+  There is no fallback or migration for discarded modes.
 - No forward creation or billing workflow is added to the desktop app.
 - No production panel deployment is part of implementation. Artifact publication
   remains a separately authorized operation.
@@ -66,6 +74,7 @@ Extract the UI-independent lifecycle currently spread across `MainViewModel`,
 
 - authentication/session and active-client state;
 - config pull, revision persistence, and forward reconciliation;
+- filtering to the three supported macOS modes before reconciliation;
 - runtime start/stop/restart requests;
 - heartbeat scheduling and usage commit semantics;
 - diagnostics request detection and redacted result submission;
@@ -139,24 +148,27 @@ The build fails if a helper required by the selected runtime is missing or has
 an unexpected SHA-256. Every helper is launched with an absolute path inside
 the app bundle or an explicit user override from settings.
 
-### 5.2 Supported modes
+### 5.2 Supported modes and filtering
 
-- `single`: one local `wstunnel` runtime, following the same SNI, Host, path,
-  and target rules as Windows.
-- `bond`: one `leikwan-bond` runtime plus the required `leikwan-ingress` or
-  WSS leg helpers. Slave-preconnect and plain-TCP mux metadata remain relay-
-  first; the client does not configure a sidecar-facing WireGuard interface.
+- `current_mode + single`: one local `wstunnel` runtime, following the same
+  SNI, Host, path, and target rules as Windows.
+- `current_mode + bond`: one `leikwan-bond` runtime plus the required
+  `leikwan-ingress` or WSS leg helpers. Slave-preconnect and plain-TCP mux
+  metadata remain relay-first; the client does not configure a sidecar-facing
+  WireGuard interface.
 - `ultra`: direct provider runtime with one-shot panel leases, local-only
   listener, status file, and per-forward control IPC. On macOS the control
   endpoint is a Unix domain socket rather than a Windows named pipe.
 
-For `mptcp` and `race`, `MacForwardPolicy` applies an explicit rule:
-
-1. accept a panel-declared, supported TCP fallback and record the fallback code;
-2. otherwise keep the forward visible as unsupported and do not start a partial
-   runtime.
-
-No mode silently falls through to a direct sidecar connection.
+`MacForwardPolicy` is a strict allowlist and must inspect the raw mode strings
+before any permissive mode normalizer runs. It accepts a forward only when
+`backend_mode=current_mode` and `mode`/`client_mode` is exactly `single` or
+`bond`, or when `backend_mode=ultra` satisfies the existing Ultra shape. Every
+other forward, including `mptcp`, `race`, `cf_mode`, `leigod_mode`, and unknown
+values, emits the fixed notice above and is then ignored without creating state,
+starting processes, or running health checks. The notice is an immediate
+transient toast/banner (and may also be copied to the log); it does not create a
+persisted forward record.
 
 ### 5.3 Shutdown and recovery
 
@@ -188,7 +200,7 @@ The shared controller sends `since_revision` and bounded `wait_seconds`, treats
 `304` as a successful no-change cycle, and applies only changed effective
 forward contracts. Heartbeats include:
 
-- app version and `supports_mptcp=false`;
+- app version and the macOS runtime capability summary;
 - WireGuard identity public key when the helper is available;
 - total byte deltas and Ultra usage sequences;
 - redacted runtime health/reputation snapshots;
@@ -292,7 +304,8 @@ the authority for final Mach-O and DMG smoke tests.
 
 - stable macOS device ID generation and header construction;
 - macOS paths and helper resolution without `.exe` suffixes;
-- mode policy and explicit MPTCP/Race fallback/rejection;
+- strict three-mode filtering, fixed notice text, and proof that discarded modes
+  have no side effects;
 - Unix process-group cleanup and port-owner classification;
 - login/select/switch/sign-out state transitions;
 - pull `304`, revision change, failed pull backoff, and no-op apply;
@@ -326,8 +339,8 @@ pass. No live production release is implied by CI success.
 
 - **Missing upstream macOS helper:** build jobs fail before publishing; do not
   substitute a Linux or Windows binary.
-- **No native MPTCP:** reject or explicitly downgrade only when the panel marks
-  the fallback; expose the reason in the UI and heartbeat.
+- **Unexpected panel mode:** discard it before reconciliation and keep the
+  accepted-mode filter covered by regression tests.
 - **Gatekeeper warning:** document the unsigned first-open confirmation; do not
   disguise or bypass system security controls.
 - **Bundle permissions:** retain a verified archive and open the DMG when an
@@ -341,7 +354,7 @@ pass. No live production release is implied by CI success.
    changing Windows semantics.
 2. Add macOS path/process/port/autostart/secret/update services and unit tests.
 3. Add the Avalonia macOS shell and shell tests.
-4. Add macOS runtime helper resolution and mode policy.
+4. Add macOS runtime helper resolution and the strict three-mode filter.
 5. Add panel manifest/routes, Ultra platform grant handling, install UI, and PHP
    regression tests.
 6. Add dual-architecture helper builds, app publishing, DMG/update packaging,
