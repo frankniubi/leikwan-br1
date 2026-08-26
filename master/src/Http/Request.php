@@ -14,13 +14,22 @@ final class Request
     /** @var array<string, string> */
     private array $headers;
     private string $rawBody;
+    private ?string $remoteAddress;
 
     /**
      * @param array<string, mixed> $query
      * @param array<string, mixed> $body
      * @param array<string, string> $headers
      */
-    public function __construct(string $method, string $path, array $query, array $body, array $headers, string $rawBody)
+    public function __construct(
+        string $method,
+        string $path,
+        array $query,
+        array $body,
+        array $headers,
+        string $rawBody,
+        ?string $remoteAddress = null,
+    )
     {
         $this->method = strtoupper($method);
         $this->path = $path;
@@ -28,6 +37,8 @@ final class Request
         $this->body = $body;
         $this->headers = array_change_key_case($headers, CASE_LOWER);
         $this->rawBody = $rawBody;
+        $remoteAddress = trim((string) $remoteAddress);
+        $this->remoteAddress = $remoteAddress !== '' ? $remoteAddress : null;
     }
 
     public static function fromGlobals(): self
@@ -48,7 +59,7 @@ final class Request
             }
         }
 
-        return new self($method, $path, $query, $body, $headers, $rawBody);
+        return new self($method, $path, $query, $body, $headers, $rawBody, $_SERVER['REMOTE_ADDR'] ?? null);
     }
 
     public function method(): string
@@ -80,6 +91,11 @@ final class Request
     public function rawBody(): string
     {
         return $this->rawBody;
+    }
+
+    public function remoteAddress(): ?string
+    {
+        return $this->remoteAddress;
     }
 
     public function input(string $key, mixed $default = null): mixed
