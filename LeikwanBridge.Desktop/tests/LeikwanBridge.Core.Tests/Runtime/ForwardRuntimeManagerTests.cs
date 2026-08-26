@@ -1,12 +1,41 @@
 using System.Text.Json;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
+using LeikwanBridge.Core.Services.Ultra;
 using Xunit;
 
 namespace LeikwanBridge.Core.Tests.Runtime;
 
 public sealed class ForwardRuntimeManagerTests
 {
+    [Fact]
+    public void UltraLifecycle_DelegatesToInjectedRuntimeHost()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var host = new RecordingUltraRuntimeHost();
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            new StateManager(tempDir.Path),
+            binaryExists: _ => true,
+            portListeningProbe: _ => true,
+            ultraRuntimeHost: host);
+        var forward = CreateUltraForward();
+
+        manager.ApplyForward(forward, "contract-a", "config_sync");
+
+        Assert.Equal([(880, "contract-a", "config_sync")], host.Starts);
+        Assert.Empty(supervisor.StartedRoles);
+
+        forward.RuntimeLease = CreateUltraForward().RuntimeLease;
+        Assert.True(manager.RefreshUltraLease(forward));
+        Assert.Equal([880], host.Refreshes);
+
+        manager.StopForward(880);
+        Assert.Equal([880], host.Stops);
+    }
+
     [Theory]
     [InlineData("single", 1)]
     [InlineData("race", 2)]
@@ -796,7 +825,9 @@ public sealed class ForwardRuntimeManagerTests
             string label,
             string exePath,
             string arguments,
-            string? workingDir = null)
+            byte[]? standardInput = null,
+            bool logArguments = true,
+            string? workingDirectory = null)
         {
             if (role == "mptcp-runtime")
                 ConfigExistedWhenMptcpStarted = File.Exists(expectedConfigPath);
@@ -818,7 +849,9 @@ public sealed class ForwardRuntimeManagerTests
             string label,
             string exePath,
             string arguments,
-            string? workingDir = null)
+            byte[]? standardInput = null,
+            bool logArguments = true,
+            string? workingDirectory = null)
         {
             var process = new System.Diagnostics.Process();
             _processes.Add(new ManagedProcess(forwardId, role, label, process, DateTime.UtcNow));
@@ -832,6 +865,29 @@ public sealed class ForwardRuntimeManagerTests
 
         public override void StopAll(int forwardId)
         {
+        }
+    }
+
+    private sealed class RecordingUltraRuntimeHost : IUltraRuntimeHost
+    {
+        public List<(int ForwardId, string ContractSignature, string ApplyReason)> Starts { get; } = [];
+        public List<int> Refreshes { get; } = [];
+        public List<int> Stops { get; } = [];
+
+        public void Start(ForwardConfig forward, UltraLease lease, string contractSignature, string applyReason)
+        {
+            Starts.Add((forward.ForwardId, contractSignature, applyReason));
+        }
+
+        public bool Refresh(ForwardConfig forward, UltraLease lease)
+        {
+            Refreshes.Add(forward.ForwardId);
+            return true;
+        }
+
+        public void Stop(int forwardId)
+        {
+            Stops.Add(forwardId);
         }
     }
 }

@@ -17,6 +17,7 @@ public sealed class WindowsJobGroupTests
     [Fact]
     public void UltraStaticConfigHasNoProviderMaterial()
     {
+        const string providerIp = "203.0.113.20";
         var config = new AgentConfig { StateDir = Path.Combine(Path.GetTempPath(), "lw-ultra-test") };
         var state = new StateManager(config.GetEffectiveStateDir());
         var supervisor = new LeikwanBridge.Core.Tests.Runtime.TestProcessSupervisor();
@@ -43,7 +44,7 @@ public sealed class WindowsJobGroupTests
             QuotaRemainingBytes = 1024,
             SelectionRef = "selection-reference-abcdefghijklmnop",
             NonceHash = new string('b', 64),
-            ProviderIp = "203.0.113.20",
+            ProviderIp = providerIp,
             ProviderPort = 5438,
             User = "user"u8.ToArray(),
             Password = "password"u8.ToArray(),
@@ -62,11 +63,11 @@ public sealed class WindowsJobGroupTests
             ultraLeaseSender: (_, _, _) => Task.FromResult(true));
         manager.ApplyForward(forward);
         Assert.Equal(["ultra-runtime"], supervisor.StartedRoles);
-        Assert.DoesNotContain(lease.ProviderIp, supervisor.StartedCommands.Single().arguments);
+        Assert.DoesNotContain(providerIp, supervisor.StartedCommands.Single().arguments);
         var staticFiles = Directory.GetFiles(Path.Combine(config.GetEffectiveStateDir(), "runtime"), "ultra-forward-42.json");
         Assert.Single(staticFiles);
         var staticJson = File.ReadAllText(staticFiles[0]);
-        Assert.DoesNotContain(lease.ProviderIp, staticJson);
+        Assert.DoesNotContain(providerIp, staticJson);
         Assert.DoesNotContain("password", staticJson, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("credential", staticJson, StringComparison.OrdinalIgnoreCase);
     }

@@ -435,14 +435,14 @@ git commit -m "feat(mac): harden Ultra memory-only runtime"
 - `bool IUltraRuntimeHost.Refresh(ForwardConfig forward, UltraLease lease)`.
 - `void IUltraRuntimeHost.Stop(int forwardId)`.
 
-- [ ] **Step 1: Write failing Windows extraction tests.**
+- [x] **Step 1: Write failing Windows extraction tests.**
 
 Retain every current `ApplyForward_Ultra*` assertion, then inject a recording
 `IUltraRuntimeHost` and assert `ForwardRuntimeManager` delegates Ultra
 start/refresh/stop while single/bond still use the existing builders. This is
 the regression fence before moving current Windows code.
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter "FullyQualifiedName~ForwardRuntimeManagerTests|FullyQualifiedName~WindowsJobGroupTests"
@@ -450,7 +450,7 @@ dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.C
 
 Expected: FAIL because the runtime abstractions do not exist.
 
-- [ ] **Step 3: Extract `IProcessSupervisor` and `WindowsUltraRuntimeHost` without behavior changes.**
+- [x] **Step 3: Extract `IProcessSupervisor` and `WindowsUltraRuntimeHost` without behavior changes.**
 
 Move the current config-file/named-pipe Ultra code into the Windows host. Make
 `ProcessSupervisor` and test supervisors implement the new interface. When
@@ -458,7 +458,7 @@ Move the current config-file/named-pipe Ultra code into the Windows host. Make
 and zero the supplied byte array in `finally`. When `logArguments=false` log only
 forward ID, role, and executable basename.
 
-- [ ] **Step 4: Write failing Unix lease and Mac host tests.**
+- [x] **Step 4: Write failing Unix lease and Mac host tests.**
 
 Use a temporary Unix listener to verify the four-byte frame, one acknowledgement,
 64 KiB limit, two-second timeout, exact forward/generation match, and zeroed body
@@ -472,14 +472,14 @@ Assert.DoesNotContain(canaryTarget, Directory.EnumerateFiles(root, "*", SearchOp
 Assert.Equal(Convert.FromHexString(new string('0', lease.Password.Length * 2)), lease.Password);
 ```
 
-- [ ] **Step 5: Implement `MacProcessSupervisor`.**
+- [x] **Step 5: Implement `MacProcessSupervisor`.**
 
 Start each helper in its own process group using `setpgid(pid,pid)`. Stop sends
 `SIGTERM` to the negative group ID, waits up to three seconds, then sends
 `SIGKILL` and disposes every `Process`. Never invoke a shell. Track roles/PIDs
 with the same semantics as the Windows supervisor.
 
-- [ ] **Step 6: Implement `MacUltraRuntimeHost`.**
+- [x] **Step 6: Implement `MacUltraRuntimeHost`.**
 
 Create `<runtime>/ultra-<forward>-<128-bit-random>/` mode `0700`; choose a random
 socket name; keep only the metadata status path on disk. Serialize the bootstrap
@@ -488,7 +488,7 @@ array, wait for the socket, send the lease, then require the local listener.
 `Refresh` uses the in-memory socket path. `Stop` kills the process group and
 removes the socket directory/status.
 
-- [ ] **Step 7: Run Core and Mac runtime tests.**
+- [x] **Step 7: Run Core and Mac runtime tests.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter "FullyQualifiedName~ForwardRuntimeManagerTests|FullyQualifiedName~UnixUltraLeaseClientTests|FullyQualifiedName~HealthCheckServiceTests|FullyQualifiedName~WindowsJobGroupTests"
@@ -497,7 +497,7 @@ dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Ma
 
 Expected: PASS; Windows tests retain their prior assertions and Mac tests find no canary on disk/argv/log.
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Core LeikwanBridge.Desktop/src/LeikwanBridge.Mac/Services/MacProcessSupervisor.cs LeikwanBridge.Desktop/src/LeikwanBridge.Mac/Services/MacUltraRuntimeHost.cs LeikwanBridge.Desktop/tests

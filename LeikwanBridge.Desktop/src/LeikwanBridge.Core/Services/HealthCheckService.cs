@@ -1,5 +1,6 @@
 using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services.Platform;
 using Serilog;
 using System.Diagnostics;
 using System.Net;
@@ -14,7 +15,7 @@ namespace LeikwanBridge.Core.Services;
 /// </summary>
 public sealed class HealthCheckService
 {
-    private readonly ProcessSupervisor _supervisor;
+    private readonly IProcessSupervisor _supervisor;
     private readonly ForwardRuntimeManager _runtimeManager;
     private readonly StateManager _stateManager;
     private readonly AgentConfig _config;
@@ -31,7 +32,7 @@ public sealed class HealthCheckService
     public event Action<int, string>? HealthIssue;
 
     public HealthCheckService(
-        ProcessSupervisor supervisor,
+        IProcessSupervisor supervisor,
         ForwardRuntimeManager runtimeManager,
         StateManager stateManager,
         Func<int, bool>? portListeningProbe = null,
