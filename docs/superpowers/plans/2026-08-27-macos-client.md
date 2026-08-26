@@ -132,7 +132,7 @@
 - Produces: `StateManager.RemoveApplied(int forwardId)`.
 - Preserves: the default `WindowsForwardAcceptancePolicy` delegates to `WindowsForwardPolicy.IsSupportedOnWindows`.
 
-- [ ] **Step 1: Write the failing raw-mode allowlist tests.**
+- [x] **Step 1: Write the failing raw-mode allowlist tests.**
 
 ```csharp
 [Theory]
@@ -158,7 +158,7 @@ public void Evaluate_UsesRawClientModeBeforeAnyNormalizer(
 }
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED.**
+- [x] **Step 2: Run the focused test and verify RED.**
 
 Run:
 ```powershell
@@ -167,7 +167,7 @@ dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.C
 
 Expected: FAIL because `MacForwardPolicy` and `ForwardAcceptance` do not exist.
 
-- [ ] **Step 3: Implement the exact policy contract.**
+- [x] **Step 3: Implement the exact policy contract.**
 
 ```csharp
 public sealed record ForwardAcceptance(bool Accepted, string EffectiveMode, string Notice);
@@ -204,7 +204,7 @@ target, an Ultra target contract (or empty legacy contract), and zero endpoint
 inventory. Refactor `WindowsForwardPolicy` to call this helper so its accepted
 Ultra shapes do not change.
 
-- [ ] **Step 4: Add a polling test that proves rejection precedes every side effect.**
+- [x] **Step 4: Add a polling test that proves rejection precedes every side effect.**
 
 Use the existing HTTP-handler fixture to return one `mptcp` forward. Subscribe to
 `ForwardRejected` and assert the exact notice, then assert the runtime spy has
@@ -212,14 +212,14 @@ zero compute/apply/health calls, `applied.json` has no rejected ID, and
 `LatestForwards` is empty. Add a supported-to-rejected revision test asserting
 the old process is stopped and `RemoveApplied` deletes the old record.
 
-- [ ] **Step 5: Inject the policy into `ConfigPollingService` and filter before normalization.**
+- [x] **Step 5: Inject the policy into `ConfigPollingService` and filter before normalization.**
 
 The constructor gains an optional `IForwardAcceptancePolicy` with a Windows
 default. Iterate the raw `pull.Forwards` once, emit `ForwardRejected` immediately,
 and reconcile only accepted active forwards. Removed/rejected IDs call
 `StopForwardForPolicy` followed by `StateManager.RemoveApplied`.
 
-- [ ] **Step 6: Run focused and Windows policy tests.**
+- [x] **Step 6: Run focused and Windows policy tests.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter "FullyQualifiedName~MacForwardPolicyTests|FullyQualifiedName~ConfigPollingServiceTests|FullyQualifiedName~WindowsForwardPolicyTests"
@@ -227,7 +227,7 @@ dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.C
 
 Expected: PASS, including the exact bilingual notice and zero rejected-forward side effects.
 
-- [ ] **Step 7: Commit.**
+- [x] **Step 7: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Core/Models/ClientPlatformIdentity.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Helpers/IForwardAcceptancePolicy.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Helpers/UltraForwardPolicy.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Helpers/MacForwardPolicy.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Helpers/WindowsForwardPolicy.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/ConfigPollingService.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/StateManager.cs LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/Runtime/MacForwardPolicyTests.cs LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/Runtime/ConfigPollingServiceTests.cs

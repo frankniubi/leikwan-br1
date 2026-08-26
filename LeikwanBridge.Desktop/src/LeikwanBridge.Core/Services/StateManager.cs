@@ -33,6 +33,18 @@ public sealed class StateManager
         SaveJson(path, applied);
     }
 
+    public bool RemoveApplied(int forwardId)
+    {
+        lock (_lock)
+        {
+            var applied = LoadApplied();
+            if (!applied.Remove(forwardId.ToString()))
+                return false;
+            SaveApplied(applied);
+            return true;
+        }
+    }
+
     public PullState LoadPullState()
     {
         var path = Path.Combine(_stateDir, "config_pull_state.json");
