@@ -520,7 +520,7 @@ git commit -m "feat(mac): add Unix process and Ultra runtime hosts"
 - `Task<bool> IAutostartService.IsEnabledAsync(CancellationToken ct)` and `Task SetEnabledAsync(bool enabled, CancellationToken ct)`.
 - `IClientPlatformPaths` exposes `ConfigPath`, `StateDirectory`, `RuntimeDirectory`, `LogDirectory`, `BundleDirectory`, and `BinDirectory`.
 
-- [ ] **Step 1: Write failing path and identity tests.**
+- [x] **Step 1: Write failing path and identity tests.**
 
 ```csharp
 var paths = new MacPlatformPaths("/Users/tester", "/Applications/LeiKwan Bridge.app");
@@ -533,13 +533,13 @@ Assert.Matches("^macos-client-[a-f0-9]{32}$", identity.DeviceId);
 Also capture a request and assert all four required Mac headers and no Windows
 user agent.
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj --filter "FullyQualifiedName~MacPlatformPathsTests|FullyQualifiedName~MacKeychainSecretStoreTests|FullyQualifiedName~MacAgentConfigStoreTests|FullyQualifiedName~MacPortOwnershipProbeTests|FullyQualifiedName~MacAutostartServiceTests"
 ```
 
-- [ ] **Step 3: Implement paths and restrictive modes.**
+- [x] **Step 3: Implement paths and restrictive modes.**
 
 Create root/state/runtime/log directories as `0700` and config/device ID files as
 `0600` using `File.SetUnixFileMode`. Generate 16 random bytes once for the device
@@ -547,7 +547,7 @@ ID; never derive it from a hardware serial or MAC address. Mac app composition
 sets all `AgentConfig` helper paths explicitly, so Windows `.exe` defaults remain
 unchanged.
 
-- [ ] **Step 4: Implement Keychain with a testable native boundary.**
+- [x] **Step 4: Implement Keychain with a testable native boundary.**
 
 Wrap `SecKeychainFindGenericPassword`, `SecKeychainAddGenericPassword`, and
 `SecKeychainItemModifyAttributesAndData` behind `IMacKeychainNative`. Service
@@ -563,7 +563,7 @@ only those tokens to the separate `0600` fallback secret file, never to the
 general config JSON. Tests seed canary tokens and assert zero matches in
 `config.json`.
 
-- [ ] **Step 5: Implement structured `lsof` and LaunchAgent handling.**
+- [x] **Step 5: Implement structured `lsof` and LaunchAgent handling.**
 
 Run `/usr/sbin/lsof` with `ProcessStartInfo.ArgumentList` and `-Fpcu`; validate
 the requested port before launch and never use shell interpolation. Generate the
@@ -571,7 +571,7 @@ plist with `XmlWriter`, including a ProgramArguments array, `RunAtLoad=true`,
 `KeepAlive=false`, and no tokens. Write atomically mode `0600`, then use
 `launchctl bootstrap/bootout gui/<uid>`.
 
-- [ ] **Step 6: Run focused tests and a source scan.**
+- [x] **Step 6: Run focused tests and a source scan.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter FullyQualifiedName~MasterApiClientDesktopLoginTests
@@ -581,7 +581,7 @@ rg -n "windows-client|Leikwan-Windows-GUI|\.exe" LeikwanBridge.Desktop/src/Leikw
 
 Expected: tests PASS; the source scan returns no Mac identity or helper-path regression.
 
-- [ ] **Step 7: Commit.**
+- [x] **Step 7: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Core LeikwanBridge.Desktop/src/LeikwanBridge.Mac/Services LeikwanBridge.Desktop/tests

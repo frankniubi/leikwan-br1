@@ -27,6 +27,12 @@ public static class PortConflictPreflight
         "leikwan-mptcp-relay.exe",
         "ultra-client.exe",
         "wstunnel.exe",
+        "LeikwanBridge.Mac",
+        "leikwan-bond",
+        "leikwan-ingress",
+        "leikwan-uot-bond",
+        "ultra-client",
+        "wstunnel",
     };
 
     public static bool IsManagedRuntimeOwner(string? executablePath, string? installRoot)

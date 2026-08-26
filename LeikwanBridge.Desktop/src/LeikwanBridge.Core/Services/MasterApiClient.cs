@@ -34,8 +34,15 @@ public sealed class MasterApiClient : IDisposable
         string devicePlatform = "",
         Func<HttpClient>? httpClientFactory = null,
         bool ownsHttpClient = true,
-        Action<HttpRequestMessage>? onRequestForTest = null)
+        Action<HttpRequestMessage>? onRequestForTest = null,
+        ClientPlatformIdentity? platformIdentity = null)
     {
+        if (platformIdentity is not null)
+        {
+            deviceId = platformIdentity.DeviceId;
+            deviceName = platformIdentity.DeviceName;
+            devicePlatform = platformIdentity.Platform;
+        }
         _masterUrl = masterUrl.TrimEnd('/');
         _agentToken = agentToken;
         _deviceId = deviceId.Trim();
@@ -43,7 +50,9 @@ public sealed class MasterApiClient : IDisposable
         _ownsHttpClient = ownsHttpClient;
         _onRequestForTest = onRequestForTest;
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _agentToken);
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd($"Leikwan-Windows-GUI/{AgentVersion}");
+        var userAgentProduct = platformIdentity?.UserAgentProduct ?? "Leikwan-Windows-GUI";
+        var appVersion = platformIdentity?.AppVersion ?? AgentVersion;
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd($"{userAgentProduct}/{appVersion}");
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         AddOptionalHeader("X-Device-Id", deviceId);
         AddOptionalHeader("X-Device-Name", deviceName);
