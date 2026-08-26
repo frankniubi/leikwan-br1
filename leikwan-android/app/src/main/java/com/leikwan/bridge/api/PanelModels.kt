@@ -3,39 +3,6 @@ package com.leikwan.bridge.api
 import com.google.gson.JsonElement
 import com.google.gson.annotations.SerializedName
 
-data class LoginRequest(
-    val email: String,
-    val password: String,
-    @SerializedName("client_id") val clientId: Long? = null,
-)
-
-data class ClientSelectionRequest(
-    @SerializedName("session_token") val sessionToken: String,
-    @SerializedName("client_id") val clientId: Long,
-)
-
-data class LoginResponse(
-    val ok: Boolean,
-    val error: String? = null,
-    @SerializedName(value = "session_token", alternate = ["token"])
-    val token: String? = null,
-    @SerializedName("user_id") val userId: Long? = null,
-    val username: String? = null,
-    @SerializedName("client_id") val clientId: Long? = null,
-    @SerializedName("client_name") val clientName: String? = null,
-    val clients: List<ClientInfo> = emptyList(),
-)
-
-data class ClientInfo(val id: Long, val name: String)
-
-data class ClientSelectionResponse(
-    val ok: Boolean,
-    val error: String? = null,
-    @SerializedName("client_id") val clientId: Long,
-    @SerializedName("client_name") val clientName: String,
-    @SerializedName("agent_token") val agentToken: String,
-)
-
 data class PullConfigsResponse(
     val ok: Boolean,
     val client: JsonElement,
@@ -49,6 +16,7 @@ data class PullConfigsResponse(
 
 data class HeartbeatRequest(
     @SerializedName("client_platform") val clientPlatform: String = "android",
+    @SerializedName("os_release") val osRelease: String = android.os.Build.VERSION.RELEASE.orEmpty(),
     @SerializedName("supports_route_direction_rules") val supportsRouteDirectionRules: Boolean = true,
     @SerializedName("supports_exact_destination_rules") val supportsExactDestinationRules: Boolean = true,
 )

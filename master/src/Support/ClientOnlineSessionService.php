@@ -210,7 +210,7 @@ final class ClientOnlineSessionService
         $userAgent = trim((string) ($request->header('user-agent') ?? ''));
         $platform = trim((string) ($request->header('x-device-platform') ?? (string) $request->input('platform', '')));
         $deviceName = trim((string) ($request->header('x-device-name') ?? (string) $request->input('device_name', '')));
-        $osRelease = trim((string) $request->input('kernel_release', ''));
+        $osRelease = trim((string) $request->input('os_release', $request->input('kernel_release', '')));
 
         if ($deviceName === '' && $userAgent !== '') {
             $deviceName = $userAgent;

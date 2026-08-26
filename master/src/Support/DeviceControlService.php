@@ -60,7 +60,8 @@ final class DeviceControlService
         }
 
         $nonce = $this->randomToken();
-        $expiresAt = gmdate('Y-m-d H:i:s', time() + self::CHALLENGE_TTL_SECONDS);
+        $expiresAtTimestamp = time() + self::CHALLENGE_TTL_SECONDS;
+        $expiresAt = gmdate('Y-m-d H:i:s', $expiresAtTimestamp);
         $this->db->insert('android_device_challenges', [
             'client_id' => $clientId,
             'device_id' => $deviceId,
@@ -70,7 +71,7 @@ final class DeviceControlService
             'created_at' => gmdate('Y-m-d H:i:s'),
         ]);
 
-        return ['nonce' => $nonce, 'expires_at' => $expiresAt];
+        return ['nonce' => $nonce, 'expires_at' => gmdate('Y-m-d\TH:i:s\Z', $expiresAtTimestamp)];
     }
 
     /**
@@ -192,7 +193,8 @@ final class DeviceControlService
             );
 
             $session = $this->randomToken();
-            $expiresAt = gmdate('Y-m-d H:i:s', time() + self::SESSION_TTL_SECONDS);
+            $expiresAtTimestamp = time() + self::SESSION_TTL_SECONDS;
+            $expiresAt = gmdate('Y-m-d H:i:s', $expiresAtTimestamp);
             $commandVersion = max(0, (int) ($control['command_version'] ?? 0));
             $this->db->insert('android_device_sessions', [
                 'client_id' => $clientId,
@@ -207,7 +209,7 @@ final class DeviceControlService
 
             return [
                 'device_session' => $session,
-                'expires_at' => $expiresAt,
+                'expires_at' => gmdate('Y-m-d\TH:i:s\Z', $expiresAtTimestamp),
                 'command_version' => $commandVersion,
             ];
         });

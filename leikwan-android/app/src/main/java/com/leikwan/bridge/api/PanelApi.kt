@@ -9,13 +9,30 @@ import retrofit2.http.DELETE
 import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
+import com.leikwan.bridge.session.DeviceAckRequest
+import com.leikwan.bridge.session.DeviceAckResponse
+import com.leikwan.bridge.session.DeviceChallengeRequest
+import com.leikwan.bridge.session.DeviceChallengeResponse
+import com.leikwan.bridge.session.DeviceEnrollRequest
+import com.leikwan.bridge.session.DeviceEnrollResponse
+import com.leikwan.bridge.session.EnrollmentCodeChallengeRequest
+import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
 
 interface PanelApi {
-    @POST("api/client/login")
-    suspend fun login(@Body request: LoginRequest): Response<LoginResponse>
+    @POST("api/client/devices/challenge")
+    suspend fun deviceChallenge(@Body request: DeviceChallengeRequest): Response<DeviceChallengeResponse>
 
-    @POST("api/client/select")
-    suspend fun selectClient(@Body request: ClientSelectionRequest): Response<ClientSelectionResponse>
+    @POST("api/client/devices/enroll")
+    suspend fun enrollDevice(@Body request: DeviceEnrollRequest): Response<DeviceEnrollResponse>
+
+    @POST("api/client/devices/code/challenge")
+    suspend fun enrollmentCodeChallenge(@Body request: EnrollmentCodeChallengeRequest): Response<DeviceChallengeResponse>
+
+    @POST("api/client/devices/code/enroll")
+    suspend fun enrollmentCodeEnroll(@Body request: EnrollmentCodeEnrollRequest): Response<DeviceEnrollResponse>
+
+    @POST("api/client/devices/ack")
+    suspend fun acknowledgeDevice(@Body request: DeviceAckRequest): Response<DeviceAckResponse>
 
     @POST("api/client/heartbeat")
     suspend fun heartbeat(

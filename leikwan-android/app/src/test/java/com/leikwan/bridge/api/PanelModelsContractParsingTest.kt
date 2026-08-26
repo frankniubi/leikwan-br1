@@ -1,13 +1,28 @@
 package com.leikwan.bridge.api
 
 import com.google.gson.JsonParser
+import com.google.gson.Gson
 import com.leikwan.bridge.runtime.ForwardContractParser
 import com.leikwan.bridge.runtime.ForwardMode
+import com.leikwan.bridge.session.DeviceControlEnvelope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
 
 class PanelModelsContractParsingTest {
+
+    @Test
+    fun `device control envelope parses terminal command without transport material`() {
+        val parsed = Gson().fromJson(
+            """{"ok":false,"error":"device_kicked","command":{"version":9,"action":"kick","reason":"tenant"},"endpoint":"secret"}""",
+            DeviceControlEnvelope::class.java,
+        )
+
+        assertEquals("device_kicked", parsed.error)
+        assertEquals(9L, parsed.command?.version)
+        assertEquals("kick", parsed.command?.action)
+        assertEquals("tenant", parsed.command?.reason)
+    }
 
     @Test
     fun `parser keeps bond ingress contract fields`() {

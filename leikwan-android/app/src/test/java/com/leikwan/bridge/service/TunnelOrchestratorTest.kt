@@ -9,14 +9,10 @@ import com.google.gson.JsonParser
 import com.leikwan.bridge.api.ClientRouteRuleDto
 import com.leikwan.bridge.api.ClientRuleWriteRequest
 import com.leikwan.bridge.api.ClientRuleWriteResponse
-import com.leikwan.bridge.api.ClientSelectionRequest
-import com.leikwan.bridge.api.ClientSelectionResponse
 import com.leikwan.bridge.api.DirectionRuntimeBindingDto
 import com.leikwan.bridge.api.DirectionRuntimeRefDto
 import com.leikwan.bridge.api.HeartbeatRequest
 import com.leikwan.bridge.api.HeartbeatResponse
-import com.leikwan.bridge.api.LoginRequest
-import com.leikwan.bridge.api.LoginResponse
 import com.leikwan.bridge.api.PanelApi
 import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.api.PullConfigsResponse
@@ -29,6 +25,15 @@ import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.data.routing.RoutingExplainabilityStore
 import com.leikwan.bridge.data.routing.RulePackManager
 import com.leikwan.bridge.data.routing.UserRoutingRuleStore
+import com.leikwan.bridge.security.DeviceSecurityResult
+import com.leikwan.bridge.session.DeviceAckRequest
+import com.leikwan.bridge.session.DeviceAckResponse
+import com.leikwan.bridge.session.DeviceChallengeRequest
+import com.leikwan.bridge.session.DeviceChallengeResponse
+import com.leikwan.bridge.session.DeviceEnrollRequest
+import com.leikwan.bridge.session.DeviceEnrollResponse
+import com.leikwan.bridge.session.EnrollmentCodeChallengeRequest
+import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
 import com.leikwan.bridge.runtime.BondingContract
 import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardEndpoint
@@ -445,7 +450,12 @@ class TunnelOrchestratorTest {
             .allowMainThreadQueries()
             .build()
         val prefs = Prefs(context.getSharedPreferences("orchestrator-route-rule-test-prefs", Context.MODE_PRIVATE))
-        prefs.token = "agent-token"
+        val deviceId = "android-client-7-aabbccddeeff00112233445566778899"
+        prefs.clientId = 7L
+        prefs.agentToken = "agent-token"
+        prefs.enrolledDeviceId = deviceId
+        prefs.deviceSessionToken = "device-session"
+        prefs.deviceSessionExpiresAtMs = Long.MAX_VALUE
         val processRunner = RecordingProcessRunner()
         val binaries = RuntimeBinaryPaths("/runtime/wstunnel", "/runtime/leikwan-ingress", "/runtime/leikwan-bond")
         val binaryInstaller = RecordingBinaryInstaller(context, binaries)
@@ -503,7 +513,14 @@ class TunnelOrchestratorTest {
             ),
             capabilities = RouteRuleCapabilitiesDto(true, true),
         )
-        val panelRepo = PanelRepository(context, prefsOverride = prefs, apiOverride = panelApi, routeRuleStore = routeRuleStore)
+        val panelRepo = PanelRepository(
+            context = context,
+            prefsOverride = prefs,
+            apiOverride = panelApi,
+            routeRuleStore = routeRuleStore,
+            deviceIdProvider = { deviceId },
+            deviceSecurityCheck = { DeviceSecurityResult.Allowed },
+        )
         val orchestrator = TunnelOrchestrator(
             context = context,
             prefs = prefs,
@@ -649,8 +666,21 @@ class TunnelOrchestratorTest {
         private val bindings: List<DirectionRuntimeBindingDto> = emptyList(),
         private val capabilities: RouteRuleCapabilitiesDto? = null,
     ) : PanelApi {
-        override suspend fun login(request: LoginRequest): Response<LoginResponse> = Response.success(LoginResponse(ok = true))
-        override suspend fun selectClient(request: ClientSelectionRequest): Response<ClientSelectionResponse> = throw UnsupportedOperationException()
+        override suspend fun deviceChallenge(request: DeviceChallengeRequest): Response<DeviceChallengeResponse> =
+            throw UnsupportedOperationException()
+
+        override suspend fun enrollDevice(request: DeviceEnrollRequest): Response<DeviceEnrollResponse> =
+            throw UnsupportedOperationException()
+
+        override suspend fun enrollmentCodeChallenge(request: EnrollmentCodeChallengeRequest): Response<DeviceChallengeResponse> =
+            throw UnsupportedOperationException()
+
+        override suspend fun enrollmentCodeEnroll(request: EnrollmentCodeEnrollRequest): Response<DeviceEnrollResponse> =
+            throw UnsupportedOperationException()
+
+        override suspend fun acknowledgeDevice(request: DeviceAckRequest): Response<DeviceAckResponse> =
+            throw UnsupportedOperationException()
+
         override suspend fun heartbeat(auth: String, request: HeartbeatRequest): HeartbeatResponse = HeartbeatResponse(ok = true)
         override suspend fun pullConfigs(auth: String): PullConfigsResponse = PullConfigsResponse(
             ok = true,
