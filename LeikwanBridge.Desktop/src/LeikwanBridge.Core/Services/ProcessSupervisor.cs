@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using LeikwanBridge.Core.Services.Platform;
 using Serilog;
 
 namespace LeikwanBridge.Core.Services;
 
-public class ProcessSupervisor : IDisposable
+public class ProcessSupervisor : IProcessSupervisor
 {
     public record ManagedProcess(
         int ForwardId,
@@ -27,64 +29,95 @@ public class ProcessSupervisor : IDisposable
 
     public IReadOnlyDictionary<int, List<ManagedProcess>> RunningProcesses => _processes;
 
-    public virtual Process StartProcess(int forwardId, string role, string label, string exePath, string arguments, string? workingDir = null)
+    public virtual Process StartProcess(
+        int forwardId,
+        string role,
+        string label,
+        string exePath,
+        string arguments,
+        byte[]? standardInput = null,
+        bool logArguments = true,
+        string? workingDirectory = null)
     {
-        Log.Information("starting process for forward {ForwardId} [{Label}]: {Exe} {Args}",
-            forwardId, label, exePath, arguments);
-
-        var psi = new ProcessStartInfo
+        if (logArguments)
         {
-            FileName = exePath,
-            Arguments = arguments,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            WorkingDirectory = workingDir ?? Path.GetDirectoryName(exePath) ?? "",
-        };
-
-        var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-
-        process.OutputDataReceived += (_, e) =>
-        {
-            if (e.Data != null)
-            {
-                Log.Debug("[fwd-{ForwardId}/{Label}] {Line}", forwardId, label, e.Data);
-                _onOutput?.Invoke(forwardId, label, e.Data);
-            }
-        };
-        process.ErrorDataReceived += (_, e) =>
-        {
-            if (e.Data != null)
-            {
-                Log.Warning("[fwd-{ForwardId}/{Label}] stderr: {Line}", forwardId, label, e.Data);
-                _onOutput?.Invoke(forwardId, label, $"[stderr] {e.Data}");
-            }
-        };
-        process.Exited += (_, _) =>
-        {
-            Log.Warning("process exited for forward {ForwardId} [{Label}] exitCode={ExitCode}",
-                forwardId, label, process.ExitCode);
-            ProcessExited?.Invoke(forwardId, role);
-        };
-
-        process.Start();
-        var job = _jobGroups.GetOrAdd(forwardId, WindowsJobGroup.Create);
-        if (!job.Attach(process))
-        {
-            process.Kill(entireProcessTree: true);
-            process.Dispose();
-            throw new InvalidOperationException("process could not be attached to forward job group");
+            Log.Information("starting process for forward {ForwardId} [{Label}]: {Exe} {Args}",
+                forwardId, label, exePath, arguments);
         }
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+        else
+        {
+            Log.Information("starting process for forward {ForwardId} [{Role}]: {Exe}",
+                forwardId, role, Path.GetFileName(exePath));
+        }
 
-        var managed = new ManagedProcess(forwardId, role, label, process, DateTime.UtcNow);
-        _processes.AddOrUpdate(forwardId,
-            _ => [managed],
-            (_, list) => { list.Add(managed); return list; });
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = arguments,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = standardInput is not null,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                WorkingDirectory = workingDirectory ?? Path.GetDirectoryName(exePath) ?? "",
+            };
 
-        return process;
+            var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data != null)
+                {
+                    Log.Debug("[fwd-{ForwardId}/{Label}] {Line}", forwardId, label, e.Data);
+                    _onOutput?.Invoke(forwardId, label, e.Data);
+                }
+            };
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data != null)
+                {
+                    Log.Warning("[fwd-{ForwardId}/{Label}] stderr: {Line}", forwardId, label, e.Data);
+                    _onOutput?.Invoke(forwardId, label, $"[stderr] {e.Data}");
+                }
+            };
+            process.Exited += (_, _) =>
+            {
+                Log.Warning("process exited for forward {ForwardId} [{Label}] exitCode={ExitCode}",
+                    forwardId, label, process.ExitCode);
+                ProcessExited?.Invoke(forwardId, role);
+            };
+
+            process.Start();
+            var job = _jobGroups.GetOrAdd(forwardId, WindowsJobGroup.Create);
+            if (!job.Attach(process))
+            {
+                process.Kill(entireProcessTree: true);
+                process.Dispose();
+                throw new InvalidOperationException("process could not be attached to forward job group");
+            }
+            if (standardInput is not null)
+            {
+                process.StandardInput.BaseStream.Write(standardInput);
+                process.StandardInput.BaseStream.Flush();
+                process.StandardInput.Close();
+            }
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            var managed = new ManagedProcess(forwardId, role, label, process, DateTime.UtcNow);
+            _processes.AddOrUpdate(forwardId,
+                _ => [managed],
+                (_, list) => { list.Add(managed); return list; });
+
+            return process;
+        }
+        finally
+        {
+            if (standardInput is not null)
+                CryptographicOperations.ZeroMemory(standardInput);
+        }
     }
 
     public virtual void StopAll(int forwardId)
@@ -146,6 +179,14 @@ public class ProcessSupervisor : IDisposable
         return GetProcesses(forwardId)
             .Where(process => IsProcessAlive(process.Process))
             .Select(process => process.Role)
+            .ToList();
+    }
+
+    public virtual IReadOnlyList<int> GetProcessIds(int forwardId)
+    {
+        return GetProcesses(forwardId)
+            .Select(process => TryGetProcessId(process.Process))
+            .Where(processId => processId > 0)
             .ToList();
     }
 

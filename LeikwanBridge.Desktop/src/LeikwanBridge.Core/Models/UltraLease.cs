@@ -7,8 +7,8 @@ namespace LeikwanBridge.Core.Models;
 public sealed class UltraLease : IDisposable
 {
     [JsonIgnore] public string Protocol { get; init; } = UltraPolicy.Protocol;
-    [JsonIgnore] public string LeaseId { get; init; } = "";
-    [JsonIgnore] public string SessionTicket { get; init; } = "";
+    [JsonIgnore] public string LeaseId { get; set; } = "";
+    [JsonIgnore] public string SessionTicket { get; set; } = "";
     [JsonIgnore] public int ForwardId { get; init; }
     [JsonIgnore] public string PolicyGeneration { get; init; } = "";
     [JsonIgnore] public string TargetDigest { get; init; } = "";
@@ -16,10 +16,10 @@ public sealed class UltraLease : IDisposable
     [JsonIgnore] public string Transport { get; init; } = "tcp+udp";
     [JsonIgnore] public long RateLimitMbps { get; init; }
     [JsonIgnore] public long QuotaRemainingBytes { get; init; }
-    [JsonIgnore] public string SelectionRef { get; init; } = "";
-    [JsonIgnore] public string NonceHash { get; init; } = "";
-    [JsonIgnore] public string ProviderIp { get; init; } = "";
-    [JsonIgnore] public int ProviderPort { get; init; }
+    [JsonIgnore] public string SelectionRef { get; set; } = "";
+    [JsonIgnore] public string NonceHash { get; set; } = "";
+    [JsonIgnore] public string ProviderIp { get; set; } = "";
+    [JsonIgnore] public int ProviderPort { get; set; }
     [JsonIgnore] public byte[] User { get; init; } = [];
     [JsonIgnore] public byte[] Password { get; init; } = [];
 
@@ -48,5 +48,11 @@ public sealed class UltraLease : IDisposable
     {
         CryptographicOperations.ZeroMemory(User);
         CryptographicOperations.ZeroMemory(Password);
+        LeaseId = "";
+        SessionTicket = "";
+        SelectionRef = "";
+        NonceHash = "";
+        ProviderIp = "";
+        ProviderPort = 0;
     }
 }
