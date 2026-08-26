@@ -265,6 +265,32 @@ public sealed class WindowsAppUpdateServiceTests
         Assert.Equal("https://cdn.example.com/leikwan-bridge-setup.exe", url);
     }
 
+    [Fact]
+    public void BuildArtifactDownloadUrl_AddsVersionAndHashCacheBust()
+    {
+        var url = WindowsAppUpdateService.BuildArtifactDownloadUrl(
+            "https://v3-mirror.leikwanhost.com/artifacts/leikwan-bridge-setup.exe",
+            "0.1.19.4",
+            "ABC123");
+
+        Assert.Equal(
+            "https://v3-mirror.leikwanhost.com/artifacts/leikwan-bridge-setup.exe?v=0.1.19.4&sha256=ABC123",
+            url);
+    }
+
+    [Fact]
+    public void BuildArtifactDownloadUrl_DoesNotDuplicateMatchingCacheBust()
+    {
+        var url = WindowsAppUpdateService.BuildArtifactDownloadUrl(
+            "https://v3-mirror.leikwanhost.com/artifacts/leikwan-bridge-setup.exe?v=0.1.19.4&sha256=ABC123",
+            "0.1.19.4",
+            "ABC123");
+
+        Assert.Equal(
+            "https://v3-mirror.leikwanhost.com/artifacts/leikwan-bridge-setup.exe?v=0.1.19.4&sha256=ABC123",
+            url);
+    }
+
 
     [Fact]
     public async Task FetchWindowsClientArtifactAsync_UsesInjectedAntiPoisonClient_ForProtectedLeikwanManifestHost()

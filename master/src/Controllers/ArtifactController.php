@@ -392,6 +392,14 @@ final class ArtifactController extends BaseController
         );
         if (isset($manifest['windows_client_app']) && is_array($manifest['windows_client_app'])) {
             $manifest['windows_client_app']['artifact_url'] = (string) (($this->versions()['windows_client_app']['artifact_url'] ?? '') ?: $manifest['windows_client_app']['artifact_url']);
+            $artifactUrl = $manifest['windows_client_app']['artifact_url'];
+            $version = rawurlencode((string) ($manifest['windows_client_app']['version'] ?? ''));
+            $sha256 = rawurlencode((string) ($manifest['windows_client_app']['sha256'] ?? ''));
+            if ($version !== '' || $sha256 !== '') {
+                $separator = str_contains($artifactUrl, '?') ? '&' : '?';
+                $artifactUrl .= $separator . 'v=' . $version . '&sha256=' . $sha256;
+            }
+            $manifest['windows_client_app']['artifact_url'] = $artifactUrl;
         }
 
         return Response::json(200, [

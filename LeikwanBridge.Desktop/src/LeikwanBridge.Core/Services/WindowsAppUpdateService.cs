@@ -149,6 +149,48 @@ public sealed class WindowsAppUpdateService : IDisposable
         return masterUrl.TrimEnd('/') + "/" + artifactUrl.TrimStart('/');
     }
 
+    public static string BuildArtifactDownloadUrl(string artifactUrl, string version, string sha256)
+    {
+        if (string.IsNullOrWhiteSpace(artifactUrl))
+            return string.Empty;
+
+        if (!Uri.TryCreate(artifactUrl, UriKind.Absolute, out var absolute))
+            throw new InvalidOperationException("artifact URL must be absolute");
+
+        var builder = new UriBuilder(absolute);
+        var query = builder.Query.TrimStart('?');
+        var encodedVersion = Uri.EscapeDataString((version ?? string.Empty).Trim());
+        var encodedSha256 = Uri.EscapeDataString((sha256 ?? string.Empty).Trim());
+        if (HasQueryParameter(query, "v", encodedVersion)
+            && HasQueryParameter(query, "sha256", encodedSha256))
+            return absolute.ToString();
+
+        if (!string.IsNullOrEmpty(query))
+            query += "&";
+        query += "v=" + encodedVersion;
+        query += "&sha256=" + encodedSha256;
+        builder.Query = query;
+        return builder.Uri.ToString();
+    }
+
+    private static bool HasQueryParameter(string query, string key, string expectedValue)
+    {
+        foreach (var item in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = item.IndexOf('=');
+            if (separator < 0)
+                continue;
+
+            var actualKey = Uri.UnescapeDataString(item[..separator]);
+            var actualValue = Uri.UnescapeDataString(item[(separator + 1)..]);
+            if (string.Equals(actualKey, key, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(actualValue, expectedValue, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
     public async Task<WindowsClientAppArtifact> FetchWindowsClientArtifactAsync(string masterUrl, CancellationToken ct = default)
     {
         var uri = new Uri(masterUrl.TrimEnd('/') + "/artifacts/client-manifest.json");

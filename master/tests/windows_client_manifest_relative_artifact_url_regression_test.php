@@ -18,6 +18,8 @@ $requiredSnippets = [
     "public function clientManifest(Request \$request, array \$params): Response",
     "\$manifest = \$this->manifestFor(",
     "\$manifest['windows_client_app']['artifact_url'] = (string) ((\$this->versions()['windows_client_app']['artifact_url'] ?? '') ?: \$manifest['windows_client_app']['artifact_url']);",
+    "rawurlencode((string) (\$manifest['windows_client_app']['version'] ?? ''))",
+    "rawurlencode((string) (\$manifest['windows_client_app']['sha256'] ?? ''))",
 ];
 
 foreach ($requiredSnippets as $snippet) {
