@@ -456,6 +456,7 @@ class TunnelOrchestratorTest {
         prefs.enrolledDeviceId = deviceId
         prefs.deviceSessionToken = "device-session"
         prefs.deviceSessionExpiresAtMs = Long.MAX_VALUE
+        prefs.selectedProxyId = db.proxyNodeDao().insert(ssNode("route-rule-proxy"))
         val processRunner = RecordingProcessRunner()
         val binaries = RuntimeBinaryPaths("/runtime/wstunnel", "/runtime/leikwan-ingress", "/runtime/leikwan-bond")
         val binaryInstaller = RecordingBinaryInstaller(context, binaries)
@@ -485,8 +486,9 @@ class TunnelOrchestratorTest {
             remoteTarget = "base.example:9000",
             routeRuleHelperOnly = false,
         ).copy(
-            backendMode = "leigod_mode",
-            targetContract = "dedicated_forward_node",
+            backendMode = "current_mode",
+            clientMode = "single",
+            targetContract = "",
             sidecarRequired = false,
             aggregationEnabled = false,
             mode = ForwardMode.SINGLE,
@@ -497,7 +499,11 @@ class TunnelOrchestratorTest {
             listenPort = 11077,
             remoteTarget = "helper.example:9000",
             routeRuleHelperOnly = true,
-        ).copy(transport = "tcp_udp")
+        ).copy(
+            backendMode = "current_mode",
+            clientMode = "bond",
+            transport = "tcp_udp",
+        )
         val panelApi = FakePanelApi(
             forwards = listOf(baseForward.toPanelJson(), helperForward.toPanelJson()),
             routeDirections = listOf(RouteDirectionDto("dir_sh_jp_1", "沪日1", "available", 10)),

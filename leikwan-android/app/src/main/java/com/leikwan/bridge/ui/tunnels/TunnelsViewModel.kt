@@ -27,7 +27,6 @@ data class TunnelsUiState(
     val forwards: List<ForwardListItem> = emptyList(),
     val selectedForwardId: Long = 0L,
     val selectedStrategy: ForwardStrategy = ForwardStrategy.LATENCY_BEST,
-    val hiddenUnsupportedMptcpCount: Int = 0,
     val connectionMode: ProxyConnectionMode = ProxyConnectionMode.SERVICES,
     val isLoading: Boolean = false,
     val error: String? = null,
@@ -77,7 +76,6 @@ class TunnelsViewModel @JvmOverloads internal constructor(
                     selectedForwardId = selectedId,
                     selectedStrategy = selectedId.takeIf { it > 0 }
                         ?.let(strategyStore::get) ?: ForwardStrategy.LATENCY_BEST,
-                    hiddenUnsupportedMptcpCount = catalog.hiddenUnsupportedMptcpCount,
                     connectionMode = ProxyConnectionMode.SERVICES,
                 )
             } catch (e: Exception) {
@@ -127,7 +125,7 @@ class TunnelsViewModel @JvmOverloads internal constructor(
                     prefs.selectedForwardId = 0L
                     _state.value = _state.value.copy(
                         selectedForwardId = 0L,
-                        error = s(R.string.tunnels_error_forward_unsupported),
+                        error = s(R.string.tunnels_error_select_service),
                     )
                     return@launch
                 }

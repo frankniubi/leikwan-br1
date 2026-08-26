@@ -6,17 +6,12 @@ object ForwardFilter {
         selectedForwardId: Long?,
     ): ForwardCatalog {
         val visible = mutableListOf<ForwardListItem>()
-        val hiddenIds = mutableSetOf<Long>()
-
         for (contract in contracts) {
             if (contract.routeRuleHelperOnly) {
-                hiddenIds += contract.forwardId
                 continue
             }
             val effective = AndroidEffectiveForwardBuilder.build(contract)
-            if (effective == null) {
-                hiddenIds += contract.forwardId
-            } else {
+            if (effective != null) {
                 visible += effective.toListItem()
             }
         }
@@ -27,8 +22,6 @@ object ForwardFilter {
 
         return ForwardCatalog(
             visibleForwards = visible,
-            hiddenUnsupportedMptcpCount = 0,
-            hiddenForwardIds = hiddenIds,
             selectedForwardId = finalSelected,
         )
     }

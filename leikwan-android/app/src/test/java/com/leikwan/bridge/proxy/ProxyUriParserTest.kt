@@ -113,4 +113,20 @@ class ProxyUriParserTest {
         assertEquals("203.0.113.7", node.originalServer)
         assertEquals(51820, node.originalPort)
     }
+
+    @Test
+    fun `socks5 parser decodes credentials and IPv6 endpoint`() {
+        val node = ProxyUriParser.parse(
+            "socks5://user%40name:pass%3Aword@[2001:db8::10]:1080#edge",
+        ) ?: error("expected socks5 node")
+
+        val config = JsonParser.parseString(node.configJson).asJsonObject
+
+        assertEquals("socks5", node.type)
+        assertEquals("2001:db8::10", node.originalServer)
+        assertEquals(1080, node.originalPort)
+        assertEquals("edge", node.name)
+        assertEquals("user@name", config.get("username").asString)
+        assertEquals("pass:word", config.get("password").asString)
+    }
 }

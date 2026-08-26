@@ -27,6 +27,7 @@ data class NodeLeg(
     val localLegPorts: List<Int>,
     val processPlans: List<RuntimeProcessPlan>,
     val bypassHosts: Set<String>,
+    val protectedConnectivity: ProtectedConnectivitySet = ProtectedConnectivitySet.fromEndpoints(bypassHosts),
 ) {
     companion object {
         fun processKey(forwardId: Long, nodeId: Long): Long = forwardId * 100_000L + (nodeId % 100_000L)
@@ -39,6 +40,7 @@ data class NodeLeg(
         localLegPorts = localLegPorts,
         processPlans = processPlans,
         bypassHosts = bypassHosts,
+        protectedConnectivity = protectedConnectivity,
     )
 }
 
@@ -49,6 +51,7 @@ data class RuntimeContext(
     val localLegPorts: List<Int>,
     val processPlans: List<RuntimeProcessPlan>,
     val bypassHosts: Set<String>,
+    val protectedConnectivity: ProtectedConnectivitySet = ProtectedConnectivitySet.fromEndpoints(bypassHosts),
     val nodeLegs: Map<Long, NodeLeg> = emptyMap(),
     val routeRuleProcessKey: Long? = null,
 ) {
@@ -64,4 +67,14 @@ data class RuntimeContext(
                 nodeLegs.values.forEach { addAll(it.bypassHosts) }
             }
         }
+
+    fun allProtectedConnectivity(): ProtectedConnectivitySet {
+        var combined = protectedConnectivity.merge(ProtectedConnectivitySet.fromEndpoints(bypassHosts))
+        nodeLegs.values.forEach { leg ->
+            combined = combined
+                .merge(leg.protectedConnectivity)
+                .merge(ProtectedConnectivitySet.fromEndpoints(leg.bypassHosts))
+        }
+        return combined
+    }
 }

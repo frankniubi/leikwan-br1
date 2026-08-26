@@ -61,8 +61,11 @@
     <string name="protocol_vless">VLESS</string>
     <string name="protocol_vmess">VMess</string>
     <string name="protocol_wireguard">WireGuard</string>
+    <string name="protocol_socks5">SOCKS5</string>
     <string name="field_encrypt_method">加密方式</string>
     <string name="field_password_psk">密码 / PSK</string>
+    <string name="field_username_optional">用户名（可选）</string>
+    <string name="field_password_optional">密码（可选）</string>
     <string name="field_plugin">插件</string>
     <string name="field_plugin_options">插件参数</string>
     <string name="field_network_optional">网络（可选）</string>

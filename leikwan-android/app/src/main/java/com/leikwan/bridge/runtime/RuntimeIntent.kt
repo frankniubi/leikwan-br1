@@ -12,6 +12,7 @@ data class RuntimeIntent(
     val localLegPorts: List<Int>,
     val processPlans: List<RuntimeProcessPlan>,
     val bypassHosts: Set<String>,
+    val protectedConnectivity: ProtectedConnectivitySet = ProtectedConnectivitySet.fromEndpoints(bypassHosts),
     val nodeLegs: Map<Long, NodeLeg> = emptyMap(),
 )
 
@@ -23,6 +24,7 @@ fun RuntimeContext.toRuntimeIntent(): RuntimeIntent {
         localLegPorts = localLegPorts,
         processPlans = processPlans,
         bypassHosts = bypassHosts,
+        protectedConnectivity = protectedConnectivity,
         nodeLegs = nodeLegs,
     )
 }

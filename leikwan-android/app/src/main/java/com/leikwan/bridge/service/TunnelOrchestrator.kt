@@ -25,6 +25,7 @@ import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardMode
 import com.leikwan.bridge.runtime.NodeLeg
 import com.leikwan.bridge.runtime.ProcessRunner
+import com.leikwan.bridge.runtime.ProtectedConnectivitySet
 import com.leikwan.bridge.runtime.RouteDirectionRuntimePlan
 import com.leikwan.bridge.runtime.RouteDirectionRuntimePlanner
 import com.leikwan.bridge.runtime.RuntimeBinaryInstaller
@@ -164,14 +165,13 @@ class TunnelOrchestrator internal constructor(
         }
         val selectedEffective = panelRepo.getCachedEffectiveForward(selectedForward)
             ?: throw Exception("Forward $selectedForward is not supported on Android")
-        val isDedicatedLeiGod = selectedEffective.isDedicatedLeiGod
 
         val selection = ProxySelectionPolicy.validate(
             selectedProxyId = prefs.selectedProxyId,
             forwardId = selectedForward,
             connectionMode = connectionMode,
             proxyNodes = proxyNodes,
-            proxyOptional = isDedicatedLeiGod,
+            proxyOptional = false,
         )
         if (selection is ProxySelectionResult.Error) {
             throw Exception(selection.message)
@@ -185,11 +185,7 @@ class TunnelOrchestrator internal constructor(
         val runtimeContext = run {
             val forward = selectedEffective.runtimeContract
             Log.i(TAG, "Starting LeiGod forward ${forward.forwardId}: ${forward.serviceName}")
-            val relayNodes = if (isDedicatedLeiGod) {
-                emptyList()
-            } else {
-                selection.activeNodes.filter { it.type.lowercase() != "wireguard" }
-            }
+            val relayNodes = selection.activeNodes.filter { it.type.lowercase() != "wireguard" }
             val missingRelayNodeIds = mutableSetOf<Long>()
             val relayNodeForwards = relayNodes.mapNotNull { node ->
                 val nodeForwardId = node.forwardId
@@ -246,24 +242,26 @@ class TunnelOrchestrator internal constructor(
         activeRouteRuleRuntimeKeys = routeRuleRuntimePlan.runtimeContexts.mapNotNull { it.routeRuleProcessKey }.toSet()
         val singboxRuntimeContext = runtimeContext.copy(
             bypassHosts = runtimeContext.bypassHosts + routeRuleRuntimePlan.bypassHosts,
+            protectedConnectivity = runtimeContext.protectedConnectivity
+                .merge(ProtectedConnectivitySet.fromEndpoints(routeRuleRuntimePlan.bypassHosts)),
         )
 
         val activeRulePackManifest = RulePackManifest.fromSnapshot(rulePackManager.current())
         val routingSnapshot = buildRoutingSnapshot(
             System.currentTimeMillis(),
             unavailableNodeIds = unavailableNodeIds,
-            ignoreProxyNodeTargets = isDedicatedLeiGod,
+            ignoreProxyNodeTargets = false,
         )
         val compiled = SingboxConfigBuilder
             .fromPrefs(prefs, activeRulePackManifest)
             .build(
-                proxyNodes = if (isDedicatedLeiGod) emptyList() else selection.activeNodes,
+                proxyNodes = selection.activeNodes,
                 runtimeContext = singboxRuntimeContext,
                 routingPolicySnapshot = routingSnapshot,
                 connectionMode = connectionMode,
                 routeRuleSnapshot = routeRuleSnapshot,
                 routeRuleRuntimeBindings = routeRuleRuntimePlan.singboxBindings,
-                runtimeOnlyProxy = isDedicatedLeiGod,
+                runtimeOnlyProxy = false,
             )
         recordExplainability(routingSnapshot)
         val configJson = compiled.configJson
@@ -321,6 +319,7 @@ class TunnelOrchestrator internal constructor(
                 strategyFilePath = strategyFile.absolutePath,
             )
         }
+        ForwardMode.ULTRA -> throw Exception("Ultra runtime is not ready")
         else -> throw Exception("Forward ${forward.forwardId} mode ${forward.mode.wireValue} is not supported on Android")
     }
 
