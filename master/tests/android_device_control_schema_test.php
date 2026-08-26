@@ -14,12 +14,23 @@ function assertTrue(bool $value, string $message): void
     }
 }
 
-$path = __DIR__ . '/../migrations/20260827_add_android_device_control.sql';
-if (!is_file($path)) {
-    fail('Android device-control migration is missing');
+$paths = [
+    __DIR__ . '/../migrations/20260827_add_android_device_control.sql',
+    __DIR__ . '/../migrations/20260827_extend_android_device_control_metadata.sql',
+];
+foreach ($paths as $path) {
+    if (!is_file($path)) {
+        fail('Android device-control migration is missing');
+    }
 }
 
-$sql = (string) file_get_contents($path);
+$sql = '';
+foreach ($paths as $path) {
+    $sql .= (string) file_get_contents($path) . "\n";
+}
+if ($sql === '') {
+    fail('Android device-control migration is missing');
+}
 foreach ([
     'client_device_controls',
     'android_device_sessions',
@@ -31,6 +42,9 @@ foreach ([
     'session_hash',
     'nonce_hash',
     'code_hash',
+    'reason_code',
+    'changed_by_user_id',
+    'acknowledged_at',
 ] as $required) {
     assertTrue(str_contains($sql, $required), "expected migration to contain {$required}");
 }
