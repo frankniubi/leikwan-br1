@@ -362,9 +362,9 @@ public partial class MainWindow : Window
                 return installerPath;
         }
 
-        await _updateService.DownloadInstallerAsync(
-            WindowsAppUpdateService.ResolveArtifactUrl(App.Config.MasterUrl, artifact.ArtifactUrl),
-            installerPath);
+        var artifactUrl = WindowsAppUpdateService.ResolveArtifactUrl(App.Config.MasterUrl, artifact.ArtifactUrl);
+        artifactUrl = WindowsAppUpdateService.BuildArtifactDownloadUrl(artifactUrl, artifact.Version, artifact.Sha256);
+        await _updateService.DownloadInstallerAsync(artifactUrl, installerPath);
         var downloadedSha = WindowsAppUpdateService.ComputeSha256(installerPath);
         if (!string.Equals(downloadedSha, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("downloaded installer hash mismatch");
