@@ -219,7 +219,7 @@ final class ClientAgentController extends BaseController
             $forwards,
             (int) $client['id'],
             $deviceId,
-            str_starts_with($platform, 'windows') || str_starts_with($platform, 'linux')
+            self::usesUltraPolicyV2($platform)
         );
 
         $response = $this->json([
@@ -459,11 +459,19 @@ final class ClientAgentController extends BaseController
         return $forwards;
     }
 
+    private static function usesUltraPolicyV2(string $platform): bool
+    {
+        $platform = strtolower(trim($platform));
+        return str_starts_with($platform, 'windows')
+            || str_starts_with($platform, 'linux')
+            || str_starts_with($platform, 'macos');
+    }
+
     /** @param array<string,mixed> $forward @return array<string,mixed> */
     private function scrubUltraClientForward(array $forward): array
     {
         foreach ([
-            'client_token',
+            'client_token', 'credential', 'credentials', 'password', 'provider', 'providers',
             'line_client_id', 'line_client_name', 'line_client_host',
             'line_client_group_id', 'line_client_group_name', 'line_client_group_ids',
             'line_client_groups', 'line_group_mode', 'line_client_agent_config_json',
