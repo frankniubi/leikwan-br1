@@ -102,7 +102,7 @@ func (server *ControlServer) Serve() error {
 		server.active = handle
 		server.mu.Unlock()
 		_, _, connectErr := connectNamedPipe.Call(uintptr(handle), 0)
-		connected := connectErr == nil || connectErr == syscall.Errno(535) // ERROR_PIPE_CONNECTED
+		connected := namedPipeConnectSucceeded(connectErr)
 		if connected {
 			server.handlePipe(handle)
 		}
@@ -115,6 +115,10 @@ func (server *ControlServer) Serve() error {
 		server.active = 0
 		server.mu.Unlock()
 	}
+}
+
+func namedPipeConnectSucceeded(err error) bool {
+	return err == nil || err == syscall.Errno(0) || err == syscall.Errno(535) // ERROR_PIPE_CONNECTED
 }
 
 func (server *ControlServer) createPipe() (syscall.Handle, error) {

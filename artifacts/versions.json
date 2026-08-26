@@ -94,9 +94,9 @@
  "ultra_client_runtime_windows": {
   "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
   "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-  "sha256": "cd7a5b4debc63c254060bef469e05720ba229535c05a1f4c3f67aed2e00f9494",
+  "sha256": "22f38d20efeadb10cbfc5dd18182b2accc58aa9a77f62ccc246f459806758d60",
   "size_bytes": 6603776,
-  "version": "2026.08.26.1"
+  "version": "2026.08.26.2"
  },
  "leigod_forward_relay": {
   "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
@@ -330,9 +330,9 @@
  "windows_client_app": {
   "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
   "path": "artifacts/windows/leikwan-bridge-setup.exe",
-  "sha256": "60aeaecdfc4d57aa74ab52088a314fa2772a5704c45cc6fe0fca785481a521ca",
-  "size_bytes": 10859768,
-  "version": "0.1.19.1"
+  "sha256": "ff780c24d3f23ae80cd765dea27b5c4ba36b0d605ed55daee82573b5235907d6",
+  "size_bytes": 10857488,
+  "version": "0.1.19.2"
  },
  "wstunnel_linux_amd64": {
   "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",
