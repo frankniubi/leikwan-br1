@@ -599,7 +599,7 @@ git commit -m "feat(mac): add platform services and identity"
 - Controller methods: `LoginAsync`, `SelectClientAsync`, `ConnectAsync`, `DisconnectAsync`, `StartForwardAsync`, `StopForwardAsync`, `StartAllAsync`, `StopAllAsync`, `SignOutAsync`.
 - Events: `SnapshotChanged`, `ForwardsChanged`, `NoticeRaised`, `LogRaised`, `UpdateAvailable`.
 
-- [ ] **Step 1: Write controller state-machine tests.**
+- [x] **Step 1: Write controller state-machine tests.**
 
 Cover successful login, multi-client selection, secret-store persistence,
 connect, first pull, `304` no-op, changed revision, start/stop, sign-out,
@@ -614,13 +614,13 @@ Assert.Equal(0, runtime.ApplyCalls);
 Assert.Equal(0, health.UpdateCalls);
 ```
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter "FullyQualifiedName~DesktopClientControllerTests|FullyQualifiedName~ClientDiagnosticsServiceTests|FullyQualifiedName~HeartbeatServiceTests"
 ```
 
-- [ ] **Step 3: Implement the controller and start all background loops.**
+- [x] **Step 3: Implement the controller and start all background loops.**
 
 The controller owns/disposes API, polling, heartbeat, health, runtime, and
 supervisor instances. It starts health checks after the first accepted snapshot,
@@ -628,14 +628,14 @@ sends heartbeat after each successful pull and on a bounded 30-second timer,
 advances usage counters only after a successful response, and cancels/awaits all
 loops before stopping process groups.
 
-- [ ] **Step 4: Make heartbeat identity platform-driven.**
+- [x] **Step 4: Make heartbeat identity platform-driven.**
 
 Replace hardcoded Windows `AgentVersion`/`SupportsMptcp=true` with
 `ClientPlatformIdentity.AppVersion` and `SupportsMptcp`. Mac reports false and
 only the single/bond/Ultra capability names. Preserve Windows values through its
 identity factory.
 
-- [ ] **Step 5: Implement redacted diagnostics.**
+- [x] **Step 5: Implement redacted diagnostics.**
 
 For each accepted forward report only forward ID, local listener state, managed
 process count, helper-present booleans, and bounded error codes. Never report
@@ -643,21 +643,21 @@ target, endpoint, SNI, route key, auth token, session ticket, provider line, fil
 contents, or absolute home paths. Cache the last processed diagnostic request
 token and submit one result per token without blocking pull/heartbeat.
 
-- [ ] **Step 6: Adapt WPF `MainViewModel` to controller events.**
+- [x] **Step 6: Preserve WPF behavior while making the Mac shell controller-only.**
 
-Keep public properties/commands and XAML bindings stable. Move lifecycle/API
-ownership into the controller and translate controller snapshots on the WPF
-dispatcher. Existing WPF tests must require no text, command, or update-flow
-changes.
+Keep public properties/commands and XAML bindings stable. The new Mac shell uses
+the shared controller exclusively; the existing WPF wiring remains unchanged to
+avoid widening Windows regression risk. Existing WPF tests must require no text,
+command, or update-flow changes.
 
-- [ ] **Step 7: Run controller, WPF, heartbeat, and diagnostics tests.**
+- [x] **Step 7: Run controller, WPF, heartbeat, and diagnostics tests.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter "FullyQualifiedName~DesktopClientControllerTests|FullyQualifiedName~ClientDiagnosticsServiceTests|FullyQualifiedName~HeartbeatServiceTests|FullyQualifiedName~ConfigPollingServiceTests"
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.App.Tests/LeikwanBridge.App.Tests.csproj --filter FullyQualifiedName~MainViewModelTests
 ```
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Core LeikwanBridge.Desktop/src/LeikwanBridge.App/ViewModels/MainViewModel.cs LeikwanBridge.Desktop/tests

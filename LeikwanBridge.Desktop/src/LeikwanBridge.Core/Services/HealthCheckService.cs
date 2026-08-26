@@ -28,6 +28,7 @@ public sealed class HealthCheckService
     private readonly HashSet<int> _restartInProgress = [];
 
     private CancellationTokenSource? _cts;
+    private Task? _checkTask;
 
     public event Action<int, string>? HealthIssue;
 
@@ -58,7 +59,7 @@ public sealed class HealthCheckService
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
 
-        Task.Run(async () =>
+        _checkTask = Task.Run(async () =>
         {
             while (!ct.IsCancellationRequested)
             {
@@ -80,6 +81,21 @@ public sealed class HealthCheckService
     }
 
     public void Stop() => _cts?.Cancel();
+
+    public async Task StopAsync()
+    {
+        Stop();
+        var checkTask = _checkTask;
+        if (checkTask is null)
+            return;
+        try
+        {
+            await checkTask;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
 
     public Task RunCheckOnceAsync(List<ForwardConfig> forwards, CancellationToken ct = default)
     {

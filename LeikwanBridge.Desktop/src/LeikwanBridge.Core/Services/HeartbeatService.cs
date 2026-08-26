@@ -15,6 +15,7 @@ public sealed class HeartbeatService
     private readonly int _wireguardListenPort;
     private readonly int _wireguardFallbackTcpPort;
     private readonly Action<IReadOnlyList<UltraPolicyAction>>? _onUltraActions;
+    private readonly ClientPlatformIdentity _platformIdentity;
 
     public HeartbeatService(
         MasterApiClient api,
@@ -22,7 +23,8 @@ public sealed class HeartbeatService
         string wireguardPublicKey = "",
         int wireguardListenPort = 0,
         int wireguardFallbackTcpPort = 0,
-        Action<IReadOnlyList<UltraPolicyAction>>? onUltraActions = null)
+        Action<IReadOnlyList<UltraPolicyAction>>? onUltraActions = null,
+        ClientPlatformIdentity? platformIdentity = null)
     {
         _api = api;
         _stateManager = stateManager;
@@ -30,7 +32,16 @@ public sealed class HeartbeatService
         _wireguardListenPort = wireguardListenPort;
         _wireguardFallbackTcpPort = wireguardFallbackTcpPort;
         _onUltraActions = onUltraActions;
+        _platformIdentity = platformIdentity ?? new ClientPlatformIdentity(
+            "windows-desktop",
+            string.Empty,
+            string.Empty,
+            "Leikwan-Windows-GUI",
+            MasterApiClient.AgentVersion,
+            SupportsMptcp: true);
     }
+
+    public event Action<IReadOnlyList<UltraPolicyAction>>? UltraActionsReceived;
 
     public async Task SendHeartbeatAsync(CancellationToken ct = default)
     {
@@ -41,10 +52,10 @@ public sealed class HeartbeatService
 
         var payload = new HeartbeatPayload
         {
-            AgentVersion = MasterApiClient.AgentVersion,
+            AgentVersion = _platformIdentity.AppVersion,
             UsageBytesIn = Math.Max(0, bytesIn),
             UsageBytesOut = Math.Max(0, bytesOut),
-            SupportsMptcp = true, // Windows supports MPTCP forwards via bundled portable relay compatibility mode
+            SupportsMptcp = _platformIdentity.SupportsMptcp,
             WireguardPublicKey = _wireguardPublicKey,
             WireguardListenPort = _wireguardListenPort,
             WireguardFallbackTcpPort = _wireguardFallbackTcpPort,
@@ -60,7 +71,10 @@ public sealed class HeartbeatService
         usage.UltraSequences = pendingUltraState.Sequences;
         _stateManager.SaveUsageState(usage);
         if (response.UltraActions is { Count: > 0 })
+        {
             _onUltraActions?.Invoke(response.UltraActions);
+            UltraActionsReceived?.Invoke(response.UltraActions);
+        }
 
         Log.Debug("heartbeat sent: in={BytesIn} out={BytesOut}", bytesIn, bytesOut);
     }
@@ -74,7 +88,9 @@ public sealed class HeartbeatService
         var runtimeDir = Path.Combine(_stateManager.EffectiveStateDir, "runtime");
         if (Directory.Exists(runtimeDir))
         {
-            foreach (var path in Directory.EnumerateFiles(runtimeDir, "ultra-forward-*.status.json").Take(32))
+            var windowsStatus = Directory.EnumerateFiles(runtimeDir, "ultra-forward-*.status.json", SearchOption.TopDirectoryOnly);
+            var macStatus = Directory.EnumerateFiles(runtimeDir, "status.json", SearchOption.AllDirectories);
+            foreach (var path in windowsStatus.Concat(macStatus).Distinct(StringComparer.Ordinal).Take(32))
             {
                 try
                 {
