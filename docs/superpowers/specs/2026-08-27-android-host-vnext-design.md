@@ -119,41 +119,45 @@ immediately invalidated. It never places a raw agent token in an install URL.
 - Android release in `os_release`.
 
 The response contains a short-lived device session token and its expiry. The
-agent token remains encrypted locally only so an explicit later enrollment can
-be performed; the response never includes a user password.
+app sends that token on later calls as `X-Device-Session`. The agent token
+remains encrypted locally only so an explicit later enrollment can be
+performed; the response never includes a user password.
 
 ### Device identity and trust
 
-`AndroidDeviceIdentity` creates a non-exportable Android Keystore signing key
-on first enrollment. The device ID is:
+`AndroidDeviceIdentity` creates a stable non-exportable Android Keystore
+identity signing key on first enrollment. The device ID is:
 
 ```
 android-client-{clientId}-{lowercase(SHA-256(spki_der))[0..31]}
 ```
 
 The raw Android ID, serial number, and IMEI are never sent or stored. The
-Panel stores the device ID and public-key hash, and the UI displays only a
-short non-secret device label.
+Panel stores the device ID and identity-public-key hash, and the UI displays
+only a short non-secret device label.
 
 The enrollment handshake is:
 
 1. Client requests an attestation challenge using the agent token and device
    ID.
 2. Panel returns a single-use, short-lived nonce bound to client and device.
-3. Android creates or attests the Keystore key with that nonce, sends the
-   certificate chain and public-key hash, and locally verifies that the key is
+3. Android creates a fresh Keystore attestation key with that nonce. It sends
+   the new certificate chain, the stable identity public key, and a signature
+   over `nonce | client_id | device_id | SHA-256(identity_spki)` made by the
+   fresh attestation key. It locally verifies that the fresh key is
    hardware-backed where the device reports that capability.
 4. Panel verifies the Android attestation chain, nonce, package certificate
-   digest, boot state, and locked-device state. It issues a short-lived device
+   digest, boot state, locked-device state, and signature binding the stable
+   identity key to the fresh attestation key. It issues a short-lived device
    session only on success.
 
 The Panel rejects missing, expired, replayed, emulator, unlocked-boot, or
-software-only attestations. Existing enrolled devices are re-attested before
-device-session expiry and before every Ultra lease. A local `DeviceSecurity`
-gate separately rejects debug/test-keys, known root managers, `su` paths,
-debuggable builds, emulator fingerprints, QEMU properties, and unsupported
-ABI. This local gate runs before enrollment, pull, VPN start, and lease
-refresh.
+software-only attestations. Existing enrolled devices make a fresh proof before
+device-session expiry and before every Ultra lease, while keeping the same
+identity key and device ID. A local `DeviceSecurity` gate separately rejects
+debug/test-keys, known root managers, `su` paths, debuggable builds, emulator
+fingerprints, QEMU properties, and unsupported ABI. This local gate runs before
+enrollment, pull, VPN start, and lease refresh.
 
 ### Device metadata and IP
 
@@ -198,40 +202,32 @@ returning a payload:
 - `POST /api/client/ultra/lease`
 - `POST /api/client/devices/ack`
 
-`kicked` returns `409 device_kicked` with `command_version`; `banned` returns
-`403 device_banned`; missing or invalid trust returns `403 device_untrusted`.
-No path leaks configs, lease material, or runtime state after a control
-rejection.
+`kicked` returns `409 device_kicked` with `{command_version, action, reason}`;
+`banned` returns `403 device_banned` with the same command object; missing or
+invalid trust returns `403 device_untrusted`. No path leaks configs, lease
+material, or runtime state after a control rejection.
 
 The tenant client page replaces delete-only kick with three CSRF-protected
 actions for the tenant's own client: kick, ban, and unban. Each action writes
 the control row, revokes the active device session and Ultra policy generation,
 and creates an audit event. Ban remains in effect until explicit unban.
 
-Heartbeat responses add an optional `device_action` object:
-
-```
-{
-  "command_version": 12,
-  "action": "kick|ban",
-  "reason": "tenant_action"
-}
-```
-
-The Android foreground control loop acknowledges the command best-effort only
-after it has stopped the VPN. Server-side state never depends on receiving the
-acknowledgement.
+The Android foreground control loop interprets the structured control error,
+then acknowledges its command version best-effort through
+`POST /api/client/devices/ack` after it has stopped the VPN. That endpoint
+accepts the device ID, agent token, and command version only to record the
+acknowledgement; it cannot reactivate a kicked or banned device. Server-side
+state never depends on receiving the acknowledgement.
 
 ## Android Runtime
 
 ### Control loop
 
 `LeikwanVpnService` owns a single coroutine while the VPN is active. Every 30
-seconds it sends the authenticated heartbeat, evaluates `device_action` and
-control errors, and refreshes an expiring Ultra lease before its configured
-refresh skew. The loop uses exponential retry for transient network failures;
-it never retries a `device_kicked`, `device_banned`, or `device_untrusted`
-response.
+seconds it sends the authenticated heartbeat, evaluates structured control
+errors, and refreshes an expiring Ultra lease before its configured refresh
+skew. The loop uses exponential retry for transient network failures; it never
+retries a `device_kicked`, `device_banned`, or `device_untrusted` response.
 
 On an authoritative control result, `SessionRevocationCoordinator` performs
 this sequence atomically:
