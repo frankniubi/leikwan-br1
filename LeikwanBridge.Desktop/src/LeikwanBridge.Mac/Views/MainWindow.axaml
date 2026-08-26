@@ -381,13 +381,19 @@
                 BorderThickness="1,1,0,0"
                 Padding="20,12"
                 IsVisible="{Binding IsUpdateVisible}">
-          <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+          <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="12">
             <lucide:LucideIcon Grid.Column="0" Kind="Download" Size="19" Foreground="{DynamicResource AccentBrush}" />
             <StackPanel Grid.Column="1">
               <TextBlock Text="Update available" FontWeight="SemiBold" />
               <TextBlock Classes="muted" Text="{Binding UpdateVersion, StringFormat='Version {0} is ready.'}" />
             </StackPanel>
-            <Button Grid.Column="2" Classes="icon secondary" Command="{Binding DismissUpdateCommand}" ToolTip.Tip="Dismiss update">
+            <Button Grid.Column="2" Classes="primary" Command="{Binding InstallUpdateCommand}">
+              <StackPanel Orientation="Horizontal" Spacing="7">
+                <lucide:LucideIcon Kind="Download" Size="16" />
+                <TextBlock Text="Install and restart" />
+              </StackPanel>
+            </Button>
+            <Button Grid.Column="3" Classes="icon secondary" Command="{Binding DismissUpdateCommand}" ToolTip.Tip="Dismiss update">
               <lucide:LucideIcon Kind="X" Size="17" />
             </Button>
           </Grid>

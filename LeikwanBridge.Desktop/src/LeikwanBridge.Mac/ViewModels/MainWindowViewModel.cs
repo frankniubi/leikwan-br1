@@ -14,6 +14,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private readonly IAutostartService? _autostart;
     private readonly Func<string, string, bool, CancellationToken, Task>? _savePreferences;
     private readonly Func<CancellationToken, Task>? _checkForUpdates;
+    private readonly Func<CancellationToken, Task>? _installUpdate;
     private readonly Action<Action> _dispatch;
 
     public MainWindowViewModel(
@@ -23,12 +24,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
         string language = "en-US",
         Func<string, string, bool, CancellationToken, Task>? savePreferences = null,
         Func<CancellationToken, Task>? checkForUpdates = null,
+        Func<CancellationToken, Task>? installUpdate = null,
         Action<Action>? dispatch = null)
     {
         _controller = controller;
         _autostart = autostart;
         _savePreferences = savePreferences;
         _checkForUpdates = checkForUpdates;
+        _installUpdate = installUpdate;
         _dispatch = dispatch ?? Dispatch;
         CloseToTray = closeToTray;
         Language = string.Equals(language, "zh-CN", StringComparison.OrdinalIgnoreCase) ? "zh-CN" : "en-US";
@@ -64,6 +67,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string _noticeText = string.Empty;
     [ObservableProperty] private bool _isUpdateVisible;
     [ObservableProperty] private string _updateVersion = string.Empty;
+    [ObservableProperty] private bool _isUpdateInstalling;
     [ObservableProperty] private bool _closeToTray;
     [ObservableProperty] private bool _autoStartEnabled;
     [ObservableProperty] private string _language = "en-US";
@@ -193,6 +197,22 @@ public sealed partial class MainWindowViewModel : ObservableObject
     {
         if (_checkForUpdates is not null)
             await _checkForUpdates(CancellationToken.None);
+    }
+
+    [RelayCommand]
+    private async Task InstallUpdateAsync()
+    {
+        if (_installUpdate is null || IsUpdateInstalling)
+            return;
+        IsUpdateInstalling = true;
+        try
+        {
+            await _installUpdate(CancellationToken.None);
+        }
+        finally
+        {
+            IsUpdateInstalling = false;
+        }
     }
 
     [RelayCommand]

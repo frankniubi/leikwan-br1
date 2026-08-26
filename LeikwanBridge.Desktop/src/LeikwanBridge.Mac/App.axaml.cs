@@ -7,6 +7,7 @@ using Avalonia.Threading;
 using LeikwanBridge.Mac.Services;
 using LeikwanBridge.Mac.ViewModels;
 using LeikwanBridge.Mac.Views;
+using LeikwanBridge.Core.Models;
 using Serilog;
 
 namespace LeikwanBridge.Mac;
@@ -17,6 +18,7 @@ public sealed partial class App : Application
     private MainWindow? _window;
     private TrayIcon? _trayIcon;
     private bool _quitStarted;
+    private ClientAppArtifact? _availableUpdate;
 
     public static MacPlatformPaths PlatformPaths { get; set; } = null!;
 
@@ -50,7 +52,8 @@ public sealed partial class App : Application
                     config.MinimizeToTray = closeToTray;
                     await _services.ConfigStore.SaveAsync(config, ct);
                 },
-                CheckForUpdatesAsync);
+                ct => CheckForUpdatesAsync(ct, notifyWhenCurrent: true),
+                ct => InstallUpdateAsync(desktop, ct));
             _window = new MainWindow { DataContext = viewModel };
             _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
             desktop.MainWindow = _window;
@@ -73,6 +76,8 @@ public sealed partial class App : Application
                     Log.Warning("startup_connect_failed");
                 }
             }
+            if (!config.DisableAutoUpdates && !string.IsNullOrWhiteSpace(config.MasterUrl))
+                _ = CheckForUpdatesAsync(CancellationToken.None, notifyWhenCurrent: false);
         }
         catch
         {
@@ -134,11 +139,55 @@ public sealed partial class App : Application
         _window.Activate();
     }
 
-    private Task CheckForUpdatesAsync(CancellationToken ct)
+    private async Task CheckForUpdatesAsync(CancellationToken ct, bool notifyWhenCurrent)
     {
-        ct.ThrowIfCancellationRequested();
-        Log.Information("manual_update_check_requested");
-        return Task.CompletedTask;
+        if (_services is null)
+            return;
+        try
+        {
+            var currentVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+            _availableUpdate = await _services.Updater.CheckAsync(
+                _services.Config.MasterUrl,
+                currentVersion,
+                ct);
+            if (_availableUpdate is null)
+            {
+                if (notifyWhenCurrent)
+                    _services.Controller.PublishNotice("LeiKwan Bridge is up to date.");
+                return;
+            }
+            _services.Controller.PublishUpdateAvailable(_availableUpdate.Version);
+        }
+        catch
+        {
+            Log.Warning("update_check_failed");
+            _services.Controller.PublishNotice("The update check could not be completed.");
+        }
+    }
+
+    private async Task InstallUpdateAsync(
+        IClassicDesktopStyleApplicationLifetime desktop,
+        CancellationToken ct)
+    {
+        if (_services is null || _availableUpdate is null)
+            return;
+        try
+        {
+            var prepared = await _services.Updater.PrepareAsync(_availableUpdate, ct);
+            var result = await _services.Updater.ApplyAsync(prepared, deferUntilRestart: false, ct);
+            if (result.RequiresManualInstall)
+            {
+                _services.Controller.PublishNotice("A verified disk image was opened for manual replacement.");
+                return;
+            }
+            if (result.Started)
+                await QuitAsync(desktop);
+        }
+        catch
+        {
+            Log.Warning("update_install_failed");
+            _services.Controller.PublishNotice("The update could not be installed.");
+        }
     }
 
     private async Task QuitAsync(IClassicDesktopStyleApplicationLifetime desktop)
@@ -151,7 +200,10 @@ public sealed partial class App : Application
         _trayIcon?.Dispose();
         _trayIcon = null;
         if (_services is not null)
+        {
             await _services.Controller.DisposeAsync();
+            _services.Updater.Dispose();
+        }
         await Dispatcher.UIThread.InvokeAsync(() => desktop.Shutdown());
     }
 

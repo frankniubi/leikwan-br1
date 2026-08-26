@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
@@ -10,7 +11,8 @@ public sealed record MacAppServices(
     AgentConfig Config,
     MacAgentConfigStore ConfigStore,
     MacAutostartService Autostart,
-    DesktopClientController Controller);
+    DesktopClientController Controller,
+    MacAppUpdateService Updater);
 
 public static class MacAppBootstrap
 {
@@ -32,7 +34,17 @@ public static class MacAppBootstrap
             identity,
             configStore.SaveAsync,
             (currentConfig, currentIdentity) => CreateRuntimeSession(paths, currentConfig, currentIdentity));
-        return new MacAppServices(config, configStore, autostart, controller);
+        var architecture = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.Arm64 => "arm64",
+            Architecture.X64 => "x64",
+            _ => throw new PlatformNotSupportedException("mac_architecture_unsupported"),
+        };
+        var updater = new MacAppUpdateService(
+            paths.Root.TrimEnd('/', '\\') + "/updates",
+            paths.BundleDirectory,
+            architecture);
+        return new MacAppServices(config, configStore, autostart, controller, updater);
     }
 
     private static IDesktopRuntimeSession CreateRuntimeSession(

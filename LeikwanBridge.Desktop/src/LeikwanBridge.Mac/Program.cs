@@ -13,6 +13,16 @@ internal static class Program
         MacProcessSecurity.DisableCoreDumps();
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var paths = new Services.MacPlatformPaths(home, ResolveBundleDirectory());
+        if (args.Length == 2 && string.Equals(args[0], "--apply-update", StringComparison.Ordinal))
+        {
+            return Services.MacAppUpdateApplier.ApplyFromRequestAsync(args[1]).GetAwaiter().GetResult()
+                ? 0
+                : 1;
+        }
+        if (Services.MacAppUpdateService.TryLaunchPendingUpdate(
+                paths.Root.TrimEnd('/', '\\') + "/updates",
+                Environment.ProcessId))
+            return 0;
         _singleInstance = MacSingleInstance.TryAcquire(paths.Root);
         if (_singleInstance is null)
             return 0;
