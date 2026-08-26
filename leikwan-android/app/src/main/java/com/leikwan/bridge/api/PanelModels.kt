@@ -1,6 +1,7 @@
 package com.leikwan.bridge.api
 
 import com.google.gson.JsonElement
+import com.google.gson.JsonObject
 import com.google.gson.annotations.SerializedName
 
 data class PullConfigsResponse(
@@ -22,6 +23,26 @@ data class HeartbeatRequest(
 )
 
 data class HeartbeatResponse(val ok: Boolean)
+
+data class UltraLeaseForwardRequest(
+    @SerializedName("forward_id") val forwardId: Long,
+    @SerializedName("session_ticket") val sessionTicket: String,
+    @SerializedName("policy_generation") val policyGeneration: String,
+    val nonce: String,
+    @SerializedName("target_digest") val targetDigest: String,
+    val transport: String,
+)
+
+data class UltraLeaseRequest(
+    @SerializedName("device_id") val deviceId: String,
+    val forwards: List<UltraLeaseForwardRequest>,
+)
+
+data class UltraLeaseResponse(
+    val ok: Boolean,
+    val error: String? = null,
+    val leases: List<JsonObject> = emptyList(),
+)
 
 data class RouteDirectionDto(
     val id: String = "",

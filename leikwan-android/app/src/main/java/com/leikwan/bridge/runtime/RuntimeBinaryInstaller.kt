@@ -33,6 +33,13 @@ open class RuntimeBinaryInstaller(private val context: Context) {
                 runtimeDir = runtimeDir,
                 extractedName = "leikwan-bond",
             ),
+            ultraBinary = resolveBinaryPath(
+                nativeLibraryDir = nativeLibraryDir,
+                nativeBinaryName = "libultra_client.so",
+                assetPath = "runtime/$abi/ultra-client",
+                runtimeDir = runtimeDir,
+                extractedName = "ultra-client",
+            ),
         )
     }
 

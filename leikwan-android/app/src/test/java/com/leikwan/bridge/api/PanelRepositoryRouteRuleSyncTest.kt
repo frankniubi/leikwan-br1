@@ -513,7 +513,7 @@ class PanelRepositoryRouteRuleSyncTest {
         override suspend fun enrollmentCodeEnroll(request: EnrollmentCodeEnrollRequest): Response<DeviceEnrollResponse> =
             throw UnsupportedOperationException()
 
-        override suspend fun acknowledgeDevice(request: DeviceAckRequest): Response<DeviceAckResponse> =
+        override suspend fun acknowledgeDevice(auth: String, request: DeviceAckRequest): Response<DeviceAckResponse> =
             throw UnsupportedOperationException()
 
         override suspend fun heartbeat(auth: String, request: HeartbeatRequest): HeartbeatResponse {
@@ -523,6 +523,9 @@ class PanelRepositoryRouteRuleSyncTest {
             heartbeatException?.let { throw it }
             return HeartbeatResponse(ok = true)
         }
+
+        override suspend fun resolveUltraLease(auth: String, request: UltraLeaseRequest): Response<UltraLeaseResponse> =
+            throw UnsupportedOperationException()
 
         override suspend fun pullConfigs(auth: String): PullConfigsResponse {
             calls += "pull"

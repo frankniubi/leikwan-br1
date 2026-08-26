@@ -11,15 +11,28 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.proxy.ImportRouter
-import com.leikwan.bridge.ui.login.LoginScreen
+import com.leikwan.bridge.security.DeviceSecurity
+import com.leikwan.bridge.security.DeviceSecurityResult
+import com.leikwan.bridge.session.SessionGate
+import com.leikwan.bridge.ui.login.EnrollmentScreen
 import com.leikwan.bridge.ui.nav.MainScreen
+import com.leikwan.bridge.ui.security.BlockedDeviceScreen
 import com.leikwan.bridge.ui.theme.LeikwanTheme
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import java.security.MessageDigest
+import java.net.URI
+
+private data class EnrollmentLink(
+    val clientId: String,
+    val code: String,
+)
 
 class MainActivity : ComponentActivity() {
 
@@ -41,6 +54,7 @@ class MainActivity : ComponentActivity() {
     val clipboardImport = _clipboardImport.asSharedFlow()
 
     private var lastClipHash: String? = null
+    private var pendingEnrollmentLink by mutableStateOf<EnrollmentLink?>(null)
 
     fun requestVpnPermission(onGranted: () -> Unit) {
         val intent = VpnService.prepare(this)
@@ -58,11 +72,32 @@ class MainActivity : ComponentActivity() {
         handleIncomingIntent(intent)
         setContent {
             LeikwanTheme {
-                var isLoggedIn by mutableStateOf(Prefs.get(this).isLoggedIn())
-                if (isLoggedIn) {
-                    MainScreen(onLogout = { isLoggedIn = false })
+                val security = androidx.compose.runtime.remember {
+                    DeviceSecurity.evaluate(applicationContext)
+                }
+                val terminalControl by SessionGate.state.collectAsState()
+                if (security != DeviceSecurityResult.Allowed
+                    || terminalControl?.code in setOf("device_banned", "device_untrusted")) {
+                    BlockedDeviceScreen()
                 } else {
-                    LoginScreen(onLoginSuccess = { isLoggedIn = true })
+                    var isLoggedIn by remember { mutableStateOf(Prefs.get(this).isLoggedIn()) }
+                    val enrollmentLink = pendingEnrollmentLink
+                    if (isLoggedIn && terminalControl == null) {
+                        MainScreen(onLogout = {
+                            SessionGate.clear()
+                            isLoggedIn = false
+                        })
+                    } else {
+                        EnrollmentScreen(
+                            onEnrollmentSuccess = {
+                                SessionGate.clear()
+                                isLoggedIn = true
+                            },
+                            prefilledClientId = enrollmentLink?.clientId.orEmpty(),
+                            prefilledEnrollmentCode = enrollmentLink?.code.orEmpty(),
+                            onPrefillConsumed = { pendingEnrollmentLink = null },
+                        )
+                    }
                 }
             }
         }
@@ -70,6 +105,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         handleIncomingIntent(intent)
     }
 
@@ -79,11 +115,31 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
+        parseEnrollmentLink(intent)?.let { link ->
+            pendingEnrollmentLink = link
+            return
+        }
         if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
             intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
                 _pendingImport.tryEmit(text)
             }
         }
+    }
+
+    private fun parseEnrollmentLink(intent: Intent?): EnrollmentLink? {
+        if (intent?.action != Intent.ACTION_VIEW) return null
+        val uri = intent.data ?: return null
+        val panelHost = runCatching { URI(BuildConfig.PANEL_URL).host }.getOrNull() ?: return null
+        if (!uri.scheme.equals("https", ignoreCase = true)
+            || !uri.host.equals(panelHost, ignoreCase = true)
+            || uri.path != "/android/enroll") {
+            return null
+        }
+        val clientId = uri.getQueryParameter("client_id")?.trim()?.takeIf { it.matches(Regex("^[1-9][0-9]{0,17}$")) }
+            ?: return null
+        val code = uri.getQueryParameter("code")?.trim()?.takeIf { it.matches(Regex("^[A-Za-z0-9_-]{16,256}$")) }
+            ?: return null
+        return EnrollmentLink(clientId, code)
     }
 
     private fun checkClipboard() {
@@ -102,6 +158,6 @@ class MainActivity : ComponentActivity() {
 
     private fun sha256(input: String): String {
         val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
-        return bytes.joinToString("") { "%02x".format(it) }
+        return bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 }

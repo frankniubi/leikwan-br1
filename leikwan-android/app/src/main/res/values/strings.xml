@@ -31,6 +31,13 @@
     <string name="login_error_switch_failed">Switch failed</string>
     <string name="login_error_select_client">Select a client to continue</string>
     <string name="login_error_credentials_required">Enter a valid Client ID and Agent Token</string>
+    <string name="enrollment_subtitle">Enroll this trusted device</string>
+    <string name="enrollment_method_token">Agent Token</string>
+    <string name="enrollment_method_code">One-time Code</string>
+    <string name="enrollment_code">One-time Code</string>
+    <string name="enrollment_error_code_required">Enter a valid Client ID and one-time code</string>
+    <string name="blocked_device_title">Unsupported device</string>
+    <string name="blocked_device_message">This device cannot access LeiKwan Host.</string>
     <string name="proxies_title">Proxies</string>
     <string name="proxies_connection_mode">Method</string>
     <string name="proxy_mode_services">LeiGod</string>

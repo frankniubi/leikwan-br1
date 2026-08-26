@@ -305,17 +305,6 @@ private fun ForwardCard(
                     }
                 }
 
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    stringResource(R.string.tunnels_target_format, forward.target),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    stringResource(R.string.tunnels_listen_format, forward.listenPort),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }

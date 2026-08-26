@@ -125,7 +125,10 @@ foreach ([
 }
 
 $terminalResponse = section($publicIndex, "if (in_array(\$exception->getMessage(), ['device_kicked'", '    $headers = [');
-if (str_contains($terminalResponse, 'endpoint') || str_contains($terminalResponse, 'lease')) {
+if (str_contains($terminalResponse, 'endpoint')
+    || str_contains($terminalResponse, 'lease')
+    || str_contains($terminalResponse, 'credential')
+    || str_contains($terminalResponse, 'forward')) {
     fail('terminal Android errors must not contain config or lease material');
 }
 

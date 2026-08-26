@@ -32,13 +32,22 @@ interface PanelApi {
     suspend fun enrollmentCodeEnroll(@Body request: EnrollmentCodeEnrollRequest): Response<DeviceEnrollResponse>
 
     @POST("api/client/devices/ack")
-    suspend fun acknowledgeDevice(@Body request: DeviceAckRequest): Response<DeviceAckResponse>
+    suspend fun acknowledgeDevice(
+        @Header("Authorization") auth: String,
+        @Body request: DeviceAckRequest,
+    ): Response<DeviceAckResponse>
 
     @POST("api/client/heartbeat")
     suspend fun heartbeat(
         @Header("Authorization") auth: String,
         @Body request: HeartbeatRequest = HeartbeatRequest(),
     ): HeartbeatResponse
+
+    @POST("api/client/ultra/lease")
+    suspend fun resolveUltraLease(
+        @Header("Authorization") auth: String,
+        @Body request: UltraLeaseRequest,
+    ): Response<UltraLeaseResponse>
 
     @GET("api/client/configs/pull")
     suspend fun pullConfigs(@Header("Authorization") auth: String): PullConfigsResponse

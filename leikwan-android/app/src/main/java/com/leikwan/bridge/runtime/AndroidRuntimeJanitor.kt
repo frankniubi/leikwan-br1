@@ -7,9 +7,11 @@ object AndroidRuntimeJanitor {
         "libleikwan_ingress.so",
         "libleikwan_bond.so",
         "libwstunnel.so",
+        "libultra_client.so",
         "leikwan-ingress",
         "leikwan-bond",
         "wstunnel",
+        "ultra-client",
     )
 
     fun cleanupStaleRuntimeProcesses(currentPid: Int = Process.myPid()) {

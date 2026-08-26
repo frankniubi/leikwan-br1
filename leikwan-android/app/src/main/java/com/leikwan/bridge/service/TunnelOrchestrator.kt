@@ -32,15 +32,34 @@ import com.leikwan.bridge.runtime.RuntimeBinaryInstaller
 import com.leikwan.bridge.runtime.RuntimeBinaryPaths
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.runtime.SingleForwardRunner
+import com.leikwan.bridge.runtime.UltraForwardRunner
+import com.leikwan.bridge.runtime.UltraLease
+import com.leikwan.bridge.runtime.UltraLeaseClient
+import com.leikwan.bridge.runtime.UltraPolicy
+import com.leikwan.bridge.session.ClientControlLoop
+import com.leikwan.bridge.session.PanelControlException
+import com.leikwan.bridge.session.SessionGate
+import com.leikwan.bridge.session.SessionRevocationCoordinator
 import com.leikwan.bridge.singbox.SingboxConfigBuilder
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Instant
 
 private const val TAG = "TunnelOrchestrator"
 
 data class NodeLegsResult(
     val legs: Map<Long, NodeLeg>,
     val failedNodeIds: List<Long>,
+)
+
+private data class ActiveUltraRuntime(
+    val forwardId: Long,
+    val policy: UltraPolicy,
+    val controlSocketPath: String,
+    val protectedConnectivity: ProtectedConnectivitySet,
 )
 
 class TunnelOrchestrator internal constructor(
@@ -58,6 +77,9 @@ class TunnelOrchestrator internal constructor(
     panelRepoFactory: () -> PanelRepository = { PanelRepository(context) },
     binaryInstallerFactory: () -> RuntimeBinaryInstaller = { RuntimeBinaryInstaller(context) },
     processRunnerFactory: () -> ProcessRunner = { ProcessRunner() },
+    private val ultraLeaseSender: (String, UltraPolicy, UltraLease) -> Boolean = { socketPath, policy, lease ->
+        UltraLeaseClient().send(socketPath, policy, lease)
+    },
     private val vpnServiceStarter: (Context) -> Unit = { appContext ->
         val intent = Intent(appContext, LeikwanVpnService::class.java)
         appContext.startForegroundService(intent)
@@ -86,9 +108,41 @@ class TunnelOrchestrator internal constructor(
     private val panelRepo: PanelRepository by lazy(panelRepoFactory)
     private val binaryInstaller: RuntimeBinaryInstaller by lazy(binaryInstallerFactory)
     private val processRunner: ProcessRunner by lazy(processRunnerFactory)
+    private val controlScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val controlLoop by lazy {
+        ClientControlLoop(
+            scope = controlScope,
+            poll = {
+                panelRepo.heartbeat()
+                refreshUltraIfDue()
+            },
+            onTerminal = ::revokeFromPanel,
+            shouldContinue = { LeikwanVpnService.isRunning },
+        )
+    }
+    private val revocationCoordinator by lazy {
+        SessionRevocationCoordinator(
+            stopVpn = {
+                runCatching { LeikwanVpnService.instance?.stopVpn() }
+            },
+            stopRuntimes = {
+                activeRouteRuleRuntimeKeys.forEach(processRunner::stopForward)
+                activeRouteRuleRuntimeKeys = emptySet()
+                processRunner.stopAll()
+            },
+            clearLeaseState = {
+                activeRuntime?.let(UltraForwardRunner::cleanup)
+                activeRuntime = null
+                activeUltra = null
+            },
+            clearEnrollment = { panelRepo.logout() },
+            onRevoked = SessionGate::markTerminal,
+        )
+    }
 
-    private var activeRuntime: RuntimeContext? = null
+    @Volatile private var activeRuntime: RuntimeContext? = null
     private var activeRouteRuleRuntimeKeys: Set<Long> = emptySet()
+    @Volatile private var activeUltra: ActiveUltraRuntime? = null
 
     /**
      * Build the authoritative [RoutingPolicySnapshot] for one startup/rebuild cycle from the
@@ -140,7 +194,13 @@ class TunnelOrchestrator internal constructor(
         return if (warnings.isEmpty()) snapshot else snapshot.copy(warnings = snapshot.warnings + warnings)
     }
 
-    suspend fun startForForward(forwardId: Long) = withContext(Dispatchers.IO) {
+    suspend fun startForForward(forwardId: Long) = startForForward(forwardId, preserveControlLoop = false)
+
+    private suspend fun startForForward(
+        forwardId: Long,
+        preserveControlLoop: Boolean,
+    ) = withContext(Dispatchers.IO) {
+        try {
         Log.i(TAG, "Pulling forward configs...")
         val connectionMode = ProxyConnectionMode.SERVICES
         if (prefs.proxyConnectionMode != ProxyConnectionMode.SERVICES) {
@@ -165,26 +225,68 @@ class TunnelOrchestrator internal constructor(
         }
         val selectedEffective = panelRepo.getCachedEffectiveForward(selectedForward)
             ?: throw Exception("Forward $selectedForward is not supported on Android")
+        val ultraPolicy = selectedEffective.runtimeContract.takeIf { selectedEffective.mode == ForwardMode.ULTRA }
+            ?.let { contract -> UltraPolicy.from(contract) }
+        if (selectedEffective.mode == ForwardMode.ULTRA && ultraPolicy == null) {
+            throw Exception("Ultra authorization is unavailable")
+        }
 
         val selection = ProxySelectionPolicy.validate(
             selectedProxyId = prefs.selectedProxyId,
             forwardId = selectedForward,
             connectionMode = connectionMode,
             proxyNodes = proxyNodes,
-            proxyOptional = false,
+            proxyOptional = selectedEffective.mode == ForwardMode.ULTRA,
         )
         if (selection is ProxySelectionResult.Error) {
             throw Exception(selection.message)
         }
         selection as ProxySelectionResult.Success
 
-        stop()
+        stop(keepControlLoop = preserveControlLoop)
 
         var unavailableNodeIds: Set<Long> = emptySet()
+        var ultraRuntimeState: ActiveUltraRuntime? = null
         val binaries = binaryInstaller.prepareBinaryPaths()
         val runtimeContext = run {
             val forward = selectedEffective.runtimeContract
             Log.i(TAG, "Starting LeiGod forward ${forward.forwardId}: ${forward.serviceName}")
+            if (selectedEffective.mode == ForwardMode.ULTRA) {
+                val policy = requireNotNull(ultraPolicy)
+                val planned = UltraForwardRunner.buildPlan(
+                    forward = forward,
+                    policy = policy,
+                    binaries = binaries,
+                    runtimeDir = context.filesDir,
+                )
+                processRunner.start(forward.forwardId, planned.runtimeContext)
+                try {
+                    val lease = panelRepo.resolveUltraLease(policy)
+                    val protectedConnectivity = lease.directConnectivity
+                    val accepted = try {
+                        ultraLeaseSender(planned.controlSocketFile.absolutePath, policy, lease)
+                    } finally {
+                        lease.wipe()
+                    }
+                    if (!accepted) {
+                        throw Exception("Ultra lease was rejected by the local runtime")
+                    }
+                    if (policy.transport != "udp") {
+                        processRunner.awaitLocalPort(planned.runtimeContext.localListenPort)
+                    }
+                    val runtime = planned.runtimeContext.copy(protectedConnectivity = protectedConnectivity)
+                    ultraRuntimeState = ActiveUltraRuntime(
+                        forwardId = forward.forwardId,
+                        policy = policy,
+                        controlSocketPath = planned.controlSocketFile.absolutePath,
+                        protectedConnectivity = protectedConnectivity,
+                    )
+                    return@run runtime
+                } catch (error: Exception) {
+                    processRunner.stopForward(forward.forwardId)
+                    throw error
+                }
+            }
             val relayNodes = selection.activeNodes.filter { it.type.lowercase() != "wireguard" }
             val missingRelayNodeIds = mutableSetOf<Long>()
             val relayNodeForwards = relayNodes.mapNotNull { node ->
@@ -250,7 +352,7 @@ class TunnelOrchestrator internal constructor(
         val routingSnapshot = buildRoutingSnapshot(
             System.currentTimeMillis(),
             unavailableNodeIds = unavailableNodeIds,
-            ignoreProxyNodeTargets = false,
+            ignoreProxyNodeTargets = selectedEffective.mode == ForwardMode.ULTRA,
         )
         val compiled = SingboxConfigBuilder
             .fromPrefs(prefs, activeRulePackManifest)
@@ -261,7 +363,7 @@ class TunnelOrchestrator internal constructor(
                 connectionMode = connectionMode,
                 routeRuleSnapshot = routeRuleSnapshot,
                 routeRuleRuntimeBindings = routeRuleRuntimePlan.singboxBindings,
-                runtimeOnlyProxy = false,
+                runtimeOnlyProxy = selectedEffective.mode == ForwardMode.ULTRA,
             )
         recordExplainability(routingSnapshot)
         val configJson = compiled.configJson
@@ -273,6 +375,8 @@ class TunnelOrchestrator internal constructor(
         when (val vpnResult = vpnStartupAwaiter()) {
             VpnStartupAwaitResult.Running -> {
                 activeRuntime = runtimeContext
+                activeUltra = ultraRuntimeState
+                controlLoop.start()
             }
             is VpnStartupAwaitResult.Failed -> {
                 stopRuntime(runtimeContext)
@@ -283,9 +387,14 @@ class TunnelOrchestrator internal constructor(
                 throw Exception("VPN service start timed out")
             }
         }
+        } catch (terminal: PanelControlException) {
+            revokeFromPanel(terminal)
+            throw terminal
+        }
     }
 
-    fun stop() {
+    fun stop(keepControlLoop: Boolean = false) {
+        if (!keepControlLoop) controlLoop.stop()
         try {
             LeikwanVpnService.instance?.stopVpn()
         } catch (e: Exception) {
@@ -294,7 +403,9 @@ class TunnelOrchestrator internal constructor(
         activeRouteRuleRuntimeKeys.forEach { processRunner.stopForward(it) }
         activeRouteRuleRuntimeKeys = emptySet()
         processRunner.stopAll()
+        activeRuntime?.let(UltraForwardRunner::cleanup)
         activeRuntime = null
+        activeUltra = null
     }
 
     fun isRunning(): Boolean = LeikwanVpnService.isRunning
@@ -319,7 +430,7 @@ class TunnelOrchestrator internal constructor(
                 strategyFilePath = strategyFile.absolutePath,
             )
         }
-        ForwardMode.ULTRA -> throw Exception("Ultra runtime is not ready")
+        ForwardMode.ULTRA -> throw Exception("Ultra can only run as the selected service")
         else -> throw Exception("Forward ${forward.forwardId} mode ${forward.mode.wireValue} is not supported on Android")
     }
 
@@ -384,6 +495,47 @@ class TunnelOrchestrator internal constructor(
         } else {
             processRunner.stopForward(runtimeContext.forwardId)
         }
+    }
+
+    private fun revokeFromPanel(terminal: PanelControlException) {
+        val acknowledgement = panelRepo.captureTerminalAcknowledgement()
+        revocationCoordinator.revoke(terminal) { commandVersion ->
+            acknowledgement?.let { captured ->
+                controlScope.launch {
+                    runCatching { panelRepo.acknowledgeTerminal(captured, commandVersion) }
+                }
+            }
+        }
+    }
+
+    /** Refreshes an in-memory Ultra lease before it reaches its policy renewal point. */
+    private suspend fun refreshUltraIfDue() {
+        val active = activeUltra ?: return
+        if (Instant.now().isBefore(active.policy.renewAfter.minusSeconds(30))) return
+
+        panelRepo.pullCatalog(active.forwardId)
+        val forward = panelRepo.getCachedEffectiveForward(active.forwardId)?.runtimeContract
+            ?: throw IllegalStateException("ultra_policy_unavailable")
+        val nextPolicy = UltraPolicy.from(forward) ?: throw IllegalStateException("ultra_policy_unavailable")
+        if (nextPolicy.policyGeneration != active.policy.policyGeneration) {
+            startForForward(active.forwardId, preserveControlLoop = true)
+            return
+        }
+
+        val lease = panelRepo.resolveUltraLease(nextPolicy)
+        val nextProtectedConnectivity = lease.directConnectivity
+        if (nextProtectedConnectivity != active.protectedConnectivity) {
+            lease.wipe()
+            startForForward(active.forwardId, preserveControlLoop = true)
+            return
+        }
+        val accepted = try {
+            ultraLeaseSender(active.controlSocketPath, nextPolicy, lease)
+        } finally {
+            lease.wipe()
+        }
+        if (!accepted) throw IllegalStateException("ultra_lease_refresh_rejected")
+        activeUltra = active.copy(policy = nextPolicy)
     }
 
     private fun listenPortForNode(baseListenPort: Int, index: Int): Int =
