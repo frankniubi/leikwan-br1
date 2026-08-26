@@ -15,6 +15,49 @@ SPEC.loader.exec_module(MODULE)
 
 
 class UltraClientLeaseTests(unittest.TestCase):
+    def test_linux_pull_declares_platform_to_panel(self):
+        with mock.patch.object(MODULE, "http_json_with_headers", return_value=({"forwards": []}, {})) as request:
+            payload, headers, master = MODULE.pull_client_configs(
+                {"master_url": "https://panel.example.test"},
+                "client-agent-token",
+            )
+
+        self.assertEqual({"forwards": []}, payload)
+        self.assertEqual({}, headers)
+        self.assertEqual("https://panel.example.test", master)
+        request.assert_called_once_with(
+            "GET",
+            "https://panel.example.test/api/client/configs/pull",
+            "client-agent-token",
+            extra_headers={"x-device-platform": "linux"},
+        )
+
+    def test_extra_headers_are_sent_on_config_pull(self):
+        class FakeResponse:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        with mock.patch.object(MODULE, "_urlopen_for_request", return_value=FakeResponse()) as open_request:
+            payload, _headers = MODULE.http_json_with_headers(
+                "GET",
+                "https://panel.example.test/api/client/configs/pull",
+                "client-agent-token",
+                extra_headers={"x-device-platform": "linux"},
+            )
+
+        self.assertEqual({"ok": True}, payload)
+        request = open_request.call_args.args[0]
+        sent_headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertEqual("linux", sent_headers["x-device-platform"])
+
     def test_panel_stop_action_requires_current_policy_generation(self):
         agent = MODULE.ClientAgent.__new__(MODULE.ClientAgent)
         agent.latest_forwards = [{

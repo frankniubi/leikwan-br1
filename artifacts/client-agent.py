@@ -31,7 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.08.24.1"
+AGENT_VERSION = "2026.08.27.1"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -474,13 +474,26 @@ def http_json(method: str, url: str, token: str, payload: dict | None = None) ->
         raise RuntimeError(f"http {exc.code} {url}: {body}") from exc
 
 
-def http_json_with_headers(method: str, url: str, token: str, payload: dict | None = None) -> tuple[dict, dict[str, str]]:
+def http_json_with_headers(
+    method: str,
+    url: str,
+    token: str,
+    payload: dict | None = None,
+    *,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[dict, dict[str, str]]:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
         "User-Agent": f"Leikwan-Client-Agent/{AGENT_VERSION}",
     }
+    for raw_key, raw_value in (extra_headers or {}).items():
+        key = str(raw_key).strip()
+        value = str(raw_value)
+        if key == "" or "\r" in key or "\n" in key or "\r" in value or "\n" in value:
+            raise ValueError("invalid extra HTTP header")
+        headers[key] = value
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -512,7 +525,12 @@ def pull_client_configs(config: dict, token: str) -> tuple[dict, dict[str, str],
     errors: list[str] = []
     for base_url in control_plane_endpoints(config):
         try:
-            payload, headers = http_json_with_headers("GET", f"{base_url}/api/client/configs/pull", token)
+            payload, headers = http_json_with_headers(
+                "GET",
+                f"{base_url}/api/client/configs/pull",
+                token,
+                extra_headers={"x-device-platform": "linux"},
+            )
             return payload, headers, base_url
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
@@ -1458,7 +1476,12 @@ class ClientAgent:
         }
 
     def bridge_lite_fetch_linux_profile_runtime(self, master: str, token: str) -> dict:
-        payload = http_json_with_headers("GET", f"{master.rstrip('/')}/api/client/configs/pull", token)[0]
+        payload = http_json_with_headers(
+            "GET",
+            f"{master.rstrip('/')}/api/client/configs/pull",
+            token,
+            extra_headers={"x-device-platform": "linux"},
+        )[0]
         return payload.get("linux_profile_runtime", {}) if isinstance(payload, dict) else {}
 
     def bond_leg_snapshot_dir(self) -> pathlib.Path:

@@ -218,7 +218,7 @@ final class ClientAgentController extends BaseController
             $forwards,
             (int) $client['id'],
             $deviceId,
-            str_starts_with($platform, 'windows')
+            str_starts_with($platform, 'windows') || str_starts_with($platform, 'linux')
         );
 
         $response = $this->json([
