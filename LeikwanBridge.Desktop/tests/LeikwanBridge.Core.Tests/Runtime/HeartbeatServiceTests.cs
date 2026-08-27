@@ -56,6 +56,45 @@ public sealed class HeartbeatServiceTests
     }
 
     [Fact]
+    public async Task SendHeartbeatAsync_UsesOnlyNewestStatusPerForward()
+    {
+        using var tempDir = new TempStateDirectory();
+        var runtimeRoot = Path.Combine(tempDir.Path, "runtime");
+        var oldDirectory = Path.Combine(runtimeRoot, "ultra-42-old");
+        var currentDirectory = Path.Combine(runtimeRoot, "ultra-42-current");
+        Directory.CreateDirectory(oldDirectory);
+        Directory.CreateDirectory(currentDirectory);
+        File.WriteAllText(Path.Combine(oldDirectory, "status.json"), $$"""
+        {
+          "forward_id": 42,
+          "policy_generation": "{{new string('a', 64)}}",
+          "bytes_in": 100,
+          "bytes_out": 200,
+          "updated_at": "2030-01-01T00:00:01Z"
+        }
+        """);
+        File.WriteAllText(Path.Combine(currentDirectory, "status.json"), $$"""
+        {
+          "forward_id": 42,
+          "policy_generation": "{{new string('b', 64)}}",
+          "bytes_in": 300,
+          "bytes_out": 400,
+          "updated_at": "2030-01-01T00:00:02Z"
+        }
+        """);
+
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        await new HeartbeatService(api, new StateManager(tempDir.Path)).SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        var ultra = Assert.Single(document.RootElement.GetProperty("ultra_usage").EnumerateArray());
+        Assert.Equal(new string('b', 64), ultra.GetProperty("policy_generation").GetString());
+        Assert.Equal(300, ultra.GetProperty("bytes_in").GetInt64());
+        Assert.Equal(400, ultra.GetProperty("bytes_out").GetInt64());
+    }
+
+    [Fact]
     public async Task SendHeartbeatAsync_DoesNotAdvanceUsageUntilThePanelAcceptsIt()
     {
         using var tempDir = new TempStateDirectory();

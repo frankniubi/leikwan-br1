@@ -42,7 +42,10 @@ public sealed class UltraPolicy
             return "target_digest_mismatch";
         if (ExpiresAt <= now)
             return "expired";
-        if (ExpiresAt > now.AddMinutes(5))
+        // The panel caps policy TTL at five minutes. Allow a small amount of
+        // clock skew and request transit time so a valid grant is not rejected
+        // merely because the panel clock is a few seconds ahead.
+        if (ExpiresAt > now.AddMinutes(5).AddSeconds(30))
             return "expiry_window";
         if (QuotaRemainingBytes <= 0)
             return "quota";
