@@ -2,6 +2,8 @@ package com.leikwan.bridge.runtime
 
 import android.content.Context
 import android.os.Build
+import android.system.Os
+import android.system.OsConstants
 import java.io.File
 
 open class RuntimeBinaryInstaller(private val context: Context) {
@@ -76,9 +78,10 @@ open class RuntimeBinaryInstaller(private val context: Context) {
         assets.open(assetPath).use { input ->
             target.outputStream().use { output -> input.copyTo(output) }
         }
-        target.setReadable(true, false)
-        target.setExecutable(true, false)
-        target.setWritable(true, true)
+        Os.chmod(
+            target.absolutePath,
+            OsConstants.S_IRUSR or OsConstants.S_IWUSR or OsConstants.S_IXUSR,
+        )
         return target.absolutePath
     }
 }
