@@ -649,6 +649,129 @@ class AccessPolicyStore
         ) === 1;
     }
 
+    /** @return array<int, array<string, mixed>> */
+    public function adminProfiles(int $limit = 100): array
+    {
+        $limit = max(1, min(500, $limit));
+        return $this->db->fetchAll(
+            'SELECT p.*, u.name AS user_name, u.email AS user_email
+             FROM user_geo_lock_profiles p
+             INNER JOIN users u ON u.id = p.user_id
+             ORDER BY p.updated_at DESC, p.id DESC LIMIT ' . $limit
+        );
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function adminViolations(int $limit = 100): array
+    {
+        $limit = max(1, min(500, $limit));
+        return $this->db->fetchAll(
+            'SELECT e.*, u.name AS user_name, u.email AS user_email
+             FROM access_policy_events e
+             LEFT JOIN users u ON u.id = e.user_id
+             WHERE e.counts_as_geo_violation = 1
+             ORDER BY e.created_at DESC, e.id DESC LIMIT ' . $limit
+        );
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function adminDeviceBlocks(int $limit = 200): array
+    {
+        $limit = max(1, min(1000, $limit));
+        return $this->db->fetchAll(
+            'SELECT cdc.*, c.name AS client_name, c.owner_user_id, u.name AS user_name, u.email AS user_email
+             FROM client_device_controls cdc
+             INNER JOIN clients c ON c.id = cdc.client_id
+             LEFT JOIN users u ON u.id = c.owner_user_id
+             WHERE cdc.blocked_until IS NOT NULL OR cdc.state = :banned_state
+             ORDER BY cdc.updated_at DESC, cdc.id DESC LIMIT ' . $limit,
+            ['banned_state' => 'banned']
+        );
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function adminAccountBans(int $limit = 100): array
+    {
+        $limit = max(1, min(500, $limit));
+        return $this->db->fetchAll(
+            'SELECT b.*, u.name AS user_name, u.email AS user_email
+             FROM account_access_bans b
+             LEFT JOIN users u ON u.id = b.user_id
+             ORDER BY (b.released_at IS NULL) DESC, b.banned_at DESC, b.id DESC LIMIT ' . $limit
+        );
+    }
+
+    /** @return array<string, mixed>|null */
+    public function releaseTemporaryDeviceBlock(int $clientId, string $deviceUuid, int $actorId): ?array
+    {
+        $control = $this->controlFor($clientId, $deviceUuid);
+        if ($control === null) {
+            return null;
+        }
+        $now = gmdate('Y-m-d H:i:s');
+        $previousVersion = max(0, (int) ($control['command_version'] ?? 0));
+        $updated = $this->db->execute(
+            'UPDATE client_device_controls
+             SET blocked_until = NULL,
+                 block_origin = NULL,
+                 release_policy = NULL,
+                 reason_code = NULL,
+                 command_version = :command_version,
+                 changed_by_user_id = :changed_by_user_id,
+                 changed_at = :changed_at,
+                 updated_at = :updated_at
+             WHERE id = :id AND command_version = :previous_command_version',
+            [
+                'id' => (int) $control['id'],
+                'previous_command_version' => $previousVersion,
+                'command_version' => $previousVersion + 1,
+                'changed_by_user_id' => $actorId > 0 ? $actorId : null,
+                'changed_at' => $now,
+                'updated_at' => $now,
+            ]
+        );
+        if ($updated !== 1) {
+            throw new ApiException('device_control_conflict', 409);
+        }
+        return array_merge($control, [
+            'blocked_until' => null,
+            'block_origin' => null,
+            'release_policy' => null,
+            'reason_code' => null,
+            'command_version' => $previousVersion + 1,
+        ]);
+    }
+
+    public function releaseAccountBan(int $userId, int $actorId, ?string $note = null): bool
+    {
+        if ($userId <= 0) {
+            return false;
+        }
+        $now = gmdate('Y-m-d H:i:s');
+        return $this->db->transaction(function () use ($userId, $actorId, $note, $now): bool {
+            $changed = $this->db->execute(
+                'UPDATE account_access_bans
+                 SET released_at = :released_at,
+                     released_by_user_id = :released_by_user_id,
+                     release_note = :release_note
+                 WHERE user_id = :user_id AND released_at IS NULL',
+                [
+                    'user_id' => $userId,
+                    'released_at' => $now,
+                    'released_by_user_id' => $actorId > 0 ? $actorId : null,
+                    'release_note' => $note !== null ? substr(trim($note), 0, 500) : null,
+                ]
+            );
+            if ($changed > 0) {
+                $this->db->execute(
+                    'UPDATE users SET status = :status, updated_at = :updated_at WHERE id = :id AND status = :banned_status',
+                    ['id' => $userId, 'status' => 'active', 'banned_status' => 'banned', 'updated_at' => $now]
+                );
+            }
+            return $changed > 0;
+        });
+    }
+
     /** @param callable $callback */
     public function transaction(callable $callback): mixed
     {

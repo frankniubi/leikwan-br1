@@ -412,6 +412,53 @@ class AccessPolicyService
         return $this->store->setBlacklistRuleActive($ruleId, $active, $actorId);
     }
 
+    /** @return array<int, array<string, mixed>> */
+    public function adminProfiles(int $limit = 100): array
+    {
+        return $this->store->adminProfiles($limit);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function adminViolations(int $limit = 100): array
+    {
+        return $this->store->adminViolations($limit);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function adminDeviceBlocks(int $limit = 200): array
+    {
+        return $this->store->adminDeviceBlocks($limit);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function adminAccountBans(int $limit = 100): array
+    {
+        return $this->store->adminAccountBans($limit);
+    }
+
+    /** @return array<string, mixed> */
+    public function releaseDeviceBlock(int $clientId, string $deviceUuid, int $actorUserId, bool $isAdmin = true): array
+    {
+        if (!$isAdmin || $actorUserId <= 0) {
+            throw new ApiException('device_block_release_forbidden', 403);
+        }
+        $row = $this->store->releaseTemporaryDeviceBlock($clientId, trim($deviceUuid), $actorUserId);
+        if ($row === null) {
+            throw new ApiException('device_control_not_found', 404);
+        }
+        return $row;
+    }
+
+    public function releaseAccountBan(int $userId, int $actorUserId, ?string $note = null): void
+    {
+        if ($actorUserId <= 0) {
+            throw new ApiException('account_ban_release_forbidden', 403);
+        }
+        if (!$this->store->releaseAccountBan($userId, $actorUserId, $note)) {
+            throw new ApiException('account_ban_not_found', 404);
+        }
+    }
+
     /**
      * Change a user's main province. Self-service changes are limited to once
      * per rolling 24 hours and must be backed by a fresh valid observation.
