@@ -6,6 +6,8 @@ namespace Leikwan\Master\Database {
     {
         /** @var array<int, array<string, mixed>> */
         public array $sessions = [];
+        /** @var array<int, array<string, mixed>> */
+        public array $clients = [];
 
         /** @param array<string, mixed> $params */
         public function fetchOne(string $sql, array $params = []): ?array
@@ -29,6 +31,12 @@ namespace Leikwan\Master\Database {
         /** @param array<string, mixed> $params */
         public function fetchAll(string $sql, array $params = []): array
         {
+            if (str_contains($sql, 'SELECT id FROM clients WHERE owner_user_id')) {
+                return array_values(array_filter(
+                    $this->clients,
+                    static fn(array $row): bool => (int) ($row['owner_user_id'] ?? 0) === (int) ($params['owner_user_id'] ?? 0)
+                ));
+            }
             return array_values($this->sessions);
         }
 
@@ -82,6 +90,10 @@ namespace {
         ['id' => 2, 'client_id' => 1, 'device_id' => 'windows-b', 'last_seen_at' => $now],
         ['id' => 3, 'client_id' => 2, 'device_id' => 'other', 'last_seen_at' => $now],
     ];
+    $db->clients = [
+        ['id' => 1, 'owner_user_id' => 8],
+        ['id' => 2, 'owner_user_id' => 7],
+    ];
 
     $service = new ClientOnlineSessionService($db);
     $service->revokeAllForClient(1);
@@ -96,6 +108,9 @@ namespace {
     }
     if (count($db->sessions) !== 1) {
         fail('expected sessions for other clients to remain intact');
+    }
+    if ($service->revokeAllForUser(7) !== 1 || $db->sessions !== []) {
+        fail('expected user-wide revocation to remove sessions for every owned client');
     }
 
     echo "ok\n";

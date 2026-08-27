@@ -149,6 +149,114 @@ class AccessPolicyStore
         );
     }
 
+    /** @return array<int, array{client_id:int,device_uuid:string}> */
+    public function knownDevicesForUser(int $userId): array
+    {
+        if ($userId <= 0) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT c.id AS client_id, cds.device_id AS device_uuid
+             FROM clients c
+             INNER JOIN client_device_sessions cds ON cds.client_id = c.id
+             WHERE c.owner_user_id = :session_user_id
+             UNION
+             SELECT c.id AS client_id, cdc.device_id AS device_uuid
+             FROM clients c
+             INNER JOIN client_device_controls cdc ON cdc.client_id = c.id
+             WHERE c.owner_user_id = :control_user_id
+             ORDER BY client_id ASC, device_uuid ASC',
+            ['session_user_id' => $userId, 'control_user_id' => $userId]
+        );
+        $devices = [];
+        foreach ($rows as $row) {
+            $clientId = (int) ($row['client_id'] ?? 0);
+            $deviceUuid = trim((string) ($row['device_uuid'] ?? ''));
+            if ($clientId > 0 && $deviceUuid !== '') {
+                $devices[] = ['client_id' => $clientId, 'device_uuid' => $deviceUuid];
+            }
+        }
+        return $devices;
+    }
+
+    /** @return array<string, mixed>|null */
+    public function activeResetGeneration(int $userId, bool $forUpdate = false): ?array
+    {
+        $sql = 'SELECT * FROM access_reset_generations
+                WHERE user_id = :user_id AND state = :state
+                ORDER BY generation DESC, id DESC LIMIT 1';
+        if ($forUpdate) {
+            $sql .= ' FOR UPDATE';
+        }
+        return $this->db->fetchOne($sql, ['user_id' => $userId, 'state' => 'pending']);
+    }
+
+    /** @param array<string, mixed> $data @return array<string, mixed> */
+    public function createResetGeneration(array $data): array
+    {
+        $row = [
+            'user_id' => (int) $data['user_id'],
+            'generation' => (int) $data['generation'],
+            'previous_province_code' => $data['previous_province_code'] ?? null,
+            'state' => (string) ($data['state'] ?? 'pending'),
+            'started_at' => (string) $data['started_at'],
+            'completed_at' => $data['completed_at'] ?? null,
+            'created_by_user_id' => (int) $data['created_by_user_id'],
+        ];
+        $id = $this->db->insert('access_reset_generations', $row);
+        return ['id' => $id] + $row;
+    }
+
+    /** @param array<string, mixed> $data */
+    public function insertResetDevice(array $data): int
+    {
+        return $this->db->insert('access_reset_devices', [
+            'reset_generation_id' => (int) $data['reset_generation_id'],
+            'user_id' => (int) $data['user_id'],
+            'client_id' => (int) $data['client_id'],
+            'device_uuid' => (string) $data['device_uuid'],
+            'blocked_until' => $data['blocked_until'] ?? null,
+            'block_created_at' => $data['block_created_at'] ?? null,
+            'created_at' => (string) $data['created_at'],
+        ]);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function resetDevicesForGeneration(int $resetGenerationId): array
+    {
+        return $this->db->fetchAll(
+            'SELECT * FROM access_reset_devices
+             WHERE reset_generation_id = :reset_generation_id
+             ORDER BY id ASC',
+            ['reset_generation_id' => $resetGenerationId]
+        );
+    }
+
+    public function completeResetGeneration(int $resetGenerationId, string $completedAt): void
+    {
+        $this->db->execute(
+            'UPDATE access_reset_generations
+             SET state = :state, completed_at = :completed_at
+             WHERE id = :id AND state = :pending_state',
+            [
+                'id' => $resetGenerationId,
+                'state' => 'completed',
+                'pending_state' => 'pending',
+                'completed_at' => $completedAt,
+            ]
+        );
+    }
+
+    public function markResetDeviceBlocked(int $resetDeviceId, string $blockedUntil, string $createdAt): void
+    {
+        $this->db->execute(
+            'UPDATE access_reset_devices
+             SET blocked_until = :blocked_until, block_created_at = :block_created_at
+             WHERE id = :id AND block_created_at IS NULL',
+            ['id' => $resetDeviceId, 'blocked_until' => $blockedUntil, 'block_created_at' => $createdAt]
+        );
+    }
+
     /** @param array<string, mixed> $data */
     public function insertChallenge(array $data): int
     {
@@ -365,45 +473,86 @@ class AccessPolicyStore
                 'release_policy' => $releasePolicy,
                 'trust_state' => 'untrusted',
                 'trust_reason' => 'policy_block',
-                'command_version' => 0,
+                'reason_code' => 'temporary_' . $origin,
+                'changed_by_user_id' => null,
+                'changed_at' => $now,
+                'command_version' => 1,
                 'last_acknowledged_command_version' => 0,
+                'acknowledged_at' => null,
                 'last_attested_at' => null,
                 'last_seen_at' => null,
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
-            return;
+        } else {
+            $previousCommandVersion = max(0, (int) ($existing['command_version'] ?? 0));
+            $updated = $this->db->execute(
+                'UPDATE client_device_controls
+                 SET blocked_until = :blocked_until,
+                     block_origin = :block_origin,
+                     release_policy = :release_policy,
+                     reason_code = :reason_code,
+                     command_version = :command_version,
+                     changed_at = :changed_at,
+                     updated_at = :updated_at
+                 WHERE id = :id AND command_version = :previous_command_version',
+                [
+                    'id' => (int) $existing['id'],
+                    'previous_command_version' => $previousCommandVersion,
+                    'blocked_until' => $until,
+                    'block_origin' => $origin,
+                    'release_policy' => $releasePolicy,
+                    'reason_code' => 'temporary_' . $origin,
+                    'command_version' => $previousCommandVersion + 1,
+                    'changed_at' => $now,
+                    'updated_at' => $now,
+                ]
+            );
+            if ($updated !== 1) {
+                throw new ApiException('device_control_conflict', 409);
+            }
         }
-
         $this->db->execute(
-            'UPDATE client_device_controls
-             SET blocked_until = :blocked_until,
-                 block_origin = :block_origin,
-                 release_policy = :release_policy,
-                 updated_at = :updated_at
-             WHERE id = :id',
-            [
-                'id' => (int) $existing['id'],
-                'blocked_until' => $until,
-                'block_origin' => $origin,
-                'release_policy' => $releasePolicy,
-                'updated_at' => $now,
-            ]
+            'UPDATE android_device_sessions SET revoked_at = :revoked_at
+             WHERE client_id = :client_id AND device_id = :device_id AND revoked_at IS NULL',
+            ['client_id' => $clientId, 'device_id' => $deviceUuid, 'revoked_at' => $now]
+        );
+        $this->db->execute(
+            'DELETE FROM client_device_sessions WHERE client_id = :client_id AND device_id = :device_id',
+            ['client_id' => $clientId, 'device_id' => $deviceUuid]
         );
     }
 
-    public function revokeApplicationSessions(int $userId, string $revokedAt): void
+    public function revokeApplicationSessions(int $userId, string $revokedAt): int
     {
         if ($userId <= 0) {
-            return;
+            return 0;
         }
+        $revoked = $this->db->execute(
+            'UPDATE forward_combination_self_leg_donors d
+             INNER JOIN clients c ON c.id = d.client_id
+             SET d.state = :state,
+                 d.revoked_at = :revoked_at,
+                 d.revoke_reason = :revoke_reason,
+                 d.updated_at = :updated_at
+             WHERE c.owner_user_id = :user_id AND d.state IN (:active_state, :qualifying_state)',
+            [
+                'user_id' => $userId,
+                'state' => 'revoked',
+                'active_state' => 'active',
+                'qualifying_state' => 'qualifying',
+                'revoked_at' => $revokedAt,
+                'revoke_reason' => 'account_device_reset',
+                'updated_at' => $revokedAt,
+            ]
+        );
         // These statements intentionally target only application sessions;
         // the authenticated web Panel session is left intact for recovery.
-        $this->db->execute(
+        $revoked += $this->db->execute(
             'DELETE FROM desktop_client_sessions WHERE user_id = :user_id',
             ['user_id' => $userId]
         );
-        $this->db->execute(
+        $revoked += $this->db->execute(
             'UPDATE android_device_sessions ads
              INNER JOIN clients c ON c.id = ads.client_id
              SET ads.revoked_at = :revoked_at
@@ -412,12 +561,13 @@ class AccessPolicyStore
         );
         // client_device_sessions is an online presence index without a
         // revocation column; deleting rows forces the next request to enroll.
-        $this->db->execute(
+        $revoked += $this->db->execute(
             'DELETE cds FROM client_device_sessions cds
              INNER JOIN clients c ON c.id = cds.client_id
              WHERE c.owner_user_id = :user_id',
             ['user_id' => $userId]
         );
+        return $revoked;
     }
 
     /** @return array<int, array<string, mixed>> */

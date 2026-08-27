@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS access_reset_devices (
     blocked_until DATETIME NULL,
     block_created_at DATETIME NULL,
     created_at DATETIME NOT NULL,
-    UNIQUE KEY uniq_access_reset_device (reset_generation_id, device_uuid),
+    UNIQUE KEY uniq_access_reset_device (reset_generation_id, client_id, device_uuid),
     INDEX idx_access_reset_device_user (user_id, device_uuid),
     CONSTRAINT fk_access_reset_device_generation FOREIGN KEY (reset_generation_id) REFERENCES access_reset_generations(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

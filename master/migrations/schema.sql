@@ -1408,10 +1408,14 @@ CREATE TABLE IF NOT EXISTS client_device_controls (
     blocked_until DATETIME NULL,
     block_origin VARCHAR(32) NULL,
     release_policy VARCHAR(32) NULL,
+    reason_code VARCHAR(64) NULL,
+    changed_by_user_id BIGINT UNSIGNED NULL,
+    changed_at DATETIME NULL,
     trust_state ENUM('trusted', 'untrusted') NOT NULL DEFAULT 'untrusted',
     trust_reason VARCHAR(64) NULL,
     command_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
     last_acknowledged_command_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    acknowledged_at DATETIME NULL,
     last_attested_at DATETIME NULL,
     last_seen_at DATETIME NULL,
     created_at DATETIME NOT NULL,
@@ -1613,7 +1617,7 @@ CREATE TABLE IF NOT EXISTS access_reset_devices (
     blocked_until DATETIME NULL,
     block_created_at DATETIME NULL,
     created_at DATETIME NOT NULL,
-    UNIQUE KEY uniq_access_reset_device (reset_generation_id, device_uuid),
+    UNIQUE KEY uniq_access_reset_device (reset_generation_id, client_id, device_uuid),
     INDEX idx_access_reset_device_user (user_id, device_uuid),
     CONSTRAINT fk_access_reset_device_generation FOREIGN KEY (reset_generation_id) REFERENCES access_reset_generations(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

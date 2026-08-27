@@ -49,6 +49,7 @@ foreach (['fresh schema' => $schema, 'migration' => $migration] as $label => $sq
         'UNIQUE KEY uniq_access_blacklist_entity',
         'UNIQUE KEY uniq_access_location_challenge_token',
         'UNIQUE KEY uniq_access_policy_attempt',
+        'UNIQUE KEY uniq_access_reset_device (reset_generation_id, client_id, device_uuid)',
         'blocked_until',
         'block_origin',
         'release_policy',
