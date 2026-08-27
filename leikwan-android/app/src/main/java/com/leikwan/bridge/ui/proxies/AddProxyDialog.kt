@@ -9,6 +9,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -167,6 +171,7 @@ private fun ProxyProtocolEditor(
         is ProxyProtocolDraft.Vless -> VlessEditor(protocol, onProtocolChange)
         is ProxyProtocolDraft.Vmess -> VmessEditor(protocol, onProtocolChange)
         is ProxyProtocolDraft.WireGuard -> WireGuardEditor(protocol, onProtocolChange)
+        is ProxyProtocolDraft.Socks5 -> Socks5Editor(protocol, onProtocolChange)
         is ProxyProtocolDraft.Unknown -> UnknownEditor(protocol, onProtocolChange)
     }
 }
@@ -177,12 +182,18 @@ private fun ShadowsocksEditor(
     onChange: (ProxyProtocolDraft) -> Unit,
 ) {
     Text(stringResource(R.string.protocol_shadowsocks))
-    OutlinedTextField(
+    SelectorField(
+        label = stringResource(R.string.field_encrypt_method),
         value = details.method,
-        onValueChange = { onChange(details.copy(method = it)) },
-        label = { Text(stringResource(R.string.field_encrypt_method)) },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
+        options = listOf(
+            "aes-128-gcm",
+            "aes-256-gcm",
+            "chacha20-ietf-poly1305",
+            "2022-blake3-aes-128-gcm",
+            "2022-blake3-aes-256-gcm",
+            "2022-blake3-chacha20-poly1305",
+        ),
+        onValueSelected = { onChange(details.copy(method = it)) },
     )
     OutlinedTextField(
         value = details.password,
@@ -207,12 +218,11 @@ private fun ShadowsocksEditor(
         minLines = 2,
         maxLines = 3,
     )
-    OutlinedTextField(
+    SelectorField(
+        label = stringResource(R.string.field_network_optional),
         value = details.network,
-        onValueChange = { onChange(details.copy(network = it)) },
-        label = { Text(stringResource(R.string.field_network_optional)) },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
+        options = listOf("", "tcp", "udp"),
+        onValueSelected = { onChange(details.copy(network = it)) },
     )
     ProtocolToggleRow(
         label = stringResource(R.string.toggle_udp_over_tcp),
@@ -246,19 +256,17 @@ private fun VlessEditor(
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
-    OutlinedTextField(
+    SelectorField(
+        label = stringResource(R.string.field_security_vless),
         value = details.security,
-        onValueChange = { onChange(details.copy(security = it)) },
-        label = { Text(stringResource(R.string.field_security_vless)) },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
+        options = listOf("", "tls", "reality", "none"),
+        onValueSelected = { onChange(details.copy(security = it)) },
     )
-    OutlinedTextField(
+    SelectorField(
+        label = stringResource(R.string.field_transport_type),
         value = details.transportType,
-        onValueChange = { onChange(details.copy(transportType = it)) },
-        label = { Text(stringResource(R.string.field_transport_type)) },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
+        options = listOf("tcp", "ws", "grpc"),
+        onValueSelected = { onChange(details.copy(transportType = it)) },
     )
     OutlinedTextField(
         value = details.host,
@@ -324,19 +332,17 @@ private fun VmessEditor(
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
-    OutlinedTextField(
+    SelectorField(
+        label = stringResource(R.string.field_security),
         value = details.security,
-        onValueChange = { onChange(details.copy(security = it)) },
-        label = { Text(stringResource(R.string.field_security)) },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
+        options = listOf("auto", "none", "aes-128-gcm", "chacha20-poly1305"),
+        onValueSelected = { onChange(details.copy(security = it)) },
     )
-    OutlinedTextField(
+    SelectorField(
+        label = stringResource(R.string.field_network),
         value = details.network,
-        onValueChange = { onChange(details.copy(network = it)) },
-        label = { Text(stringResource(R.string.field_network)) },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
+        options = listOf("tcp", "ws"),
+        onValueSelected = { onChange(details.copy(network = it)) },
     )
     OutlinedTextField(
         value = details.host,
@@ -398,24 +404,44 @@ private fun WireGuardEditor(
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
-    OutlinedTextField(
+    SelectorField(
+        label = stringResource(R.string.field_mtu_optional),
         value = details.mtu,
-        onValueChange = { onChange(details.copy(mtu = it)) },
-        label = { Text(stringResource(R.string.field_mtu_optional)) },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
+        options = listOf("", "1280", "1360", "1380", "1420"),
+        onValueSelected = { onChange(details.copy(mtu = it)) },
     )
-    OutlinedTextField(
+    SelectorField(
+        label = stringResource(R.string.field_persistent_keepalive_optional),
         value = details.persistentKeepalive,
-        onValueChange = { onChange(details.copy(persistentKeepalive = it)) },
-        label = { Text(stringResource(R.string.field_persistent_keepalive_optional)) },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
+        options = listOf("", "15", "25"),
+        onValueSelected = { onChange(details.copy(persistentKeepalive = it)) },
     )
     OutlinedTextField(
         value = details.reserved,
         onValueChange = { onChange(details.copy(reserved = it)) },
         label = { Text(stringResource(R.string.field_reserved_bytes_optional)) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
+}
+
+@Composable
+private fun Socks5Editor(
+    details: ProxyProtocolDraft.Socks5,
+    onChange: (ProxyProtocolDraft) -> Unit,
+) {
+    Text(stringResource(R.string.protocol_socks5))
+    OutlinedTextField(
+        value = details.username,
+        onValueChange = { onChange(details.copy(username = it)) },
+        label = { Text(stringResource(R.string.field_username_optional)) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
+    OutlinedTextField(
+        value = details.password,
+        onValueChange = { onChange(details.copy(password = it)) },
+        label = { Text(stringResource(R.string.field_password_optional)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
@@ -452,5 +478,47 @@ private fun ProtocolToggleRow(
             checked = checked,
             onCheckedChange = onCheckedChange,
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SelectorField(
+    label: String,
+    value: String,
+    options: List<String>,
+    onValueSelected: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val values = (options + value).distinct()
+    val emptyLabel = stringResource(R.string.common_unknown)
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        OutlinedTextField(
+            value = if (value.isBlank()) emptyLabel else value,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.fillMaxWidth().menuAnchor(),
+            singleLine = true,
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            values.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(if (option.isBlank()) emptyLabel else option) },
+                    onClick = {
+                        onValueSelected(option)
+                        expanded = false
+                    },
+                )
+            }
+        }
     }
 }

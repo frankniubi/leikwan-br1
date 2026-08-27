@@ -106,12 +106,6 @@ final class UltraLeaseService
             return ['ok' => false, 'error' => 'quota_exhausted'];
         }
 
-        $deviceHash = hash('sha256', trim($deviceId));
-        $nonceHash = hash('sha256', $normalized['nonce']);
-        if (!$this->consumeNonce($clientId, $deviceHash, $forwardId, $nonceHash, $policyGeneration, $quotaBytes, $expiresAt)) {
-            return ['ok' => false, 'error' => 'lease_replayed'];
-        }
-
         $candidate = ($this->candidateResolver)($normalized, $clientId, trim($deviceId));
         if (!is_array($candidate) || !$this->candidateIsValid($candidate)) {
             return ['ok' => false, 'error' => 'no_approved_candidate'];
@@ -119,6 +113,12 @@ final class UltraLeaseService
         if (isset($candidate['policy_generation'])
             && !hash_equals($policyGeneration, (string) $candidate['policy_generation'])) {
             return ['ok' => false, 'error' => 'policy_generation_invalid'];
+        }
+
+        $deviceHash = hash('sha256', trim($deviceId));
+        $nonceHash = hash('sha256', $normalized['nonce']);
+        if (!$this->consumeNonce($clientId, $deviceHash, $forwardId, $nonceHash, $policyGeneration, $quotaBytes, $expiresAt)) {
+            return ['ok' => false, 'error' => 'lease_replayed'];
         }
 
         $leaseId = 'ul2_' . $this->base64UrlEncode(random_bytes(24));
@@ -145,6 +145,7 @@ final class UltraLeaseService
                 'user' => (string) $candidate['user'],
                 'password' => (string) $candidate['credential'],
             ],
+            'direct_ip_cidrs' => $this->directIpCidrsForCandidate($candidate),
         ]);
         return ['ok' => true, 'lease' => $lease];
     }
@@ -172,6 +173,26 @@ final class UltraLeaseService
         }
         $this->memoryGenerations[$forwardId . ':' . strtolower($generation)] = true;
         return ['ok' => true, 'revoked' => $count];
+    }
+
+    public function revokeDevice(int $clientId, string $deviceId): int
+    {
+        $deviceId = trim($deviceId);
+        if ($this->db === null || $clientId <= 0 || $deviceId === '') {
+            return 0;
+        }
+        $now = gmdate('Y-m-d H:i:s', $this->now());
+        return $this->db->execute(
+            'UPDATE ultra_client_leases
+             SET revoked_at = :revoked_at, updated_at = :updated_at
+             WHERE client_id = :client_id AND device_hash = :device_hash AND revoked_at IS NULL',
+            [
+                'client_id' => $clientId,
+                'device_hash' => hash('sha256', $deviceId),
+                'revoked_at' => $now,
+                'updated_at' => $now,
+            ]
+        );
     }
 
     /** @param array<string,mixed> $request @return array<string,mixed>|null */
@@ -209,7 +230,62 @@ final class UltraLeaseService
             && $port > 0 && $port <= 65535
             && trim((string) ($candidate['user'] ?? '')) !== ''
             && trim((string) ($candidate['credential'] ?? '')) !== ''
-            && preg_match('/^[A-Za-z0-9_-]{16,128}$/', (string) ($candidate['selection_ref'] ?? '')) === 1;
+            && preg_match('/^[A-Za-z0-9_-]{16,128}$/', (string) ($candidate['selection_ref'] ?? '')) === 1
+            && $this->candidateDirectCidrsAreValid($candidate);
+    }
+
+    /** @param array<string,mixed> $candidate */
+    private function candidateDirectCidrsAreValid(array $candidate): bool
+    {
+        $raw = $candidate['direct_ip_cidrs'] ?? $candidate['direct_cidrs'] ?? [];
+        if (!is_array($raw)) {
+            return false;
+        }
+        foreach ($raw as $cidr) {
+            if (!is_string($cidr) || $this->normalizeDirectIpCidr($cidr) === null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @param array<string,mixed> $candidate @return list<string> */
+    private function directIpCidrsForCandidate(array $candidate): array
+    {
+        $ip = trim((string) ($candidate['ip'] ?? ''));
+        $endpointCidr = str_contains($ip, ':') ? strtolower($ip) . '/128' : $ip . '/32';
+        $normalized = [$endpointCidr => true];
+        $raw = $candidate['direct_ip_cidrs'] ?? $candidate['direct_cidrs'] ?? [];
+        foreach (is_array($raw) ? $raw : [] as $cidr) {
+            if (!is_string($cidr)) {
+                continue;
+            }
+            $value = $this->normalizeDirectIpCidr($cidr);
+            if ($value !== null) {
+                $normalized[$value] = true;
+            }
+        }
+        return array_values(array_keys($normalized));
+    }
+
+    private function normalizeDirectIpCidr(string $value): ?string
+    {
+        $parts = explode('/', trim($value), 2);
+        if (count($parts) !== 2 || !preg_match('/^\d{1,3}$/', trim($parts[1]))) {
+            return null;
+        }
+        $ip = trim($parts[0]);
+        if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return null;
+        }
+        $isIpv6 = str_contains($ip, ':');
+        $prefix = (int) trim($parts[1]);
+        $minimum = $isIpv6 ? 32 : 8;
+        $maximum = $isIpv6 ? 128 : 32;
+        if ($prefix < $minimum || $prefix > $maximum) {
+            return null;
+        }
+        return ($isIpv6 ? strtolower($ip) : $ip) . '/' . $prefix;
     }
 
     private function consumeNonce(int $clientId, string $deviceHash, int $forwardId, string $nonceHash, string $generation, int $quotaBytes, int $expiresAt): bool
@@ -325,6 +401,10 @@ final class UltraLeaseService
                 'user' => (string) $lease['credential']['user'],
                 'password' => (string) $lease['credential']['password'],
             ],
+            'direct_ip_cidrs' => array_values(array_filter(
+                is_array($lease['direct_ip_cidrs'] ?? null) ? $lease['direct_ip_cidrs'] : [],
+                static fn(mixed $value): bool => is_string($value) && $value !== ''
+            )),
         ];
     }
 

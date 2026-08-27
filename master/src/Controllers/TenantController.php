@@ -5,12 +5,15 @@ namespace Leikwan\Master\Controllers;
 
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
+use Leikwan\Master\Support\AndroidEnrollmentCodeService;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\ClientOnlineSessionService;
+use Leikwan\Master\Support\DeviceControlService;
 use Leikwan\Master\Support\ForwardLineApiContract;
 use Leikwan\Master\Support\PrecisionGridUi;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\SessionAuth;
+use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\WhmcsIdentityService;
 
 final class TenantController extends BaseController
@@ -1022,6 +1025,32 @@ final class TenantController extends BaseController
         $onlineCount = $sessionService->activeCountForClient($clientId);
         $onlineLimit = max(1, (int) ($client['online_device_limit'] ?? 1));
         $sessions = $sessionService->activeSessionsForClient($clientId);
+        $controlRows = DeviceControlService::fromConfig($this->config, $this->db)->controlsForClient($clientId);
+        $controlsByDevice = [];
+        foreach ($controlRows as $controlRow) {
+            $controlDeviceId = trim((string) ($controlRow['device_id'] ?? ''));
+            if ($controlDeviceId !== '') {
+                $controlsByDevice[$controlDeviceId] = $controlRow;
+            }
+        }
+        $observedDevices = [];
+        foreach ($sessions as $session) {
+            $observedDevices[(string) ($session['device_id'] ?? '')] = true;
+        }
+        foreach ($controlRows as $controlRow) {
+            $controlDeviceId = trim((string) ($controlRow['device_id'] ?? ''));
+            if ($controlDeviceId === '' || isset($observedDevices[$controlDeviceId])) {
+                continue;
+            }
+            $sessions[] = [
+                'device_id' => $controlDeviceId,
+                'platform' => 'android',
+                'last_ip' => '',
+                'os_release' => '',
+                'client_version' => '',
+                'user_agent' => '',
+            ];
+        }
         $csrf = $this->escape(SessionAuth::csrfToken());
         $resetForm = '<form class="inline" method="post" action="/tenant/clients/reset-token">'
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
@@ -1047,11 +1076,28 @@ final class TenantController extends BaseController
                 . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
                 . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
                 . '<button class="button ghost" type="submit">踢走</button></form>';
+            $control = $controlsByDevice[$deviceId] ?? null;
+            $controlState = is_array($control) ? (string) ($control['state'] ?? 'active') : 'online';
+            $controlForms = $kickForm;
+            if (is_array($control)) {
+                if ($controlState === 'banned') {
+                    $controlForms = '<form class="inline" method="post" action="/tenant/clients/unban">'
+                        . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                        . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
+                        . '<button class="button ghost" type="submit">Unban</button></form>';
+                } else {
+                    $controlForms .= '<form class="inline" method="post" action="/tenant/clients/ban" onsubmit="return confirm(\'Ban this device?\');">'
+                        . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                        . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
+                        . '<button class="button ghost" type="submit">Ban</button></form>';
+                }
+            }
+            $controlForms = '<span class="muted">' . $this->escape($controlState) . '</span>' . $controlForms;
             $onlineRows .= '<tr>'
                 . '<td>' . $this->escape($ip !== '' ? $ip : '—') . '</td>'
                 . '<td>' . $this->escape($os !== '' ? $os : '—') . '</td>'
                 . '<td>' . $this->escape($version !== '' ? $version : '—') . '</td>'
-                . '<td class="actions">' . $kickForm . '</td>'
+                . '<td class="actions">' . $controlForms . '</td>'
                 . '</tr>';
         }
 
@@ -1071,7 +1117,10 @@ final class TenantController extends BaseController
             . '<div class="actions">' . $this->renderCopyButton('Copy Client ID', (string) $clientId) . '</div></div>'
             . '<div><strong>Agent Token</strong><code>' . $this->escape($agentToken) . '</code>'
             . '<div class="actions">' . $this->renderCopyButton('Copy Agent Token', $agentToken) . '</div></div>'
-            . '</section>';
+            . '</section>'
+            . '<form method="post" action="/tenant/clients/android-enrollment-code">'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<button class="button ghost" type="submit">Create enrollment code</button></form>';
 
         $body = '<div class="tenant-client-install">'
             . '<div class="tenant-client-install__shell">'
@@ -1085,6 +1134,9 @@ final class TenantController extends BaseController
             . '</div></section>'
             . '<section class="tenant-client-install__platform"><strong>Windows App</strong>'
             . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
+            . '</section>'
+            . '<section class="tenant-client-install__platform"><strong>Android (Unstable)</strong>'
+            . '<div class="actions">' . $this->renderCommandLink('Download APK', $this->androidClientApkUrl(), 'secondary') . '</div>'
             . '</section></div>'
             . '<div class="tenant-client-install__online"><span>最大在线</span><strong>'
             . $onlineCount . ' / ' . $onlineLimit . '</strong></div></div></div>'
@@ -1146,10 +1198,92 @@ final class TenantController extends BaseController
                 throw new ApiException('invalid_device', 400);
             }
 
+            if (str_starts_with($deviceId, 'android-client-')) {
+                DeviceControlService::fromConfig($this->config, $this->db)->setState(
+                    $clientId,
+                    $deviceId,
+                    'kicked',
+                    'tenant_kick',
+                    (int) $user['id'],
+                );
+                (new UltraLeaseService($this->config, $this->db))->revokeDevice($clientId, $deviceId);
+            }
             (new ClientOnlineSessionService($this->db))->revokeDevice($clientId, $deviceId);
             SessionAuth::flash('success', '客户端已踢下线。');
         } catch (\Throwable) {
             SessionAuth::flash('error', '踢下线失败。');
+        }
+
+        return Response::redirect('/tenant/clients');
+    }
+
+    public function banClientDevice(Request $request, array $params): Response
+    {
+        return $this->changeAndroidDeviceState($request, 'banned', 'tenant_ban');
+    }
+
+    public function unbanClientDevice(Request $request, array $params): Response
+    {
+        return $this->changeAndroidDeviceState($request, 'active', 'tenant_unban');
+    }
+
+    public function createAndroidEnrollmentCode(Request $request, array $params): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $client = $this->provisioning->defaultClientForUser((int) $user['id']);
+            if ($client === null) {
+                $client = $this->provisioning->ensureDefaultClientForUser((int) $user['id']);
+            }
+            $issued = (new AndroidEnrollmentCodeService($this->db))->issue(
+                (int) ($client['id'] ?? 0),
+                (int) $user['id'],
+            );
+            $link = $this->agentBaseUrl() . '/android/enroll?client_id=' . (int) ($client['id'] ?? 0)
+                . '&code=' . rawurlencode((string) $issued['code']);
+            SessionAuth::flash('success', 'Enrollment link (valid 5 minutes): ' . $link);
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Enrollment code creation failed.');
+        }
+
+        return Response::redirect('/tenant/clients');
+    }
+
+    private function changeAndroidDeviceState(Request $request, string $state, string $reason): Response
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) $user['role'] !== 'tenant') {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $client = $this->provisioning->defaultClientForUser((int) $user['id']);
+            if ($client === null) {
+                $client = $this->provisioning->ensureDefaultClientForUser((int) $user['id']);
+            }
+            $clientId = (int) ($client['id'] ?? 0);
+            $deviceId = trim((string) $request->input('device_id', ''));
+            if ($clientId <= 0 || !str_starts_with($deviceId, 'android-client-')) {
+                throw new ApiException('invalid_device', 400);
+            }
+            DeviceControlService::fromConfig($this->config, $this->db)->setState(
+                $clientId,
+                $deviceId,
+                $state,
+                $reason,
+                (int) $user['id'],
+            );
+            (new ClientOnlineSessionService($this->db))->revokeDevice($clientId, $deviceId);
+            (new UltraLeaseService($this->config, $this->db))->revokeDevice($clientId, $deviceId);
+            SessionAuth::flash('success', $state === 'banned' ? 'Device banned.' : 'Device unbanned; enrollment is still required.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Device control update failed.');
         }
 
         return Response::redirect('/tenant/clients');

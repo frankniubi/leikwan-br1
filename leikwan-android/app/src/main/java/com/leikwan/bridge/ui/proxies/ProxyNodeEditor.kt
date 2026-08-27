@@ -94,6 +94,8 @@ object ProxyNodeEditor {
                 else -> null
             }
 
+            is ProxyProtocolDraft.Socks5 -> null
+
             is ProxyProtocolDraft.Unknown -> null
         }
     }

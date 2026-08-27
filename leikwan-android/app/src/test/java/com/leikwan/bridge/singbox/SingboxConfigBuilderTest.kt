@@ -519,6 +519,120 @@ class SingboxConfigBuilderTest {
     }
 
     @Test
+    fun `active proxy and WireGuard peer endpoints are direct before user rules`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+        val snapshot = engine().compile(
+            globalDefault = UserTrafficOutcome.TUNNEL,
+            globalDefaultNodeId = null,
+            countryRules = listOf(RoutingRule("c-cn", RoutingRuleKind.COUNTRY, "CN", UserTrafficOutcome.TUNNEL)),
+            categoryRules = emptyList(),
+            rulePackVersions = listOf("test"),
+            compiledAtMs = 1L,
+        )
+        val nodes = listOf(
+            ProxyNode(
+                id = 44,
+                name = "direct-ss",
+                type = "ss",
+                originalServer = "198.51.100.44",
+                originalPort = 443,
+                configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+            ),
+            ProxyNode(
+                id = 45,
+                name = "peer-wg",
+                type = "wireguard",
+                originalServer = "wg.example.test",
+                originalPort = 51820,
+                configJson = """{"private_key":"private","address":["10.0.0.2/32"],"peers":[{"public_key":"public","address":"wg.example.test","port":51820,"allowed_ips":["0.0.0.0/0"]}]}""",
+            ),
+            ProxyNode(
+                id = 46,
+                name = "direct-vless",
+                type = "vless",
+                originalServer = "vless.example.test",
+                originalPort = 443,
+                configJson = """{"uuid":"uuid","sni":"vless.example.test"}""",
+            ),
+            ProxyNode(
+                id = 47,
+                name = "direct-socks",
+                type = "socks5",
+                originalServer = "socks.example.test",
+                originalPort = 1080,
+                configJson = """{"username":"user","password":"pass"}""",
+            ),
+        )
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = nodes,
+                runtimeContext = null,
+                routingPolicySnapshot = snapshot,
+                connectionMode = ProxyConnectionMode.DIRECT,
+            ).configJson,
+        ).asJsonObject
+        val rules = config.getAsJsonObject("route").getAsJsonArray("rules").map { it.asJsonObject }
+        val ipIndex = rules.indexOfFirst { rule ->
+            rule.has("ip_cidr") && rule.getAsJsonArray("ip_cidr").any { it.asString == "198.51.100.44/32" }
+        }
+        val peerIndex = rules.indexOfFirst { rule ->
+            rule.has("domain") && rule.getAsJsonArray("domain").any { it.asString == "wg.example.test" }
+        }
+        val vlessIndex = rules.indexOfFirst { rule ->
+            rule.has("domain") && rule.getAsJsonArray("domain").any { it.asString == "vless.example.test" }
+        }
+        val socksIndex = rules.indexOfFirst { rule ->
+            rule.has("domain") && rule.getAsJsonArray("domain").any { it.asString == "socks.example.test" }
+        }
+        val countryIndex = rules.indexOfFirst { rule ->
+            rule.has("rule_set") && rule.getAsJsonArray("rule_set").any { it.asString == "geoip-cn" }
+        }
+
+        assertTrue(ipIndex >= 0)
+        assertTrue(peerIndex >= 0)
+        assertTrue(vlessIndex >= 0)
+        assertTrue(socksIndex >= 0)
+        assertTrue(countryIndex >= 0)
+        assertEquals("direct", rules[ipIndex].get("outbound").asString)
+        assertEquals("direct", rules[peerIndex].get("outbound").asString)
+        assertEquals("direct", rules[vlessIndex].get("outbound").asString)
+        assertEquals("direct", rules[socksIndex].get("outbound").asString)
+        assertTrue(ipIndex < countryIndex)
+        assertTrue(peerIndex < countryIndex)
+        assertTrue(vlessIndex < countryIndex)
+        assertTrue(socksIndex < countryIndex)
+    }
+
+    @Test
+    fun `builder emits a SOCKS5 outbound with optional credentials`() {
+        val config = JsonParser.parseString(
+            SingboxConfigBuilder(settings = baseSettings()).build(
+                proxyNodes = listOf(
+                    ProxyNode(
+                        id = 50,
+                        name = "socks",
+                        type = "socks5",
+                        originalServer = "198.51.100.50",
+                        originalPort = 1080,
+                        configJson = """{"username":"user","password":"pass"}""",
+                    ),
+                ),
+                runtimeContext = null,
+                connectionMode = ProxyConnectionMode.DIRECT,
+            ).configJson,
+        ).asJsonObject
+        val outbound = config.getAsJsonArray("outbounds")
+            .map { it.asJsonObject }
+            .first { it.get("tag")?.asString == "proxy-50" }
+
+        assertEquals("socks", outbound.get("type").asString)
+        assertEquals("5", outbound.get("version").asString)
+        assertEquals("user", outbound.get("username").asString)
+        assertEquals("pass", outbound.get("password").asString)
+    }
+
+    @Test
     fun `country DIRECT rule emits geoip-cn direct rule and rule_set definition`() {
         val builder = SingboxConfigBuilder(settings = baseSettings())
         val snapshot = engine().compile(

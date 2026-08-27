@@ -41,6 +41,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
@@ -367,7 +368,7 @@ private fun RuleRow(
     controlsEnabled: Boolean = true,
     zh: Boolean,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(modifier = Modifier.fillMaxWidth().testTag("routing-rule-${rule.id}")) {
         Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),

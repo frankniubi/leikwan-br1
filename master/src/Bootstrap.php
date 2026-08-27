@@ -270,6 +270,9 @@ final class Bootstrap
         $this->router->add('GET', '/tenant/clients', [$tenant, 'clientsPage']);
         $this->router->add('POST', '/tenant/clients/reset-token', [$tenant, 'resetDefaultClientToken']);
         $this->router->add('POST', '/tenant/clients/kick', [$tenant, 'kickClientDevice']);
+        $this->router->add('POST', '/tenant/clients/ban', [$tenant, 'banClientDevice']);
+        $this->router->add('POST', '/tenant/clients/unban', [$tenant, 'unbanClientDevice']);
+        $this->router->add('POST', '/tenant/clients/android-enrollment-code', [$tenant, 'createAndroidEnrollmentCode']);
         $this->router->add('POST', '/tenant/clients', [$tenant, 'saveClient']);
         $this->router->add('GET', '/tenant-transport-endpoints', [$tenant, 'sidecarsPage']);
         $this->router->add('POST', '/tenant-transport-endpoints', [$tenant, 'saveSidecarPoint']);
@@ -331,7 +334,12 @@ final class Bootstrap
         $this->router->add('GET', '/api/admin/nodes', [$nodes, 'listNodes']);
         $this->router->add('GET', '/api/admin/services', [$services, 'listAllServices']);
         $this->router->add('POST', '/api/client/login', [$clientAgent, 'desktopLogin']);
-$this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopClient']);
+        $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopClient']);
+        $this->router->add('POST', '/api/client/devices/challenge', [$clientAgent, 'deviceChallenge']);
+        $this->router->add('POST', '/api/client/devices/enroll', [$clientAgent, 'enrollDevice']);
+        $this->router->add('POST', '/api/client/devices/ack', [$clientAgent, 'acknowledgeDevice']);
+        $this->router->add('POST', '/api/client/devices/code/challenge', [$clientAgent, 'enrollmentCodeChallenge']);
+        $this->router->add('POST', '/api/client/devices/code/enroll', [$clientAgent, 'enrollmentCodeEnroll']);
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
         $this->router->add('POST', '/api/client/ultra/materials', [$clientAgent, 'resolveUltraMaterials']);
         $this->router->add('POST', UltraMode::LEASE_ENDPOINT, [$clientAgent, 'resolveUltraLease']);

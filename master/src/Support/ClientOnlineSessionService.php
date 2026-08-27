@@ -10,8 +10,11 @@ final class ClientOnlineSessionService
 {
     public const ACTIVE_WINDOW_SECONDS = 180;
 
-    public function __construct(private Database $db)
+    private TrustedClientIpResolver $clientIpResolver;
+
+    public function __construct(private Database $db, ?TrustedClientIpResolver $clientIpResolver = null)
     {
+        $this->clientIpResolver = $clientIpResolver ?? new TrustedClientIpResolver();
     }
 
     /**
@@ -207,7 +210,7 @@ final class ClientOnlineSessionService
         $userAgent = trim((string) ($request->header('user-agent') ?? ''));
         $platform = trim((string) ($request->header('x-device-platform') ?? (string) $request->input('platform', '')));
         $deviceName = trim((string) ($request->header('x-device-name') ?? (string) $request->input('device_name', '')));
-        $osRelease = trim((string) $request->input('kernel_release', ''));
+        $osRelease = trim((string) $request->input('os_release', $request->input('kernel_release', '')));
 
         if ($deviceName === '' && $userAgent !== '') {
             $deviceName = $userAgent;
@@ -237,16 +240,7 @@ final class ClientOnlineSessionService
 
     private function requestIp(Request $request): ?string
     {
-        $forwarded = trim((string) ($request->header('x-forwarded-for') ?? ''));
-        if ($forwarded !== '') {
-            $parts = array_map('trim', explode(',', $forwarded));
-            if ($parts !== [] && $parts[0] !== '') {
-                return $parts[0];
-            }
-        }
-
-        $realIp = trim((string) ($request->header('x-real-ip') ?? ''));
-        return $realIp !== '' ? $realIp : null;
+        return $this->clientIpResolver->resolve($request);
     }
 
     private function trimOrNull(mixed $value): ?string
