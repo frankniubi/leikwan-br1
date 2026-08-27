@@ -8,7 +8,7 @@ output_root=""
 wstunnel_src="${WSTUNNEL_SRC:-}"
 dry_run=0
 package_after_build=1
-wstunnel_commit="15372e44f2606f8e2e22a8a90d2e01cc60889836"
+wstunnel_commit="9d0ec3f27556e3132536401d1b2e4e1aa30c277c"
 wstunnel_repository="https://github.com/erebe/wstunnel.git"
 
 fail() {
