@@ -38,7 +38,6 @@ internal static class MacUltraLeakFixture
 
             Directory.CreateDirectory(stateRoot);
             SetPrivateDirectory(stateRoot);
-            var socketRoot = Path.Combine(stateRoot, "s");
             var config = new AgentConfig
             {
                 StateDir = stateRoot,
@@ -50,8 +49,7 @@ internal static class MacUltraLeakFixture
                 config,
                 supervisor,
                 state,
-                portListeningProbe: CanConnectToListener,
-                socketRoot: socketRoot);
+                portListeningProbe: CanConnectToListener);
             var listenPort = ReserveTcpPort();
             var generation = new string('a', 64);
             var targetDigest = UltraPolicy.ComputeTargetDigest(canary.Target);
