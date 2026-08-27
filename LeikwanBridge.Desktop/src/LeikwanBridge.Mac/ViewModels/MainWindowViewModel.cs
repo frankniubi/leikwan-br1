@@ -66,7 +66,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     public ObservableCollection<string> Logs { get; } = [];
     public IReadOnlyList<string> Languages { get; } = ["en-US", "zh-CN"];
     public IReadOnlyList<string> AuthenticationModes { get; } =
-        [EmailPasswordAuthentication, ClientIdTokenAuthentication];
+        [ClientIdTokenAuthentication];
     public IReadOnlyList<MacConnectionMode> ConnectionModes { get; } =
         [MacConnectionMode.Proxy, MacConnectionMode.Vpn];
     public MacConnectionEditorViewModel NodeEditor { get; } = new();
@@ -74,7 +74,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string _panelUrl = string.Empty;
     [ObservableProperty] private string _email = string.Empty;
     [ObservableProperty] private string _password = string.Empty;
-    [ObservableProperty] private string _selectedAuthenticationMode = EmailPasswordAuthentication;
+    [ObservableProperty] private string _selectedAuthenticationMode = ClientIdTokenAuthentication;
     [ObservableProperty] private string _clientIdText = string.Empty;
     [ObservableProperty] private string _agentToken = string.Empty;
     [ObservableProperty] private string _validationMessage = string.Empty;
@@ -163,47 +163,52 @@ public sealed partial class MainWindowViewModel : ObservableObject
         if (!Uri.TryCreate(PanelUrl?.Trim(), UriKind.Absolute, out var panel)
             || panel.Scheme is not ("https" or "http"))
         {
-            ValidationMessage = IsClientIdTokenAuthentication
-                ? "Enter a valid panel URL, client ID, and token."
-                : "Enter the panel URL, email, and password.";
+            ValidationMessage = "Enter a valid panel URL, client ID, and token.";
             return;
         }
 
-        var useAgentToken = IsClientIdTokenAuthentication;
-        if (useAgentToken)
+        if (!int.TryParse(ClientIdText.Trim(), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var clientId)
+            || clientId <= 0
+            || string.IsNullOrWhiteSpace(AgentToken))
         {
-            if (!int.TryParse(ClientIdText.Trim(), System.Globalization.NumberStyles.None,
-                    System.Globalization.CultureInfo.InvariantCulture, out var clientId)
-                || clientId <= 0
-                || string.IsNullOrWhiteSpace(AgentToken))
-            {
-                ValidationMessage = "Enter a valid panel URL, client ID, and token.";
-                return;
-            }
-        }
-        else if (string.IsNullOrWhiteSpace(Email) || string.IsNullOrWhiteSpace(Password))
-        {
-            ValidationMessage = "Enter the panel URL, email, and password.";
+            ValidationMessage = "Enter a valid panel URL, client ID, and token.";
             return;
         }
 
-        var password = Password;
         var agentToken = AgentToken;
         IsBusy = true;
         try
         {
-            if (useAgentToken)
-                await _controller.LoginWithAgentTokenAsync(PanelUrl, int.Parse(ClientIdText.Trim(), System.Globalization.CultureInfo.InvariantCulture), agentToken);
-            else
-                await _controller.LoginAsync(PanelUrl, Email.Trim(), password);
+            try
+            {
+                await _controller.LoginWithAgentTokenAsync(PanelUrl, clientId, agentToken);
+            }
+            catch (MasterApiException exception) when (exception.StatusCode == 401)
+            {
+                ValidationMessage = "Client ID or token was rejected by the panel.";
+                return;
+            }
+            catch
+            {
+                ValidationMessage = "Sign-in failed. Check the panel address, client ID, and token.";
+                return;
+            }
+
             if (_controller.Snapshot.IsSignedIn
                 && !_controller.Snapshot.RequiresClientSelection
                 && !string.IsNullOrWhiteSpace(_controller.Snapshot.ActiveClientName))
-                await _controller.ConnectAsync();
-        }
-        catch
-        {
-            ValidationMessage = "Sign-in failed. Check the panel address and credentials.";
+            {
+                try
+                {
+                    await _controller.ConnectAsync();
+                }
+                catch
+                {
+                    ValidationMessage = "Signed in, but the client could not connect.";
+                    ShowNotice(ValidationMessage);
+                }
+            }
         }
         finally
         {

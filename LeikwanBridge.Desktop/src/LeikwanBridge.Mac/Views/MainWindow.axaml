@@ -85,23 +85,12 @@
                   <Image Source="avares://LeikwanBridge.Mac/Assets/app-icon.png" Width="82" Height="82"
                          HorizontalAlignment="Left" Stretch="Uniform" />
                   <TextBlock Classes="heading" Text="Sign in to LeiKwan Bridge" Margin="0,5,0,0" />
-                  <TextBlock Classes="muted" Text="Use a client token or your panel account to continue." TextWrapping="Wrap" />
+                  <TextBlock Classes="muted" Text="Use your client ID and token to continue." TextWrapping="Wrap" />
 
-                  <TextBlock Classes="label" Text="AUTHENTICATION" Margin="0,12,0,0" />
-                  <ComboBox ItemsSource="{Binding AuthenticationModes}"
-                            SelectedItem="{Binding SelectedAuthenticationMode, Mode=TwoWay}" />
-
-                  <TextBlock Classes="label" Text="PANEL URL" Margin="0,4,0,0" />
+                  <TextBlock Classes="label" Text="PANEL URL" Margin="0,12,0,0" />
                   <TextBox Text="{Binding PanelUrl, Mode=TwoWay}" Watermark="https://panel.example.com" />
 
-                  <StackPanel IsVisible="{Binding IsEmailPasswordAuthentication}" Spacing="8">
-                    <TextBlock Classes="label" Text="EMAIL" />
-                    <TextBox Text="{Binding Email, Mode=TwoWay}" Watermark="name@example.com" />
-                    <TextBlock Classes="label" Text="PASSWORD" />
-                    <TextBox Text="{Binding Password, Mode=TwoWay}" PasswordChar="*" Watermark="Password" />
-                  </StackPanel>
-
-                  <StackPanel IsVisible="{Binding IsClientIdTokenAuthentication}" Spacing="8">
+                  <StackPanel Spacing="8">
                     <TextBlock Classes="label" Text="CLIENT ID" />
                     <TextBox Text="{Binding ClientIdText, Mode=TwoWay}" Watermark="27" />
                     <TextBlock Classes="label" Text="CLIENT TOKEN" />
