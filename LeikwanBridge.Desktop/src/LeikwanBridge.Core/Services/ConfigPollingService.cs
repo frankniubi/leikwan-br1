@@ -149,7 +149,7 @@ public sealed class ConfigPollingService
                 // Ultra grants carry a short-lived session ticket. Refresh the
                 // full policy before its renewal window so the next lease request
                 // uses the current ticket rather than a stale one.
-                _lastConfigRevision = "";
+                QueueConfigRefreshSoon();
             }
             else
             {
@@ -219,6 +219,7 @@ public sealed class ConfigPollingService
                 continue;
 
             var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+            var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
             if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
             {
                 UltraLease? lease;
@@ -232,7 +233,21 @@ public sealed class ConfigPollingService
                 }
                 catch (Exception ex)
                 {
-                    Log.Warning("Ultra lease refresh failed for forward {ForwardId}; stopping by Panel policy (error={ErrorType})", forward.ForwardId, ex.GetType().Name);
+                    Log.Warning(
+                        "Ultra lease refresh failed for forward {ForwardId}; stopping by Panel policy (error={ErrorType}, status={StatusCode}, code={ErrorCode})",
+                        forward.ForwardId,
+                        ex.GetType().Name,
+                        ex is MasterApiException apiException ? apiException.StatusCode : 0,
+                        BoundErrorCode(ex.Message));
+                    if (hasAppliedState && isRunning && IsGrantRefreshError(ex))
+                    {
+                        // A metering update can rotate the short-lived grant
+                        // while the stable forward remains unchanged. Keep the
+                        // current data plane and fetch the new grant next cycle.
+                        QueueConfigRefreshSoon();
+                        Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
+                        continue;
+                    }
                     _runtimeManager.StopForwardForPolicy(forward.ForwardId);
                     continue;
                 }
@@ -244,7 +259,6 @@ public sealed class ConfigPollingService
                 effectiveForward.RuntimeLease = lease;
             }
             var contractSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
-            var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
             var signatureMatches = hasAppliedState
                 && string.Equals(appliedState!.ContractSignature, contractSignature, StringComparison.Ordinal);
 
@@ -287,6 +301,14 @@ public sealed class ConfigPollingService
                 continue;
 
             var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+            var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
+            if (isRunning
+                && effectiveForward.UltraAccess is { } policy
+                && policy.RenewAfter > DateTimeOffset.UtcNow)
+            {
+                continue;
+            }
+
             UltraLease? lease;
             try
             {
@@ -300,7 +322,19 @@ public sealed class ConfigPollingService
             {
                 // Keep a currently-running runtime alive through transient API failures;
                 // retry on the next long-poll cycle rather than revoking it immediately.
-                Log.Warning("Ultra lease refresh failed for forward {ForwardId}; preserving current runtime (error={ErrorType})", forward.ForwardId, ex.GetType().Name);
+                Log.Warning(
+                    "Ultra lease refresh failed for forward {ForwardId}; preserving current runtime (error={ErrorType}, status={StatusCode}, code={ErrorCode})",
+                    forward.ForwardId,
+                    ex.GetType().Name,
+                    ex is MasterApiException apiException ? apiException.StatusCode : 0,
+                    BoundErrorCode(ex.Message));
+                if (IsGrantRefreshError(ex))
+                {
+                    // Force a non-304 pull so the panel can attach the latest
+                    // ticket/generation after a quota or material rotation.
+                    QueueConfigRefreshSoon();
+                    Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
+                }
                 continue;
             }
 
@@ -312,7 +346,6 @@ public sealed class ConfigPollingService
 
             effectiveForward.RuntimeLease = lease;
             var contractSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
-            var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
             var signatureMatches = appliedState != null
                 && string.Equals(appliedState.ContractSignature, contractSignature, StringComparison.Ordinal);
 
@@ -336,12 +369,57 @@ public sealed class ConfigPollingService
 
     private bool NeedsUltraPolicyRefresh()
     {
-        var refreshBefore = DateTimeOffset.UtcNow.AddMinutes(2);
+        var now = DateTimeOffset.UtcNow;
         return _latestForwards.Any(forward =>
-            string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
-            && (forward.UltraAccess is null
-                || !string.Equals(forward.UltraAccess.ProtocolValue, UltraPolicy.Protocol, StringComparison.Ordinal)
-                || forward.UltraAccess.ExpiresAt <= refreshBefore));
+        {
+            if (!string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var policy = forward.UltraAccess;
+            if (policy is null
+                || !string.Equals(policy.ProtocolValue, UltraPolicy.Protocol, StringComparison.Ordinal)
+                || policy.ExpiresAt <= now)
+                return true;
+
+            // Current policy-v2 grants carry the broker's exact renewal point.
+            // Older payloads omitted renew_after, so retain a bounded expiry
+            // fallback for those clients and test fixtures.
+            return policy.RenewAfter == default
+                ? policy.ExpiresAt <= now.AddMinutes(2)
+                : policy.RenewAfter <= now;
+        });
+    }
+
+    private static string BoundErrorCode(string message)
+    {
+        var code = new string((message ?? string.Empty)
+            .ToLowerInvariant()
+            .Where(character => character is >= 'a' and <= 'z' or >= '0' and <= '9' or '_' or '-')
+            .Take(96)
+            .ToArray());
+        return code.Length == 0 ? "unknown" : code;
+    }
+
+    private static bool IsGrantRefreshError(Exception exception)
+    {
+        if (exception is not MasterApiException apiException || apiException.StatusCode != 409)
+            return false;
+
+        var code = (apiException.Message ?? string.Empty).Trim().ToLowerInvariant();
+        return code is "lease_scope_invalid"
+            or "policy_generation_invalid"
+            or "policy_scope_invalid"
+            or "policy_unavailable"
+            or "no_approved_candidate"
+            or "quota_exhausted";
+    }
+
+    private void QueueConfigRefreshSoon()
+    {
+        _lastConfigRevision = "";
+        _nextPollAfterMs = _nextPollAfterMs > 0
+            ? Math.Min(_nextPollAfterMs, ReArmDelayMs)
+            : ReArmDelayMs;
     }
 
     private void SavePullState(string status, int forwardsTotal)

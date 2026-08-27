@@ -88,18 +88,71 @@ public sealed class HeartbeatService
         var runtimeDir = Path.Combine(_stateManager.EffectiveStateDir, "runtime");
         if (Directory.Exists(runtimeDir))
         {
-            var windowsStatus = Directory.EnumerateFiles(runtimeDir, "ultra-forward-*.status.json", SearchOption.TopDirectoryOnly);
-            var macStatus = Directory.EnumerateFiles(runtimeDir, "status.json", SearchOption.AllDirectories);
-            foreach (var path in windowsStatus.Concat(macStatus).Distinct(StringComparer.Ordinal).Take(32))
+            var statusFiles = new List<string>();
+            try
+            {
+                statusFiles.AddRange(Directory.EnumerateFiles(
+                    runtimeDir,
+                    "ultra-forward-*.status.json",
+                    SearchOption.TopDirectoryOnly));
+                statusFiles.AddRange(Directory.EnumerateFiles(
+                    runtimeDir,
+                    "status.json",
+                    SearchOption.AllDirectories));
+            }
+            catch (IOException)
+            {
+                statusFiles.Clear();
+            }
+            catch (UnauthorizedAccessException)
+            {
+                statusFiles.Clear();
+            }
+
+            // macOS runtimes use a unique directory per lease. A stopped
+            // runtime can leave an old status file behind, so only the latest
+            // status for each forward is allowed to contribute usage.
+            var candidates = new List<(int ForwardId, JsonElement Root, DateTimeOffset UpdatedAt, DateTime LastWrite)>();
+            foreach (var path in statusFiles.Distinct(StringComparer.Ordinal))
             {
                 try
                 {
+                    var info = new FileInfo(path);
+                    if (!info.Exists || info.Length > 64 * 1024)
+                        continue;
                     using var document = JsonDocument.Parse(File.ReadAllBytes(path));
                     var root = document.RootElement;
                     var forwardId = root.GetProperty("forward_id").GetInt32();
+                    if (forwardId <= 0)
+                        continue;
+                    var updatedAt = DateTimeOffset.MinValue;
+                    if (root.TryGetProperty("updated_at", out var updatedElement)
+                        && DateTimeOffset.TryParse(updatedElement.GetString(), out var parsedUpdatedAt))
+                        updatedAt = parsedUpdatedAt;
+                    candidates.Add((forwardId, root.Clone(), updatedAt, info.LastWriteTimeUtc));
+                }
+                catch (Exception ex) when (ex is IOException or JsonException or KeyNotFoundException or FormatException or InvalidOperationException or OverflowException)
+                {
+                    Log.Debug(ex, "skipping malformed Ultra status file {Path}", path);
+                }
+            }
+
+            foreach (var candidate in candidates
+                .GroupBy(item => item.ForwardId)
+                .Select(group => group
+                    .OrderByDescending(item => item.UpdatedAt)
+                    .ThenByDescending(item => item.LastWrite)
+                    .First())
+                .OrderBy(item => item.ForwardId)
+                .Take(32))
+            {
+                try
+                {
+                    var root = candidate.Root;
                     var generation = root.TryGetProperty("policy_generation", out var generationElement) ? generationElement.GetString() ?? "" : "";
                     var currentIn = root.TryGetProperty("bytes_in", out var inElement) ? Math.Max(0, inElement.GetInt64()) : 0;
                     var currentOut = root.TryGetProperty("bytes_out", out var outElement) ? Math.Max(0, outElement.GetInt64()) : 0;
+                    var forwardId = candidate.ForwardId;
                     if (forwardId <= 0 || generation.Length != 64)
                         continue;
                     var deltaIn = currentIn >= lastIn.GetValueOrDefault(forwardId) ? currentIn - lastIn.GetValueOrDefault(forwardId) : currentIn;
@@ -118,9 +171,9 @@ public sealed class HeartbeatService
                         BytesOut = Math.Min(deltaOut, 107374182400),
                     });
                 }
-                catch (Exception ex) when (ex is IOException or JsonException or KeyNotFoundException or FormatException)
+                catch (Exception ex) when (ex is JsonException or KeyNotFoundException or FormatException or InvalidOperationException or OverflowException)
                 {
-                    Log.Debug(ex, "skipping malformed Ultra status file {Path}", path);
+                    Log.Debug(ex, "skipping malformed Ultra status snapshot");
                 }
             }
         }

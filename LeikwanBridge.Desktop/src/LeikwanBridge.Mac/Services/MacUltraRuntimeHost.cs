@@ -191,6 +191,33 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             DeletePrivateDirectory(runtime.Directory, Path.Combine(_config.GetEffectiveStateDir(), "runtime"), "ultra-");
             DeletePrivateDirectory(runtime.SocketDirectory, _socketRoot, "lk-u-");
         }
+        CleanupRuntimeDirectories(forwardId);
+    }
+
+    private void CleanupRuntimeDirectories(int forwardId)
+    {
+        if (forwardId <= 0)
+            return;
+
+        var runtimeRoot = Path.GetFullPath(Path.Combine(_config.GetEffectiveStateDir(), "runtime"));
+        if (!Directory.Exists(runtimeRoot))
+            return;
+
+        var prefix = $"ultra-{forwardId}-";
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories(runtimeRoot, prefix + "*", SearchOption.TopDirectoryOnly))
+                DeletePrivateDirectory(directory, runtimeRoot, prefix);
+        }
+        catch (DirectoryNotFoundException)
+        {
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     private bool WaitForSocket(string socketPath, TimeSpan timeout)

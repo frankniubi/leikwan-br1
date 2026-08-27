@@ -358,7 +358,6 @@ final class ClientAgentController extends BaseController
                 'transport' => (string) ($forward['transport'] ?? ''),
                 'service_status' => (string) ($forward['service_status'] ?? ''),
                 'speed_limit_mbps' => (int) ($forward['speed_limit_mbps'] ?? 0),
-                'quota_remaining_bytes' => (int) ($forward['quota_remaining_bytes'] ?? 0),
             ];
         }
         return hash('sha256', (string) json_encode($projection, JSON_UNESCAPED_SLASHES));

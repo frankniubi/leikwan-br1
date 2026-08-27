@@ -25,6 +25,9 @@ public sealed class MacUltraRuntimeHostTests
         var supervisor = new RecordingProcessSupervisor();
         var lease = CreateLease(canaryIp);
         var socketRoot = Path.Combine(temp.Path, "sockets");
+        var staleRuntime = Path.Combine(temp.Path, "runtime", "ultra-42-stale");
+        Directory.CreateDirectory(staleRuntime);
+        File.WriteAllText(Path.Combine(staleRuntime, "status.json"), "{\"forward_id\":42}");
         string? sentSocket = null;
         var portProbeAttempts = 0;
         var host = new MacUltraRuntimeHost(
@@ -45,6 +48,7 @@ public sealed class MacUltraRuntimeHostTests
 
         host.Start(forward, lease, "contract-a", "config_sync");
 
+        Assert.False(Directory.Exists(staleRuntime));
         var launch = Assert.Single(supervisor.Launches);
         Assert.Equal("--config-stdin", launch.Arguments);
         Assert.False(launch.LogArguments);
