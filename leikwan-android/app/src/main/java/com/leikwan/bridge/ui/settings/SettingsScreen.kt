@@ -36,7 +36,6 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leikwan.bridge.R
-import com.leikwan.bridge.api.ClientInfo
 import com.leikwan.bridge.ui.shared.RoutingDiagnosticsCard
 
 @Composable
@@ -47,7 +46,6 @@ fun SettingsScreen(
     val state by viewModel.state.collectAsState()
     SettingsScreenContent(
         state = state,
-        onSwitchClient = viewModel::switchClient,
         onUpdateDnsServer = viewModel::updateDnsServer,
         onUpdateDnsFallback = viewModel::updateDnsFallback,
         onUpdateDnsStrategy = viewModel::updateDnsStrategy,
@@ -64,7 +62,6 @@ fun SettingsScreen(
 @Composable
 internal fun SettingsScreenContent(
     state: SettingsUiState,
-    onSwitchClient: (Long) -> Unit,
     onUpdateDnsServer: (String) -> Unit,
     onUpdateDnsFallback: (String) -> Unit,
     onUpdateDnsStrategy: (String) -> Unit,
@@ -83,70 +80,6 @@ internal fun SettingsScreenContent(
     ) {
         Text(stringResource(R.string.settings_title), style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(16.dp))
-
-        // Client Switcher
-        if (state.clients.size > 1) {
-            Text(stringResource(R.string.settings_client), style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-
-            var clientExpanded by remember { mutableStateOf(false) }
-            ExposedDropdownMenuBox(
-                expanded = clientExpanded,
-                onExpandedChange = { clientExpanded = it },
-            ) {
-                OutlinedTextField(
-                    value = if (state.clientName.isNotEmpty()) {
-                        state.clientName
-                    } else {
-                        stringResource(R.string.settings_client_id_format, state.clientId)
-                    },
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text(stringResource(R.string.settings_active_client)) },
-                    modifier = Modifier.fillMaxWidth().menuAnchor(),
-                    trailingIcon = {
-                        if (state.isSwitchingClient) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        } else {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = clientExpanded)
-                        }
-                    },
-                    enabled = !state.isSwitchingClient,
-                )
-                ExposedDropdownMenu(
-                    expanded = clientExpanded,
-                    onDismissRequest = { clientExpanded = false },
-                ) {
-                    state.clients.forEach { client: ClientInfo ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    client.name,
-                                    color = if (client.id == state.clientId) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    },
-                                )
-                            },
-                            onClick = {
-                                clientExpanded = false
-                                onSwitchClient(client.id)
-                            },
-                        )
-                    }
-                }
-            }
-
-            state.switchError?.let { err ->
-                Spacer(Modifier.height(4.dp))
-                Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-
-            Spacer(Modifier.height(24.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
-        }
 
         // DNS
         Text(stringResource(R.string.language), style = MaterialTheme.typography.titleMedium)
@@ -302,11 +235,10 @@ internal fun SettingsScreenContent(
         // Account
         Text(stringResource(R.string.settings_account), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
-        Text(stringResource(R.string.settings_logged_in_as_format, state.username), style = MaterialTheme.typography.bodyMedium)
-        if (state.clientName.isNotEmpty()) {
+        if (state.clientId > 0L) {
             Text(
-                stringResource(R.string.settings_client_name_format, state.clientName),
-                style = MaterialTheme.typography.bodySmall,
+                stringResource(R.string.settings_client_id_format, state.clientId),
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }

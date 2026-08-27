@@ -19,6 +19,8 @@ object ProxyUriParser {
             trimmed.startsWith("ss://") -> parseShadowsocks(trimmed)
             trimmed.startsWith("vmess://") -> parseVmess(trimmed)
             trimmed.startsWith("vless://") -> parseVless(trimmed)
+            trimmed.startsWith("socks://", ignoreCase = true) ||
+                trimmed.startsWith("socks5://", ignoreCase = true) -> parseSocks5(trimmed)
             trimmed.startsWith("wg://", ignoreCase = true) -> parseWireGuard(trimmed)
             looksLikeWireGuardConfig(trimmed) -> parseWireGuardConfig(trimmed, explicitName = null)
             else -> null
@@ -185,6 +187,33 @@ object ProxyUriParser {
             ProxyNode(
                 name = name,
                 type = "vless",
+                originalServer = server,
+                originalPort = port,
+                configJson = gson.toJson(config),
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun parseSocks5(uri: String): ProxyNode? {
+        return try {
+            val parsed = URI(uri)
+            val server = parsed.host?.removeSurrounding("[", "]") ?: return null
+            val port = parsed.port.takeIf { it in 1..65535 } ?: return null
+            val credentials = parsed.rawUserInfo
+                ?.split(":", limit = 2)
+                ?.let { parts ->
+                    urlDecode(parts[0]) to parts.getOrNull(1)?.let(::urlDecode).orEmpty()
+                }
+            val name = parsed.rawFragment?.let(::urlDecode)?.takeIf { it.isNotBlank() } ?: "$server:$port"
+            val config = JsonObject().apply {
+                credentials?.first?.takeIf { it.isNotBlank() }?.let { addProperty("username", it) }
+                credentials?.second?.takeIf { it.isNotBlank() }?.let { addProperty("password", it) }
+            }
+            ProxyNode(
+                name = name,
+                type = "socks5",
                 originalServer = server,
                 originalPort = port,
                 configJson = gson.toJson(config),

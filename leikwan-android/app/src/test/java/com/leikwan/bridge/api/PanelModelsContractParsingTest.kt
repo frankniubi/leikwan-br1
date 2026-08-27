@@ -1,13 +1,28 @@
 package com.leikwan.bridge.api
 
 import com.google.gson.JsonParser
+import com.google.gson.Gson
 import com.leikwan.bridge.runtime.ForwardContractParser
 import com.leikwan.bridge.runtime.ForwardMode
+import com.leikwan.bridge.session.DeviceControlEnvelope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
 
 class PanelModelsContractParsingTest {
+
+    @Test
+    fun `device control envelope parses terminal command without transport material`() {
+        val parsed = Gson().fromJson(
+            """{"ok":false,"error":"device_kicked","command":{"version":9,"action":"kick","reason":"tenant"},"endpoint":"secret"}""",
+            DeviceControlEnvelope::class.java,
+        )
+
+        assertEquals("device_kicked", parsed.error)
+        assertEquals(9L, parsed.command?.version)
+        assertEquals("kick", parsed.command?.action)
+        assertEquals("tenant", parsed.command?.reason)
+    }
 
     @Test
     fun `parser keeps bond ingress contract fields`() {
@@ -19,10 +34,10 @@ class PanelModelsContractParsingTest {
               "target": "193.227.109.82:5201",
               "listen_port": 11024,
               "mode": "bond",
-              "backend_mode": "leigod_mode",
+              "backend_mode": "current_mode",
               "contract_version": 1,
-              "client_mode": "mptcp",
-              "runtime_preference": "mptcp_preferred_bond_fallback",
+              "client_mode": "bond",
+              "runtime_preference": "bond",
               "bond_ingress_mode": "plain_tcp_mux",
               "active_family": "sidecar_aggregation",
               "aggregation_enabled": true,
@@ -96,10 +111,10 @@ class PanelModelsContractParsingTest {
         parsed!!
         assertEquals(26L, parsed.forwardId)
         assertEquals(ForwardMode.BOND, parsed.mode)
-        assertEquals("leigod_mode", parsed.backendMode)
+        assertEquals("current_mode", parsed.backendMode)
         assertEquals(1, parsed.contractVersion)
-        assertEquals("mptcp", parsed.clientMode)
-        assertEquals("mptcp_preferred_bond_fallback", parsed.runtimePreference)
+        assertEquals("bond", parsed.clientMode)
+        assertEquals("bond", parsed.runtimePreference)
         assertEquals("plain_tcp_mux", parsed.bondIngressMode)
         assertEquals("sidecar_aggregation", parsed.activeFamily)
         assertEquals(true, parsed.aggregationEnabled)
@@ -139,8 +154,9 @@ class PanelModelsContractParsingTest {
               "target": "93.184.216.34:443",
               "listen_port": 12001,
               "mode": "single",
-              "backend_mode": "leigod_mode",
+              "backend_mode": "current_mode",
               "contract_version": 1,
+              "client_mode": "single",
               "transport": "tcp_udp",
               "service_status": "active",
               "endpoint_mode": "manual",
@@ -159,7 +175,9 @@ class PanelModelsContractParsingTest {
               "target": "203.0.113.10:443",
               "listen_port": 12002,
               "mode": "single",
+              "backend_mode": "current_mode",
               "contract_version": 1,
+              "client_mode": "single",
               "transport": "tcp_udp",
               "service_status": "active",
               "endpoint_mode": "manual",

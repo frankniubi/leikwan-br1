@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.leikwan.bridge.data.AppDatabase
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -38,5 +39,10 @@ class InfraSmokeTest {
         } finally {
             db.close()
         }
+    }
+
+    @Test
+    fun `production panel origin is compiled into BuildConfig`() {
+        assertEquals("https://v3.leikwanhost.com", BuildConfig.PANEL_URL)
     }
 }

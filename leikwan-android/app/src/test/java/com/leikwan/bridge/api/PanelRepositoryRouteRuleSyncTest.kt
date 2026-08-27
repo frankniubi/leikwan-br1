@@ -10,6 +10,15 @@ import com.leikwan.bridge.clientrules.ClientRuleWriteDraft
 import com.leikwan.bridge.clientrules.PendingClientRuleOperation
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
+import com.leikwan.bridge.security.DeviceSecurityResult
+import com.leikwan.bridge.session.DeviceAckRequest
+import com.leikwan.bridge.session.DeviceAckResponse
+import com.leikwan.bridge.session.DeviceChallengeRequest
+import com.leikwan.bridge.session.DeviceChallengeResponse
+import com.leikwan.bridge.session.DeviceEnrollRequest
+import com.leikwan.bridge.session.DeviceEnrollResponse
+import com.leikwan.bridge.session.EnrollmentCodeChallengeRequest
+import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -31,6 +40,7 @@ class PanelRepositoryRouteRuleSyncTest {
     private lateinit var store: ClientRouteRuleStore
     private lateinit var api: FakePanelApi
     private lateinit var repo: PanelRepository
+    private val deviceId = "android-client-7-aabbccddeeff00112233445566778899"
 
     @Before
     fun setUp() {
@@ -38,7 +48,11 @@ class PanelRepositoryRouteRuleSyncTest {
         testPrefs = Prefs(context.getSharedPreferences("route-rule-repo-test-prefs", Context.MODE_PRIVATE).also {
             it.edit().clear().commit()
         })
-        testPrefs.token = "agent-token"
+        testPrefs.clientId = 7L
+        testPrefs.agentToken = "agent-token"
+        testPrefs.enrolledDeviceId = deviceId
+        testPrefs.deviceSessionToken = "device-session"
+        testPrefs.deviceSessionExpiresAtMs = Long.MAX_VALUE
         context.getSharedPreferences("route-rule-repo-store", Context.MODE_PRIVATE).edit().clear().commit()
         context.getSharedPreferences("client-route-rules", Context.MODE_PRIVATE).edit().clear().commit()
         store = ClientRouteRuleStore(
@@ -46,7 +60,7 @@ class PanelRepositoryRouteRuleSyncTest {
             clock = { 10L },
         )
         api = FakePanelApi()
-        repo = PanelRepository(context, prefsOverride = testPrefs, apiOverride = api, routeRuleStore = store)
+        repo = newRepository(store)
     }
 
     @Test
@@ -356,40 +370,10 @@ class PanelRepositoryRouteRuleSyncTest {
     }
 
     @Test
-    fun `client switch clears route rule cache before next pull`() = runBlocking {
-        store.replaceFromPull(
-            routeDirections = listOf(RouteDirectionDto(id = "dir_a", label = "A", status = "available", sortOrder = 1)),
-            entitlements = emptyList(),
-            rules = listOf(ClientRouteRuleDto("rule_a", "svc_scope_a", "93.184.216.34", 443, "tcp_udp", "dir_a", true, "active", 1L)),
-            bindings = emptyList(),
-            capabilities = RouteRuleCapabilitiesDto(true, true),
-        )
-        testPrefs.email = "user@example.com"
-        testPrefs.password = "secret"
-        testPrefs.clientId = 7L
-        api.loginResponse = Response.success(
-            LoginResponse(
-                ok = true,
-                token = "session-token-b",
-                clientId = 8L,
-                clients = listOf(ClientInfo(7L, "phone-a"), ClientInfo(8L, "phone-b")),
-                username = "user",
-            )
-        )
-        api.selectResponse = Response.success(ClientSelectionResponse(ok = true, clientId = 8L, clientName = "phone-b", agentToken = "agent-token-b"))
-
-        repo.switchClient(8L)
-
-        assertTrue(store.current().rules.isEmpty())
-        assertTrue(store.current().directions.isEmpty())
-        assertEquals(8L, testPrefs.clientId)
-    }
-
-    @Test
     fun `repository pull through one store is observable from another store instance`() = runBlocking {
         val sharedStore = ClientRouteRuleStore.from(context)
         val consumerStore = ClientRouteRuleStore.from(context)
-        val sharedRepo = PanelRepository(context, prefsOverride = testPrefs, apiOverride = api, routeRuleStore = sharedStore)
+        val sharedRepo = newRepository(sharedStore)
         api.pullResponse = PullConfigsResponse(
             ok = true,
             client = JsonObject(),
@@ -408,7 +392,7 @@ class PanelRepositoryRouteRuleSyncTest {
     fun `repository write through one store is observable from another store instance`() = runBlocking {
         val sharedStore = ClientRouteRuleStore.from(context)
         val consumerStore = ClientRouteRuleStore.from(context)
-        val sharedRepo = PanelRepository(context, prefsOverride = testPrefs, apiOverride = api, routeRuleStore = sharedStore)
+        val sharedRepo = newRepository(sharedStore)
         api.createResponse = Response.success(
             ClientRuleWriteResponse(
                 ok = true,
@@ -455,37 +439,6 @@ class PanelRepositoryRouteRuleSyncTest {
     }
 
     @Test
-    fun `api override is retained across login and client selection`() = runBlocking {
-        api.loginResponse = Response.success(
-            LoginResponse(
-                ok = true,
-                token = "session-token",
-                clientId = 7L,
-                clients = listOf(ClientInfo(7L, "phone")),
-                username = "user",
-            )
-        )
-        api.selectResponse = Response.success(ClientSelectionResponse(ok = true, clientId = 7L, clientName = "phone", agentToken = "agent-token-2"))
-
-        repo.login("https://other.example", "user@example.com", "secret")
-
-        assertEquals(listOf("login", "select"), api.calls)
-
-        api.calls.clear()
-        repo.selectClient(
-            panelUrl = "https://third.example",
-            email = "user@example.com",
-            password = "secret",
-            sessionToken = "session-token",
-            clientId = 7L,
-            clients = listOf(ClientInfo(7L, "phone")),
-            username = "user",
-        )
-
-        assertEquals(listOf("select"), api.calls)
-    }
-
-    @Test
     fun `logout clears route rule cache`() = runBlocking {
         store.replaceFromPull(
             routeDirections = listOf(RouteDirectionDto(id = "dir_sh_jp_1", label = "沪日1", status = "available", sortOrder = 10)),
@@ -509,8 +462,9 @@ class PanelRepositoryRouteRuleSyncTest {
           "target": "93.184.216.34:443",
           "listen_port": $listenPort,
           "mode": "single",
-          "backend_mode": "leigod_mode",
+          "backend_mode": "current_mode",
           "contract_version": 1,
+          "client_mode": "single",
           "transport": "tcp_udp",
           "service_status": "active",
           "endpoint_mode": "manual",
@@ -522,12 +476,17 @@ class PanelRepositoryRouteRuleSyncTest {
         """.trimIndent()
     )
 
+    private fun newRepository(routeRuleStore: ClientRouteRuleStore): PanelRepository = PanelRepository(
+        context = context,
+        prefsOverride = testPrefs,
+        apiOverride = api,
+        routeRuleStore = routeRuleStore,
+        deviceIdProvider = { deviceId },
+        deviceSecurityCheck = { DeviceSecurityResult.Allowed },
+    )
+
     private class FakePanelApi : PanelApi {
         var pullResponse = PullConfigsResponse(true, JsonObject(), emptyList())
-        var loginResponse: Response<LoginResponse> = Response.success(LoginResponse(ok = true))
-        var selectResponse: Response<ClientSelectionResponse> = Response.success(
-            ClientSelectionResponse(ok = true, clientId = 7L, clientName = "phone", agentToken = "agent-token-2")
-        )
         var createResponse: Response<ClientRuleWriteResponse> = Response.success(ClientRuleWriteResponse(false, error = "not_configured"))
         var updateResponse: Response<ClientRuleWriteResponse> = Response.success(ClientRuleWriteResponse(false, error = "not_configured"))
         var deleteResponse: Response<ClientRuleWriteResponse> = Response.success(ClientRuleWriteResponse(false, error = "not_configured"))
@@ -542,15 +501,20 @@ class PanelRepositoryRouteRuleSyncTest {
         var lastUpdateRequest: ClientRuleWriteRequest? = null
         val deletedRuleIds = mutableListOf<String>()
 
-        override suspend fun login(request: LoginRequest): Response<LoginResponse> {
-            calls += "login"
-            return loginResponse
-        }
+        override suspend fun deviceChallenge(request: DeviceChallengeRequest): Response<DeviceChallengeResponse> =
+            throw UnsupportedOperationException()
 
-        override suspend fun selectClient(request: ClientSelectionRequest): Response<ClientSelectionResponse> {
-            calls += "select"
-            return selectResponse
-        }
+        override suspend fun enrollDevice(request: DeviceEnrollRequest): Response<DeviceEnrollResponse> =
+            throw UnsupportedOperationException()
+
+        override suspend fun enrollmentCodeChallenge(request: EnrollmentCodeChallengeRequest): Response<DeviceChallengeResponse> =
+            throw UnsupportedOperationException()
+
+        override suspend fun enrollmentCodeEnroll(request: EnrollmentCodeEnrollRequest): Response<DeviceEnrollResponse> =
+            throw UnsupportedOperationException()
+
+        override suspend fun acknowledgeDevice(auth: String, request: DeviceAckRequest): Response<DeviceAckResponse> =
+            throw UnsupportedOperationException()
 
         override suspend fun heartbeat(auth: String, request: HeartbeatRequest): HeartbeatResponse {
             calls += "heartbeat"
@@ -559,6 +523,9 @@ class PanelRepositoryRouteRuleSyncTest {
             heartbeatException?.let { throw it }
             return HeartbeatResponse(ok = true)
         }
+
+        override suspend fun resolveUltraLease(auth: String, request: UltraLeaseRequest): Response<UltraLeaseResponse> =
+            throw UnsupportedOperationException()
 
         override suspend fun pullConfigs(auth: String): PullConfigsResponse {
             calls += "pull"

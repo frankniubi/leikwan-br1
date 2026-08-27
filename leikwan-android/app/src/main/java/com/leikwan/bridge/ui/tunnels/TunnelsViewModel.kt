@@ -27,7 +27,6 @@ data class TunnelsUiState(
     val forwards: List<ForwardListItem> = emptyList(),
     val selectedForwardId: Long = 0L,
     val selectedStrategy: ForwardStrategy = ForwardStrategy.LATENCY_BEST,
-    val hiddenUnsupportedMptcpCount: Int = 0,
     val connectionMode: ProxyConnectionMode = ProxyConnectionMode.SERVICES,
     val isLoading: Boolean = false,
     val error: String? = null,
@@ -51,7 +50,7 @@ class TunnelsViewModel @JvmOverloads internal constructor(
             selectedForwardId = prefs.selectedForwardId,
             selectedStrategy = prefs.selectedForwardId.takeIf { it > 0 }
                 ?.let(strategyStore::get) ?: ForwardStrategy.LATENCY_BEST,
-            connectionMode = ProxyConnectionMode.SERVICES,
+            connectionMode = prefs.proxyConnectionMode,
             vpnStatus = if (LeikwanVpnService.isRunning) VpnStatus.CONNECTED else VpnStatus.DISCONNECTED,
             routingDiagnostics = runCatching {
                 RoutingDiagnosticsSource.from(app).latest()
@@ -77,8 +76,7 @@ class TunnelsViewModel @JvmOverloads internal constructor(
                     selectedForwardId = selectedId,
                     selectedStrategy = selectedId.takeIf { it > 0 }
                         ?.let(strategyStore::get) ?: ForwardStrategy.LATENCY_BEST,
-                    hiddenUnsupportedMptcpCount = catalog.hiddenUnsupportedMptcpCount,
-                    connectionMode = ProxyConnectionMode.SERVICES,
+                    connectionMode = prefs.proxyConnectionMode,
                 )
             } catch (e: Exception) {
                 _state.value = _state.value.copy(error = e.message, isLoading = false)
@@ -106,8 +104,14 @@ class TunnelsViewModel @JvmOverloads internal constructor(
 
     fun toggleVpn() {
         viewModelScope.launch {
-            if (prefs.proxyConnectionMode != ProxyConnectionMode.SERVICES) {
-                prefs.proxyConnectionMode = ProxyConnectionMode.SERVICES
+            if (prefs.proxyConnectionMode == ProxyConnectionMode.DIRECT &&
+                _state.value.vpnStatus == VpnStatus.DISCONNECTED
+            ) {
+                _state.value = _state.value.copy(
+                    connectionMode = ProxyConnectionMode.DIRECT,
+                    error = s(R.string.tunnels_error_direct_from_proxies),
+                )
+                return@launch
             }
             val wantDisconnect = _state.value.vpnStatus != VpnStatus.DISCONNECTED
             if (wantDisconnect) {
@@ -127,7 +131,7 @@ class TunnelsViewModel @JvmOverloads internal constructor(
                     prefs.selectedForwardId = 0L
                     _state.value = _state.value.copy(
                         selectedForwardId = 0L,
-                        error = s(R.string.tunnels_error_forward_unsupported),
+                        error = s(R.string.tunnels_error_select_service),
                     )
                     return@launch
                 }

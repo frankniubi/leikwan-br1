@@ -73,4 +73,22 @@ class ProxyProtocolDraftTest {
         assertEquals("0.0.0.0/0", details.allowedIps)
         assertEquals("25", details.persistentKeepalive)
     }
+
+    @Test
+    fun `details parser reads SOCKS5 credentials`() {
+        val node = ProxyNode(
+            id = 4,
+            name = "SOCKS",
+            type = "socks5",
+            originalServer = "socks.example.test",
+            originalPort = 1080,
+            configJson = """{"username":"user","password":"pass"}""",
+        )
+
+        val details = ProxyProtocolDraftParser.parse(node)
+
+        require(details is ProxyProtocolDraft.Socks5)
+        assertEquals("user", details.username)
+        assertEquals("pass", details.password)
+    }
 }

@@ -50,6 +50,11 @@ sealed interface ProxyProtocolDraft {
         val reserved: String = "",
     ) : ProxyProtocolDraft
 
+    data class Socks5(
+        val username: String = "",
+        val password: String = "",
+    ) : ProxyProtocolDraft
+
     data class Unknown(
         val configJson: String,
     ) : ProxyProtocolDraft
@@ -121,6 +126,11 @@ object ProxyProtocolDraftParser {
                 )
             }
 
+            "socks", "socks5" -> ProxyProtocolDraft.Socks5(
+                username = config.stringOrEmpty("username"),
+                password = config.stringOrEmpty("password"),
+            )
+
             else -> ProxyProtocolDraft.Unknown(prettyJson(node.configJson))
         }
     }
@@ -190,6 +200,11 @@ object ProxyProtocolDraftParser {
                 })
             }
 
+            is ProxyProtocolDraft.Socks5 -> JsonObject().apply {
+                protocol.username.takeIf { it.isNotBlank() }?.let { addProperty("username", it) }
+                protocol.password.takeIf { it.isNotBlank() }?.let { addProperty("password", it) }
+            }
+
             is ProxyProtocolDraft.Unknown -> runCatching {
                 JsonParser.parseString(protocol.configJson).asJsonObject
             }.getOrElse { JsonObject() }
@@ -246,6 +261,8 @@ object ProxyProtocolDraftParser {
                 details.addresses.takeIf { it.isNotBlank() }?.let { add(text.addressFormat.formatOne(it)) }
             }
 
+            is ProxyProtocolDraft.Socks5 -> listOf(hostLine)
+
             is ProxyProtocolDraft.Unknown -> listOf(hostLine)
         }
     }
@@ -281,6 +298,12 @@ object ProxyProtocolDraftParser {
                     peer.addProperty("address", server)
                     peer.addProperty("port", port)
                 }
+                config.addProperty("name", name)
+            }
+
+            "socks", "socks5" -> {
+                config.addProperty("server", server)
+                config.addProperty("server_port", port)
                 config.addProperty("name", name)
             }
         }

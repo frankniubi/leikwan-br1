@@ -4,6 +4,7 @@ enum class RuntimeProcessRole {
     SINGLE,
     INGRESS,
     BOND,
+    ULTRA,
 }
 
 data class RuntimeProcessPlan(
@@ -16,6 +17,7 @@ data class RuntimeBinaryPaths(
     val wstunnelBinary: String?,
     val ingressBinary: String?,
     val bondBinary: String?,
+    val ultraBinary: String? = null,
 )
 
 data class NodeLeg(
@@ -27,6 +29,7 @@ data class NodeLeg(
     val localLegPorts: List<Int>,
     val processPlans: List<RuntimeProcessPlan>,
     val bypassHosts: Set<String>,
+    val protectedConnectivity: ProtectedConnectivitySet = ProtectedConnectivitySet.fromEndpoints(bypassHosts),
 ) {
     companion object {
         fun processKey(forwardId: Long, nodeId: Long): Long = forwardId * 100_000L + (nodeId % 100_000L)
@@ -39,6 +42,7 @@ data class NodeLeg(
         localLegPorts = localLegPorts,
         processPlans = processPlans,
         bypassHosts = bypassHosts,
+        protectedConnectivity = protectedConnectivity,
     )
 }
 
@@ -49,8 +53,11 @@ data class RuntimeContext(
     val localLegPorts: List<Int>,
     val processPlans: List<RuntimeProcessPlan>,
     val bypassHosts: Set<String>,
+    val protectedConnectivity: ProtectedConnectivitySet = ProtectedConnectivitySet.fromEndpoints(bypassHosts),
     val nodeLegs: Map<Long, NodeLeg> = emptyMap(),
     val routeRuleProcessKey: Long? = null,
+    /** App-private runtime files that must disappear when a forward stops or fails to start. */
+    val privateRuntimePaths: List<String> = emptyList(),
 ) {
     fun relayListenPortForNode(nodeId: Long): Int? =
         nodeLegs[nodeId]?.localListenPort ?: localListenPort
@@ -64,4 +71,14 @@ data class RuntimeContext(
                 nodeLegs.values.forEach { addAll(it.bypassHosts) }
             }
         }
+
+    fun allProtectedConnectivity(): ProtectedConnectivitySet {
+        var combined = protectedConnectivity.merge(ProtectedConnectivitySet.fromEndpoints(bypassHosts))
+        nodeLegs.values.forEach { leg ->
+            combined = combined
+                .merge(leg.protectedConnectivity)
+                .merge(ProtectedConnectivitySet.fromEndpoints(leg.bypassHosts))
+        }
+        return combined
+    }
 }
