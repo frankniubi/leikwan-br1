@@ -80,7 +80,7 @@ if [[ "$dry_run" -eq 1 ]]; then
   printf 'uot_binary=leikwan-uot-bond\n'
   printf 'cargo build --locked -p leikwan-bond -p leikwan-ingress -p leikwan-uot --target %s\n' "$rust_target"
   printf 'go build GOOS=darwin GOARCH=%s ./tools/ultra-client\n' "$go_arch"
-  printf 'go build GOOS=darwin GOARCH=%s -tags with_quic,with_wireguard,with_utls ./cmd/sing-box\n' "$go_arch"
+  printf 'go build GOOS=darwin GOARCH=%s -tags with_gvisor,with_quic,with_wireguard,with_utls ./cmd/sing-box\n' "$go_arch"
   printf 'package=%s\n' "$package_after_build"
   exit 0
 fi
@@ -144,7 +144,7 @@ git -C "$sing_box_src" checkout --detach "$sing_box_version"
   cd "$sing_box_src"
   GOOS=darwin GOARCH="$go_arch" CGO_ENABLED=0 \
     go build -mod=readonly -trimpath \
-      -tags 'with_quic,with_wireguard,with_utls' \
+      -tags 'with_gvisor,with_quic,with_wireguard,with_utls' \
       -ldflags='-s -w' -o "$helper_dir/sing-box" ./cmd/sing-box
 )
 

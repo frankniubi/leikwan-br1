@@ -39,6 +39,13 @@ public sealed class MacConnectionConfigBuilderTests
         Assert.Contains(rules.EnumerateArray(), rule =>
             rule.TryGetProperty("domain", out var domains)
             && domains.EnumerateArray().Any(item => item.GetString() == "panel.example.test"));
+        Assert.Contains(rules.EnumerateArray(), rule =>
+            rule.TryGetProperty("action", out var action)
+            && action.GetString() == "sniff");
+        Assert.DoesNotContain(root.GetProperty("inbounds")[0].EnumerateObject(), property => property.Name == "sniff");
+        var dnsServers = root.GetProperty("dns").GetProperty("servers");
+        Assert.Equal("https", dnsServers[0].GetProperty("type").GetString());
+        Assert.Equal("local", dnsServers[1].GetProperty("type").GetString());
         Assert.Equal("proxy", root.GetProperty("route").GetProperty("final").GetString());
     }
 

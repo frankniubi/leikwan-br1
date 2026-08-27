@@ -73,18 +73,19 @@ public static class MacConnectionConfigBuilder
             {
                 new JsonObject
                 {
+                    ["type"] = "https",
                     ["tag"] = "remote",
-                    ["address"] = "https://1.1.1.1/dns-query",
+                    ["server"] = "1.1.1.1",
+                    ["path"] = "/dns-query",
                     ["detour"] = "proxy",
                 },
                 new JsonObject
                 {
+                    ["type"] = "local",
                     ["tag"] = "local",
-                    ["address"] = "local",
                 },
             },
             ["final"] = "remote",
-            ["independent_cache"] = true,
         };
         if (bootstrapDomains.Count > 0)
         {
