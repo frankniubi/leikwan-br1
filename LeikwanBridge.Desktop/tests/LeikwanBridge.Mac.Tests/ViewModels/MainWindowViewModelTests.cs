@@ -16,17 +16,17 @@ public sealed class MainWindowViewModelTests
 
         await vm.LoginCommand.ExecuteAsync(null);
 
-        Assert.Equal("Enter the panel URL, email, and password.", vm.ValidationMessage);
-        Assert.Equal(0, controller.LoginCalls);
+        Assert.Equal("Enter a valid panel URL, client ID, and token.", vm.ValidationMessage);
+        Assert.Equal(0, controller.AgentTokenLoginCalls);
 
         vm.PanelUrl = "https://panel.example.test";
-        vm.Email = "user@example.test";
-        vm.Password = "password-canary";
+        vm.ClientIdText = "21";
+        vm.AgentToken = "agent-token-21";
         await vm.LoginCommand.ExecuteAsync(null);
-        Assert.Equal(1, controller.LoginCalls);
+        Assert.Equal(1, controller.AgentTokenLoginCalls);
         controller.RaiseLog("connected");
         Assert.Contains(vm.Logs, message => message.EndsWith("connected", StringComparison.Ordinal));
-        Assert.DoesNotContain("password-canary", string.Join("\n", vm.Logs));
+        Assert.DoesNotContain("agent-token-21", string.Join("\n", vm.Logs));
 
         controller.RaiseSnapshot(new DesktopClientSnapshot
         {
@@ -102,7 +102,6 @@ public sealed class MainWindowViewModelTests
         var vm = new MainWindowViewModel(controller, dispatch: action => action());
 
         vm.PanelUrl = "https://panel.example.test";
-        vm.SelectedAuthenticationMode = MainWindowViewModel.ClientIdTokenAuthentication;
         vm.ClientIdText = "27";
         vm.AgentToken = "agent-token-27";
         await vm.LoginCommand.ExecuteAsync(null);
@@ -110,6 +109,39 @@ public sealed class MainWindowViewModelTests
         Assert.Equal(1, controller.AgentTokenLoginCalls);
         Assert.Equal((27, "agent-token-27"), controller.LastAgentTokenLogin);
         Assert.Empty(vm.AgentToken);
+    }
+
+    [Fact]
+    public void MacLoginOffersClientIdTokenAsTheOnlyAuthenticationMode()
+    {
+        var vm = new MainWindowViewModel(new FakeController(new DesktopClientSnapshot()), dispatch: action => action());
+
+        Assert.Equal([MainWindowViewModel.ClientIdTokenAuthentication], vm.AuthenticationModes);
+        Assert.Equal(MainWindowViewModel.ClientIdTokenAuthentication, vm.SelectedAuthenticationMode);
+        Assert.False(vm.IsEmailPasswordAuthentication);
+        Assert.True(vm.IsClientIdTokenAuthentication);
+    }
+
+    [Fact]
+    public async Task TokenLoginDoesNotReportConnectionFailureAsSignInFailure()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot())
+        {
+            SignInOnAgentToken = true,
+            ThrowOnConnect = true,
+        };
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+        vm.PanelUrl = "https://panel.example.test";
+        vm.ClientIdText = "27";
+        vm.AgentToken = "agent-token-27";
+
+        await vm.LoginCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, controller.AgentTokenLoginCalls);
+        Assert.False(vm.IsLoginVisible);
+        Assert.Equal("Signed in, but the client could not connect.", vm.ValidationMessage);
+        Assert.True(vm.IsNoticeVisible);
+        Assert.Equal(vm.ValidationMessage, vm.NoticeText);
     }
 
     private sealed class FakeController(DesktopClientSnapshot initial) : IDesktopClientController
@@ -124,6 +156,8 @@ public sealed class MainWindowViewModelTests
         public int LoginCalls { get; private set; }
         public int AgentTokenLoginCalls { get; private set; }
         public (int ClientId, string Token) LastAgentTokenLogin { get; private set; }
+        public bool SignInOnAgentToken { get; init; }
+        public bool ThrowOnConnect { get; init; }
         public List<int> SelectedClients { get; } = [];
         public List<int> StartedForwards { get; } = [];
         public List<int> StoppedForwards { get; } = [];
@@ -138,6 +172,14 @@ public sealed class MainWindowViewModelTests
         {
             AgentTokenLoginCalls++;
             LastAgentTokenLogin = (clientId, agentToken);
+            if (SignInOnAgentToken)
+            {
+                RaiseSnapshot(new DesktopClientSnapshot
+                {
+                    IsSignedIn = true,
+                    ActiveClientName = $"Client {clientId}",
+                });
+            }
             return Task.CompletedTask;
         }
 
@@ -147,7 +189,10 @@ public sealed class MainWindowViewModelTests
             return Task.CompletedTask;
         }
 
-        public Task ConnectAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task ConnectAsync(CancellationToken ct = default)
+            => ThrowOnConnect
+                ? Task.FromException(new InvalidOperationException("runtime unavailable"))
+                : Task.CompletedTask;
         public Task DisconnectAsync(CancellationToken ct = default) => Task.CompletedTask;
         public Task StartForwardAsync(int forwardId, CancellationToken ct = default)
         {
