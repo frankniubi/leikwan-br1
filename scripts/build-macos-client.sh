@@ -66,6 +66,7 @@ if [[ "$dry_run" -eq 1 ]]; then
   printf 'wstunnel_commit=%s\n' "$wstunnel_commit"
   printf 'dotnet restore LeikwanBridge.Mac --locked-mode\n'
   printf 'dotnet publish LeikwanBridge.Mac -r %s --self-contained true\n' "$rid"
+  printf 'uot_binary=leikwan-uot-bond\n'
   printf 'cargo build --locked -p leikwan-bond -p leikwan-ingress -p leikwan-uot --target %s\n' "$rust_target"
   printf 'go build GOOS=darwin GOARCH=%s ./tools/ultra-client\n' "$go_arch"
   printf 'package=%s\n' "$package_after_build"
@@ -136,7 +137,7 @@ dotnet publish \
 
 cp "$repo_root/wstunnel-main/target/$rust_target/release/leikwan-bond" "$helper_dir/leikwan-bond"
 cp "$repo_root/wstunnel-main/target/$rust_target/release/leikwan-ingress" "$helper_dir/leikwan-ingress"
-cp "$repo_root/wstunnel-main/target/$rust_target/release/leikwan-uot" "$helper_dir/leikwan-uot-bond"
+cp "$repo_root/wstunnel-main/target/$rust_target/release/leikwan-uot-bond" "$helper_dir/leikwan-uot-bond"
 cp "$wstunnel_src/target/$rust_target/release/wstunnel" "$helper_dir/wstunnel"
 chmod 0755 "$helper_dir"/* "$publish_dir/LeikwanBridge.Mac"
 

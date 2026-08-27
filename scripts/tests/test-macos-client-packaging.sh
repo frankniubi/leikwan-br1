@@ -76,6 +76,9 @@ printf '%s\n' "$build_plan" | grep -Fqx \
 printf '%s\n' "$build_plan" | grep -Fqx \
   'dotnet restore LeikwanBridge.Mac --locked-mode' \
   || fail "locked restore must use the project dual-RID contract"
+printf '%s\n' "$build_plan" | grep -Fqx \
+  'uot_binary=leikwan-uot-bond' \
+  || fail "UOT helper must use the Cargo binary name"
 
 temp_root="$(mktemp -d "${TMPDIR:-/tmp}/leikwan-macos-package-test.XXXXXX")"
 trap 'rm -rf "$temp_root"' EXIT
