@@ -21,19 +21,19 @@ while Date() < deadline && windowID == nil {
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
     let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
     for window in windows {
-        guard let ownerPID = window[kCGWindowOwnerPID as String] as? Int32,
-              ownerPID == pid,
-              let layer = window[kCGWindowLayer as String] as? Int,
-              layer == 0,
-              let number = window[kCGWindowNumber as String] as? UInt32,
+        guard let ownerPID = window[kCGWindowOwnerPID as String] as? NSNumber,
+              ownerPID.int32Value == pid,
+              let layer = window[kCGWindowLayer as String] as? NSNumber,
+              layer.intValue == 0,
+              let number = window[kCGWindowNumber as String] as? NSNumber,
               let bounds = window[kCGWindowBounds as String] as? [String: Any],
-              let width = bounds["Width"] as? Double,
-              let height = bounds["Height"] as? Double,
-              width >= Double(expectedWidth - 20),
-              height >= Double(expectedHeight - 20) else {
+              let width = bounds["Width"] as? NSNumber,
+              let height = bounds["Height"] as? NSNumber,
+              width.doubleValue >= Double(expectedWidth - 20),
+              height.doubleValue >= Double(expectedHeight - 20) else {
             continue
         }
-        windowID = number
+        windowID = CGWindowID(number.uint32Value)
         break
     }
     if windowID == nil {
