@@ -12,7 +12,7 @@ source_commit="unknown"
 metadata_path=""
 merge_versions=""
 dry_run=0
-helpers="wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client"
+helpers="sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client"
 
 fail() {
   printf 'package-macos-client: %s\n' "$*" >&2
@@ -199,7 +199,7 @@ for helper in $helpers; do
   check_architecture "$path"
 done
 
-extra_helper="$(find "$helper_dir" -mindepth 1 -maxdepth 1 -type f ! -name 'wstunnel' ! -name 'leikwan-bond' ! -name 'leikwan-ingress' ! -name 'leikwan-uot-bond' ! -name 'ultra-client' -print -quit)"
+extra_helper="$(find "$helper_dir" -mindepth 1 -maxdepth 1 -type f ! -name 'sing-box' ! -name 'wstunnel' ! -name 'leikwan-bond' ! -name 'leikwan-ingress' ! -name 'leikwan-uot-bond' ! -name 'ultra-client' -print -quit)"
 [[ -z "$extra_helper" ]] || fail "unexpected helper input: $(basename "$extra_helper")"
 
 if [[ "$dry_run" -eq 1 ]]; then
@@ -227,6 +227,9 @@ cp -R "$publish_dir"/. "$macos_dir"/
 for helper in $helpers; do
   cp "$helper_dir/$helper" "$bundle_helpers/$helper"
 done
+notice_path="$repo_root/docs/third-party/sing-box-notice.txt"
+[[ -f "$notice_path" ]] || fail "sing-box third-party notice missing"
+cp "$notice_path" "$resources_dir/THIRD-PARTY-SING-BOX.txt"
 
 python3 - "$template" "$app/Contents/Info.plist" "$version" <<'PY'
 import pathlib

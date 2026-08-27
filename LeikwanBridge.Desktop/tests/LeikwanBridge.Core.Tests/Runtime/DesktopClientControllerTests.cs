@@ -96,10 +96,51 @@ public sealed class DesktopClientControllerTests
         await controller.DisposeAsync();
     }
 
+    [Fact]
+    public async Task AgentTokenLoginValidatesPullClientAndPersistsTokenWithoutDesktopSession()
+    {
+        var config = new AgentConfig();
+        var saves = 0;
+        var runtime = new FakeRuntimeSession();
+        var controller = CreateController(
+            config,
+            runtime,
+            save: (_, _) =>
+            {
+                saves++;
+                return Task.CompletedTask;
+            },
+            tokenPull: (_, token, clientId, _) =>
+            {
+                Assert.Equal("agent-token-27", token);
+                Assert.Equal(27, clientId);
+                return Task.FromResult(new PullResponse
+                {
+                    Ok = true,
+                    Client = new ClientMeta { Id = 27, Name = "Mac client 27" },
+                });
+            });
+
+        await controller.LoginWithAgentTokenAsync(
+            "https://panel.example.test/",
+            27,
+            "agent-token-27");
+
+        Assert.True(controller.Snapshot.IsSignedIn);
+        Assert.False(controller.Snapshot.RequiresClientSelection);
+        Assert.Equal("Mac client 27", controller.Snapshot.ActiveClientName);
+        Assert.Equal("agent-token-27", config.AgentToken);
+        Assert.Equal(27, config.ActiveClientId);
+        Assert.Equal(string.Empty, config.DesktopSessionToken);
+        Assert.True(saves >= 1);
+        await controller.DisposeAsync();
+    }
+
     private static DesktopClientController CreateController(
         AgentConfig config,
         FakeRuntimeSession runtime,
-        Func<AgentConfig, CancellationToken, Task>? save = null)
+        Func<AgentConfig, CancellationToken, Task>? save = null,
+        Func<string, string, int, CancellationToken, Task<PullResponse>>? tokenPull = null)
     {
         var identity = new ClientPlatformIdentity(
             "macos-desktop", "device", "Mac", "Leikwan-Mac-GUI", "1.0.0", SupportsMptcp: false);
@@ -127,7 +168,8 @@ public sealed class DesktopClientControllerTests
                 ClientId = clientId,
                 ClientName = $"Client {clientId}",
                 AgentToken = $"agent-token-{clientId}",
-            }));
+            }),
+            agentTokenPull: tokenPull);
     }
 
     private static AgentConfig SignedInConfig() => new()

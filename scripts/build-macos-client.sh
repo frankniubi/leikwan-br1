@@ -6,10 +6,13 @@ rid=""
 version="1.0.0"
 output_root=""
 wstunnel_src="${WSTUNNEL_SRC:-}"
+sing_box_src="${SING_BOX_SRC:-}"
 dry_run=0
 package_after_build=1
 wstunnel_commit="9d0ec3f27556e3132536401d1b2e4e1aa30c277c"
 wstunnel_repository="https://github.com/erebe/wstunnel.git"
+sing_box_version="${SING_BOX_VERSION:-v1.13.12}"
+sing_box_repository="https://github.com/SagerNet/sing-box.git"
 
 fail() {
   printf 'build-macos-client: %s\n' "$*" >&2
@@ -22,6 +25,7 @@ Usage: scripts/build-macos-client.sh --rid <osx-arm64|osx-x64> [options]
   --version <version>       App version (default: 1.0.0)
   --output-root <path>      Intermediate output directory
   --wstunnel-src <path>     Upstream wstunnel checkout/cache
+  --sing-box-src <path>     Upstream sing-box checkout/cache
   --no-package              Build publish/helpers only
   --dry-run                 Print the pinned build plan without compiling
 EOF
@@ -33,6 +37,7 @@ while [[ $# -gt 0 ]]; do
     --version) version="${2:-}"; shift 2 ;;
     --output-root) output_root="${2:-}"; shift 2 ;;
     --wstunnel-src) wstunnel_src="${2:-}"; shift 2 ;;
+    --sing-box-src) sing_box_src="${2:-}"; shift 2 ;;
     --no-package) package_after_build=0; shift ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -57,6 +62,7 @@ esac
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || fail "version must be numeric"
 output_root="${output_root:-$repo_root/.build/macos-client/$rid}"
 wstunnel_src="${wstunnel_src:-$repo_root/.build/tool-sources/wstunnel-v10.5.2}"
+sing_box_src="${sing_box_src:-$repo_root/.build/tool-sources/sing-box-$sing_box_version}"
 publish_dir="$output_root/publish"
 helper_dir="$output_root/helpers"
 helper_hashes="$output_root/helper-hashes.txt"
@@ -64,11 +70,13 @@ helper_hashes="$output_root/helper-hashes.txt"
 if [[ "$dry_run" -eq 1 ]]; then
   printf 'rid=%s\narchitecture=%s\nrust_target=%s\ngo_arch=%s\n' "$rid" "$architecture" "$rust_target" "$go_arch"
   printf 'wstunnel_commit=%s\n' "$wstunnel_commit"
+  printf 'sing_box_version=%s\n' "$sing_box_version"
   printf 'dotnet restore LeikwanBridge.Mac --locked-mode\n'
   printf 'dotnet publish LeikwanBridge.Mac -r %s --self-contained true\n' "$rid"
   printf 'uot_binary=leikwan-uot-bond\n'
   printf 'cargo build --locked -p leikwan-bond -p leikwan-ingress -p leikwan-uot --target %s\n' "$rust_target"
   printf 'go build GOOS=darwin GOARCH=%s ./tools/ultra-client\n' "$go_arch"
+  printf 'go build GOOS=darwin GOARCH=%s -tags with_quic,with_wireguard,with_utls ./cmd/sing-box\n' "$go_arch"
   printf 'package=%s\n' "$package_after_build"
   exit 0
 fi
@@ -91,7 +99,7 @@ if ".build" not in output.parts:
 PY
 
 rm -rf "$output_root"
-mkdir -p "$publish_dir" "$helper_dir" "$(dirname "$wstunnel_src")"
+mkdir -p "$publish_dir" "$helper_dir" "$(dirname "$wstunnel_src")" "$(dirname "$sing_box_src")"
 
 rustup target add "$rust_target"
 cargo build \
@@ -121,6 +129,21 @@ cargo build \
     go build -mod=readonly -trimpath -ldflags='-s -w' -o "$helper_dir/ultra-client" .
 )
 
+if [[ ! -d "$sing_box_src/.git" ]]; then
+  git clone --filter=blob:none --branch "$sing_box_version" "$sing_box_repository" "$sing_box_src"
+fi
+git -C "$sing_box_src" fetch --depth=1 origin "refs/tags/$sing_box_version"
+git -C "$sing_box_src" checkout --detach "$sing_box_version"
+[[ "$(git -C "$sing_box_src" describe --tags --exact-match HEAD 2>/dev/null || true)" == "$sing_box_version" ]] \
+  || fail "sing-box tag mismatch"
+(
+  cd "$sing_box_src"
+  GOOS=darwin GOARCH="$go_arch" CGO_ENABLED=0 \
+    go build -mod=readonly -trimpath \
+      -tags 'with_quic,with_wireguard,with_utls' \
+      -ldflags='-s -w' -o "$helper_dir/sing-box" ./cmd/sing-box
+)
+
 dotnet restore \
   "$repo_root/LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.csproj" \
   --locked-mode
@@ -143,7 +166,7 @@ chmod 0755 "$helper_dir"/* "$publish_dir/LeikwanBridge.Mac"
 
 (
   cd "$helper_dir"
-  shasum -a 256 wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client >"$helper_hashes"
+  shasum -a 256 sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client >"$helper_hashes"
 )
 
 if [[ "$package_after_build" -eq 1 ]]; then

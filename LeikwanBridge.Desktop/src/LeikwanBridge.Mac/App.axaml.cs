@@ -72,6 +72,8 @@ public sealed partial class App : Application
             var config = _services.Config;
             var viewModel = new MainWindowViewModel(
                 _services.Controller,
+                _services.Connections,
+                () => _services.Controller.RuntimeForwards,
                 _services.Autostart,
                 config.MinimizeToTray,
                 config.Language,
@@ -231,6 +233,7 @@ public sealed partial class App : Application
         _trayIcon = null;
         if (_services is not null)
         {
+            await _services.Connections.DisposeAsync();
             await _services.Controller.DisposeAsync();
             _services.Updater.Dispose();
         }

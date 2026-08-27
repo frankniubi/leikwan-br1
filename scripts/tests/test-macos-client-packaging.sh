@@ -43,12 +43,12 @@ make_fixture() {
   write_macho "$publish/LeikwanBridge.Mac" "$architecture"
   printf '{}' >"$publish/LeikwanBridge.Mac.runtimeconfig.json"
   printf 'managed' >"$publish/LeikwanBridge.Mac.dll"
-  for helper in wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client; do
+  for helper in sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client; do
     write_macho "$helpers/$helper" "$architecture"
   done
   (
     cd "$helpers"
-    shasum -a 256 wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client >"$root/helper-hashes.txt"
+    shasum -a 256 sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client >"$root/helper-hashes.txt"
   )
 }
 
@@ -101,7 +101,7 @@ make_fixture "$wrong_arch" arm64
 write_macho "$wrong_arch/helpers/leikwan-bond" x86_64
 (
   cd "$wrong_arch/helpers"
-  shasum -a 256 wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client >"$wrong_arch/helper-hashes.txt"
+  shasum -a 256 sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client >"$wrong_arch/helper-hashes.txt"
 )
 expect_failure "wrong architecture" run_dry "$wrong_arch"
 

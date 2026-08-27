@@ -215,7 +215,9 @@ public sealed class MacKeychainSecretStore : ISecretStore
 
     private static void ValidateAccount(string name)
     {
-        if (name != "desktop-session" && !Regex.IsMatch(name, "^client-agent-[1-9][0-9]*$", RegexOptions.CultureInvariant))
+        if (name != "desktop-session"
+            && name != MacConnectionProfileStore.SecretAccount
+            && !Regex.IsMatch(name, "^client-agent-[1-9][0-9]*$", RegexOptions.CultureInvariant))
             throw new ArgumentException("secret account invalid", nameof(name));
     }
 
