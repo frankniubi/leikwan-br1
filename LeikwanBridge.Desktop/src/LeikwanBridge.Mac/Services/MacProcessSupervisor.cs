@@ -67,6 +67,8 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
                 WorkingDirectory = workingDirectory ?? Path.GetDirectoryName(exePath) ?? string.Empty,
             };
             process = _processStarter(startInfo);
+            Log.Information("macOS process spawned for forward {ForwardId} [{Role}] pid={ProcessId}",
+                forwardId, role, process.Id);
             process.EnableRaisingEvents = true;
             if (_setProcessGroup(process.Id, process.Id) != 0)
                 Log.Warning("process_group_create_failed for forward {ForwardId} [{Role}]", forwardId, role);
@@ -89,9 +91,20 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
 
             if (standardInput is not null)
             {
-                process.StandardInput.BaseStream.Write(standardInput);
-                process.StandardInput.BaseStream.Flush();
+                Log.Information("writing macOS process bootstrap for forward {ForwardId} [{Role}]", forwardId, role);
+                using var inputTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                var writeTask = process.StandardInput.BaseStream
+                    .WriteAsync(standardInput.AsMemory(), inputTimeout.Token)
+                    .AsTask();
+                if (!writeTask.Wait(TimeSpan.FromSeconds(3)))
+                    throw new TimeoutException("process_stdin_write_timeout");
+                writeTask.GetAwaiter().GetResult();
+                var flushTask = process.StandardInput.BaseStream.FlushAsync(inputTimeout.Token);
+                if (!flushTask.Wait(TimeSpan.FromSeconds(3)))
+                    throw new TimeoutException("process_stdin_flush_timeout");
+                flushTask.GetAwaiter().GetResult();
                 process.StandardInput.Close();
+                Log.Information("macOS process bootstrap written for forward {ForwardId} [{Role}]", forwardId, role);
             }
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
@@ -135,6 +148,7 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
     {
         if (!_processes.TryRemove(forwardId, out var managed))
             return;
+        Log.Information("stopping macOS processes for forward {ForwardId} count={Count}", forwardId, managed.Count);
         List<ManagedProcess> snapshot;
         lock (managed)
             snapshot = [.. managed];
@@ -184,6 +198,7 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
             }
             item.Process.Dispose();
         }
+        Log.Information("stopped macOS processes for forward {ForwardId}", forwardId);
     }
 
     public void StopAll()

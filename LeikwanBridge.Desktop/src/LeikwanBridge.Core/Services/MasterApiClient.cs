@@ -115,8 +115,25 @@ public sealed class MasterApiClient : IDisposable
     public async Task<UltraLease?> ResolveUltraLeaseAsync(ForwardConfig forward, CancellationToken ct = default)
     {
         var policy = forward.UltraAccess;
-        if (policy is null || !policy.IsUsable(forward, DateTimeOffset.UtcNow))
+        if (policy is null)
+        {
+            Log.Warning("Ultra lease skipped for forward {ForwardId}; policy missing", forward.ForwardId);
             return null;
+        }
+
+        var policyFailure = policy.GetValidationFailure(forward, DateTimeOffset.UtcNow);
+        if (policyFailure is not null)
+        {
+            Log.Warning(
+                "Ultra lease skipped for forward {ForwardId}; policy invalid ({Reason}, protocol={Protocol}, expiry={ExpiresAt}, quota={Quota}, transport={Transport})",
+                forward.ForwardId,
+                policyFailure,
+                policy.ProtocolValue,
+                policy.ExpiresAt,
+                policy.QuotaRemainingBytes,
+                policy.Transport);
+            return null;
+        }
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         var payload = new
         {
