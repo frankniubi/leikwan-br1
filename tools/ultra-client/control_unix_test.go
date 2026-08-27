@@ -6,14 +6,12 @@ import (
 	"bytes"
 	"net"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
 func TestControlServerRejectsPeerBeforeReadingLease(t *testing.T) {
 	config := testPolicyConfig()
-	parent := filepath.Join(t.TempDir(), "private")
-	path := filepath.Join(parent, "forward-42.control.sock")
+	parent, path := shortControlSocketPath(t)
 	store := NewPolicyStore(config)
 	server := NewControlServer(path, config, store)
 	server.peerAllowed = func(*net.UnixConn) bool { return false }

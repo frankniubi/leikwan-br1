@@ -40,19 +40,22 @@ public static class PortConflictPreflight
         if (string.IsNullOrWhiteSpace(executablePath))
             return false;
 
-        var fileName = Path.GetFileName(executablePath);
+        var normalizedExecutablePath = NormalizePathSeparators(executablePath);
+        var separator = normalizedExecutablePath.LastIndexOf('/');
+        var fileName = separator >= 0
+            ? normalizedExecutablePath[(separator + 1)..]
+            : normalizedExecutablePath;
         if (string.IsNullOrWhiteSpace(fileName) || !ManagedRuntimeExecutableNames.Contains(fileName))
             return false;
 
         if (!string.IsNullOrWhiteSpace(installRoot))
         {
-            var root = NormalizeDirectoryPath(Path.GetFullPath(installRoot));
-            if (executablePath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            var root = NormalizeDirectoryPath(installRoot);
+            if (normalizedExecutablePath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
                 return true;
         }
 
-        var normalized = executablePath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
-        return normalized.IndexOf("LeiKwan Bridge", StringComparison.OrdinalIgnoreCase) >= 0;
+        return normalizedExecutablePath.IndexOf("LeiKwan Bridge", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     public static PortClassification Classify(
@@ -181,5 +184,8 @@ public static class PortConflictPreflight
     }
 
     private static string NormalizeDirectoryPath(string path)
-        => path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        => NormalizePathSeparators(path).TrimEnd('/') + "/";
+
+    private static string NormalizePathSeparators(string path)
+        => path.Trim().Replace('\\', '/');
 }

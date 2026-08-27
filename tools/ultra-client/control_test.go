@@ -39,12 +39,22 @@ func TestControlFrameBoundsAndPartialReads(t *testing.T) {
 	}
 }
 
+func shortControlSocketPath(t *testing.T) (string, string) {
+	t.Helper()
+	parent, err := os.MkdirTemp("", "lku-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(parent) })
+	return parent, filepath.Join(parent, "c.sock")
+}
+
 func TestControlServerAcceptsLeaseAndRejectsReplay(t *testing.T) {
 	if os.Getenv("CI") == "windows" {
 		t.Skip("Unix control socket is exercised on Linux")
 	}
 	config := testPolicyConfig()
-	path := filepath.Join(t.TempDir(), "forward-42.control.sock")
+	_, path := shortControlSocketPath(t)
 	store := NewPolicyStore(config)
 	server := NewControlServer(path, config, store)
 	if err := server.Listen(); err != nil {

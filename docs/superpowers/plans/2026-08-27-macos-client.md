@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the panel wire contract and `LeikwanBridge.Core` as the source of truth, but inject platform policy and platform services into the lifecycle coordinator. The macOS Avalonia shell composes Unix process, Keychain, LaunchAgent, updater, and port-probe implementations. Ultra uses policy-v2 pulls, a maximum-300-second selected lease, anonymous bootstrap input, and a private Unix socket; provider material never enters static configuration or persisted state.
 
-**Tech Stack:** .NET 8, Avalonia 11.3.20, CommunityToolkit.Mvvm 8.4.2, Lucide.Avalonia 0.1.64, xUnit, Go 1.22, Rust stable, PHP 8, Bash, GitHub Actions, macOS `hdiutil`/`ditto`.
+**Tech Stack:** .NET 8, Avalonia 11.3.20, CommunityToolkit.Mvvm 8.4.2, Lucide.Avalonia 0.1.64, xUnit, Go 1.27, Rust stable, PHP 8, Bash, GitHub Actions, macOS `hdiutil`/`ditto`.
 
 **Spec:** `docs/superpowers/specs/2026-08-27-macos-client-design.md`
 
