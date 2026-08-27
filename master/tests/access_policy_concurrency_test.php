@@ -63,7 +63,7 @@ namespace {
         public function activeAccountBan(int $u, bool $forUpdate = false): ?array { foreach ($this->bans as $row) if ((int) $row['user_id'] === $u && ($row['released_at'] ?? null) === null) return $row; return null; }
         public function createAccountBan(array $data): int { $id = ++$this->nextId; $this->bans[$id] = ['id' => $id] + $data; return $id; }
         public function setUserStatus(int $id, string $status): void { $this->users[$id]['status'] = $status; }
-        public function revokeApplicationSessions(int $id, string $at): void {}
+        public function revokeApplicationSessions(int $id, string $at): int { return 0; }
         public function upsertTemporaryDeviceBlock(int $clientId, string $device, string $until, string $origin, string $release): void { $this->blockWrites++; $this->controls[$clientId . ':' . $device] = ['id' => ++$this->nextId, 'state' => 'active', 'blocked_until' => $until, 'block_origin' => $origin, 'release_policy' => $release]; }
         public function transaction(callable $callback): mixed { $this->transactions++; return $callback($this); }
     }

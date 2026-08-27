@@ -365,6 +365,80 @@ class AccessPolicyService
         });
     }
 
+    /** @return array{reset_generation:int,snapshot_count:int,revoked_count:int,idempotent:bool} */
+    public function beginAllDeviceReset(int $userId, int $actorUserId): array
+    {
+        if ($userId <= 0 || $actorUserId <= 0) {
+            throw new ApiException('device_reset_invalid', 422);
+        }
+        $now = $this->now();
+        return $this->store->transaction(function () use ($userId, $actorUserId, $now): array {
+            if ($this->store->userById($userId, true) === null) {
+                throw new ApiException('user_not_found', 404);
+            }
+            $pending = $this->store->activeResetGeneration($userId, true);
+            if ($pending !== null) {
+                return [
+                    'reset_generation' => (int) ($pending['generation'] ?? 0),
+                    'snapshot_count' => count($this->store->resetDevicesForGeneration((int) $pending['id'])),
+                    'revoked_count' => 0,
+                    'idempotent' => true,
+                ];
+            }
+
+            $profile = $this->store->profileForUser($userId, true);
+            $currentProvince = $this->regions->normalizeProvince((string) ($profile['main_province_code'] ?? ''));
+            $generation = max(0, (int) ($profile['reset_generation'] ?? 0)) + 1;
+            $devices = $this->deduplicateDevices($this->store->knownDevicesForUser($userId));
+            $reset = $this->store->createResetGeneration([
+                'user_id' => $userId,
+                'generation' => $generation,
+                'previous_province_code' => $currentProvince,
+                'state' => 'pending',
+                'started_at' => $this->sqlTime($now),
+                'completed_at' => null,
+                'created_by_user_id' => $actorUserId,
+            ]);
+            foreach ($devices as $device) {
+                $this->store->insertResetDevice([
+                    'reset_generation_id' => (int) $reset['id'],
+                    'user_id' => $userId,
+                    'client_id' => $device['client_id'],
+                    'device_uuid' => $device['device_uuid'],
+                    'blocked_until' => null,
+                    'block_created_at' => null,
+                    'created_at' => $this->sqlTime($now),
+                ]);
+            }
+
+            $profileData = [
+                'state' => 'reset_pending',
+                'main_province_code' => null,
+                'previous_province_code' => $currentProvince,
+                'reset_generation' => $generation,
+                'reset_started_at' => $this->sqlTime($now),
+                'updated_at' => $this->sqlTime($now),
+            ];
+            if ($profile === null) {
+                $this->store->createProfile($userId, $profileData + [
+                    'bound_observation_id' => null,
+                    'last_verified_at' => null,
+                    'self_change_available_at' => null,
+                    'created_at' => $this->sqlTime($now),
+                ]);
+            } else {
+                $this->store->updateProfile($userId, $profileData);
+            }
+            $revoked = $this->store->revokeApplicationSessions($userId, $this->sqlTime($now));
+            return [
+                'reset_generation' => $generation,
+                'snapshot_count' => count($devices),
+                'revoked_count' => $revoked,
+                'idempotent' => false,
+            ];
+        });
+    }
+
     /** @return MainlandRegionPolicy */
     public function regions(): MainlandRegionPolicy
     {
@@ -426,6 +500,7 @@ class AccessPolicyService
         }
 
         $profile = $this->store->profileForUser($context['user_id'], true);
+        $resetResult = [];
         if ($geoEnabled) {
             if ($profile === null) {
                 $now = $this->now();
@@ -444,26 +519,35 @@ class AccessPolicyService
                     'updated_at' => $this->sqlTime($now),
                 ]);
             } else {
-                $main = $this->regions->normalizeProvince((string) ($profile['main_province_code'] ?? ''));
-                if ($main === null) {
-                    $now = $this->now();
-                    $this->store->updateProfile($context['user_id'], [
+                if ((string) ($profile['state'] ?? '') === 'reset_pending') {
+                    $resetResult = $this->completeResetBinding($context, $profile, $selected, $province);
+                    $profile = array_merge($profile, [
                         'state' => 'bound',
                         'main_province_code' => $province,
                         'bound_observation_id' => $selected['id'] ?? null,
-                        'last_verified_at' => $this->sqlTime($now),
-                        'self_change_available_at' => null,
-                        'updated_at' => $this->sqlTime($now),
                     ]);
-                    $profile['main_province_code'] = $province;
-                } elseif (!in_array($province, $this->regions->allowedProvinces($main), true)) {
-                    $this->raiseGeoViolation($context, $sourceIp, $selected, 'non_adjacent_province', $main, $province);
                 } else {
-                    $this->store->updateProfile($context['user_id'], [
-                        'last_verified_at' => $this->sqlTime($this->now()),
-                        'bound_observation_id' => $selected['id'] ?? ($profile['bound_observation_id'] ?? null),
-                        'updated_at' => $this->sqlTime($this->now()),
-                    ]);
+                    $main = $this->regions->normalizeProvince((string) ($profile['main_province_code'] ?? ''));
+                    if ($main === null) {
+                        $now = $this->now();
+                        $this->store->updateProfile($context['user_id'], [
+                            'state' => 'bound',
+                            'main_province_code' => $province,
+                            'bound_observation_id' => $selected['id'] ?? null,
+                            'last_verified_at' => $this->sqlTime($now),
+                            'self_change_available_at' => null,
+                            'updated_at' => $this->sqlTime($now),
+                        ]);
+                        $profile['main_province_code'] = $province;
+                    } elseif (!in_array($province, $this->regions->allowedProvinces($main), true)) {
+                        $this->raiseGeoViolation($context, $sourceIp, $selected, 'non_adjacent_province', $main, $province);
+                    } else {
+                        $this->store->updateProfile($context['user_id'], [
+                            'last_verified_at' => $this->sqlTime($this->now()),
+                            'bound_observation_id' => $selected['id'] ?? ($profile['bound_observation_id'] ?? null),
+                            'updated_at' => $this->sqlTime($this->now()),
+                        ]);
+                    }
                 }
             }
         }
@@ -477,6 +561,80 @@ class AccessPolicyService
             'main_province_code' => $profile['main_province_code'] ?? $province,
             'observation_id' => $selected['id'] ?? null,
             'persisted' => $persisted,
+        ] + $resetResult;
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     * @param array<string, mixed> $profile
+     * @param array<string, mixed> $observation
+     * @return array<string, mixed>
+     */
+    private function completeResetBinding(array $context, array $profile, array $observation, string $province): array
+    {
+        $now = $this->now();
+        $reset = $this->store->activeResetGeneration($context['user_id'], true);
+        $previous = $this->regions->normalizeProvince((string) ($profile['previous_province_code'] ?? ''));
+        $changed = $previous !== null && $previous !== $province;
+        $blockedCount = 0;
+
+        if ($reset !== null) {
+            $devices = $this->store->resetDevicesForGeneration((int) $reset['id']);
+            if ($changed) {
+                $blockedUntil = $this->sqlTime($now->modify('+3600 seconds'));
+                foreach ($devices as $device) {
+                    if (($device['block_created_at'] ?? null) !== null) {
+                        continue;
+                    }
+                    $clientId = (int) ($device['client_id'] ?? 0);
+                    $deviceUuid = trim((string) ($device['device_uuid'] ?? ''));
+                    if ($clientId <= 0 || $deviceUuid === '') {
+                        continue;
+                    }
+                    $this->store->upsertTemporaryDeviceBlock(
+                        $clientId,
+                        $deviceUuid,
+                        $blockedUntil,
+                        'province_reset',
+                        'admin_only'
+                    );
+                    $this->store->markResetDeviceBlocked((int) $device['id'], $blockedUntil, $this->sqlTime($now));
+                    $blockedCount++;
+                }
+            }
+            $this->store->completeResetGeneration((int) $reset['id'], $this->sqlTime($now));
+        }
+
+        $this->store->updateProfile($context['user_id'], [
+            'state' => 'bound',
+            'main_province_code' => $province,
+            'previous_province_code' => $previous,
+            'bound_observation_id' => $observation['id'] ?? null,
+            'last_verified_at' => $this->sqlTime($now),
+            'reset_started_at' => null,
+            'updated_at' => $this->sqlTime($now),
+        ]);
+        $this->store->insertPolicyEvent([
+            'decision_id' => bin2hex(random_bytes(16)),
+            'user_id' => $context['user_id'],
+            'client_id' => $context['client_id'] > 0 ? $context['client_id'] : null,
+            'device_uuid' => $context['device_uuid'],
+            'source_ip' => $observation['source_ip'] ?? null,
+            'event_type' => 'province_reset',
+            'decision' => 'allow',
+            'reason_code' => $changed ? 'province_changed' : 'province_unchanged',
+            'matched_entity_type' => null,
+            'matched_observation_id' => $observation['id'] ?? null,
+            'attempt_id' => (string) ($observation['attempt_id'] ?? $context['attempt_id']),
+            'counts_as_geo_violation' => 0,
+            'details_digest' => hash('sha256', implode('|', [$previous ?? '', $province, (string) $blockedCount])),
+            'created_at' => $this->sqlTime($now),
+        ]);
+
+        return [
+            'reset_generation' => (int) ($reset['generation'] ?? $profile['reset_generation'] ?? 0),
+            'province_changed' => $changed,
+            'reset_blocked_device_count' => $blockedCount,
         ];
     }
 
@@ -1102,5 +1260,29 @@ class AccessPolicyService
             }
         }
         return null;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $devices
+     * @return array<int, array{client_id:int,device_uuid:string}>
+     */
+    private function deduplicateDevices(array $devices): array
+    {
+        $result = [];
+        $seen = [];
+        foreach ($devices as $device) {
+            $clientId = (int) ($device['client_id'] ?? 0);
+            $deviceUuid = trim((string) ($device['device_uuid'] ?? $device['device_id'] ?? ''));
+            if ($clientId <= 0 || $deviceUuid === '' || strlen($deviceUuid) > 191) {
+                continue;
+            }
+            $key = $clientId . '|' . $deviceUuid;
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $result[] = ['client_id' => $clientId, 'device_uuid' => $deviceUuid];
+        }
+        return $result;
     }
 }

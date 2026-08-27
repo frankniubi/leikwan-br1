@@ -207,8 +207,9 @@ namespace {
             $this->users[$userId]['status'] = $status;
         }
 
-        public function revokeApplicationSessions(int $userId, string $revokedAt): void
+        public function revokeApplicationSessions(int $userId, string $revokedAt): int
         {
+            return 0;
         }
 
         public function upsertTemporaryDeviceBlock(int $clientId, string $deviceUuid, string $until, string $origin, string $releasePolicy): void
