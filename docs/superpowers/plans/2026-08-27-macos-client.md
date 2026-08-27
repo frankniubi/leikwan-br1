@@ -881,7 +881,7 @@ For the matrix target:
 ```bash
 cargo build --locked --release --target "$RUST_TARGET" -p leikwan-bond -p leikwan-ingress -p leikwan-uot
 GOOS=darwin GOARCH="$GO_ARCH" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$STAGE/bin/ultra-client" ./tools/ultra-client
-git -C "$WSTUNNEL_SRC" checkout --detach 15372e44f2606f8e2e22a8a90d2e01cc60889836
+git -C "$WSTUNNEL_SRC" checkout --detach 9d0ec3f27556e3132536401d1b2e4e1aa30c277c
 cargo build --locked --release --target "$RUST_TARGET" --manifest-path "$WSTUNNEL_SRC/Cargo.toml"
 ```
 
