@@ -523,3 +523,56 @@ jobs:
           path: ${{ runner.temp }}/macos-client-combined-metadata.json
           if-no-files-found: error
           retention-days: 14
+
+  report-status:
+    name: Export private build status
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    needs:
+      - build-and-test
+      - verify-artifacts
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source for authenticated status export
+        uses: actions/checkout@v4
+
+      - name: Push status to a temporary private branch
+        shell: bash
+        env:
+          BUILD_RESULT: ${{ needs.build-and-test.result }}
+          VERIFY_RESULT: ${{ needs.verify-artifacts.result }}
+        run: |
+          set -euo pipefail
+          branch="status/macos-test-${GITHUB_SHA:0:12}"
+          status_root="$RUNNER_TEMP/macos-client-status"
+          mkdir -p "$status_root"
+          python3 - "$status_root/status.json" "$GITHUB_SHA" "$GITHUB_RUN_ID" \
+            "$GITHUB_RUN_ATTEMPT" "$BUILD_RESULT" "$VERIFY_RESULT" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          output, source_commit, run_id, attempt, build_result, verify_result = sys.argv[1:]
+          payload = {
+              "source_commit": source_commit,
+              "run_id": int(run_id),
+              "run_attempt": int(attempt),
+              "build_result": build_result,
+              "verify_result": verify_result,
+          }
+          pathlib.Path(output).write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --orphan "$branch"
+          git rm -rf .
+          mkdir -p macos-client-status
+          cp "$status_root/status.json" macos-client-status/status.json
+          git add macos-client-status/status.json
+          git commit -m "ci(mac): record test package status ${GITHUB_SHA:0:12}"
+          git push --force origin "HEAD:refs/heads/$branch"
