@@ -280,6 +280,46 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('artifacts/windows/leikwan-bridge-setup.exe', 'application/octet-stream', $request);
     }
 
+    public function macosClientArm64Dmg(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/macos/leikwan-bridge-arm64.dmg',
+            'application/x-apple-diskimage',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="leikwan-bridge-arm64.dmg"']
+        );
+    }
+
+    public function macosClientX64Dmg(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/macos/leikwan-bridge-x64.dmg',
+            'application/x-apple-diskimage',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="leikwan-bridge-x64.dmg"']
+        );
+    }
+
+    public function macosClientArm64Update(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/macos/leikwan-bridge-update-arm64.zip',
+            'application/zip',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="leikwan-bridge-update-arm64.zip"']
+        );
+    }
+
+    public function macosClientX64Update(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/macos/leikwan-bridge-update-x64.zip',
+            'application/zip',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="leikwan-bridge-update-x64.zip"']
+        );
+    }
+
     public function gostBinary(Request $request, array $params): Response
     {
         return $this->serveRepoFile('artifacts/gost/gost_linux_amd64', 'application/octet-stream', $request);
@@ -382,6 +422,10 @@ final class ArtifactController extends BaseController
             'tcp_accel_installer',
             'android_client_apk',
             'windows_client_app',
+            'macos_client_app_arm64',
+            'macos_client_app_x64',
+            'macos_client_update_arm64',
+            'macos_client_update_x64',
             'legacy_client',
             'wstunnel_linux_amd64',
             'wstunnel_windows_amd64',

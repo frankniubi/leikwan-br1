@@ -339,6 +339,42 @@
   "size_bytes": 7852,
   "version": "2026.05.29.1"
  },
+ "macos_client_app_arm64": {
+  "architecture": "arm64",
+  "artifact_url": "/artifacts/macos/leikwan-bridge-arm64.dmg",
+  "format": "dmg",
+  "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
+  "sha256": "e7116cb36c4d3a002b2e04a88dac911f3dac0dbdf202c411fbf8e9be3ea68504",
+  "size_bytes": 74765590,
+  "version": "1.0.1"
+ },
+ "macos_client_app_x64": {
+  "architecture": "x86_64",
+  "artifact_url": "/artifacts/macos/leikwan-bridge-x64.dmg",
+  "format": "dmg",
+  "path": "artifacts/macos/leikwan-bridge-x64.dmg",
+  "sha256": "b4d6e1faa4138b74f3e351bfe452614e1c23229c66d58c8fc248dbdd7cc47dc0",
+  "size_bytes": 78119330,
+  "version": "1.0.1"
+ },
+ "macos_client_update_arm64": {
+  "architecture": "arm64",
+  "artifact_url": "/artifacts/macos/leikwan-bridge-update-arm64.zip",
+  "format": "zip",
+  "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
+  "sha256": "7936b26e79b26485f1785ab6631a0c41563c75b00f2f42a1ba5c796f5c07c402",
+  "size_bytes": 65610588,
+  "version": "1.0.1"
+ },
+ "macos_client_update_x64": {
+  "architecture": "x86_64",
+  "artifact_url": "/artifacts/macos/leikwan-bridge-update-x64.zip",
+  "format": "zip",
+  "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
+  "sha256": "47ff923db8b2b095f650d53dfe34d369e807a7552652c49a63b7205f445f4db9",
+  "size_bytes": 68722762,
+  "version": "1.0.1"
+ },
  "windows_client_app": {
   "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
   "path": "artifacts/windows/leikwan-bridge-setup.exe",
