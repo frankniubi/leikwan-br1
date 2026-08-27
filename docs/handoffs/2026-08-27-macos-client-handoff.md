@@ -2,17 +2,18 @@
 
 ## Delivery status
 
-The macOS client implementation is complete on branch `codex/macos-client`,
-based on `master` commit `56ad059b36addd2e92ac221ce9cfde51e40fe260`.
-Source, tests, packaging, and native CI gates are committed locally.
+The macOS client implementation and native packages are complete on branch
+`codex/macos-client`. The source is based on `master` commit
+`56ad059b36addd2e92ac221ce9cfde51e40fe260`; the final source/package scripts
+are at commit `ac87181ca7689746c0bd352d53ba6c9428d1aef6`.
 
-Native delivery is not yet proven. This Windows workstation cannot create or
-run a genuine macOS app bundle or DMG, the branch has not been pushed, and the
-macOS GitHub Actions workflow has not run. Therefore no DMG is represented as
-user-ready, and no artifact SHA-256 or byte size is recorded here.
+Apple Silicon and Intel packages were built on a real macOS 26.6.2 arm64 host.
+The Intel package was cross-compiled and executed through Rosetta 2. The
+artifacts are copied to `artifacts/macos/` locally and their metadata is merged
+into `artifacts/versions.json`.
 
-No production panel deployment, artifact publication, branch push, migration,
-or live infrastructure change was performed.
+Production panel publication is the remaining release operation. No panel
+database migration or application overlay has been performed in this handoff.
 
 ## User contract
 
@@ -66,17 +67,17 @@ The unsigned build will show normal macOS Gatekeeper confirmation. Signing and
 notarization are intentionally outside this release because no Apple Developer
 identity is available.
 
-## Expected native artifacts
+## Native artifacts
 
-| Architecture | Installer | Update archive | Metadata | Status |
-| --- | --- | --- | --- | --- |
-| Apple Silicon | `leikwan-bridge-arm64.dmg` | `leikwan-bridge-update-arm64.zip` | `leikwan-bridge-arm64-metadata.json` | pending native CI |
-| Intel | `leikwan-bridge-x64.dmg` | `leikwan-bridge-update-x64.zip` | `leikwan-bridge-x64-metadata.json` | pending native CI |
+| Architecture | Installer | Bytes / SHA-256 | Update archive | Bytes / SHA-256 | Status |
+| --- | --- | --- | --- | --- | --- |
+| Apple Silicon | `leikwan-bridge-arm64.dmg` | 64,828,949 / `b031a06d9b8d2d9fc66abf563eea452bd4079a9a96a6e195a001d4804bb88946` | `leikwan-bridge-update-arm64.zip` | 56,662,846 / `8c5307ec8d2dc93a9210a5a77abafc8dd530976bf2cbf86d3ff8048f213c1f04` | native build and leak gate passed |
+| Intel | `leikwan-bridge-x64.dmg` | 67,419,754 / `7a65557d768c1410af589d827a95cbadc4df9ff3e481e89c4cf7ff877a898be5` | `leikwan-bridge-update-x64.zip` | 59,262,696 / `10e5e9d6ca1019338f8b6ef24d9dfeb7bf46eca33415feeb3465febece304cd9` | Rosetta native execution and leak gate passed |
 
-The workflow uploads eight real-window screenshots per architecture: login,
-dashboard, forwards, and settings at `1440x900` and `1024x768`. A final job
-rejects missing/empty artifacts, metadata mismatches, duplicate cross-arch
-package/helper hashes, incomplete screenshots, and high-risk secret literals.
+Metadata files:
+
+- `leikwan-bridge-arm64-metadata.json` SHA-256 `7861c588cd7417bf4fb8ad199f55a25af0eb566f45d6404442650aa667ba01d3`, 2,092 bytes.
+- `leikwan-bridge-x64-metadata.json` SHA-256 `2c69b946df9ce4090babf01fad7cfbae38135fa4417262bfe63ba289e947f571`, 2,085 bytes.
 
 ## Commits
 
@@ -91,51 +92,51 @@ package/helper hashes, incomplete screenshots, and high-risk secret literals.
 9. `6611d5d` - panel artifact routes and tenant download surface
 10. `e02d619` - dual-architecture native packaging
 11. `f47430e` - native CI, screenshots, lock files, and Ultra canary leak gate
+12. `57c1ee6` - portable native build gates
+13. `5da06a8` - pinned peeled wstunnel commit
+14. `6c6b9b1` - locked dual-RID restore
+15. `a048ea8` - package the UOT client binary
+16. `ac87181` - short Ultra fixture socket path
 
 ## Verification evidence
 
-Passed locally on 2026-08-27:
+Passed on 2026-08-27:
 
-- `dotnet test LeikwanBridge.Desktop/LeikwanBridge.Desktop.sln -c Release`:
-  246 passed, 0 failed (`Core` 180, Windows `App` 33, Mac 33).
-- `go test ./... -count=1` in `tools/ultra-client`: passed.
-- `cargo test -p leikwan-bond -p leikwan-ingress -p leikwan-uot --locked`:
-  176 passed, 0 failed. Existing compiler warnings remain non-fatal.
-- Five focused PHP contracts: all returned `ok`. The workstation PHP emitted
-  its existing invalid `date.timezone=UTC+8` startup warning.
-- `scripts/tests/test-macos-client-packaging.sh`: passed under WSL.
-- `scripts/test-macos-ultra-leaks.sh --fixture`: passed under WSL.
-- Both architecture build dry-runs and shell syntax checks: passed.
-- Workflow YAML parse and all 14 embedded shell blocks: passed local syntax
-  validation.
-- Changed-file secret scan: 123 changed paths scanned with no private-key,
-  long token, bearer-token, or project credential-file match.
-- Exact unsupported-mode notice was found in production policy and regression
-  tests.
+- .NET solution Release tests: 246 passed, 0 failed (`Core` 180, Windows App
+  33, Mac 33).
+- Go Ultra tests: passed with Go 1.27.
+- Locked Rust tests: 176 passed, 0 failed.
+- Focused PHP contracts, packaging fixture, and WSL Ultra fixture: passed.
+- Native arm64 build, bundle/DMG/update ZIP architecture checks, DMG mount,
+  and arm64 dynamic Ultra canary leak gate: passed.
+- Native x86_64 build, bundle/DMG/update ZIP architecture checks, DMG mount,
+  Rosetta execution, and x86_64 dynamic Ultra canary leak gate: passed.
+- The dynamic canary checked argv/environment, runtime state, logs, update
+  cache, update ZIP, mounted DMG, crash reports, and post-stop cleanup.
+- Local metadata hash/size checks passed for all four packages; the four
+  entries are present in `artifacts/versions.json`.
+- Changed-file secret scan and workflow/shell syntax validation passed.
 
-Not proven locally:
+Not completed on this host:
 
-- native Mach-O compilation for either architecture;
-- native Avalonia launch, tray, Keychain, LaunchAgent, or updater execution;
-- DMG creation/mount, update ZIP launch, native UI screenshot inspection, and
-  dynamic process/disk/crash canary scan;
-- GitHub `actionlint` (the local terminal could not reach the Go module proxy);
-- final artifact SHA-256, byte sizes, and user acceptance on real Mac hardware.
+- The native screenshot helper could launch the app through LaunchServices,
+  but the SSH-launched capture process could not see the GUI window. macOS
+  Screen Recording/GUI-session permission is required for the eight screenshot
+  files in CI; no screenshot is represented as passed here.
+- GitHub Actions execution and `actionlint` remain CI-side checks.
 
-These are fail-closed gates in `.github/workflows/macos-client.yml`; both matrix
-jobs and the cross-architecture verification job must pass before the DMGs are
-described or published as user-ready.
+## Publication and rollback
 
-## Next operation
+The panel already defines these artifact routes:
 
-Push `codex/macos-client` to a non-production remote branch and run the `macOS
-client` workflow. Download both architecture artifacts, inspect the uploaded
-screenshots, verify the combined metadata, then perform one Apple Silicon and
-one Intel user smoke test. Publication requires a separate explicit action.
+- `/artifacts/macos/leikwan-bridge-arm64.dmg`
+- `/artifacts/macos/leikwan-bridge-x64.dmg`
+- `/artifacts/macos/leikwan-bridge-update-arm64.zip`
+- `/artifacts/macos/leikwan-bridge-update-x64.zip`
 
-## Rollback
-
-No live rollback is needed because nothing was deployed. To abandon the source
-work, delete the local topic branch/worktree. If these commits are later merged,
-revert the commits above in reverse order. No database migration or server-only
-state needs restoration.
+Before publication, create an application backup excluding `.env`, a validated
+MySQL backup, and a release archive. Preserve server-only `.env` and state,
+require exact remote SHA/size equality, run migration status checks, then run
+HTTP canaries for the manifest and all four artifact routes. Roll back by
+restoring the recorded application backup and retaining the prior artifact
+files if any canary fails.
