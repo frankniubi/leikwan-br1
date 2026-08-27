@@ -31,6 +31,13 @@
     <string name="login_error_switch_failed">切换失败</string>
     <string name="login_error_select_client">请选择客户端后继续</string>
     <string name="login_error_credentials_required">请输入有效的 Client ID 和 Agent Token</string>
+    <string name="enrollment_subtitle">注册此受信任设备</string>
+    <string name="enrollment_method_token">Agent Token</string>
+    <string name="enrollment_method_code">一次性代码</string>
+    <string name="enrollment_code">一次性代码</string>
+    <string name="enrollment_error_code_required">请输入有效的 Client ID 和一次性代码</string>
+    <string name="blocked_device_title">不支持的设备</string>
+    <string name="blocked_device_message">此设备无法访问 LeiKwan Host。</string>
     <string name="proxies_title">代理</string>
     <string name="proxies_connection_mode">方式</string>
     <string name="proxy_mode_services">雷神</string>

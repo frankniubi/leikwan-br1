@@ -1,8 +1,9 @@
 package com.leikwan.bridge.ui.routing
 
-import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithTag
 import com.leikwan.bridge.routing.RoutingRule
 import com.leikwan.bridge.routing.RoutingRuleKind
 import com.leikwan.bridge.routing.UserTrafficOutcome
@@ -57,9 +58,9 @@ class RoutingScreenTest {
             )
         }
 
-        composeRule.onNodeWithText("Add country rule").assertIsDisplayed()
-        composeRule.onNodeWithText("Add category rule").assertIsDisplayed()
-        composeRule.onNodeWithText("CN").assertIsDisplayed()
-        composeRule.onNodeWithText("video").assertIsDisplayed()
+        composeRule.onNode(hasText("Add country rule") and hasClickAction()).assertExists()
+        composeRule.onNode(hasText("Add category rule") and hasClickAction()).assertExists()
+        composeRule.onNodeWithTag("routing-rule-country-cn").assertExists()
+        composeRule.onNodeWithTag("routing-rule-category-video").assertExists()
     }
 }
