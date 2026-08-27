@@ -305,6 +305,9 @@ namespace {
         'observations' => [observation('SN', '1.2.3.4')],
     ]));
     assertSame('SN', $bound['main_province_code'] ?? null, 'first Mainland report binds province');
+    $nextCheck = strtotime((string) ($bound['next_location_check_at'] ?? ''));
+    assertTrue($nextCheck !== false && $nextCheck >= strtotime('2026-08-28 12:30:00 UTC') && $nextCheck <= strtotime('2026-08-28 12:35:00 UTC'), 'report returns 30 minute plus jitter schedule');
+    assertSame('2026-08-28 12:00:00', end($store->observations)['received_at'] ?? null, 'Panel persists observation receive time');
     assertSame('bound', $store->profiles[7]['state'] ?? null, 'profile bound state');
     expectApi('location_challenge_invalid', 403, fn() => $service->recordLocationReport($client, requestFor([
         'challenge_token' => $challenge['token'],
@@ -349,7 +352,7 @@ namespace {
         'reason_code' => 'test',
     ];
     $blacklistChallenge = $service->issueLocationChallenge($client, 'device-a', 'blacklist-1', 'macos');
-    $blacklist = expectApi('access_denied_blacklist', 403, fn() => $service->recordLocationReport($client, requestFor([
+    $blacklist = expectApi('access_blacklisted', 403, fn() => $service->recordLocationReport($client, requestFor([
         'challenge_token' => $blacklistChallenge['token'],
         'attempt_id' => 'blacklist-1',
         'observations' => [observation('GD')],
@@ -371,7 +374,7 @@ namespace {
         );
         assertTrue(($error->details()['violation_count'] ?? 0) >= 1, 'violation response includes rolling count');
         if ($attempt === 'bad-1') {
-            expectApi('location_challenge_invalid', 403, fn() => $service->recordLocationReport($client, requestFor([
+            expectApi('device_temporarily_banned', 423, fn() => $service->recordLocationReport($client, requestFor([
                 'challenge_token' => $badChallenge['token'],
                 'attempt_id' => $attempt,
                 'observations' => [observation('GD')],
@@ -384,6 +387,16 @@ namespace {
 
     expectApi('account_banned', 403, fn() => $service->issueLocationChallenge($client, 'device-c', 'retry-after-ban', 'ios'));
     assertSame(3, count($store->geoViolationEvents(7, '2026-08-27 12:00:00')), 'retry does not increment violation count');
+
+    $store->users[8] = row(['id' => 8, 'status' => 'active']);
+    $store->geoLockUsers[8] = false;
+    $legacyService = new AccessPolicyService(new Database(), null, new \DateTimeImmutable('2026-08-28 12:00:00 UTC'), $store);
+    $legacyRequest = new Request('GET', '/api/client/configs/pull', [], [], [
+        'x-device-id' => 'legacy-linux-device',
+        'x-device-platform' => 'linux-amd64',
+    ], '', '203.0.113.20');
+    $legacy = $legacyService->authorizeClientRequest(['id' => 22, 'owner_user_id' => 8], $legacyRequest, 'pull');
+    assertSame('allow', $legacy['decision'] ?? null, 'default-off legacy Linux client remains compatible');
 
     echo "ok\n";
 }

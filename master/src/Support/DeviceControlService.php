@@ -607,7 +607,7 @@ final class DeviceControlService
             ];
             throw new ApiException('device_kicked', 409, $details);
         }
-        throw new ApiException('device_temporarily_banned', 403, $details);
+        throw new ApiException('device_temporarily_banned', 423, $details);
     }
 
     /** @param array<string, mixed> $control */
