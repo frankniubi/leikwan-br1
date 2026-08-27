@@ -106,6 +106,7 @@ Metadata files:
 20. `a27f56d` - migrate sniff to current route action
 21. `1e65221` - gVisor-enabled sing-box and modern DNS server formats
 22. `6d16344` - connection status styling and selector-based node editor handoff
+23. `1861219` - validate both proxy and VPN configs with native sing-box
 
 ## Verification evidence
 
@@ -113,8 +114,9 @@ Passed on 2026-08-27 for the current revision:
 
 - .NET Core Release tests: 181 passed, 0 failed.
 - macOS Release tests: 44 passed, 0 failed.
-- Real arm64 and x86_64 `sing-box check` passed for Shadowsocks, VLESS, and
-  WireGuard profiles; both helpers include `with_gvisor` for WireGuard.
+- Real arm64 and x86_64 `sing-box check` passed for all six generated
+  Shadowsocks, VLESS, and WireGuard proxy/VPN profiles; both helpers include
+  `with_gvisor` for WireGuard.
 - Both architecture builds produced six correctly typed Mach-O helpers,
   self-contained app bundles, DMGs, and update ZIPs.
 - Go Ultra tests: passed with Go 1.27.
