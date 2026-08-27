@@ -138,6 +138,9 @@ final class Bootstrap
         );
         $ultraInventory = new UltraInventoryService($this->config, $this->db);
         $ultraClientStatus = new UltraClientStatusService($this->config, $this->db);
+        $accessPolicy = isset($this->services['access_policy']) && $this->services['access_policy'] instanceof AccessPolicyService
+            ? $this->services['access_policy']
+            : new AccessPolicyService($this->db);
         $admin = new AdminController(
             $this->config,
             $this->db,
@@ -145,6 +148,7 @@ final class Bootstrap
             $this->leigodOnlyAdminServices(),
             $ultraInventory,
             $ultraClientStatus,
+            $accessPolicy,
         );
         $whmcs = new WhmcsController($this->config, $this->db, $this->provisioning);
         $services = new ServiceController($this->config, $this->db, $this->provisioning);
@@ -160,9 +164,7 @@ final class Bootstrap
             $ultraMaterials,
             $ultraClientStatus,
             $ultraLeases,
-            accessPolicy: isset($this->services['access_policy']) && $this->services['access_policy'] instanceof AccessPolicyService
-                ? $this->services['access_policy']
-                : null,
+            accessPolicy: $accessPolicy,
         );
         $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
@@ -189,6 +191,11 @@ final class Bootstrap
         $this->router->add('POST', '/logout', [$auth, 'logout']);
         $this->router->add('GET', '/admin', [$admin, 'dashboard']);
         $this->router->add('POST', '/admin/republish/all', [$admin, 'republishAllForwards']);
+        $this->router->add('GET', '/admin/access-control', [$admin, 'accessControlPage']);
+        $this->router->add('POST', '/admin/access-control/rules', [$admin, 'saveAccessBlacklistRule']);
+        $this->router->add('POST', '/admin/access-control/rules/{id}/toggle', [$admin, 'toggleAccessBlacklistRule']);
+        $this->router->add('POST', '/admin/access-control/devices/release', [$admin, 'releaseDeviceBlock']);
+        $this->router->add('POST', '/admin/access-control/accounts/release', [$admin, 'releaseAccountBan']);
         $this->router->add('GET', '/admin/leigod-only-rollout', [$admin, 'leigodOnlyRolloutPage']);
         $this->router->add('POST', '/admin/leigod-only-rollout/dry-run', [$admin, 'leigodOnlyActivationDryRun']);
         $this->router->add('POST', '/admin/leigod-only-rollout/activate', [$admin, 'leigodOnlyActivationApply']);
