@@ -420,6 +420,49 @@ public sealed class ConfigPollingServiceTests
     }
 
     [Fact]
+    public async Task SyncOnceAsync_NotModified_ForcesFullPullWhenUltraPolicyProtocolChanges()
+    {
+        using var tempDir = new TempStateDirectory();
+        var legacyPayload = BuildUltraPullResponseJson().Replace(
+            "\"protocol\": \"leikwan-ultra-policy-v2\"",
+            "\"protocol\": \"legacy-ultra\"",
+            StringComparison.Ordinal).Replace(
+            "\"ok\": true,",
+            "\"ok\": true,\n  \"config_revision\": \"rev-ultra\",",
+            StringComparison.Ordinal);
+        using var server = new PullApiServer(legacyPayload, ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+            NotModifiedRevision = "rev-ultra",
+        };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+        Assert.Empty(runtimeManager.AppliedForwardIds);
+        Assert.Equal([42], runtimeManager.StoppedForwardIds);
+
+        server.SetPayload(BuildUltraPullResponseJson().Replace(
+            "\"ok\": true,",
+            "\"ok\": true,\n  \"config_revision\": \"rev-ultra\",",
+            StringComparison.Ordinal));
+        await service.SyncOnceAsync();
+        Assert.Empty(runtimeManager.AppliedForwardIds);
+
+        await service.SyncOnceAsync();
+        Assert.Equal([42], runtimeManager.AppliedForwardIds);
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_HotRefreshesLeaseWhenOnlyUltraPolicyGenerationChanges()
     {
         using var tempDir = new TempStateDirectory();

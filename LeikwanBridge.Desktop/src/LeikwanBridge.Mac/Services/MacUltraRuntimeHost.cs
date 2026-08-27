@@ -6,6 +6,7 @@ using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using LeikwanBridge.Core.Services.Platform;
 using LeikwanBridge.Core.Services.Ultra;
+using Serilog;
 
 namespace LeikwanBridge.Mac.Services;
 
@@ -52,15 +53,25 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         byte[] bootstrap = [];
         try
         {
+            Log.Information("ultra runtime start begin for forward {ForwardId}", forward.ForwardId);
             if (forward.ListenPort is < 1 or > 65535)
                 throw new InvalidOperationException("ultra_listen_port_invalid");
             var ultraBinary = _config.GetEffectiveUltraBin();
             if (!_binaryExists(ultraBinary))
                 throw new InvalidOperationException("ultra_runtime_unavailable");
-            if (_portPreflight?.Invoke(forward.ListenPort).Blocked == true)
-                throw new InvalidOperationException("ultra_port_conflict");
+            if (_portPreflight is not null)
+            {
+                Log.Information("ultra port preflight begin for forward {ForwardId}", forward.ForwardId);
+                var preflight = _portPreflight.Invoke(forward.ListenPort);
+                Log.Information("ultra port preflight complete blocked={Blocked} for forward {ForwardId}",
+                    preflight.Blocked, forward.ForwardId);
+                if (preflight.Blocked)
+                    throw new InvalidOperationException("ultra_port_conflict");
+            }
 
+            Log.Information("ultra previous runtime stop begin for forward {ForwardId}", forward.ForwardId);
             Stop(forward.ForwardId);
+            Log.Information("ultra previous runtime stop complete for forward {ForwardId}", forward.ForwardId);
             var runtimeRoot = Path.Combine(_config.GetEffectiveStateDir(), "runtime");
             Directory.CreateDirectory(runtimeRoot);
             SetPrivateDirectoryMode(runtimeRoot);
@@ -75,6 +86,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             var statusPath = Path.Combine(runtimeDirectory, "status.json");
             var runtimeState = new RuntimeState(runtimeDirectory, socketDirectory, socketPath, statusPath);
             _runtimes[forward.ForwardId] = runtimeState;
+            Log.Information("ultra runtime paths ready for forward {ForwardId}", forward.ForwardId);
 
             bootstrap = JsonSerializer.SerializeToUtf8Bytes(new
             {
@@ -102,11 +114,22 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 bootstrap,
                 logArguments: false,
                 workingDirectory: runtimeDirectory);
-            if (!WaitForSocket(socketPath, TimeSpan.FromSeconds(2)))
+            Log.Information("ultra runtime process started for forward {ForwardId}", forward.ForwardId);
+            var socketReady = WaitForSocket(socketPath, TimeSpan.FromSeconds(2));
+            Log.Information("ultra control socket ready={SocketReady} for forward {ForwardId}", socketReady, forward.ForwardId);
+            if (!socketReady)
                 throw new InvalidOperationException("ultra_control_socket_not_ready");
-            if (!_leaseSender(socketPath, forward.ForwardId, lease, CancellationToken.None).GetAwaiter().GetResult())
+            Log.Information("ultra lease delivery begin for forward {ForwardId}", forward.ForwardId);
+            var leaseDelivered = _leaseSender(socketPath, forward.ForwardId, lease, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(3))
+                .GetAwaiter()
+                .GetResult();
+            Log.Information("ultra lease delivery result={LeaseDelivered} for forward {ForwardId}", leaseDelivered, forward.ForwardId);
+            if (!leaseDelivered)
                 throw new InvalidOperationException("ultra_lease_delivery_failed");
-            if (!WaitForPort(forward.ListenPort, TimeSpan.FromSeconds(6)))
+            var portReady = WaitForPort(forward.ListenPort, TimeSpan.FromSeconds(6));
+            Log.Information("ultra listener ready={PortReady} for forward {ForwardId}", portReady, forward.ForwardId);
+            if (!portReady)
                 throw new InvalidOperationException("ultra_listener_not_ready");
 
             var applied = _stateManager.LoadApplied();
@@ -128,8 +151,10 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             };
             _stateManager.SaveApplied(applied);
         }
-        catch
+        catch (Exception exception)
         {
+            Log.Warning("ultra runtime start failed for forward {ForwardId} ({ErrorType})",
+                forward.ForwardId, exception.GetType().Name);
             Stop(forward.ForwardId);
             throw new InvalidOperationException("ultra_runtime_start_failed");
         }

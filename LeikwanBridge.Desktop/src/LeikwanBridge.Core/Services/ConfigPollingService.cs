@@ -339,7 +339,9 @@ public sealed class ConfigPollingService
         var refreshBefore = DateTimeOffset.UtcNow.AddMinutes(2);
         return _latestForwards.Any(forward =>
             string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
-            && (forward.UltraAccess is null || forward.UltraAccess.ExpiresAt <= refreshBefore));
+            && (forward.UltraAccess is null
+                || !string.Equals(forward.UltraAccess.ProtocolValue, UltraPolicy.Protocol, StringComparison.Ordinal)
+                || forward.UltraAccess.ExpiresAt <= refreshBefore));
     }
 
     private void SavePullState(string status, int forwardsTotal)

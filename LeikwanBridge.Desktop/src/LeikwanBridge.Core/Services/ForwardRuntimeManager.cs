@@ -186,9 +186,16 @@ public class ForwardRuntimeManager : IDisposable
         var policy = forward.UltraAccess;
         var lease = forward.RuntimeLease;
         var now = DateTimeOffset.UtcNow;
-        if (policy is null || lease is null || !policy.IsUsable(forward, now) || !lease.IsUsable(policy, forward, now))
+        var policyFailure = policy?.GetValidationFailure(forward, now);
+        var leaseUsable = policy is not null && lease is not null && lease.IsUsable(policy, forward, now);
+        if (policy is null || lease is null || policyFailure is not null || !leaseUsable)
         {
-            Log.Warning("Ultra policy or lease rejected for forward {ForwardId}; stopping without legacy fallback", forward.ForwardId);
+            Log.Warning(
+                "Ultra policy or lease rejected for forward {ForwardId}; stopping without legacy fallback (policy_reason={PolicyReason}, lease_present={LeasePresent}, lease_usable={LeaseUsable})",
+                forward.ForwardId,
+                policy is null ? "missing" : policyFailure ?? "ok",
+                lease is not null,
+                leaseUsable);
             lease?.Dispose();
             forward.RuntimeLease = null;
             StopForwardForPolicy(forward.ForwardId);
