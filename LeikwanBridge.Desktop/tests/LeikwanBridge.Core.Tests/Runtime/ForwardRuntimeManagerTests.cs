@@ -44,8 +44,10 @@ public sealed class ForwardRuntimeManagerTests
         using var tempDir = new TempStateDirectory();
         var supervisor = new TestProcessSupervisor();
         var stateManager = new StateManager(tempDir.Path);
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
         var manager = new ForwardRuntimeManager(
-            CreateConfig(),
+            config,
             supervisor,
             stateManager,
             binaryExists: _ => true,
@@ -77,8 +79,10 @@ public sealed class ForwardRuntimeManagerTests
         using var tempDir = new TempStateDirectory();
         var supervisor = new TestProcessSupervisor();
         var stateManager = new StateManager(tempDir.Path);
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
         var manager = new ForwardRuntimeManager(
-            CreateConfig(),
+            config,
             supervisor,
             stateManager,
             binaryExists: _ => true,
@@ -97,8 +101,10 @@ public sealed class ForwardRuntimeManagerTests
         using var tempDir = new TempStateDirectory();
         var supervisor = new TestProcessSupervisor();
         var stateManager = new StateManager(tempDir.Path);
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
         var manager = new ForwardRuntimeManager(
-            CreateConfig(),
+            config,
             supervisor,
             stateManager,
             binaryExists: _ => true,
@@ -121,8 +127,10 @@ public sealed class ForwardRuntimeManagerTests
         var stateManager = new StateManager(tempDir.Path);
         var health = new BondEndpointHealthService(stateManager);
         health.ForceQuarantine(26, 184, "bond_leg_probe_failed", null, nowUnixSeconds: 1_000);
+        var config = CreateConfig();
+        config.StateDir = tempDir.Path;
         var manager = new ForwardRuntimeManager(
-            CreateConfig(),
+            config,
             supervisor,
             stateManager,
             binaryExists: _ => true,

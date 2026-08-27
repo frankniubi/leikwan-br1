@@ -5,8 +5,12 @@ using Xunit;
 
 namespace LeikwanBridge.Core.Tests.Runtime;
 
-public sealed class BondRuntimeBuilderTests
+public sealed class BondRuntimeBuilderTests : IDisposable
 {
+    private readonly TempStateDirectory _stateDirectory = new();
+
+    public void Dispose() => _stateDirectory.Dispose();
+
     [Fact]
     public void BondingConfig_DeserializesSidecarFrontendContract()
     {
@@ -224,19 +228,22 @@ public sealed class BondRuntimeBuilderTests
         Assert.Contains("--latency-first", runtime.Arguments);
     }
 
-    private static BondRuntimeBuilder CreateBuilder(AgentConfig? config = null)
+    private BondRuntimeBuilder CreateBuilder(AgentConfig? config = null)
     {
-        return new BondRuntimeBuilder(config ?? new AgentConfig
+        config ??= new AgentConfig
         {
             BondBin = @"C:\leikwan\bin\leikwan-bond.exe",
             BondIngressBin = @"C:\leikwan\bin\leikwan-ingress.exe",
             WstunnelBin = @"C:\leikwan\bin\wstunnel.exe",
-        });
+        };
+        if (string.IsNullOrWhiteSpace(config.StateDir))
+            config.StateDir = _stateDirectory.Path;
+        return new BondRuntimeBuilder(config);
     }
 
-    private static AgentConfig CreateUdpSidepathConfig()
+    private AgentConfig CreateUdpSidepathConfig()
     {
-        return JsonSerializer.Deserialize<AgentConfig>(
+        var config = JsonSerializer.Deserialize<AgentConfig>(
             """
             {
               "state_dir": "C:\\leikwan\\state",
@@ -278,6 +285,8 @@ public sealed class BondRuntimeBuilderTests
               }
             }
             """)!;
+        config.StateDir = _stateDirectory.Path;
+        return config;
     }
 
     private static ForwardConfig CreateSingleForward()
