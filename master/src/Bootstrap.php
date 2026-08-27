@@ -168,7 +168,7 @@ final class Bootstrap
         );
         $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
-        $tenant = new TenantController($this->config, $this->db, $this->provisioning);
+        $tenant = new TenantController($this->config, $this->db, $this->provisioning, $accessPolicy);
         $artifacts = new ArtifactController($this->config);
 
         $this->router->add('GET', '/', [$auth, 'home']);
@@ -278,6 +278,10 @@ final class Bootstrap
         $this->router->add('POST', '/tenant/plans/purchase', [$tenant, 'purchasePackage']);
         $this->router->add('POST', '/tenant/billing/purchase', [$tenant, 'purchasePackage']);
         $this->router->add('GET', '/tenant/forwards', [$tenant, 'dashboard']);
+        $this->router->add('GET', '/tenant/security', [$tenant, 'accessSecurityPage']);
+        $this->router->add('POST', '/tenant/security/main-province', [$tenant, 'changeMainProvince']);
+        $this->router->add('POST', '/tenant/security/kick-all', [$tenant, 'kickAllDevices']);
+        $this->router->add('POST', '/tenant/security/devices/restore', [$tenant, 'restoreDevice']);
         $this->router->add('GET', '/tenant/clients', [$tenant, 'clientsPage']);
         $this->router->add('POST', '/tenant/clients/reset-token', [$tenant, 'resetDefaultClientToken']);
         $this->router->add('POST', '/tenant/clients/kick', [$tenant, 'kickClientDevice']);

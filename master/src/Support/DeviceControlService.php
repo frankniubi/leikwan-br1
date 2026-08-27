@@ -281,7 +281,10 @@ final class DeviceControlService
         if ($clientId <= 0 || !in_array($state, ['active', 'kicked', 'banned'], true)) {
             throw new ApiException('device_control_invalid', 422);
         }
-        $deviceId = $this->requireDeviceId($deviceId);
+        // State controls are distribution-neutral. Attestation/enrollment
+        // keeps the Android-specific validator; policy actions accept any
+        // stable UUID issued by a supported client.
+        $deviceId = $this->requireStableDeviceId($deviceId);
         return $this->db->transaction(function () use ($clientId, $deviceId, $state, $reasonCode, $actorId): array {
             $control = $this->controlFor($clientId, $deviceId);
             if ($control === null) {
@@ -452,6 +455,10 @@ final class DeviceControlService
             $control = $this->controlFor($clientId, $deviceId);
             if ($control === null) {
                 throw new ApiException('device_control_not_found', 404);
+            }
+            if ((string) ($control['state'] ?? '') === 'banned'
+                && ($control['blocked_until'] ?? null) === null) {
+                throw new ApiException('device_block_release_forbidden', 403);
             }
             $activeBlock = $this->activeTemporaryBlock($control);
             if ($activeBlock === null) {
