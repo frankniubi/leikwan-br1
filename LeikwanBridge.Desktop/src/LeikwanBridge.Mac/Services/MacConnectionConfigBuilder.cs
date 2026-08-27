@@ -118,7 +118,6 @@ public static class MacConnectionConfigBuilder
                     ["auto_route"] = true,
                     ["strict_route"] = true,
                     ["stack"] = "mixed",
-                    ["sniff"] = true,
                 },
             };
         }
@@ -132,7 +131,6 @@ public static class MacConnectionConfigBuilder
                 ["listen"] = "127.0.0.1",
                 ["listen_port"] = proxyPort,
                 ["set_system_proxy"] = true,
-                ["sniff"] = true,
             },
         };
     }
@@ -238,6 +236,10 @@ public static class MacConnectionConfigBuilder
     {
         var rules = new JsonArray
         {
+            new JsonObject
+            {
+                ["action"] = "sniff",
+            },
             new JsonObject
             {
                 ["ip_cidr"] = new JsonArray(bypassIps.Select(item => JsonValue.Create(item)).ToArray()),
