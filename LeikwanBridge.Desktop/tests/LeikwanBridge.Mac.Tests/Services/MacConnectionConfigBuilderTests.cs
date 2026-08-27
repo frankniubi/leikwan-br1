@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using LeikwanBridge.Mac.Services;
 using Xunit;
 
@@ -84,5 +85,71 @@ public sealed class MacConnectionConfigBuilderTests
             MacConnectionConfigBuilder.Build(profile, MacConnectionMode.Proxy, []));
 
         Assert.Contains("protocol", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GeneratedProfilesPassTheBundledSingBoxCheckWhenRequested()
+    {
+        var singBox = Environment.GetEnvironmentVariable("LEIKWAN_SINGBOX_PATH");
+        if (string.IsNullOrWhiteSpace(singBox) || !File.Exists(singBox))
+            return;
+
+        var profiles = new[]
+        {
+            new MacConnectionProfile
+            {
+                Protocol = MacConnectionProtocol.Shadowsocks,
+                Server = "198.51.100.7",
+                Port = 443,
+                Method = "aes-256-gcm",
+                Password = "check-only",
+            },
+            new MacConnectionProfile
+            {
+                Protocol = MacConnectionProtocol.Vless,
+                Server = "198.51.100.8",
+                Port = 443,
+                Uuid = "00000000-0000-0000-0000-000000000001",
+                Transport = "ws",
+                Path = "/edge",
+                Tls = true,
+                ServerName = "edge.example.test",
+            },
+            new MacConnectionProfile
+            {
+                Protocol = MacConnectionProtocol.WireGuard,
+                Server = "198.51.100.9",
+                Port = 51820,
+                PrivateKey = "YNXtAzepDqRv9H52osJVDQnznT5AM11eCK3ESpwSt04=",
+                LocalAddress = "10.8.0.2/32",
+                PeerPublicKey = "Z1XXLsKYkYxuiYjJIkRvtIKFepCYHTgON+GwPq7SOV4=",
+            },
+        };
+
+        foreach (var profile in profiles)
+        {
+            var configPath = Path.Combine(Path.GetTempPath(), $"leikwan-check-{Guid.NewGuid():N}.json");
+            try
+            {
+                await File.WriteAllTextAsync(configPath, MacConnectionConfigBuilder.Build(profile, MacConnectionMode.Proxy, []).Json);
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = singBox,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+                startInfo.ArgumentList.Add("check");
+                startInfo.ArgumentList.Add("-c");
+                startInfo.ArgumentList.Add(configPath);
+                using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("sing_box_check_start_failed");
+                await process.WaitForExitAsync();
+                Assert.True(process.ExitCode == 0, $"sing-box rejected {profile.Protocol}: {await process.StandardError.ReadToEndAsync()}");
+            }
+            finally
+            {
+                try { File.Delete(configPath); } catch (IOException) { }
+            }
+        }
     }
 }
