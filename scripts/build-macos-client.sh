@@ -63,6 +63,10 @@ esac
 output_root="${output_root:-$repo_root/.build/macos-client/$rid}"
 wstunnel_src="${wstunnel_src:-$repo_root/.build/tool-sources/wstunnel-v10.5.2}"
 sing_box_src="${sing_box_src:-$repo_root/.build/tool-sources/sing-box-$sing_box_version}"
+mkdir -p "$(dirname "$output_root")" "$(dirname "$wstunnel_src")" "$(dirname "$sing_box_src")"
+output_root="$(cd "$(dirname "$output_root")" && pwd)/$(basename "$output_root")"
+wstunnel_src="$(cd "$(dirname "$wstunnel_src")" && pwd)/$(basename "$wstunnel_src")"
+sing_box_src="$(cd "$(dirname "$sing_box_src")" && pwd)/$(basename "$sing_box_src")"
 publish_dir="$output_root/publish"
 helper_dir="$output_root/helpers"
 helper_hashes="$output_root/helper-hashes.txt"
@@ -99,7 +103,7 @@ if ".build" not in output.parts:
 PY
 
 rm -rf "$output_root"
-mkdir -p "$publish_dir" "$helper_dir" "$(dirname "$wstunnel_src")" "$(dirname "$sing_box_src")"
+mkdir -p "$publish_dir" "$helper_dir"
 
 rustup target add "$rust_target"
 cargo build \
@@ -162,6 +166,9 @@ cp "$repo_root/wstunnel-main/target/$rust_target/release/leikwan-bond" "$helper_
 cp "$repo_root/wstunnel-main/target/$rust_target/release/leikwan-ingress" "$helper_dir/leikwan-ingress"
 cp "$repo_root/wstunnel-main/target/$rust_target/release/leikwan-uot-bond" "$helper_dir/leikwan-uot-bond"
 cp "$wstunnel_src/target/$rust_target/release/wstunnel" "$helper_dir/wstunnel"
+for helper in sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client; do
+  [[ -f "$helper_dir/$helper" ]] || fail "helper build output missing: $helper"
+done
 chmod 0755 "$helper_dir"/* "$publish_dir/LeikwanBridge.Mac"
 
 (
