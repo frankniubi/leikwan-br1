@@ -49,6 +49,7 @@ public sealed class MacUiFixtureController : IDesktopClientController
 
     public Task SelectClientAsync(int clientId, CancellationToken ct = default) => Task.CompletedTask;
     public Task ConnectAsync(CancellationToken ct = default) => Task.CompletedTask;
+    public Task RefreshAsync(CancellationToken ct = default) => Task.CompletedTask;
     public Task DisconnectAsync(CancellationToken ct = default) => Task.CompletedTask;
     public Task StartForwardAsync(int forwardId, CancellationToken ct = default) => Task.CompletedTask;
     public Task StopForwardAsync(int forwardId, CancellationToken ct = default) => Task.CompletedTask;

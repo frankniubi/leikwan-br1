@@ -11,37 +11,61 @@ public interface IMacCommandRunner
 
 public sealed class MacCommandRunner : IMacCommandRunner
 {
-    public async Task<MacCommandResult> RunAsync(ProcessStartInfo startInfo, CancellationToken ct)
+    private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(5);
+
+    public Task<MacCommandResult> RunAsync(ProcessStartInfo startInfo, CancellationToken ct)
+        => Task.Run(() => RunBlocking(startInfo, ct), CancellationToken.None);
+
+    private static MacCommandResult RunBlocking(ProcessStartInfo startInfo, CancellationToken ct)
     {
         startInfo.UseShellExecute = false;
         startInfo.CreateNoWindow = true;
         startInfo.RedirectStandardOutput = true;
         startInfo.RedirectStandardError = true;
         using var process = new Process { StartInfo = startInfo };
-        if (!process.Start())
-            throw new InvalidOperationException("mac_command_start_failed");
-        var outputTask = process.StandardOutput.ReadToEndAsync(ct);
-        var errorTask = process.StandardError.ReadToEndAsync(ct);
         try
         {
-            await process.WaitForExitAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            if (!process.Start())
+                throw new InvalidOperationException("mac_command_start_failed");
+
+            var deadline = Stopwatch.GetTimestamp() + (long)(CommandTimeout.TotalSeconds * Stopwatch.Frequency);
+            while (!process.HasExited)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (Stopwatch.GetTimestamp() >= deadline)
+                    throw new TimeoutException("mac_command_timeout");
+                Thread.Sleep(25);
+            }
+
+            // WaitForExit() is used only after HasExited so fast-exit commands
+            // cannot lose the process exit notification. Reading after exit
+            // also prevents a child pipe from keeping the caller blocked.
+            process.WaitForExit();
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            return new MacCommandResult(
+                process.ExitCode,
+                Bound(output),
+                Bound(error));
         }
-        catch (OperationCanceledException)
+        catch
         {
-            try
-            {
-                if (!process.HasExited)
-                    process.Kill(entireProcessTree: true);
-            }
-            catch
-            {
-            }
+            StopProcess(process);
             throw;
         }
-        return new MacCommandResult(
-            process.ExitCode,
-            Bound(await outputTask),
-            Bound(await errorTask));
+    }
+
+    private static void StopProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+        }
     }
 
     private static string Bound(string value)

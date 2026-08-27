@@ -15,6 +15,7 @@ public interface IDesktopClientController : IAsyncDisposable
     Task LoginWithAgentTokenAsync(string panelUrl, int clientId, string agentToken, CancellationToken ct = default);
     Task SelectClientAsync(int clientId, CancellationToken ct = default);
     Task ConnectAsync(CancellationToken ct = default);
+    Task RefreshAsync(CancellationToken ct = default);
     Task DisconnectAsync(CancellationToken ct = default);
     Task StartForwardAsync(int forwardId, CancellationToken ct = default);
     Task StopForwardAsync(int forwardId, CancellationToken ct = default);
@@ -241,6 +242,50 @@ public sealed class DesktopClientController : IDesktopClientController
                 Forwards = [],
             });
             ForwardsChanged?.Invoke([]);
+        }
+        finally
+        {
+            SetBusy(false);
+            _lifecycleGate.Release();
+        }
+    }
+
+    public async Task RefreshAsync(CancellationToken ct = default)
+    {
+        await _lifecycleGate.WaitAsync(ct);
+        try
+        {
+            var runtime = _runtimeSession ?? throw new InvalidOperationException("client_not_connected");
+            SetBusy(true);
+            await runtime.RefreshAsync(ct);
+            PublishSnapshot(Snapshot with
+            {
+                IsConnected = true,
+                IsBusy = false,
+                ConnectionStatus = "connected",
+                LastErrorCode = string.Empty,
+            });
+        }
+        catch
+        {
+            // A refresh is intentionally non-destructive. Keep the current
+            // runtime usable when the pull itself fails or times out.
+            if (_runtimeSession is not null)
+            {
+                PublishSnapshot(Snapshot with
+                {
+                    IsConnected = true,
+                    IsBusy = false,
+                    ConnectionStatus = "connected",
+                    LastErrorCode = "refresh_failed",
+                });
+                LogRaised?.Invoke("refresh_failed");
+            }
+            else
+            {
+                PublishFailure("refresh_failed");
+            }
+            throw;
         }
         finally
         {

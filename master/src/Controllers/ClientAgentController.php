@@ -215,11 +215,17 @@ final class ClientAgentController extends BaseController
         $linuxProfileRuntime = $snapshot['linux_profile_runtime'];
 
         $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? '')));
+        // Older Mac builds did not consistently send X-Device-Platform. The
+        // dedicated User-Agent remains an authenticated client identity signal
+        // and keeps those builds on the scrubbed Ultra v2 contract.
+        $userAgent = strtolower(trim((string) ($request->header('user-agent') ?? '')));
+        $policyV2 = self::usesUltraPolicyV2($platform)
+            || str_starts_with($userAgent, 'leikwan-mac-gui/');
         $forwards = $this->attachUltraAccessGrants(
             $forwards,
             (int) $client['id'],
             $deviceId,
-            self::usesUltraPolicyV2($platform)
+            $policyV2
         );
 
         $response = $this->json([

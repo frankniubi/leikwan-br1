@@ -136,6 +136,61 @@ public sealed class DesktopClientControllerTests
         await controller.DisposeAsync();
     }
 
+    [Fact]
+    public async Task RefreshAsyncSyncsTheExistingRuntimeWithoutDisconnectingOrRecreatingIt()
+    {
+        var config = SignedInConfig();
+        var runtime = new FakeRuntimeSession
+        {
+            InitialForwards = [Forward(1, "current_mode", "single", 12001)],
+        };
+        var runtimeFactoryCalls = 0;
+        var identity = new ClientPlatformIdentity(
+            "macos-desktop", "device", "Mac", "Leikwan-Mac-GUI", "1.0.0", SupportsMptcp: false);
+        var controller = new DesktopClientController(
+            config,
+            identity,
+            (_, _) => Task.CompletedTask,
+            (_, _) =>
+            {
+                runtimeFactoryCalls++;
+                return runtime;
+            });
+
+        await controller.ConnectAsync();
+        await controller.RefreshAsync();
+
+        Assert.Equal(1, runtimeFactoryCalls);
+        Assert.Equal(0, runtime.StopCalls);
+        Assert.Equal(1, runtime.RefreshCalls);
+        Assert.True(controller.Snapshot.IsConnected);
+        Assert.False(controller.Snapshot.IsBusy);
+        await controller.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RefreshAsyncFailureKeepsConnectedRuntimeAndClearsBusyState()
+    {
+        var config = SignedInConfig();
+        var runtime = new FakeRuntimeSession
+        {
+            InitialForwards = [Forward(1, "current_mode", "single", 12001)],
+            ThrowOnRefresh = true,
+        };
+        var controller = CreateController(config, runtime);
+
+        await controller.ConnectAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => controller.RefreshAsync());
+
+        Assert.True(controller.Snapshot.IsConnected);
+        Assert.False(controller.Snapshot.IsBusy);
+        Assert.Equal("connected", controller.Snapshot.ConnectionStatus);
+        Assert.Equal("refresh_failed", controller.Snapshot.LastErrorCode);
+        Assert.Equal(0, runtime.StopCalls);
+        await controller.DisposeAsync();
+    }
+
     private static DesktopClientController CreateController(
         AgentConfig config,
         FakeRuntimeSession runtime,
@@ -203,6 +258,7 @@ public sealed class DesktopClientControllerTests
         public IReadOnlyList<ForwardConfig> InitialForwards { get; init; } = [];
         public string RejectionNotice { get; init; } = string.Empty;
         public bool BlockStart { get; init; }
+        public bool ThrowOnRefresh { get; init; }
         public IReadOnlyList<ForwardConfig> Forwards => _forwards;
         public List<int> Started { get; } = [];
         public List<int> Stopped { get; } = [];
@@ -211,6 +267,7 @@ public sealed class DesktopClientControllerTests
         public int StopAllCalls { get; private set; }
         public int StopCalls { get; private set; }
         public int DisposeCalls { get; private set; }
+        public int RefreshCalls { get; private set; }
 
         public bool IsForwardRunning(int forwardId) => Started.Contains(forwardId);
 
@@ -227,6 +284,15 @@ public sealed class DesktopClientControllerTests
         public Task StopAsync()
         {
             StopCalls++;
+            return Task.CompletedTask;
+        }
+
+        public Task RefreshAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            RefreshCalls++;
+            if (ThrowOnRefresh)
+                throw new InvalidOperationException("refresh_failed");
             return Task.CompletedTask;
         }
 
