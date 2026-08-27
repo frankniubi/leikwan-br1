@@ -1,11 +1,14 @@
 package com.leikwan.bridge.ui.login
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import com.leikwan.bridge.ui.theme.LeikwanTheme
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -26,5 +29,59 @@ class EnrollmentScreenTest {
         composeRule.onNodeWithText("One-time Code").assertExists()
         composeRule.onNodeWithText("Email").assertDoesNotExist()
         composeRule.onNodeWithText("Panel URL").assertDoesNotExist()
+    }
+
+    @Test
+    fun enrollmentTitleHasReadableContrast() {
+        composeRule.setContent {
+            LeikwanTheme {
+                EnrollmentScreen(onEnrollmentSuccess = {})
+            }
+        }
+
+        val pixels = composeRule
+            .onNodeWithText("LeiKwan Bridge")
+            .captureToImage()
+            .toPixelMap()
+        var darkestPixel = 1f
+
+        for (y in 0 until pixels.height) {
+            for (x in 0 until pixels.width) {
+                val color = pixels[x, y]
+                darkestPixel = minOf(darkestPixel, color.red, color.green, color.blue)
+            }
+        }
+
+        assertTrue(
+            "Enrollment title should be visibly darker than its light background",
+            darkestPixel <= 0.35f,
+        )
+    }
+
+    @Test
+    fun disabledEnrollButtonKeepsReadableLabel() {
+        composeRule.setContent {
+            LeikwanTheme {
+                EnrollmentScreen(onEnrollmentSuccess = {})
+            }
+        }
+
+        val pixels = composeRule
+            .onNodeWithText("Enroll")
+            .captureToImage()
+            .toPixelMap()
+        var darkestPixel = 1f
+
+        for (y in 0 until pixels.height) {
+            for (x in 0 until pixels.width) {
+                val color = pixels[x, y]
+                darkestPixel = minOf(darkestPixel, color.red, color.green, color.blue)
+            }
+        }
+
+        assertTrue(
+            "Disabled enroll label should remain readable",
+            darkestPixel <= 0.5f,
+        )
     }
 }

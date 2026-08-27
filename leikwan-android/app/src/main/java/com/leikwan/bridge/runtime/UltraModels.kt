@@ -8,6 +8,7 @@ import java.security.MessageDigest
 import java.time.Instant
 
 private const val ULTRA_POLICY_PROTOCOL = "leikwan-ultra-policy-v2"
+private const val ULTRA_MAX_SESSION_TICKET_LENGTH = 4096
 private const val ULTRA_MAX_TTL_SECONDS = 300L
 private const val ULTRA_MAX_QUOTA_BYTES = 107_374_182_400L
 private const val ULTRA_MAX_RATE_MBPS = 100_000L
@@ -48,7 +49,7 @@ data class UltraPolicy(
             if (protocol != ULTRA_POLICY_PROTOCOL
                 || forwardId != forward.forwardId
                 || !serviceState.equals("active", ignoreCase = true)
-                || ticket.length !in 1..1024
+                || ticket.length !in 1..ULTRA_MAX_SESSION_TICKET_LENGTH
                 || !generation.isLowerHex64()
                 || !policyTargetDigest.isLowerHex64()
                 || policyTargetDigest != targetDigest(forward.target)

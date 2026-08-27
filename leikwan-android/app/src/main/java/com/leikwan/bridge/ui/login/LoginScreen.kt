@@ -15,9 +15,11 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -63,69 +65,79 @@ fun LoginScreen(
         )
     }
 
-    Box(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
-        contentAlignment = Alignment.Center,
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().widthIn(max = 420.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+        Box(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center,
         ) {
-            Image(
-                painter = painterResource(R.drawable.ic_launcher_foreground),
-                contentDescription = stringResource(R.string.app_name),
-                modifier = Modifier.size(76.dp),
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
-            Text(
-                stringResource(R.string.login_subtitle),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(28.dp))
-
-            OutlinedTextField(
-                value = clientId,
-                onValueChange = { clientId = it.filter(Char::isDigit) },
-                label = { Text(stringResource(R.string.login_client_id)) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            )
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
-                value = agentToken,
-                onValueChange = { agentToken = it },
-                label = { Text(stringResource(R.string.login_agent_token)) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            )
-            Spacer(Modifier.height(18.dp))
-
-            Button(
-                onClick = { viewModel.enroll(clientId, agentToken) },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !state.isLoading && clientId.isNotBlank() && agentToken.isNotBlank(),
+            Column(
+                modifier = Modifier.fillMaxWidth().widthIn(max = 420.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
             ) {
-                if (state.isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                }
-                Text(
-                    if (state.isLoading) {
-                        stringResource(R.string.login_signing_in)
-                    } else {
-                        stringResource(R.string.login_sign_in)
-                    },
+                Image(
+                    painter = painterResource(R.drawable.ic_launcher_foreground),
+                    contentDescription = stringResource(R.string.app_name),
+                    modifier = Modifier.size(76.dp),
                 )
+                Spacer(Modifier.height(8.dp))
+                Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    stringResource(R.string.login_subtitle),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(28.dp))
+
+                OutlinedTextField(
+                    value = clientId,
+                    onValueChange = { clientId = it.filter(Char::isDigit) },
+                    label = { Text(stringResource(R.string.login_client_id)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = agentToken,
+                    onValueChange = { agentToken = it },
+                    label = { Text(stringResource(R.string.login_agent_token)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+                Spacer(Modifier.height(18.dp))
+
+                Button(
+                    onClick = { viewModel.enroll(clientId, agentToken) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.isLoading && clientId.isNotBlank() && agentToken.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(
+                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                ) {
+                    if (state.isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        if (state.isLoading) {
+                            stringResource(R.string.login_signing_in)
+                        } else {
+                            stringResource(R.string.login_sign_in)
+                        },
+                    )
+                }
             }
         }
     }

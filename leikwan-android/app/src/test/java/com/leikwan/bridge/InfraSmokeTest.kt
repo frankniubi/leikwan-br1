@@ -43,6 +43,6 @@ class InfraSmokeTest {
 
     @Test
     fun `production panel origin is compiled into BuildConfig`() {
-        assertEquals("https://v3-mirror.leikwanhost.com", BuildConfig.PANEL_URL)
+        assertEquals("https://v3.leikwanhost.com", BuildConfig.PANEL_URL)
     }
 }

@@ -28,6 +28,13 @@ class UltraModelsTest {
     }
 
     @Test
+    fun `policy v2 accepts panel tickets up to four kilobytes`() {
+        val forward = sampleForward(policyJson(sessionTicket = "t".repeat(2131)))
+
+        assertNotNull(UltraPolicy.from(forward, now))
+    }
+
+    @Test
     fun `policy v2 drops bad target digest expired and malformed generation`() {
         val good = sampleForward(policyJson())
         val badDigest = good.copy(ultraAccess = policyJson(targetDigest = "b".repeat(64)))
@@ -82,6 +89,7 @@ class UltraModelsTest {
     )
 
     private fun policyJson(
+        sessionTicket: String = "ticket-42",
         targetDigest: String = targetDigest("origin.example:443"),
         expiresAt: String = "2026-08-27T00:04:00Z",
         policyGeneration: String = "a".repeat(64),
@@ -90,7 +98,7 @@ class UltraModelsTest {
         {
           "protocol":"leikwan-ultra-policy-v2",
           "forward_id":42,
-          "session_ticket":"ticket-42",
+          "session_ticket":"$sessionTicket",
           "policy_generation":"$policyGeneration",
           "issued_at":"2026-08-27T00:00:00Z",
           "renew_after":"2026-08-27T00:02:00Z",

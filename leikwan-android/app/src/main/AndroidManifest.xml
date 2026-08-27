@@ -49,7 +49,7 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
                     android:scheme="https"
-                    android:host="v3-mirror.leikwanhost.com"
+                    android:host="v3.leikwanhost.com"
                     android:path="/android/enroll" />
             </intent-filter>
         </activity>

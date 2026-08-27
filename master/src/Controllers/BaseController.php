@@ -269,7 +269,15 @@ abstract class BaseController
 
     protected function androidClientApkUrl(): string
     {
-        return $this->artifactBaseUrl() . '/artifacts/leikwan-android-client.apk';
+        $url = $this->artifactBaseUrl() . '/artifacts/leikwan-android-client.apk';
+        $metadata = $this->artifactMetadata('android_client_apk');
+        $version = rawurlencode((string) ($metadata['version'] ?? ''));
+        $sha256 = rawurlencode((string) ($metadata['sha256'] ?? ''));
+        if ($version === '' && $sha256 === '') {
+            return $url;
+        }
+
+        return $url . '?v=' . $version . '&sha256=' . $sha256;
     }
 
     protected function windowsClientAppUrl(): string
