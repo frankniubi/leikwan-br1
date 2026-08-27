@@ -44,6 +44,9 @@ public sealed class MacUiFixtureController : IDesktopClientController
     public Task LoginAsync(string panelUrl, string email, string password, CancellationToken ct = default)
         => Task.CompletedTask;
 
+    public Task LoginWithAgentTokenAsync(string panelUrl, int clientId, string agentToken, CancellationToken ct = default)
+        => Task.CompletedTask;
+
     public Task SelectClientAsync(int clientId, CancellationToken ct = default) => Task.CompletedTask;
     public Task ConnectAsync(CancellationToken ct = default) => Task.CompletedTask;
     public Task DisconnectAsync(CancellationToken ct = default) => Task.CompletedTask;

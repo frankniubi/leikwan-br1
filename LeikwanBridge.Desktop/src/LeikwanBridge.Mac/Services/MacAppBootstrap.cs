@@ -12,6 +12,7 @@ public sealed record MacAppServices(
     MacAgentConfigStore ConfigStore,
     MacAutostartService Autostart,
     DesktopClientController Controller,
+    MacConnectionService Connections,
     MacAppUpdateService Updater);
 
 public static class MacAppBootstrap
@@ -34,6 +35,10 @@ public static class MacAppBootstrap
             identity,
             configStore.SaveAsync,
             (currentConfig, currentIdentity) => CreateRuntimeSession(paths, currentConfig, currentIdentity));
+        var connections = new MacConnectionService(
+            paths,
+            new MacConnectionProfileStore(secrets));
+        await connections.InitializeAsync(ct);
         var architecture = RuntimeInformation.ProcessArchitecture switch
         {
             Architecture.Arm64 => "arm64",
@@ -44,7 +49,7 @@ public static class MacAppBootstrap
             paths.Root.TrimEnd('/', '\\') + "/updates",
             paths.BundleDirectory,
             architecture);
-        return new MacAppServices(config, configStore, autostart, controller, updater);
+        return new MacAppServices(config, configStore, autostart, controller, connections, updater);
     }
 
     private static IDesktopRuntimeSession CreateRuntimeSession(

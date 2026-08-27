@@ -1,0 +1,9 @@
+LeiKwan Bridge bundles sing-box as an independent helper.
+
+Project: https://github.com/SagerNet/sing-box
+Documentation: https://sing-box.sagernet.org/
+License: GNU General Public License version 3 (GPL-3.0-only)
+
+The bundled helper is not linked into the LeiKwan Bridge application. Source is
+available from the project URL above at the version pinned by the build script.
+The helper may be replaced or removed without modifying this application.

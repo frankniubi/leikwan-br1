@@ -12,6 +12,7 @@ public interface IDesktopClientController : IAsyncDisposable
 
     DesktopClientSnapshot Snapshot { get; }
     Task LoginAsync(string panelUrl, string email, string password, CancellationToken ct = default);
+    Task LoginWithAgentTokenAsync(string panelUrl, int clientId, string agentToken, CancellationToken ct = default);
     Task SelectClientAsync(int clientId, CancellationToken ct = default);
     Task ConnectAsync(CancellationToken ct = default);
     Task DisconnectAsync(CancellationToken ct = default);
@@ -29,6 +30,7 @@ public sealed class DesktopClientController : IDesktopClientController
     private readonly Func<AgentConfig, CancellationToken, Task> _saveConfig;
     private readonly Func<string, string, string, CancellationToken, Task<DesktopLoginResponse>> _login;
     private readonly Func<string, string, int, CancellationToken, Task<ClientSelectionResponse>> _selectClient;
+    private readonly Func<string, string, int, CancellationToken, Task<PullResponse>> _agentTokenPull;
     private readonly Func<AgentConfig, ClientPlatformIdentity, IDesktopRuntimeSession> _runtimeFactory;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly object _snapshotLock = new();
@@ -41,7 +43,8 @@ public sealed class DesktopClientController : IDesktopClientController
         Func<AgentConfig, CancellationToken, Task> saveConfig,
         Func<AgentConfig, ClientPlatformIdentity, IDesktopRuntimeSession> runtimeFactory,
         Func<string, string, string, CancellationToken, Task<DesktopLoginResponse>>? login = null,
-        Func<string, string, int, CancellationToken, Task<ClientSelectionResponse>>? selectClient = null)
+        Func<string, string, int, CancellationToken, Task<ClientSelectionResponse>>? selectClient = null,
+        Func<string, string, int, CancellationToken, Task<PullResponse>>? agentTokenPull = null)
     {
         _config = config;
         _identity = identity;
@@ -49,6 +52,7 @@ public sealed class DesktopClientController : IDesktopClientController
         _runtimeFactory = runtimeFactory;
         _login = login ?? LoginWithMasterAsync;
         _selectClient = selectClient ?? SelectWithMasterAsync;
+        _agentTokenPull = agentTokenPull ?? PullWithMasterAsync;
         _snapshot = SnapshotFromConfig(config);
     }
 
@@ -66,6 +70,9 @@ public sealed class DesktopClientController : IDesktopClientController
                 return _snapshot;
         }
     }
+
+    public IReadOnlyList<ForwardConfig> RuntimeForwards
+        => _runtimeSession?.Forwards ?? [];
 
     public async Task LoginAsync(string panelUrl, string email, string password, CancellationToken ct = default)
     {
@@ -96,6 +103,61 @@ public sealed class DesktopClientController : IDesktopClientController
         catch
         {
             PublishFailure("login_failed");
+            throw;
+        }
+        finally
+        {
+            SetBusy(false);
+            _lifecycleGate.Release();
+        }
+    }
+
+    public async Task LoginWithAgentTokenAsync(
+        string panelUrl,
+        int clientId,
+        string agentToken,
+        CancellationToken ct = default)
+    {
+        await _lifecycleGate.WaitAsync(ct);
+        try
+        {
+            SetBusy(true);
+            var normalizedPanel = NormalizePanelUrl(panelUrl);
+            if (clientId <= 0 || string.IsNullOrWhiteSpace(agentToken))
+                throw new InvalidOperationException("agent_token_login_invalid");
+
+            var normalizedToken = agentToken.Trim();
+            var response = await _agentTokenPull(normalizedPanel, normalizedToken, clientId, ct);
+            if (!response.Ok)
+                throw new InvalidOperationException("agent_token_login_failed");
+
+            var returnedClient = response.Client;
+            if (returnedClient is not null && returnedClient.Id > 0 && returnedClient.Id != clientId)
+                throw new InvalidOperationException("agent_token_client_mismatch");
+
+            _config.MasterUrl = normalizedPanel;
+            _config.AgentToken = normalizedToken;
+            _config.ClientId = clientId;
+            _config.ActiveClientId = returnedClient?.Id > 0 ? returnedClient.Id : clientId;
+            _config.ActiveClientName = returnedClient?.Name?.Trim() is { Length: > 0 } name
+                ? name
+                : $"Client {clientId}";
+            _config.DesktopSessionToken = string.Empty;
+            _config.SignedInUserId = 0;
+            _config.SignedInUsername = string.Empty;
+            _config.SignedInEmail = string.Empty;
+            _config.AvailableClients = [];
+            await _saveConfig(_config, ct);
+            PublishSnapshot(SnapshotFromConfig(_config) with
+            {
+                IsBusy = false,
+                RequiresClientSelection = false,
+                LastErrorCode = string.Empty,
+            });
+        }
+        catch
+        {
+            PublishFailure("agent_token_login_failed");
             throw;
         }
         finally
@@ -323,10 +385,12 @@ public sealed class DesktopClientController : IDesktopClientController
 
     private DesktopClientSnapshot SnapshotFromConfig(AgentConfig config)
     {
+        var hasDesktopSession = !string.IsNullOrWhiteSpace(config.DesktopSessionToken);
+        var hasAgentToken = !string.IsNullOrWhiteSpace(config.AgentToken) && config.ActiveClientId > 0;
         return new DesktopClientSnapshot
         {
-            IsSignedIn = !string.IsNullOrWhiteSpace(config.DesktopSessionToken),
-            RequiresClientSelection = !string.IsNullOrWhiteSpace(config.DesktopSessionToken) && config.ActiveClientId <= 0,
+            IsSignedIn = hasDesktopSession || hasAgentToken,
+            RequiresClientSelection = hasDesktopSession && config.ActiveClientId <= 0,
             IsConnected = false,
             PanelUrl = config.MasterUrl,
             SignedInUsername = config.SignedInUsername,
@@ -355,5 +419,28 @@ public sealed class DesktopClientController : IDesktopClientController
     {
         using var api = new MasterApiClient(panelUrl, string.Empty, platformIdentity: _identity);
         return await api.SelectClientAsync(sessionToken, clientId, ct);
+    }
+
+    private async Task<PullResponse> PullWithMasterAsync(
+        string panelUrl,
+        string agentToken,
+        int clientId,
+        CancellationToken ct)
+    {
+        using var api = new MasterApiClient(panelUrl, agentToken, platformIdentity: _identity);
+        var response = await api.PullConfigsAsync(ct: ct);
+        if (response.Client is { Id: > 0 } returned && returned.Id != clientId)
+            throw new InvalidOperationException("agent_token_client_mismatch");
+        return response;
+    }
+
+    private static string NormalizePanelUrl(string panelUrl)
+    {
+        var normalized = panelUrl.Trim().TrimEnd('/');
+        if (!Uri.TryCreate(normalized, UriKind.Absolute, out var uri)
+            || uri.Scheme is not ("http" or "https")
+            || string.IsNullOrWhiteSpace(uri.Host))
+            throw new InvalidOperationException("panel_url_invalid");
+        return normalized;
     }
 }

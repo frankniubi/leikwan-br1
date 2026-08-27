@@ -31,6 +31,7 @@ public sealed class MacPlatformPaths : IClientPlatformPaths
     public string LogDirectory { get; }
     public string BundleDirectory { get; }
     public string BinDirectory { get; }
+    public string SingBoxPath => Join(BinDirectory, "sing-box");
 
     public void EnsureDirectories()
     {

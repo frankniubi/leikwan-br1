@@ -95,6 +95,23 @@ public sealed class MainWindowViewModelTests
         Assert.Equal(1, installCalls);
     }
 
+    [Fact]
+    public async Task ClientIdTokenLoginUsesTheSelectedAuthenticationMode()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+
+        vm.PanelUrl = "https://panel.example.test";
+        vm.SelectedAuthenticationMode = MainWindowViewModel.ClientIdTokenAuthentication;
+        vm.ClientIdText = "27";
+        vm.AgentToken = "agent-token-27";
+        await vm.LoginCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, controller.AgentTokenLoginCalls);
+        Assert.Equal((27, "agent-token-27"), controller.LastAgentTokenLogin);
+        Assert.Empty(vm.AgentToken);
+    }
+
     private sealed class FakeController(DesktopClientSnapshot initial) : IDesktopClientController
     {
         public event Action<DesktopClientSnapshot>? SnapshotChanged;
@@ -105,6 +122,8 @@ public sealed class MainWindowViewModelTests
 
         public DesktopClientSnapshot Snapshot { get; private set; } = initial;
         public int LoginCalls { get; private set; }
+        public int AgentTokenLoginCalls { get; private set; }
+        public (int ClientId, string Token) LastAgentTokenLogin { get; private set; }
         public List<int> SelectedClients { get; } = [];
         public List<int> StartedForwards { get; } = [];
         public List<int> StoppedForwards { get; } = [];
@@ -112,6 +131,13 @@ public sealed class MainWindowViewModelTests
         public Task LoginAsync(string panelUrl, string email, string password, CancellationToken ct = default)
         {
             LoginCalls++;
+            return Task.CompletedTask;
+        }
+
+        public Task LoginWithAgentTokenAsync(string panelUrl, int clientId, string agentToken, CancellationToken ct = default)
+        {
+            AgentTokenLoginCalls++;
+            LastAgentTokenLogin = (clientId, agentToken);
             return Task.CompletedTask;
         }
 

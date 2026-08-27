@@ -21,6 +21,19 @@ public sealed class MacKeychainSecretStoreTests
     }
 
     [Fact]
+    public async Task ConnectionProfilesUseAValidKeychainAccount()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new MacKeychainSecretStore(
+            new FakeKeychainNative(),
+            Path.Combine(temp.Path, "fallback-secrets.json"));
+
+        await store.SetAsync(MacConnectionProfileStore.SecretAccount, "[]", CancellationToken.None);
+
+        Assert.Equal("[]", await store.GetAsync(MacConnectionProfileStore.SecretAccount, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task UnavailableKeychainUsesOnlyThePrivateFallbackFile()
     {
         using var temp = new TemporaryDirectory();

@@ -10,6 +10,7 @@ on:
       - "scripts/**"
       - "tools/ultra-client/**"
       - "wstunnel-main/**"
+      - "docs/third-party/**"
   push:
     branches:
       - master
@@ -21,6 +22,7 @@ on:
       - "scripts/**"
       - "tools/ultra-client/**"
       - "wstunnel-main/**"
+      - "docs/third-party/**"
 
 permissions:
   contents: read
@@ -216,7 +218,7 @@ jobs:
           architecture = sys.argv[3]
           version = sys.argv[4]
           helper_manifest = json.loads((app / "Contents/Resources/helper-manifest.json").read_text(encoding="utf-8"))
-          expected_helpers = {"wstunnel", "leikwan-bond", "leikwan-ingress", "leikwan-uot-bond", "ultra-client"}
+          expected_helpers = {"sing-box", "wstunnel", "leikwan-bond", "leikwan-ingress", "leikwan-uot-bond", "ultra-client"}
           helpers = helper_manifest.get("helpers")
           if helper_manifest.get("architecture") != architecture or not isinstance(helpers, list):
               raise SystemExit("invalid helper manifest header")
@@ -237,6 +239,7 @@ jobs:
           binaries=(
             "$app/Contents/MacOS/LeikwanBridge.Mac"
             "$app/Contents/Resources/bin/wstunnel"
+            "$app/Contents/Resources/bin/sing-box"
             "$app/Contents/Resources/bin/leikwan-bond"
             "$app/Contents/Resources/bin/leikwan-ingress"
             "$app/Contents/Resources/bin/leikwan-uot-bond"

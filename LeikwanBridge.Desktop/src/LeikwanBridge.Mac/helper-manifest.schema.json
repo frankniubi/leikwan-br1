@@ -11,19 +11,19 @@
     },
     "helpers": {
       "type": "array",
-      "minItems": 5,
-      "maxItems": 5,
+      "minItems": 6,
+      "maxItems": 6,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["name", "path", "sha256", "size_bytes"],
         "properties": {
           "name": {
-            "enum": ["wstunnel", "leikwan-bond", "leikwan-ingress", "leikwan-uot-bond", "ultra-client"]
+            "enum": ["sing-box", "wstunnel", "leikwan-bond", "leikwan-ingress", "leikwan-uot-bond", "ultra-client"]
           },
           "path": {
             "type": "string",
-            "pattern": "^bin/(wstunnel|leikwan-bond|leikwan-ingress|leikwan-uot-bond|ultra-client)$"
+            "pattern": "^bin/(sing-box|wstunnel|leikwan-bond|leikwan-ingress|leikwan-uot-bond|ultra-client)$"
           },
           "sha256": {
             "type": "string",
