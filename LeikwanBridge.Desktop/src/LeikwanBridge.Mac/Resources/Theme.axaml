@@ -82,6 +82,13 @@
     <Setter Property="BorderThickness" Value="1" />
     <Setter Property="CornerRadius" Value="6" />
   </Style>
+  <Style Selector="Border.status-pill">
+    <Setter Property="Background" Value="{DynamicResource QuietBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="5" />
+    <Setter Property="Padding" Value="10,6" />
+  </Style>
   <Style Selector="Border.status-dot">
     <Setter Property="Background" Value="#AAB4B1" />
   </Style>
