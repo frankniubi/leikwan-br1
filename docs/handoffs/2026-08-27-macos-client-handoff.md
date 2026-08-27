@@ -3,11 +3,10 @@
 ## Delivery status
 
 The macOS client implementation and native packages are complete on branch
-`codex/macos-client`. The source is based on `master` commit
-`56ad059b36addd2e92ac221ce9cfde51e40fe260`; the final source/package scripts
-are at commit `ac87181ca7689746c0bd352d53ba6c9428d1aef6`.
+`codex/macos-client`. The current source/package revision is commit
+`6d16344fa1c907e88ee678b0aeab2bda2e6a2efb`.
 
-Apple Silicon and Intel packages were built on a real macOS 26.6.2 arm64 host.
+Apple Silicon and Intel packages were built on a real macOS arm64 host.
 The Intel package was cross-compiled and executed through Rosetta 2. The
 artifacts are copied to `artifacts/macos/` locally and their metadata is merged
 into `artifacts/versions.json`.
@@ -33,7 +32,11 @@ The mode of this forward is not supported in MacOS binary. 此转发的模式尚
 The client supports login, owned-client selection, config pull/revision
 handling, forward reconciliation, start/stop, health, heartbeat and usage
 reporting, diagnostics upload, tray operation, LaunchAgent autostart, and
-architecture-aware application updates.
+architecture-aware application updates. The Connections view adds client-id +
+token login, structured Shadowsocks/VLESS/WireGuard node editing, local proxy
+mode, full-device VPN mode, and automatic direct bypasses for panel/forward
+control-plane addresses. Protocol, cipher, transport, connection mode, and
+TLS are selector/toggle controls rather than free-form protocol text.
 
 ## Ultra confidentiality boundary
 
@@ -71,13 +74,13 @@ identity is available.
 
 | Architecture | Installer | Bytes / SHA-256 | Update archive | Bytes / SHA-256 | Status |
 | --- | --- | --- | --- | --- | --- |
-| Apple Silicon | `leikwan-bridge-arm64.dmg` | 64,828,949 / `b031a06d9b8d2d9fc66abf563eea452bd4079a9a96a6e195a001d4804bb88946` | `leikwan-bridge-update-arm64.zip` | 56,662,846 / `8c5307ec8d2dc93a9210a5a77abafc8dd530976bf2cbf86d3ff8048f213c1f04` | native build and leak gate passed |
-| Intel | `leikwan-bridge-x64.dmg` | 67,419,754 / `7a65557d768c1410af589d827a95cbadc4df9ff3e481e89c4cf7ff877a898be5` | `leikwan-bridge-update-x64.zip` | 59,262,696 / `10e5e9d6ca1019338f8b6ef24d9dfeb7bf46eca33415feeb3465febece304cd9` | Rosetta native execution and leak gate passed |
+| Apple Silicon | `leikwan-bridge-arm64.dmg` | 74,767,188 / `5a3ae824a74cc045e4b51457fd54d3340bbefe680bf88b0c0701a55764e475ca` | `leikwan-bridge-update-arm64.zip` | 65,611,325 / `951d120a3a75886a6a539212e5dd1fd5a8f4443935b0051115e0801e98537607` | native build and real SS/VLESS/WireGuard config checks passed |
+| Intel | `leikwan-bridge-x64.dmg` | 77,984,264 / `908c7816b96c2c9ea788839f7efbc60cd206c426deb5f34c3be09b693bc88f36` | `leikwan-bridge-update-x64.zip` | 68,723,493 / `ced3279e3ac7cf911611a1c75444a56118a7b083768306e918e508ae073e943a` | Rosetta execution and real SS/VLESS/WireGuard config checks passed |
 
 Metadata files:
 
-- `leikwan-bridge-arm64-metadata.json` SHA-256 `7861c588cd7417bf4fb8ad199f55a25af0eb566f45d6404442650aa667ba01d3`, 2,092 bytes.
-- `leikwan-bridge-x64-metadata.json` SHA-256 `2c69b946df9ce4090babf01fad7cfbae38135fa4417262bfe63ba289e947f571`, 2,085 bytes.
+- `leikwan-bridge-arm64-metadata.json` SHA-256 `7f5e1d89986fe0410505e749c99f1a1107281e6bd15dc0d7c39688a071c5b0ea`.
+- `leikwan-bridge-x64-metadata.json` SHA-256 `c3888ca3f8ae669f93097174b3dc5931421ab03de7e78229b79e44581a03607d`.
 
 ## Commits
 
@@ -97,13 +100,23 @@ Metadata files:
 14. `6c6b9b1` - locked dual-RID restore
 15. `a048ea8` - package the UOT client binary
 16. `ac87181` - short Ultra fixture socket path
+17. `f7f9752` - client-id + token login and native proxy connections
+18. `46f0fde` - absolute native output paths for reproducible packaging
+19. `f425a4f` - real sing-box config validation tests
+20. `a27f56d` - migrate sniff to current route action
+21. `1e65221` - gVisor-enabled sing-box and modern DNS server formats
+22. `6d16344` - connection status styling and selector-based node editor handoff
 
 ## Verification evidence
 
-Passed on 2026-08-27:
+Passed on 2026-08-27 for the current revision:
 
-- .NET solution Release tests: 246 passed, 0 failed (`Core` 180, Windows App
-  33, Mac 33).
+- .NET Core Release tests: 181 passed, 0 failed.
+- macOS Release tests: 44 passed, 0 failed.
+- Real arm64 and x86_64 `sing-box check` passed for Shadowsocks, VLESS, and
+  WireGuard profiles; both helpers include `with_gvisor` for WireGuard.
+- Both architecture builds produced six correctly typed Mach-O helpers,
+  self-contained app bundles, DMGs, and update ZIPs.
 - Go Ultra tests: passed with Go 1.27.
 - Locked Rust tests: 176 passed, 0 failed.
 - Focused PHP contracts, packaging fixture, and WSL Ultra fixture: passed.
