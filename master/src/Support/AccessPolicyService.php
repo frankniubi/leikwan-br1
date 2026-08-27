@@ -436,10 +436,41 @@ class AccessPolicyService
         return $this->store->adminAccountBans($limit);
     }
 
+    /** @return array<string, mixed>|null */
+    public function tenantProfile(int $userId): ?array
+    {
+        $profile = $this->store->profileForUser($userId);
+        if ($profile === null) {
+            return null;
+        }
+        return [
+            'state' => (string) ($profile['state'] ?? 'unbound'),
+            'main_province_code' => $profile['main_province_code'] ?? null,
+            'previous_province_code' => $profile['previous_province_code'] ?? null,
+            'last_verified_at' => $profile['last_verified_at'] ?? null,
+            'self_change_available_at' => $profile['self_change_available_at'] ?? null,
+            'reset_generation' => (int) ($profile['reset_generation'] ?? 0),
+            'reset_started_at' => $profile['reset_started_at'] ?? null,
+        ];
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function tenantDeviceRows(int $userId): array
+    {
+        return $this->store->tenantDeviceRows($userId);
+    }
+
     /** @return array<string, mixed> */
     public function releaseDeviceBlock(int $clientId, string $deviceUuid, int $actorUserId, bool $isAdmin = true): array
     {
         if (!$isAdmin || $actorUserId <= 0) {
+            throw new ApiException('device_block_release_forbidden', 403);
+        }
+        $control = $this->store->controlFor($clientId, trim($deviceUuid));
+        if ($control === null) {
+            throw new ApiException('device_control_not_found', 404);
+        }
+        if (($control['blocked_until'] ?? null) === null) {
             throw new ApiException('device_block_release_forbidden', 403);
         }
         $row = $this->store->releaseTemporaryDeviceBlock($clientId, trim($deviceUuid), $actorUserId);

@@ -179,6 +179,112 @@ class AccessPolicyStore
         return $devices;
     }
 
+    /**
+     * Return the tenant-safe device view used by the Panel security page.
+     * Session metadata and control metadata are merged by the stable
+     * `(client_id, device_id)` identity, so offline blocked devices remain
+     * visible after their application session has been revoked.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function tenantDeviceRows(int $userId): array
+    {
+        if ($userId <= 0) {
+            return [];
+        }
+
+        $rows = [];
+        $sessions = $this->db->fetchAll(
+            'SELECT c.id AS client_id,
+                    c.name AS client_name,
+                    s.device_id,
+                    s.platform,
+                    s.client_version,
+                    s.os_release,
+                    s.last_ip,
+                    s.last_seen_at
+             FROM client_device_sessions s
+             INNER JOIN clients c ON c.id = s.client_id
+             WHERE c.owner_user_id = :user_id
+             ORDER BY c.id ASC, s.device_id ASC',
+            ['user_id' => $userId]
+        );
+        foreach ($sessions as $row) {
+            $clientId = (int) ($row['client_id'] ?? 0);
+            $deviceId = trim((string) ($row['device_id'] ?? ''));
+            if ($clientId <= 0 || $deviceId === '') {
+                continue;
+            }
+            $rows[$clientId . '|' . $deviceId] = [
+                'client_id' => $clientId,
+                'client_name' => (string) ($row['client_name'] ?? ''),
+                'device_uuid' => $deviceId,
+                'platform' => (string) ($row['platform'] ?? ''),
+                'client_version' => (string) ($row['client_version'] ?? ''),
+                'os_release' => (string) ($row['os_release'] ?? ''),
+                'last_ip' => (string) ($row['last_ip'] ?? ''),
+                'last_seen_at' => $row['last_seen_at'] ?? null,
+                'state' => 'active',
+                'blocked_until' => null,
+                'block_origin' => null,
+                'release_policy' => null,
+                'reason_code' => null,
+            ];
+        }
+
+        $controls = $this->db->fetchAll(
+            'SELECT c.id AS client_id,
+                    c.name AS client_name,
+                    cdc.device_id AS device_uuid,
+                    cdc.state,
+                    cdc.blocked_until,
+                    cdc.block_origin,
+                    cdc.release_policy,
+                    cdc.reason_code,
+                    cdc.last_seen_at,
+                    cdc.updated_at
+             FROM client_device_controls cdc
+             INNER JOIN clients c ON c.id = cdc.client_id
+             WHERE c.owner_user_id = :user_id
+             ORDER BY c.id ASC, cdc.device_id ASC',
+            ['user_id' => $userId]
+        );
+        foreach ($controls as $row) {
+            $clientId = (int) ($row['client_id'] ?? 0);
+            $deviceId = trim((string) ($row['device_uuid'] ?? ''));
+            if ($clientId <= 0 || $deviceId === '') {
+                continue;
+            }
+            $key = $clientId . '|' . $deviceId;
+            $rows[$key] = array_merge($rows[$key] ?? [
+                'client_id' => $clientId,
+                'client_name' => (string) ($row['client_name'] ?? ''),
+                'device_uuid' => $deviceId,
+                'platform' => '',
+                'client_version' => '',
+                'os_release' => '',
+                'last_ip' => '',
+            ], [
+                'state' => (string) ($row['state'] ?? 'active'),
+                'blocked_until' => $row['blocked_until'] ?? null,
+                'block_origin' => $row['block_origin'] ?? null,
+                'release_policy' => $row['release_policy'] ?? null,
+                'reason_code' => $row['reason_code'] ?? null,
+                'last_seen_at' => $row['last_seen_at'] ?? ($rows[$key]['last_seen_at'] ?? null),
+                'updated_at' => $row['updated_at'] ?? null,
+            ]);
+        }
+
+        $result = array_values($rows);
+        usort($result, static function (array $left, array $right): int {
+            $clientCompare = ((int) ($left['client_id'] ?? 0)) <=> ((int) ($right['client_id'] ?? 0));
+            return $clientCompare !== 0
+                ? $clientCompare
+                : strcmp((string) ($left['device_uuid'] ?? ''), (string) ($right['device_uuid'] ?? ''));
+        });
+        return $result;
+    }
+
     /** @return array<string, mixed>|null */
     public function activeResetGeneration(int $userId, bool $forUpdate = false): ?array
     {
