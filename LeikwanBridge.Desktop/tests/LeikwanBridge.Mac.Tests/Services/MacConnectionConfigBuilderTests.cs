@@ -135,27 +135,30 @@ public sealed class MacConnectionConfigBuilderTests
 
         foreach (var profile in profiles)
         {
-            var configPath = Path.Combine(Path.GetTempPath(), $"leikwan-check-{Guid.NewGuid():N}.json");
-            try
+            foreach (var mode in new[] { MacConnectionMode.Proxy, MacConnectionMode.Vpn })
             {
-                await File.WriteAllTextAsync(configPath, MacConnectionConfigBuilder.Build(profile, MacConnectionMode.Proxy, []).Json);
-                var startInfo = new ProcessStartInfo
+                var configPath = Path.Combine(Path.GetTempPath(), $"leikwan-check-{Guid.NewGuid():N}.json");
+                try
                 {
-                    FileName = singBox,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                };
-                startInfo.ArgumentList.Add("check");
-                startInfo.ArgumentList.Add("-c");
-                startInfo.ArgumentList.Add(configPath);
-                using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("sing_box_check_start_failed");
-                await process.WaitForExitAsync();
-                Assert.True(process.ExitCode == 0, $"sing-box rejected {profile.Protocol}: {await process.StandardError.ReadToEndAsync()}");
-            }
-            finally
-            {
-                try { File.Delete(configPath); } catch (IOException) { }
+                    await File.WriteAllTextAsync(configPath, MacConnectionConfigBuilder.Build(profile, mode, []).Json);
+                    var startInfo = new ProcessStartInfo
+                    {
+                        FileName = singBox,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                    };
+                    startInfo.ArgumentList.Add("check");
+                    startInfo.ArgumentList.Add("-c");
+                    startInfo.ArgumentList.Add(configPath);
+                    using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("sing_box_check_start_failed");
+                    await process.WaitForExitAsync();
+                    Assert.True(process.ExitCode == 0, $"sing-box rejected {profile.Protocol}/{mode}: {await process.StandardError.ReadToEndAsync()}");
+                }
+                finally
+                {
+                    try { File.Delete(configPath); } catch (IOException) { }
+                }
             }
         }
     }
