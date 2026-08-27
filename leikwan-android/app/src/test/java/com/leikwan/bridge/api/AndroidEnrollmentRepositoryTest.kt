@@ -84,7 +84,7 @@ class AndroidEnrollmentRepositoryTest {
         assertEquals(deviceId, challenge.getHeader("X-Device-Id"))
         assertEquals("Pixel QA", challenge.getHeader("X-Device-Name"))
         assertEquals("android-host", challenge.getHeader("X-Device-Platform"))
-        assertEquals("0.1.0", challenge.getHeader("X-Client-Version"))
+        assertEquals("0.2.1", challenge.getHeader("X-Client-Version"))
         assertTrue(challenge.getHeader("User-Agent")!!.startsWith("LeiKwan-Host-Android/"))
         assertNull(challenge.getHeader("X-Device-Session"))
         assertFalse(challenge.body.readUtf8().contains("password", ignoreCase = true))

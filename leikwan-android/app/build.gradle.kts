@@ -13,13 +13,13 @@ android {
         applicationId = "com.leikwan.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += "arm64-v8a"
         }
-        buildConfigField("String", "PANEL_URL", "\"https://v3-mirror.leikwanhost.com\"")
+        buildConfigField("String", "PANEL_URL", "\"https://v3.leikwanhost.com\"")
     }
 
     buildTypes {

@@ -202,10 +202,7 @@ class TunnelOrchestrator internal constructor(
     ) = withContext(Dispatchers.IO) {
         try {
         Log.i(TAG, "Pulling forward configs...")
-        val connectionMode = ProxyConnectionMode.SERVICES
-        if (prefs.proxyConnectionMode != ProxyConnectionMode.SERVICES) {
-            prefs.proxyConnectionMode = ProxyConnectionMode.SERVICES
-        }
+        val connectionMode = prefs.proxyConnectionMode
         val proxyNodes = db.proxyNodeDao().getAllList()
         val selectedProxyId = prefs.selectedProxyId
         if (selectedProxyId > 0L && proxyNodes.none { it.id == selectedProxyId }) {
@@ -216,27 +213,38 @@ class TunnelOrchestrator internal constructor(
         val selectedForward = forwardId.takeIf { it > 0L }
             ?: catalog.selectedForwardId
             ?: catalog.visibleForwards.firstOrNull()?.forwardId
-        if (selectedForward != null && prefs.selectedForwardId != selectedForward) {
+        if (connectionMode == ProxyConnectionMode.SERVICES &&
+            selectedForward != null && prefs.selectedForwardId != selectedForward
+        ) {
             prefs.selectedForwardId = selectedForward
         }
 
-        if (selectedForward == null || catalog.visibleForwards.none { it.forwardId == selectedForward }) {
+        if (connectionMode == ProxyConnectionMode.SERVICES &&
+            (selectedForward == null || catalog.visibleForwards.none { it.forwardId == selectedForward })
+        ) {
             throw Exception("Select a service before starting in Services mode")
         }
-        val selectedEffective = panelRepo.getCachedEffectiveForward(selectedForward)
-            ?: throw Exception("Forward $selectedForward is not supported on Android")
-        val ultraPolicy = selectedEffective.runtimeContract.takeIf { selectedEffective.mode == ForwardMode.ULTRA }
-            ?.let { contract -> UltraPolicy.from(contract) }
-        if (selectedEffective.mode == ForwardMode.ULTRA && ultraPolicy == null) {
+        val selectedEffective = if (connectionMode == ProxyConnectionMode.SERVICES) {
+            val serviceId = requireNotNull(selectedForward)
+            panelRepo.getCachedEffectiveForward(serviceId)
+                ?: throw Exception("Forward $serviceId is not supported on Android")
+        } else {
+            null
+        }
+        val ultraPolicy = selectedEffective
+            ?.takeIf { it.mode == ForwardMode.ULTRA }
+            ?.runtimeContract
+            ?.let(UltraPolicy::from)
+        if (selectedEffective?.mode == ForwardMode.ULTRA && ultraPolicy == null) {
             throw Exception("Ultra authorization is unavailable")
         }
 
         val selection = ProxySelectionPolicy.validate(
             selectedProxyId = prefs.selectedProxyId,
-            forwardId = selectedForward,
+            forwardId = selectedForward ?: 0L,
             connectionMode = connectionMode,
             proxyNodes = proxyNodes,
-            proxyOptional = selectedEffective.mode == ForwardMode.ULTRA,
+            proxyOptional = selectedEffective?.mode == ForwardMode.ULTRA,
         )
         if (selection is ProxySelectionResult.Error) {
             throw Exception(selection.message)
@@ -248,10 +256,11 @@ class TunnelOrchestrator internal constructor(
         var unavailableNodeIds: Set<Long> = emptySet()
         var ultraRuntimeState: ActiveUltraRuntime? = null
         val binaries = binaryInstaller.prepareBinaryPaths()
-        val runtimeContext = run {
-            val forward = selectedEffective.runtimeContract
-            Log.i(TAG, "Starting LeiGod forward ${forward.forwardId}: ${forward.serviceName}")
-            if (selectedEffective.mode == ForwardMode.ULTRA) {
+        val runtimeContext = if (connectionMode == ProxyConnectionMode.SERVICES) run {
+            val effective = requireNotNull(selectedEffective)
+            val forward = effective.runtimeContract
+            Log.i(TAG, "Starting service ${forward.forwardId}: ${forward.serviceName}")
+            if (effective.mode == ForwardMode.ULTRA) {
                 val policy = requireNotNull(ultraPolicy)
                 val planned = UltraForwardRunner.buildPlan(
                     forward = forward,
@@ -329,6 +338,8 @@ class TunnelOrchestrator internal constructor(
                 processRunner.start(singleForward.forwardId, planned)
                 planned
             }
+        } else {
+            null
         }
 
         val routeRuleSnapshot = routeRuleStore.current()
@@ -342,7 +353,7 @@ class TunnelOrchestrator internal constructor(
             processRunner.start(processKey, routeRuntime, cleanupStale = false)
         }
         activeRouteRuleRuntimeKeys = routeRuleRuntimePlan.runtimeContexts.mapNotNull { it.routeRuleProcessKey }.toSet()
-        val singboxRuntimeContext = runtimeContext.copy(
+        val singboxRuntimeContext = runtimeContext?.copy(
             bypassHosts = runtimeContext.bypassHosts + routeRuleRuntimePlan.bypassHosts,
             protectedConnectivity = runtimeContext.protectedConnectivity
                 .merge(ProtectedConnectivitySet.fromEndpoints(routeRuleRuntimePlan.bypassHosts)),
@@ -352,7 +363,7 @@ class TunnelOrchestrator internal constructor(
         val routingSnapshot = buildRoutingSnapshot(
             System.currentTimeMillis(),
             unavailableNodeIds = unavailableNodeIds,
-            ignoreProxyNodeTargets = selectedEffective.mode == ForwardMode.ULTRA,
+            ignoreProxyNodeTargets = selectedEffective?.mode == ForwardMode.ULTRA,
         )
         val compiled = SingboxConfigBuilder
             .fromPrefs(prefs, activeRulePackManifest)
@@ -363,11 +374,11 @@ class TunnelOrchestrator internal constructor(
                 connectionMode = connectionMode,
                 routeRuleSnapshot = routeRuleSnapshot,
                 routeRuleRuntimeBindings = routeRuleRuntimePlan.singboxBindings,
-                runtimeOnlyProxy = selectedEffective.mode == ForwardMode.ULTRA,
+                runtimeOnlyProxy = selectedEffective?.mode == ForwardMode.ULTRA,
             )
         recordExplainability(routingSnapshot)
         val configJson = compiled.configJson
-        Log.d(TAG, "Generated sing-box config for LeiGod forward ${runtimeContext.forwardId}")
+        Log.d(TAG, "Generated sing-box config for $connectionMode")
 
         LeikwanVpnService.configJson = configJson
         vpnServiceStarter(context)

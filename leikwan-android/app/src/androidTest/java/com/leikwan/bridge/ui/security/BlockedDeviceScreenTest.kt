@@ -37,18 +37,18 @@ class BlockedDeviceScreenTest {
             .onNodeWithText("Unsupported device")
             .captureToImage()
             .toPixelMap()
-        var brightestPixel = 0f
+        var darkestPixel = 1f
 
         for (y in 0 until pixels.height) {
             for (x in 0 until pixels.width) {
                 val color = pixels[x, y]
-                brightestPixel = maxOf(brightestPixel, color.red, color.green, color.blue)
+                darkestPixel = minOf(darkestPixel, color.red, color.green, color.blue)
             }
         }
 
         assertTrue(
-            "Blocked-device title should be visibly lighter than its dark background",
-            brightestPixel >= 0.65f,
+            "Blocked-device title should be visibly darker than its light background",
+            darkestPixel <= 0.35f,
         )
     }
 }

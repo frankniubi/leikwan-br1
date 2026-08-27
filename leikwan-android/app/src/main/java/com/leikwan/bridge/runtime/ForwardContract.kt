@@ -127,7 +127,7 @@ data class ForwardListItem(
     val serviceStatus: String,
     val endpointMode: String,
     val speedLimitMbps: Int?,
-    val methodDisplay: String = "LeiGod",
+    val methodDisplay: String = "Service",
     val backendMode: String = "",
     val contractVersion: Int = 0,
     val clientMode: String = "",
