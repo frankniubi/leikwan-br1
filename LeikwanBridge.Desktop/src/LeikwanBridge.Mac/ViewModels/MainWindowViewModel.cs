@@ -252,6 +252,20 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
     }
 
+    [RelayCommand]
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            await _controller.RefreshAsync();
+        }
+        catch
+        {
+            ValidationMessage = "Refresh failed. The current connection is still running.";
+            ShowNotice(ValidationMessage);
+        }
+    }
+
     [RelayCommand] private Task DisconnectAsync() => _controller.DisconnectAsync();
     [RelayCommand] private Task StartAllAsync() => _controller.StartAllAsync();
     [RelayCommand] private Task StopAllAsync() => _controller.StopAllAsync();

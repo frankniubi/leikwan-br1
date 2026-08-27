@@ -11,6 +11,7 @@ public interface IDesktopRuntimeSession : IAsyncDisposable
     IReadOnlyList<ForwardConfig> Forwards { get; }
     bool IsForwardRunning(int forwardId);
     Task StartAsync(CancellationToken ct);
+    Task RefreshAsync(CancellationToken ct);
     Task StopAsync();
     Task StartForwardAsync(int forwardId, CancellationToken ct);
     Task StopForwardAsync(int forwardId, CancellationToken ct);
@@ -87,6 +88,18 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         await _polling.SyncOnceAsync(_cts.Token);
         _polling.Start(_pollIntervalSeconds);
         _heartbeatLoop = RunHeartbeatLoopAsync(_cts.Token);
+    }
+
+    public async Task RefreshAsync(CancellationToken ct)
+    {
+        if (_cts is null || _stopped)
+            throw new InvalidOperationException("client_not_connected");
+
+        // Config pulls use a server long-poll. Bound an explicit user refresh
+        // without cancelling the session's background polling token.
+        using var refreshCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
+        refreshCts.CancelAfter(TimeSpan.FromSeconds(15));
+        await _polling.SyncOnceAsync(refreshCts.Token);
     }
 
     public async Task StopAsync()

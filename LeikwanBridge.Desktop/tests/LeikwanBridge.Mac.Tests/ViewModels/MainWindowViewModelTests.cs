@@ -123,6 +123,23 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public async Task RefreshCommandUsesInPlaceControllerRefresh()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            IsSignedIn = true,
+            IsConnected = true,
+            ConnectionStatus = "connected",
+        });
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+
+        await vm.RefreshCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, controller.RefreshCalls);
+        Assert.Equal(0, controller.ConnectCalls);
+    }
+
+    [Fact]
     public async Task TokenLoginDoesNotReportConnectionFailureAsSignInFailure()
     {
         var controller = new FakeController(new DesktopClientSnapshot())
@@ -155,6 +172,8 @@ public sealed class MainWindowViewModelTests
         public DesktopClientSnapshot Snapshot { get; private set; } = initial;
         public int LoginCalls { get; private set; }
         public int AgentTokenLoginCalls { get; private set; }
+        public int ConnectCalls { get; private set; }
+        public int RefreshCalls { get; private set; }
         public (int ClientId, string Token) LastAgentTokenLogin { get; private set; }
         public bool SignInOnAgentToken { get; init; }
         public bool ThrowOnConnect { get; init; }
@@ -190,9 +209,17 @@ public sealed class MainWindowViewModelTests
         }
 
         public Task ConnectAsync(CancellationToken ct = default)
-            => ThrowOnConnect
+        {
+            ConnectCalls++;
+            return ThrowOnConnect
                 ? Task.FromException(new InvalidOperationException("runtime unavailable"))
                 : Task.CompletedTask;
+        }
+        public Task RefreshAsync(CancellationToken ct = default)
+        {
+            RefreshCalls++;
+            return Task.CompletedTask;
+        }
         public Task DisconnectAsync(CancellationToken ct = default) => Task.CompletedTask;
         public Task StartForwardAsync(int forwardId, CancellationToken ct = default)
         {
