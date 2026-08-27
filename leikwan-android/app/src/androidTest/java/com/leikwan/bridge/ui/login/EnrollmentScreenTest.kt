@@ -1,6 +1,8 @@
 package com.leikwan.bridge.ui.login
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import com.leikwan.bridge.ui.theme.LeikwanTheme
@@ -19,8 +21,9 @@ class EnrollmentScreenTest {
             }
         }
 
-        composeRule.onNodeWithText("Client ID").assertExists()
-        composeRule.onNodeWithText("Agent Token").assertExists()
+        composeRule.onNode(hasText("Client ID") and hasSetTextAction()).assertExists()
+        composeRule.onNode(hasText("Agent Token") and hasSetTextAction()).assertExists()
+        composeRule.onNodeWithText("One-time Code").assertExists()
         composeRule.onNodeWithText("Email").assertDoesNotExist()
         composeRule.onNodeWithText("Panel URL").assertDoesNotExist()
     }
