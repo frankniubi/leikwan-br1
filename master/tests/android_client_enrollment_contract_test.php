@@ -124,7 +124,7 @@ foreach ([
     }
 }
 
-$terminalResponse = section($publicIndex, "if (in_array(\$exception->getMessage(), ['device_kicked'", '    $headers = [');
+$terminalResponse = section($publicIndex, '$clientSafeCodes = [', '    if ($status < 400 || $status >= 500)');
 if (str_contains($terminalResponse, 'endpoint')
     || str_contains($terminalResponse, 'lease')
     || str_contains($terminalResponse, 'credential')

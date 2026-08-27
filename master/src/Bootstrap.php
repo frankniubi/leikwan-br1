@@ -34,6 +34,7 @@ use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\WhmcsClient;
 use Leikwan\Master\Support\WhmcsIdentityService;
 use Leikwan\Master\Support\AppSettings;
+use Leikwan\Master\Support\AccessPolicyService;
 use Leikwan\Master\Support\UltraClientStatusService;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMaterialService;
@@ -159,6 +160,9 @@ final class Bootstrap
             $ultraMaterials,
             $ultraClientStatus,
             $ultraLeases,
+            accessPolicy: isset($this->services['access_policy']) && $this->services['access_policy'] instanceof AccessPolicyService
+                ? $this->services['access_policy']
+                : null,
         );
         $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
@@ -335,6 +339,9 @@ final class Bootstrap
         $this->router->add('GET', '/api/admin/services', [$services, 'listAllServices']);
         $this->router->add('POST', '/api/client/login', [$clientAgent, 'desktopLogin']);
         $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopClient']);
+        $this->router->add('POST', '/api/client/access/location/challenge', [$clientAgent, 'locationChallenge']);
+        $this->router->add('POST', '/api/client/access/location/report', [$clientAgent, 'locationReport']);
+        $this->router->add('GET', '/api/client/access/policy', [$clientAgent, 'accessPolicyStatus']);
         $this->router->add('POST', '/api/client/devices/challenge', [$clientAgent, 'deviceChallenge']);
         $this->router->add('POST', '/api/client/devices/enroll', [$clientAgent, 'enrollDevice']);
         $this->router->add('POST', '/api/client/devices/ack', [$clientAgent, 'acknowledgeDevice']);

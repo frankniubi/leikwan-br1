@@ -50,9 +50,17 @@ class AccessPolicyService
         string $deviceUuid,
         string $attemptId,
         string $platform = 'unknown',
+        ?Request $request = null,
     ): array {
         $context = $this->clientContext($client, $deviceUuid, $attemptId, $platform);
         $this->assertAccountUsable($context['user_id']);
+        if ($request !== null) {
+            $sourceIp = $this->resolvedSourceIp($request);
+            if ($sourceIp === null) {
+                throw new ApiException('source_ip_unavailable', 400);
+            }
+            $this->enforceGlobalRules($context, $sourceIp);
+        }
         $this->assertDeviceUsable($context['client_id'], $context['device_uuid']);
 
         $token = $this->randomToken();
@@ -90,8 +98,9 @@ class AccessPolicyService
         string $deviceUuid,
         string $attemptId,
         string $platform = 'unknown',
+        ?Request $request = null,
     ): array {
-        return $this->issueLocationChallenge($client, $deviceUuid, $attemptId, $platform);
+        return $this->issueLocationChallenge($client, $deviceUuid, $attemptId, $platform, $request);
     }
 
     public function effectiveGeoLockForUser(int $userId): bool
@@ -124,13 +133,15 @@ class AccessPolicyService
         if ($token === '') {
             throw new ApiException('location_challenge_invalid', 403);
         }
-        $reportedPlatform = trim((string) $request->input('platform', ''));
+        $reportedPlatform = trim((string) ($request->input('platform', '') ?: $request->header('x-device-platform', '')));
         $context = $this->clientContext($client, $deviceUuid, $attemptId, $reportedPlatform === '' ? 'unknown' : $reportedPlatform);
         $this->assertAccountUsable($context['user_id']);
         $sourceIp = $this->resolvedSourceIp($request);
         if ($sourceIp === null) {
             throw new ApiException('source_ip_unavailable', 400);
         }
+        $this->enforceGlobalRules($context, $sourceIp);
+        $this->assertDeviceUsable($context['client_id'], $context['device_uuid']);
 
         $challenge = $this->store->challengeByHash(hash('sha256', $token));
         if ($context['platform'] === 'unknown' && is_array($challenge) && trim((string) ($challenge['platform'] ?? '')) !== '') {
@@ -168,6 +179,7 @@ class AccessPolicyService
             // required direct physical observation with the same attempt.
             throw new ApiException('direct_location_check_required', 428, [
                 'challenge_token' => $token,
+                'challenge_expires_at' => $this->isoTime($challenge['expires_at'] ?? null),
                 'attempt_id' => $context['attempt_id'],
                 'required_collection_mode' => 'physical_no_proxy',
             ]);
@@ -195,7 +207,7 @@ class AccessPolicyService
 
             $effectiveRow = $this->rowForNormalized($observationRows, $effective);
             $physicalRow = $physical === null ? null : $this->rowForNormalized($observationRows, $physical);
-            return $this->evaluateObservations(
+            $decision = $this->evaluateObservations(
                 $context,
                 $sourceIp,
                 $observationRows,
@@ -203,6 +215,10 @@ class AccessPolicyService
                 $physicalRow,
                 true
             );
+            $latest = $observationRows[0] ?? $effectiveRow;
+            $decision['next_location_check_at'] = $this->nextLocationCheckAt($latest, $context, $sourceIp)
+                ->format('Y-m-d\\TH:i:s\\Z');
+            return $decision;
         });
     }
 
@@ -214,9 +230,14 @@ class AccessPolicyService
      * @param array<string, mixed> $client
      * @return array<string, mixed>
      */
-    public function authorizeClientRequest(array $client, Request $request, string $touchType = 'request'): array
+    public function authorizeClientRequest(
+        array $client,
+        Request $request,
+        string $touchType = 'request',
+        ?string $deviceUuid = null,
+    ): array
     {
-        $deviceUuid = $this->deviceUuidFromRequest($request);
+        $deviceUuid = $deviceUuid !== null ? trim($deviceUuid) : $this->deviceUuidFromRequest($request);
         $context = $this->clientContext(
             $client,
             $deviceUuid,
@@ -246,7 +267,11 @@ class AccessPolicyService
         $cutoff = $this->sqlTime($this->now()->modify('-' . self::OBSERVATION_CACHE_SECONDS . ' seconds'));
         $observations = $this->store->recentObservations($context['user_id'], $context['device_uuid'], $sourceIp, $cutoff);
         $selected = $this->selectCachedObservations($observations);
-        if ($selected === null || $this->cacheIsDue($selected['latest'], $context, $sourceIp)) {
+        $freshAuthentication = in_array($touchType, ['login', 'enrollment'], true);
+        $attemptAlreadyVerified = $this->observationsContainAttempt($observations, $context['attempt_id']);
+        if ($selected === null
+            || ($freshAuthentication && !$attemptAlreadyVerified)
+            || (!$freshAuthentication && $this->cacheIsDue($selected['latest'], $context, $sourceIp))) {
             $challenge = $this->issueLocationChallenge(
                 $client,
                 $context['device_uuid'],
@@ -257,8 +282,8 @@ class AccessPolicyService
                 'challenge' => $challenge,
                 'source_ip' => $sourceIp,
                 'next_location_check_at' => $selected === null
-                    ? $this->sqlTime($this->now())
-                    : $this->sqlTime($this->nextLocationCheckAt($selected['latest'], $context, $sourceIp)),
+                    ? $this->now()->format('Y-m-d\\TH:i:s\\Z')
+                    : $this->nextLocationCheckAt($selected['latest'], $context, $sourceIp)->format('Y-m-d\\TH:i:s\\Z'),
             ]);
         }
 
@@ -270,8 +295,85 @@ class AccessPolicyService
             $selected['physical'],
             false
         );
-        $decision['next_location_check_at'] = $this->sqlTime($this->nextLocationCheckAt($selected['latest'], $context, $sourceIp));
+        $decision['next_location_check_at'] = $this->nextLocationCheckAt($selected['latest'], $context, $sourceIp)->format('Y-m-d\\TH:i:s\\Z');
         return $decision;
+    }
+
+    /**
+     * Login-stage guard used before a desktop session is issued. It performs
+     * only checks that do not require a selected client/location report;
+     * selectDesktopClient performs the full geo decision before returning an
+     * agent token.
+     */
+    public function preflightClientRequest(array $client, Request $request, ?string $deviceUuid = null): void
+    {
+        $deviceUuid = $deviceUuid !== null ? trim($deviceUuid) : $this->deviceUuidFromRequest($request);
+        $context = $this->clientContext(
+            $client,
+            $deviceUuid,
+            $this->optionalAttemptId($request) ?? $this->generatedAttemptId(),
+            (string) ($request->header('x-device-platform') ?? $request->input('platform', 'unknown'))
+        );
+        $this->assertAccountUsable($context['user_id']);
+        $sourceIp = $this->resolvedSourceIp($request);
+        if ($sourceIp === null) {
+            throw new ApiException('source_ip_unavailable', 400);
+        }
+        $this->enforceGlobalRules($context, $sourceIp);
+        $this->assertDeviceUsable($context['client_id'], $context['device_uuid']);
+    }
+
+    /**
+     * Return the safe distribution handoff state without issuing or consuming
+     * a location challenge.
+     *
+     * @param array<string, mixed> $client
+     * @return array<string, mixed>
+     */
+    public function policyStatus(array $client, Request $request, ?string $deviceUuid = null): array
+    {
+        $deviceUuid = $deviceUuid !== null ? trim($deviceUuid) : $this->deviceUuidFromRequest($request);
+        $context = $this->clientContext(
+            $client,
+            $deviceUuid,
+            $this->optionalAttemptId($request) ?? $this->generatedAttemptId(),
+            (string) ($request->header('x-device-platform') ?? $request->input('platform', 'unknown'))
+        );
+        $this->assertAccountUsable($context['user_id']);
+        $sourceIp = $this->resolvedSourceIp($request);
+        if ($sourceIp === null) {
+            throw new ApiException('source_ip_unavailable', 400);
+        }
+        $this->enforceGlobalRules($context, $sourceIp);
+        $this->assertDeviceUsable($context['client_id'], $context['device_uuid']);
+
+        $geoLockEnabled = $this->store->geoLockEnabledForUser($context['user_id']);
+        $locationPolicyRequired = $geoLockEnabled || $this->store->hasActiveGeographicRules();
+        $profile = $this->store->profileForUser($context['user_id']);
+        $status = [
+            'protocol_version' => 1,
+            'geo_lock_enabled' => $geoLockEnabled,
+            'location_required' => $locationPolicyRequired,
+            'location_check_due' => false,
+            'main_province_code' => $profile['main_province_code'] ?? null,
+            'profile_state' => $profile['state'] ?? 'unbound',
+            'next_location_check_at' => null,
+        ];
+        if (!$locationPolicyRequired) {
+            return $status;
+        }
+
+        $cutoff = $this->sqlTime($this->now()->modify('-' . self::OBSERVATION_CACHE_SECONDS . ' seconds'));
+        $observations = $this->store->recentObservations($context['user_id'], $context['device_uuid'], $sourceIp, $cutoff);
+        $selected = $this->selectCachedObservations($observations);
+        if ($selected === null) {
+            $status['location_check_due'] = true;
+            return $status;
+        }
+        $next = $this->nextLocationCheckAt($selected['latest'], $context, $sourceIp);
+        $status['location_check_due'] = $next <= $this->now();
+        $status['next_location_check_at'] = $next->format('Y-m-d\\TH:i:s\\Z');
+        return $status;
     }
 
     /**
@@ -463,7 +565,7 @@ class AccessPolicyService
         $matched = $this->matchBlacklistObservations($context, $sourceIp, $observations);
         if ($matched !== null) {
             $this->recordBlacklistEvent($context, $sourceIp, $matched, $effective);
-            throw new ApiException('access_denied_blacklist', 403, [
+            throw new ApiException('access_blacklisted', 403, [
                 'matched_entity_type' => $matched['entity_type'],
                 'matched_value' => $matched['display_value'] ?? $matched['canonical_value'],
                 'observation_id' => $effective['id'] ?? null,
@@ -646,7 +748,7 @@ class AccessPolicyService
             return;
         }
         $this->recordBlacklistEvent($context, $sourceIp, $matched, null);
-        throw new ApiException('access_denied_blacklist', 403, [
+        throw new ApiException('access_blacklisted', 403, [
             'matched_entity_type' => $matched['entity_type'],
             'matched_value' => $matched['display_value'] ?? $matched['canonical_value'],
             'counts_as_geo_violation' => false,
@@ -822,13 +924,16 @@ class AccessPolicyService
         if ($platform === '') {
             $platform = 'unknown';
         }
-        $platform = match ($platform) {
-            'win', 'win32', 'win64' => 'windows',
-            'mac', 'osx' => 'macos',
+        $platform = match (true) {
+            $platform === 'win' || str_starts_with($platform, 'windows') => 'windows',
+            $platform === 'mac' || $platform === 'osx' || str_starts_with($platform, 'macos') || str_starts_with($platform, 'darwin') => 'macos',
+            str_starts_with($platform, 'android') => 'android',
+            str_starts_with($platform, 'ios') => 'ios',
+            str_starts_with($platform, 'linux') => 'linux',
             default => $platform,
         };
         if (strlen($platform) > 32 || preg_match('/^[a-z0-9._-]+$/', $platform) !== 1
-            || !in_array($platform, ['android', 'windows', 'macos', 'ios', 'unknown'], true)) {
+            || !in_array($platform, ['android', 'windows', 'macos', 'ios', 'linux', 'unknown'], true)) {
             throw new ApiException('location_platform_invalid', 422);
         }
         if ($userId <= 0) {
@@ -897,6 +1002,7 @@ class AccessPolicyService
             || (string) ($challenge['device_uuid'] ?? '') !== $context['device_uuid']
             || (string) ($challenge['attempt_id'] ?? '') !== $context['attempt_id']
             || ($context['platform'] !== 'unknown' && (string) ($challenge['platform'] ?? '') !== $context['platform'])
+            || !hash_equals((string) ($challenge['auth_context_hash'] ?? ''), $this->authContextHash($context))
             || !$this->isFuture($challenge['expires_at'] ?? null, $this->now())) {
             throw new ApiException('location_challenge_invalid', 403);
         }
@@ -934,7 +1040,7 @@ class AccessPolicyService
         }
         $blockedUntil = $this->parseTime($control['blocked_until'] ?? null);
         if ($blockedUntil !== null && $blockedUntil > $this->now()) {
-            throw new ApiException('device_temporarily_banned', 403, [
+            throw new ApiException('device_temporarily_banned', 423, [
                 'blocked_until' => $this->sqlTime($blockedUntil),
                 'block_origin' => $control['block_origin'] ?? 'policy',
                 'release_policy' => $control['release_policy'] ?? 'admin_only',
@@ -1003,7 +1109,12 @@ class AccessPolicyService
                 'retry_after_seconds' => self::POLL_INTERVAL_SECONDS,
             ]);
         }
-        $mode = strtolower(trim((string) ($observation['collection_mode'] ?? '')));
+        $mode = strtolower(trim((string) ($observation['collection_mode'] ?? $observation['mode'] ?? '')));
+        $mode = match ($mode) {
+            'effective_path', 'effective-path', 'effective' => 'effective',
+            'physical_no_proxy', 'physical-no-proxy', 'direct', 'direct_physical' => 'physical_no_proxy',
+            default => $mode,
+        };
         if (!in_array($mode, ['effective', 'physical_no_proxy'], true)) {
             throw new ApiException('location_collection_mode_invalid', 422);
         }
@@ -1058,6 +1169,7 @@ class AccessPolicyService
             'province_code' => $provinceCode,
             'city_code' => $cityCode,
             'observed_at' => $this->sqlTime($observedAt),
+            'received_at' => $this->sqlTime($now),
             'source_ip' => $sourceIp,
         ];
         $payload['payload_digest'] = hash('sha256', json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '');
@@ -1222,6 +1334,12 @@ class AccessPolicyService
         return $time->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
     }
 
+    private function isoTime(mixed $value): ?string
+    {
+        $time = $this->parseTime($value);
+        return $time?->format('Y-m-d\\TH:i:s\\Z');
+    }
+
     private function parseTime(mixed $value): ?DateTimeImmutable
     {
         if (!is_string($value) || trim($value) === '') {
@@ -1260,6 +1378,20 @@ class AccessPolicyService
             }
         }
         return null;
+    }
+
+    /** @param array<int, array<string, mixed>> $observations */
+    private function observationsContainAttempt(array $observations, string $attemptId): bool
+    {
+        if ($attemptId === '' || str_starts_with($attemptId, 'poll-')) {
+            return false;
+        }
+        foreach ($observations as $observation) {
+            if ((string) ($observation['attempt_id'] ?? '') === $attemptId) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -132,10 +132,10 @@ namespace {
     assertSame('policy', $policy['block_origin'] ?? null, 'policy block origin');
     assertSame('admin_only', $policy['release_policy'] ?? null, 'policy release policy');
     assertTrue((string) ($policy['blocked_until'] ?? '') > gmdate('Y-m-d H:i:s'), 'policy block expiry');
-    $blocked = expectApi('device_temporarily_banned', 403, fn() => $service->requireActive($client, $request));
+    $blocked = expectApi('device_temporarily_banned', 423, fn() => $service->requireActive($client, $request));
     assertTrue((int) ($blocked->details()['retry_after_seconds'] ?? 0) > 0, 'temporary block retry timing');
-    expectApi('device_temporarily_banned', 403, fn() => $service->issueChallenge($client, $device, 1));
-    expectApi('device_temporarily_banned', 403, fn() => $service->enroll($client, $device, 'unused', ['protocol_version' => 1]));
+    expectApi('device_temporarily_banned', 423, fn() => $service->issueChallenge($client, $device, 1));
+    expectApi('device_temporarily_banned', 423, fn() => $service->enroll($client, $device, 'unused', ['protocol_version' => 1]));
     expectApi('device_kicked', 409, fn() => $service->issueChallenge($client, $device));
     expectApi('device_block_release_forbidden', 403, fn() => $service->releaseTemporaryBlock(17, $device, 7, false));
 

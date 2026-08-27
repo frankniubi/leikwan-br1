@@ -80,7 +80,7 @@ namespace {
     $first = $service->issueChallenge($client, 'race-device', 'race-1', 'windows');
     $second = $service->issueChallenge($client, 'race-device', 'race-1', 'windows');
     expectCode('geo_lock_violation', fn() => $service->recordLocationReport($client, req('race-device', $first['token'], 'race-1')));
-    expectCode('geo_lock_violation', fn() => $service->recordLocationReport($client, req('race-device', $second['token'], 'race-1')));
+    expectCode('device_temporarily_banned', fn() => $service->recordLocationReport($client, req('race-device', $second['token'], 'race-1')));
     assertSame(1, count($store->geoViolationEvents(17, '2026-08-27 12:00:00')), 'same attempt is counted once');
     assertSame(1, count($store->controls), 'one temporary policy block is created');
     assertSame(1, $store->blockWrites, 'duplicate attempt does not extend temporary block');
@@ -91,7 +91,7 @@ namespace {
     }
     assertSame(3, count($store->geoViolationEvents(17, '2026-08-27 12:00:00')), 'three independent attempts are retained');
     assertSame('banned', $store->users[17]['status'] ?? null, 'third attempt atomically bans account');
-    assertSame(4, $store->transactions, 'each report is evaluated in a transaction');
+    assertSame(3, $store->transactions, 'blocked retries are rejected before opening an evaluation transaction');
 
     $storeSource = file_get_contents(__DIR__ . '/../src/Support/AccessPolicyStore.php') ?: '';
     $serviceSource = file_get_contents(__DIR__ . '/../src/Support/AccessPolicyService.php') ?: '';
