@@ -73,6 +73,9 @@ build_plan="$(bash "$build_script" --rid osx-arm64 --dry-run)"
 printf '%s\n' "$build_plan" | grep -Fqx \
   'wstunnel_commit=9d0ec3f27556e3132536401d1b2e4e1aa30c277c' \
   || fail "wstunnel commit pin is not the peeled v10.5.2 commit"
+printf '%s\n' "$build_plan" | grep -Fqx \
+  'dotnet restore LeikwanBridge.Mac --locked-mode' \
+  || fail "locked restore must use the project dual-RID contract"
 
 temp_root="$(mktemp -d "${TMPDIR:-/tmp}/leikwan-macos-package-test.XXXXXX")"
 trap 'rm -rf "$temp_root"' EXIT

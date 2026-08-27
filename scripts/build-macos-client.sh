@@ -64,6 +64,7 @@ helper_hashes="$output_root/helper-hashes.txt"
 if [[ "$dry_run" -eq 1 ]]; then
   printf 'rid=%s\narchitecture=%s\nrust_target=%s\ngo_arch=%s\n' "$rid" "$architecture" "$rust_target" "$go_arch"
   printf 'wstunnel_commit=%s\n' "$wstunnel_commit"
+  printf 'dotnet restore LeikwanBridge.Mac --locked-mode\n'
   printf 'dotnet publish LeikwanBridge.Mac -r %s --self-contained true\n' "$rid"
   printf 'cargo build --locked -p leikwan-bond -p leikwan-ingress -p leikwan-uot --target %s\n' "$rust_target"
   printf 'go build GOOS=darwin GOARCH=%s ./tools/ultra-client\n' "$go_arch"
@@ -121,7 +122,6 @@ cargo build \
 
 dotnet restore \
   "$repo_root/LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.csproj" \
-  --runtime "$rid" \
   --locked-mode
 dotnet publish \
   "$repo_root/LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.csproj" \
