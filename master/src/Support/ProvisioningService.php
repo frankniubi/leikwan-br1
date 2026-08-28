@@ -3014,6 +3014,8 @@ final class ProvisioningService
         $extraClientPrice = $this->normalizeMoney($payload['extra_client_price'] ?? '0');
         $maxForwardRuleQuantity = max(1, min(100000, (int) ($payload['max_forward_rule_quantity'] ?? 64)));
         $isActive = (int) (($payload['is_active'] ?? '1') ? 1 : 0);
+        $geoLockValue = strtolower(trim((string) ($payload['geo_lock_enabled'] ?? '0')));
+        $geoLockEnabled = in_array($geoLockValue, ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
         $featureFlagsJson = $this->normalizeJsonField($payload['feature_flags_json'] ?? $payload['feature_flags'] ?? null);
         $groupIds = [];
         foreach ((array) ($payload['allowed_node_group_ids'] ?? []) as $groupId) {
@@ -3113,7 +3115,7 @@ final class ProvisioningService
             );
         }
 
-        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $maxForwardRuleQuantity, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $forwardRouteIds, $payload): array {
+        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $maxForwardRuleQuantity, $isActive, $geoLockEnabled, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $forwardRouteIds, $payload): array {
             if ($id > 0) {
                 $this->db->execute(
                     'UPDATE service_plans
@@ -3137,6 +3139,7 @@ final class ProvisioningService
                          max_forward_rule_quantity = :max_forward_rule_quantity,
                          is_active = :is_active,
                          is_tenant_visible = :is_tenant_visible,
+                         geo_lock_enabled = :geo_lock_enabled,
                          feature_flags_json = :feature_flags_json,
                          updated_at = :updated_at
                      WHERE id = :id',
@@ -3162,6 +3165,7 @@ final class ProvisioningService
                         'max_forward_rule_quantity' => $maxForwardRuleQuantity,
                         'is_active' => $isActive,
                         'is_tenant_visible' => (int) (($payload['is_tenant_visible'] ?? '1') ? 1 : 0),
+                        'geo_lock_enabled' => $geoLockEnabled,
                         'feature_flags_json' => $featureFlagsJson,
                         'updated_at' => $this->now(),
                     ]
@@ -3188,6 +3192,7 @@ final class ProvisioningService
                     'max_forward_rule_quantity' => $maxForwardRuleQuantity,
                     'is_active' => $isActive,
                     'is_tenant_visible' => (int) (($payload['is_tenant_visible'] ?? '1') ? 1 : 0),
+                    'geo_lock_enabled' => $geoLockEnabled,
                     'feature_flags_json' => $featureFlagsJson,
                     'created_at' => $this->now(),
                     'updated_at' => $this->now(),

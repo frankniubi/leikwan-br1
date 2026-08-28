@@ -6,6 +6,7 @@ namespace Leikwan\Master\Controllers;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\AccessPolicyService;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\LeigodActivationGateContext;
 use Leikwan\Master\Support\LeigodNormalizationActivationContext;
@@ -28,6 +29,7 @@ use Leikwan\Master\Support\UltraMode;
 final class AdminController extends BaseController
 {
     private ?SslCertificateService $sslCertificateService = null;
+    private AccessPolicyService $accessPolicy;
     /** @var array<string, mixed> */
     private array $leigodOnlyServices;
 
@@ -39,9 +41,11 @@ final class AdminController extends BaseController
         array $leigodOnlyServices = [],
         private ?UltraInventoryService $ultraInventory = null,
         private ?UltraClientStatusService $ultraClientStatus = null,
+        ?AccessPolicyService $accessPolicy = null,
     ) {
         $this->leigodOnlyServices = $leigodOnlyServices;
         parent::__construct($config, $db);
+        $this->accessPolicy = $accessPolicy ?? new AccessPolicyService($db);
     }
 
     public function dashboard(Request $request, array $params): Response
@@ -1567,6 +1571,9 @@ final class AdminController extends BaseController
             $visibilitySummary = (int) ($plan['is_tenant_visible'] ?? 1) === 1
                 ? '<span class="badge success">tenant visible</span>'
                 : '<span class="badge info">internal test</span>';
+            $geoLockSummary = (int) ($plan['geo_lock_enabled'] ?? 0) === 1
+                ? '<span class="badge danger">geo lock</span>'
+                : '<span class="badge info">geo open</span>';
             $rows .= '<tr>
                 <td>' . (int) $plan['id'] . '</td>
                 <td>' . $this->escape((string) $plan['name']) . '</td>
@@ -1575,7 +1582,7 @@ final class AdminController extends BaseController
                 <td>' . (int) $plan['default_traffic_limit_gb'] . ' GB</td>
                 <td>' . $billingSummary . '</td>
                 <td>' . $forwardRouteSummary . '</td>
-                <td>' . $visibilitySummary . '</td>
+                <td>' . $visibilitySummary . '<br>' . $geoLockSummary . '</td>
                 <td>' . ((int) $plan['is_active'] === 1 ? '<span class="badge success">active</span>' : '<span class="badge danger">inactive</span>') . '</td>
                 <td>
                     <div class="actions">
@@ -1616,6 +1623,9 @@ final class AdminController extends BaseController
                       <select name="is_tenant_visible"><option value="1"' . ((int) ($editing['is_tenant_visible'] ?? 1) === 1 ? ' selected' : '') . '>Visible to tenants</option><option value="0"' . ((int) ($editing['is_tenant_visible'] ?? 1) === 0 ? ' selected' : '') . '>Internal test package</option></select>
                       <p class="muted">Hidden plans stay active for internal/admin workflows, but do not appear on the tenant purchase page.</p>
                     </div>
+                    <div class="field"><label><input type="checkbox" name="geo_lock_enabled" value="1"' . ((int) ($editing['geo_lock_enabled'] ?? 0) === 1 ? ' checked' : '') . '> Enable geographic lock</label>
+                      <p class="muted">Login and periodic checks validate device location against the main province, adjacent provinces, and special circles.</p>
+                    </div>
                     <div class="field"><label>Billing Mode</label><select name="billing_mode"><option value="monthly_bundle"' . (((string) ($editing['billing_mode'] ?? 'monthly_bundle')) === 'monthly_bundle' ? ' selected' : '') . '>monthly_bundle</option><option value="metered"' . (((string) ($editing['billing_mode'] ?? 'monthly_bundle')) === 'metered' ? ' selected' : '') . '>metered</option></select></div>
                     <div class="field"><label>Billing Currency</label><input type="text" name="billing_currency" value="' . $this->escape((string) ($editing['billing_currency'] ?? 'CNY')) . '" placeholder="CNY"></div>
                     <div class="field"><label>Monthly Base Fee</label><input type="number" step="0.01" min="0" name="monthly_base_fee" value="' . $this->escape((string) ($editing['monthly_base_fee'] ?? '0.00')) . '"></div>
@@ -1648,7 +1658,7 @@ final class AdminController extends BaseController
                 <h3>Plan List</h3>
                 <div class="table-wrap">
                   <table>
-                    <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>Bandwidth</th><th>Traffic</th><th>Billing</th><th>Forward Routes</th><th>Visibility</th><th>Status</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>Bandwidth</th><th>Traffic</th><th>Billing</th><th>Forward Routes</th><th>Visibility / Geo</th><th>Status</th><th>Actions</th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
@@ -4285,6 +4295,7 @@ final class AdminController extends BaseController
                 'default_client_online_device_limit' => $request->input('default_client_online_device_limit', '1'),
                 'is_active' => $request->input('is_active', '1'),
                 'is_tenant_visible' => $request->input('is_tenant_visible', '1'),
+                'geo_lock_enabled' => $request->input('geo_lock_enabled', '0'),
                 'allowed_forward_route_ids' => $request->body()['allowed_forward_route_ids'] ?? [],
                 'allowed_node_group_ids' => $request->body()['allowed_node_group_ids'] ?? [],
                 'allowed_client_group_ids' => $request->body()['allowed_client_group_ids'] ?? [],
@@ -4944,6 +4955,203 @@ final class AdminController extends BaseController
         }
 
         return Response::redirect('/admin/nodes');
+    }
+
+    public function accessControlPage(Request $request, array $params): Response
+    {
+        // The service reads access_blacklist_rules, user_geo_lock_profiles,
+        // access_policy_events, and account_access_bans without exposing raw
+        // provider payloads to the Panel.
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $entityFilter = trim((string) $request->input('entity_type', ''));
+        $activeFilter = $request->input('active_only', null);
+        $activeOnly = null;
+        if ($activeFilter !== null && $activeFilter !== '') {
+            $activeOnly = in_array(strtolower(trim((string) $activeFilter)), ['1', 'true', 'yes', 'on'], true);
+        }
+        $rules = $this->accessPolicy->listBlacklistRules([
+            'entity_type' => $entityFilter,
+            'active_only' => $activeOnly,
+        ]);
+        $profiles = $this->accessPolicy->adminProfiles(100);
+        $violations = $this->accessPolicy->adminViolations(100);
+        $blocks = $this->accessPolicy->adminDeviceBlocks(200);
+        $bans = $this->accessPolicy->adminAccountBans(100);
+        $csrf = $this->escape(SessionAuth::csrfToken());
+
+        $ruleRows = '';
+        foreach ($rules as $rule) {
+            $ruleId = (int) ($rule['id'] ?? 0);
+            $isActive = (int) ($rule['is_active'] ?? 0) === 1;
+            $ruleRows .= '<tr><td>' . $ruleId . '</td>'
+                . '<td>' . $this->escape((string) ($rule['entity_type'] ?? '')) . '</td>'
+                . '<td><code>' . $this->escape((string) ($rule['display_value'] ?? $rule['canonical_value'] ?? '')) . '</code></td>'
+                . '<td>' . $this->escape((string) ($rule['reason_code'] ?? '')) . '</td>'
+                . '<td><span class="badge ' . ($isActive ? 'danger' : 'muted') . '">' . ($isActive ? 'active' : 'disabled') . '</span></td>'
+                . '<td><form class="inline" method="post" action="/admin/access-control/rules/' . $ruleId . '/toggle">'
+                . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                . '<input type="hidden" name="active" value="' . ($isActive ? '0' : '1') . '">'
+                . '<button class="button ghost" type="submit">' . ($isActive ? 'Disable' : 'Enable') . '</button></form></td></tr>';
+        }
+        if ($ruleRows === '') {
+            $ruleRows = '<tr><td colspan="6" class="muted">No blacklist rules configured.</td></tr>';
+        }
+
+        $profileRows = '';
+        foreach ($profiles as $profile) {
+            $profileRows .= '<tr><td>' . $this->escape((string) ($profile['user_name'] ?? $profile['user_email'] ?? $profile['user_id'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($profile['user_email'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($profile['state'] ?? 'unbound')) . '</td>'
+                . '<td>' . $this->escape((string) ($profile['main_province_code'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($profile['previous_province_code'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($profile['last_verified_at'] ?? '')) . '</td></tr>';
+        }
+        if ($profileRows === '') {
+            $profileRows = '<tr><td colspan="6" class="muted">No geographic profiles yet.</td></tr>';
+        }
+
+        $violationRows = '';
+        foreach ($violations as $event) {
+            $violationRows .= '<tr><td>' . $this->escape((string) ($event['created_at'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($event['user_name'] ?? $event['user_email'] ?? $event['user_id'] ?? '')) . '</td>'
+                . '<td><code>' . $this->escape((string) ($event['device_uuid'] ?? '')) . '</code></td>'
+                . '<td>' . $this->escape((string) ($event['reason_code'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($event['attempt_id'] ?? '')) . '</td></tr>';
+        }
+        if ($violationRows === '') {
+            $violationRows = '<tr><td colspan="5" class="muted">No geographic violations recorded.</td></tr>';
+        }
+
+        $blockRows = '';
+        foreach ($blocks as $block) {
+            $clientId = (int) ($block['client_id'] ?? 0);
+            $deviceUuid = (string) ($block['device_id'] ?? '');
+            $blockRows .= '<tr><td>' . $this->escape((string) ($block['user_name'] ?? $block['owner_user_id'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($block['client_name'] ?? $clientId)) . '</td>'
+                . '<td><code>' . $this->escape($deviceUuid) . '</code></td>'
+                . '<td>' . $this->escape((string) ($block['state'] ?? 'active')) . '</td>'
+                . '<td>' . $this->escape((string) ($block['block_origin'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($block['blocked_until'] ?? '')) . '</td>'
+                . '<td><form class="inline" method="post" action="/admin/access-control/devices/release">'
+                . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                . '<input type="hidden" name="client_id" value="' . $clientId . '">'
+                . '<input type="hidden" name="device_uuid" value="' . $this->escape($deviceUuid) . '">'
+                . '<button class="button ghost" type="submit">Release</button></form></td></tr>';
+        }
+        if ($blockRows === '') {
+            $blockRows = '<tr><td colspan="7" class="muted">No device blocks found.</td></tr>';
+        }
+
+        $banRows = '';
+        foreach ($bans as $ban) {
+            $userId = (int) ($ban['user_id'] ?? 0);
+            $released = ($ban['released_at'] ?? null) !== null;
+            $banRows .= '<tr><td>' . $this->escape((string) ($ban['user_name'] ?? $ban['user_email'] ?? $userId)) . '</td>'
+                . '<td>' . $this->escape((string) ($ban['reason_code'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($ban['banned_at'] ?? '')) . '</td>'
+                . '<td>' . ($released ? '<span class="badge success">released</span>' : '<span class="badge danger">active</span>') . '</td>'
+                . '<td>' . ($released ? '' : '<form class="inline" method="post" action="/admin/access-control/accounts/release">'
+                    . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                    . '<input type="hidden" name="user_id" value="' . $userId . '">'
+                    . '<button class="button ghost" type="submit">Release Account</button></form>') . '</td></tr>';
+        }
+        if ($banRows === '') {
+            $banRows = '<tr><td colspan="5" class="muted">No account bans found.</td></tr>';
+        }
+
+        $body = '<div class="hero"><div><h2>Access Control</h2><p class="muted">Manage global deny rules, geographic profiles, policy events, device blocks, and account bans.</p></div></div>'
+            . '<section class="card"><h3>Blacklist Rules</h3><form method="post" action="/admin/access-control/rules"><input type="hidden" name="csrf_token" value="' . $csrf . '"><div class="form-grid">'
+            . '<div class="field"><label>Entity</label><select name="entity_type"><option value="device_uuid">Device UUID</option><option value="ip">Exact IP</option><option value="cidr">IP subnet</option><option value="province">Mainland province</option><option value="city">Prefecture city</option><option value="country">Country / region</option></select></div>'
+            . '<div class="field"><label>Value</label><input name="value" required maxlength="255" placeholder="UUID, IP, CIDR, province, city, or country"></div>'
+            . '<div class="field"><label>Province (city rules)</label><input name="province" maxlength="64"></div>'
+            . '<div class="field"><label>Reason code</label><input name="reason_code" value="admin_blacklist" maxlength="64"></div>'
+            . '</div><div class="actions"><button class="button" type="submit">Add Rule</button></div></form><div class="table-wrap"><table><thead><tr><th>ID</th><th>Entity</th><th>Value</th><th>Reason</th><th>Status</th><th>Action</th></tr></thead><tbody>' . $ruleRows . '</tbody></table></div></section>'
+            . '<section class="card"><h3>Geo Profiles</h3><div class="table-wrap"><table><thead><tr><th>User</th><th>Email</th><th>State</th><th>Main Province</th><th>Previous</th><th>Last Verified</th></tr></thead><tbody>' . $profileRows . '</tbody></table></div></section>'
+            . '<section class="card"><h3>Violations</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>User</th><th>Device UUID</th><th>Reason</th><th>Attempt</th></tr></thead><tbody>' . $violationRows . '</tbody></table></div></section>'
+            . '<section class="card"><h3>Device Blocks</h3><div class="table-wrap"><table><thead><tr><th>User</th><th>Client</th><th>Device UUID</th><th>State</th><th>Origin</th><th>Blocked Until</th><th>Action</th></tr></thead><tbody>' . $blockRows . '</tbody></table></div></section>'
+            . '<section class="card"><h3>Account Bans</h3><div class="table-wrap"><table><thead><tr><th>User</th><th>Reason</th><th>Banned At</th><th>Status</th><th>Action</th></tr></thead><tbody>' . $banRows . '</tbody></table></div></section>';
+
+        return $this->adminPage('Access Control', $body, $viewer, 'access-control');
+    }
+
+    public function saveAccessBlacklistRule(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->accessPolicy->registerBlacklistRule($request->body(), (int) $viewer['id']);
+            SessionAuth::flash('success', 'Access rule saved.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Unable to save the access rule.');
+        }
+        return Response::redirect('/admin/access-control');
+    }
+
+    public function toggleAccessBlacklistRule(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $ruleId = $this->idParam($params);
+            $activeValue = strtolower(trim((string) $request->input('active', '0')));
+            $active = in_array($activeValue, ['1', 'true', 'yes', 'on'], true);
+            $this->accessPolicy->setBlacklistRuleActive($ruleId, $active, (int) $viewer['id']);
+            SessionAuth::flash('success', 'Access rule status updated.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Unable to update the access rule.');
+        }
+        return Response::redirect('/admin/access-control');
+    }
+
+    public function releaseDeviceBlock(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->accessPolicy->releaseDeviceBlock(
+                (int) $request->input('client_id', 0),
+                (string) $request->input('device_uuid', ''),
+                (int) $viewer['id'],
+                true
+            );
+            SessionAuth::flash('success', 'Device block released.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Unable to release the device block.');
+        }
+        return Response::redirect('/admin/access-control');
+    }
+
+    public function releaseAccountBan(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->accessPolicy->releaseAccountBan(
+                (int) $request->input('user_id', 0),
+                (int) $viewer['id'],
+                (string) $request->input('release_note', '')
+            );
+            SessionAuth::flash('success', 'Account ban released.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Unable to release the account ban.');
+        }
+        return Response::redirect('/admin/access-control');
     }
 
     private function adminViewer(): ?array

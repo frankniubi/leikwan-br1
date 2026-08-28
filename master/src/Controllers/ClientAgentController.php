@@ -9,6 +9,7 @@ use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\AppSettings;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\AndroidEnrollmentCodeService;
+use Leikwan\Master\Support\AccessPolicyService;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\DeviceControlService;
@@ -31,6 +32,7 @@ final class ClientAgentController extends BaseController
     private UltraClientStatusService $ultraClientStatus;
     private DeviceControlService $deviceControls;
     private AndroidEnrollmentCodeService $enrollmentCodes;
+    private AccessPolicyService $accessPolicy;
 
     public function __construct(
         \Leikwan\Master\Config $config,
@@ -42,6 +44,7 @@ final class ClientAgentController extends BaseController
         ?UltraLeaseService $ultraLeases = null,
         ?DeviceControlService $deviceControls = null,
         ?AndroidEnrollmentCodeService $enrollmentCodes = null,
+        ?AccessPolicyService $accessPolicy = null,
     ) {
         parent::__construct($config, $db);
         $this->ultraMaterials = $ultraMaterials
@@ -52,6 +55,62 @@ final class ClientAgentController extends BaseController
         $this->ultraClientStatus = $ultraClientStatus ?? new UltraClientStatusService($config, $db);
         $this->deviceControls = $deviceControls ?? DeviceControlService::fromConfig($config, $db);
         $this->enrollmentCodes = $enrollmentCodes ?? new AndroidEnrollmentCodeService($db);
+        $this->accessPolicy = $accessPolicy ?? new AccessPolicyService(
+            $db,
+            clientIpResolver: new TrustedClientIpResolver((string) ($config->get('TRUSTED_PROXY_CIDRS', '') ?? '')),
+        );
+    }
+
+    public function locationChallenge(Request $request, array $params): Response
+    {
+        $client = $this->accessPolicyClient($request);
+        $platform = $this->accessPolicyPlatform($request);
+        $challenge = $this->accessPolicy->issueLocationChallenge(
+            $client,
+            $this->accessPolicyDeviceUuid($request),
+            $this->accessPolicyAttemptId($request),
+            $platform,
+            $request,
+        );
+        return $this->noStoreJson([
+            'ok' => true,
+            'protocol_version' => 1,
+            'challenge_token' => (string) ($challenge['token'] ?? ''),
+            'challenge_expires_at' => (string) ($challenge['expires_at'] ?? ''),
+            'attempt_id' => (string) ($challenge['attempt_id'] ?? ''),
+            'platform' => (string) ($challenge['platform'] ?? $platform),
+            'poll_interval_seconds' => (int) ($challenge['poll_interval_seconds'] ?? 1800),
+            'poll_jitter_seconds' => (int) ($challenge['poll_jitter_seconds'] ?? 300),
+        ]);
+    }
+
+    public function locationReport(Request $request, array $params): Response
+    {
+        $client = $this->accessPolicyClient($request);
+        $this->accessPolicyPlatform($request);
+        try {
+            $decision = $this->accessPolicy->recordLocationReport($client, $request);
+        } catch (ApiException $exception) {
+            $stable = [
+                'direct_location_check_required', 'location_check_unavailable',
+                'access_blacklisted', 'geo_lock_violation', 'device_temporarily_banned',
+                'device_banned', 'account_banned',
+            ];
+            if (!in_array($exception->getMessage(), $stable, true)
+                && in_array($exception->statusCode(), [400, 413, 422], true)) {
+                throw new ApiException('location_report_invalid', 422);
+            }
+            throw $exception;
+        }
+        return $this->noStoreJson(['ok' => true, 'protocol_version' => 1] + $this->safeAccessDecision($decision));
+    }
+
+    public function accessPolicyStatus(Request $request, array $params): Response
+    {
+        $client = $this->accessPolicyClient($request);
+        $this->accessPolicyPlatform($request);
+        $status = $this->accessPolicy->policyStatus($client, $request, $this->accessPolicyDeviceUuid($request));
+        return $this->noStoreJson(['ok' => true] + $status);
     }
 
     public function deviceChallenge(Request $request, array $params): Response
@@ -59,7 +118,9 @@ final class ClientAgentController extends BaseController
         $client = Auth::requireClientAgent($request, $this->db);
         $this->requireAndroidRequest($request);
         $this->assertRequestedClientId($client, $request);
-        $challenge = $this->deviceControls->issueChallenge($client, $this->requestedDeviceId($request));
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $challenge = $this->deviceControls->issueChallenge($client, $deviceId, 1);
         return $this->noStoreJson(['ok' => true] + $challenge);
     }
 
@@ -72,9 +133,12 @@ final class ClientAgentController extends BaseController
         if (!is_array($proof)) {
             throw new ApiException('attestation_proof_invalid', 422);
         }
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $proof['access_policy_protocol_version'] = 1;
         $enrollment = $this->deviceControls->enroll(
             $client,
-            $this->requestedDeviceId($request),
+            $deviceId,
             (string) $request->input('nonce', ''),
             $proof,
         );
@@ -89,9 +153,11 @@ final class ClientAgentController extends BaseController
     {
         $client = Auth::requireClientAgent($request, $this->db);
         $this->requireAndroidRequest($request);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'acknowledge', $deviceId);
         $this->deviceControls->acknowledge(
             $client,
-            $this->requestedDeviceId($request),
+            $deviceId,
             max(0, (int) $request->input('command_version', 0)),
         );
         return $this->noStoreJson(['ok' => true]);
@@ -101,7 +167,9 @@ final class ClientAgentController extends BaseController
     {
         $this->requireAndroidRequest($request);
         $client = $this->activeClientForEnrollmentCode((string) $request->input('enrollment_code', ''));
-        $challenge = $this->deviceControls->issueChallenge($client, $this->requestedDeviceId($request));
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $challenge = $this->deviceControls->issueChallenge($client, $deviceId, 1);
         return $this->noStoreJson([
             'ok' => true,
             'client_id' => (int) $client['id'],
@@ -116,6 +184,10 @@ final class ClientAgentController extends BaseController
         if (!is_array($proof)) {
             throw new ApiException('attestation_proof_invalid', 422);
         }
+        $policyClient = $this->activeClientForEnrollmentCode($code);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($policyClient, $request, 'enrollment', $deviceId);
+        $proof['access_policy_protocol_version'] = 1;
         [$client, $enrollment] = $this->db->transaction(function () use ($code, $request, $proof): array {
             $codeRow = $this->enrollmentCodes->findActive($code);
             if ($codeRow === null) {
@@ -744,6 +816,13 @@ final class ClientAgentController extends BaseController
             return $this->json(['ok' => false, 'error' => 'invalid credentials'], 401);
         }
 
+        $loginDevice = $this->requestDeviceIdentity($request, false, 'device_uuid_invalid');
+        if ($loginDevice !== '') {
+            $this->accessPolicy->preflightClientRequest([
+                'owner_user_id' => (int) $user['id'],
+            ], $request, $loginDevice);
+        }
+
         // Find clients owned by this user
         $clients = $this->db->fetchAll(
             'SELECT id, name, agent_token FROM clients WHERE owner_user_id = :user_id AND status = :status',
@@ -786,13 +865,15 @@ final class ClientAgentController extends BaseController
         }
 
         $client = $this->db->fetchOne(
-            'SELECT id, name, agent_token FROM clients WHERE id = :id AND owner_user_id = :user_id AND status = :status LIMIT 1',
+            'SELECT * FROM clients WHERE id = :id AND owner_user_id = :user_id AND status = :status LIMIT 1',
             ['id' => $clientId, 'user_id' => $session['user_id'], 'status' => 'active']
         );
 
         if ($client === null) {
             return $this->json(['ok' => false, 'error' => 'client not found'], 404);
         }
+        $deviceId = $this->clientOnlineSessions()->deviceIdFromRequest($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'login', $deviceId);
 
         return $this->json([
             'ok' => true,
@@ -802,16 +883,95 @@ final class ClientAgentController extends BaseController
         ]);
     }
 
+    /** @return array<string, mixed> */
+    private function accessPolicyClient(Request $request): array
+    {
+        $agentToken = trim((string) ($request->bearerToken() ?? $request->input('token', '')));
+        if ($agentToken !== '') {
+            $client = Auth::requireClientAgent($request, $this->db);
+            $requestedClientId = (int) $request->input('client_id', 0);
+            if ($requestedClientId > 0 && $requestedClientId !== (int) ($client['id'] ?? 0)) {
+                throw new ApiException('client_id_mismatch', 403);
+            }
+            return $client;
+        }
+
+        $desktopSessionToken = trim((string) $request->input('session_token', ''));
+        $clientId = (int) $request->input('client_id', 0);
+        if ($desktopSessionToken !== '' && $clientId > 0) {
+            $session = (new DesktopClientSessionService($this->db, $this->config))->findActive($desktopSessionToken);
+            if ($session === null) {
+                throw new ApiException('client_agent_auth_failed', 401);
+            }
+            $client = $this->db->fetchOne(
+                'SELECT * FROM clients
+                 WHERE id = :id AND owner_user_id = :user_id AND status = :status LIMIT 1',
+                ['id' => $clientId, 'user_id' => (int) $session['user_id'], 'status' => 'active']
+            );
+            if ($client === null) {
+                throw new ApiException('client_agent_auth_failed', 401);
+            }
+            return $client;
+        }
+
+        $enrollmentCode = trim((string) $request->input('enrollment_code', ''));
+        if ($enrollmentCode !== '') {
+            return $this->activeClientForEnrollmentCode($enrollmentCode);
+        }
+        throw new ApiException('client_agent_auth_failed', 401);
+    }
+
+    private function accessPolicyPlatform(Request $request): string
+    {
+        $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? $request->input('platform', ''))));
+        if (!in_array($platform, ['android', 'windows', 'macos', 'ios'], true)) {
+            throw new ApiException('location_platform_invalid', 422);
+        }
+        return $platform;
+    }
+
+    private function accessPolicyDeviceUuid(Request $request): string
+    {
+        return $this->requestDeviceIdentity($request, true, 'device_uuid_invalid');
+    }
+
+    private function accessPolicyAttemptId(Request $request): string
+    {
+        $attemptId = trim((string) ($request->header('x-attempt-id') ?? $request->input('attempt_id', '')));
+        if ($attemptId === '' || strlen($attemptId) > 128) {
+            throw new ApiException('location_attempt_invalid', 422);
+        }
+        return $attemptId;
+    }
+
+    /** @param array<string, mixed> $decision @return array<string, mixed> */
+    private function safeAccessDecision(array $decision): array
+    {
+        $safe = [];
+        foreach ([
+            'decision', 'location_required', 'geo_lock_enabled', 'province_code',
+            'main_province_code', 'next_location_check_at', 'reset_generation',
+            'province_changed', 'reset_blocked_device_count',
+        ] as $field) {
+            if (array_key_exists($field, $decision)) {
+                $safe[$field] = $decision[$field];
+            }
+        }
+        return $safe;
+    }
+
     /**
      * @param array<string, mixed> $client
      * @return array{0:ClientOnlineSessionService,1:string}
      */
     private function enforceClientRequest(array $client, Request $request, string $touchType): array
     {
+        $sessions = $this->clientOnlineSessions();
+        $deviceId = $sessions->deviceIdFromRequest($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, $touchType, $deviceId);
         if ($this->isAndroidRequest($request)) {
             $this->deviceControls->requireActive($client, $request);
         }
-        $sessions = $this->clientOnlineSessions();
         return [$sessions, $sessions->enforceFromRequest($client, $request, $touchType)];
     }
 
@@ -847,12 +1007,33 @@ final class ClientAgentController extends BaseController
 
     private function requestedDeviceId(Request $request): string
     {
-        $header = trim((string) ($request->header('x-device-id') ?? ''));
-        $body = trim((string) $request->input('device_id', ''));
-        if ($header !== '' && $body !== '' && !hash_equals($header, $body)) {
-            throw new ApiException('device_id_invalid', 422);
+        return $this->requestDeviceIdentity($request, false, 'device_id_invalid');
+    }
+
+    private function requestDeviceIdentity(Request $request, bool $required, string $errorCode): string
+    {
+        $deviceId = '';
+        foreach ([
+            $request->header('x-device-uuid', ''),
+            $request->header('x-device-id', ''),
+            $request->input('device_uuid', ''),
+            $request->input('device_id', ''),
+        ] as $candidate) {
+            $candidate = trim((string) $candidate);
+            if ($candidate === '') {
+                continue;
+            }
+            if ($deviceId !== '' && !hash_equals($deviceId, $candidate)) {
+                throw new ApiException($errorCode, 422);
+            }
+            $deviceId = $candidate;
         }
-        return $header !== '' ? $header : $body;
+        if (($required && $deviceId === '')
+            || strlen($deviceId) > 191
+            || preg_match('/[\x00-\x20\x7f]/', $deviceId) === 1) {
+            throw new ApiException($errorCode, 422);
+        }
+        return $deviceId;
     }
 
     /** @return array<string, mixed> */

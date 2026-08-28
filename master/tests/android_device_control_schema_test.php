@@ -28,6 +28,10 @@ $sql = '';
 foreach ($paths as $path) {
     $sql .= (string) file_get_contents($path) . "\n";
 }
+$schema = (string) file_get_contents(__DIR__ . '/../migrations/schema.sql');
+foreach (['reason_code', 'changed_by_user_id', 'changed_at', 'acknowledged_at'] as $field) {
+    assertTrue(str_contains($schema, $field), 'expected fresh schema device control metadata: ' . $field);
+}
 if ($sql === '') {
     fail('Android device-control migration is missing');
 }

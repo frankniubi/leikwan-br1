@@ -132,6 +132,50 @@ final class ClientOnlineSessionService
         );
     }
 
+    public function revokeAllForUser(int $userId): int
+    {
+        if ($userId <= 0) {
+            return 0;
+        }
+        $clients = $this->db->fetchAll(
+            'SELECT id FROM clients WHERE owner_user_id = :owner_user_id',
+            ['owner_user_id' => $userId]
+        );
+        $now = gmdate('Y-m-d H:i:s');
+        $revoked = 0;
+        foreach ($clients as $client) {
+            $clientId = (int) ($client['id'] ?? 0);
+            if ($clientId <= 0) {
+                continue;
+            }
+            $revoked += $this->db->execute(
+                'UPDATE forward_combination_self_leg_donors
+                 SET state = :state, revoked_at = :revoked_at, revoke_reason = :revoke_reason, updated_at = :updated_at
+                 WHERE client_id = :client_id AND state IN (:active_state, :qualifying_state)',
+                [
+                    'client_id' => $clientId,
+                    'state' => 'revoked',
+                    'active_state' => 'active',
+                    'qualifying_state' => 'qualifying',
+                    'revoked_at' => $now,
+                    'revoke_reason' => 'account_device_reset',
+                    'updated_at' => $now,
+                ]
+            );
+            $revoked += $this->db->execute(
+                'UPDATE android_device_sessions SET revoked_at = :revoked_at
+                 WHERE client_id = :client_id AND revoked_at IS NULL',
+                ['client_id' => $clientId, 'revoked_at' => $now]
+            );
+            $revoked += $this->revokeAllForClient($clientId);
+        }
+        $revoked += $this->db->execute(
+            'DELETE FROM desktop_client_sessions WHERE user_id = :user_id',
+            ['user_id' => $userId]
+        );
+        return $revoked;
+    }
+
     public function revokeDevice(int $clientId, string $deviceId): int
     {
         $deviceId = trim($deviceId);
@@ -187,14 +231,24 @@ final class ClientOnlineSessionService
 
     public function deviceIdFromRequest(Request $request): string
     {
-        $header = trim((string) ($request->header('x-device-id') ?? ''));
-        if ($header !== '') {
-            return $header;
+        $deviceId = '';
+        foreach ([
+            $request->header('x-device-id', ''),
+            $request->header('x-device-uuid', ''),
+            $request->input('device_id', ''),
+            $request->input('device_uuid', ''),
+        ] as $candidate) {
+            $candidate = trim((string) $candidate);
+            if ($candidate === '') {
+                continue;
+            }
+            if ($deviceId !== '' && !hash_equals($deviceId, $candidate)) {
+                throw new ApiException('device_id_invalid', 422);
+            }
+            $deviceId = $candidate;
         }
-
-        $body = trim((string) $request->input('device_id', ''));
-        if ($body !== '') {
-            return $body;
+        if ($deviceId !== '') {
+            return $deviceId;
         }
 
         $userAgent = trim((string) ($request->header('user-agent') ?? 'unknown'));

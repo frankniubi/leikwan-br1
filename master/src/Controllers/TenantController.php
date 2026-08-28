@@ -7,6 +7,7 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\AndroidEnrollmentCodeService;
 use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\AccessPolicyService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\DeviceControlService;
 use Leikwan\Master\Support\ForwardLineApiContract;
@@ -18,12 +19,16 @@ use Leikwan\Master\Support\WhmcsIdentityService;
 
 final class TenantController extends BaseController
 {
+    private AccessPolicyService $accessPolicy;
+
     public function __construct(
         \Leikwan\Master\Config $config,
         \Leikwan\Master\Database\Database $db,
         private ProvisioningService $provisioning,
+        ?AccessPolicyService $accessPolicy = null,
     ) {
         parent::__construct($config, $db);
+        $this->accessPolicy = $accessPolicy ?? new AccessPolicyService($db);
     }
 
     public function introPage(Request $request, array $params): Response
@@ -1001,6 +1006,154 @@ final class TenantController extends BaseController
         return Response::redirect('/tenant/services/' . $serviceId);
     }
 
+    public function accessSecurityPage(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        $userId = (int) $user['id'];
+        $profile = $this->accessPolicy->tenantProfile($userId) ?? [
+            'state' => 'unbound',
+            'main_province_code' => null,
+            'previous_province_code' => null,
+            'last_verified_at' => null,
+            'self_change_available_at' => null,
+            'reset_generation' => 0,
+            'reset_started_at' => null,
+        ];
+        $devices = $this->accessPolicy->tenantDeviceRows($userId);
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $mainProvince = trim((string) ($profile['main_province_code'] ?? ''));
+        $availableAt = trim((string) ($profile['self_change_available_at'] ?? ''));
+        $geoEnabled = $this->accessPolicy->effectiveGeoLockForUser($userId);
+
+        $options = '<option value="">Select province</option>';
+        foreach ($this->accessPolicy->regions()->allProvinces() as $province) {
+            $selected = $province === $mainProvince ? ' selected' : '';
+            $options .= '<option value="' . $this->escape($province) . '"' . $selected . '>'
+                . $this->escape($province) . '</option>';
+        }
+
+        $deviceRows = '';
+        foreach ($devices as $device) {
+            $clientId = (int) ($device['client_id'] ?? 0);
+            $deviceUuid = trim((string) ($device['device_uuid'] ?? ''));
+            if ($clientId <= 0 || $deviceUuid === '') {
+                continue;
+            }
+            $origin = trim((string) ($device['block_origin'] ?? ''));
+            $releasePolicy = trim((string) ($device['release_policy'] ?? ''));
+            $blockedUntil = trim((string) ($device['blocked_until'] ?? ''));
+            $canRestore = $blockedUntil !== ''
+                && $origin === 'manual_tenant'
+                && $releasePolicy === 'tenant_or_admin';
+            $restore = $canRestore
+                ? '<form class="inline" method="post" action="/tenant/security/devices/restore">'
+                    . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                    . '<input type="hidden" name="client_id" value="' . $clientId . '">'
+                    . '<input type="hidden" name="device_uuid" value="' . $this->escape($deviceUuid) . '">'
+                    . '<button class="button ghost" type="submit">Restore</button></form>'
+                : '<span class="muted">Admin release</span>';
+            $deviceRows .= '<tr><td>' . $this->escape((string) ($device['client_name'] ?? $clientId)) . '</td>'
+                . '<td><code>' . $this->escape($deviceUuid) . '</code></td>'
+                . '<td>' . $this->escape((string) ($device['platform'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($device['state'] ?? 'active')) . '</td>'
+                . '<td>' . $this->escape($origin !== '' ? $origin : '-') . '</td>'
+                . '<td>' . $this->escape($blockedUntil !== '' ? $blockedUntil : '-') . '</td>'
+                . '<td>' . $restore . '</td></tr>';
+        }
+        if ($deviceRows === '') {
+            $deviceRows = '<tr><td colspan="7" class="muted">No registered devices.</td></tr>';
+        }
+
+        $profileState = (string) ($profile['state'] ?? 'unbound');
+        $body = '<div class="hero"><div><h2>Security</h2>'
+            . '<p class="muted">Review location binding and control devices for this account.</p></div></div>'
+            . '<section class="card"><h3>Location binding</h3>'
+            . '<p><strong>Geo lock:</strong> ' . ($geoEnabled ? 'Enabled' : 'Disabled') . '</p>'
+            . '<p><strong>State:</strong> ' . $this->escape($profileState)
+            . ' · <strong>Main province:</strong> ' . $this->escape($mainProvince !== '' ? $mainProvince : 'Not bound') . '</p>'
+            . '<p class="muted">Last verified: ' . $this->escape((string) ($profile['last_verified_at'] ?? 'Not verified'))
+            . ' · Next self-change: ' . $this->escape($availableAt !== '' ? $availableAt : 'Available now') . '</p>'
+            . '<form method="post" action="/tenant/security/main-province"><input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<div class="form-grid"><div class="field"><label for="main-province">Main province</label>'
+            . '<select id="main-province" name="province" required>' . $options . '</select></div>'
+            . '</div><div class="actions"><button class="button" type="submit">Change main province</button></div></form></section>'
+            . '<section class="card"><div class="hero"><div><h3>Devices</h3>'
+            . '<p class="muted">Kick all devices to reset application sessions. Your web Panel session stays active.</p></div>'
+            . '<form method="post" action="/tenant/security/kick-all" data-confirm="Confirm kicking all application devices" onsubmit="return confirm(this.dataset.confirm);">'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<button class="button danger" type="submit">Kick all devices</button></form></div>'
+            . '<div class="table-wrap"><table><thead><tr><th>Client</th><th>Device UUID</th><th>Platform</th><th>State</th><th>Block origin</th><th>Blocked until</th><th>Action</th></tr></thead><tbody>'
+            . $deviceRows . '</tbody></table></div></section>';
+
+        return $this->page('Security', $body, $user, $this->tenantNav('security'));
+    }
+
+    public function changeMainProvince(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $province = trim((string) $request->input('province', ''));
+            $this->accessPolicy->changeMainProvince((int) $user['id'], $province, (int) $user['id'], false);
+            SessionAuth::flash('success', 'Main province updated.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Unable to update the main province.');
+        }
+        return Response::redirect('/tenant/security');
+    }
+
+    public function kickAllDevices(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $result = $this->accessPolicy->beginAllDeviceReset((int) $user['id'], (int) $user['id']);
+            $message = !empty($result['idempotent'])
+                ? 'A device reset is already pending.'
+                : 'All application devices were kicked out.';
+            SessionAuth::flash('success', $message);
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Unable to kick all devices.');
+        }
+        // Deliberately preserve the authenticated web Panel session.
+        return Response::redirect('/tenant/security');
+    }
+
+    public function restoreDevice(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            [$clientId, $deviceUuid] = $this->ownedTenantDevice($user, $request);
+            DeviceControlService::fromConfig($this->config, $this->db)->releaseTemporaryBlock(
+                $clientId,
+                $deviceUuid,
+                (int) $user['id'],
+                false,
+            );
+            SessionAuth::flash('success', 'Device restored.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'This device cannot be restored by the tenant.');
+        }
+        return Response::redirect('/tenant/security');
+    }
+
     public function clientsPage(Request $request, array $params): Response
     {
         $user = SessionAuth::currentUser($this->db);
@@ -1072,22 +1225,34 @@ final class TenantController extends BaseController
                 }
             }
             $deviceId = trim((string) ($session['device_id'] ?? ''));
-            $kickForm = '<form class="inline" method="post" action="/tenant/clients/kick" onsubmit="return confirm(\'确定要踢走这个客户端吗？\');">'
+            $kickForm = '<form class="inline" method="post" action="/tenant/clients/kick" data-confirm="Confirm kicking this client" onsubmit="return confirm(this.dataset.confirm);">'
                 . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                . '<input type="hidden" name="client_id" value="' . $clientId . '">'
                 . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
                 . '<button class="button ghost" type="submit">踢走</button></form>';
             $control = $controlsByDevice[$deviceId] ?? null;
             $controlState = is_array($control) ? (string) ($control['state'] ?? 'active') : 'online';
             $controlForms = $kickForm;
             if (is_array($control)) {
-                if ($controlState === 'banned') {
-                    $controlForms = '<form class="inline" method="post" action="/tenant/clients/unban">'
+                $blockedUntil = trim((string) ($control['blocked_until'] ?? ''));
+                $tenantCanRestore = $blockedUntil !== ''
+                    && (string) ($control['block_origin'] ?? '') === 'manual_tenant'
+                    && (string) ($control['release_policy'] ?? '') === 'tenant_or_admin';
+                if ($tenantCanRestore) {
+                    $controlForms = '<form class="inline" method="post" action="/tenant/security/devices/restore">'
                         . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
-                        . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
-                        . '<button class="button ghost" type="submit">Unban</button></form>';
+                        . '<input type="hidden" name="client_id" value="' . $clientId . '">'
+                        . '<input type="hidden" name="device_uuid" value="' . $this->escape($deviceId) . '">'
+                        . '<button class="button ghost" type="submit">Restore</button></form>';
+                } elseif ($controlState === 'banned' || $controlState === 'kicked'
+                    || ($blockedUntil !== '' && (string) ($control['release_policy'] ?? '') !== 'tenant_or_admin')) {
+                    // Tenant-origin temporary blocks are restorable above;
+                    // permanent and policy/admin blocks stay administrator-only.
+                    $controlForms = '<span class="muted">Admin release</span>';
                 } else {
-                    $controlForms .= '<form class="inline" method="post" action="/tenant/clients/ban" onsubmit="return confirm(\'Ban this device?\');">'
+                    $controlForms .= '<form class="inline" method="post" action="/tenant/clients/ban" data-confirm="Confirm banning this device" onsubmit="return confirm(this.dataset.confirm);">'
                         . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                        . '<input type="hidden" name="client_id" value="' . $clientId . '">'
                         . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
                         . '<button class="button ghost" type="submit">Ban</button></form>';
                 }
@@ -1107,8 +1272,8 @@ final class TenantController extends BaseController
         if ($sessions === []) {
             $onlineList .= '<div class="muted">当前没有在线客户端。</div>';
         } else {
-            $onlineList .= '<table class="table"><thead><tr><th>IP</th><th>系统</th><th>客户端版本</th><th></th></tr></thead><tbody>'
-                . $onlineRows . '</tbody></table>';
+            $onlineList .= '<div class="table-wrap"><table class="table"><thead><tr><th>IP</th><th>系统</th><th>客户端版本</th><th></th></tr></thead><tbody>'
+                . $onlineRows . '</tbody></table></div>';
         }
         $onlineList .= '</div>';
 
@@ -1181,34 +1346,23 @@ final class TenantController extends BaseController
 
     public function kickClientDevice(Request $request, array $params): Response
     {
-        $user = SessionAuth::currentUser($this->db);
-        if ($user === null || (string) $user['role'] !== 'tenant') {
+        $user = $this->tenantUser();
+        if ($user === null) {
             return Response::redirect('/login');
         }
 
         try {
             SessionAuth::validateCsrf($request);
-            $client = $this->provisioning->defaultClientForUser((int) $user['id']);
-            if ($client === null) {
-                $client = $this->provisioning->ensureDefaultClientForUser((int) $user['id']);
-            }
-            $clientId = (int) ($client['id'] ?? 0);
-            $deviceId = trim((string) $request->input('device_id', ''));
-            if ($clientId <= 0 || $deviceId === '') {
-                throw new ApiException('invalid_device', 400);
-            }
+            [$clientId, $deviceId] = $this->ownedTenantDevice($user, $request);
 
-            if (str_starts_with($deviceId, 'android-client-')) {
-                DeviceControlService::fromConfig($this->config, $this->db)->setState(
-                    $clientId,
-                    $deviceId,
-                    'kicked',
-                    'tenant_kick',
-                    (int) $user['id'],
-                );
-                (new UltraLeaseService($this->config, $this->db))->revokeDevice($clientId, $deviceId);
-            }
-            (new ClientOnlineSessionService($this->db))->revokeDevice($clientId, $deviceId);
+            DeviceControlService::fromConfig($this->config, $this->db)->setTemporaryBlock(
+                $clientId,
+                $deviceId,
+                'manual_tenant',
+                1800,
+                (int) $user['id'],
+            );
+            (new UltraLeaseService($this->config, $this->db))->revokeDevice($clientId, $deviceId);
             SessionAuth::flash('success', '客户端已踢下线。');
         } catch (\Throwable) {
             SessionAuth::flash('error', '踢下线失败。');
@@ -1224,7 +1378,21 @@ final class TenantController extends BaseController
 
     public function unbanClientDevice(Request $request, array $params): Response
     {
-        return $this->changeAndroidDeviceState($request, 'active', 'tenant_unban');
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            // Permanent device bans are an administrator-only control. Keep
+            // the legacy route so old clients receive a deterministic denial.
+            throw new ApiException('device_unban_admin_only', 403);
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Permanent device bans require administrator release.');
+        }
+
+        return Response::redirect('/tenant/clients');
     }
 
     public function createAndroidEnrollmentCode(Request $request, array $params): Response
@@ -1256,22 +1424,14 @@ final class TenantController extends BaseController
 
     private function changeAndroidDeviceState(Request $request, string $state, string $reason): Response
     {
-        $user = SessionAuth::currentUser($this->db);
-        if ($user === null || (string) $user['role'] !== 'tenant') {
+        $user = $this->tenantUser();
+        if ($user === null) {
             return Response::redirect('/login');
         }
 
         try {
             SessionAuth::validateCsrf($request);
-            $client = $this->provisioning->defaultClientForUser((int) $user['id']);
-            if ($client === null) {
-                $client = $this->provisioning->ensureDefaultClientForUser((int) $user['id']);
-            }
-            $clientId = (int) ($client['id'] ?? 0);
-            $deviceId = trim((string) $request->input('device_id', ''));
-            if ($clientId <= 0 || !str_starts_with($deviceId, 'android-client-')) {
-                throw new ApiException('invalid_device', 400);
-            }
+            [$clientId, $deviceId] = $this->ownedTenantDevice($user, $request);
             DeviceControlService::fromConfig($this->config, $this->db)->setState(
                 $clientId,
                 $deviceId,
@@ -3244,10 +3404,43 @@ final class TenantController extends BaseController
             ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'Forwards', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
             ['group' => 'Services', 'href' => '/tenant/plans', 'label' => 'Packages', 'active' => $active === 'plans'],
             ['group' => '客户端', 'href' => '/tenant/clients', 'label' => '客户端', 'active' => $active === 'clients'],
+            ['group' => 'Account', 'href' => '/tenant/security', 'label' => 'Security', 'active' => $active === 'security'],
             ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Account', 'active' => $active === 'account'],
             ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
             ['group' => 'Advanced', 'href' => '/tenant/slave-groups', 'label' => 'Node Groups', 'active' => $active === 'slave-groups'],
         ];
+    }
+
+    /** @return array<string, mixed>|null */
+    private function tenantUser(): ?array
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) ($user['role'] ?? '') !== 'tenant') {
+            return null;
+        }
+        return $user;
+    }
+
+    /** @return array{0:int,1:string} */
+    private function ownedTenantDevice(array $user, Request $request): array
+    {
+        $clientId = (int) $request->input('client_id', 0);
+        $uuidValue = trim((string) $request->input('device_uuid', ''));
+        $idValue = trim((string) $request->input('device_id', ''));
+        if ($uuidValue !== '' && $idValue !== '' && !hash_equals($uuidValue, $idValue)) {
+            throw new ApiException('device_id_invalid', 422);
+        }
+        $deviceUuid = $uuidValue !== '' ? $uuidValue : $idValue;
+        if ($clientId <= 0 || $deviceUuid === '' || strlen($deviceUuid) > 191 || preg_match('/[\x00-\x20\x7f]/', $deviceUuid) === 1) {
+            throw new ApiException('invalid_device', 400);
+        }
+        foreach ($this->accessPolicy->tenantDeviceRows((int) $user['id']) as $device) {
+            if ((int) ($device['client_id'] ?? 0) === $clientId
+                && hash_equals($deviceUuid, (string) ($device['device_uuid'] ?? ''))) {
+                return [$clientId, $deviceUuid];
+            }
+        }
+        throw new ApiException('device_not_owned', 403);
     }
 
     private function whmcsIdentityService(): WhmcsIdentityService
