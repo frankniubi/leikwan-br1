@@ -231,14 +231,24 @@ final class ClientOnlineSessionService
 
     public function deviceIdFromRequest(Request $request): string
     {
-        $header = trim((string) ($request->header('x-device-id') ?? ''));
-        if ($header !== '') {
-            return $header;
+        $deviceId = '';
+        foreach ([
+            $request->header('x-device-id', ''),
+            $request->header('x-device-uuid', ''),
+            $request->input('device_id', ''),
+            $request->input('device_uuid', ''),
+        ] as $candidate) {
+            $candidate = trim((string) $candidate);
+            if ($candidate === '') {
+                continue;
+            }
+            if ($deviceId !== '' && !hash_equals($deviceId, $candidate)) {
+                throw new ApiException('device_id_invalid', 422);
+            }
+            $deviceId = $candidate;
         }
-
-        $body = trim((string) $request->input('device_id', ''));
-        if ($body !== '') {
-            return $body;
+        if ($deviceId !== '') {
+            return $deviceId;
         }
 
         $userAgent = trim((string) ($request->header('user-agent') ?? 'unknown'));

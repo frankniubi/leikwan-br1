@@ -3014,7 +3014,8 @@ final class ProvisioningService
         $extraClientPrice = $this->normalizeMoney($payload['extra_client_price'] ?? '0');
         $maxForwardRuleQuantity = max(1, min(100000, (int) ($payload['max_forward_rule_quantity'] ?? 64)));
         $isActive = (int) (($payload['is_active'] ?? '1') ? 1 : 0);
-        $geoLockEnabled = (int) (($payload['geo_lock_enabled'] ?? '0') ? 1 : 0);
+        $geoLockValue = strtolower(trim((string) ($payload['geo_lock_enabled'] ?? '0')));
+        $geoLockEnabled = in_array($geoLockValue, ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
         $featureFlagsJson = $this->normalizeJsonField($payload['feature_flags_json'] ?? $payload['feature_flags'] ?? null);
         $groupIds = [];
         foreach ((array) ($payload['allowed_node_group_ids'] ?? []) as $groupId) {

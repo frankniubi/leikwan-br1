@@ -12,6 +12,7 @@ assertContains($admin, 'name="geo_lock_enabled"', 'plan form must expose geo loc
 assertContains($admin, 'geo_lock_enabled', 'admin plan controller must pass geo lock field');
 assertContains($provisioning, 'geo_lock_enabled', 'provisioning savePlan must persist geo lock field');
 assertContains($provisioning, 'geo_lock_enabled = :geo_lock_enabled', 'plan UPDATE must persist geo lock field');
+assertContains($provisioning, "in_array(\$geoLockValue, ['1', 'true', 'yes', 'on'], true)", 'geo lock switch must parse false string as disabled');
 assertContains($schema, 'geo_lock_enabled TINYINT(1) NOT NULL DEFAULT 0', 'schema geo lock default');
 
 echo "ok\n";

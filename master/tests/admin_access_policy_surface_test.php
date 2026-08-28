@@ -34,5 +34,6 @@ foreach (['saveAccessBlacklistRule', 'toggleAccessBlacklistRule', 'releaseDevice
     $body = $start === false ? '' : substr($controller, $start, 4000);
     assertContains($body, 'SessionAuth::validateCsrf($request)', $method . ' must validate CSRF');
 }
+assertContains($controller, "in_array(\$activeValue, ['1', 'true', 'yes', 'on'], true)", 'blacklist toggle must parse false string as disabled');
 
 echo "ok\n";

@@ -65,7 +65,12 @@ class AccessPolicyStore
     {
         $row = $this->db->fetchOne(
             "SELECT 1 AS enabled FROM access_blacklist_rules
-             WHERE is_active = 1 AND entity_type IN ('province', 'city', 'country') LIMIT 1"
+            WHERE is_active = 1 AND entity_type IN (
+                'province', 'city', 'country',
+                'cn_province', 'province_cn', 'mainland_province',
+                'cn_city', 'city_cn', 'prefecture', 'prefecture_city',
+                'country_region', 'region', 'country_code'
+            ) LIMIT 1"
         );
         return $row !== null;
     }
@@ -566,8 +571,14 @@ class AccessPolicyStore
         string $releasePolicy,
     ): void {
         $existing = $this->controlFor($clientId, $deviceUuid);
+        if ($existing !== null && (string) ($existing['state'] ?? '') === 'banned') {
+            // A timed policy/reset block must never downgrade a stronger
+            // permanent administrator block.
+            return;
+        }
         $now = gmdate('Y-m-d H:i:s');
         if ($existing === null) {
+            $commandVersion = 1;
             $this->db->insert('client_device_controls', [
                 'client_id' => $clientId,
                 'device_id' => $deviceUuid,
@@ -582,7 +593,7 @@ class AccessPolicyStore
                 'reason_code' => 'temporary_' . $origin,
                 'changed_by_user_id' => null,
                 'changed_at' => $now,
-                'command_version' => 1,
+                'command_version' => $commandVersion,
                 'last_acknowledged_command_version' => 0,
                 'acknowledged_at' => null,
                 'last_attested_at' => null,
@@ -592,9 +603,11 @@ class AccessPolicyStore
             ]);
         } else {
             $previousCommandVersion = max(0, (int) ($existing['command_version'] ?? 0));
+            $commandVersion = $previousCommandVersion + 1;
             $updated = $this->db->execute(
                 'UPDATE client_device_controls
-                 SET blocked_until = :blocked_until,
+                 SET state = :state,
+                     blocked_until = :blocked_until,
                      block_origin = :block_origin,
                      release_policy = :release_policy,
                      reason_code = :reason_code,
@@ -605,11 +618,12 @@ class AccessPolicyStore
                 [
                     'id' => (int) $existing['id'],
                     'previous_command_version' => $previousCommandVersion,
+                    'state' => 'active',
                     'blocked_until' => $until,
                     'block_origin' => $origin,
                     'release_policy' => $releasePolicy,
                     'reason_code' => 'temporary_' . $origin,
-                    'command_version' => $previousCommandVersion + 1,
+                    'command_version' => $commandVersion,
                     'changed_at' => $now,
                     'updated_at' => $now,
                 ]
@@ -627,6 +641,16 @@ class AccessPolicyStore
             'DELETE FROM client_device_sessions WHERE client_id = :client_id AND device_id = :device_id',
             ['client_id' => $clientId, 'device_id' => $deviceUuid]
         );
+        $this->db->insert('client_device_control_audits', [
+            'client_id' => $clientId,
+            'device_id' => $deviceUuid,
+            'command_version' => $commandVersion,
+            'event_type' => 'temporarily_blocked',
+            'reason' => $origin,
+            'actor_type' => 'system',
+            'actor_id' => null,
+            'created_at' => $now,
+        ]);
     }
 
     public function revokeApplicationSessions(int $userId, string $revokedAt): int
@@ -789,9 +813,10 @@ class AccessPolicyStore
              FROM client_device_controls cdc
              INNER JOIN clients c ON c.id = cdc.client_id
              LEFT JOIN users u ON u.id = c.owner_user_id
-             WHERE cdc.blocked_until IS NOT NULL OR cdc.state = :banned_state
+             WHERE cdc.blocked_until IS NOT NULL
+                OR cdc.state IN (:banned_state, :kicked_state)
              ORDER BY cdc.updated_at DESC, cdc.id DESC LIMIT ' . $limit,
-            ['banned_state' => 'banned']
+            ['banned_state' => 'banned', 'kicked_state' => 'kicked']
         );
     }
 
@@ -811,14 +836,15 @@ class AccessPolicyStore
     public function releaseTemporaryDeviceBlock(int $clientId, string $deviceUuid, int $actorId): ?array
     {
         $control = $this->controlFor($clientId, $deviceUuid);
-        if ($control === null) {
+        if ($control === null || ($control['blocked_until'] ?? null) === null) {
             return null;
         }
         $now = gmdate('Y-m-d H:i:s');
         $previousVersion = max(0, (int) ($control['command_version'] ?? 0));
         $updated = $this->db->execute(
             'UPDATE client_device_controls
-             SET blocked_until = NULL,
+             SET state = :state,
+                 blocked_until = NULL,
                  block_origin = NULL,
                  release_policy = NULL,
                  reason_code = NULL,
@@ -830,6 +856,7 @@ class AccessPolicyStore
             [
                 'id' => (int) $control['id'],
                 'previous_command_version' => $previousVersion,
+                'state' => 'active',
                 'command_version' => $previousVersion + 1,
                 'changed_by_user_id' => $actorId > 0 ? $actorId : null,
                 'changed_at' => $now,
@@ -839,7 +866,168 @@ class AccessPolicyStore
         if ($updated !== 1) {
             throw new ApiException('device_control_conflict', 409);
         }
+        $this->db->execute(
+            'UPDATE android_device_sessions SET revoked_at = :revoked_at
+             WHERE client_id = :client_id AND device_id = :device_id AND revoked_at IS NULL',
+            ['client_id' => $clientId, 'device_id' => $deviceUuid, 'revoked_at' => $now]
+        );
+        $this->db->execute(
+            'DELETE FROM client_device_sessions WHERE client_id = :client_id AND device_id = :device_id',
+            ['client_id' => $clientId, 'device_id' => $deviceUuid]
+        );
+        $this->db->insert('client_device_control_audits', [
+            'client_id' => $clientId,
+            'device_id' => $deviceUuid,
+            'command_version' => $previousVersion + 1,
+            'event_type' => 'temporary_block_released',
+            'reason' => (string) ($control['block_origin'] ?? 'temporary_block'),
+            'actor_type' => 'admin',
+            'actor_id' => $actorId > 0 ? $actorId : null,
+            'created_at' => $now,
+        ]);
         return array_merge($control, [
+            'state' => 'active',
+            'blocked_until' => null,
+            'block_origin' => null,
+            'release_policy' => null,
+            'reason_code' => null,
+            'command_version' => $previousVersion + 1,
+        ]);
+    }
+
+    /**
+     * Release a legacy or permanent device-control block. This path is kept
+     * separate from temporary release so tenant-origin permissions cannot be
+     * accidentally widened by an admin UI action.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function releasePermanentDeviceBlock(int $clientId, string $deviceUuid, int $actorId): ?array
+    {
+        $control = $this->controlFor($clientId, $deviceUuid);
+        if ($control === null) {
+            return null;
+        }
+        if (!in_array((string) ($control['state'] ?? ''), ['banned', 'kicked'], true)
+            || ($control['blocked_until'] ?? null) !== null) {
+            return null;
+        }
+        $now = gmdate('Y-m-d H:i:s');
+        $previousVersion = max(0, (int) ($control['command_version'] ?? 0));
+        $updated = $this->db->execute(
+            'UPDATE client_device_controls
+             SET state = :state,
+                 blocked_until = NULL,
+                 block_origin = NULL,
+                 release_policy = NULL,
+                 reason_code = NULL,
+                 command_version = :command_version,
+                 changed_by_user_id = :changed_by_user_id,
+                 changed_at = :changed_at,
+                 updated_at = :updated_at
+             WHERE id = :id AND command_version = :previous_command_version',
+            [
+                'id' => (int) $control['id'],
+                'previous_command_version' => $previousVersion,
+                'state' => 'active',
+                'command_version' => $previousVersion + 1,
+                'changed_by_user_id' => $actorId > 0 ? $actorId : null,
+                'changed_at' => $now,
+                'updated_at' => $now,
+            ]
+        );
+        if ($updated !== 1) {
+            throw new ApiException('device_control_conflict', 409);
+        }
+        $this->db->execute(
+            'UPDATE android_device_sessions SET revoked_at = :revoked_at
+             WHERE client_id = :client_id AND device_id = :device_id AND revoked_at IS NULL',
+            ['client_id' => $clientId, 'device_id' => $deviceUuid, 'revoked_at' => $now]
+        );
+        $this->db->execute(
+            'DELETE FROM client_device_sessions WHERE client_id = :client_id AND device_id = :device_id',
+            ['client_id' => $clientId, 'device_id' => $deviceUuid]
+        );
+        $this->db->insert('client_device_control_audits', [
+            'client_id' => $clientId,
+            'device_id' => $deviceUuid,
+            'command_version' => $previousVersion + 1,
+            'event_type' => 'permanent_block_released',
+            'reason' => (string) ($control['reason_code'] ?? 'permanent_block'),
+            'actor_type' => 'admin',
+            'actor_id' => $actorId > 0 ? $actorId : null,
+            'created_at' => $now,
+        ]);
+        return array_merge($control, [
+            'state' => 'active',
+            'blocked_until' => null,
+            'block_origin' => null,
+            'release_policy' => null,
+            'reason_code' => null,
+            'command_version' => $previousVersion + 1,
+        ]);
+    }
+
+    /** @return array<string, mixed>|null */
+    public function clearExpiredTemporaryDeviceBlock(int $clientId, string $deviceUuid, string $clearedAt): ?array
+    {
+        $control = $this->controlFor($clientId, $deviceUuid);
+        if ($control === null || ($control['blocked_until'] ?? null) === null) {
+            return $control;
+        }
+        if ((string) ($control['state'] ?? '') === 'banned') {
+            return $control;
+        }
+        $blockedTimestamp = strtotime((string) $control['blocked_until'] . ' UTC');
+        $clearedTimestamp = strtotime($clearedAt . ' UTC');
+        if ($blockedTimestamp === false || $clearedTimestamp === false) {
+            return $control;
+        }
+        if ($blockedTimestamp !== false && $clearedTimestamp !== false && $blockedTimestamp > $clearedTimestamp) {
+            return $control;
+        }
+        $previousVersion = max(0, (int) ($control['command_version'] ?? 0));
+        $updated = $this->db->execute(
+            'UPDATE client_device_controls
+             SET state = :state,
+                 blocked_until = NULL,
+                 block_origin = NULL,
+                 release_policy = NULL,
+                 reason_code = NULL,
+                 command_version = :command_version,
+                 changed_by_user_id = NULL,
+                 changed_at = :changed_at,
+                 updated_at = :updated_at
+             WHERE id = :id
+               AND command_version = :previous_command_version
+               AND blocked_until = :previous_blocked_until
+               AND blocked_until <= :cleared_at',
+            [
+                'id' => (int) $control['id'],
+                'previous_command_version' => $previousVersion,
+                'previous_blocked_until' => (string) $control['blocked_until'],
+                'cleared_at' => $clearedAt,
+                'state' => 'active',
+                'command_version' => $previousVersion + 1,
+                'changed_at' => $clearedAt,
+                'updated_at' => $clearedAt,
+            ]
+        );
+        if ($updated !== 1) {
+            throw new ApiException('device_control_conflict', 409);
+        }
+        $this->db->insert('client_device_control_audits', [
+            'client_id' => $clientId,
+            'device_id' => $deviceUuid,
+            'command_version' => $previousVersion + 1,
+            'event_type' => 'temporary_block_expired',
+            'reason' => (string) ($control['block_origin'] ?? 'temporary_block'),
+            'actor_type' => 'system',
+            'actor_id' => null,
+            'created_at' => $clearedAt,
+        ]);
+        return array_merge($control, [
+            'state' => 'active',
             'blocked_until' => null,
             'block_origin' => null,
             'release_policy' => null,

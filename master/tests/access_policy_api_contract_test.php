@@ -97,6 +97,45 @@ namespace {
     }
     assertSame(['android', 'windows', 'macos', 'ios'], $policy->platforms, 'all distributions use the same policy service');
 
+    $conflictBody = [
+        'token' => 'fixture-agent-token',
+        'protocol_version' => 1,
+        'device_uuid' => 'body-device',
+        'attempt_id' => 'conflicting-device',
+        'platform' => 'windows',
+    ];
+    try {
+        $controller->locationChallenge(new Request(
+            'POST',
+            '/api/client/access/location/challenge',
+            [],
+            $conflictBody,
+            ['x-device-platform' => 'windows', 'x-device-uuid' => 'header-device'],
+            json_encode($conflictBody),
+            '203.0.113.10'
+        ), []);
+        fail('conflicting shared UUID fields must be rejected');
+    } catch (\Leikwan\Master\Support\ApiException $exception) {
+        assertSame('device_uuid_invalid', $exception->getMessage(), 'conflicting shared UUID error');
+    }
+
+    $legacyHeaderBody = [
+        'token' => 'fixture-agent-token',
+        'protocol_version' => 1,
+        'attempt_id' => 'legacy-header-fallback',
+        'platform' => 'windows',
+    ];
+    $legacyHeaderResponse = payload($controller->locationChallenge(new Request(
+        'POST',
+        '/api/client/access/location/challenge',
+        [],
+        $legacyHeaderBody,
+        ['x-device-platform' => 'windows', 'x-device-uuid' => '', 'x-device-id' => 'legacy-header-device'],
+        json_encode($legacyHeaderBody),
+        '203.0.113.10'
+    ), []));
+    assertSame(true, $legacyHeaderResponse['ok'] ?? null, 'empty UUID header falls back to legacy device header');
+
     $bootstrap = (string) file_get_contents(__DIR__ . '/../src/Bootstrap.php');
     foreach (['/api/client/access/location/challenge', '/api/client/access/location/report', '/api/client/access/policy'] as $route) {
         assertTrue(str_contains($bootstrap, $route), 'missing route ' . $route);

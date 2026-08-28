@@ -20,6 +20,12 @@ final class IpAddressMatcher
             if ($packed === false || strlen($packed) !== 16) {
                 return null;
             }
+            if (substr($packed, 0, 12) === str_repeat("\x00", 10) . "\xff\xff") {
+                $mapped = @inet_ntop(substr($packed, 12));
+                return is_string($mapped) && $mapped !== ''
+                    ? ['canonical' => $mapped, 'family' => 4, 'packed' => substr($packed, 12)]
+                    : null;
+            }
             $canonical = @inet_ntop($packed);
             return is_string($canonical) && $canonical !== ''
                 ? ['canonical' => strtolower($canonical), 'family' => 6, 'packed' => $packed]

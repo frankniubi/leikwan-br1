@@ -71,10 +71,10 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
         if ($status < 400 || $status > 599) {
             $status = 500;
         }
-        $details = $exception->details();
+        $details = $exception->safeDetails();
         $payload = [
             'ok' => false,
-            'error' => $exception->getMessage(),
+            'error' => (string) $exception->getMessage(),
             'protocol_version' => 1,
         ];
         $challenge = $details['challenge'] ?? null;

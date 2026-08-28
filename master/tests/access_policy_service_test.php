@@ -53,6 +53,7 @@ namespace {
         /** @var array<string, array<string, mixed>> */
         public array $controls = [];
         public bool $simulateDatabaseRollback = true;
+        public int $transactions = 0;
         private int $nextId = 1;
 
         public function __construct()
@@ -88,12 +89,21 @@ namespace {
 
         public function hasActiveGeographicRules(): bool
         {
-            foreach (['province', 'city', 'country'] as $type) {
+            foreach (['province', 'city', 'country', 'cn_province', 'cn_city', 'country_region'] as $type) {
                 if ($this->activeBlacklistRules($type) !== []) {
                     return true;
                 }
             }
             return false;
+        }
+
+        public function saveBlacklistRule(array $data): array
+        {
+            $type = (string) ($data['entity_type'] ?? '');
+            $id = $this->nextId++;
+            $row = ['id' => $id] + $data;
+            $this->rules[$type][] = $row;
+            return $row;
         }
 
         public function controlFor(int $clientId, string $deviceUuid): ?array
@@ -226,8 +236,36 @@ namespace {
             ];
         }
 
+        public function releasePermanentDeviceBlock(int $clientId, string $deviceUuid, int $actorId): ?array
+        {
+            $key = $clientId . ':' . $deviceUuid;
+            if (!isset($this->controls[$key])) {
+                return null;
+            }
+            $this->controls[$key]['state'] = 'active';
+            $this->controls[$key]['reason_code'] = null;
+            return $this->controls[$key];
+        }
+
+        public function clearExpiredTemporaryDeviceBlock(int $clientId, string $deviceUuid, string $clearedAt): ?array
+        {
+            $key = $clientId . ':' . $deviceUuid;
+            if (!isset($this->controls[$key])) {
+                return null;
+            }
+            $this->controls[$key] = array_merge($this->controls[$key], [
+                'state' => 'active',
+                'blocked_until' => null,
+                'block_origin' => null,
+                'release_policy' => null,
+                'reason_code' => null,
+            ]);
+            return $this->controls[$key];
+        }
+
         public function transaction(callable $callback): mixed
         {
+            $this->transactions++;
             if (!$this->simulateDatabaseRollback) {
                 return $callback($this);
             }
@@ -304,7 +342,10 @@ namespace {
             'provider' => 'bilibili_zone',
             'public_ip' => $ip,
             'country' => $country,
-            'country_code' => $country === '中国' ? '86' : 'US',
+            // The provider uses calling-code style values for many foreign
+            // locations (for example United States => 1); the service must
+            // reconcile that with the stable country display name.
+            'country_code' => $country === '中国' ? '86' : '1',
             'province' => $province,
             'city' => '测试市',
             'observed_at' => '2026-08-28 12:00:00',
@@ -322,11 +363,41 @@ namespace {
     );
     $client = ['id' => 11, 'owner_user_id' => 7];
 
+    expectApi('blacklist_country_invalid', 422, fn() => $service->saveBlacklistRule([
+        'entity_type' => 'country',
+        'value' => '中国',
+    ], 7));
+
+    $qualifiedCityRule = $service->saveBlacklistRule([
+        'entity_type' => 'cn_city',
+        'value' => 'SN:weinan',
+    ], 7);
+    assertSame('city', $qualifiedCityRule['entity_type'] ?? null, 'qualified city rule canonical type');
+    assertSame('SN:weinan', $qualifiedCityRule['canonical_value'] ?? null, 'qualified city rule canonical value');
+    assertSame('SN', $qualifiedCityRule['province_code'] ?? null, 'qualified city rule parent province');
+    $disabledCountryRule = $service->saveBlacklistRule([
+        'entity_type' => 'country_region',
+        'country_code' => 'US',
+        'is_active' => '0',
+    ], 7);
+    assertSame('country', $disabledCountryRule['entity_type'] ?? null, 'country region alias canonical type');
+    assertSame('US', $disabledCountryRule['canonical_value'] ?? null, 'country code field canonical value');
+    assertSame(0, $disabledCountryRule['is_active'] ?? null, 'string zero disables blacklist rule');
+    $store->rules['city'] = [];
+
+    expectApi('device_uuid_invalid', 422, fn() => $service->issueLocationChallenge(
+        $client,
+        "invalid device\nidentity",
+        'invalid-device-attempt',
+        'windows'
+    ));
+
     $challenge = $service->issueLocationChallenge($client, 'device-a', 'attempt-1', 'windows');
     assertTrue(strlen((string) ($challenge['token'] ?? '')) >= 32, 'challenge token must be high entropy');
-    assertSame('device-a', $store->challenges[1]['device_uuid'] ?? null, 'challenge binding device');
+    $challengeRow = $store->challenges[array_key_last($store->challenges)] ?? [];
+    assertSame('device-a', $challengeRow['device_uuid'] ?? null, 'challenge binding device');
     assertTrue(!str_contains(json_encode($store->challenges, JSON_THROW_ON_ERROR), (string) $challenge['token']), 'raw challenge token must not be persisted');
-    assertTrue(preg_match('/^[a-f0-9]{64}$/', (string) ($store->challenges[1]['auth_context_hash'] ?? '')) === 1, 'challenge auth context hash');
+    assertTrue(preg_match('/^[a-f0-9]{64}$/', (string) ($challengeRow['auth_context_hash'] ?? '')) === 1, 'challenge auth context hash');
     $bound = $service->recordLocationReport($client, requestFor([
         'challenge_token' => $challenge['token'],
         'attempt_id' => 'attempt-1',
@@ -337,6 +408,88 @@ namespace {
     assertTrue($nextCheck !== false && $nextCheck >= strtotime('2026-08-28 12:30:00 UTC') && $nextCheck <= strtotime('2026-08-28 12:35:00 UTC'), 'report returns 30 minute plus jitter schedule');
     assertSame('2026-08-28 12:00:00', end($store->observations)['received_at'] ?? null, 'Panel persists observation receive time');
     assertSame('bound', $store->profiles[7]['state'] ?? null, 'profile bound state');
+
+    // A foreign effective observation must not borrow a Mainland physical
+    // observation from a different attempt when selecting the cache.
+    $store->observations[90] = [
+        'id' => 90,
+        'user_id' => 7,
+        'client_id' => 11,
+        'device_uuid' => 'cache-device',
+        'attempt_id' => 'cache-foreign',
+        'collection_mode' => 'effective',
+        'public_ip' => '198.51.100.10',
+        'source_ip' => '203.0.113.10',
+        'country_code' => 'US',
+        'province_code' => null,
+        'city_code' => null,
+        'received_at' => '2026-08-28 11:55:00',
+    ];
+    $store->observations[91] = [
+        'id' => 91,
+        'user_id' => 7,
+        'client_id' => 11,
+        'device_uuid' => 'cache-device',
+        'attempt_id' => 'cache-old-mainland',
+        'collection_mode' => 'physical_no_proxy',
+        'public_ip' => '10.0.0.1',
+        'source_ip' => '203.0.113.10',
+        'country_code' => 'CN',
+        'province_code' => 'SN',
+        'city_code' => 'SN:test',
+        'received_at' => '2026-08-28 11:54:00',
+    ];
+    $cacheTransactions = $store->transactions;
+    expectApi('location_check_required', 428, fn() => $service->authorizeClientRequest(
+        $client,
+        new Request('GET', '/api/client/configs/pull', [], [], ['x-device-platform' => 'windows'], '', '203.0.113.10'),
+        'pull',
+        'cache-device'
+    ));
+    assertTrue($store->transactions === $cacheTransactions, 'cache mismatch should request a fresh challenge without evaluation transaction');
+    $cacheStatus = $service->policyStatus(
+        $client,
+        new Request('GET', '/api/client/access/policy', [], [], ['x-device-platform' => 'windows'], '', '203.0.113.10'),
+        'cache-device'
+    );
+    assertSame(true, $cacheStatus['location_check_due'] ?? null, 'status marks missing physical observation as immediately due');
+
+    // Cached policy denials must still use the same transaction boundary as a
+    // freshly submitted report so evidence and the third-attempt BAN commit.
+    $store->users[8] = row(['id' => 8, 'status' => 'active']);
+    $store->geoLockUsers[8] = true;
+    $store->profiles[8] = row(['id' => 8, 'user_id' => 8, 'state' => 'bound', 'main_province_code' => 'SN']);
+    $store->observations[92] = [
+        'id' => 92,
+        'user_id' => 8,
+        'client_id' => 22,
+        'device_uuid' => 'cached-bad-device',
+        'attempt_id' => 'cached-bad',
+        'collection_mode' => 'effective',
+        'public_ip' => '1.2.3.4',
+        'source_ip' => '203.0.113.10',
+        'country_code' => 'CN',
+        'province_code' => 'GD',
+        'city_code' => 'GD:test',
+        'received_at' => '2026-08-28 11:55:00',
+    ];
+    $cachedTransactions = $store->transactions;
+    expectApi('geo_lock_violation', 403, fn() => $service->authorizeClientRequest(
+        ['id' => 22, 'owner_user_id' => 8],
+        new Request('GET', '/api/client/configs/pull', [], [], ['x-device-platform' => 'windows'], '', '203.0.113.10'),
+        'pull',
+        'cached-bad-device'
+    ));
+    assertTrue($store->transactions > $cachedTransactions, 'cached policy evaluation must open a transaction');
+    assertTrue($store->controlFor(22, 'cached-bad-device') !== null, 'cached violation persists a temporary device block');
+    $cachedBlocked = expectApi('device_temporarily_banned', 423, fn() => $service->authorizeClientRequest(
+        ['id' => 22, 'owner_user_id' => 8],
+        new Request('GET', '/api/client/configs/pull', [], [], ['x-device-platform' => 'windows'], '', '203.0.113.10'),
+        'pull',
+        'cached-bad-device'
+    ));
+    assertTrue((int) ($cachedBlocked->details()['retry_after_seconds'] ?? 0) > 0, 'temporary policy block exposes retry timing');
+
     expectApi('location_challenge_invalid', 403, fn() => $service->recordLocationReport($client, requestFor([
         'challenge_token' => $challenge['token'],
         'attempt_id' => 'attempt-1',
@@ -372,6 +525,22 @@ namespace {
     ], '203.0.113.10', 'provider-device')));
     assertSame(0, count($store->geoViolationEvents(7, '2026-08-27 12:00:00')), 'provider failures do not count as geo violations');
 
+    $malformedProvider = $service->issueLocationChallenge($client, 'malformed-provider-device', 'malformed-provider', 'windows');
+    expectApi('location_check_unavailable', 503, fn() => $service->recordLocationReport($client, requestFor([
+        'device_uuid' => 'malformed-provider-device',
+        'challenge_token' => $malformedProvider['token'],
+        'attempt_id' => 'malformed-provider',
+        'observations' => [[
+            'collection_mode' => 'effective',
+            'provider' => 'bilibili_zone',
+            'code' => 'not-a-number',
+            'public_ip' => '1.2.3.4',
+            'country_code' => '86',
+            'province' => 'SN',
+            'observed_at' => '2026-08-28 12:00:00',
+        ]],
+    ], '203.0.113.10', 'malformed-provider-device')));
+
     $store->rules['province'][] = [
         'id' => 99,
         'entity_type' => 'province',
@@ -388,6 +557,127 @@ namespace {
     assertSame(0, count($store->geoViolationEvents(7, '2026-08-27 12:00:00')), 'blacklist must not count as geo violation');
     assertSame('province', $blacklist->details()['matched_entity_type'] ?? null, 'blacklist match type');
     $store->rules['province'] = [];
+
+    // Geographic deny rules require a location report, but they must not
+    // turn into the account-wide adjacency policy when the user's active
+    // plans have geographic lock disabled.
+    $store->users[9] = row(['id' => 9, 'status' => 'active']);
+    $store->geoLockUsers[9] = false;
+    $store->rules['province'][] = [
+        'id' => 100,
+        'entity_type' => 'province',
+        'canonical_value' => 'BJ',
+        'is_active' => 1,
+        'reason_code' => 'deny_beijing',
+    ];
+    $unlockedClient = ['id' => 33, 'owner_user_id' => 9];
+    $unlockedChallenge = $service->issueLocationChallenge($unlockedClient, 'unlocked-device', 'unlocked-geo-rule', 'windows');
+    $unlockedDecision = $service->recordLocationReport($unlockedClient, requestFor([
+        'device_uuid' => 'unlocked-device',
+        'challenge_token' => $unlockedChallenge['token'],
+        'attempt_id' => 'unlocked-geo-rule',
+        'observations' => [
+            observation('', '198.51.100.20', 'effective', 'United States'),
+            observation('', '198.51.100.21', 'physical_no_proxy', 'United States'),
+        ],
+    ]));
+    assertSame('allow', $unlockedDecision['decision'] ?? null, 'geo blacklist without plan lock must not create adjacency violation');
+    assertSame(0, count($store->geoViolationEvents(9, '2026-08-27 12:00:00')), 'unlocked geo account must not accrue violations');
+    $store->rules['province'] = [];
+
+    $conflictingCountryChallenge = $service->issueLocationChallenge($unlockedClient, 'conflicting-country-device', 'conflicting-country', 'windows');
+    expectApi('direct_location_check_required', 428, fn() => $service->recordLocationReport($unlockedClient, requestFor([
+        'device_uuid' => 'conflicting-country-device',
+        'challenge_token' => $conflictingCountryChallenge['token'],
+        'attempt_id' => 'conflicting-country',
+        'observations' => [[
+            'collection_mode' => 'effective',
+            'provider' => 'bilibili_zone',
+            'public_ip' => '198.51.100.23',
+            'country' => '中国',
+            'country_code' => 'US',
+            'province' => 'SN',
+            'observed_at' => '2026-08-28 12:00:00',
+        ]],
+    ], '203.0.113.10', 'conflicting-country-device')));
+
+    // A matching country deny rule is authoritative on the effective result;
+    // it must block without forcing an additional physical probe first.
+    $store->rules['country'][] = [
+        'id' => 101,
+        'entity_type' => 'country',
+        'canonical_value' => 'US',
+        'is_active' => 1,
+        'reason_code' => 'deny_us',
+    ];
+    $foreignBlacklistChallenge = $service->issueLocationChallenge($unlockedClient, 'foreign-denied-device', 'foreign-denied', 'windows');
+    expectApi('access_blacklisted', 403, fn() => $service->recordLocationReport($unlockedClient, requestFor([
+        'device_uuid' => 'foreign-denied-device',
+        'challenge_token' => $foreignBlacklistChallenge['token'],
+        'attempt_id' => 'foreign-denied',
+        'observations' => [observation('', '198.51.100.22', 'effective', 'United States')],
+    ])));
+    assertSame(0, count($store->geoViolationEvents(9, '2026-08-27 12:00:00')), 'blacklisted foreign result must not accrue geo violations');
+
+    // A valid cached geographic deny hit is authoritative even on a fresh
+    // login attempt; it must not be hidden behind another location challenge.
+    $store->observations[103] = [
+        'id' => 103,
+        'user_id' => 9,
+        'client_id' => 33,
+        'device_uuid' => 'cached-foreign-denied',
+        'attempt_id' => 'cached-foreign-denied-attempt',
+        'collection_mode' => 'effective',
+        'public_ip' => '198.51.100.24',
+        'source_ip' => '203.0.113.10',
+        'country_code' => 'US',
+        'province_code' => null,
+        'city_code' => null,
+        'received_at' => '2026-08-28 11:55:00',
+    ];
+    expectApi('access_blacklisted', 403, fn() => $service->authorizeClientRequest(
+        $unlockedClient,
+        new Request('GET', '/api/client/select', [], [], ['x-device-platform' => 'windows'], '', '203.0.113.10'),
+        'login',
+        'cached-foreign-denied'
+    ));
+    $store->rules['country'] = [];
+
+    $store->controls['33:permanent-device'] = [
+        'id' => 303,
+        'client_id' => 33,
+        'device_id' => 'permanent-device',
+        'state' => 'banned',
+        'blocked_until' => null,
+        'reason_code' => 'manual_admin',
+    ];
+    expectApi('device_block_release_forbidden', 403, fn() => $service->releaseDeviceBlock(
+        33,
+        'permanent-device',
+        9,
+        false
+    ));
+    $releasedPermanent = $service->releaseDeviceBlock(33, 'permanent-device', 9, true);
+    assertSame('active', $releasedPermanent['state'] ?? null, 'admin can release permanent device block');
+
+    // Legacy/admin-created aliases may retain a localized display value;
+    // matching must normalize the stored province/city/country fields too.
+    $store->rules['cn_province'][] = [
+        'id' => 102,
+        'entity_type' => 'cn_province',
+        'canonical_value' => '陕西省',
+        'province_code' => null,
+        'is_active' => 1,
+        'reason_code' => 'legacy_shaanxi',
+    ];
+    $legacyRuleChallenge = $service->issueLocationChallenge($unlockedClient, 'legacy-rule-device', 'legacy-rule', 'windows');
+    expectApi('access_blacklisted', 403, fn() => $service->recordLocationReport($unlockedClient, requestFor([
+        'device_uuid' => 'legacy-rule-device',
+        'challenge_token' => $legacyRuleChallenge['token'],
+        'attempt_id' => 'legacy-rule',
+        'observations' => [observation('SN')],
+    ])));
+    $store->rules['cn_province'] = [];
 
     foreach (['bad-1' => 'device-a', 'bad-2' => 'device-b', 'bad-3' => 'device-c'] as $attempt => $device) {
         $badChallenge = $service->issueLocationChallenge($client, $device, $attempt, 'ios');
@@ -419,12 +709,44 @@ namespace {
     $store->users[8] = row(['id' => 8, 'status' => 'active']);
     $store->geoLockUsers[8] = false;
     $legacyService = new AccessPolicyService(new Database(), null, new \DateTimeImmutable('2026-08-28 12:00:00 UTC'), $store);
+    $store->controls['22:expired-legacy-kick'] = [
+        'id' => 404,
+        'client_id' => 22,
+        'device_id' => 'expired-legacy-kick',
+        'state' => 'kicked',
+        'blocked_until' => '2026-08-28 11:59:59',
+        'block_origin' => 'manual_tenant',
+        'release_policy' => 'tenant_or_admin',
+    ];
+    $expiredDecision = $legacyService->authorizeClientRequest(
+        ['id' => 22, 'owner_user_id' => 8],
+        new Request('GET', '/api/client/configs/pull', [], [], ['x-device-platform' => 'windows'], '', '203.0.113.20'),
+        'pull',
+        'expired-legacy-kick'
+    );
+    assertSame('allow', $expiredDecision['decision'] ?? null, 'expired temporary block restores legacy kicked state');
+    assertSame('active', $store->controls['22:expired-legacy-kick']['state'] ?? null, 'expired block cleanup persists active state');
     $legacyRequest = new Request('GET', '/api/client/configs/pull', [], [], [
         'x-device-id' => 'legacy-linux-device',
         'x-device-platform' => 'linux-amd64',
     ], '', '203.0.113.20');
     $legacy = $legacyService->authorizeClientRequest(['id' => 22, 'owner_user_id' => 8], $legacyRequest, 'pull');
     assertSame('allow', $legacy['decision'] ?? null, 'default-off legacy Linux client remains compatible');
+
+    $aliasRequest = new Request('GET', '/api/client/configs/pull', [], ['device_uuid' => 'alias-device'], [
+        'x-device-uuid' => '',
+    ], '', '203.0.113.20');
+    $aliasDecision = $legacyService->authorizeClientRequest(['id' => 22, 'owner_user_id' => 8], $aliasRequest, 'pull');
+    assertSame('allow', $aliasDecision['decision'] ?? null, 'empty UUID header falls back to body identity');
+
+    $conflictRequest = new Request('GET', '/api/client/configs/pull', [], ['device_uuid' => 'body-device'], [
+        'x-device-uuid' => 'header-device',
+    ], '', '203.0.113.20');
+    expectApi('device_uuid_invalid', 422, fn() => $legacyService->authorizeClientRequest(
+        ['id' => 22, 'owner_user_id' => 8],
+        $conflictRequest,
+        'pull'
+    ));
 
     echo "ok\n";
 }

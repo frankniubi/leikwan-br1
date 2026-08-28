@@ -57,6 +57,10 @@ $challenge = methodBlock($controller, 'locationChallenge', 'locationReport');
 if (str_contains($challenge, 'requireAndroidRequest')) {
     fail('location challenge must not contain an Android-only guard');
 }
+$report = methodBlock($controller, 'locationReport', 'accessPolicyStatus');
+assertContains($report, 'accessPolicyPlatform(', 'location report must bind an explicit distribution platform');
+$status = methodBlock($controller, 'accessPolicyStatus', 'deviceChallenge');
+assertContains($status, 'accessPolicyPlatform(', 'policy status must bind an explicit distribution platform');
 assertContains($service, 'public function policyStatus(', 'safe policy status method missing');
 assertContains($service, 'public function authorizeClientRequest(', 'shared authorization hook missing');
 

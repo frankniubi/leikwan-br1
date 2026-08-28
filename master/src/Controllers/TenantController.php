@@ -1083,7 +1083,7 @@ final class TenantController extends BaseController
             . '</div><div class="actions"><button class="button" type="submit">Change main province</button></div></form></section>'
             . '<section class="card"><div class="hero"><div><h3>Devices</h3>'
             . '<p class="muted">Kick all devices to reset application sessions. Your web Panel session stays active.</p></div>'
-            . '<form method="post" action="/tenant/security/kick-all" onsubmit="return confirm(\'Kick all application devices?\');">'
+            . '<form method="post" action="/tenant/security/kick-all" data-confirm="Confirm kicking all application devices" onsubmit="return confirm(this.dataset.confirm);">'
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
             . '<button class="button danger" type="submit">Kick all devices</button></form></div>'
             . '<div class="table-wrap"><table><thead><tr><th>Client</th><th>Device UUID</th><th>Platform</th><th>State</th><th>Block origin</th><th>Blocked until</th><th>Action</th></tr></thead><tbody>'
@@ -1225,7 +1225,7 @@ final class TenantController extends BaseController
                 }
             }
             $deviceId = trim((string) ($session['device_id'] ?? ''));
-            $kickForm = '<form class="inline" method="post" action="/tenant/clients/kick" onsubmit="return confirm(\'确定要踢走这个客户端吗？\');">'
+            $kickForm = '<form class="inline" method="post" action="/tenant/clients/kick" data-confirm="Confirm kicking this client" onsubmit="return confirm(this.dataset.confirm);">'
                 . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
                 . '<input type="hidden" name="client_id" value="' . $clientId . '">'
                 . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
@@ -1234,14 +1234,23 @@ final class TenantController extends BaseController
             $controlState = is_array($control) ? (string) ($control['state'] ?? 'active') : 'online';
             $controlForms = $kickForm;
             if (is_array($control)) {
-                if ($controlState === 'banned') {
-                    $controlForms = '<form class="inline" method="post" action="/tenant/clients/unban">'
+                $blockedUntil = trim((string) ($control['blocked_until'] ?? ''));
+                $tenantCanRestore = $blockedUntil !== ''
+                    && (string) ($control['block_origin'] ?? '') === 'manual_tenant'
+                    && (string) ($control['release_policy'] ?? '') === 'tenant_or_admin';
+                if ($tenantCanRestore) {
+                    $controlForms = '<form class="inline" method="post" action="/tenant/security/devices/restore">'
                         . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
                         . '<input type="hidden" name="client_id" value="' . $clientId . '">'
-                        . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
-                        . '<button class="button ghost" type="submit">Unban</button></form>';
+                        . '<input type="hidden" name="device_uuid" value="' . $this->escape($deviceId) . '">'
+                        . '<button class="button ghost" type="submit">Restore</button></form>';
+                } elseif ($controlState === 'banned' || $controlState === 'kicked'
+                    || ($blockedUntil !== '' && (string) ($control['release_policy'] ?? '') !== 'tenant_or_admin')) {
+                    // Tenant-origin temporary blocks are restorable above;
+                    // permanent and policy/admin blocks stay administrator-only.
+                    $controlForms = '<span class="muted">Admin release</span>';
                 } else {
-                    $controlForms .= '<form class="inline" method="post" action="/tenant/clients/ban" onsubmit="return confirm(\'Ban this device?\');">'
+                    $controlForms .= '<form class="inline" method="post" action="/tenant/clients/ban" data-confirm="Confirm banning this device" onsubmit="return confirm(this.dataset.confirm);">'
                         . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
                         . '<input type="hidden" name="client_id" value="' . $clientId . '">'
                         . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
@@ -1263,8 +1272,8 @@ final class TenantController extends BaseController
         if ($sessions === []) {
             $onlineList .= '<div class="muted">当前没有在线客户端。</div>';
         } else {
-            $onlineList .= '<table class="table"><thead><tr><th>IP</th><th>系统</th><th>客户端版本</th><th></th></tr></thead><tbody>'
-                . $onlineRows . '</tbody></table>';
+            $onlineList .= '<div class="table-wrap"><table class="table"><thead><tr><th>IP</th><th>系统</th><th>客户端版本</th><th></th></tr></thead><tbody>'
+                . $onlineRows . '</tbody></table></div>';
         }
         $onlineList .= '</div>';
 
@@ -1369,7 +1378,21 @@ final class TenantController extends BaseController
 
     public function unbanClientDevice(Request $request, array $params): Response
     {
-        return $this->changeAndroidDeviceState($request, 'active', 'tenant_unban');
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            // Permanent device bans are an administrator-only control. Keep
+            // the legacy route so old clients receive a deterministic denial.
+            throw new ApiException('device_unban_admin_only', 403);
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Permanent device bans require administrator release.');
+        }
+
+        return Response::redirect('/tenant/clients');
     }
 
     public function createAndroidEnrollmentCode(Request $request, array $params): Response
@@ -3402,8 +3425,13 @@ final class TenantController extends BaseController
     private function ownedTenantDevice(array $user, Request $request): array
     {
         $clientId = (int) $request->input('client_id', 0);
-        $deviceUuid = trim((string) $request->input('device_uuid', $request->input('device_id', '')));
-        if ($clientId <= 0 || $deviceUuid === '') {
+        $uuidValue = trim((string) $request->input('device_uuid', ''));
+        $idValue = trim((string) $request->input('device_id', ''));
+        if ($uuidValue !== '' && $idValue !== '' && !hash_equals($uuidValue, $idValue)) {
+            throw new ApiException('device_id_invalid', 422);
+        }
+        $deviceUuid = $uuidValue !== '' ? $uuidValue : $idValue;
+        if ($clientId <= 0 || $deviceUuid === '' || strlen($deviceUuid) > 191 || preg_match('/[\x00-\x20\x7f]/', $deviceUuid) === 1) {
             throw new ApiException('invalid_device', 400);
         }
         foreach ($this->accessPolicy->tenantDeviceRows((int) $user['id']) as $device) {
