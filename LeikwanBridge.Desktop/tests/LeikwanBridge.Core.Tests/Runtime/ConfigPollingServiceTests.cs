@@ -284,6 +284,89 @@ public sealed class ConfigPollingServiceTests
     }
 
     [Fact]
+    public async Task SyncOnceAsync_PreservesRunningUltraWhenLeaseEndpointHasTransientServerError()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildUltraPullResponseJson(), ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+        };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["42"] = new AppliedForwardState
+            {
+                ForwardId = 42,
+                Mode = "ultra",
+                ListenPort = 12042,
+                ProcessRoles = ["ultra-runtime"],
+                ContractSignature = runtimeManager.ComputeContractSignature(service.LatestForwards[0]),
+            },
+        });
+
+        server.SuccessfulUltraLease = false;
+        server.UltraLeaseStatus = 502;
+        await service.SyncOnceAsync();
+
+        Assert.Empty(runtimeManager.StoppedForwardIds);
+        Assert.Equal([42], runtimeManager.AppliedForwardIds);
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_PreservesRunningUltraWhenLeaseDeliveryFails()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildUltraPullResponseJson(), ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+        };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor())
+        {
+            RefreshUltraLeaseResult = false,
+        };
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["42"] = new AppliedForwardState
+            {
+                ForwardId = 42,
+                Mode = "ultra",
+                ListenPort = 12042,
+                ProcessRoles = ["ultra-runtime"],
+                ContractSignature = runtimeManager.ComputeContractSignature(service.LatestForwards[0]),
+            },
+        });
+
+        await service.SyncOnceAsync();
+
+        Assert.Empty(runtimeManager.StoppedForwardIds);
+        Assert.Equal([42], runtimeManager.RefreshedForwardIds);
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_NotModified_ShortCircuitsReconcile()
     {
         using var tempDir = new TempStateDirectory();
@@ -721,12 +804,14 @@ public sealed class ConfigPollingServiceTests
         public List<int> StoppedForwardIds { get; } = [];
         public List<int> RefreshedForwardIds { get; } = [];
 
+        public bool RefreshUltraLeaseResult { get; set; } = true;
+
         public override bool RefreshUltraLease(ForwardConfig forward)
         {
             RefreshedForwardIds.Add(forward.ForwardId);
             forward.RuntimeLease?.Dispose();
             forward.RuntimeLease = null;
-            return true;
+            return RefreshUltraLeaseResult;
         }
 
         public override void ApplyForward(ForwardConfig forward)

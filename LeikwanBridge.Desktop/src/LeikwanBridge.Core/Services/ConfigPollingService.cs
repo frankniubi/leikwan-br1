@@ -195,25 +195,26 @@ public sealed class ConfigPollingService
                 catch (Exception ex)
                 {
                     Log.Warning(
-                        "Ultra lease refresh failed for forward {ForwardId}; stopping by Panel policy (error={ErrorType}, status={StatusCode}, code={ErrorCode})",
+                        "Ultra lease refresh failed for forward {ForwardId} (error={ErrorType}, status={StatusCode}, code={ErrorCode})",
                         forward.ForwardId,
                         ex.GetType().Name,
                         ex is MasterApiException apiException ? apiException.StatusCode : 0,
                         BoundErrorCode(ex.Message));
-                    if (hasAppliedState && isRunning && IsGrantRefreshError(ex))
+                    if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease refresh exception"))
                     {
-                        // Metering may rotate the short-lived grant while the
-                        // stable forward remains unchanged. Keep the current
-                        // data plane and fetch the new grant next cycle.
-                        QueueConfigRefreshSoon();
-                        Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
+                        if (IsGrantRefreshError(ex))
+                            Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
                         continue;
                     }
+                    Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
                     _runtimeManager.StopForwardForPolicy(forward.ForwardId);
                     continue;
                 }
                 if (lease is null)
                 {
+                    if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease response unavailable"))
+                        continue;
+                    Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
                     _runtimeManager.StopForwardForPolicy(forward.ForwardId);
                     continue;
                 }
@@ -228,7 +229,10 @@ public sealed class ConfigPollingService
                 if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
                 {
                     if (!_runtimeManager.RefreshUltraLease(effectiveForward))
-                        _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+                    {
+                        if (!TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease delivery failed"))
+                            _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+                    }
                 }
                 continue;
             }
@@ -299,6 +303,9 @@ public sealed class ConfigPollingService
 
             if (lease is null)
             {
+                if (TryPreserveRunningUltra(forward.ForwardId, appliedState != null, isRunning, "lease response unavailable"))
+                    continue;
+                Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
                 _runtimeManager.StopForwardForPolicy(forward.ForwardId);
                 continue;
             }
@@ -311,7 +318,10 @@ public sealed class ConfigPollingService
             if (appliedState != null && isRunning && signatureMatches)
             {
                 if (!_runtimeManager.RefreshUltraLease(effectiveForward))
-                    _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+                {
+                    if (!TryPreserveRunningUltra(forward.ForwardId, true, isRunning, "lease delivery failed"))
+                        _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+                }
                 continue;
             }
 
@@ -378,6 +388,19 @@ public sealed class ConfigPollingService
         _nextPollAfterMs = _nextPollAfterMs > 0
             ? Math.Min(_nextPollAfterMs, ReArmDelayMs)
             : ReArmDelayMs;
+    }
+
+    private bool TryPreserveRunningUltra(int forwardId, bool hasAppliedState, bool isRunning, string reason)
+    {
+        if (!hasAppliedState || !isRunning)
+            return false;
+
+        QueueConfigRefreshSoon();
+        Log.Warning(
+            "Ultra lease unavailable for forward {ForwardId}; preserving current runtime and retrying config sync (reason={Reason})",
+            forwardId,
+            reason);
+        return true;
     }
 
     private void SavePullState(string status, int forwardsTotal)

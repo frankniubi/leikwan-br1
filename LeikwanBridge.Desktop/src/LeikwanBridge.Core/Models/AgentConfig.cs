@@ -150,9 +150,32 @@ public sealed class AgentConfig
 
     public string GetEffectiveUltraBin()
     {
-        if (!string.IsNullOrWhiteSpace(UltraBin))
-            return UltraBin;
-        return Path.Combine(AppContext.BaseDirectory, "bin", "ultra-client.exe");
+        var installedPath = Path.Combine(AppContext.BaseDirectory, "bin", "ultra-client.exe");
+        if (string.IsNullOrWhiteSpace(UltraBin))
+            return installedPath;
+
+        // Older installers persisted a per-user runtime path. Prefer the
+        // runtime shipped beside the GUI when that legacy path is still set.
+        if (IsLegacyUltraBinPath(UltraBin) && File.Exists(installedPath))
+            return installedPath;
+
+        return UltraBin;
+    }
+
+    public bool MigrateLegacyUltraBin(string installRoot)
+    {
+        if (string.IsNullOrWhiteSpace(installRoot))
+            return false;
+
+        var installedPath = Path.Combine(installRoot.Trim(), "bin", "ultra-client.exe");
+        if (!File.Exists(installedPath)
+            || string.IsNullOrWhiteSpace(UltraBin)
+            || !IsLegacyUltraBinPath(UltraBin)
+            || PathsEqual(UltraBin, installedPath))
+            return false;
+
+        UltraBin = installedPath;
+        return true;
     }
 
     public string GetEffectiveWgBin()
@@ -195,5 +218,25 @@ public sealed class AgentConfig
         }
 
         UdpUotSidepath = null;
+    }
+
+    private static bool IsLegacyUltraBinPath(string path)
+    {
+        var normalized = path.Trim().Replace('/', '\\');
+        return normalized.Contains(@"\AppData\Local\LeiKwan Bridge\", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains(@"\AppData\Local\Programs\LeiKwan Bridge\", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains(@"\LeiKwan Bridge Backup\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        try
+        {
+            return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
     }
 }

@@ -190,34 +190,6 @@ function Stop-InstalledProcesses {
     Start-Sleep -Milliseconds 800
 }
 
-function Backup-ExistingInstall {
-    param([string]$TargetDir)
-
-    if (-not (Test-Path -LiteralPath $TargetDir)) {
-        return ""
-    }
-
-    $entries = @(Get-ChildItem -LiteralPath $TargetDir -Force | Where-Object { $_.Name -notlike 'backup-*' })
-    if ($entries.Count -eq 0) {
-        return ""
-    }
-
-    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $backupDir = Join-Path $TargetDir ("backup-" + $timestamp)
-    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-
-    foreach ($entry in $entries) {
-        $destination = Join-Path $backupDir $entry.Name
-        if ($entry.PSIsContainer) {
-            Copy-Item -LiteralPath $entry.FullName -Destination $destination -Recurse -Force
-        } else {
-            Copy-Item -LiteralPath $entry.FullName -Destination $destination -Force
-        }
-    }
-
-    return $backupDir
-}
-
 function Copy-StagedPayload {
     param(
         [string]$PayloadRoot,
@@ -517,6 +489,23 @@ function Remove-StaleInstallerOwnedFiles {
     }
 }
 
+function Remove-ClientBackupDirectories {
+    param([string]$TargetDir)
+
+    if (-not (Test-Path -LiteralPath $TargetDir)) {
+        return
+    }
+
+    Get-ChildItem -LiteralPath $TargetDir -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'backup-*' } |
+        ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $_.FullName) {
+                throw "client backup directory could not be removed: $($_.FullName)"
+            }
+        }
+}
+
 function Is-UnderInstallRoot {
     param(
         [string]$TargetDir,
@@ -567,14 +556,7 @@ function Remove-InstallerOwnedFiles {
         }
     }
 
-    Get-ChildItem -LiteralPath $TargetDir -Directory -Force -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like 'backup-*' } |
-        ForEach-Object {
-            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-            if (Test-Path -LiteralPath $_.FullName) {
-                throw "backup directory could not be removed: $($_.FullName)"
-            }
-        }
+    Remove-ClientBackupDirectories -TargetDir $TargetDir
 }
 
 function Remove-EmptyDirectoryIfPossible {
@@ -633,7 +615,10 @@ function Invoke-InstallMode {
     $currentInstalledFiles = Get-StagedPayloadRelativeFiles -PayloadRoot $payloadRoot
 
     Stop-InstalledProcesses -TargetDir $InstallDir
-    $backupDir = Backup-ExistingInstall -TargetDir $InstallDir
+    Remove-ClientBackupDirectories -TargetDir $InstallDir
+    # Client updates replace installer-owned files in place. Development-side
+    # artifacts may keep backups, but the installed client must not create them.
+    $backupDir = ""
     Remove-StaleInstallerOwnedFiles -TargetDir $InstallDir -PreviousInstalledFiles $previousInstalledFiles -CurrentInstalledFiles $currentInstalledFiles
     Copy-StagedPayload -PayloadRoot $payloadRoot -TargetDir $InstallDir
     Write-CompatibilityCopies -TargetDir $InstallDir
@@ -644,9 +629,6 @@ function Invoke-InstallMode {
     Write-InstallState -TargetDir $InstallDir -SelectedInstallMode $InstallMode -SelectedDesktopShortcut $selectedDesktopShortcut -SelectedDisplayName $DisplayName -SelectedAppVersion $AppVersion
 
     Write-Host "Installed LeiKwan Bridge to $InstallDir"
-    if (-not [string]::IsNullOrWhiteSpace($backupDir)) {
-        Write-Host "Backup saved to $backupDir"
-    }
 }
 
 function Invoke-UninstallMode {

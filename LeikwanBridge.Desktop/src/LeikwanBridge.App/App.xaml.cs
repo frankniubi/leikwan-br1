@@ -50,6 +50,8 @@ public partial class App : System.Windows.Application
 
         var stateManager = new StateManager(configDir);
         Config = stateManager.LoadConfig(ConfigPath);
+        if (Config.MigrateLegacyUltraBin(AppDefaults.GetInstallRoot()))
+            stateManager.SaveConfig(ConfigPath, Config);
         var normalizedMasterUrl = AppDefaults.NormalizeMasterUrl(Config.MasterUrl);
         if (!string.Equals(normalizedMasterUrl, Config.MasterUrl, StringComparison.Ordinal))
         {
