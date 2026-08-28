@@ -24,6 +24,13 @@ $tenant = (string) file_get_contents(__DIR__ . '/../src/Controllers/TenantContro
 if ($base === '' || $tenant === '') {
     failMacDownloadPage('failed to read controller sources');
 }
+$manifest = json_decode((string) file_get_contents(__DIR__ . '/../../artifacts/versions.json'), true);
+$expectedVersion = is_array($manifest)
+    ? trim((string) ($manifest['macos_client_app_arm64']['version'] ?? ''))
+    : '';
+if ($expectedVersion === '') {
+    failMacDownloadPage('macOS artifact version is missing from the manifest');
+}
 
 foreach ([
     'macosClientArm64AppUrl(): string',
@@ -84,7 +91,7 @@ try {
     };
     $installSection = $controller->installSection();
     $downloadPanels = $controller->downloadPanels();
-    foreach (['Release announcement / 发布声明', 'macOS 客户端 1.0.1', 'Apple Silicon', 'Intel'] as $required) {
+    foreach (['Release announcement / 发布声明', 'macOS 客户端 ' . $expectedVersion, 'Apple Silicon', 'Intel'] as $required) {
         if (!str_contains($installSection, $required) || !str_contains($downloadPanels, $required)) {
             failMacDownloadPage('rendered Mac download surface missing ' . $required);
         }
