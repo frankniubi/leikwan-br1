@@ -87,6 +87,7 @@ final class ClientAgentController extends BaseController
     public function locationReport(Request $request, array $params): Response
     {
         $client = $this->accessPolicyClient($request);
+        $this->accessPolicyPlatform($request);
         try {
             $decision = $this->accessPolicy->recordLocationReport($client, $request);
         } catch (ApiException $exception) {
@@ -107,6 +108,7 @@ final class ClientAgentController extends BaseController
     public function accessPolicyStatus(Request $request, array $params): Response
     {
         $client = $this->accessPolicyClient($request);
+        $this->accessPolicyPlatform($request);
         $status = $this->accessPolicy->policyStatus($client, $request, $this->accessPolicyDeviceUuid($request));
         return $this->noStoreJson(['ok' => true] + $status);
     }
@@ -815,9 +817,11 @@ final class ClientAgentController extends BaseController
             return $this->json(['ok' => false, 'error' => 'invalid credentials'], 401);
         }
 
-        $loginDevice = trim((string) ($request->header('x-device-uuid') ?? $request->header('x-device-id') ?? $request->input('device_uuid', $request->input('device_id', ''))));
+        $loginDevice = $this->requestDeviceIdentity($request, false, 'device_uuid_invalid');
         if ($loginDevice !== '') {
-            $this->accessPolicy->preflightClientRequest($user, $request, $loginDevice);
+            $this->accessPolicy->preflightClientRequest([
+                'owner_user_id' => (int) $user['id'],
+            ], $request, $loginDevice);
         }
 
         // Find clients owned by this user
@@ -929,16 +933,7 @@ final class ClientAgentController extends BaseController
 
     private function accessPolicyDeviceUuid(Request $request): string
     {
-        $header = trim((string) ($request->header('x-device-uuid') ?? $request->header('x-device-id') ?? ''));
-        $body = trim((string) $request->input('device_uuid', $request->input('device_id', '')));
-        if ($header !== '' && $body !== '' && !hash_equals($header, $body)) {
-            throw new ApiException('device_uuid_invalid', 422);
-        }
-        $deviceUuid = $header !== '' ? $header : $body;
-        if ($deviceUuid === '' || strlen($deviceUuid) > 191) {
-            throw new ApiException('device_uuid_invalid', 422);
-        }
-        return $deviceUuid;
+        return $this->requestDeviceIdentity($request, true, 'device_uuid_invalid');
     }
 
     private function accessPolicyAttemptId(Request $request): string
@@ -1013,12 +1008,33 @@ final class ClientAgentController extends BaseController
 
     private function requestedDeviceId(Request $request): string
     {
-        $header = trim((string) ($request->header('x-device-id') ?? ''));
-        $body = trim((string) $request->input('device_id', ''));
-        if ($header !== '' && $body !== '' && !hash_equals($header, $body)) {
-            throw new ApiException('device_id_invalid', 422);
+        return $this->requestDeviceIdentity($request, false, 'device_id_invalid');
+    }
+
+    private function requestDeviceIdentity(Request $request, bool $required, string $errorCode): string
+    {
+        $deviceId = '';
+        foreach ([
+            $request->header('x-device-uuid', ''),
+            $request->header('x-device-id', ''),
+            $request->input('device_uuid', ''),
+            $request->input('device_id', ''),
+        ] as $candidate) {
+            $candidate = trim((string) $candidate);
+            if ($candidate === '') {
+                continue;
+            }
+            if ($deviceId !== '' && !hash_equals($deviceId, $candidate)) {
+                throw new ApiException($errorCode, 422);
+            }
+            $deviceId = $candidate;
         }
-        return $header !== '' ? $header : $body;
+        if (($required && $deviceId === '')
+            || strlen($deviceId) > 191
+            || preg_match('/[\x00-\x20\x7f]/', $deviceId) === 1) {
+            throw new ApiException($errorCode, 422);
+        }
+        return $deviceId;
     }
 
     /** @return array<string, mixed> */

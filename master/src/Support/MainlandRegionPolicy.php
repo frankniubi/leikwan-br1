@@ -107,6 +107,13 @@ final class MainlandRegionPolicy
         if ($provinceCode === null || $city === '') {
             return null;
         }
+        if (str_contains($city, ':')) {
+            [$cityProvince, $cityName] = explode(':', $city, 2);
+            if ($this->normalizeProvince($cityProvince) !== $provinceCode) {
+                return null;
+            }
+            $city = trim($cityName);
+        }
         $city = preg_replace('/市$/u', '', $city) ?? $city;
         $city = strtolower(trim($city));
         return $city !== '' ? $provinceCode . ':' . $city : null;

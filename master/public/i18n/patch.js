@@ -111,7 +111,7 @@
   function patchAttributes(root, dictionary) {
     const attrMap = dictionary.attributes || {};
     root.querySelectorAll("*").forEach((element) => {
-      ["placeholder", "title", "aria-label", "value"].forEach((attr) => {
+      ["placeholder", "title", "aria-label", "value", "data-confirm"].forEach((attr) => {
         if (!element.hasAttribute(attr)) return;
         const value = element.getAttribute(attr) || "";
         const normalized = normalizeKey(value);

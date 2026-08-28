@@ -33,6 +33,15 @@ assertContains($device, "'manual_tenant' => 'tenant_or_admin'", 'manual tenant r
 assertContains($device, "'policy', 'province_reset' => 'admin_only'", 'policy/admin release policy missing');
 assertContains($policy, 'main_province_change_rate_limited', 'daily province change guard missing');
 assertContains($policy, 'main_province_observation_required', 'fresh observation guard missing');
+assertContains($tenant, 'device_id_invalid', 'tenant device identity aliases must reject conflicts');
+
+$unbanStart = strpos($tenant, 'public function unbanClientDevice(');
+$unbanEnd = strpos($tenant, 'public function createAndroidEnrollmentCode(', $unbanStart ?: 0);
+$unban = ($unbanStart !== false && $unbanEnd !== false) ? substr($tenant, $unbanStart, $unbanEnd - $unbanStart) : '';
+assertContains($unban, 'device_unban_admin_only', 'tenant must not release permanent device bans');
+if (str_contains($unban, 'changeAndroidDeviceState($request, \'active\'')) {
+    fail('tenant unban route must not call the permanent state release path');
+}
 
 $resetStart = strpos($tenant, 'public function kickAllDevices(');
 $resetEnd = strpos($tenant, 'public function restoreDevice(', $resetStart ?: 0);

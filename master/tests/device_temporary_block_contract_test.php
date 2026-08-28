@@ -132,6 +132,7 @@ namespace {
     assertSame('policy', $policy['block_origin'] ?? null, 'policy block origin');
     assertSame('admin_only', $policy['release_policy'] ?? null, 'policy release policy');
     assertTrue((string) ($policy['blocked_until'] ?? '') > gmdate('Y-m-d H:i:s'), 'policy block expiry');
+    expectApi('device_block_release_forbidden', 403, fn() => $service->setTemporaryBlock(17, $device, 'manual_tenant', 900, 7));
     $blocked = expectApi('device_temporarily_banned', 423, fn() => $service->requireActive($client, $request));
     assertTrue((int) ($blocked->details()['retry_after_seconds'] ?? 0) > 0, 'temporary block retry timing');
     expectApi('device_temporarily_banned', 423, fn() => $service->issueChallenge($client, $device, 1));
@@ -146,9 +147,17 @@ namespace {
 
     $manual = $service->setTemporaryBlock(17, $device, 'manual_tenant', 900, 7);
     assertSame('tenant_or_admin', $manual['release_policy'] ?? null, 'tenant block release policy');
+    $db->controls[$controlId]['state'] = 'kicked';
     $released = $service->releaseTemporaryBlock(17, $device, 7, false);
     assertSame(null, $released['blocked_until'] ?? null, 'tenant can release own temporary block');
+    assertSame('active', $released['state'] ?? null, 'releasing a legacy kicked temporary row restores active state');
     assertSame((int) $manual['command_version'] + 1, (int) ($released['command_version'] ?? 0), 'release increments command version');
+
+    $db->controls[$controlId]['state'] = 'kicked';
+    $db->controls[$controlId]['blocked_until'] = null;
+    $db->controls[$controlId]['block_origin'] = null;
+    $db->controls[$controlId]['release_policy'] = null;
+    expectApi('device_block_release_forbidden', 403, fn() => $service->releaseTemporaryBlock(17, $device, 7, false));
 
     $service->setState(17, $device, 'banned', 'permanent', 42);
     expectApi('device_banned', 403, fn() => $service->issueChallenge($client, $device));

@@ -1623,8 +1623,8 @@ final class AdminController extends BaseController
                       <select name="is_tenant_visible"><option value="1"' . ((int) ($editing['is_tenant_visible'] ?? 1) === 1 ? ' selected' : '') . '>Visible to tenants</option><option value="0"' . ((int) ($editing['is_tenant_visible'] ?? 1) === 0 ? ' selected' : '') . '>Internal test package</option></select>
                       <p class="muted">Hidden plans stay active for internal/admin workflows, but do not appear on the tenant purchase page.</p>
                     </div>
-                    <div class="field"><label><input type="checkbox" name="geo_lock_enabled" value="1"' . ((int) ($editing['geo_lock_enabled'] ?? 0) === 1 ? ' checked' : '') . '> 开启地域锁</label>
-                      <p class="muted">登录与定期检查将按主省份、邻近省份和特殊省圈规则验证设备位置。</p>
+                    <div class="field"><label><input type="checkbox" name="geo_lock_enabled" value="1"' . ((int) ($editing['geo_lock_enabled'] ?? 0) === 1 ? ' checked' : '') . '> Enable geographic lock</label>
+                      <p class="muted">Login and periodic checks validate device location against the main province, adjacent provinces, and special circles.</p>
                     </div>
                     <div class="field"><label>Billing Mode</label><select name="billing_mode"><option value="monthly_bundle"' . (((string) ($editing['billing_mode'] ?? 'monthly_bundle')) === 'monthly_bundle' ? ' selected' : '') . '>monthly_bundle</option><option value="metered"' . (((string) ($editing['billing_mode'] ?? 'monthly_bundle')) === 'metered' ? ' selected' : '') . '>metered</option></select></div>
                     <div class="field"><label>Billing Currency</label><input type="text" name="billing_currency" value="' . $this->escape((string) ($editing['billing_currency'] ?? 'CNY')) . '" placeholder="CNY"></div>
@@ -4969,7 +4969,10 @@ final class AdminController extends BaseController
 
         $entityFilter = trim((string) $request->input('entity_type', ''));
         $activeFilter = $request->input('active_only', null);
-        $activeOnly = $activeFilter === null || $activeFilter === '' ? null : (bool) $activeFilter;
+        $activeOnly = null;
+        if ($activeFilter !== null && $activeFilter !== '') {
+            $activeOnly = in_array(strtolower(trim((string) $activeFilter)), ['1', 'true', 'yes', 'on'], true);
+        }
         $rules = $this->accessPolicy->listBlacklistRules([
             'entity_type' => $entityFilter,
             'active_only' => $activeOnly,
@@ -5100,7 +5103,9 @@ final class AdminController extends BaseController
         try {
             SessionAuth::validateCsrf($request);
             $ruleId = $this->idParam($params);
-            $this->accessPolicy->setBlacklistRuleActive($ruleId, (bool) $request->input('active', '0'), (int) $viewer['id']);
+            $activeValue = strtolower(trim((string) $request->input('active', '0')));
+            $active = in_array($activeValue, ['1', 'true', 'yes', 'on'], true);
+            $this->accessPolicy->setBlacklistRuleActive($ruleId, $active, (int) $viewer['id']);
             SessionAuth::flash('success', 'Access rule status updated.');
         } catch (\Throwable) {
             SessionAuth::flash('error', 'Unable to update the access rule.');

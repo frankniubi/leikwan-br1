@@ -42,6 +42,10 @@ assertSame('2001:db8::1', $v6['canonical'] ?? null, 'IPv6 canonical value');
 assertSame(6, $v6['family'] ?? null, 'IPv6 family');
 assertSame(16, strlen((string) ($v6['packed'] ?? '')), 'IPv6 packed length');
 
+$mapped = IpAddressMatcher::canonicalize('::ffff:203.0.113.10');
+assertSame('203.0.113.10', $mapped['canonical'] ?? null, 'IPv4-mapped address normalization');
+assertSame(4, $mapped['family'] ?? null, 'IPv4-mapped address family');
+
 assertSame(null, IpAddressMatcher::canonicalize('203.0.113.001'), 'leading-zero IPv4 must be rejected');
 assertSame(null, IpAddressMatcher::canonicalize('not-an-ip'), 'invalid IP must be rejected');
 assertSame(null, IpAddressMatcher::canonicalCidr('203.0.113.0/33'), 'IPv4 prefix overflow');

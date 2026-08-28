@@ -47,6 +47,7 @@ assertSame('BJ', $policy->normalizeProvince('北京市'), 'municipality normaliz
 assertSame(null, $policy->normalizeProvince('香港'), 'Hong Kong is not Mainland');
 assertSame('SN:渭南', $policy->normalizeCity('陕西', '渭南市'), 'city parent key normalization');
 assertSame('SN:weinan', $policy->normalizeCity('SN', 'Weinan'), 'ASCII city key normalization');
+assertSame('SN:weinan', $policy->normalizeCity('SN', 'SN:weinan'), 'canonical city key normalization');
 assertSame(null, $policy->normalizeCity('香港', '九龙'), 'non-Mainland city rejection');
 
 assertSame(['JS', 'SH', 'ZJ'], sorted($policy->allowedProvinces('SH')), 'Shanghai circle');

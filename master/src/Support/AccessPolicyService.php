@@ -55,6 +55,10 @@ class AccessPolicyService
         $context = $this->clientContext($client, $deviceUuid, $attemptId, $platform);
         $this->assertAccountUsable($context['user_id']);
         if ($request !== null) {
+            $protocolVersion = (int) $request->input('protocol_version', 1);
+            if ($protocolVersion !== 1) {
+                throw new ApiException('location_protocol_version_unsupported', 422, ['supported' => [1]]);
+            }
             $sourceIp = $this->resolvedSourceIp($request);
             if ($sourceIp === null) {
                 throw new ApiException('source_ip_unavailable', 400);
@@ -174,7 +178,10 @@ class AccessPolicyService
             throw new ApiException('location_effective_observation_required', 422);
         }
         $physical = $this->observationByMode($normalized, 'physical_no_proxy');
-        if (!$this->isMainlandCountry($effective['country_code'] ?? null) && $physical === null) {
+        $matchedBlacklist = $this->matchBlacklistObservations($context, $sourceIp, $normalized);
+        if (!$this->isMainlandCountry($effective['country_code'] ?? null)
+            && $physical === null
+            && $matchedBlacklist === null) {
             // Leave the challenge unconsumed so the client can submit the
             // required direct physical observation with the same attempt.
             throw new ApiException('direct_location_check_required', 428, [
@@ -224,6 +231,8 @@ class AccessPolicyService
                     'access_blacklisted',
                     'geo_lock_violation',
                     'account_banned',
+                    'device_temporarily_banned',
+                    'device_banned',
                 ], true)) {
                     throw $exception;
                 }
@@ -274,8 +283,14 @@ class AccessPolicyService
         $this->enforceGlobalRules($context, $sourceIp);
         $this->assertDeviceUsable($context['client_id'], $context['device_uuid']);
 
-        $needsLocation = $this->store->geoLockEnabledForUser($context['user_id'])
-            || $this->store->hasActiveGeographicRules();
+        $geoLockEnabled = $this->store->geoLockEnabledForUser($context['user_id']);
+        $profile = $this->store->profileForUser($context['user_id']);
+        $resetPending = $geoLockEnabled
+            && is_array($profile)
+            && (string) ($profile['state'] ?? '') === 'reset_pending';
+        $needsLocation = $geoLockEnabled
+            || $this->store->hasActiveGeographicRules()
+            || $resetPending;
         if (!$needsLocation) {
             return [
                 'decision' => 'allow',
@@ -289,10 +304,30 @@ class AccessPolicyService
         $observations = $this->store->recentObservations($context['user_id'], $context['device_uuid'], $sourceIp, $cutoff);
         $selected = $this->selectCachedObservations($observations);
         $freshAuthentication = in_array($touchType, ['login', 'enrollment'], true);
-        $attemptAlreadyVerified = $this->observationsContainAttempt($observations, $context['attempt_id']);
+        $selectedObservations = [];
+        if ($selected !== null) {
+            $selectedObservations[] = $selected['effective'];
+            if ($selected['physical'] !== null) {
+                $selectedObservations[] = $selected['physical'];
+            }
+        }
+        $cachedBlacklist = $selectedObservations === []
+            ? null
+            : $this->matchBlacklistObservations($context, $sourceIp, $selectedObservations);
+        // A fresh authentication is satisfied only by the selected coherent
+        // attempt. An unrelated observation carrying the same attempt ID
+        // must not suppress the login check.
+        $attemptAlreadyVerified = $selected !== null
+            && (string) ($selected['effective']['attempt_id'] ?? '') === $context['attempt_id'];
+        $cachedDirectCheckRequired = $selected !== null
+            && !$this->isMainlandCountry($selected['effective']['country_code'] ?? null)
+            && $selected['physical'] === null
+            && $cachedBlacklist === null;
         if ($selected === null
-            || ($freshAuthentication && !$attemptAlreadyVerified)
-            || (!$freshAuthentication && $this->cacheIsDue($selected['latest'], $context, $sourceIp))) {
+            || ($freshAuthentication && !$attemptAlreadyVerified && $cachedBlacklist === null)
+            || (!$freshAuthentication && $this->cacheIsDue($selected['latest'], $context, $sourceIp))
+            || $cachedDirectCheckRequired
+            || $resetPending) {
             $challenge = $this->issueLocationChallenge(
                 $client,
                 $context['device_uuid'],
@@ -308,14 +343,39 @@ class AccessPolicyService
             ]);
         }
 
-        $decision = $this->evaluateObservations(
-            $context,
-            $sourceIp,
-            $observations,
-            $selected['effective'],
-            $selected['physical'],
-            false
-        );
+        // Only the coherent attempt selected above participates in the
+        // decision. Older cached attempts remain useful for audit/history,
+        // but must not trigger a newly activated geographic deny rule.
+        $evaluationResult = $this->store->transaction(function () use ($context, $sourceIp, $selectedObservations, $selected): array {
+            try {
+                return ['decision' => $this->evaluateObservations(
+                    $context,
+                    $sourceIp,
+                    $selectedObservations,
+                    $selected['effective'],
+                    $selected['physical'],
+                    false
+                )];
+            } catch (ApiException $exception) {
+                if (!in_array($exception->getMessage(), [
+                    'access_blacklisted',
+                    'geo_lock_violation',
+                    'account_banned',
+                    'device_temporarily_banned',
+                    'device_banned',
+                ], true)) {
+                    throw $exception;
+                }
+                return ['policy_exception' => $exception];
+            }
+        });
+        if (is_array($evaluationResult) && ($evaluationResult['policy_exception'] ?? null) instanceof ApiException) {
+            throw $evaluationResult['policy_exception'];
+        }
+        if (!is_array($evaluationResult) || !is_array($evaluationResult['decision'] ?? null)) {
+            throw new ApiException('location_policy_transaction_invalid', 500);
+        }
+        $decision = $evaluationResult['decision'];
         $decision['next_location_check_at'] = $this->nextLocationCheckAt($selected['latest'], $context, $sourceIp)->format('Y-m-d\\TH:i:s\\Z');
         return $decision;
     }
@@ -389,6 +449,17 @@ class AccessPolicyService
         $selected = $this->selectCachedObservations($observations);
         if ($selected === null) {
             $status['location_check_due'] = true;
+            return $status;
+        }
+        if ($geoLockEnabled && (string) ($profile['state'] ?? '') === 'reset_pending') {
+            $status['location_check_due'] = true;
+            $status['next_location_check_at'] = $this->now()->format('Y-m-d\TH:i:s\Z');
+            return $status;
+        }
+        if (!$this->isMainlandCountry($selected['effective']['country_code'] ?? null)
+            && $selected['physical'] === null) {
+            $status['location_check_due'] = true;
+            $status['next_location_check_at'] = $this->now()->format('Y-m-d\TH:i:s\Z');
             return $status;
         }
         $next = $this->nextLocationCheckAt($selected['latest'], $context, $sourceIp);
@@ -487,14 +558,24 @@ class AccessPolicyService
         if (!$isAdmin || $actorUserId <= 0) {
             throw new ApiException('device_block_release_forbidden', 403);
         }
-        $control = $this->store->controlFor($clientId, trim($deviceUuid));
-        if ($control === null) {
-            throw new ApiException('device_control_not_found', 404);
-        }
-        if (($control['blocked_until'] ?? null) === null) {
+        $deviceUuid = trim($deviceUuid);
+        $row = $this->store->transaction(function () use ($clientId, $deviceUuid, $actorUserId): ?array {
+            $control = $this->store->controlFor($clientId, $deviceUuid);
+            if ($control === null) {
+                throw new ApiException('device_control_not_found', 404);
+            }
+            $state = (string) ($control['state'] ?? '');
+            if ($state === 'banned') {
+                return $this->store->releasePermanentDeviceBlock($clientId, $deviceUuid, $actorUserId);
+            }
+            if (($control['blocked_until'] ?? null) !== null) {
+                return $this->store->releaseTemporaryDeviceBlock($clientId, $deviceUuid, $actorUserId);
+            }
+            if ($state === 'kicked') {
+                return $this->store->releasePermanentDeviceBlock($clientId, $deviceUuid, $actorUserId);
+            }
             throw new ApiException('device_block_release_forbidden', 403);
-        }
-        $row = $this->store->releaseTemporaryDeviceBlock($clientId, trim($deviceUuid), $actorUserId);
+        });
         if ($row === null) {
             throw new ApiException('device_control_not_found', 404);
         }
@@ -525,10 +606,13 @@ class AccessPolicyService
             throw new ApiException('main_province_invalid', 422);
         }
         $now = $this->now();
-        return $this->store->transaction(function () use ($userId, $provinceCode, $admin, $now): array {
+        return $this->store->transaction(function () use ($userId, $provinceCode, $actorUserId, $admin, $now): array {
             $profile = $this->store->profileForUser($userId, true);
             if ($profile === null) {
                 throw new ApiException('main_province_unbound', 409);
+            }
+            if ((string) ($profile['state'] ?? '') === 'reset_pending') {
+                throw new ApiException('main_province_reset_pending', 409);
             }
             if (!$admin && $this->isFuture($profile['self_change_available_at'] ?? null, $now)) {
                 throw new ApiException('main_province_change_rate_limited', 429, [
@@ -557,6 +641,22 @@ class AccessPolicyService
                 'self_change_available_at' => $admin ? ($profile['self_change_available_at'] ?? null) : $this->sqlTime($now->modify('+86400 seconds')),
                 'last_verified_at' => $this->sqlTime($now),
                 'updated_at' => $this->sqlTime($now),
+            ]);
+            $this->store->insertPolicyEvent([
+                'decision_id' => bin2hex(random_bytes(16)),
+                'user_id' => $userId,
+                'client_id' => null,
+                'device_uuid' => null,
+                'source_ip' => null,
+                'event_type' => 'province_change',
+                'decision' => 'allow',
+                'reason_code' => $admin ? 'admin_change' : 'tenant_change',
+                'matched_entity_type' => null,
+                'matched_observation_id' => null,
+                'attempt_id' => 'province-change-' . bin2hex(random_bytes(12)),
+                'counts_as_geo_violation' => 0,
+                'details_digest' => hash('sha256', implode('|', [$previous, $provinceCode, (string) $actorUserId])),
+                'created_at' => $this->sqlTime($now),
             ]);
             return array_merge($profile, [
                 'state' => 'bound',
@@ -684,6 +784,22 @@ class AccessPolicyService
             ];
         }
 
+        // Geographic blacklist rules only decide whether the observed
+        // entity is denied. They do not implicitly enable the account-wide
+        // main-province adjacency policy; that policy is controlled solely by
+        // the effective plan switch.
+        if (!$geoEnabled) {
+            return [
+                'decision' => 'allow',
+                'location_required' => true,
+                'geo_lock_enabled' => false,
+                'source_ip' => $sourceIp,
+                'country_code' => $countryCode,
+                'observation_id' => $effective['id'] ?? null,
+                'persisted' => $persisted,
+            ];
+        }
+
         // A foreign effective result is accepted only when physical_no_proxy
         // supplied a Mainland observation; use that observation for geo lock.
         $selected = $effective;
@@ -727,6 +843,20 @@ class AccessPolicyService
                         'main_province_code' => $province,
                         'bound_observation_id' => $selected['id'] ?? null,
                     ]);
+                    if (!empty($resetResult['current_device_permanent'])) {
+                        throw new ApiException('device_banned', 403, [
+                            'reason' => 'province_reset',
+                        ]);
+                    }
+                    if (!empty($resetResult['current_device_blocked'])) {
+                        $blockedUntil = (string) ($resetResult['current_device_blocked_until'] ?? $this->sqlTime($this->now()->modify('+3600 seconds')));
+                        throw new ApiException('device_temporarily_banned', 423, [
+                            'blocked_until' => $blockedUntil,
+                            'retry_after_seconds' => max(1, strtotime($blockedUntil . ' UTC') - $this->now()->getTimestamp()),
+                            'block_origin' => 'province_reset',
+                            'release_policy' => 'admin_only',
+                        ]);
+                    }
                 } else {
                     $main = $this->regions->normalizeProvince((string) ($profile['main_province_code'] ?? ''));
                     if ($main === null) {
@@ -778,18 +908,34 @@ class AccessPolicyService
         $previous = $this->regions->normalizeProvince((string) ($profile['previous_province_code'] ?? ''));
         $changed = $previous !== null && $previous !== $province;
         $blockedCount = 0;
+        $currentDeviceBlocked = false;
+        $currentDevicePermanent = false;
+        $currentDeviceBlockedUntil = null;
 
         if ($reset !== null) {
             $devices = $this->store->resetDevicesForGeneration((int) $reset['id']);
             if ($changed) {
                 $blockedUntil = $this->sqlTime($now->modify('+3600 seconds'));
                 foreach ($devices as $device) {
-                    if (($device['block_created_at'] ?? null) !== null) {
-                        continue;
-                    }
                     $clientId = (int) ($device['client_id'] ?? 0);
                     $deviceUuid = trim((string) ($device['device_uuid'] ?? ''));
                     if ($clientId <= 0 || $deviceUuid === '') {
+                        continue;
+                    }
+                    if (($device['block_created_at'] ?? null) !== null) {
+                        // A partially completed retry may already have marked
+                        // this snapshot row. Re-read the control so the
+                        // current old UUID is still denied after the reset.
+                        if ($clientId === $context['client_id'] && hash_equals($deviceUuid, $context['device_uuid'])) {
+                            $control = $this->store->controlFor($clientId, $deviceUuid);
+                            $currentDevicePermanent = is_array($control)
+                                && (string) ($control['state'] ?? '') === 'banned'
+                                && ($control['blocked_until'] ?? null) === null;
+                            $currentDeviceBlockedUntil = is_array($control)
+                                ? (($control['blocked_until'] ?? null) !== null ? (string) $control['blocked_until'] : null)
+                                : null;
+                            $currentDeviceBlocked = $currentDevicePermanent || $currentDeviceBlockedUntil !== null;
+                        }
                         continue;
                     }
                     $this->store->upsertTemporaryDeviceBlock(
@@ -800,7 +946,20 @@ class AccessPolicyService
                         'admin_only'
                     );
                     $this->store->markResetDeviceBlocked((int) $device['id'], $blockedUntil, $this->sqlTime($now));
-                    $blockedCount++;
+                    $control = $this->store->controlFor($clientId, $deviceUuid);
+                    $hasTemporaryBlock = is_array($control)
+                        && (string) ($control['blocked_until'] ?? '') === $blockedUntil;
+                    $hasPermanentBlock = is_array($control)
+                        && (string) ($control['state'] ?? '') === 'banned'
+                        && ($control['blocked_until'] ?? null) === null;
+                    if ($hasTemporaryBlock) {
+                        $blockedCount++;
+                    }
+                    if ($clientId === $context['client_id'] && hash_equals($deviceUuid, $context['device_uuid'])) {
+                        $currentDeviceBlocked = $hasTemporaryBlock || $hasPermanentBlock;
+                        $currentDevicePermanent = $hasPermanentBlock;
+                        $currentDeviceBlockedUntil = $hasTemporaryBlock ? $blockedUntil : null;
+                    }
                 }
             }
             $this->store->completeResetGeneration((int) $reset['id'], $this->sqlTime($now));
@@ -812,6 +971,9 @@ class AccessPolicyService
             'previous_province_code' => $previous,
             'bound_observation_id' => $observation['id'] ?? null,
             'last_verified_at' => $this->sqlTime($now),
+            // A completed all-device reset establishes a fresh binding; the
+            // previous self-service cooldown must not carry into that reset.
+            'self_change_available_at' => null,
             'reset_started_at' => null,
             'updated_at' => $this->sqlTime($now),
         ]);
@@ -836,6 +998,9 @@ class AccessPolicyService
             'reset_generation' => (int) ($reset['generation'] ?? $profile['reset_generation'] ?? 0),
             'province_changed' => $changed,
             'reset_blocked_device_count' => $blockedCount,
+            'current_device_blocked' => $currentDeviceBlocked,
+            'current_device_permanent' => $currentDevicePermanent,
+            'current_device_blocked_until' => $currentDeviceBlockedUntil,
         ];
     }
 
@@ -863,8 +1028,59 @@ class AccessPolicyService
     {
         $rules = $this->store->activeBlacklistRules();
         foreach ($rules as $rule) {
-            $type = (string) ($rule['entity_type'] ?? '');
-            $canonical = (string) ($rule['canonical_value'] ?? '');
+            $type = match (strtolower(trim((string) ($rule['entity_type'] ?? '')))) {
+                'device', 'device_code', 'uuid' => 'device_uuid',
+                'ip_address', 'address' => 'ip',
+                'ip_subnet', 'subnet', 'network' => 'cidr',
+                'cn_province', 'province_cn', 'mainland_province' => 'province',
+                'cn_city', 'city_cn', 'prefecture', 'prefecture_city' => 'city',
+                'country_region', 'region', 'country_code' => 'country',
+                default => strtolower(trim((string) ($rule['entity_type'] ?? ''))),
+            };
+            $canonical = trim((string) ($rule['canonical_value'] ?? ''));
+            if ($type === 'province') {
+                $provinceCandidates = [
+                    (string) ($rule['province_code'] ?? ''),
+                    $canonical,
+                    (string) ($rule['display_value'] ?? ''),
+                ];
+                foreach ($provinceCandidates as $candidate) {
+                    $normalized = $this->regions->normalizeProvince($candidate);
+                    if ($normalized !== null) {
+                        $canonical = $normalized;
+                        break;
+                    }
+                }
+            } elseif ($type === 'city') {
+                $province = $this->regions->normalizeProvince((string) ($rule['province_code'] ?? ''));
+                $cityValue = trim((string) ($rule['city_code'] ?? ''));
+                if ($cityValue === '') {
+                    $cityValue = $canonical !== '' ? $canonical : trim((string) ($rule['display_value'] ?? ''));
+                }
+                if ($province === null && str_contains($cityValue, ':')) {
+                    [$rawProvince, $rawCity] = explode(':', $cityValue, 2);
+                    $province = $this->regions->normalizeProvince($rawProvince);
+                    $cityValue = $rawCity;
+                }
+                if ($province !== null) {
+                    $canonical = $this->regions->normalizeCity($province, $cityValue) ?? $canonical;
+                }
+            } elseif ($type === 'country') {
+                $countryCandidates = [
+                    (string) ($rule['country_code'] ?? ''),
+                    $canonical,
+                    (string) ($rule['display_value'] ?? ''),
+                ];
+                foreach ($countryCandidates as $candidate) {
+                    $normalized = $this->normalizeCountryCode($candidate);
+                    if ($normalized !== '') {
+                        $canonical = $normalized;
+                        break;
+                    }
+                }
+            } elseif (($type === 'ip' || $type === 'cidr') && $canonical === '') {
+                $canonical = trim((string) ($rule['display_value'] ?? ''));
+            }
             if ($type === 'device_uuid' && hash_equals(strtolower($canonical), strtolower($context['device_uuid']))) {
                 return $rule;
             }
@@ -896,7 +1112,7 @@ class AccessPolicyService
     /** @param array<string, mixed> $context @param array<string, mixed>|null $observation */
     private function recordBlacklistEvent(array $context, string $sourceIp, array $rule, ?array $observation): void
     {
-        $attemptId = $observation !== null ? (string) ($observation['attempt_id'] ?? $context['attempt_id']) : null;
+        $attemptId = trim((string) ($observation['attempt_id'] ?? $context['attempt_id'] ?? ''));
         $this->store->insertPolicyEvent([
             'decision_id' => bin2hex(random_bytes(16)),
             'user_id' => $context['user_id'],
@@ -965,7 +1181,7 @@ class AccessPolicyService
                 'reason_code' => (string) ($ban['reason_code'] ?? 'account_access_ban'),
             ]);
         }
-        if ($count >= 3 && $ban === null) {
+        if ($count >= 3 && $ban === null && $isNewEvent) {
             $eventIds = array_values(array_map(static fn(array $item): int => (int) ($item['id'] ?? 0), $events));
             $this->store->createAccountBan([
                 'user_id' => $context['user_id'],
@@ -1014,10 +1230,14 @@ class AccessPolicyService
         $deviceUuid = trim($deviceUuid);
         $attemptId = trim($attemptId);
         $platform = strtolower(trim($platform));
-        if ($deviceUuid === '' || strlen($deviceUuid) > 191) {
+        if ($deviceUuid === ''
+            || strlen($deviceUuid) > 191
+            || preg_match('/[\x00-\x20\x7f]/', $deviceUuid) === 1) {
             throw new ApiException('device_uuid_invalid', 422);
         }
-        if ($attemptId === '' || strlen($attemptId) > 128) {
+        if ($attemptId === ''
+            || strlen($attemptId) > 128
+            || preg_match('/[\x00-\x20\x7f]/', $attemptId) === 1) {
             throw new ApiException('location_attempt_invalid', 422);
         }
         if ($platform === '') {
@@ -1052,9 +1272,22 @@ class AccessPolicyService
     /** @param array<string, mixed> $client */
     private function deviceUuidFromRequest(Request $request): string
     {
-        $value = trim((string) ($request->header('x-device-uuid')
-            ?? $request->header('x-device-id')
-            ?? $request->input('device_uuid', $request->input('device_id', ''))));
+        $value = '';
+        foreach ([
+            $request->header('x-device-uuid', ''),
+            $request->header('x-device-id', ''),
+            $request->input('device_uuid', ''),
+            $request->input('device_id', ''),
+        ] as $candidate) {
+            $candidate = trim((string) $candidate);
+            if ($candidate === '') {
+                continue;
+            }
+            if ($value !== '' && !hash_equals($value, $candidate)) {
+                throw new ApiException('device_uuid_invalid', 422);
+            }
+            $value = $candidate;
+        }
         if ($value === '') {
             throw new ApiException('device_uuid_required', 422);
         }
@@ -1134,16 +1367,67 @@ class AccessPolicyService
         if ($state === 'banned') {
             throw new ApiException('device_banned', 403, ['reason' => $control['reason_code'] ?? null]);
         }
-        if ($state === 'kicked') {
-            throw new ApiException('device_kicked', 409, ['reason' => $control['reason_code'] ?? null]);
-        }
-        $blockedUntil = $this->parseTime($control['blocked_until'] ?? null);
-        if ($blockedUntil !== null && $blockedUntil > $this->now()) {
+        $rawBlockedUntil = $control['blocked_until'] ?? null;
+        $blockedUntil = $this->parseTime($rawBlockedUntil);
+        if ($rawBlockedUntil !== null && $blockedUntil === null) {
+            // An invalid persisted timer must fail closed instead of being
+            // interpreted as an active device. Only an administrator can
+            // repair the control row.
             throw new ApiException('device_temporarily_banned', 423, [
-                'blocked_until' => $this->sqlTime($blockedUntil),
+                'retry_after_seconds' => self::TEMPORARY_BLOCK_SECONDS,
                 'block_origin' => $control['block_origin'] ?? 'policy',
                 'release_policy' => $control['release_policy'] ?? 'admin_only',
             ]);
+        }
+        if ($blockedUntil !== null) {
+            $now = $this->now();
+            if ($blockedUntil > $now) {
+                throw new ApiException('device_temporarily_banned', 423, [
+                    'blocked_until' => $this->sqlTime($blockedUntil),
+                    'retry_after_seconds' => max(1, $blockedUntil->getTimestamp() - $now->getTimestamp()),
+                    'block_origin' => $control['block_origin'] ?? 'policy',
+                    'release_policy' => $control['release_policy'] ?? 'admin_only',
+                ]);
+            }
+            $this->store->clearExpiredTemporaryDeviceBlock(
+                $clientId,
+                $deviceUuid,
+                $this->sqlTime($now)
+            );
+            // Re-read after the compare-and-swap expiry cleanup. A concurrent
+            // policy writer may have installed a new timer after the first
+            // snapshot; fail closed instead of returning an active decision.
+            $latest = $this->store->controlFor($clientId, $deviceUuid);
+            if ($latest !== null) {
+                $latestState = (string) ($latest['state'] ?? 'active');
+                if ($latestState === 'banned') {
+                    throw new ApiException('device_banned', 403, ['reason' => $latest['reason_code'] ?? null]);
+                }
+                $latestRawBlockedUntil = $latest['blocked_until'] ?? null;
+                $latestBlockedUntil = $this->parseTime($latestRawBlockedUntil);
+                if ($latestRawBlockedUntil !== null && $latestBlockedUntil === null) {
+                    throw new ApiException('device_temporarily_banned', 423, [
+                        'retry_after_seconds' => self::TEMPORARY_BLOCK_SECONDS,
+                        'block_origin' => $latest['block_origin'] ?? 'policy',
+                        'release_policy' => $latest['release_policy'] ?? 'admin_only',
+                    ]);
+                }
+                if ($latestBlockedUntil !== null && $latestBlockedUntil > $this->now()) {
+                    throw new ApiException('device_temporarily_banned', 423, [
+                        'blocked_until' => $this->sqlTime($latestBlockedUntil),
+                        'retry_after_seconds' => max(1, $latestBlockedUntil->getTimestamp() - $this->now()->getTimestamp()),
+                        'block_origin' => $latest['block_origin'] ?? 'policy',
+                        'release_policy' => $latest['release_policy'] ?? 'admin_only',
+                    ]);
+                }
+                if ($latestBlockedUntil === null && $latestState === 'kicked') {
+                    throw new ApiException('device_kicked', 409, ['reason' => $latest['reason_code'] ?? null]);
+                }
+            }
+            return;
+        }
+        if ($state === 'kicked') {
+            throw new ApiException('device_kicked', 409, ['reason' => $control['reason_code'] ?? null]);
         }
     }
 
@@ -1153,19 +1437,61 @@ class AccessPolicyService
         if ($observations === []) {
             return null;
         }
-        $effective = null;
-        $physical = null;
-        $latest = $observations[0];
+
+        // Effective and physical readings are a single decision only when
+        // they belong to the same client attempt. Never combine a fresh
+        // foreign reading with an older physical reading from another check.
+        $groups = [];
         foreach ($observations as $observation) {
+            $attemptId = trim((string) ($observation['attempt_id'] ?? ''));
+            $challengeId = (int) ($observation['challenge_id'] ?? 0);
+            $groupKey = $attemptId !== ''
+                ? 'attempt:' . $attemptId
+                : ($challengeId > 0 ? 'challenge:' . $challengeId : 'observation:' . (int) ($observation['id'] ?? 0));
+            if (!isset($groups[$groupKey])) {
+                $groups[$groupKey] = [
+                    'latest' => $observation,
+                    'effective' => null,
+                    'physical' => null,
+                ];
+            }
+            $group =& $groups[$groupKey];
+            if ($this->observationIsNewer($observation, $group['latest'])) {
+                $group['latest'] = $observation;
+            }
             $mode = (string) ($observation['collection_mode'] ?? '');
-            if ($mode === 'effective' && $effective === null) {
-                $effective = $observation;
+            if ($mode === 'effective' && ($group['effective'] === null || $this->observationIsNewer($observation, $group['effective']))) {
+                $group['effective'] = $observation;
             }
-            if ($mode === 'physical_no_proxy' && $physical === null) {
-                $physical = $observation;
+            if ($mode === 'physical_no_proxy' && ($group['physical'] === null || $this->observationIsNewer($observation, $group['physical']))) {
+                $group['physical'] = $observation;
             }
+            unset($group);
         }
-        return $effective === null ? null : ['latest' => $latest, 'effective' => $effective, 'physical' => $physical];
+
+        $groups = array_values(array_filter($groups, static fn(array $group): bool => is_array($group['effective'] ?? null)));
+        usort($groups, fn(array $left, array $right): int => $this->compareObservationRecency($right['latest'], $left['latest']));
+        $selected = $groups[0] ?? null;
+        return $selected === null ? null : [
+            'latest' => $selected['latest'],
+            'effective' => $selected['effective'],
+            'physical' => $selected['physical'],
+        ];
+    }
+
+    /** @param array<string, mixed> $left @param array<string, mixed> $right */
+    private function observationIsNewer(array $left, array $right): bool
+    {
+        return $this->compareObservationRecency($left, $right) > 0;
+    }
+
+    /** @param array<string, mixed> $left @param array<string, mixed> $right */
+    private function compareObservationRecency(array $left, array $right): int
+    {
+        $timeCompare = strcmp((string) ($left['received_at'] ?? ''), (string) ($right['received_at'] ?? ''));
+        return $timeCompare !== 0
+            ? $timeCompare
+            : ((int) ($left['id'] ?? 0) <=> (int) ($right['id'] ?? 0));
     }
 
     /** @param array<string, mixed> $latest @param array<string, mixed> $context */
@@ -1196,7 +1522,10 @@ class AccessPolicyService
             $observation = array_merge($observation, $providerData);
         }
         $providerCode = $observation['code'] ?? ($observation['response']['code'] ?? 0);
-        if ((string) $providerCode !== '0' && (int) $providerCode !== 0) {
+        $providerCodeIsSuccess = is_int($providerCode) && $providerCode === 0
+            || is_float($providerCode) && $providerCode === 0.0
+            || is_string($providerCode) && preg_match('/^0+(?:\.0+)?$/', trim($providerCode)) === 1;
+        if (!$providerCodeIsSuccess) {
             throw new ApiException('location_check_unavailable', 503, [
                 'provider' => (string) ($observation['provider'] ?? 'bilibili_zone'),
                 'retry_after_seconds' => self::POLL_INTERVAL_SECONDS,
@@ -1224,7 +1553,7 @@ class AccessPolicyService
                 'retry_after_seconds' => self::POLL_INTERVAL_SECONDS,
             ]);
         }
-        $provider = strtolower(trim((string) ($observation['provider'] ?? '')));
+        $provider = strtolower(trim((string) ($observation['provider'] ?? 'bilibili_zone')));
         if ($provider !== 'bilibili_zone') {
             throw new ApiException('location_provider_invalid', 422);
         }
@@ -1234,9 +1563,11 @@ class AccessPolicyService
         }
         $rawCountryCode = trim((string) ($observation['country_code'] ?? ''));
         $rawCountry = trim((string) ($observation['country'] ?? ''));
-        $countryCode = $this->isMainlandCountry($rawCountryCode) || $this->isMainlandCountry($rawCountry)
-            ? 'CN'
-            : $this->normalizeCountryCode($rawCountry !== '' ? $rawCountry : $rawCountryCode);
+        // Prefer the provider's stable country code whenever it is present.
+        // A display name is only a fallback; otherwise a caller could pair a
+        // foreign code with a localized "China" label and bypass the direct
+        // physical-network check.
+        $countryCode = $this->normalizeObservedCountryCode($rawCountryCode, $rawCountry);
         if ($countryCode === '') {
             throw new ApiException('location_country_invalid', 422);
         }
@@ -1295,16 +1626,26 @@ class AccessPolicyService
             'device', 'device_code', 'uuid' => 'device_uuid',
             'ip_address', 'address' => 'ip',
             'ip_subnet', 'subnet', 'network' => 'cidr',
-            'mainland_province', 'prefecture_province' => 'province',
-            'prefecture', 'prefecture_city' => 'city',
-            'region' => 'country',
+            'mainland_province', 'prefecture_province', 'cn_province', 'province_cn' => 'province',
+            'prefecture', 'prefecture_city', 'cn_city', 'city_cn' => 'city',
+            'region', 'country_region', 'country_code' => 'country',
             default => $type,
         };
         $allowed = ['device_uuid', 'ip', 'cidr', 'province', 'city', 'country'];
         if (!in_array($type, $allowed, true)) {
             throw new ApiException('blacklist_entity_type_invalid', 422);
         }
-        $value = trim((string) ($payload['value'] ?? $payload['canonical_value'] ?? ''));
+        $value = '';
+        foreach (['value', 'canonical_value', 'country_code', 'country'] as $field) {
+            $candidate = trim((string) ($payload[$field] ?? ''));
+            if ($candidate !== '') {
+                $value = $candidate;
+                break;
+            }
+        }
+        if ($type === 'city' && $value === '') {
+            $value = trim((string) ($payload['city'] ?? $payload['city_code'] ?? ''));
+        }
         if ($value === '') {
             throw new ApiException('blacklist_entity_value_required', 422);
         }
@@ -1318,7 +1659,7 @@ class AccessPolicyService
             'province_code' => null,
             'city_code' => null,
             'country_code' => null,
-            'is_active' => array_key_exists('is_active', $payload) ? ((bool) $payload['is_active'] ? 1 : 0) : 1,
+            'is_active' => $this->strictBoolean($payload['is_active'] ?? 1) ? 1 : 0,
             'reason_code' => $this->boundedText((string) ($payload['reason_code'] ?? 'admin_blacklist'), 64),
             'admin_note' => $this->boundedNullableText($payload['admin_note'] ?? null, 500),
         ];
@@ -1363,19 +1704,26 @@ class AccessPolicyService
             return $row;
         }
         if ($type === 'city') {
-            $province = (string) ($payload['province'] ?? $payload['province_code'] ?? '');
-            $city = $this->regions->normalizeCity($province, $value);
+            $province = trim((string) ($payload['province'] ?? $payload['province_code'] ?? ''));
+            $cityValue = $value;
+            if ($province === '' && str_contains($cityValue, ':')) {
+                [$province, $cityValue] = explode(':', $cityValue, 2);
+            }
+            $provinceCode = $this->regions->normalizeProvince($province);
+            $city = $provinceCode === null
+                ? null
+                : $this->regions->normalizeCity($provinceCode, $cityValue);
             if ($city === null) {
                 throw new ApiException('blacklist_city_invalid', 422);
             }
             $row['canonical_value'] = $city;
-            $row['province_code'] = $this->regions->normalizeProvince($province);
+            $row['province_code'] = $provinceCode;
             $row['city_code'] = $city;
             return $row;
         }
 
         $country = $this->normalizeCountryCode($value);
-        if ($country === '') {
+        if ($country === '' || $country === 'CN') {
             throw new ApiException('blacklist_country_invalid', 422);
         }
         $row['canonical_value'] = $country;
@@ -1390,15 +1738,75 @@ class AccessPolicyService
             return '';
         }
         $upper = strtoupper($value);
-        if (in_array($upper, ['CN', 'CHN', '86', '中国', '中国大陆', 'MAINLAND CHINA', 'CHINA'], true)) {
+        if (in_array($upper, ['CN', 'CHN', '86', '中国', '中国大陆', '中国内地', 'MAINLAND CHINA', 'CHINA'], true)) {
             return 'CN';
         }
-        if (preg_match('/^[A-Z]{2,3}$/', $upper) === 1 || preg_match('/^[0-9]{1,3}$/', $upper) === 1) {
+        // The admin form is intentionally friendly to common provider/UI
+        // country names while retaining ISO-like codes as the canonical
+        // persisted value. Unknown labels still receive a deterministic key.
+        $commonAliases = [
+            'UNITED STATES' => 'US', 'UNITED STATES OF AMERICA' => 'US', '美国' => 'US',
+            'JAPAN' => 'JP', '日本' => 'JP', 'SOUTH KOREA' => 'KR', '韩国' => 'KR',
+            'SINGAPORE' => 'SG', '新加坡' => 'SG', 'HONG KONG' => 'HK', '香港' => 'HK',
+            'MACAO' => 'MO', 'MACAU' => 'MO', '澳门' => 'MO', 'TAIWAN' => 'TW', '台湾' => 'TW',
+            'UNITED KINGDOM' => 'GB', '英国' => 'GB', 'CANADA' => 'CA', '加拿大' => 'CA',
+            'AUSTRALIA' => 'AU', '澳大利亚' => 'AU', 'GERMANY' => 'DE', '德国' => 'DE',
+            'FRANCE' => 'FR', '法国' => 'FR', 'RUSSIA' => 'RU', '俄罗斯' => 'RU',
+            'MALAYSIA' => 'MY', '马来西亚' => 'MY', 'THAILAND' => 'TH', '泰国' => 'TH',
+            'VIETNAM' => 'VN', '越南' => 'VN', 'INDIA' => 'IN', '印度' => 'IN',
+        ];
+        if (isset($commonAliases[$upper])) {
+            return $commonAliases[$upper];
+        }
+        if (preg_match('/^[A-Z]{2,3}$/', $upper) === 1) {
             return $upper;
+        }
+        if (preg_match('/^[0-9]{1,3}$/', $upper) === 1) {
+            $numeric = (int) $upper;
+            return $numeric === 86 ? 'CN' : (string) $numeric;
         }
         // Keep non-Latin provider labels deterministic without treating them
         // as Mainland. Admins can use the stable generated key in rules.
         return 'NAME:' . strtoupper(substr(hash('sha256', strtolower($value)), 0, 16));
+    }
+
+    private function normalizeObservedCountryCode(string $countryCode, string $country): string
+    {
+        if ($countryCode === '') {
+            return $this->normalizeCountryCode($country);
+        }
+
+        $stable = $this->normalizeCountryCode($countryCode);
+        if (preg_match('/^[0-9]{1,3}$/', $countryCode) !== 1) {
+            return $stable;
+        }
+
+        $callingCode = (string) ((int) $countryCode);
+        $callingCodeAliases = [
+            '1' => ['US', 'CA'],
+            '7' => ['RU', 'KZ'],
+            '33' => ['FR'],
+            '44' => ['GB'],
+            '49' => ['DE'],
+            '60' => ['MY'],
+            '61' => ['AU'],
+            '65' => ['SG'],
+            '66' => ['TH'],
+            '81' => ['JP'],
+            '82' => ['KR'],
+            '84' => ['VN'],
+            '86' => ['CN'],
+            '852' => ['HK'],
+            '853' => ['MO'],
+            '886' => ['TW'],
+            '91' => ['IN'],
+        ];
+        $displayCode = $this->normalizeCountryCode($country);
+        $candidates = $callingCodeAliases[$callingCode] ?? [];
+        if ($displayCode !== '' && in_array($displayCode, $candidates, true)) {
+            return $displayCode;
+        }
+        return count($candidates) === 1 ? $candidates[0] : $stable;
     }
 
     private function isMainlandCountry(mixed $countryCode): bool
@@ -1467,6 +1875,15 @@ class AccessPolicyService
     {
         $value = trim((string) $value);
         return $value === '' ? null : substr($value, 0, $length);
+    }
+
+    private function strictBoolean(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        $normalized = strtolower(trim((string) $value));
+        return in_array($normalized, ['1', 'true', 'yes', 'on'], true);
     }
 
     private function observationByMode(array $observations, string $mode): ?array

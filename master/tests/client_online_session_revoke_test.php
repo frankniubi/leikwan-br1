@@ -75,6 +75,8 @@ namespace {
     });
 
     use Leikwan\Master\Database\Database;
+    use Leikwan\Master\Http\Request;
+    use Leikwan\Master\Support\ApiException;
     use Leikwan\Master\Support\ClientOnlineSessionService;
 
     function fail(string $message): never
@@ -111,6 +113,26 @@ namespace {
     }
     if ($service->revokeAllForUser(7) !== 1 || $db->sessions !== []) {
         fail('expected user-wide revocation to remove sessions for every owned client');
+    }
+
+    $uuidHeader = new Request('GET', '/api/client/heartbeat', [], [], ['x-device-uuid' => 'cross-platform-uuid'], '', '203.0.113.10');
+    if ($service->deviceIdFromRequest($uuidHeader) !== 'cross-platform-uuid') {
+        fail('x-device-uuid must map to the shared device identity');
+    }
+    $uuidBody = new Request('GET', '/api/client/heartbeat', [], ['device_uuid' => 'body-cross-platform-uuid'], [], '', '203.0.113.10');
+    if ($service->deviceIdFromRequest($uuidBody) !== 'body-cross-platform-uuid') {
+        fail('device_uuid body field must map to the shared device identity');
+    }
+    $conflictingUuid = new Request('GET', '/api/client/heartbeat', [], ['device_uuid' => 'body-uuid'], [
+        'x-device-id' => 'header-uuid',
+    ], '', '203.0.113.10');
+    try {
+        $service->deviceIdFromRequest($conflictingUuid);
+        fail('conflicting shared device identity fields must be rejected');
+    } catch (ApiException $exception) {
+        if ($exception->getMessage() !== 'device_id_invalid') {
+            fail('unexpected conflicting device identity error: ' . $exception->getMessage());
+        }
     }
 
     echo "ok\n";

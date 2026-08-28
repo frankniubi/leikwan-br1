@@ -52,9 +52,21 @@ $textKeys = [
     'Device temporarily blocked.', 'Unable to block this device.', 'Device restored.',
     'This device cannot be restored by the tenant.', 'All application devices were kicked out.',
     'A device reset is already pending.', 'Unable to kick all devices.', 'Main province updated.',
-    'Unable to update the main province.', 'Point', 'Source ID', 'Visibility / Geo',
+    'Unable to update the main province.', 'Point', 'Source ID', 'Visibility / Geo', 'Not verified',
+    'Enable geographic lock',
+    'Login and periodic checks validate device location against the main province, adjacent provinces, and special circles.',
+    'Enable', 'Disable', 'Access rule saved.', 'Unable to save the access rule.',
+    'Access rule status updated.', 'Unable to update the access rule.',
+    'Device block released.', 'Unable to release the device block.',
+    'Account ban released.', 'Unable to release the account ban.',
+    'Permanent device bans require administrator release.',
 ];
-$attributeKeys = ['UUID, IP, CIDR, province, city, or country'];
+$attributeKeys = [
+    'UUID, IP, CIDR, province, city, or country',
+    'Confirm kicking all application devices',
+    'Confirm kicking this client',
+    'Confirm banning this device',
+];
 
 $catalogs = [
     'en' => loadCatalog(__DIR__ . '/../public/i18n/en.json'),
