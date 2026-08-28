@@ -185,7 +185,7 @@ class AccessPolicyService
             ]);
         }
 
-        return $this->store->transaction(function () use ($challenge, $token, $context, $normalized, $effective, $physical, $sourceIp): array {
+        $transactionResult = $this->store->transaction(function () use ($challenge, $token, $context, $normalized, $effective, $physical, $sourceIp): array {
             $locked = $this->store->challengeByHash(hash('sha256', $token), true);
             $this->assertChallenge($locked, $context);
             if (!$this->store->consumeChallenge((int) $locked['id'], $this->sqlTime($this->now()))) {
@@ -207,19 +207,40 @@ class AccessPolicyService
 
             $effectiveRow = $this->rowForNormalized($observationRows, $effective);
             $physicalRow = $physical === null ? null : $this->rowForNormalized($observationRows, $physical);
-            $decision = $this->evaluateObservations(
-                $context,
-                $sourceIp,
-                $observationRows,
-                $effectiveRow,
-                $physicalRow,
-                true
-            );
+            try {
+                $decision = $this->evaluateObservations(
+                    $context,
+                    $sourceIp,
+                    $observationRows,
+                    $effectiveRow,
+                    $physicalRow,
+                    true
+                );
+            } catch (ApiException $exception) {
+                // Policy denials intentionally commit their evidence and
+                // device/account state. Validation and storage errors still
+                // escape so Database::transaction() rolls them back.
+                if (!in_array($exception->getMessage(), [
+                    'access_blacklisted',
+                    'geo_lock_violation',
+                    'account_banned',
+                ], true)) {
+                    throw $exception;
+                }
+                return ['policy_exception' => $exception];
+            }
             $latest = $observationRows[0] ?? $effectiveRow;
             $decision['next_location_check_at'] = $this->nextLocationCheckAt($latest, $context, $sourceIp)
                 ->format('Y-m-d\\TH:i:s\\Z');
-            return $decision;
+            return ['decision' => $decision];
         });
+        if (is_array($transactionResult) && ($transactionResult['policy_exception'] ?? null) instanceof ApiException) {
+            throw $transactionResult['policy_exception'];
+        }
+        if (!is_array($transactionResult) || !is_array($transactionResult['decision'] ?? null)) {
+            throw new ApiException('location_policy_transaction_invalid', 500);
+        }
+        return $transactionResult['decision'];
     }
 
     /**

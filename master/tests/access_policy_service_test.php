@@ -52,6 +52,7 @@ namespace {
         public array $bans = [];
         /** @var array<string, array<string, mixed>> */
         public array $controls = [];
+        public bool $simulateDatabaseRollback = true;
         private int $nextId = 1;
 
         public function __construct()
@@ -227,7 +228,34 @@ namespace {
 
         public function transaction(callable $callback): mixed
         {
-            return $callback($this);
+            if (!$this->simulateDatabaseRollback) {
+                return $callback($this);
+            }
+            $snapshot = [
+                $this->users,
+                $this->profiles,
+                $this->challenges,
+                $this->observations,
+                $this->events,
+                $this->bans,
+                $this->controls,
+                $this->nextId,
+            ];
+            try {
+                return $callback($this);
+            } catch (\Throwable $throwable) {
+                [
+                    $this->users,
+                    $this->profiles,
+                    $this->challenges,
+                    $this->observations,
+                    $this->events,
+                    $this->bans,
+                    $this->controls,
+                    $this->nextId,
+                ] = $snapshot;
+                throw $throwable;
+            }
         }
     }
 
