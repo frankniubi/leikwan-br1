@@ -67,9 +67,11 @@ func TestRuntimePolicyRequiresValidLeaseBeforeDataPlane(t *testing.T) {
 	if err := store.Replace(policy, lease); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := store.Snapshot(); !ok {
+	snapshot, ok := store.Snapshot()
+	if !ok {
 		t.Fatal("valid policy and lease were not accepted")
 	}
+	snapshot.Lease.wipe()
 	store.Revoke(policy.PolicyGeneration)
 	if _, ok := store.Snapshot(); ok {
 		t.Fatal("revoked lease remained usable")

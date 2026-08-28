@@ -56,7 +56,7 @@ $service = new UltraLeaseService(
     static fn(): int => $now,
     static function (int $clientId, string $deviceId, int $forwardId) use ($generation): array {
         return [
-            'forward_id' => $forwardId,
+            'forward_id' => 42,
             'device_hash' => hash('sha256', 'device-a'),
             'service_state' => 'active',
             'policy_generation' => $generation,
@@ -88,7 +88,17 @@ assertUltraPolicyLease(
 );
 assertUltraPolicyLease(!array_key_exists('line_id', $lease['lease']), 'lease exposed line id');
 assertUltraPolicyLease(!array_key_exists('line_ips', $lease['lease']), 'lease exposed line ips');
+assertUltraPolicyLease(!array_key_exists('endpoints', $lease['lease']), 'lease exposed endpoint inventory');
+assertUltraPolicyLease(!array_key_exists('candidates', $lease['lease']), 'lease exposed candidate inventory');
+assertUltraPolicyLease(
+    array_keys((array) ($lease['lease']['endpoint'] ?? [])) === ['ip', 'port'],
+    'lease must contain exactly one endpoint'
+);
 assertUltraPolicyLease(($lease['lease']['policy_generation'] ?? '') === $generation, 'generation missing');
+assertUltraPolicyLease(
+    strtotime((string) ($lease['lease']['expires_at'] ?? '')) <= $now + UltraMode::MAX_POLICY_TTL_SECONDS,
+    'lease TTL exceeded five minutes'
+);
 assertUltraPolicyLease($candidateCalls === 1, 'candidate resolver call count mismatch');
 
 $replay = $service->issueLease($request, 7, 'device-a');
@@ -96,6 +106,10 @@ assertUltraPolicyLease(($replay['error'] ?? '') === 'lease_replayed', 'nonce rep
 assertUltraPolicyLease(
     ($service->issueLease(array_merge($request, ['nonce' => 'abcdef0123456789abcdef01234530']), 7, 'wrong-device')['error'] ?? '') === 'lease_scope_invalid',
     'device scope was not rejected'
+);
+assertUltraPolicyLease(
+    ($service->issueLease(array_merge($request, ['forward_id' => 43, 'nonce' => 'abcdef0123456789abcdef01234534']), 7, 'device-a')['error'] ?? '') === 'lease_scope_invalid',
+    'forward scope was not rejected'
 );
 assertUltraPolicyLease(
     ($service->issueLease(array_merge($request, ['nonce' => 'abcdef0123456789abcdef01234531', 'policy_generation' => str_repeat('b', 64)]), 7, 'device-a')['error'] ?? '') === 'policy_generation_invalid',
@@ -213,6 +227,11 @@ foreach (['lease_replayed', 'policy_generation_invalid', 'forward_inactive', 'po
 assertUltraPolicyLease(str_contains($source, 'ultra_client_leases'), 'lease audit table integration missing');
 assertUltraPolicyLease(!str_contains($source, 'gateway'), 'lease service introduced gateway semantics');
 assertUltraPolicyLease(UltraMode::LEASE_ENDPOINT === '/api/client/ultra/lease', 'lease endpoint constant mismatch');
+$controllerSource = (string) file_get_contents(__DIR__ . '/../src/Controllers/ClientAgentController.php');
+assertUltraPolicyLease(
+    substr_count($controllerSource, "'Cache-Control' => 'no-store, no-cache, must-revalidate'") >= 2,
+    'Ultra policy and lease responses must be no-store'
+);
 
 @unlink($envPath);
 echo "ok\n";

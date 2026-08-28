@@ -381,14 +381,17 @@ final class ClientAgentController extends BaseController
         $linuxProfileRuntime = $snapshot['linux_profile_runtime'];
 
         $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? '')));
+        // Older Mac builds did not consistently send X-Device-Platform. The
+        // dedicated User-Agent remains an authenticated client identity signal
+        // and keeps those builds on the scrubbed Ultra v2 contract.
+        $userAgent = strtolower(trim((string) ($request->header('user-agent') ?? '')));
+        $policyV2 = self::usesUltraPolicyV2($platform)
+            || str_starts_with($userAgent, 'leikwan-mac-gui/');
         $forwards = $this->attachUltraAccessGrants(
             $forwards,
             (int) $client['id'],
             $deviceId,
-            str_starts_with($platform, 'windows')
-                || str_starts_with($platform, 'linux')
-                || str_starts_with($platform, 'macos')
-                || $this->isAndroidRequest($request)
+            $policyV2 || $this->isAndroidRequest($request)
         );
 
         $response = $this->json([
@@ -627,11 +630,19 @@ final class ClientAgentController extends BaseController
         return $forwards;
     }
 
+    private static function usesUltraPolicyV2(string $platform): bool
+    {
+        $platform = strtolower(trim($platform));
+        return str_starts_with($platform, 'windows')
+            || str_starts_with($platform, 'linux')
+            || str_starts_with($platform, 'macos');
+    }
+
     /** @param array<string,mixed> $forward @return array<string,mixed> */
     private function scrubUltraClientForward(array $forward): array
     {
         foreach ([
-            'client_token',
+            'client_token', 'credential', 'credentials', 'password', 'provider', 'providers',
             'line_client_id', 'line_client_name', 'line_client_host',
             'line_client_group_id', 'line_client_group_name', 'line_client_group_ids',
             'line_client_groups', 'line_group_mode', 'line_client_agent_config_json',

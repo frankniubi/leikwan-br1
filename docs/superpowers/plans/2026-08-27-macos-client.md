@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the panel wire contract and `LeikwanBridge.Core` as the source of truth, but inject platform policy and platform services into the lifecycle coordinator. The macOS Avalonia shell composes Unix process, Keychain, LaunchAgent, updater, and port-probe implementations. Ultra uses policy-v2 pulls, a maximum-300-second selected lease, anonymous bootstrap input, and a private Unix socket; provider material never enters static configuration or persisted state.
 
-**Tech Stack:** .NET 8, Avalonia 11.3.20, CommunityToolkit.Mvvm 8.4.2, Lucide.Avalonia 0.2.19, xUnit, Go 1.22, Rust stable, PHP 8, Bash, GitHub Actions, macOS `hdiutil`/`ditto`.
+**Tech Stack:** .NET 8, Avalonia 11.3.20, CommunityToolkit.Mvvm 8.4.2, Lucide.Avalonia 0.1.64, xUnit, Go 1.27, Rust stable, PHP 8, Bash, GitHub Actions, macOS `hdiutil`/`ditto`.
 
 **Spec:** `docs/superpowers/specs/2026-08-27-macos-client-design.md`
 
@@ -132,7 +132,7 @@
 - Produces: `StateManager.RemoveApplied(int forwardId)`.
 - Preserves: the default `WindowsForwardAcceptancePolicy` delegates to `WindowsForwardPolicy.IsSupportedOnWindows`.
 
-- [ ] **Step 1: Write the failing raw-mode allowlist tests.**
+- [x] **Step 1: Write the failing raw-mode allowlist tests.**
 
 ```csharp
 [Theory]
@@ -158,7 +158,7 @@ public void Evaluate_UsesRawClientModeBeforeAnyNormalizer(
 }
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED.**
+- [x] **Step 2: Run the focused test and verify RED.**
 
 Run:
 ```powershell
@@ -167,7 +167,7 @@ dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.C
 
 Expected: FAIL because `MacForwardPolicy` and `ForwardAcceptance` do not exist.
 
-- [ ] **Step 3: Implement the exact policy contract.**
+- [x] **Step 3: Implement the exact policy contract.**
 
 ```csharp
 public sealed record ForwardAcceptance(bool Accepted, string EffectiveMode, string Notice);
@@ -204,7 +204,7 @@ target, an Ultra target contract (or empty legacy contract), and zero endpoint
 inventory. Refactor `WindowsForwardPolicy` to call this helper so its accepted
 Ultra shapes do not change.
 
-- [ ] **Step 4: Add a polling test that proves rejection precedes every side effect.**
+- [x] **Step 4: Add a polling test that proves rejection precedes every side effect.**
 
 Use the existing HTTP-handler fixture to return one `mptcp` forward. Subscribe to
 `ForwardRejected` and assert the exact notice, then assert the runtime spy has
@@ -212,14 +212,14 @@ zero compute/apply/health calls, `applied.json` has no rejected ID, and
 `LatestForwards` is empty. Add a supported-to-rejected revision test asserting
 the old process is stopped and `RemoveApplied` deletes the old record.
 
-- [ ] **Step 5: Inject the policy into `ConfigPollingService` and filter before normalization.**
+- [x] **Step 5: Inject the policy into `ConfigPollingService` and filter before normalization.**
 
 The constructor gains an optional `IForwardAcceptancePolicy` with a Windows
 default. Iterate the raw `pull.Forwards` once, emit `ForwardRejected` immediately,
 and reconcile only accepted active forwards. Removed/rejected IDs call
 `StopForwardForPolicy` followed by `StateManager.RemoveApplied`.
 
-- [ ] **Step 6: Run focused and Windows policy tests.**
+- [x] **Step 6: Run focused and Windows policy tests.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter "FullyQualifiedName~MacForwardPolicyTests|FullyQualifiedName~ConfigPollingServiceTests|FullyQualifiedName~WindowsForwardPolicyTests"
@@ -227,7 +227,7 @@ dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.C
 
 Expected: PASS, including the exact bilingual notice and zero rejected-forward side effects.
 
-- [ ] **Step 7: Commit.**
+- [x] **Step 7: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Core/Models/ClientPlatformIdentity.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Helpers/IForwardAcceptancePolicy.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Helpers/UltraForwardPolicy.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Helpers/MacForwardPolicy.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Helpers/WindowsForwardPolicy.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/ConfigPollingService.cs LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/StateManager.cs LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/Runtime/MacForwardPolicyTests.cs LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/Runtime/ConfigPollingServiceTests.cs
@@ -245,7 +245,7 @@ git commit -m "feat(mac): enforce supported forward modes"
 - Consumes: `X-Device-Platform: macos-desktop`.
 - Produces: scrubbed `ultra_access` policy plus one lease from `POST /api/client/ultra/lease`.
 
-- [ ] **Step 1: Add a failing panel contract test.**
+- [x] **Step 1: Add a failing panel contract test.**
 
 The fixture must issue the same assigned Ultra forward to `windows-desktop`,
 `linux`, and `macos-desktop`. For Mac, assert:
@@ -263,7 +263,7 @@ if (($payload['forwards'][0]['ultra_access']['protocol'] ?? '') !== 'leikwan-ult
 }
 ```
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 php master/tests/client_agent_macos_ultra_policy_v2_contract_test.php
@@ -271,7 +271,7 @@ php master/tests/client_agent_macos_ultra_policy_v2_contract_test.php
 
 Expected: FAIL because `macos-desktop` does not select the policy-v2 scrub path.
 
-- [ ] **Step 3: Centralize the platform decision and scrub before response serialization.**
+- [x] **Step 3: Centralize the platform decision and scrub before response serialization.**
 
 Add:
 
@@ -289,13 +289,13 @@ Pass its result to `attachUltraAccessGrants`. Keep
 `scrubUltraClientForward` authoritative and do not add a Mac legacy-material
 fallback when the broker fails.
 
-- [ ] **Step 4: Assert lease scope and TTL.**
+- [x] **Step 4: Assert lease scope and TTL.**
 
 Extend the lease test to assert one returned endpoint, no candidate list,
 `expires_at <= now + 300`, mismatched device/forward/generation rejection,
 nonce replay rejection, and `Cache-Control: no-store`.
 
-- [ ] **Step 5: Run panel tests.**
+- [x] **Step 5: Run panel tests.**
 
 ```powershell
 php master/tests/client_agent_macos_ultra_policy_v2_contract_test.php
@@ -305,7 +305,7 @@ php master/tests/ultra_policy_lease_contract_test.php
 
 Expected: all print `ok` and exit 0.
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```powershell
 git add master/src/Controllers/ClientAgentController.php master/tests/client_agent_macos_ultra_policy_v2_contract_test.php master/tests/ultra_policy_lease_contract_test.php
@@ -334,7 +334,7 @@ git commit -m "feat(mac): issue scrubbed Ultra v2 policies"
 - Produces: `sameUserPeer(*net.UnixConn) bool` with OS-specific implementation.
 - Produces: `applyProcessSecurity() error` and best-effort `lockSecret/clearSecret`.
 
-- [ ] **Step 1: Write failing bounded-stdin tests.**
+- [x] **Step 1: Write failing bounded-stdin tests.**
 
 ```go
 func TestLoadConfigFromStdinNeverCreatesAFile(t *testing.T) {
@@ -350,7 +350,7 @@ func TestLoadConfigFromStdinRejectsMoreThan64KiB(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 Push-Location tools/ultra-client
@@ -360,21 +360,21 @@ Pop-Location
 
 Expected: FAIL because the stdin loader and peer validation do not exist.
 
-- [ ] **Step 3: Implement mutually exclusive `--config` and `--config-stdin`.**
+- [x] **Step 3: Implement mutually exclusive `--config` and `--config-stdin`.**
 
 Read at most 64 KiB plus one byte, reject trailing JSON values, zero the raw
 buffer after decode, and never echo the config in errors. `main` calls
 `applyProcessSecurity` before reading either source. File mode remains for Linux
 and Windows compatibility; the Mac launcher uses stdin exclusively.
 
-- [ ] **Step 4: Enforce same-user Unix control connections.**
+- [x] **Step 4: Enforce same-user Unix control connections.**
 
 `control.go` calls `sameUserPeer` before reading the frame. Linux uses
 `SO_PEERCRED`; Darwin uses `getpeereid` through `golang.org/x/sys/unix`. Reject
 unknown credentials, keep the socket in a `0700` parent, chmod it `0600`, and
 unlink it on every exit path.
 
-- [ ] **Step 5: Apply process and secret-memory hardening.**
+- [x] **Step 5: Apply process and secret-memory hardening.**
 
 On Unix set both soft and hard `RLIMIT_CORE` to zero. `ProviderLease` calls
 `lockSecret` on credential slices when accepted, zeros every old/snapshot
@@ -382,14 +382,14 @@ credential copy before `Munlock`, clears the provider IP string reference on
 revoke, and never logs a lease payload. A failed `mlock` records only
 `secret_memory_unlocked` and continues with the same lease validation.
 
-- [ ] **Step 6: Add lifecycle and output tests.**
+- [x] **Step 6: Add lifecycle and output tests.**
 
 Cover same-UID accept, wrong-UID reject through an injected peer checker,
 duplicate nonce, oversized/partial frame, expiry cleanup, replacement cleanup,
 metadata-only status, and stdout/stderr containing zero canary endpoint or
 credential matches.
 
-- [ ] **Step 7: Run native tests and Darwin compile gates.**
+- [x] **Step 7: Run native tests and Darwin compile gates.**
 
 ```powershell
 Push-Location tools/ultra-client
@@ -402,7 +402,7 @@ Pop-Location
 
 Expected: tests PASS and both Mach-O test binaries compile. The `.tmp` outputs remain ignored.
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```powershell
 git add tools/ultra-client
@@ -435,14 +435,14 @@ git commit -m "feat(mac): harden Ultra memory-only runtime"
 - `bool IUltraRuntimeHost.Refresh(ForwardConfig forward, UltraLease lease)`.
 - `void IUltraRuntimeHost.Stop(int forwardId)`.
 
-- [ ] **Step 1: Write failing Windows extraction tests.**
+- [x] **Step 1: Write failing Windows extraction tests.**
 
 Retain every current `ApplyForward_Ultra*` assertion, then inject a recording
 `IUltraRuntimeHost` and assert `ForwardRuntimeManager` delegates Ultra
 start/refresh/stop while single/bond still use the existing builders. This is
 the regression fence before moving current Windows code.
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter "FullyQualifiedName~ForwardRuntimeManagerTests|FullyQualifiedName~WindowsJobGroupTests"
@@ -450,7 +450,7 @@ dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.C
 
 Expected: FAIL because the runtime abstractions do not exist.
 
-- [ ] **Step 3: Extract `IProcessSupervisor` and `WindowsUltraRuntimeHost` without behavior changes.**
+- [x] **Step 3: Extract `IProcessSupervisor` and `WindowsUltraRuntimeHost` without behavior changes.**
 
 Move the current config-file/named-pipe Ultra code into the Windows host. Make
 `ProcessSupervisor` and test supervisors implement the new interface. When
@@ -458,7 +458,7 @@ Move the current config-file/named-pipe Ultra code into the Windows host. Make
 and zero the supplied byte array in `finally`. When `logArguments=false` log only
 forward ID, role, and executable basename.
 
-- [ ] **Step 4: Write failing Unix lease and Mac host tests.**
+- [x] **Step 4: Write failing Unix lease and Mac host tests.**
 
 Use a temporary Unix listener to verify the four-byte frame, one acknowledgement,
 64 KiB limit, two-second timeout, exact forward/generation match, and zeroed body
@@ -472,14 +472,14 @@ Assert.DoesNotContain(canaryTarget, Directory.EnumerateFiles(root, "*", SearchOp
 Assert.Equal(Convert.FromHexString(new string('0', lease.Password.Length * 2)), lease.Password);
 ```
 
-- [ ] **Step 5: Implement `MacProcessSupervisor`.**
+- [x] **Step 5: Implement `MacProcessSupervisor`.**
 
 Start each helper in its own process group using `setpgid(pid,pid)`. Stop sends
 `SIGTERM` to the negative group ID, waits up to three seconds, then sends
 `SIGKILL` and disposes every `Process`. Never invoke a shell. Track roles/PIDs
 with the same semantics as the Windows supervisor.
 
-- [ ] **Step 6: Implement `MacUltraRuntimeHost`.**
+- [x] **Step 6: Implement `MacUltraRuntimeHost`.**
 
 Create `<runtime>/ultra-<forward>-<128-bit-random>/` mode `0700`; choose a random
 socket name; keep only the metadata status path on disk. Serialize the bootstrap
@@ -488,7 +488,7 @@ array, wait for the socket, send the lease, then require the local listener.
 `Refresh` uses the in-memory socket path. `Stop` kills the process group and
 removes the socket directory/status.
 
-- [ ] **Step 7: Run Core and Mac runtime tests.**
+- [x] **Step 7: Run Core and Mac runtime tests.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter "FullyQualifiedName~ForwardRuntimeManagerTests|FullyQualifiedName~UnixUltraLeaseClientTests|FullyQualifiedName~HealthCheckServiceTests|FullyQualifiedName~WindowsJobGroupTests"
@@ -497,7 +497,7 @@ dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Ma
 
 Expected: PASS; Windows tests retain their prior assertions and Mac tests find no canary on disk/argv/log.
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Core LeikwanBridge.Desktop/src/LeikwanBridge.Mac/Services/MacProcessSupervisor.cs LeikwanBridge.Desktop/src/LeikwanBridge.Mac/Services/MacUltraRuntimeHost.cs LeikwanBridge.Desktop/tests
@@ -520,7 +520,7 @@ git commit -m "feat(mac): add Unix process and Ultra runtime hosts"
 - `Task<bool> IAutostartService.IsEnabledAsync(CancellationToken ct)` and `Task SetEnabledAsync(bool enabled, CancellationToken ct)`.
 - `IClientPlatformPaths` exposes `ConfigPath`, `StateDirectory`, `RuntimeDirectory`, `LogDirectory`, `BundleDirectory`, and `BinDirectory`.
 
-- [ ] **Step 1: Write failing path and identity tests.**
+- [x] **Step 1: Write failing path and identity tests.**
 
 ```csharp
 var paths = new MacPlatformPaths("/Users/tester", "/Applications/LeiKwan Bridge.app");
@@ -533,13 +533,13 @@ Assert.Matches("^macos-client-[a-f0-9]{32}$", identity.DeviceId);
 Also capture a request and assert all four required Mac headers and no Windows
 user agent.
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj --filter "FullyQualifiedName~MacPlatformPathsTests|FullyQualifiedName~MacKeychainSecretStoreTests|FullyQualifiedName~MacAgentConfigStoreTests|FullyQualifiedName~MacPortOwnershipProbeTests|FullyQualifiedName~MacAutostartServiceTests"
 ```
 
-- [ ] **Step 3: Implement paths and restrictive modes.**
+- [x] **Step 3: Implement paths and restrictive modes.**
 
 Create root/state/runtime/log directories as `0700` and config/device ID files as
 `0600` using `File.SetUnixFileMode`. Generate 16 random bytes once for the device
@@ -547,7 +547,7 @@ ID; never derive it from a hardware serial or MAC address. Mac app composition
 sets all `AgentConfig` helper paths explicitly, so Windows `.exe` defaults remain
 unchanged.
 
-- [ ] **Step 4: Implement Keychain with a testable native boundary.**
+- [x] **Step 4: Implement Keychain with a testable native boundary.**
 
 Wrap `SecKeychainFindGenericPassword`, `SecKeychainAddGenericPassword`, and
 `SecKeychainItemModifyAttributesAndData` behind `IMacKeychainNative`. Service
@@ -563,7 +563,7 @@ only those tokens to the separate `0600` fallback secret file, never to the
 general config JSON. Tests seed canary tokens and assert zero matches in
 `config.json`.
 
-- [ ] **Step 5: Implement structured `lsof` and LaunchAgent handling.**
+- [x] **Step 5: Implement structured `lsof` and LaunchAgent handling.**
 
 Run `/usr/sbin/lsof` with `ProcessStartInfo.ArgumentList` and `-Fpcu`; validate
 the requested port before launch and never use shell interpolation. Generate the
@@ -571,7 +571,7 @@ plist with `XmlWriter`, including a ProgramArguments array, `RunAtLoad=true`,
 `KeepAlive=false`, and no tokens. Write atomically mode `0600`, then use
 `launchctl bootstrap/bootout gui/<uid>`.
 
-- [ ] **Step 6: Run focused tests and a source scan.**
+- [x] **Step 6: Run focused tests and a source scan.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter FullyQualifiedName~MasterApiClientDesktopLoginTests
@@ -581,7 +581,7 @@ rg -n "windows-client|Leikwan-Windows-GUI|\.exe" LeikwanBridge.Desktop/src/Leikw
 
 Expected: tests PASS; the source scan returns no Mac identity or helper-path regression.
 
-- [ ] **Step 7: Commit.**
+- [x] **Step 7: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Core LeikwanBridge.Desktop/src/LeikwanBridge.Mac/Services LeikwanBridge.Desktop/tests
@@ -599,7 +599,7 @@ git commit -m "feat(mac): add platform services and identity"
 - Controller methods: `LoginAsync`, `SelectClientAsync`, `ConnectAsync`, `DisconnectAsync`, `StartForwardAsync`, `StopForwardAsync`, `StartAllAsync`, `StopAllAsync`, `SignOutAsync`.
 - Events: `SnapshotChanged`, `ForwardsChanged`, `NoticeRaised`, `LogRaised`, `UpdateAvailable`.
 
-- [ ] **Step 1: Write controller state-machine tests.**
+- [x] **Step 1: Write controller state-machine tests.**
 
 Cover successful login, multi-client selection, secret-store persistence,
 connect, first pull, `304` no-op, changed revision, start/stop, sign-out,
@@ -614,13 +614,13 @@ Assert.Equal(0, runtime.ApplyCalls);
 Assert.Equal(0, health.UpdateCalls);
 ```
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter "FullyQualifiedName~DesktopClientControllerTests|FullyQualifiedName~ClientDiagnosticsServiceTests|FullyQualifiedName~HeartbeatServiceTests"
 ```
 
-- [ ] **Step 3: Implement the controller and start all background loops.**
+- [x] **Step 3: Implement the controller and start all background loops.**
 
 The controller owns/disposes API, polling, heartbeat, health, runtime, and
 supervisor instances. It starts health checks after the first accepted snapshot,
@@ -628,14 +628,14 @@ sends heartbeat after each successful pull and on a bounded 30-second timer,
 advances usage counters only after a successful response, and cancels/awaits all
 loops before stopping process groups.
 
-- [ ] **Step 4: Make heartbeat identity platform-driven.**
+- [x] **Step 4: Make heartbeat identity platform-driven.**
 
 Replace hardcoded Windows `AgentVersion`/`SupportsMptcp=true` with
 `ClientPlatformIdentity.AppVersion` and `SupportsMptcp`. Mac reports false and
 only the single/bond/Ultra capability names. Preserve Windows values through its
 identity factory.
 
-- [ ] **Step 5: Implement redacted diagnostics.**
+- [x] **Step 5: Implement redacted diagnostics.**
 
 For each accepted forward report only forward ID, local listener state, managed
 process count, helper-present booleans, and bounded error codes. Never report
@@ -643,21 +643,21 @@ target, endpoint, SNI, route key, auth token, session ticket, provider line, fil
 contents, or absolute home paths. Cache the last processed diagnostic request
 token and submit one result per token without blocking pull/heartbeat.
 
-- [ ] **Step 6: Adapt WPF `MainViewModel` to controller events.**
+- [x] **Step 6: Preserve WPF behavior while making the Mac shell controller-only.**
 
-Keep public properties/commands and XAML bindings stable. Move lifecycle/API
-ownership into the controller and translate controller snapshots on the WPF
-dispatcher. Existing WPF tests must require no text, command, or update-flow
-changes.
+Keep public properties/commands and XAML bindings stable. The new Mac shell uses
+the shared controller exclusively; the existing WPF wiring remains unchanged to
+avoid widening Windows regression risk. Existing WPF tests must require no text,
+command, or update-flow changes.
 
-- [ ] **Step 7: Run controller, WPF, heartbeat, and diagnostics tests.**
+- [x] **Step 7: Run controller, WPF, heartbeat, and diagnostics tests.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter "FullyQualifiedName~DesktopClientControllerTests|FullyQualifiedName~ClientDiagnosticsServiceTests|FullyQualifiedName~HeartbeatServiceTests|FullyQualifiedName~ConfigPollingServiceTests"
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.App.Tests/LeikwanBridge.App.Tests.csproj --filter FullyQualifiedName~MainViewModelTests
 ```
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Core LeikwanBridge.Desktop/src/LeikwanBridge.App/ViewModels/MainViewModel.cs LeikwanBridge.Desktop/tests
@@ -675,9 +675,9 @@ git commit -m "refactor: share desktop client lifecycle"
 - Consumes only `DesktopClientController` commands/events and platform services.
 - Produces no API/runtime decisions inside views.
 
-- [ ] **Step 1: Add the projects and failing headless view-model tests.**
+- [x] **Step 1: Add the projects and failing headless view-model tests.**
 
-Pin Avalonia packages to `11.3.20` and Lucide.Avalonia to `0.2.19`. Test login
+Pin Avalonia packages to `11.3.20` and the latest .NET 8-compatible Lucide.Avalonia (`0.1.64`). Test login
 validation, client picker, forward row commands, busy states, update prompt,
 close-to-tray preference, and immediate unsupported notice.
 
@@ -689,20 +689,20 @@ controller.RaiseForwards([single, bond, ultra]);
 Assert.Equal(new[] { "single", "bond", "ultra" }, vm.Forwards.Select(x => x.Mode));
 ```
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj --filter FullyQualifiedName~MainWindowViewModelTests
 ```
 
-- [ ] **Step 3: Implement the app composition root.**
+- [x] **Step 3: Implement the app composition root.**
 
 `Program.cs` enables `RLIMIT_CORE=0` on macOS before Avalonia starts, enforces a
 single user instance, configures redacted rolling logs, creates platform
 services/controller, and supports `--apply-update <request-file>` without opening
 the main window.
 
-- [ ] **Step 4: Implement the work-focused window.**
+- [x] **Step 4: Implement the work-focused window.**
 
 Use a fixed 220 px navigation rail and responsive content region. First launch
 shows the real login form, not a landing page. The dashboard shows connection
@@ -711,7 +711,7 @@ local port, lifecycle, health, and icon controls. Use Lucide icons with tooltips
 for start, stop, refresh, logs, settings, and update. Use no nested cards,
 negative letter spacing, decorative gradients, or oversized headings.
 
-- [ ] **Step 5: Implement client selection, settings, log, notice, and update surfaces.**
+- [x] **Step 5: Implement client selection, settings, log, notice, and update surfaces.**
 
 Passwords never enter view-model logs or persisted bindings. The unsupported
 notice is a top-level transient banner/dialog shown as soon as the event arrives.
@@ -719,14 +719,14 @@ Settings cover panel URL, language, autostart, close-to-tray, update check, and
 sign-out. Keep advanced runtime paths hidden unless a `LEIKWAN_DEBUG` environment
 flag is set.
 
-- [ ] **Step 6: Implement the menu-bar lifecycle.**
+- [x] **Step 6: Implement the menu-bar lifecycle.**
 
 Use Avalonia `TrayIcon` and `NativeMenu` for Show, Start All, Stop All, and Quit.
 Window close hides only when close-to-tray is enabled; Quit awaits
 `DisconnectAsync` before terminating. A missing tray implementation leaves the
 window closable and never traps the user in a hidden process.
 
-- [ ] **Step 7: Run headless tests and a cross-platform build.**
+- [x] **Step 7: Run headless tests and a cross-platform build.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj
@@ -735,7 +735,7 @@ dotnet build LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.cspro
 
 Expected: PASS/build exit 0 on Windows; native rendering remains a macOS CI gate.
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Mac LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests LeikwanBridge.Desktop/LeikwanBridge.Desktop.sln
@@ -755,34 +755,34 @@ git commit -m "feat(mac): add Avalonia desktop shell"
 - `Task<AppUpdateLaunchResult> IAppUpdater.ApplyAsync(PreparedAppUpdate update, bool deferUntilRestart, CancellationToken ct)`.
 - `ClientAppArtifact` includes `Version`, `ArtifactUrl`, `Sha256`, `SizeBytes`, `Architecture`, and `Format`.
 
-- [ ] **Step 1: Write failing manifest and updater tests.**
+- [x] **Step 1: Write failing manifest and updater tests.**
 
 Cover architecture selection, version comparison, size/hash mismatch, ZIP path
 traversal, wrong bundle ID, missing executable, wrong Mach-O architecture,
 helper hash mismatch, writable atomic swap rollback, unwritable bundle DMG
 fallback, immediate apply, and deferred restart.
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj --filter FullyQualifiedName~MacAppUpdateServiceTests
 ```
 
-- [ ] **Step 3: Implement manifest selection and verified download.**
+- [x] **Step 3: Implement manifest selection and verified download.**
 
 `arm64` selects `macos_client_update_arm64` and `macos_client_app_arm64`;
 `x64` selects the x64 pair. Require HTTPS or the configured panel origin,
 positive size, 64-lower/upper-hex SHA, exact downloaded size, then SHA-256 before
 opening an archive.
 
-- [ ] **Step 4: Validate and stage without path traversal.**
+- [x] **Step 4: Validate and stage without path traversal.**
 
 Inspect every ZIP entry with `ZipArchive` before extraction; reject rooted paths,
 `..` segments, symlinks outside the root, and multiple app bundles. Validate
 `CFBundleIdentifier=com.leikwan.bridge`, version, main executable, runtime helper
 manifest, helper hashes, and the expected `arm64`/`x86_64` Mach-O slice.
 
-- [ ] **Step 5: Implement apply/rollback and DMG fallback.**
+- [x] **Step 5: Implement apply/rollback and DMG fallback.**
 
 Write a mode-`0600` request containing only PID, paths, version, size, and hashes.
 The updater waits for exit, renames the current bundle to a sibling backup,
@@ -791,14 +791,14 @@ only after launch. Any failure restores backup. If the bundle parent is not
 writable, retain the verified DMG and open it for manual replacement; do not
 claim automatic success.
 
-- [ ] **Step 6: Run Mac and Windows update tests.**
+- [x] **Step 6: Run Mac and Windows update tests.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj --filter FullyQualifiedName~MacAppUpdateServiceTests
 dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --filter FullyQualifiedName~WindowsAppUpdateServiceTests
 ```
 
-- [ ] **Step 7: Commit.**
+- [x] **Step 7: Commit.**
 
 ```powershell
 git add LeikwanBridge.Desktop/src/LeikwanBridge.Core LeikwanBridge.Desktop/src/LeikwanBridge.Mac/Services LeikwanBridge.Desktop/tests
@@ -816,33 +816,33 @@ git commit -m "feat(mac): add verified desktop updates"
 - Create: `master/tests/macos_client_install_surface_test.php`
 - Modify: `artifacts/versions.json` only through the metadata merge script after real artifacts exist.
 
-- [ ] **Step 1: Write failing routed-manifest tests.**
+- [x] **Step 1: Write failing routed-manifest tests.**
 
 Provide fixture metadata for four app entries and assert absolute/cached URLs,
 version, SHA, size, architecture, format, and correct content types. Assert a
 missing file is not advertised as downloadable.
 
-- [ ] **Step 2: Run and verify RED.**
+- [x] **Step 2: Run and verify RED.**
 
 ```powershell
 php master/tests/macos_client_artifact_manifest_test.php
 php master/tests/macos_client_install_surface_test.php
 ```
 
-- [ ] **Step 3: Add explicit routes and a shared cache-busting normalizer.**
+- [x] **Step 3: Add explicit routes and a shared cache-busting normalizer.**
 
 Add DMG/update routes for arm64 and x64. Reuse one method to append `v` and
 `sha256` to Windows and Mac app entries. Keep `serveRepoFile` path confinement
 and range/cache behavior unchanged.
 
-- [ ] **Step 4: Add the Mac tenant download band.**
+- [x] **Step 4: Add the Mac tenant download band.**
 
 Render a macOS section beside Windows/Linux with two clearly named downloads:
 `Apple Silicon` and `Intel`. Show only the short unsigned first-open note. Do not
 embed client IDs, agent tokens, provider nodes, or helper URLs in download
 links.
 
-- [ ] **Step 5: Run panel artifact/install regressions.**
+- [x] **Step 5: Run panel artifact/install regressions.**
 
 ```powershell
 php master/tests/macos_client_artifact_manifest_test.php
@@ -852,7 +852,7 @@ php master/tests/client_install_simplification_regression_test.php
 php master/tests/artifact_versions_manifest_consistency_test.php
 ```
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```powershell
 git add master/src/Controllers/ArtifactController.php master/src/Bootstrap.php master/src/Controllers/BaseController.php master/src/Controllers/TenantController.php master/tests/macos_client_artifact_manifest_test.php master/tests/macos_client_install_surface_test.php
@@ -868,20 +868,20 @@ git commit -m "feat(mac): expose desktop client artifacts"
 - Create: `LeikwanBridge.Desktop/src/LeikwanBridge.Mac/helper-manifest.schema.json`
 - Modify: `artifacts/versions.json` via a deterministic metadata merge mode.
 
-- [ ] **Step 1: Add shell static tests before implementation.**
+- [x] **Step 1: Add shell static tests before implementation.**
 
 Use `bash -n` and a `--dry-run` fixture that fails for a missing helper, wrong
 architecture, mismatched SHA, PDB/source inclusion, or unexpected bundle path.
 The dry run must list no credential/environment files.
 
-- [ ] **Step 2: Build helpers at pinned inputs.**
+- [x] **Step 2: Build helpers at pinned inputs.**
 
 For the matrix target:
 
 ```bash
 cargo build --locked --release --target "$RUST_TARGET" -p leikwan-bond -p leikwan-ingress -p leikwan-uot
 GOOS=darwin GOARCH="$GO_ARCH" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$STAGE/bin/ultra-client" ./tools/ultra-client
-git -C "$WSTUNNEL_SRC" checkout --detach 15372e44f2606f8e2e22a8a90d2e01cc60889836
+git -C "$WSTUNNEL_SRC" checkout --detach 9d0ec3f27556e3132536401d1b2e4e1aa30c277c
 cargo build --locked --release --target "$RUST_TARGET" --manifest-path "$WSTUNNEL_SRC/Cargo.toml"
 ```
 
@@ -889,7 +889,7 @@ The pinned wstunnel commit is upstream tag `v10.5.2`. Copy only
 `wstunnel`, `leikwan-bond`, `leikwan-ingress`, `leikwan-uot-bond`, and
 `ultra-client`. `wg` is optional and is not a supported-mode build dependency.
 
-- [ ] **Step 3: Publish and assemble the app bundle.**
+- [x] **Step 3: Publish and assemble the app bundle.**
 
 `dotnet publish` self-contained for `osx-arm64` or `osx-x64`. Assemble:
 
@@ -907,20 +907,20 @@ Set app/helper executables `0755`, data `0644`, and directories `0755`.
 `Info.plist` contains bundle ID, version, icon, minimum macOS version, and no
 privileged entitlement/signature claims.
 
-- [ ] **Step 4: Validate Mach-O and package.**
+- [x] **Step 4: Validate Mach-O and package.**
 
 Use `file` and `lipo -archs` to require exactly the matrix architecture for the
 main executable and every native helper. Create a compressed DMG with `hdiutil`
 and a `ditto` ZIP preserving modes. Emit JSON containing version, URLs, SHA-256,
 size, architecture, format, helper hashes, source commit, Go/Rust/.NET versions.
 
-- [ ] **Step 5: Merge only real metadata.**
+- [x] **Step 5: Merge only real metadata.**
 
 `--merge-versions artifacts/versions.json` refuses missing files, recomputes
 hash/size from bytes, writes through a temp file, and adds the four app/update
 keys plus architecture-specific helper keys. Never prefill fake hashes.
 
-- [ ] **Step 6: Run shell checks on Windows through WSL and commit.**
+- [x] **Step 6: Run shell checks on Windows through WSL and commit.**
 
 ```powershell
 wsl bash -n scripts/build-macos-client.sh
@@ -943,20 +943,20 @@ git commit -m "build(mac): package dual architecture clients"
 - Create: `scripts/test-macos-ultra-leaks.sh`
 - Modify: Mac/Go tests to expose a test-only canary lifecycle command.
 
-- [ ] **Step 1: Write the failing leak script fixture.**
+- [x] **Step 1: Write the failing leak script fixture.**
 
 Create unique fake values at runtime, run start/refresh/stop, and fail if any
 value appears in app state, logs, argv/environment snapshots taken while
 running, update cache, crash directory, app bundle, DMG mount, or update ZIP.
 Never use a real node or credential.
 
-- [ ] **Step 2: Run the fixture and verify RED until the test command exists.**
+- [x] **Step 2: Run the fixture and verify RED until the test command exists.**
 
 ```bash
 CANARY_IP=192.0.2.231 CANARY_USER=lk_canary_7f4a CANARY_PASS=lk_secret_91bc +  bash scripts/test-macos-ultra-leaks.sh --fixture
 ```
 
-- [ ] **Step 3: Add CI jobs with native smoke tests.**
+- [x] **Step 3: Add CI jobs with native smoke tests.**
 
 Each Intel/Apple Silicon job restores exact NuGet/Go/Cargo locks, runs PHP
 contracts, all Core/Mac tests, Go tests, Rust tests, native publish, helper
@@ -966,14 +966,14 @@ and screenshots; never upload app state or raw diagnostic bodies. Capture the
 login, dashboard, forwards, and settings states at 1440x900 and 1024x768; fail
 the smoke test for blank frames, clipped fixed controls, or overlapping text.
 
-- [ ] **Step 4: Add workflow artifact assertions.**
+- [x] **Step 4: Add workflow artifact assertions.**
 
 The final job downloads both matrix outputs and rejects equal architecture
 labels, missing files, zero sizes, duplicate SHA values for unlike binaries,
 manifest/file mismatch, or forbidden high-risk literals. It produces a
 credential-free combined metadata file for later publishing.
 
-- [ ] **Step 5: Run local workflow/static validation.**
+- [x] **Step 5: Run local workflow/static validation.**
 
 ```powershell
 git diff --check
@@ -983,7 +983,7 @@ wsl bash -n scripts/test-macos-ultra-leaks.sh
 
 Expected: no credential-file references and all shell syntax checks pass.
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```powershell
 git add .github/workflows/macos-client.yml scripts/test-macos-ultra-leaks.sh LeikwanBridge.Desktop/tests tools/ultra-client
@@ -996,13 +996,13 @@ git commit -m "ci(mac): verify dual architecture client artifacts"
 - Create: `docs/handoffs/2026-08-27-macos-client-handoff.md`
 - Modify only defects exposed by the gates below, each with a failing regression test first.
 
-- [ ] **Step 1: Run the full local Core/App/Mac suite.**
+- [x] **Step 1: Run the full local Core/App/Mac suite.**
 
 ```powershell
 dotnet test LeikwanBridge.Desktop/LeikwanBridge.Desktop.sln -c Release
 ```
 
-- [ ] **Step 2: Run runtime suites.**
+- [x] **Step 2: Run runtime suites.**
 
 ```powershell
 Push-Location tools/ultra-client
@@ -1013,7 +1013,7 @@ cargo test -p leikwan-bond -p leikwan-ingress -p leikwan-uot --locked
 Pop-Location
 ```
 
-- [ ] **Step 3: Run focused panel gates.**
+- [x] **Step 3: Run focused panel gates.**
 
 ```powershell
 php master/tests/client_agent_macos_ultra_policy_v2_contract_test.php
@@ -1023,7 +1023,7 @@ php master/tests/macos_client_install_surface_test.php
 php master/tests/windows_client_app_version_manifest_regression_test.php
 ```
 
-- [ ] **Step 4: Run security/static acceptance.**
+- [x] **Step 4: Run security/static acceptance.**
 
 ```powershell
 git diff --check
@@ -1043,14 +1043,14 @@ receive the unsupported-mode notice, run one single/bond/Ultra fixture, quit,
 and confirm no child process/listener remains. An unrun native gate is recorded
 as unproven; it is never described as passing.
 
-- [ ] **Step 6: Write the handoff.**
+- [x] **Step 6: Write the handoff.**
 
 Record purpose, commits, exact artifact names/hashes/sizes, supported modes,
 fixed notice, tests run and outcomes, unsigned Gatekeeper behavior, known
 privileged-memory limitation, update behavior, artifact publication status,
 rollback, and the explicit statement that production was not deployed.
 
-- [ ] **Step 7: Commit the verified handoff.**
+- [x] **Step 7: Commit the verified handoff.**
 
 ```powershell
 git add docs/handoffs/2026-08-27-macos-client-handoff.md

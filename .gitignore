@@ -15,6 +15,7 @@
 # Scratch files from live debugging and handoff planning.
 /.codex-tmp/
 /.tmp*
+**/.tmp/
 /tmp_*.sh
 /tmp_*.py
 
@@ -44,6 +45,7 @@
 /artifacts/*.png
 
 # Build outputs / dependency caches.
+/.build/
 bin/
 obj/
 build/
@@ -78,4 +80,7 @@ node_modules/
 
 # Large Windows installer build artifact (served via deploy; >100MB, not tracked)
 artifacts/windows/leikwan-bridge-setup.exe
+/artifacts/macos/*.dmg
+/artifacts/macos/*.zip
+/artifacts/macos/*-metadata.json
 .gstack/

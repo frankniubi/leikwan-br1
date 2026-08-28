@@ -1,5 +1,6 @@
 using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services.Platform;
 using Serilog;
 using System.Diagnostics;
 using System.Net;
@@ -14,7 +15,7 @@ namespace LeikwanBridge.Core.Services;
 /// </summary>
 public sealed class HealthCheckService
 {
-    private readonly ProcessSupervisor _supervisor;
+    private readonly IProcessSupervisor _supervisor;
     private readonly ForwardRuntimeManager _runtimeManager;
     private readonly StateManager _stateManager;
     private readonly AgentConfig _config;
@@ -27,11 +28,12 @@ public sealed class HealthCheckService
     private readonly HashSet<int> _restartInProgress = [];
 
     private CancellationTokenSource? _cts;
+    private Task? _checkTask;
 
     public event Action<int, string>? HealthIssue;
 
     public HealthCheckService(
-        ProcessSupervisor supervisor,
+        IProcessSupervisor supervisor,
         ForwardRuntimeManager runtimeManager,
         StateManager stateManager,
         Func<int, bool>? portListeningProbe = null,
@@ -57,7 +59,7 @@ public sealed class HealthCheckService
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
 
-        Task.Run(async () =>
+        _checkTask = Task.Run(async () =>
         {
             while (!ct.IsCancellationRequested)
             {
@@ -79,6 +81,21 @@ public sealed class HealthCheckService
     }
 
     public void Stop() => _cts?.Cancel();
+
+    public async Task StopAsync()
+    {
+        Stop();
+        var checkTask = _checkTask;
+        if (checkTask is null)
+            return;
+        try
+        {
+            await checkTask;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
 
     public Task RunCheckOnceAsync(List<ForwardConfig> forwards, CancellationToken ct = default)
     {
