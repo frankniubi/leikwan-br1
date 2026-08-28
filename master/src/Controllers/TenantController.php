@@ -1287,6 +1287,8 @@ final class TenantController extends BaseController
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
             . '<button class="button ghost" type="submit">Create enrollment code</button></form>';
 
+        $macosInstallSection = $this->renderMacClientInstallSection();
+
         $body = '<div class="tenant-client-install">'
             . '<div class="tenant-client-install__shell">'
             . '<div class="tenant-client-install__header"><strong>安装</strong></div>'
@@ -1300,6 +1302,7 @@ final class TenantController extends BaseController
             . '<section class="tenant-client-install__platform"><strong>Windows App</strong>'
             . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
             . '</section>'
+            . $macosInstallSection
             . '<section class="tenant-client-install__platform"><strong>Android (Unstable)</strong>'
             . '<div class="actions">' . $this->renderCommandLink('Download APK', $this->androidClientApkUrl(), 'secondary') . '</div>'
             . '</section></div>'
