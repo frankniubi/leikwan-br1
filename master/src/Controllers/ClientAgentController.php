@@ -448,7 +448,6 @@ final class ClientAgentController extends BaseController
                 'transport' => (string) ($forward['transport'] ?? ''),
                 'service_status' => (string) ($forward['service_status'] ?? ''),
                 'speed_limit_mbps' => (int) ($forward['speed_limit_mbps'] ?? 0),
-                'quota_remaining_bytes' => (int) ($forward['quota_remaining_bytes'] ?? 0),
             ];
         }
         return hash('sha256', (string) json_encode($projection, JSON_UNESCAPED_SLASHES));
@@ -563,7 +562,7 @@ final class ClientAgentController extends BaseController
             'line_client_id', 'line_client_name', 'line_client_host',
             'line_client_group_id', 'line_client_group_name', 'line_client_group_ids',
             'line_client_groups', 'line_group_mode', 'line_client_agent_config_json',
-            'forward_combination_direction', 'forward_combination_label',
+            'forward_combination_label',
             'forward_combination_name', 'bond_sidecar_point_id', 'bond_sidecar_point_name',
             'bond_sidecar_host', 'bond_sidecar_port', 'mptcp_sidecar_port',
             'bond_sidecar_cf_listen_port', 'bond_sidecar_cf_sni_host',

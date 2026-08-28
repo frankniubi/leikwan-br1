@@ -40,6 +40,9 @@ public sealed class ForwardConfig
     [JsonPropertyName("runtime_preference")]
     public string RuntimePreference { get; set; } = "single";
 
+    [JsonPropertyName("forward_combination_direction")]
+    public string ForwardCombinationDirection { get; set; } = "";
+
     [JsonPropertyName("bond_ingress_mode")]
     public string BondIngressMode { get; set; } = "";
 

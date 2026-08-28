@@ -47,6 +47,12 @@ namespace {
         failRevision('forward_revision changed when only ephemeral grant material changed');
     }
 
+    $meteredForward = $stableForward;
+    $meteredForward['quota_remaining_bytes'] = 512;
+    if (ClientAgentController::forwardRevision([$meteredForward]) !== $revStable) {
+        failRevision('forward_revision changed when only metered quota changed');
+    }
+
     $changedTarget = $stableForward;
     $changedTarget['target'] = '5.6.7.8:443';
     if (ClientAgentController::forwardRevision([$changedTarget]) === $revStable) {

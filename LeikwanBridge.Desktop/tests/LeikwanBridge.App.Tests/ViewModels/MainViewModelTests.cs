@@ -1,6 +1,7 @@
 using LeikwanBridge.App.ViewModels;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
+using System.Text.Json;
 using System.Reflection;
 using Xunit;
 
@@ -9,18 +10,39 @@ namespace LeikwanBridge.App.Tests.ViewModels;
 public sealed class MainViewModelTests
 {
     [Fact]
-    public void ApplyForwardSnapshot_BuildsFriendlyForwardSummary()
+    public void ApplyForwardSnapshot_DisplaysForwardIdPortAndDirection()
     {
         var vm = new MainViewModel();
-        vm.ApplyForwardSnapshot([CreateBondForwardWithEndpoints()], _ => true);
+        var config = JsonSerializer.Deserialize<ForwardConfig>("""
+            {
+                "forward_id": 59,
+                "mode": "bond",
+                "listen_port": 11059,
+                "target": "193.227.109.82:5201",
+                "transport": "tcp+udp",
+                "forward_combination_direction": "CAN->HKG"
+            }
+            """)!;
+        vm.ApplyForwardSnapshot([config], _ => true);
 
         var forward = Assert.Single(vm.Forwards);
         Assert.Equal(59, forward.ForwardId);
-        Assert.Equal("Forward #59", forward.DisplayName);
+        Assert.Equal("Forward #59 | Port 11059 | Direction CAN->HKG", forward.DisplayName);
         Assert.Equal(ForwardLifecycleState.Connected, forward.Summary.Lifecycle);
         Assert.Equal(ForwardQualityState.Good, forward.Summary.Quality);
         Assert.True(forward.Summary.CanStop);
         Assert.False(forward.Summary.CanStart);
+    }
+
+    [Fact]
+    public void ApplyForwardSnapshot_WhenDirectionMissing_UsesStablePlaceholder()
+    {
+        var vm = new MainViewModel();
+        vm.ApplyForwardSnapshot([CreateForward(26, "bond")], _ => false);
+
+        var forward = Assert.Single(vm.Forwards);
+
+        Assert.Equal("Forward #26 | Port 10026 | Direction -", forward.DisplayName);
     }
 
     [Fact]

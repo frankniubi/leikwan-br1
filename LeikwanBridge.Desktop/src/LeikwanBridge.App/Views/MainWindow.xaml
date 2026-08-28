@@ -240,7 +240,8 @@
                                                                      Fill="{Binding Summary.CanStop, Converter={StaticResource StatusBrush}}"/>
                                                             <TextBlock Text="{Binding DisplayName}"
                                                                        FontSize="15" FontWeight="SemiBold"
-                                                                       Foreground="{StaticResource TextBrush}"/>
+                                                                       Foreground="{StaticResource TextBrush}"
+                                                                       TextWrapping="Wrap" MaxWidth="205"/>
                                                         </StackPanel>
                                                         <Border DockPanel.Dock="Right" Style="{StaticResource ModeBadge}"
                                                                 Background="{StaticResource PrimaryBrush}"
@@ -291,7 +292,7 @@
                                             </Grid.RowDefinitions>
 
                                             <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="Forward"/>
-                                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedForward.DisplayName}" FontSize="14" FontWeight="SemiBold"/>
+                                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedForward.DisplayName}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
 
                                             <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="Status"/>
                                             <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedForward.Summary.Lifecycle}" FontSize="14"/>

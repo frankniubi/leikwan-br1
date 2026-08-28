@@ -404,7 +404,7 @@ public partial class MainViewModel : ObservableObject
 
         return new ForwardSummary(
             forward.ForwardId,
-            $"Forward #{forward.ForwardId}",
+            BuildForwardDisplayName(forward),
             lifecycle,
             quality,
             quality.ToString(),
@@ -413,6 +413,15 @@ public partial class MainViewModel : ObservableObject
             CanStart: lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
             CanStop: lifecycle is ForwardLifecycleState.Connected,
             LastTransitionAt: DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    }
+
+    private static string BuildForwardDisplayName(ForwardConfig forward)
+    {
+        var port = forward.ListenPort > 0 ? forward.ListenPort.ToString() : "-";
+        var direction = string.IsNullOrWhiteSpace(forward.ForwardCombinationDirection)
+            ? "-"
+            : forward.ForwardCombinationDirection.Trim();
+        return $"Forward #{forward.ForwardId} | Port {port} | Direction {direction}";
     }
 
     private void SetLifecycle(int forwardId, ForwardLifecycleState lifecycle)
