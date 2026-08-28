@@ -1092,6 +1092,7 @@ abstract class BaseController
             ['group' => 'Operations', 'href' => '/admin/services', 'label' => 'Services', 'active' => $active === 'services'],
             ['group' => 'Operations', 'href' => '/admin/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
             ['group' => 'Operations', 'href' => '/admin/ultra', 'label' => 'Ultra Operations', 'active' => $active === 'ultra'],
+            ['group' => 'Security', 'href' => '/admin/access-control', 'label' => 'Access Control', 'active' => $active === 'access-control'],
             ['group' => 'Customers', 'href' => '/admin/tenants', 'label' => 'Tenants', 'active' => $active === 'tenants'],
             ['group' => 'Customers', 'href' => '/admin/registration', 'label' => 'Registration Codes', 'active' => $active === 'registration'],
             ['group' => 'Customers', 'href' => '/admin/user-groups', 'label' => 'User Groups', 'active' => $active === 'user-groups'],

@@ -51,17 +51,50 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
     error_log('unhandled application exception [' . $referenceId . ']: ' . $exception::class);
 
     $status = $exception instanceof ApiException ? $exception->statusCode() : 500;
-    if ($status < 400 || $status >= 500) {
-        $status = 500;
-    }
     $path = $request?->path() ?? (parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH) ?: '/');
-    if (in_array($exception->getMessage(), ['device_kicked', 'device_banned', 'device_untrusted'], true)
+    $clientSafeCodes = [
+        'location_check_required',
+        'direct_location_check_required',
+        'location_report_invalid',
+        'location_check_unavailable',
+        'access_blacklisted',
+        'geo_lock_violation',
+        'device_temporarily_banned',
+        'device_kicked',
+        'device_banned',
+        'device_untrusted',
+        'account_banned',
+    ];
+    if ($exception instanceof ApiException
+        && in_array($exception->getMessage(), $clientSafeCodes, true)
         && str_starts_with($path, '/api/client/')) {
+        if ($status < 400 || $status > 599) {
+            $status = 500;
+        }
+        $details = $exception->safeDetails();
         $payload = [
             'ok' => false,
-            'error' => $exception->getMessage(),
+            'error' => (string) $exception->getMessage(),
+            'protocol_version' => 1,
         ];
-        $command = $exception instanceof ApiException ? ($exception->details()['command'] ?? null) : null;
+        $challenge = $details['challenge'] ?? null;
+        if (is_array($challenge)) {
+            $payload['challenge_token'] = (string) ($challenge['token'] ?? '');
+            $payload['challenge_expires_at'] = (string) ($challenge['expires_at'] ?? '');
+            $payload['attempt_id'] = (string) ($challenge['attempt_id'] ?? '');
+        }
+        foreach ([
+            'challenge_token', 'challenge_expires_at', 'attempt_id', 'required_collection_mode',
+            'retry_after_seconds', 'blocked_until', 'next_location_check_at', 'matched_entity_type',
+        ] as $field) {
+            if (array_key_exists($field, $details)) {
+                $payload[$field] = $details[$field];
+            }
+        }
+        if (isset($details['violation_count'])) {
+            $payload['remaining_geo_violations'] = max(0, 3 - (int) $details['violation_count']);
+        }
+        $command = $details['command'] ?? null;
         if (is_array($command)) {
             $payload['command'] = [
                 'version' => max(0, (int) ($command['version'] ?? 0)),
@@ -73,6 +106,9 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
             'Cache-Control' => 'no-store',
             'X-Content-Type-Options' => 'nosniff',
         ]);
+    }
+    if ($status < 400 || $status >= 500) {
+        $status = 500;
     }
     $error = match ($status) {
         400 => ['invalid_request', 'The request could not be processed.'],

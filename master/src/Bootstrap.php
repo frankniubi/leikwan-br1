@@ -34,6 +34,7 @@ use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\WhmcsClient;
 use Leikwan\Master\Support\WhmcsIdentityService;
 use Leikwan\Master\Support\AppSettings;
+use Leikwan\Master\Support\AccessPolicyService;
 use Leikwan\Master\Support\UltraClientStatusService;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMaterialService;
@@ -137,6 +138,9 @@ final class Bootstrap
         );
         $ultraInventory = new UltraInventoryService($this->config, $this->db);
         $ultraClientStatus = new UltraClientStatusService($this->config, $this->db);
+        $accessPolicy = isset($this->services['access_policy']) && $this->services['access_policy'] instanceof AccessPolicyService
+            ? $this->services['access_policy']
+            : new AccessPolicyService($this->db);
         $admin = new AdminController(
             $this->config,
             $this->db,
@@ -144,6 +148,7 @@ final class Bootstrap
             $this->leigodOnlyAdminServices(),
             $ultraInventory,
             $ultraClientStatus,
+            $accessPolicy,
         );
         $whmcs = new WhmcsController($this->config, $this->db, $this->provisioning);
         $services = new ServiceController($this->config, $this->db, $this->provisioning);
@@ -159,10 +164,11 @@ final class Bootstrap
             $ultraMaterials,
             $ultraClientStatus,
             $ultraLeases,
+            accessPolicy: $accessPolicy,
         );
         $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
-        $tenant = new TenantController($this->config, $this->db, $this->provisioning);
+        $tenant = new TenantController($this->config, $this->db, $this->provisioning, $accessPolicy);
         $artifacts = new ArtifactController($this->config);
 
         $this->router->add('GET', '/', [$auth, 'home']);
@@ -185,6 +191,11 @@ final class Bootstrap
         $this->router->add('POST', '/logout', [$auth, 'logout']);
         $this->router->add('GET', '/admin', [$admin, 'dashboard']);
         $this->router->add('POST', '/admin/republish/all', [$admin, 'republishAllForwards']);
+        $this->router->add('GET', '/admin/access-control', [$admin, 'accessControlPage']);
+        $this->router->add('POST', '/admin/access-control/rules', [$admin, 'saveAccessBlacklistRule']);
+        $this->router->add('POST', '/admin/access-control/rules/{id}/toggle', [$admin, 'toggleAccessBlacklistRule']);
+        $this->router->add('POST', '/admin/access-control/devices/release', [$admin, 'releaseDeviceBlock']);
+        $this->router->add('POST', '/admin/access-control/accounts/release', [$admin, 'releaseAccountBan']);
         $this->router->add('GET', '/admin/leigod-only-rollout', [$admin, 'leigodOnlyRolloutPage']);
         $this->router->add('POST', '/admin/leigod-only-rollout/dry-run', [$admin, 'leigodOnlyActivationDryRun']);
         $this->router->add('POST', '/admin/leigod-only-rollout/activate', [$admin, 'leigodOnlyActivationApply']);
@@ -267,6 +278,10 @@ final class Bootstrap
         $this->router->add('POST', '/tenant/plans/purchase', [$tenant, 'purchasePackage']);
         $this->router->add('POST', '/tenant/billing/purchase', [$tenant, 'purchasePackage']);
         $this->router->add('GET', '/tenant/forwards', [$tenant, 'dashboard']);
+        $this->router->add('GET', '/tenant/security', [$tenant, 'accessSecurityPage']);
+        $this->router->add('POST', '/tenant/security/main-province', [$tenant, 'changeMainProvince']);
+        $this->router->add('POST', '/tenant/security/kick-all', [$tenant, 'kickAllDevices']);
+        $this->router->add('POST', '/tenant/security/devices/restore', [$tenant, 'restoreDevice']);
         $this->router->add('GET', '/tenant/clients', [$tenant, 'clientsPage']);
         $this->router->add('POST', '/tenant/clients/reset-token', [$tenant, 'resetDefaultClientToken']);
         $this->router->add('POST', '/tenant/clients/kick', [$tenant, 'kickClientDevice']);
@@ -335,6 +350,9 @@ final class Bootstrap
         $this->router->add('GET', '/api/admin/services', [$services, 'listAllServices']);
         $this->router->add('POST', '/api/client/login', [$clientAgent, 'desktopLogin']);
         $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopClient']);
+        $this->router->add('POST', '/api/client/access/location/challenge', [$clientAgent, 'locationChallenge']);
+        $this->router->add('POST', '/api/client/access/location/report', [$clientAgent, 'locationReport']);
+        $this->router->add('GET', '/api/client/access/policy', [$clientAgent, 'accessPolicyStatus']);
         $this->router->add('POST', '/api/client/devices/challenge', [$clientAgent, 'deviceChallenge']);
         $this->router->add('POST', '/api/client/devices/enroll', [$clientAgent, 'enrollDevice']);
         $this->router->add('POST', '/api/client/devices/ack', [$clientAgent, 'acknowledgeDevice']);

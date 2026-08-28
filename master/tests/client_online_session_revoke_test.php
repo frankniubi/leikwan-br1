@@ -6,6 +6,8 @@ namespace Leikwan\Master\Database {
     {
         /** @var array<int, array<string, mixed>> */
         public array $sessions = [];
+        /** @var array<int, array<string, mixed>> */
+        public array $clients = [];
 
         /** @param array<string, mixed> $params */
         public function fetchOne(string $sql, array $params = []): ?array
@@ -29,6 +31,12 @@ namespace Leikwan\Master\Database {
         /** @param array<string, mixed> $params */
         public function fetchAll(string $sql, array $params = []): array
         {
+            if (str_contains($sql, 'SELECT id FROM clients WHERE owner_user_id')) {
+                return array_values(array_filter(
+                    $this->clients,
+                    static fn(array $row): bool => (int) ($row['owner_user_id'] ?? 0) === (int) ($params['owner_user_id'] ?? 0)
+                ));
+            }
             return array_values($this->sessions);
         }
 
@@ -67,6 +75,8 @@ namespace {
     });
 
     use Leikwan\Master\Database\Database;
+    use Leikwan\Master\Http\Request;
+    use Leikwan\Master\Support\ApiException;
     use Leikwan\Master\Support\ClientOnlineSessionService;
 
     function fail(string $message): never
@@ -82,6 +92,10 @@ namespace {
         ['id' => 2, 'client_id' => 1, 'device_id' => 'windows-b', 'last_seen_at' => $now],
         ['id' => 3, 'client_id' => 2, 'device_id' => 'other', 'last_seen_at' => $now],
     ];
+    $db->clients = [
+        ['id' => 1, 'owner_user_id' => 8],
+        ['id' => 2, 'owner_user_id' => 7],
+    ];
 
     $service = new ClientOnlineSessionService($db);
     $service->revokeAllForClient(1);
@@ -96,6 +110,29 @@ namespace {
     }
     if (count($db->sessions) !== 1) {
         fail('expected sessions for other clients to remain intact');
+    }
+    if ($service->revokeAllForUser(7) !== 1 || $db->sessions !== []) {
+        fail('expected user-wide revocation to remove sessions for every owned client');
+    }
+
+    $uuidHeader = new Request('GET', '/api/client/heartbeat', [], [], ['x-device-uuid' => 'cross-platform-uuid'], '', '203.0.113.10');
+    if ($service->deviceIdFromRequest($uuidHeader) !== 'cross-platform-uuid') {
+        fail('x-device-uuid must map to the shared device identity');
+    }
+    $uuidBody = new Request('GET', '/api/client/heartbeat', [], ['device_uuid' => 'body-cross-platform-uuid'], [], '', '203.0.113.10');
+    if ($service->deviceIdFromRequest($uuidBody) !== 'body-cross-platform-uuid') {
+        fail('device_uuid body field must map to the shared device identity');
+    }
+    $conflictingUuid = new Request('GET', '/api/client/heartbeat', [], ['device_uuid' => 'body-uuid'], [
+        'x-device-id' => 'header-uuid',
+    ], '', '203.0.113.10');
+    try {
+        $service->deviceIdFromRequest($conflictingUuid);
+        fail('conflicting shared device identity fields must be rejected');
+    } catch (ApiException $exception) {
+        if ($exception->getMessage() !== 'device_id_invalid') {
+            fail('unexpected conflicting device identity error: ' . $exception->getMessage());
+        }
     }
 
     echo "ok\n";
