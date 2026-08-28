@@ -387,6 +387,7 @@ final class ClientAgentController extends BaseController
             $deviceId,
             str_starts_with($platform, 'windows')
                 || str_starts_with($platform, 'linux')
+                || str_starts_with($platform, 'macos')
                 || $this->isAndroidRequest($request)
         );
 
