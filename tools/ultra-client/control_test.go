@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -25,9 +26,27 @@ func TestControlFrameBoundsAndPartialReads(t *testing.T) {
 	if _, err := readFrame(bytes.NewReader(oversized[:])); !errors.Is(err, ErrFrameTooLarge) {
 		t.Fatalf("oversized read err=%v", err)
 	}
+	var partial bytes.Buffer
+	var partialHeader [4]byte
+	binary.BigEndian.PutUint32(partialHeader[:], 8)
+	partial.Write(partialHeader[:])
+	partial.WriteString("no")
+	if _, err := readFrame(&partial); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("partial read err=%v", err)
+	}
 	if err := writeFrame(&buffer, make([]byte, maxControlPayload+1)); !errors.Is(err, ErrFrameTooLarge) {
 		t.Fatalf("oversized write err=%v", err)
 	}
+}
+
+func shortControlSocketPath(t *testing.T) (string, string) {
+	t.Helper()
+	parent, err := os.MkdirTemp("", "lku-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(parent) })
+	return parent, filepath.Join(parent, "c.sock")
 }
 
 func TestControlServerAcceptsLeaseAndRejectsReplay(t *testing.T) {
@@ -35,7 +54,7 @@ func TestControlServerAcceptsLeaseAndRejectsReplay(t *testing.T) {
 		t.Skip("Unix control socket is exercised on Linux")
 	}
 	config := testPolicyConfig()
-	path := filepath.Join(t.TempDir(), "forward-42.control.sock")
+	_, path := shortControlSocketPath(t)
 	store := NewPolicyStore(config)
 	server := NewControlServer(path, config, store)
 	if err := server.Listen(); err != nil {

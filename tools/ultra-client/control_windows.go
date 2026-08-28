@@ -147,6 +147,7 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 		_ = writeJSONFrame(file, map[string]any{"ok": false, "error": "frame_invalid"})
 		return
 	}
+	defer clearBytes(payload)
 	policy, lease, err := decodeLeaseFrame(payload, server.config)
 	if err == nil {
 		err = server.store.Replace(policy, lease)

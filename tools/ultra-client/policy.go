@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -179,17 +180,31 @@ type ProviderLease struct {
 	Port             int
 	User             []byte
 	Password         []byte
+	userLocked       bool
+	passwordLocked   bool
 }
 
 func (l *ProviderLease) wipe() {
-	for i := range l.User {
-		l.User[i] = 0
-	}
-	for i := range l.Password {
-		l.Password[i] = 0
-	}
+	clearSecret(l.User, l.userLocked)
+	clearSecret(l.Password, l.passwordLocked)
 	l.User = nil
 	l.Password = nil
+	l.IP = ""
+	l.SelectionRef = ""
+	l.LeaseID = ""
+	l.NonceHash = ""
+	l.userLocked = false
+	l.passwordLocked = false
+}
+
+var secretMemoryWarning sync.Once
+
+func (l *ProviderLease) lock() {
+	l.userLocked = lockSecret(l.User)
+	l.passwordLocked = lockSecret(l.Password)
+	if !l.userLocked || !l.passwordLocked {
+		secretMemoryWarning.Do(func() { log.Print("secret_memory_unlocked") })
+	}
 }
 
 func (l ProviderLease) Validate(policy Policy, now time.Time) error {
@@ -259,6 +274,9 @@ func (s *PolicyStore) Replace(policy Policy, lease ProviderLease) error {
 	leaseCopy := lease
 	leaseCopy.User = append([]byte(nil), lease.User...)
 	leaseCopy.Password = append([]byte(nil), lease.Password...)
+	leaseCopy.userLocked = false
+	leaseCopy.passwordLocked = false
+	leaseCopy.lock()
 	s.policy = &policyCopy
 	s.lease = &leaseCopy
 	_ = s.limiter.Replace(policy.RateLimitMbps, policy.QuotaRemainingBytes, policy.ExpiresAt, policy.PolicyGeneration)
@@ -304,7 +322,17 @@ func (s *PolicyStore) Snapshot() (RuntimeSnapshot, bool) {
 	snapshot := RuntimeSnapshot{Policy: *s.policy, Lease: *s.lease}
 	snapshot.Lease.User = append([]byte(nil), s.lease.User...)
 	snapshot.Lease.Password = append([]byte(nil), s.lease.Password...)
+	snapshot.Lease.userLocked = false
+	snapshot.Lease.passwordLocked = false
+	snapshot.Lease.lock()
 	return snapshot, true
+}
+
+func (s *PolicyStore) HasValid() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.policy != nil && s.lease != nil &&
+		s.policy.ExpiresAt.After(time.Now()) && s.lease.ExpiresAt.After(time.Now())
 }
 
 func (s *PolicyStore) Limiter() *PolicyLimiter  { return s.limiter }

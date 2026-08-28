@@ -1287,6 +1287,7 @@ final class TenantController extends BaseController
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
             . '<button class="button ghost" type="submit">Create enrollment code</button></form>';
 
+        // The helper renders the macOS, Apple Silicon, Intel, and Unsigned install surface.
         $macosInstallSection = $this->renderMacClientInstallSection();
 
         $body = '<div class="tenant-client-install">'

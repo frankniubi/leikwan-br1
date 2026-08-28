@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -143,6 +142,7 @@ func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout 
 		return nil, err
 	}
 	handshake, err := buildHandshake(string(lease.User), string(lease.Password), 1, targetHost, targetPort)
+	defer clearBytes(handshake)
 	if err == nil {
 		_, err = conn.Write(handshake)
 	}
@@ -330,6 +330,7 @@ func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, 
 	}
 	control := conn.(*net.TCPConn)
 	handshake, err := buildHandshake(string(lease.User), string(lease.Password), 3, lease.IP, lease.Port)
+	defer clearBytes(handshake)
 	if err == nil {
 		_, err = control.Write(handshake)
 	}
@@ -406,13 +407,13 @@ func watchRuntimePolicy(ctx context.Context, cancel context.CancelFunc, store *P
 		case <-ctx.Done():
 			return
 		case <-store.Updates():
-			if _, ok := store.Snapshot(); !ok {
+			if !store.HasValid() {
 				cancel()
 				return
 			}
 		case <-ticker.C:
 			store.ClearExpired()
-			if _, ok := store.Snapshot(); !ok {
+			if !store.HasValid() {
 				cancel()
 				return
 			}
@@ -517,6 +518,8 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 			status.UpdateError("policy_stopped")
 			continue
 		}
+		lease := snapshot.Lease
+		selectionRef := lease.SelectionRef
 		key := client.String()
 		associationMu.Lock()
 		association := associations[key]
@@ -532,7 +535,6 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 		associationMu.Unlock()
 		if association == nil {
 			started := time.Now()
-			lease := snapshot.Lease
 			next, armErr := armDatagram(lease, time.Duration(config.ConnectTimeoutSecs)*time.Second)
 			lease.wipe()
 			if armErr != nil {
@@ -559,7 +561,7 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 			}
 			associations[key] = association
 			associationMu.Unlock()
-			status.UpdateUDP(snapshot.Lease.SelectionRef, time.Since(started))
+			status.UpdateUDP(selectionRef, time.Since(started))
 			go func(key string, current *udpAssociation) {
 				readBuffer := make([]byte, 65535)
 				for {
@@ -576,6 +578,8 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 					_, _ = local.WriteToUDP(payload, current.client)
 				}
 			}(key, association)
+		} else {
+			lease.wipe()
 		}
 		associationMu.Lock()
 		current := associations[key]
@@ -596,17 +600,18 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 }
 
 func main() {
-	configPath := flag.String("config", "/etc/ultra/forward.json", "runtime configuration")
+	configPath := flag.String("config", "", "runtime configuration file")
+	configStdin := flag.Bool("config-stdin", false, "read runtime configuration from stdin")
 	flag.Parse()
-	raw, err := os.ReadFile(*configPath)
-	if err != nil {
-		log.Fatal(err)
+	if err := applyProcessSecurity(); err != nil {
+		log.Fatal("process security unavailable")
 	}
-	var config Config
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&config); err != nil {
-		log.Fatal(err)
+	if !*configStdin && strings.TrimSpace(*configPath) == "" {
+		*configPath = "/etc/ultra/forward.json"
+	}
+	config, err := loadConfig(*configPath, *configStdin, os.Stdin)
+	if err != nil {
+		log.Fatal("runtime configuration unavailable")
 	}
 	if config.ListenHost == "" {
 		config.ListenHost = "127.0.0.1"
@@ -667,15 +672,17 @@ func main() {
 		if err != nil {
 			break
 		}
+		policy := snapshot.Policy
+		snapshot.Lease.wipe()
 		locationContext, cancelLocation := context.WithTimeout(rootContext, locationRequestTimeout+time.Second)
 		location := DetectLocation(locationContext, config.LocationCachePath, config.LocationLockPath, config.ZoneAliases)
 		cancelLocation()
 		status.UpdateLocation(location)
-		status.UpdatePolicy(snapshot.Policy.PolicyGeneration)
+		status.UpdatePolicy(policy.PolicyGeneration)
 		runtimeContext, cancelRuntime := context.WithCancel(rootContext)
 		runtimeErrors := make(chan error, 2)
 		var runtimeWait sync.WaitGroup
-		transport := strings.ToLower(snapshot.Policy.Transport)
+		transport := strings.ToLower(policy.Transport)
 		if transport == "tcp" || transport == "tcp+udp" {
 			runtimeWait.Add(1)
 			go func() {

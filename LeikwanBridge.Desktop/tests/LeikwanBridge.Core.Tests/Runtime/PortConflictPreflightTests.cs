@@ -31,6 +31,19 @@ public sealed class PortConflictPreflightTests
     }
 
     [Fact]
+    public void Classify_ManagedOld_ForMacRuntimeInsideTheAppBundle()
+    {
+        const string installRoot = "/Applications/LeiKwan Bridge.app/Contents/Resources/bin";
+        var result = PortConflictPreflight.Classify(
+            [new PortOwner("tcp", "127.0.0.1", 12042, 24001)],
+            [],
+            _ => installRoot + "/ultra-client",
+            installRoot);
+
+        Assert.Equal(PortOwnerClass.ManagedOld, result.Class);
+    }
+
+    [Fact]
     public void Classify_Foreign_WhenOwnerIsUnknownProcess()
     {
         var result = PortConflictPreflight.Classify(

@@ -22,22 +22,38 @@ public sealed class UltraPolicy
     [JsonPropertyName("target_digest")] public string TargetDigest { get; init; } = "";
 
     public bool IsUsable(ForwardConfig forward, DateTimeOffset now)
+        => GetValidationFailure(forward, now) is null;
+
+    public string? GetValidationFailure(ForwardConfig forward, DateTimeOffset now)
     {
-        if (!string.Equals(ProtocolValue, Protocol, StringComparison.Ordinal)
-            || ForwardId != forward.ForwardId
-            || !string.Equals(ServiceState, "active", StringComparison.OrdinalIgnoreCase)
-            || string.IsNullOrWhiteSpace(SessionTicket)
-            || !IsHex64(PolicyGeneration)
-            || !IsHex64(TargetDigest)
-            || !string.Equals(TargetDigest, ComputeTargetDigest(forward.Target), StringComparison.OrdinalIgnoreCase)
-            || ExpiresAt <= now
-            || ExpiresAt > now.AddMinutes(5)
-            || QuotaRemainingBytes <= 0
-            || RateLimitMbps < 0
-            || RateLimitMbps > 100000
-            || Transport is not ("tcp" or "udp" or "tcp+udp"))
-            return false;
-        return true;
+        if (!string.Equals(ProtocolValue, Protocol, StringComparison.Ordinal))
+            return "protocol";
+        if (ForwardId != forward.ForwardId)
+            return "forward_id";
+        if (!string.Equals(ServiceState, "active", StringComparison.OrdinalIgnoreCase))
+            return "service_state";
+        if (string.IsNullOrWhiteSpace(SessionTicket))
+            return "session_ticket";
+        if (!IsHex64(PolicyGeneration))
+            return "policy_generation";
+        if (!IsHex64(TargetDigest))
+            return "target_digest_format";
+        if (!string.Equals(TargetDigest, ComputeTargetDigest(forward.Target), StringComparison.OrdinalIgnoreCase))
+            return "target_digest_mismatch";
+        if (ExpiresAt <= now)
+            return "expired";
+        // The panel caps policy TTL at five minutes. Allow a small amount of
+        // clock skew and request transit time so a valid grant is not rejected
+        // merely because the panel clock is a few seconds ahead.
+        if (ExpiresAt > now.AddMinutes(5).AddSeconds(30))
+            return "expiry_window";
+        if (QuotaRemainingBytes <= 0)
+            return "quota";
+        if (RateLimitMbps < 0 || RateLimitMbps > 100000)
+            return "rate_limit";
+        if (Transport is not ("tcp" or "udp" or "tcp+udp"))
+            return "transport";
+        return null;
     }
 
     public static string ComputeTargetDigest(string target)

@@ -1,0 +1,9 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <x:String x:Key="AppName">LeiKwan Bridge</x:String>
+  <x:String x:Key="DashboardLabel">Dashboard</x:String>
+  <x:String x:Key="LogsLabel">Activity</x:String>
+  <x:String x:Key="SettingsLabel">Settings</x:String>
+  <x:String x:Key="StartAllLabel">Start all</x:String>
+  <x:String x:Key="StopAllLabel">Stop all</x:String>
+</ResourceDictionary>

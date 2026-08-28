@@ -35,7 +35,9 @@ namespace {
         'quota_remaining_bytes' => 1024,
     ];
 
-    // Ephemeral grant/line material must not perturb the forward revision.
+    // Ephemeral grant/line material and metering state must not perturb the
+    // forward revision. Quota changes are reported by heartbeat and must not
+    // make the runtime reconnect on every traffic update.
     $ephemeralForward = $stableForward;
     $ephemeralForward['_ultra_line_ids'] = [453, 692];
     $ephemeralForward['_ultra_lines'] = [['line_id' => 453, 'relay_ip' => '203.0.113.20']];

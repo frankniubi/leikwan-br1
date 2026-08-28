@@ -72,6 +72,28 @@ public sealed class MasterApiClientDesktopLoginTests
     }
 
     [Fact]
+    public async Task PullConfigsAsync_SendsMacIdentityWithoutWindowsUserAgent()
+    {
+        using var server = new HeaderCaptureServer();
+        var identity = new ClientPlatformIdentity(
+            "macos-desktop",
+            "macos-client-0123456789abcdef0123456789abcdef",
+            "Test Mac",
+            "Leikwan-Mac-GUI",
+            MasterApiClient.AgentVersion,
+            SupportsMptcp: false);
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token-27", platformIdentity: identity);
+
+        await api.PullConfigsAsync();
+
+        Assert.Equal(identity.DeviceId, server.LastRequestHeaders["X-Device-Id"]);
+        Assert.Equal(identity.DeviceName, server.LastRequestHeaders["X-Device-Name"]);
+        Assert.Equal(identity.Platform, server.LastRequestHeaders["X-Device-Platform"]);
+        Assert.Contains("Leikwan-Mac-GUI/", server.LastRequestHeaders["User-Agent"]);
+        Assert.DoesNotContain("Windows", server.LastRequestHeaders["User-Agent"], StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task PullConfigsAsync_UsesInjectedHttpClientFactory_ForProtectedLeikwanMasterUrl()
     {
         using var http = new HttpClient(new StubPullResponseHandler()) { Timeout = TimeSpan.FromSeconds(5) };

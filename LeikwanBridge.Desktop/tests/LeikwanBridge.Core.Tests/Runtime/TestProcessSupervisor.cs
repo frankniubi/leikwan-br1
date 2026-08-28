@@ -18,7 +18,9 @@ internal sealed class TestProcessSupervisor : ProcessSupervisor
         string label,
         string exePath,
         string arguments,
-        string? workingDir = null)
+        byte[]? standardInput = null,
+        bool logArguments = true,
+        string? workingDirectory = null)
     {
         StartedRoles.Add(role);
         StartedCommands.Add((role, arguments));

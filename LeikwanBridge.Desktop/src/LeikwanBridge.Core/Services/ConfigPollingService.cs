@@ -17,6 +17,7 @@ public sealed class ConfigPollingService
     private readonly MasterApiClient _api;
     private readonly ForwardRuntimeManager _runtimeManager;
     private readonly StateManager _stateManager;
+    private readonly IForwardAcceptancePolicy _forwardPolicy;
 
     private List<ForwardConfig> _latestForwards = [];
     private CancellationTokenSource? _cts;
@@ -25,18 +26,27 @@ public sealed class ConfigPollingService
     private int _nextPollAfterMs;
     private int _syncInProgress;
     private volatile bool _pendingResync;
+    private ClientMeta? _latestClient;
 
     public event Action<List<ForwardConfig>>? ForwardsUpdated;
     public event Action<PullState>? PullStateChanged;
     public event Action<Exception>? SyncError;
+    public event Action<int, string>? ForwardRejected;
+    public event Action<ClientMeta>? ClientUpdated;
 
     public List<ForwardConfig> LatestForwards => _latestForwards;
+    public ClientMeta? LatestClient => _latestClient;
 
-    public ConfigPollingService(MasterApiClient api, ForwardRuntimeManager runtimeManager, StateManager stateManager)
+    public ConfigPollingService(
+        MasterApiClient api,
+        ForwardRuntimeManager runtimeManager,
+        StateManager stateManager,
+        IForwardAcceptancePolicy? forwardPolicy = null)
     {
         _api = api;
         _runtimeManager = runtimeManager;
         _stateManager = stateManager;
+        _forwardPolicy = forwardPolicy ?? WindowsForwardAcceptancePolicy.Instance;
     }
 
     public void Start(int intervalSeconds = 30)
@@ -75,6 +85,21 @@ public sealed class ConfigPollingService
     public void Stop()
     {
         _cts?.Cancel();
+    }
+
+    public async Task StopAsync()
+    {
+        Stop();
+        var pollingTask = _pollingTask;
+        if (pollingTask is null)
+            return;
+        try
+        {
+            await pollingTask;
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     /// <summary>Immediate revision-aware pull for reconnect / window-foreground / user Start.</summary>
@@ -141,11 +166,24 @@ public sealed class ConfigPollingService
         if (pull.NextPollAfterMs > 0)
             _nextPollAfterMs = pull.NextPollAfterMs;
 
+        if (pull.Client is not null)
+        {
+            _latestClient = pull.Client;
+        }
         _runtimeManager.ApplyAuthoritativeAgentConfig(pull.Client?.AgentConfigJson);
 
-        var forwards = WindowsForwardPolicy.FilterSupportedForwards(pull.Forwards)
-            .Where(f => f.ServiceStatus == "active")
-            .ToList();
+        var forwards = new List<ForwardConfig>();
+        foreach (var forward in pull.Forwards)
+        {
+            var acceptance = _forwardPolicy.Evaluate(forward);
+            if (!acceptance.Accepted)
+            {
+                ForwardRejected?.Invoke(forward.ForwardId, acceptance.Notice);
+                continue;
+            }
+            if (forward.ServiceStatus == "active")
+                forwards.Add(forward);
+        }
         _latestForwards = forwards;
 
         SavePullState("ok", forwards.Count);
@@ -163,6 +201,7 @@ public sealed class ConfigPollingService
                 try
                 {
                     _runtimeManager.StopForwardForPolicy(fid);
+                    _stateManager.RemoveApplied(fid);
                 }
                 catch (Exception ex)
                 {
@@ -247,6 +286,8 @@ public sealed class ConfigPollingService
             }
         }
 
+        if (_latestClient is not null)
+            ClientUpdated?.Invoke(_latestClient);
         ForwardsUpdated?.Invoke(forwards);
     }
 
