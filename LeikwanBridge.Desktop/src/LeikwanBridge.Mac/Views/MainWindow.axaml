@@ -23,6 +23,7 @@
             <StackPanel VerticalAlignment="Center" Spacing="1">
               <TextBlock Text="LeiKwan Bridge" Foreground="White" FontSize="16" FontWeight="SemiBold" />
               <TextBlock Text="macOS client" Foreground="{DynamicResource RailMutedBrush}" FontSize="11" />
+              <TextBlock Text="macOS 客户端" Foreground="{DynamicResource RailMutedBrush}" FontSize="11" />
             </StackPanel>
           </StackPanel>
         </StackPanel>
