@@ -285,6 +285,49 @@ abstract class BaseController
         return $this->artifactBaseUrl() . '/artifacts/leikwan-bridge-setup.exe';
     }
 
+    protected function macosClientArm64AppUrl(): string
+    {
+        return $this->artifactBaseUrl() . '/artifacts/macos/leikwan-bridge-arm64.dmg';
+    }
+
+    protected function macosClientX64AppUrl(): string
+    {
+        return $this->artifactBaseUrl() . '/artifacts/macos/leikwan-bridge-x64.dmg';
+    }
+
+    protected function macosClientArtifactsAvailable(): bool
+    {
+        foreach (['macos_client_app_arm64', 'macos_client_app_x64'] as $key) {
+            $metadata = $this->artifactMetadata($key);
+            if ($metadata === [] || trim((string) ($metadata['artifact_url'] ?? '')) === '') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    protected function macosClientReleaseVersion(): string
+    {
+        foreach (['macos_client_app_arm64', 'macos_client_app_x64'] as $key) {
+            $version = trim((string) ($this->artifactMetadata($key)['version'] ?? ''));
+            if ($version !== '') {
+                return $version;
+            }
+        }
+
+        return '';
+    }
+
+    protected function macosClientReleaseNotice(): string
+    {
+        $version = $this->macosClientReleaseVersion();
+
+        return $version !== ''
+            ? 'Release announcement / 发布声明：macOS client ' . $version . ' is now available. macOS 客户端 ' . $version . ' 已发布，支持 Apple Silicon 与 Intel。'
+            : 'Release announcement / 发布声明：macOS client is now available. macOS 客户端已发布，支持 Apple Silicon 与 Intel。';
+    }
+
     protected function clientWindowsInstallerUrl(): string
     {
         return $this->artifactBaseUrl() . '/artifacts/install-client.ps1';
@@ -473,11 +516,11 @@ abstract class BaseController
             ];
         $linuxDescription = $hasClient
             ? 'Example shown for the current client. Each client card below includes its own exact install details and Linux install command.'
-            : 'Windows and Android use the app install flow. Linux remains a local/manual install on the host that will run the client-agent.';
+            : 'Windows, Android, and macOS use the app install flow. Linux remains a local/manual install on the host that will run the client-agent.';
 
         return '<section class="card" style="margin-bottom:20px;">'
             . '<h3>App Download</h3>'
-            . '<p class="muted">Windows and Android use the app install flow. Linux remains a local/manual install command for the host that runs the client-agent.</p>'
+            . '<p class="muted">Windows, Android, and macOS use the app install flow. Linux remains a local/manual install command for the host that runs the client-agent.</p>'
             . $this->renderCommandPanel(
                 'Windows App',
                 $windowsAppUrl,
@@ -487,6 +530,7 @@ abstract class BaseController
                 ],
                 'Download the LeiKwan Bridge desktop app for this client.'
             )
+            . $this->renderMacClientDownloadPanels()
             . $this->renderCommandPanel(
                 'Android App',
                 $androidApkUrl,
@@ -539,7 +583,7 @@ abstract class BaseController
 
         return '<section class="card" style="margin-top:14px;">'
             . '<h4 style="margin:0 0 8px;">App Download</h4>'
-            . '<div class="muted command-lead">Windows and Android use the app install flow. Linux remains available as a local/manual install command for this client.</div>'
+            . '<div class="muted command-lead">Windows, Android, and macOS use the app install flow. Linux remains available as a local/manual install command for this client.</div>'
             . $this->renderCommandPanel(
                 'Windows App',
                 $windowsAppUrl,
@@ -549,6 +593,7 @@ abstract class BaseController
                 ],
                 'Install the LeiKwan Bridge desktop app for this client.'
             )
+            . $this->renderMacClientDownloadPanels()
             . $this->renderCommandPanel(
                 'Android App',
                 $androidApkUrl,
@@ -581,6 +626,54 @@ abstract class BaseController
                 'Manual uninstall command for the Linux client-agent host.'
             )
             . '</details>'
+            . '</section>';
+    }
+
+    protected function renderMacClientDownloadPanels(): string
+    {
+        if (!$this->macosClientArtifactsAvailable()) {
+            return '';
+        }
+
+        $releaseNotice = $this->macosClientReleaseNotice();
+        $arm64Url = $this->macosClientArm64AppUrl();
+        $x64Url = $this->macosClientX64AppUrl();
+
+        return $this->renderCommandPanel(
+            'macOS App — Apple Silicon',
+            $arm64Url,
+            [
+                $this->renderCommandLink('Download Apple Silicon', $arm64Url),
+                $this->renderCopyButton('Copy Download Link', $arm64Url),
+            ],
+            $releaseNotice . ' Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。'
+        )
+        . $this->renderCommandPanel(
+            'macOS App — Intel',
+            $x64Url,
+            [
+                $this->renderCommandLink('Download Intel', $x64Url),
+                $this->renderCopyButton('Copy Download Link', $x64Url),
+            ],
+            'For Intel Macs (x86_64). 适用于 Intel Mac。'
+        );
+    }
+
+    protected function renderMacClientInstallSection(): string
+    {
+        if (!$this->macosClientArtifactsAvailable()) {
+            return '';
+        }
+
+        $releaseNotice = $this->macosClientReleaseNotice();
+
+        return '<section class="tenant-client-install__platform"><strong>macOS</strong>'
+            . '<div class="flash success" style="margin:10px 0 0;">' . $this->escape($releaseNotice) . '</div>'
+            . '<div class="muted">Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。</div>'
+            . '<div class="actions">'
+            . $this->renderCommandLink('Apple Silicon', $this->macosClientArm64AppUrl(), 'secondary')
+            . $this->renderCommandLink('Intel', $this->macosClientX64AppUrl(), 'secondary')
+            . '</div>'
             . '</section>';
     }
 
