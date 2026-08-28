@@ -9,6 +9,22 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class WindowsAppUpdateServiceTests
 {
     [Fact]
+    public void AgentConfig_MigrateLegacyUltraBin_UsesInstalledRuntimePath()
+    {
+        using var tempDir = new TempUpdateDirectory();
+        var installedBin = Path.Combine(tempDir.Path, "bin", "ultra-client.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(installedBin)!);
+        File.WriteAllText(installedBin, "runtime");
+        var config = new AgentConfig
+        {
+            UltraBin = @"C:\Users\demo\AppData\Local\LeiKwan Bridge\runtime\ultra-client.exe",
+        };
+
+        Assert.True(config.MigrateLegacyUltraBin(tempDir.Path));
+        Assert.Equal(installedBin, config.UltraBin);
+    }
+
+    [Fact]
     public void AgentConfig_CanStorePendingWindowsUpdateState()
     {
         var config = new AgentConfig

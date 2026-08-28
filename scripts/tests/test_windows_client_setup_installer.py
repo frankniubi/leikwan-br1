@@ -300,6 +300,9 @@ class WindowsClientInstallHelperTests(unittest.TestCase):
             )
             self.assertEqual(first_install.returncode, 0, msg=first_install.stdout + "\n" + first_install.stderr)
             self.assertTrue((install_dir / "Obsolete.Dependency.dll").is_file())
+            old_backup = install_dir / "backup-legacy"
+            (old_backup / "old-client.exe").parent.mkdir(parents=True)
+            (old_backup / "old-client.exe").write_bytes(b"old")
 
             obsolete_file.unlink()
             second_install = self.run_helper(
@@ -319,6 +322,14 @@ class WindowsClientInstallHelperTests(unittest.TestCase):
             )
             self.assertEqual(second_install.returncode, 0, msg=second_install.stdout + "\n" + second_install.stderr)
             self.assertFalse((install_dir / "Obsolete.Dependency.dll").exists())
+            manifest = json.loads((install_dir / "install-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["backup_dir"], "")
+            self.assertFalse(any(install_dir.glob("backup-*")))
+
+    def test_helper_source_does_not_create_client_backup_directories(self) -> None:
+        helper_source = INSTALL_HELPER.read_text(encoding="utf-8")
+        self.assertNotIn("function Backup-ExistingInstall", helper_source)
+        self.assertNotIn("Backup-ExistingInstall -TargetDir", helper_source)
 
     def test_helper_all_users_shortcut_uses_common_desktop(self) -> None:
         with tempfile.TemporaryDirectory(prefix="leikwan-helper-common-desktop-") as temp_dir:
