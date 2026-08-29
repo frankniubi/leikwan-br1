@@ -81,6 +81,45 @@ public sealed class MacUltraRuntimeHostTests
         Assert.Empty(Directory.EnumerateDirectories(socketRoot));
     }
 
+    [Fact]
+    public void StartWithCandidates_SendsBatchAndEnablesAutoSelectBeforeListenerReadiness()
+    {
+        using var temp = new TemporaryDirectory();
+        var config = new AgentConfig
+        {
+            StateDir = temp.Path,
+            UltraBin = Path.Combine(temp.Path, "bin", "ultra-client"),
+        };
+        var state = new StateManager(temp.Path);
+        var supervisor = new RecordingProcessSupervisor();
+        var first = CreateLease("203.0.113.199");
+        var second = CreateLease("203.0.113.200");
+        var forward = CreateForward("198.51.100.199:443", first);
+        var host = new MacUltraRuntimeHost(
+            config,
+            supervisor,
+            state,
+            binaryExists: _ => true,
+            socketExists: _ => true,
+            portListeningProbe: _ => true,
+            leaseSender: (_, _, _, _) => throw new InvalidOperationException("single sender should not be used"),
+            leaseBatchSender: (_, _, leases, _) =>
+            {
+                Assert.Equal(2, leases.Count);
+                return Task.FromResult(true);
+            },
+            socketRoot: Path.Combine(temp.Path, "sockets"));
+
+        host.Start(forward, new[] { first, second }, "contract-a", "config_sync");
+
+        var bootstrapText = Encoding.UTF8.GetString(Assert.Single(supervisor.Launches).StandardInput);
+        Assert.Contains("\"auto_select\":true", bootstrapText, StringComparison.Ordinal);
+        Assert.Contains("\"probe_samples\":20", bootstrapText, StringComparison.Ordinal);
+        Assert.All(first.Password, value => Assert.Equal(0, value));
+        Assert.All(second.Password, value => Assert.Equal(0, value));
+        host.Stop(42);
+    }
+
     private static ForwardConfig CreateForward(string target, UltraLease lease)
     {
         return new ForwardConfig
