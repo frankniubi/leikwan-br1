@@ -184,7 +184,7 @@ class UltraClientLeaseTests(unittest.TestCase):
         self.assertEqual("ul2_test", resolved[0]["_ultra_lease"]["lease_id"])
         self.assertNotIn("_ultra_lease", resolved[1])
 
-    def test_resolve_preserves_bounded_candidate_batch_for_low_jitter_probe(self):
+    def test_resolve_defaults_to_one_stable_candidate(self):
         forward = {
             "forward_id": 42,
             "backend_mode": "ultra",
@@ -214,10 +214,45 @@ class UltraClientLeaseTests(unittest.TestCase):
             )
 
         body = request.call_args.args[3]
+        self.assertEqual("single", body["forwards"][0]["selection_mode"])
+        self.assertEqual(1, body["forwards"][0]["max_candidates"])
+        self.assertEqual(["ul2-first"], [item["lease_id"] for item in resolved[0]["_ultra_leases"]])
+        self.assertEqual("ul2-first", resolved[0]["_ultra_lease"]["lease_id"])
+
+    def test_resolve_can_opt_in_to_bounded_candidate_batch(self):
+        forward = {
+            "forward_id": 42,
+            "backend_mode": "ultra",
+            "target": "203.0.113.10:443",
+            "transport": "tcp+udp",
+            "ultra_access": {
+                "protocol": "leikwan-ultra-policy-v2",
+                "session_ticket": "opaque-42",
+                "policy_generation": "a" * 64,
+                "target_digest": "b" * 64,
+                "transport": "tcp+udp",
+            },
+        }
+        response = {
+            "ok": True,
+            "leases": [
+                {"forward_id": 42, "lease_id": "ul2-first"},
+                {"forward_id": 42, "lease_id": "ul2-second"},
+            ],
+        }
+        with mock.patch.object(MODULE, "http_json", return_value=response) as request:
+            resolved = MODULE.resolve_ultra_leases(
+                "https://panel.example.test",
+                "client-agent-token",
+                "device-a",
+                [forward],
+                selection_mode="auto",
+            )
+
+        body = request.call_args.args[3]
         self.assertEqual("auto", body["forwards"][0]["selection_mode"])
         self.assertEqual(4, body["forwards"][0]["max_candidates"])
         self.assertEqual(["ul2-first", "ul2-second"], [item["lease_id"] for item in resolved[0]["_ultra_leases"]])
-        self.assertEqual("ul2-first", resolved[0]["_ultra_lease"]["lease_id"])
 
     def test_normal_pull_contract_does_not_contain_ports_or_credentials(self):
         access = {"session_ticket": "opaque", "policy_generation": "a" * 64, "transport": "tcp+udp"}

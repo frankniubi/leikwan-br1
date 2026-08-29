@@ -1127,6 +1127,10 @@ def endpoint_sni(endpoint: dict, default_sni: str) -> str:
     return str(endpoint.get("cf_sni_host", "") or endpoint.get("sni_host", "") or endpoint.get("cdn_host", "") or default_sni or endpoint.get("host", "") or "").strip()
 
 
+def normalize_ultra_selection_mode(value: object) -> str:
+    return "auto" if str(value or "").strip().lower() == "auto" else "single"
+
+
 def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
     forward_id = int(forward.get("forward_id", 0) or 0)
     listen_port = int(forward.get("listen_port", 0) or 0)
@@ -1148,6 +1152,8 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
     if transport not in {"tcp", "udp", "tcp+udp"}:
         raise RuntimeError("ultra transport invalid")
     control_socket = f"/run/ultra/forward-{forward_id}.control.sock"
+    selection_mode = normalize_ultra_selection_mode(agent_config.get("ultra_selection_mode", "single"))
+    auto_select = selection_mode == "auto"
     zone_aliases: dict[str, list[str]] = {}
     raw_aliases = access.get("zone_aliases", {})
     if isinstance(raw_aliases, dict):
@@ -1163,7 +1169,6 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         "listen_host": "0.0.0.0",
         "listen_port": listen_port,
         "target": str(forward.get("target", "") or "").strip(),
-        "probe_target": "1.1.1.1:53",
         "control_socket": control_socket,
         "transport": transport,
         "max_tcp_connections": 512,
@@ -1175,12 +1180,18 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         "policy_generation": policy_generation,
         "target_digest": target_digest,
         "zone_aliases": zone_aliases,
-        "auto_select": True,
-        "probe_timeout_ms": 300,
-        "probe_workers": 4,
-        "probe_samples": 20,
-        "probe_interval_ms": 100,
+        "auto_select": auto_select,
     }
+    if auto_select:
+        config_payload.update(
+            {
+                "probe_target": "1.1.1.1:53",
+                "probe_timeout_ms": 300,
+                "probe_workers": 4,
+                "probe_samples": 20,
+                "probe_interval_ms": 100,
+            }
+        )
     if config_payload["target"] == "":
         raise RuntimeError("ultra target missing")
     config_path = f"/etc/ultra/forward-{forward_id}.json"

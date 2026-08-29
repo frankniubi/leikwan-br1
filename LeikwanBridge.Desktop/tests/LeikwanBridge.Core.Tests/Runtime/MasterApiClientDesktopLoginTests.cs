@@ -262,7 +262,7 @@ public sealed class MasterApiClientDesktopLoginTests
     }
 
     [Fact]
-    public async Task ResolveUltraLeasesAsync_ReturnsBoundedCandidateBatchForAutoSelection()
+    public async Task ResolveUltraLeasesAsync_DefaultsToSingleLease()
     {
         const string target = "198.51.100.10:443";
         var generation = new string('a', 64);
@@ -299,6 +299,49 @@ public sealed class MasterApiClientDesktopLoginTests
             ownsHttpClient: false);
 
         var leases = await api.ResolveUltraLeasesAsync(forward);
+
+        Assert.Single(leases);
+        Assert.Equal("203.0.113.20", leases[0].ProviderIp);
+    }
+
+    [Fact]
+    public async Task ResolveUltraLeasesAutoAsync_RequestsBoundedCandidateBatch()
+    {
+        const string target = "198.51.100.10:443";
+        var generation = new string('a', 64);
+        var now = DateTimeOffset.UtcNow;
+        var policy = new UltraPolicy
+        {
+            ProtocolValue = UltraPolicy.Protocol,
+            ForwardId = 42,
+            PolicyGeneration = generation,
+            SessionTicket = "ticket-a",
+            IssuedAt = now,
+            RenewAfter = now.AddMinutes(1),
+            ExpiresAt = now.AddMinutes(4),
+            ServiceState = "active",
+            Transport = "tcp+udp",
+            QuotaRemainingBytes = 1024 * 1024,
+            TargetDigest = UltraPolicy.ComputeTargetDigest(target),
+        };
+        var forward = new ForwardConfig
+        {
+            ForwardId = 42,
+            BackendMode = "ultra",
+            Mode = "single",
+            Target = target,
+            Transport = "tcp+udp",
+            UltraAccess = policy,
+        };
+        using var http = new HttpClient(new UltraLeaseBatchHandler(generation, target)) { Timeout = TimeSpan.FromSeconds(5) };
+        using var api = new MasterApiClient(
+            "https://v3.leikwanhost.com",
+            "agent-token",
+            "windows-client-42-device",
+            httpClientFactory: () => http,
+            ownsHttpClient: false);
+
+        var leases = await api.ResolveUltraLeasesAutoAsync(forward);
 
         Assert.Equal(2, leases.Count);
         Assert.Equal("203.0.113.20", leases[0].ProviderIp);

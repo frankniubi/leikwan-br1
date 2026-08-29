@@ -96,28 +96,33 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             _runtimes[forward.ForwardId] = runtimeState;
             Log.Information("ultra runtime paths ready for forward {ForwardId}", forward.ForwardId);
 
-            bootstrap = JsonSerializer.SerializeToUtf8Bytes(new
+            var autoSelect = leases.Count > 1;
+            var bootstrapConfig = new Dictionary<string, object?>
             {
-                forward_id = forward.ForwardId,
-                listen_host = "127.0.0.1",
-                listen_port = forward.ListenPort,
-                target = forward.Target,
-                probe_target = "1.1.1.1:53",
-                control_socket = socketPath,
-                transport = leases[0].Transport,
-                policy_generation = leases[0].PolicyGeneration,
-                target_digest = leases[0].TargetDigest,
-                auto_select = leases.Count > 1,
-                probe_timeout_ms = 300,
-                probe_samples = 20,
-                probe_interval_ms = 100,
-                max_tcp_connections = 512,
-                udp_queue_packets = 64,
-                connect_timeout_seconds = 5,
-                status_path = statusPath,
-                location_cache_path = Path.Combine(runtimeDirectory, "location.json"),
-                location_lock_path = Path.Combine(runtimeDirectory, "location.lock"),
-            });
+                ["forward_id"] = forward.ForwardId,
+                ["listen_host"] = "127.0.0.1",
+                ["listen_port"] = forward.ListenPort,
+                ["target"] = forward.Target,
+                ["control_socket"] = socketPath,
+                ["transport"] = leases[0].Transport,
+                ["policy_generation"] = leases[0].PolicyGeneration,
+                ["target_digest"] = leases[0].TargetDigest,
+                ["auto_select"] = autoSelect,
+                ["max_tcp_connections"] = 512,
+                ["udp_queue_packets"] = 64,
+                ["connect_timeout_seconds"] = 5,
+                ["status_path"] = statusPath,
+                ["location_cache_path"] = Path.Combine(runtimeDirectory, "location.json"),
+                ["location_lock_path"] = Path.Combine(runtimeDirectory, "location.lock"),
+            };
+            if (autoSelect)
+            {
+                bootstrapConfig["probe_target"] = "1.1.1.1:53";
+                bootstrapConfig["probe_timeout_ms"] = 300;
+                bootstrapConfig["probe_samples"] = 20;
+                bootstrapConfig["probe_interval_ms"] = 100;
+            }
+            bootstrap = JsonSerializer.SerializeToUtf8Bytes(bootstrapConfig);
             _supervisor.StartProcess(
                 forward.ForwardId,
                 "ultra-runtime",

@@ -46,6 +46,7 @@ DEFAULT_MANAGED_CONFIG = {
     "log_level": "INFO",
     "wireguard_listen_port": 0,
     "wireguard_fallback_tcp_port": 0,
+    "ultra_selection_mode": "single",
 }
 
 
@@ -126,6 +127,10 @@ def forward_runtime_service_name(forward: dict) -> str:
     forward_id = int(forward.get("forward_id", 0) or 0)
     prefix = "ultra-forward" if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra" else "leikwan-client"
     return f"{prefix}-{forward_id}"
+
+
+def normalize_ultra_selection_mode(value: object) -> str:
+    return "auto" if str(value or "").strip().lower() == "auto" else "single"
 MPTCP_PROTOCOL = getattr(socket, "IPPROTO_MPTCP", 262)
 MPTCP_FALSE_VALUES = {"", "0", "false", "no", "off", "disabled"}
 HELPER_CANDIDATE_KINDS = {"rented_group_leg", "donated_slave_leg"}  # donor_candidate_consumed_as_helper
@@ -627,7 +632,16 @@ def collect_ultra_status(
     return statuses
 
 
-def resolve_ultra_leases(master: str, agent_token: str, device_id: str, forwards: list[dict]) -> list[dict]:
+def resolve_ultra_leases(
+    master: str,
+    agent_token: str,
+    device_id: str,
+    forwards: list[dict],
+    *,
+    selection_mode: str = "single",
+) -> list[dict]:
+    normalized_selection_mode = normalize_ultra_selection_mode(selection_mode)
+    max_candidates = 4 if normalized_selection_mode == "auto" else 1
     requests: list[dict] = []
     for forward in forwards:
         if not isinstance(forward, dict) or str(forward.get("backend_mode", "")).strip().lower() != "ultra":
@@ -650,8 +664,8 @@ def resolve_ultra_leases(master: str, agent_token: str, device_id: str, forwards
                 "nonce": secrets.token_hex(16),
                 "target_digest": hashlib.sha256(target.encode("utf-8")).hexdigest(),
                 "transport": transport,
-                "selection_mode": "auto",
-                "max_candidates": 4,
+                "selection_mode": normalized_selection_mode,
+                "max_candidates": max_candidates,
             }
         )
     if not requests:
@@ -681,7 +695,7 @@ def resolve_ultra_leases(master: str, agent_token: str, device_id: str, forwards
         if forward_id <= 0:
             continue
         candidates = leases_by_forward.setdefault(forward_id, [])
-        if len(candidates) < 4:
+        if len(candidates) < max_candidates:
             candidates.append(item)
     result: list[dict] = []
     for forward in forwards:
@@ -1042,6 +1056,9 @@ class ClientAgent:
     @staticmethod
     def install_forward_runtime_path() -> pathlib.Path:
         return pathlib.Path(__file__).with_name("install_forward_runtime.py")
+
+    def ultra_selection_mode(self) -> str:
+        return normalize_ultra_selection_mode(self.config.get("ultra_selection_mode", "single"))
 
     def semantic_agent_config(self) -> dict:
         payload = dict(self.config)
@@ -1775,7 +1792,13 @@ class ClientAgent:
         device_id = str(client_meta.get("current_device_id", "") or "") if isinstance(client_meta, dict) else ""
         lease_resolution_failed = False
         try:
-            runtime_forwards = resolve_ultra_leases(master, token, device_id, self.latest_forwards)
+            runtime_forwards = resolve_ultra_leases(
+                master,
+                token,
+                device_id,
+                self.latest_forwards,
+                selection_mode=self.ultra_selection_mode(),
+            )
         except Exception as exc:  # noqa: BLE001
             # Keep an already-running Ultra process on its last in-memory lease
             # through transient control-plane failures. A successful response
@@ -2189,6 +2212,7 @@ class ClientAgent:
             "cfwg_latency_watchdog",
             "runtime_refresh",
             "cfwg_edge_pins",
+            "ultra_selection_mode",
         }
         config_changed = False
         for key, value in patch.items():
