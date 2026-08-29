@@ -31,15 +31,24 @@ public sealed class WindowsNetchProcessProxyAdapter : IWindowsProcessProxyAdapte
     private readonly string _driverPath;
     private RedirectorApi? _api;
     private bool _initAttempted;
+    private bool _driverServiceOwned;
     private Task<bool>? _freeTask;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly Func<bool> _stopDriverService;
+    private readonly Func<bool> _isDriverServiceStopped;
 
     private static readonly TimeSpan NativeStopTimeout = TimeSpan.FromSeconds(5);
 
-    public WindowsNetchProcessProxyAdapter(string redirectorPath, string driverPath)
+    public WindowsNetchProcessProxyAdapter(
+        string redirectorPath,
+        string driverPath,
+        Func<bool>? stopDriverService = null,
+        Func<bool>? isDriverServiceStopped = null)
     {
         _redirectorPath = redirectorPath ?? string.Empty;
         _driverPath = driverPath ?? string.Empty;
+        _stopDriverService = stopDriverService ?? StopDriverServiceBestEffort;
+        _isDriverServiceStopped = isDriverServiceStopped ?? IsDriverServiceStopped;
     }
 
     public bool IsAvailable => OperatingSystem.IsWindows()
@@ -85,6 +94,7 @@ public sealed class WindowsNetchProcessProxyAdapter : IWindowsProcessProxyAdapte
                 // connection can leave NetFilter2 in a half-started state.
                 if (copiedDriver || !IsDriverServiceInstalled())
                 {
+                    _driverServiceOwned = true;
                     Call(api.Register("netfilter2"), "process_driver_register_failed");
                 }
                 Configure(api, socksPort, rules ?? []);
@@ -146,6 +156,10 @@ public sealed class WindowsNetchProcessProxyAdapter : IWindowsProcessProxyAdapte
     private async Task StopCoreAsync()
     {
         Exception? failure = null;
+        var shouldStopDriverService = _driverServiceOwned || _initAttempted || _freeTask is not null;
+        if (!shouldStopDriverService)
+            return;
+
         if (_api is not null && _initAttempted)
         {
             var api = _api;
@@ -173,7 +187,7 @@ public sealed class WindowsNetchProcessProxyAdapter : IWindowsProcessProxyAdapte
         // aio_free normally stops this service.  If the native call timed out
         // or an earlier app instance was killed, stop it directly so the
         // kernel filter cannot continue affecting unrelated processes.
-        var serviceStopped = await Task.Run(StopDriverServiceBestEffort);
+        var serviceStopped = await Task.Run(_stopDriverService);
         if (!serviceStopped)
         {
             var serviceFailure = new InvalidOperationException("process_driver_stop_failed");
@@ -188,6 +202,8 @@ public sealed class WindowsNetchProcessProxyAdapter : IWindowsProcessProxyAdapte
             // safety boundary: no running service means no packet filter.
             failure = null;
         }
+        if (serviceStopped)
+            _driverServiceOwned = false;
         if (failure is not null)
             throw failure;
     }
@@ -212,8 +228,12 @@ public sealed class WindowsNetchProcessProxyAdapter : IWindowsProcessProxyAdapte
             throw new InvalidOperationException("process_redirector_free_failed", exception);
         }
 
-        if (!freed && !await Task.Run(IsDriverServiceStopped).ConfigureAwait(false))
+        var serviceStopped = freed || await Task.Run(_isDriverServiceStopped).ConfigureAwait(false);
+        if (!serviceStopped)
             throw new InvalidOperationException("process_redirector_free_failed");
+
+        if (serviceStopped)
+            _driverServiceOwned = false;
     }
 
     private void Configure(RedirectorApi api, int socksPort, IEnumerable<WindowsProcessProxyRule> rules)
