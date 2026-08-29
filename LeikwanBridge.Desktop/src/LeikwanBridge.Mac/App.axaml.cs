@@ -68,40 +68,17 @@ public sealed partial class App : Application
     {
         try
         {
-            _services = await MacAppBootstrap.CreateAsync(PlatformPaths);
-            var config = _services.Config;
-            var viewModel = new MainWindowViewModel(
-                _services.Controller,
-                _services.Connections,
-                () => _services.Controller.RuntimeForwards,
-                _services.Autostart,
-                config.MinimizeToTray,
-                config.Language,
-                async (panelUrl, language, closeToTray, ct) =>
-                {
-                    config.MasterUrl = panelUrl.TrimEnd('/');
-                    config.Language = language;
-                    config.MinimizeToTray = closeToTray;
-                    await _services.ConfigStore.SaveAsync(config, ct);
-                },
-                ct => CheckForUpdatesAsync(ct, notifyWhenCurrent: true),
-                ct => InstallUpdateAsync(desktop, ct));
-            _window = new MainWindow { DataContext = viewModel };
-            _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
-            desktop.MainWindow = _window;
+            var services = await MacAppBootstrap.CreateAsync(PlatformPaths).ConfigureAwait(false);
+            await Dispatcher.UIThread.InvokeAsync(() => InitializeDesktopUi(desktop, services));
 
-            viewModel.TrayAvailable = TryCreateTray(desktop, viewModel);
-            var background = desktop.Args?.Any(arg => string.Equals(arg, "--background", StringComparison.Ordinal)) == true;
-            if (!background || !viewModel.TrayAvailable)
-                _window.Show();
-
-            if (_services.Controller.Snapshot.IsSignedIn
-                && !_services.Controller.Snapshot.RequiresClientSelection
+            var config = services.Config;
+            if (services.Controller.Snapshot.IsSignedIn
+                && !services.Controller.Snapshot.RequiresClientSelection
                 && !string.IsNullOrWhiteSpace(config.AgentToken))
             {
                 try
                 {
-                    await _services.Controller.ConnectAsync();
+                    await services.Controller.ConnectAsync().ConfigureAwait(false);
                 }
                 catch
                 {
@@ -111,14 +88,51 @@ public sealed partial class App : Application
             if (!config.DisableAutoUpdates && !string.IsNullOrWhiteSpace(config.MasterUrl))
                 _ = CheckForUpdatesAsync(CancellationToken.None, notifyWhenCurrent: false);
         }
-        catch
+        catch (Exception exception)
         {
-            Log.Error("mac_app_initialization_failed");
-            var errorWindow = BuildStartupErrorWindow();
-            desktop.MainWindow = errorWindow;
-            errorWindow.Closed += (_, _) => desktop.Shutdown(1);
-            errorWindow.Show();
+            Log.Error(exception, "mac_app_initialization_failed");
+            await Dispatcher.UIThread.InvokeAsync(() => ShowStartupError(desktop));
         }
+    }
+
+    private void InitializeDesktopUi(
+        IClassicDesktopStyleApplicationLifetime desktop,
+        MacAppServices services)
+    {
+        _services = services;
+        var config = services.Config;
+        var viewModel = new MainWindowViewModel(
+            services.Controller,
+            services.Connections,
+            () => services.Controller.RuntimeForwards,
+            services.Autostart,
+            config.MinimizeToTray,
+            config.Language,
+            async (panelUrl, language, closeToTray, ct) =>
+            {
+                config.MasterUrl = panelUrl.TrimEnd('/');
+                config.Language = language;
+                config.MinimizeToTray = closeToTray;
+                await services.ConfigStore.SaveAsync(config, ct).ConfigureAwait(false);
+            },
+            ct => CheckForUpdatesAsync(ct, notifyWhenCurrent: true),
+            ct => InstallUpdateAsync(desktop, ct));
+        _window = new MainWindow { DataContext = viewModel };
+        _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
+        desktop.MainWindow = _window;
+
+        viewModel.TrayAvailable = TryCreateTray(desktop, viewModel);
+        var background = desktop.Args?.Any(arg => string.Equals(arg, "--background", StringComparison.Ordinal)) == true;
+        if (!background || !viewModel.TrayAvailable)
+            _window.Show();
+    }
+
+    private static void ShowStartupError(IClassicDesktopStyleApplicationLifetime desktop)
+    {
+        var errorWindow = BuildStartupErrorWindow();
+        desktop.MainWindow = errorWindow;
+        errorWindow.Closed += (_, _) => desktop.Shutdown(1);
+        errorWindow.Show();
     }
 
     private bool TryCreateTray(
