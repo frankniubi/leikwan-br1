@@ -68,6 +68,8 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
             var configPath = Path.Combine(runtimeDirectory, $"ultra-forward-{forward.ForwardId}.json");
             var statusPath = Path.Combine(runtimeDirectory, $"ultra-forward-{forward.ForwardId}.status.json");
             var autoSelect = leases.Count > 1;
+            var udpCapable = string.Equals(leases[0].Transport, "udp", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(leases[0].Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase);
             var staticConfig = new Dictionary<string, object?>
             {
                 ["forward_id"] = forward.ForwardId,
@@ -84,6 +86,11 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 ["connect_timeout_seconds"] = 5,
                 ["status_path"] = statusPath,
             };
+            if (udpCapable)
+            {
+                staticConfig["udp_prewarm"] = true;
+                staticConfig["udp_keepalive_interval_seconds"] = 5;
+            }
             if (autoSelect)
             {
                 staticConfig["probe_target"] = "1.1.1.1:53";

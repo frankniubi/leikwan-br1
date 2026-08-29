@@ -97,6 +97,8 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             Log.Information("ultra runtime paths ready for forward {ForwardId}", forward.ForwardId);
 
             var autoSelect = leases.Count > 1;
+            var udpCapable = string.Equals(leases[0].Transport, "udp", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(leases[0].Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase);
             var bootstrapConfig = new Dictionary<string, object?>
             {
                 ["forward_id"] = forward.ForwardId,
@@ -115,6 +117,11 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 ["location_cache_path"] = Path.Combine(runtimeDirectory, "location.json"),
                 ["location_lock_path"] = Path.Combine(runtimeDirectory, "location.lock"),
             };
+            if (udpCapable)
+            {
+                bootstrapConfig["udp_prewarm"] = true;
+                bootstrapConfig["udp_keepalive_interval_seconds"] = 5;
+            }
             if (autoSelect)
             {
                 bootstrapConfig["probe_target"] = "1.1.1.1:53";
