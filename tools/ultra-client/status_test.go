@@ -107,6 +107,7 @@ func TestStatusWriterPublishesUDPProbeQualityWithoutProviderMaterial(t *testing.
 	writer := newStatusWriter(path, 11, time.Millisecond)
 	writer.UpdateUDPProbe("udp-entry-reference-abcdefghijklmnop", udpProbeResult{
 		Sent: 20, Received: 19, MedianRTT: 12 * time.Millisecond, P95RTT: 18 * time.Millisecond,
+		Jitter: 3 * time.Millisecond,
 	})
 	writer.Close()
 
@@ -118,7 +119,7 @@ func TestStatusWriterPublishesUDPProbeQualityWithoutProviderMaterial(t *testing.
 	if err := json.Unmarshal(raw, &status); err != nil {
 		t.Fatal(err)
 	}
-	if status.ActiveUDP == nil || status.ActiveUDP.LossPercent != 5 || status.ActiveUDP.P95RTTMillis != 18 {
+	if status.ActiveUDP == nil || status.ActiveUDP.LossPercent != 5 || status.ActiveUDP.P95RTTMillis != 18 || status.ActiveUDP.JitterMillis != 3 {
 		t.Fatalf("probe quality=%+v", status.ActiveUDP)
 	}
 	if strings.Contains(strings.ToLower(string(raw)), "provider") {

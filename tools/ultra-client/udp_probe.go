@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"time"
 )
@@ -21,7 +23,11 @@ type udpProbeResult struct {
 }
 
 func (result udpProbeResult) usable() bool {
-	return result.Err == nil && result.Sent > 0 && result.Received > 0
+	if result.Err != nil || result.Sent <= 0 || result.Received <= 0 {
+		return false
+	}
+	lost, sent := result.lossRatio()
+	return lost*100 <= sent*25
 }
 
 func (result udpProbeResult) lossRatio() (lost, sent int) {
@@ -35,9 +41,9 @@ func (result udpProbeResult) lossRatio() (lost, sent int) {
 	return lost, result.Sent
 }
 
-// rankUDPProbeResults uses loss as the primary ordering key. Latency is only
-// compared between candidates with the same delivery ratio, which prevents a
-// very fast but lossy leg from winning over a stable leg.
+// rankUDPProbeResults uses loss as the primary ordering key, then prefers the
+// lowest jitter before comparing tail and median latency. This keeps a fast
+// but unstable leg from winning over a slightly slower stable leg.
 func rankUDPProbeResults(results []udpProbeResult) []udpProbeResult {
 	ranked := append([]udpProbeResult(nil), results...)
 	sort.SliceStable(ranked, func(left, right int) bool {
@@ -51,14 +57,14 @@ func rankUDPProbeResults(results []udpProbeResult) []udpProbeResult {
 		if llost*rsent != rlost*lsent {
 			return llost*rsent < rlost*lsent
 		}
+		if l.Jitter != r.Jitter {
+			return l.Jitter < r.Jitter
+		}
 		if l.P95RTT != r.P95RTT {
 			return l.P95RTT < r.P95RTT
 		}
 		if l.MedianRTT != r.MedianRTT {
 			return l.MedianRTT < r.MedianRTT
-		}
-		if l.Jitter != r.Jitter {
-			return l.Jitter < r.Jitter
 		}
 		return l.Index < r.Index
 	})
@@ -79,7 +85,7 @@ func stringsContainsUDP(transport string) bool {
 func probeTCPLease(ctx context.Context, lease ProviderLease, config Config, policy Policy) udpProbeResult {
 	result := udpProbeResult{Sent: 1}
 	started := time.Now()
-	host, port, err := parseTarget(config.Target)
+	host, port, err := probeTarget(config)
 	if err != nil {
 		result.Err = err
 		return result
@@ -104,6 +110,11 @@ func probeTCPLease(ctx context.Context, lease ProviderLease, config Config, poli
 
 func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpProbeResult {
 	result := udpProbeResult{Sent: 0}
+	targetHost, targetPort, targetErr := probeTarget(config)
+	if targetErr != nil {
+		result.Err = targetErr
+		return result
+	}
 	session, err := armDatagram(lease, probeTimeout(config))
 	if err != nil {
 		result.Err = err
@@ -126,10 +137,8 @@ func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpP
 			result.Err = err
 			return result
 		}
-		payload := make([]byte, len(keepPayloadHex)+8)
-		copy(payload, keepPayloadHex)
-		putUint64(payload[len(keepPayloadHex):], uint64(sequence))
-		packet, packetErr := makeDatagramEnvelope(session.mode, session.sid, "2.0.0.0", 0, payload)
+		payload, transactionID := buildDNSProbePayload(uint16(sequence))
+		packet, packetErr := makeDatagramEnvelope(session.mode, session.sid, targetHost, targetPort, payload)
 		clearBytes(payload)
 		if packetErr != nil {
 			result.Err = packetErr
@@ -145,7 +154,7 @@ func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpP
 					break
 				}
 				response, valid := unwrapDatagram(readBuffer[:count])
-				if valid && len(response) >= len(keepPayloadHex)+8 {
+				if valid && probeResponseMatches(response, transactionID) {
 					result.Received++
 					rtts = append(rtts, time.Since(started))
 					break
@@ -172,11 +181,39 @@ func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpP
 	return result
 }
 
-func putUint64(buffer []byte, value uint64) {
-	for index := 7; index >= 0; index-- {
-		buffer[index] = byte(value)
-		value >>= 8
+func probeResponseMatches(response []byte, transactionID uint16) bool {
+	if len(response) < 12 {
+		return false
 	}
+	return binary.BigEndian.Uint16(response[:2]) == transactionID && response[2]&0x80 != 0
+}
+
+func buildDNSProbePayload(sequence uint16) ([]byte, uint16) {
+	transactionID := uint16(time.Now().UnixNano()) ^ sequence
+	payload := make([]byte, 0, 64)
+	var header [12]byte
+	binary.BigEndian.PutUint16(header[0:2], transactionID)
+	binary.BigEndian.PutUint16(header[2:4], 0x0100)
+	binary.BigEndian.PutUint16(header[4:6], 1)
+	payload = append(payload, header[:]...)
+	for _, label := range []string{"cloudflare", "com"} {
+		payload = append(payload, byte(len(label)))
+		payload = append(payload, label...)
+	}
+	payload = append(payload, 0, 0, 1, 0, 1)
+	return payload, transactionID
+}
+
+func probeTarget(config Config) (string, int, error) {
+	target := config.ProbeTarget
+	if target == "" {
+		target = defaultProbeTarget
+	}
+	host, port, err := net.SplitHostPort(target)
+	if err != nil || net.ParseIP(host).To4() == nil || port != "53" {
+		return "", 0, errors.New("probe target must be an IPv4 DNS endpoint on port 53")
+	}
+	return host, 53, nil
 }
 
 func summarizeRTTs(rtts []time.Duration) (time.Duration, time.Duration, time.Duration) {

@@ -14,6 +14,7 @@ type SelectionStatus struct {
 	SelectionRef  string `json:"selection_ref"`
 	RTTMillis     int64  `json:"rtt_ms"`
 	P95RTTMillis  int64  `json:"p95_rtt_ms,omitempty"`
+	JitterMillis  int64  `json:"jitter_ms,omitempty"`
 	LossPercent   int64  `json:"loss_percent,omitempty"`
 	ProbeSent     int    `json:"probe_sent,omitempty"`
 	ProbeReceived int    `json:"probe_received,omitempty"`
@@ -121,6 +122,7 @@ func (writer *StatusWriter) UpdateUDPProbe(selectionRef string, result udpProbeR
 			SelectionRef:  boundedStatusText(selectionRef, 128),
 			RTTMillis:     maxInt64(result.MedianRTT.Milliseconds(), 0),
 			P95RTTMillis:  maxInt64(result.P95RTT.Milliseconds(), 0),
+			JitterMillis:  maxInt64(result.Jitter.Milliseconds(), 0),
 			LossPercent:   maxInt64(minInt64(lossPercent, 100), 0),
 			ProbeSent:     result.Sent,
 			ProbeReceived: result.Received,

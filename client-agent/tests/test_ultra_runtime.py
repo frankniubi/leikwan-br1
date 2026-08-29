@@ -77,7 +77,11 @@ class UltraRuntimeTests(unittest.TestCase):
         self.assertNotIn("fallback_policy", config)
         self.assertEqual(["Shanghai", "上海"], config["zone_aliases"]["shanghai"])
         self.assertEqual(4, config["probe_workers"])
-        self.assertEqual(800, config["probe_timeout_ms"])
+        self.assertEqual(300, config["probe_timeout_ms"])
+        self.assertTrue(config["auto_select"])
+        self.assertEqual("1.1.1.1:53", config["probe_target"])
+        self.assertEqual(20, config["probe_samples"])
+        self.assertEqual(100, config["probe_interval_ms"])
         self.assertIn("ReadWritePaths=/run/ultra /var/lib/ultra", rendered["service_unit"])
         self.assertFalse(any(item["path"].endswith(".access.json") for item in rendered["files"]))
 

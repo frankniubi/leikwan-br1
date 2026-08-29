@@ -1163,6 +1163,7 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         "listen_host": "0.0.0.0",
         "listen_port": listen_port,
         "target": str(forward.get("target", "") or "").strip(),
+        "probe_target": "1.1.1.1:53",
         "control_socket": control_socket,
         "transport": transport,
         "max_tcp_connections": 512,
@@ -1174,8 +1175,11 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         "policy_generation": policy_generation,
         "target_digest": target_digest,
         "zone_aliases": zone_aliases,
-        "probe_timeout_ms": 800,
+        "auto_select": True,
+        "probe_timeout_ms": 300,
         "probe_workers": 4,
+        "probe_samples": 20,
+        "probe_interval_ms": 100,
     }
     if config_payload["target"] == "":
         raise RuntimeError("ultra target missing")
