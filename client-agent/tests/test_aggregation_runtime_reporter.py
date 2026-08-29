@@ -81,6 +81,72 @@ class AggregationRuntimeReporterTests(unittest.TestCase):
         self.assertFalse(summary["runtime"]["mptcp_client_bin_present"])
         self.assertNotIn("live_pull", summary)
 
+    def test_live_check_fails_when_panel_returns_invalid_forward(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = pathlib.Path(tmp_dir)
+            state_dir = root / "state"
+            state_dir.mkdir(parents=True)
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "client_id": 47,
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            agent = client_agent.ClientAgent(config_path)
+            with mock.patch.object(
+                client_agent,
+                "http_json",
+                return_value={"forwards": [{"forward_id": 71, "mode": "single", "endpoints": []}]},
+            ), mock.patch.object(agent, "systemd_is_active", return_value=True), \
+                mock.patch.object(agent, "ensure_wireguard_identity", return_value="pub"), \
+                mock.patch.object(agent, "wireguard_listen_port", return_value=51820), \
+                mock.patch.object(agent, "wireguard_fallback_tcp_port", return_value=0), \
+                mock.patch.object(agent, "binary_available", return_value=True), \
+                mock.patch.object(agent, "mptcp_client_path", return_value=root / "leikwan-mptcp-client"), \
+                mock.patch.object(agent, "mptcp_capability", return_value={"supported": True}):
+                summary = agent.check(live=True)
+
+        self.assertFalse(summary["ok"])
+        self.assertFalse(summary["live_pull"]["ok"])
+        self.assertEqual([71], summary["live_pull"]["invalid_forward_ids"])
+
+    def test_check_fails_when_agent_service_is_inactive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = pathlib.Path(tmp_dir)
+            state_dir = root / "state"
+            state_dir.mkdir(parents=True)
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "client_id": 47,
+                        "agent_token": "token",
+                        "state_dir": str(state_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent = client_agent.ClientAgent(config_path)
+            with mock.patch.object(agent, "systemd_is_active", return_value=False), \
+                mock.patch.object(agent, "ensure_wireguard_identity", return_value="pub"), \
+                mock.patch.object(agent, "wireguard_listen_port", return_value=51820), \
+                mock.patch.object(agent, "wireguard_fallback_tcp_port", return_value=0), \
+                mock.patch.object(agent, "binary_available", return_value=True), \
+                mock.patch.object(agent, "mptcp_client_path", return_value=root / "leikwan-mptcp-client"), \
+                mock.patch.object(agent, "mptcp_capability", return_value={"supported": True}):
+                summary = agent.check(live=False)
+
+        self.assertFalse(summary["ok"])
+        self.assertFalse(summary["service_active"])
+
 
 if __name__ == "__main__":
     unittest.main()

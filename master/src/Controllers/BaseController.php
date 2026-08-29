@@ -38,6 +38,11 @@ abstract class BaseController
         return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
     }
 
+    protected function shellQuote(string $value): string
+    {
+        return "'" . str_replace("'", "'\"'\"'", $value) . "'";
+    }
+
     protected function agentBaseUrl(): string
     {
         $agentUrl = (string) ($this->config->get('AGENT_API_URL', '') ?? '');
@@ -260,11 +265,32 @@ abstract class BaseController
      */
     protected function clientAgentInstallCommand(array $client): string
     {
-        return 'curl -fsSL ' . $this->artifactBaseUrl() . '/artifacts/install-client-agent.sh | bash -s -- --master '
-            . $this->agentBaseUrl()
-            . ' --artifact-base ' . $this->artifactBaseUrl()
-            . ' --client-id ' . (int) ($client['id'] ?? 0)
-            . ' --agent-token ' . (string) ($client['agent_token'] ?? '');
+        $artifactBase = rtrim($this->artifactBaseUrl(), '/');
+        $masterUrl = $this->agentBaseUrl();
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = (string) ($client['agent_token'] ?? '');
+
+        // Debian minimal images commonly lack one or more of curl/bash/python3
+        // and coreutils.  Bootstrap every command used by the manifest gate,
+        // then verify the downloaded installer against the panel manifest.
+        $installerUrl = $this->shellQuote($artifactBase . '/artifacts/install-client-agent.sh');
+        $manifestUrl = $this->shellQuote($artifactBase . '/artifacts/versions.json');
+        $masterArg = $this->shellQuote($masterUrl);
+        $artifactArg = $this->shellQuote($artifactBase);
+        $tokenArg = $this->shellQuote($agentToken);
+        $bootstrap = '(need=0; for cmd in bash curl python3 sha256sum mktemp awk grep sed install chmod mv id uname systemctl timedatectl dpkg-query apt-cache sleep seq journalctl sysctl flock; do command -v "$cmd" >/dev/null 2>&1 || need=1; done; if [ "$need" -ne 0 ] || [ ! -r /etc/ssl/certs/ca-certificates.crt ]; then command -v apt-get >/dev/null 2>&1 || { echo "apt-get is required to bootstrap Debian client dependencies" >&2; exit 1; }; [ "$(id -u)" -eq 0 ] || { echo "client installer bootstrap must run as root" >&2; exit 1; }; export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y bash curl ca-certificates python3 coreutils grep sed mawk procps iproute2 nftables util-linux; fi; for cmd in bash curl python3 sha256sum mktemp awk grep sed install chmod mv id uname systemctl timedatectl dpkg-query apt-cache sleep seq journalctl sysctl flock; do command -v "$cmd" >/dev/null 2>&1 || { echo "required Debian command is still missing: $cmd" >&2; exit 1; }; done)';
+        $command = $bootstrap
+            . ' && tmp=$(mktemp) && manifest=$(mktemp)'
+            . ' && trap ' . $this->shellQuote('rm -f "$tmp" "$manifest"') . ' 0'
+            . ' && curl -fsSL ' . $installerUrl . ' -o "$tmp"'
+            . ' && curl -fsSL ' . $manifestUrl . ' -o "$manifest"'
+            . ' && expected=$(python3 -c ' . $this->shellQuote('import json,sys; print(json.load(open(sys.argv[1]))["client_agent_installer"]["sha256"])') . ' "$manifest")'
+            . ' && echo "$expected  $tmp" | sha256sum -c -'
+            . ' && bash "$tmp" --master ' . $masterArg
+            . ' --artifact-base ' . $artifactArg
+            . ' --client-id ' . $clientId
+            . ' --agent-token ' . $tokenArg;
+        return $command;
     }
 
     protected function androidClientApkUrl(): string
@@ -1272,7 +1298,7 @@ HTML;
         $mainClass = $isBridgeHome ? ' bridge-home-main' : '';
         $styleLinks = '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
             . ($isBridgeHome
-                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260728a">'
+                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260829a">'
                 : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260729a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';

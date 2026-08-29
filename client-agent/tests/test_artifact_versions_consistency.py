@@ -78,6 +78,22 @@ class ArtifactVersionsConsistencyTests(unittest.TestCase):
         self.assertEqual(digest, cfwg_watchdog["sha256"])
         self.assertEqual(watchdog_path.stat().st_size, cfwg_watchdog["size_bytes"])
 
+    def test_client_installer_artifacts_have_current_manifest_hashes(self) -> None:
+        import hashlib
+
+        versions = json.loads((REPO_ROOT / "artifacts" / "versions.json").read_text(encoding="utf-8"))
+        expected = {
+            "client_agent_installer": REPO_ROOT / "install" / "install-client-agent.sh",
+            "client_installer": REPO_ROOT / "install" / "install-client.sh",
+            "client_agent_update": REPO_ROOT / "install" / "client-agent-update.sh",
+        }
+        for key, path in expected.items():
+            with self.subTest(key=key):
+                self.assertIn(key, versions)
+                entry = versions[key]
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), entry["sha256"])
+                self.assertEqual(path.stat().st_size, entry["size_bytes"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,7 +12,7 @@ namespace LeikwanBridge.Core.Services;
 public sealed class ConfigPollingService
 {
     private const int LongPollWaitSeconds = 10;
-    private const int ReArmDelayMs = 500;
+    private const int ReArmDelayMs = 5000;
 
     private readonly MasterApiClient _api;
     private readonly ForwardRuntimeManager _runtimeManager;

@@ -124,6 +124,39 @@ final class ClientAgentController extends BaseController
         return $this->noStoreJson(['ok' => true] + $challenge);
     }
 
+    public function deviceRenewalChallenge(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $this->assertRequestedClientId($client, $request);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $challenge = $this->deviceControls->issueRenewalChallenge($client, $deviceId, 1);
+        return $this->noStoreJson(['ok' => true] + $challenge);
+    }
+
+    public function renewDevice(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $this->assertRequestedClientId($client, $request);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $enrollment = $this->deviceControls->renew(
+            $client,
+            $deviceId,
+            (string) $request->input('nonce', ''),
+            (string) $request->input('identity_public_key', ''),
+            (string) $request->input('binding_signature', ''),
+            1,
+        );
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+        ] + $enrollment);
+    }
+
     public function enrollDevice(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
@@ -376,6 +409,11 @@ final class ClientAgentController extends BaseController
         $bondBinary = $snapshot['bond_binary'];
         $mptcpRuntime = $snapshot['mptcp_runtime'];
         $cfwgLatencyWatchdog = $snapshot['cfwg_latency_watchdog'];
+        // Keep the pull endpoint JSON-safe while older deployments finish
+        // rolling out the optional wstunnel artifact metadata.
+        $wstunnelBinary = is_array($snapshot['wstunnel_binary'] ?? null)
+            ? $snapshot['wstunnel_binary']
+            : [];
         $desiredBondSha256 = (string) $snapshot['desired_bond_sha256'];
         $updateRequestToken = (string) $snapshot['update_request_token'];
         $linuxProfileRuntime = $snapshot['linux_profile_runtime'];
@@ -422,6 +460,8 @@ final class ClientAgentController extends BaseController
                 'desired_mptcp_runtime_sha256' => (string) ($mptcpRuntime['sha256'] ?? ''),
                 'desired_cfwg_watchdog_version' => (string) ($cfwgLatencyWatchdog['version'] ?? ''),
                 'desired_cfwg_watchdog_sha256' => (string) ($cfwgLatencyWatchdog['sha256'] ?? ''),
+                'desired_wstunnel_version' => (string) ($wstunnelBinary['version'] ?? ''),
+                'desired_wstunnel_sha256' => (string) ($wstunnelBinary['sha256'] ?? ''),
                 'online_device_limit' => max(1, (int) ($client['online_device_limit'] ?? 1)),
                 'active_online_devices' => $deviceSessionService->activeCountForClient((int) $client['id']),
                 'current_device_id' => $deviceId,
@@ -453,6 +493,7 @@ final class ClientAgentController extends BaseController
         $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
         $mptcpRuntime = $this->artifactMetadata('mptcp_client_runtime');
         $cfwgLatencyWatchdog = $this->artifactMetadata('cfwg_latency_watchdog');
+        $wstunnelBinary = $this->artifactMetadata('wstunnel_linux_amd64');
         $desiredBondSha256 = (string) ($bondBinary['binary_sha256'] ?? $bondBinary['sha256'] ?? '');
         $updateRequestToken = trim((string) ($client['agent_update_request_token'] ?? ''));
         if ($updateRequestToken === '') {
@@ -482,6 +523,7 @@ final class ClientAgentController extends BaseController
             'leikwan_bond_linux_amd64' => $bondBinary,
             'mptcp_client_runtime' => $mptcpRuntime,
             'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
+            'wstunnel_binary' => $wstunnelBinary,
         ]);
 
         return [
@@ -695,6 +737,8 @@ final class ClientAgentController extends BaseController
             'supports_mptcp' => $request->input('supports_mptcp'),
             'wireguard_public_key' => $request->input('wireguard_public_key'),
             'cfwg_watchdog_sha256' => $request->input('cfwg_watchdog_sha256'),
+            'wstunnel_sha256' => $request->input('wstunnel_sha256'),
+            'wstunnel_version' => $request->input('wstunnel_version'),
             'wireguard_listen_port' => $request->input('wireguard_listen_port'),
             'wireguard_fallback_tcp_port' => $request->input('wireguard_fallback_tcp_port'),
         ]);
@@ -1209,7 +1253,7 @@ final class ClientAgentController extends BaseController
                 $merged[$boolKey] = !in_array(strtolower(trim((string) $input[$boolKey])), ['0', 'false', 'no', 'off'], true);
             }
         }
-        foreach (['wireguard_public_key', 'cfwg_watchdog_sha256'] as $stringKey) {
+        foreach (['wireguard_public_key', 'cfwg_watchdog_sha256', 'wstunnel_sha256', 'wstunnel_version'] as $stringKey) {
             if (array_key_exists($stringKey, $input)) {
                 $value = trim((string) ($input[$stringKey] ?? ''));
                 if ($value !== '') {

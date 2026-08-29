@@ -436,17 +436,17 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
         self.assertEqual(len(rendered["extra_units"]), 1)
         udp_unit = rendered["extra_units"][0]
         self.assertEqual(udp_unit["service_name"], "leikwan-client-26-udp-uot")
-        self.assertIn("ExecStart=/usr/bin/python3 /usr/local/bin/leikwan-uot-bond.py --config /etc/leikwan/uot-bond-forward-26.json", udp_unit["service_unit"])
+        self.assertIn("ExecStart=/usr/local/bin/leikwan-uot-bond --config /etc/leikwan/uot-bond-forward-26.json", udp_unit["service_unit"])
         config_file = next(item for item in udp_unit["files"] if item["path"] == "/etc/leikwan/uot-bond-forward-26.json")
         self.assertIn('"route_key": "a43547b6350f72cd.uot"', config_file["content"])
         self.assertIn('"session_token": "udp-token"', config_file["content"])
         runtime = json.loads(config_file["content"])
         self.assertEqual(runtime["scheduler_mode"], "feedback_drr")
-        self.assertEqual(runtime["aggregate_rate_bps"], 300_000_000)
-        self.assertEqual(runtime["queue_deadline_ms"], 10)
-        self.assertEqual(runtime["global_queue_bytes"], 1_048_576)
+        self.assertEqual(runtime["aggregate_rate_bps"], 450_000_000)
+        self.assertEqual(runtime["queue_deadline_ms"], 30)
+        self.assertEqual(runtime["global_queue_bytes"], 4_194_304)
         self.assertEqual(runtime["chunk_target_bytes"], 32_768)
-        self.assertEqual(runtime["max_total_outstanding_bytes"], 8_388_608)
+        self.assertEqual(runtime["max_total_outstanding_bytes"], 16_777_216)
         self.assertEqual(runtime["control_queue_packets"], 256)
 
     def test_feedback_scheduler_rejects_python_uot_fallback(self) -> None:

@@ -31,7 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.08.27.2"
+AGENT_VERSION = "2026.08.29.1"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -740,6 +740,7 @@ class ClientAgent:
     @staticmethod
     def detect_time_service() -> str:
         services = [
+            ("ntpsec.service", "ntpsec"),
             ("ntp.service", "ntp"),
             ("ntpd.service", "ntpd"),
             ("chronyd.service", "chronyd"),
@@ -854,6 +855,84 @@ class ClientAgent:
         raw = str(self.config.get("bond_bin", "/usr/local/bin/leikwan-bond") or "/usr/local/bin/leikwan-bond")
         return pathlib.Path(raw)
 
+    def wstunnel_binary_path(self) -> pathlib.Path:
+        raw = str(self.config.get("wstunnel_bin", "/usr/local/bin/wstunnel") or "/usr/local/bin/wstunnel")
+        return pathlib.Path(raw)
+
+    def ultra_binary_path(self) -> pathlib.Path:
+        raw = str(self.config.get("ultra_bin", "/usr/local/bin/ultra-client") or "/usr/local/bin/ultra-client")
+        return pathlib.Path(raw)
+
+    def bond_ingress_binary_path(self) -> pathlib.Path:
+        raw = str(self.config.get("bond_ingress_bin", "/usr/local/bin/leikwan-ingress") or "/usr/local/bin/leikwan-ingress")
+        return pathlib.Path(raw)
+
+    def rate_limit_binary_path(self) -> pathlib.Path:
+        raw = str(self.config.get("rate_limit_bin", "/usr/local/bin/leikwan-rate-limit.py") or "/usr/local/bin/leikwan-rate-limit.py")
+        return pathlib.Path(raw)
+
+    def tcp_race_binary_path(self) -> pathlib.Path:
+        raw = str(self.config.get("tcp_race_bin", "/usr/local/bin/leikwan-tcp-race.py") or "/usr/local/bin/leikwan-tcp-race.py")
+        return pathlib.Path(raw)
+
+    def udp_fanout_binary_path(self) -> pathlib.Path:
+        raw = str(self.config.get("udp_fanout_bin", "/usr/local/bin/leikwan-udp-fanout.py") or "/usr/local/bin/leikwan-udp-fanout.py")
+        return pathlib.Path(raw)
+
+    def uot_bond_binary_path(self) -> pathlib.Path:
+        raw = str(self.config.get("uot_bond_bin", "/usr/local/bin/leikwan-uot-bond") or "/usr/local/bin/leikwan-uot-bond")
+        return pathlib.Path(raw)
+
+    def forward_runtime_requirements(self, forward: dict) -> dict[str, pathlib.Path]:
+        """Return binaries required to render and run one published forward."""
+        requirements: dict[str, pathlib.Path] = {}
+        backend_mode = str(forward.get("backend_mode", "") or "").strip().lower()
+        mode = self.normalize_mode(forward.get("mode", "single"))
+        if backend_mode != "ultra":
+            requirements["wstunnel_bin"] = self.wstunnel_binary_path()
+        if backend_mode == "ultra":
+            requirements["ultra_bin"] = self.ultra_binary_path()
+            return requirements
+
+        if self.forward_uses_bond_runtime(forward):
+            requirements["bond_bin"] = self.bond_binary_path()
+            bonding = forward.get("bonding", {})
+            if isinstance(bonding, dict) and str(bonding.get("ingress_mode", "") or "").strip().lower() == "plain_tcp_mux":
+                requirements["bond_ingress_bin"] = self.bond_ingress_binary_path()
+        if mode == "mptcp":
+            requirements["mptcp_client_bin"] = self.mptcp_client_path()
+
+        try:
+            speed_limit_mbps = int(forward.get("speed_limit_mbps", 0) or 0)
+        except (TypeError, ValueError):
+            speed_limit_mbps = 0
+        if speed_limit_mbps > 0:
+            requirements["rate_limit_bin"] = self.rate_limit_binary_path()
+
+        endpoints = self.usable_endpoints(forward)
+        if mode == "race" and len(endpoints) > 1:
+            protocols = self.transport_protocols(forward.get("transport", "tcp+udp"))
+            if "tcp" in protocols:
+                requirements["tcp_race_bin"] = self.tcp_race_binary_path()
+            if "udp" in protocols:
+                requirements["udp_fanout_bin"] = self.udp_fanout_binary_path()
+
+        sidepath = self.config.get("udp_uot_sidepath", {})
+        enabled_ids = sidepath.get("enabled_forward_ids", []) if isinstance(sidepath, dict) else []
+        if not isinstance(enabled_ids, list):
+            enabled_ids = []
+        sidepath_forwards = sidepath.get("forwards", {}) if isinstance(sidepath, dict) else {}
+        if not isinstance(sidepath_forwards, dict):
+            sidepath_forwards = {}
+        if (
+            self.forward_uses_bond_runtime(forward)
+            and str(forward.get("transport", "tcp+udp") or "tcp+udp").strip().lower() == "tcp+udp"
+            and int(forward.get("forward_id", 0) or 0) in {int(value) for value in enabled_ids if str(value).strip().isdigit()}
+            and sidepath_forwards.get(str(int(forward.get("forward_id", 0) or 0))) is not None
+        ):
+            requirements["uot_bond_bin"] = self.uot_bond_binary_path()
+        return requirements
+
     def mptcp_client_path(self) -> pathlib.Path:
         raw = str(self.config.get("mptcp_client_bin", "/usr/local/bin/leikwan-mptcp-client.py") or "/usr/local/bin/leikwan-mptcp-client.py")
         return pathlib.Path(raw)
@@ -944,6 +1023,8 @@ class ClientAgent:
         payload["wireguard_fallback_tcp_port"] = self.wireguard_fallback_tcp_port()
         payload["install_forward_runtime_sha256"] = file_sha256(self.install_forward_runtime_path())
         payload["mptcp_client_sha256"] = file_sha256(self.mptcp_client_path())
+        payload["wstunnel_sha256"] = file_sha256(self.wstunnel_binary_path())
+        payload["wstunnel_version"] = str(self.config.get("wstunnel_version", "") or "")
         payload.setdefault("installer_sha256", str(self.config.get("installer_sha256", "") or ""))
         payload["kernel_release"] = platform.release()
         return payload
@@ -1665,11 +1746,16 @@ class ClientAgent:
         ]
         client_meta = payload.get("client", {})
         device_id = str(client_meta.get("current_device_id", "") or "") if isinstance(client_meta, dict) else ""
+        lease_resolution_failed = False
         try:
             runtime_forwards = resolve_ultra_leases(master, token, device_id, self.latest_forwards)
         except Exception as exc:  # noqa: BLE001
-            logging.warning("ultra lease resolution failed; stopping affected runtimes: %s", exc)
-            runtime_forwards = []
+            # Keep an already-running Ultra process on its last in-memory lease
+            # through transient control-plane failures. A successful response
+            # with a missing lease still fails closed below.
+            logging.warning("ultra lease resolution failed; preserving running runtimes for retry: %s", exc)
+            lease_resolution_failed = True
+            runtime_forwards = self.latest_forwards
         runtime_by_id = {
             int(forward.get("forward_id", 0) or 0): forward
             for forward in runtime_forwards
@@ -1705,6 +1791,11 @@ class ClientAgent:
                 self.stop_forward(forward_id)
                 continue
             if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra" and not isinstance(runtime_forward.get("_ultra_lease"), dict):
+                previous = self.load_applied().get(str(forward_id), {})
+                if lease_resolution_failed and isinstance(previous, dict) and self.applied_forward_runtime_is_present(previous):
+                    logging.warning("forward %s Ultra lease refresh failed; preserving current runtime", forward_id)
+                    desired_ids.add(forward_id)
+                    continue
                 skipped_invalid_forward_ids.append(forward_id)
                 self.log_invalid_forward(forward_id, "ultra lease missing or rejected by panel")
                 self.stop_forward(forward_id, delete_files=True)
@@ -1819,6 +1910,8 @@ class ClientAgent:
                 "installer_sha256": str(self.config.get("installer_sha256", "") or ""),
                 "install_forward_runtime_sha256": file_sha256(self.install_forward_runtime_path()),
                 "mptcp_client_sha256": file_sha256(self.mptcp_client_path()),
+                "wstunnel_sha256": file_sha256(self.wstunnel_binary_path()),
+                "wstunnel_version": str(self.config.get("wstunnel_version", "") or ""),
                 "cfwg_watchdog_sha256": file_sha256(cfwg_watchdog_path) if cfwg_watchdog_path.is_file() else "",
                 "wireguard_public_key": wireguard_public_key,
                 "wireguard_listen_port": self.wireguard_listen_port(),
@@ -1996,6 +2089,7 @@ class ClientAgent:
         desired_bond_sha256 = str(client_meta.get("desired_bond_sha256", "") or "").strip().lower()
         desired_mptcp_runtime_sha256 = str(client_meta.get("desired_mptcp_runtime_sha256", "") or "").strip().lower()
         desired_cfwg_watchdog_sha256 = str(client_meta.get("desired_cfwg_watchdog_sha256", "") or "").strip().lower()
+        desired_wstunnel_sha256 = str(client_meta.get("desired_wstunnel_sha256", "") or "").strip().lower()
         mismatches: list[str] = []
 
         if desired_agent_version and desired_agent_version != AGENT_VERSION:
@@ -2037,6 +2131,11 @@ class ClientAgent:
                 local_cfwg_watchdog_sha256 = ""
             if local_cfwg_watchdog_sha256 != desired_cfwg_watchdog_sha256:
                 mismatches.append(f"cfwg_watchdog={desired_cfwg_watchdog_sha256}")
+
+        if desired_wstunnel_sha256:
+            local_wstunnel_sha256 = file_sha256(self.wstunnel_binary_path()).lower()
+            if local_wstunnel_sha256 != desired_wstunnel_sha256:
+                mismatches.append(f"wstunnel={desired_wstunnel_sha256}")
 
         if mismatches == []:
             return ""
@@ -5536,6 +5635,8 @@ class ClientAgent:
             "runtime": {
                 "bond_bin": str(bond_bin),
                 "bond_bin_present": bond_available,
+                "wstunnel_bin": str(self.wstunnel_binary_path()),
+                "wstunnel_bin_present": self.binary_available(self.wstunnel_binary_path()),
                 "mptcp_client_bin": str(mptcp_client),
                 "mptcp_client_bin_present": mptcp_client_present,
                 "mptcp_kernel_supported": mptcp_kernel_supported,
@@ -5545,6 +5646,9 @@ class ClientAgent:
                 "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
             },
         }
+        if summary["service_active"] is not True:
+            summary["ok"] = False
+            summary["service_error"] = "leikwan-client-agent.service is not active"
 
         if live:
             try:
@@ -5564,24 +5668,50 @@ class ClientAgent:
                     for forward in forwards
                     if self.normalize_mode(forward.get("mode", "single")) == "mptcp"
                 ]
+                invalid_forward_ids = [
+                    int(forward.get("forward_id", 0) or 0)
+                    for forward in forwards
+                    if (
+                        self.normalize_mode(forward.get("mode", "single")) != "mptcp"
+                        and self.usable_endpoints(forward) == []
+                    )
+                ]
                 summary["live_pull"] = {
                     "ok": True,
                     "forwards_total": len(forwards),
                     "forward_ids": [int(forward.get("forward_id", 0) or 0) for forward in forwards],
-                    "invalid_forward_ids": [
-                        int(forward.get("forward_id", 0) or 0)
-                        for forward in forwards
-                        if (
-                            self.normalize_mode(forward.get("mode", "single")) != "mptcp"
-                            and self.usable_endpoints(forward) == []
-                        )
-                    ],
+                    "invalid_forward_ids": invalid_forward_ids,
                     "bond_forward_ids": bond_forward_ids,
                     "mptcp_forward_ids": mptcp_forward_ids,
                 }
+                if invalid_forward_ids:
+                    summary["ok"] = False
+                    summary["live_pull"]["ok"] = False
+                    summary["live_pull"]["invalid_forward_error"] = (
+                        f"forwards have no usable endpoints: {invalid_forward_ids}"
+                    )
+                runtime_dependency_errors: dict[str, list[str]] = {}
+                for forward in forwards:
+                    forward_id = int(forward.get("forward_id", 0) or 0)
+                    missing = [
+                        name
+                        for name, path in self.forward_runtime_requirements(forward).items()
+                        if not self.binary_available(path)
+                    ]
+                    if missing:
+                        runtime_dependency_errors[str(forward_id)] = missing
+                if runtime_dependency_errors:
+                    summary["ok"] = False
+                    summary["live_pull"]["ok"] = False
+                    summary["live_pull"]["runtime_dependency_errors"] = runtime_dependency_errors
                 if bond_forward_ids and not bond_available:
                     summary["ok"] = False
                     summary["live_pull"]["bond_dependency_error"] = f"bond runtime forwards require {bond_bin}"
+                if forwards and not summary["runtime"]["wstunnel_bin_present"]:
+                    summary["ok"] = False
+                    summary["live_pull"]["wstunnel_dependency_error"] = (
+                        f"published client forwards require {self.wstunnel_binary_path()}"
+                    )
                 if mptcp_forward_ids and not mptcp_client_present:
                     summary["ok"] = False
                     summary["live_pull"]["mptcp_dependency_error"] = f"mptcp mode forwards require {mptcp_client}"

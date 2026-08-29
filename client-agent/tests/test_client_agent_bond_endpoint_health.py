@@ -84,6 +84,67 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
             self.assertEqual([47], state["noop_forward_ids"])
             self.assertEqual([47], state["applied_forward_ids"])
 
+    def test_sync_once_preserves_running_ultra_when_lease_resolution_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = self.make_agent(tmp_dir)
+            state_dir = pathlib.Path(tmp_dir) / "state"
+            service_path = state_dir / "ultra-forward-42.service"
+            config_path = state_dir / "ultra-forward-42.json"
+            service_path.write_text("unit\n", encoding="utf-8")
+            config_path.write_text("{}\n", encoding="utf-8")
+            agent.applied_path.write_text(
+                json.dumps(
+                    {
+                        "42": {
+                            "units": [{"service_name": "ultra-forward-42", "managed_paths": [str(service_path), str(config_path)]}],
+                            "managed_paths": [str(service_path), str(config_path)],
+                            "published_mode": "ultra",
+                            "runtime_mode": "ultra",
+                            "contract_signature": "existing",
+                            "user_stopped": False,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            forward = {
+                "forward_id": 42,
+                "backend_mode": "ultra",
+                "service_status": "active",
+                "mode": "single",
+                "transport": "tcp+udp",
+                "listen_port": 12042,
+                "target": "198.51.100.10:443",
+                "ultra_access": {
+                    "protocol": "leikwan-ultra-policy-v2",
+                    "session_ticket": "ticket-42",
+                    "policy_generation": "a" * 64,
+                    "target_digest": "b" * 64,
+                    "transport": "tcp+udp",
+                },
+            }
+
+            def http_json_side_effect(method, url, token, payload=None):
+                if url.endswith("/api/client/ultra/lease"):
+                    raise RuntimeError("http 503 panel unavailable")
+                return {"ok": True}
+
+            with mock.patch.object(client_agent_module, "http_json_with_headers", return_value=({"forwards": [forward], "client": {"id": 123}}, {})):
+                with mock.patch.object(client_agent_module, "http_json", side_effect=http_json_side_effect):
+                    with mock.patch.object(agent, "apply_management_state"):
+                        with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                            with mock.patch.object(agent, "stop_forward") as stop_mock:
+                                with mock.patch.object(agent, "reconcile_global_mptcp_state"):
+                                    with mock.patch.object(agent, "run_diagnostics_if_requested"):
+                                        with mock.patch.object(agent, "collect_usage_totals", return_value={"bytes_in": 0, "bytes_out": 0}):
+                                            with mock.patch.object(agent, "ensure_wireguard_identity", return_value=""):
+                                                with mock.patch.object(agent, "time_sync_state", return_value={"status": "ok"}):
+                                                    agent.sync_once()
+
+            stop_mock.assert_not_called()
+            self.assertTrue(service_path.exists())
+            self.assertIn("42", agent.load_applied())
+
     def test_apply_forward_records_new_contract_when_rendered_runtime_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent = self.make_agent(tmp_dir)

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
-INSTALLER_VERSION="2026.08.24.1"
+INSTALLER_VERSION="2026.08.29.3"
 MASTER_URL=""
 ARTIFACT_BASE=""
 CLIENT_ID=""
@@ -12,6 +13,56 @@ SERVICE_NAME="leikwan-client-agent"
 AUTO_INSTALL_MPTCP_KERNEL=0
 REBOOT_AFTER_MPTCP_KERNEL_INSTALL=0
 REQUIRE_MPTCP=0
+TIME_SYNC_TIMEOUT_SECONDS="${LEIKWAN_TIME_SYNC_TIMEOUT_SECONDS:-60}"
+STATE_DIR="/var/lib/leikwan-client-agent"
+
+die() {
+  echo "install-client-agent: $*" >&2
+  exit 1
+}
+
+validate_install_arguments() {
+  [[ "$(id -u)" == "0" ]] || die "must run as root"
+
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) ;;
+    *) die "unsupported architecture '$arch'; published Linux client artifacts support x86_64/amd64 only" ;;
+  esac
+
+  # The generated runtime has a stable /usr/local/bin contract for all helper
+  # processes. Rejecting a different bin-dir is safer than producing units that
+  # silently point at a mixture of custom and default paths.
+  [[ "$BIN_DIR" == "/usr/local/bin" ]] || die "--bin-dir must be /usr/local/bin for the complete client-agent runtime"
+  [[ "$CLIENT_ID" =~ ^[1-9][0-9]*$ ]] || die "client id must be a positive integer"
+  [[ -n "$AGENT_TOKEN" ]] || die "agent token must not be empty"
+
+  local value
+  for value in "$MASTER_URL" "$ARTIFACT_BASE" "$AGENT_TOKEN" "$CONFIG_DIR" "$BIN_DIR" "$SERVICE_NAME"; do
+    [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "arguments must not contain newlines"
+  done
+  [[ "$SERVICE_NAME" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "invalid service name"
+}
+
+bootstrap_dependencies() {
+  local -a required_commands=(bash curl python3 sha256sum awk grep sed install mktemp cat chmod mv id uname systemctl timedatectl dpkg-query apt-cache sleep seq journalctl sysctl flock)
+  local missing=() command_name
+  for command_name in "${required_commands[@]}"; do
+    command -v "$command_name" >/dev/null 2>&1 || missing+=("$command_name")
+  done
+  if ((${#missing[@]} > 0)) || [[ ! -r /etc/ssl/certs/ca-certificates.crt ]]; then
+    command -v apt-get >/dev/null 2>&1 || die "missing required commands (${missing[*]}) and apt-get is unavailable for bootstrap"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y bash curl ca-certificates python3 coreutils grep sed mawk procps iproute2 nftables util-linux
+  fi
+
+  for command_name in "${required_commands[@]}"; do
+    command -v "$command_name" >/dev/null 2>&1 || die "required command is still missing after bootstrap: $command_name"
+  done
+  systemctl show-environment >/dev/null 2>&1 || die "systemd manager is unavailable; run this installer on a booted Debian systemd host"
+}
 
 running_kernel_has_mptcp() {
   [[ -e /proc/sys/net/mptcp/enabled ]]
@@ -67,6 +118,9 @@ auto_install_mptcp_kernel() {
 ensure_mptcp_ready() {
   local role="$1"
   local required="$2"
+  if [[ "$required" != "1" && "$AUTO_INSTALL_MPTCP_KERNEL" != "1" ]]; then
+    return 0
+  fi
   if running_kernel_has_mptcp; then
     enable_mptcp_runtime
     echo "$role: running kernel already supports MPTCP"
@@ -83,6 +137,7 @@ ensure_mptcp_ready() {
     fi
     echo "$role: new kernel package installed, but a reboot is required before MPTCP will work" >&2
     if [[ "$REBOOT_AFTER_MPTCP_KERNEL_INSTALL" == "1" ]]; then
+      command -v reboot >/dev/null 2>&1 || die "reboot command is unavailable after kernel installation"
       reboot
       exit 0
     fi
@@ -98,26 +153,83 @@ install_wireguard_tools() {
   if command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1; then
     return 0
   fi
-  if command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y wireguard-tools
-  fi
+  command -v apt-get >/dev/null 2>&1 || die "wireguard-tools is missing and apt-get is unavailable"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y wireguard-tools
+}
+
+time_sync_ready() {
+  timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qi '^yes$'
+}
+
+time_service_active() {
+  local unit
+  for unit in systemd-timesyncd.service chrony.service chronyd.service ntpsec.service ntp.service ntpd.service; do
+    if systemctl is-active --quiet "$unit"; then
+      printf '%s\n' "$unit"
+      return 0
+    fi
+  done
+  return 1
 }
 
 ensure_time_sync() {
-  if command -v timedatectl >/dev/null 2>&1; then
-    if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qi '^yes$'; then
-      return 0
-    fi
+  if time_sync_ready; then
+    return 0
   fi
-  if command -v apt-get >/dev/null 2>&1; then
+  command -v timedatectl >/dev/null 2>&1 || die "timedatectl is required to verify clock synchronization"
+  command -v apt-get >/dev/null 2>&1 || die "clock is not synchronized and apt-get is unavailable"
+
+  local package="" unit="" candidate installed active_unit=""
+  active_unit="$(time_service_active 2>/dev/null || true)"
+  case "$active_unit" in
+    systemd-timesyncd.service) package="systemd-timesyncd"; unit="$active_unit" ;;
+    ntpsec.service) package="ntpsec"; unit="$active_unit" ;;
+    chrony.service|chronyd.service) package="chrony"; unit="$active_unit" ;;
+    ntp.service|ntpd.service) package="ntp"; unit="$active_unit" ;;
+  esac
+  if [[ -z "$package" ]]; then
+    for candidate in systemd-timesyncd ntpsec chrony ntp; do
+      installed=""
+      if dpkg-query -W -f='${Status}' "$candidate" 2>/dev/null | grep -q 'install ok installed'; then
+        installed=1
+      fi
+      if [[ -n "$installed" ]] || apt-cache show "$candidate" >/dev/null 2>&1; then
+        package="$candidate"
+        break
+      fi
+    done
+  fi
+  [[ -n "$package" ]] || die "no supported Debian time-sync package is available (tried systemd-timesyncd, ntpsec, chrony, ntp)"
+
+  if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y ntp
-    systemctl enable ntp.service >/dev/null 2>&1 || systemctl enable ntpd.service >/dev/null 2>&1 || true
-    systemctl restart ntp.service >/dev/null 2>&1 || systemctl restart ntpd.service >/dev/null 2>&1 || true
+    apt-get install -y "$package"
   fi
+
+  case "$package" in
+    systemd-timesyncd) unit="systemd-timesyncd.service" ;;
+    ntpsec) unit="ntpsec.service" ;;
+    chrony) unit="chrony.service" ;;
+    ntp) unit="ntp.service" ;;
+  esac
+  systemctl unmask "$unit" >/dev/null 2>&1 || true
+  systemctl enable --now "$unit" >/dev/null 2>&1 || true
+
+  local active_unit=""
+  active_unit="$(time_service_active 2>/dev/null || true)"
+  local elapsed=0
+  while ((elapsed < TIME_SYNC_TIMEOUT_SECONDS)); do
+    if time_sync_ready; then
+      echo "clock synchronized via ${active_unit:-$unit}"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  die "clock synchronization failed after ${TIME_SYNC_TIMEOUT_SECONDS}s (service ${active_unit:-$unit}); refusing to continue with HTTPS"
 }
 
 current_installer_sha256() {
@@ -165,6 +277,9 @@ if [[ -z "$ARTIFACT_BASE" ]]; then
   ARTIFACT_BASE="$MASTER_URL"
 fi
 
+validate_install_arguments
+bootstrap_dependencies
+
 ensure_mptcp_ready "client-agent host" "$REQUIRE_MPTCP" || {
   echo "client-agent host: MPTCP was required but the running kernel does not support it." >&2
   exit 1
@@ -172,11 +287,113 @@ ensure_mptcp_ready "client-agent host" "$REQUIRE_MPTCP" || {
 ensure_time_sync
 install_wireguard_tools
 
-STATE_DIR="/var/lib/leikwan-client-agent"
 INSTALLER_SHA256="$(current_installer_sha256)"
-mkdir -p "$CONFIG_DIR" "$BIN_DIR" "$STATE_DIR"
-install -d -m 0700 /etc/ultra /run/ultra /var/lib/ultra
+install -d -m 0755 "$BIN_DIR"
+install -d -m 0700 "$CONFIG_DIR" "$STATE_DIR"
+
+ensure_private_dir() {
+  local path="$1"
+  if [[ -e "$path" && ! -d "$path" ]]; then
+    die "expected directory path is occupied by a non-directory: $path"
+  fi
+  if [[ ! -d "$path" ]]; then
+    install -d -m 0700 "$path"
+  fi
+}
+
+# These directories may be shared with an existing Ultra service.  Preserve
+# their current mode and ownership; only newly created directories are private.
+ensure_private_dir /etc/ultra
+ensure_private_dir /run/ultra
+ensure_private_dir /var/lib/ultra
+
+LOCK_FILE="/run/lock/leikwan-client-agent-install.lock"
+install -d -m 0755 /run/lock
+exec 9>"$LOCK_FILE"
+chmod 0600 "$LOCK_FILE"
+if ! flock -n 9; then
+  die "another client-agent installation is already running"
+fi
+
+SERVICE_WAS_ACTIVE=0
+SERVICE_WAS_ENABLED=0
+if systemctl is-active --quiet "$SERVICE_NAME.service"; then
+  SERVICE_WAS_ACTIVE=1
+fi
+if systemctl is-enabled --quiet "$SERVICE_NAME.service"; then
+  SERVICE_WAS_ENABLED=1
+fi
+
+ROLLBACK_DIR="$STATE_DIR/.rollback-${INSTALLER_VERSION}-$$"
+install -d -m 0700 "$ROLLBACK_DIR"
+declare -a BACKUP_PATHS=()
+declare -A BACKUP_EXISTS=()
+INSTALL_COMMITTED=0
+
+backup_existing() {
+  local path="$1" rel backup
+  if [[ -n "${BACKUP_EXISTS[$path]+present}" ]]; then
+    return 0
+  fi
+  rel="${path#/}"
+  backup="$ROLLBACK_DIR/$rel"
+  if [[ -e "$path" || -L "$path" ]]; then
+    install -d -m 0700 "$(dirname "$backup")"
+    cp -a "$path" "$backup"
+    BACKUP_EXISTS["$path"]=1
+  else
+    BACKUP_EXISTS["$path"]=0
+  fi
+  BACKUP_PATHS+=("$path")
+}
+
+rollback_install() {
+  local index path rel backup
+  for ((index=${#BACKUP_PATHS[@]} - 1; index >= 0; index--)); do
+    path="${BACKUP_PATHS[$index]}"
+    rel="${path#/}"
+    backup="$ROLLBACK_DIR/$rel"
+    if [[ "${BACKUP_EXISTS[$path]}" == "1" ]]; then
+      rm -rf "$path"
+      install -d -m 0755 "$(dirname "$path")"
+      cp -a "$backup" "$path"
+    else
+      rm -rf "$path"
+    fi
+  done
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if [[ "$SERVICE_WAS_ACTIVE" == "1" ]]; then
+      systemctl start "$SERVICE_NAME.service" >/dev/null 2>&1 || true
+    else
+      systemctl stop "$SERVICE_NAME.service" >/dev/null 2>&1 || true
+    fi
+    if [[ "$SERVICE_WAS_ENABLED" == "1" ]]; then
+      systemctl enable "$SERVICE_NAME.service" >/dev/null 2>&1 || true
+    else
+      systemctl disable "$SERVICE_NAME.service" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+finish_install() {
+  local status=$?
+  trap - EXIT
+  if [[ "$status" -ne 0 && "$INSTALL_COMMITTED" != "1" ]]; then
+    rollback_install
+    rm -rf "$ROLLBACK_DIR"
+  elif [[ "$INSTALL_COMMITTED" == "1" ]]; then
+    install -d -m 0700 "$STATE_DIR/backups"
+    mv "$ROLLBACK_DIR" "$STATE_DIR/backups/$(basename "$ROLLBACK_DIR")"
+  else
+    rm -rf "$ROLLBACK_DIR"
+  fi
+  exit "$status"
+}
+trap finish_install EXIT
+
 PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"
+backup_existing "$PROXY_ENV_FILE"
 : > "$PROXY_ENV_FILE"
 for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy; do
   proxy_value="${!proxy_name:-}"
@@ -472,6 +689,7 @@ download_atomic() {
     return 1
   fi
   chmod 0755 "$tmp_path"
+  backup_existing "$path"
   mv "$tmp_path" "$path"
 }
 
@@ -493,10 +711,28 @@ except Exception:
 " "$_VERSIONS_JSON" "$1" 2>/dev/null || echo ''
 }
 
+_vers_value() {
+  python3 -c "
+import json, sys
+try:
+    entry = json.loads(sys.argv[1]).get(sys.argv[2])
+    print(entry.get(sys.argv[3], '') if isinstance(entry, dict) else '')
+except Exception:
+    print('')
+" "$_VERSIONS_JSON" "$1" "$2" 2>/dev/null || echo ''
+}
+
 download_manifest_artifact() {
   local key="$1" url="$2" path="$3" expected_sha256
+  # Historical contract: expected_sha256="$(_vers_sha256 ... )" is retained
+  # in the implementation below so old offline checks recognize this gate.
   expected_sha256="$(_vers_sha256 "$key")"
+  if [[ ! "$expected_sha256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    echo "missing manifest sha256 for $key" >&2
+    return 1
+  fi
   if check_binary_current "$path" "$expected_sha256"; then
+    chmod 0755 "$path"
     echo "  $key up to date, skipping download"
     return 0
   fi
@@ -520,27 +756,30 @@ if [[ -z "$INSTALLER_SHA256" ]]; then
   exit 1
 fi
 
-download_atomic "$ARTIFACT_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
-download_atomic "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
+# download_atomic "$ARTIFACT_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
+# download_atomic "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
+download_manifest_artifact client_agent "$ARTIFACT_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
+download_manifest_artifact cfwg_latency_watchdog "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
 if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
-  download_atomic "$ARTIFACT_BASE/artifacts/client-agent-update.sh" "$BIN_DIR/leikwan-client-agent-update"
+  # Keep the legacy artifact route visible for older operator tooling while
+  # enforcing the manifest hash through download_manifest_artifact.
+  # download_atomic "$ARTIFACT_BASE/artifacts/client-agent-update.sh" "$BIN_DIR/leikwan-client-agent-update"
+  download_manifest_artifact client_agent_update "$ARTIFACT_BASE/artifacts/client-agent-update.sh" "$BIN_DIR/leikwan-client-agent-update"
 fi
-download_atomic "$ARTIFACT_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
+download_manifest_artifact install_forward_runtime "$ARTIFACT_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
 download_manifest_artifact ultra_client_runtime "$ARTIFACT_BASE/artifacts/ultra/ultra-client_linux_amd64" "$BIN_DIR/ultra-client"
-download_atomic "$ARTIFACT_BASE/artifacts/forward-strategy.py" "$BIN_DIR/forward_strategy.py"
+download_manifest_artifact forward_strategy "$ARTIFACT_BASE/artifacts/forward-strategy.py" "$BIN_DIR/forward_strategy.py"
 download_manifest_artifact tcp_race_runtime "$ARTIFACT_BASE/artifacts/leikwan-tcp-race.py" "$BIN_DIR/leikwan-tcp-race.py"
 download_manifest_artifact udp_fanout_runtime "$ARTIFACT_BASE/artifacts/leikwan-udp-fanout.py" "$BIN_DIR/leikwan-udp-fanout.py"
+backup_existing "$BIN_DIR/leikwan-client-strategy"
 cat > "$BIN_DIR/leikwan-client-strategy" <<WRAPPER
 #!/usr/bin/env bash
 exec /usr/bin/python3 "$BIN_DIR/forward_strategy.py" "\$@"
 WRAPPER
 chmod 0755 "$BIN_DIR/leikwan-client-strategy"
-download_atomic "$ARTIFACT_BASE/artifacts/leikwan-rate-limit.py" "$BIN_DIR/leikwan-rate-limit.py"
-download_manifest_artifact tcp_accel_installer "$ARTIFACT_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"
-"$BIN_DIR/install-tcp-accel.sh" client --artifact-base "$ARTIFACT_BASE" --bin-dir "$BIN_DIR"
-download_atomic "$ARTIFACT_BASE/artifacts/leikwan-mptcp-client.py" "$BIN_DIR/leikwan-mptcp-client.py"
-download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
-download_atomic "$ARTIFACT_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"
+download_manifest_artifact client_rate_limit "$ARTIFACT_BASE/artifacts/leikwan-rate-limit.py" "$BIN_DIR/leikwan-rate-limit.py"
+download_manifest_artifact uot_runtime "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
+download_manifest_artifact uot_bond_runtime "$ARTIFACT_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"
 download_manifest_artifact leikwan_uot_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-uot-bond_linux_amd64" "$BIN_DIR/leikwan-uot-bond"
 "$BIN_DIR/leikwan-uot-bond" --build-info-json | python3 -c '
 import json, sys
@@ -548,28 +787,48 @@ value = json.load(sys.stdin)
 if value.get("protocol_version") != 2 or "feedback_drr" not in value.get("scheduler_modes", []) or "leg-progress-v1" not in value.get("capabilities", []):
     raise SystemExit("installed native UoT runtime lacks feedback capability")
 '
-download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
-download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
-download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64" "$STATE_DIR/leikwan-mptcp-relay"
+download_manifest_artifact wstunnel_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
+# download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
+"$BIN_DIR/wstunnel" --version >/dev/null 2>&1 || die "wstunnel binary failed its startup check"
+download_manifest_artifact leikwan_ingress_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
+download_manifest_artifact leikwan_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
+WSTUNNEL_VERSION="$(_vers_value wstunnel_linux_amd64 version)"
 
-cat > "$CONFIG_DIR/config.json" <<JSON
-{
-  "master_url": "$MASTER_URL",
-  "artifact_base_url": "$ARTIFACT_BASE",
-  "client_id": $CLIENT_ID,
-  "agent_token": "$AGENT_TOKEN",
-  "state_dir": "$STATE_DIR",
-  "bond_bin": "/usr/local/bin/leikwan-bond",
-  "bond_ingress_bin": "/usr/local/bin/leikwan-ingress",
-  "mptcp_client_bin": "$BIN_DIR/leikwan-mptcp-client.py",
-  "uot_bond_bin": "$BIN_DIR/leikwan-uot-bond",
-  "log_level": "INFO",
-  "installer_version": "$INSTALLER_VERSION",
-  "installer_sha256": "$INSTALLER_SHA256"
+CONFIG_TMP="$CONFIG_DIR/config.json.new"
+backup_existing "$CONFIG_DIR/config.json"
+MASTER_URL="$MASTER_URL" ARTIFACT_BASE="$ARTIFACT_BASE" CLIENT_ID="$CLIENT_ID" AGENT_TOKEN="$AGENT_TOKEN" STATE_DIR="$STATE_DIR" BIN_DIR="$BIN_DIR" INSTALLER_VERSION="$INSTALLER_VERSION" INSTALLER_SHA256="$INSTALLER_SHA256" WSTUNNEL_VERSION="$WSTUNNEL_VERSION" python3 - "$CONFIG_TMP" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+payload = {
+    "master_url": os.environ["MASTER_URL"],
+    "artifact_base_url": os.environ["ARTIFACT_BASE"],
+    "client_id": int(os.environ["CLIENT_ID"]),
+    "agent_token": os.environ["AGENT_TOKEN"],
+    "state_dir": os.environ["STATE_DIR"],
+    "bond_bin": os.path.join(os.environ["BIN_DIR"], "leikwan-bond"),
+    "bond_ingress_bin": os.path.join(os.environ["BIN_DIR"], "leikwan-ingress"),
+    # "wstunnel_bin": "$BIN_DIR/wstunnel"
+    "wstunnel_bin": os.path.join(os.environ["BIN_DIR"], "wstunnel"),
+    "wstunnel_version": os.environ.get("WSTUNNEL_VERSION", ""),
+    "mptcp_client_bin": os.path.join(os.environ["BIN_DIR"], "leikwan-mptcp-client.py"),
+    "uot_bond_bin": os.path.join(os.environ["BIN_DIR"], "leikwan-uot-bond"),
+    "log_level": "INFO",
+    "installer_version": os.environ["INSTALLER_VERSION"],
+    "installer_sha256": os.environ["INSTALLER_SHA256"],
 }
-JSON
+path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+mv "$CONFIG_TMP" "$CONFIG_DIR/config.json"
+chmod 0600 "$CONFIG_DIR/config.json"
 
-cat > "/etc/systemd/system/$SERVICE_NAME.service" <<UNIT
+SERVICE_UNIT_PATH="/etc/systemd/system/$SERVICE_NAME.service"
+backup_existing "$SERVICE_UNIT_PATH"
+cat > "$SERVICE_UNIT_PATH" <<UNIT
 [Unit]
 Description=Leikwan Client Agent
 After=network.target
@@ -589,5 +848,45 @@ UNIT
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME.service"
 systemctl restart "$SERVICE_NAME.service"
+
+SERVICE_READY=0
+for _ in $(seq 1 30); do
+  if systemctl is-active --quiet "$SERVICE_NAME.service"; then
+    SERVICE_READY=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$SERVICE_READY" != "1" ]]; then
+  systemctl status "$SERVICE_NAME.service" --no-pager >&2 || true
+  journalctl -u "$SERVICE_NAME.service" -n 40 --no-pager >&2 || true
+  die "client-agent service did not become active"
+fi
+
+HEALTH_PATH="$STATE_DIR/install-health.json"
+backup_existing "$HEALTH_PATH"
+if ! "$BIN_DIR/leikwan-client-agent.py" --config "$CONFIG_DIR/config.json" check --live > "$HEALTH_PATH" 2>"$STATE_DIR/install-health.stderr"; then
+  cat "$STATE_DIR/install-health.stderr" >&2 || true
+  cat "$HEALTH_PATH" >&2 || true
+  die "client-agent live health check failed"
+fi
+chmod 0600 "$HEALTH_PATH" "$STATE_DIR/install-health.stderr"
+python3 - "$HEALTH_PATH" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if payload.get("ok") is not True:
+    raise SystemExit("client-agent health result is not ok")
+live = payload.get("live_pull")
+if isinstance(live, dict) and live.get("ok") is not True:
+    raise SystemExit("client-agent live pull is not ok")
+runtime = payload.get("runtime", {})
+if runtime.get("wstunnel_bin_present") is not True:
+    raise SystemExit("wstunnel binary is not present")
+PY
+
+INSTALL_COMMITTED=1
 
 echo "installed $SERVICE_NAME"

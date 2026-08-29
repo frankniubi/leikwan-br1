@@ -24,13 +24,14 @@ class TcpAccelInstallerDistributionTests(unittest.TestCase):
         for snippet in forbidden:
             self.assertNotIn(snippet, source)
 
+        self.assertIn("missing manifest sha256", source)
+        self.assertLess(
+            source.rfind("ensure_debian12_dependencies"),
+            source.index('VERSIONS_JSON=')
+        )
+
     def test_role_installers_download_and_run_tcp_accel_installer(self) -> None:
         expectations = [
-            (
-                "install-client-agent.sh",
-                'download_manifest_artifact tcp_accel_installer "$ARTIFACT_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"',
-                '"$BIN_DIR/install-tcp-accel.sh" client --artifact-base "$ARTIFACT_BASE" --bin-dir "$BIN_DIR"',
-            ),
             (
                 "install-slave.sh",
                 'download_manifest_artifact tcp_accel_installer "$ARTIFACT_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"',
@@ -47,6 +48,10 @@ class TcpAccelInstallerDistributionTests(unittest.TestCase):
                 source = (REPO_ROOT / "install" / filename).read_text(encoding="utf-8")
                 self.assertIn(download_snippet, source)
                 self.assertIn(exec_snippet, source)
+
+        client_agent = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        self.assertNotIn("tcp_accel_installer", client_agent)
+        self.assertNotIn('install-tcp-accel.sh" client', client_agent)
 
     def test_repo_local_tcp_accel_installer_uses_br1_bridge_helper(self) -> None:
         source = (REPO_ROOT / "tools" / "tcp-accel" / "install_debian12.sh").read_text(encoding="utf-8")

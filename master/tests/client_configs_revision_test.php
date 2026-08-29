@@ -85,5 +85,9 @@ namespace {
         }
     }
 
+    if (!str_contains($source, "is_array(\$snapshot['wstunnel_binary'] ?? null)")) {
+        failRevision('pull config response must tolerate a missing wstunnel artifact snapshot');
+    }
+
     echo "ok\n";
 }
