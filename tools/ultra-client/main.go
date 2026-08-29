@@ -404,6 +404,18 @@ func isDatagramKeepaliveResponse(packet, payload []byte) bool {
 	return bytes.Equal(payload, []byte(keepPayloadHex))
 }
 
+func sendDatagramKeepalive(session *DatagramSession) error {
+	if session == nil {
+		return errors.New("datagram session missing")
+	}
+	packet, err := makeDatagramEnvelope(session.mode, session.sid, "2.0.0.0", 0, []byte(keepPayloadHex))
+	if err != nil {
+		return err
+	}
+	_, err = session.remote.Write(packet)
+	return err
+}
+
 func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, error) {
 	address := net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port))
 	conn, err := net.DialTimeout("tcp", address, timeout)
@@ -543,10 +555,11 @@ func (association *udpAssociation) close() {
 }
 
 type udpWarmSession struct {
-	session      *DatagramSession
-	selectionRef string
-	started      time.Time
-	err          error
+	session         *DatagramSession
+	selectionRef    string
+	started         time.Time
+	keepaliveCancel context.CancelFunc
+	err             error
 }
 
 type udpRuntimeLimits struct {
@@ -639,6 +652,9 @@ func serveUDPOnConn(
 	closeWarmSession := func() {
 		select {
 		case warm := <-warmSessions:
+			if warm.keepaliveCancel != nil {
+				warm.keepaliveCancel()
+			}
 			if warm.session != nil {
 				warm.session.Close()
 			}
@@ -745,13 +761,7 @@ func serveUDPOnConn(
 						association.writeMu.Unlock()
 						return
 					}
-					packet, packetErr := makeDatagramEnvelope(current.mode, current.sid, "2.0.0.0", 0, []byte(keepPayloadHex))
-					var writeErr error
-					if packetErr != nil {
-						writeErr = packetErr
-					} else {
-						_, writeErr = current.remote.Write(packet)
-					}
+					writeErr := sendDatagramKeepalive(current)
 					association.writeMu.Unlock()
 					if writeErr != nil {
 						closeAssociation(key, association)
@@ -766,6 +776,9 @@ func serveUDPOnConn(
 			return
 		}
 		next := warm.session
+		if warm.keepaliveCancel != nil {
+			warm.keepaliveCancel()
+		}
 		association.writeMu.Lock()
 		associationMu.Lock()
 		if associations[key] != association {
@@ -856,8 +869,14 @@ func serveUDPOnConn(
 		warmWorker.Add(1)
 		go func() {
 			defer warmWorker.Done()
+			select {
+			case setupSlots <- struct{}{}:
+			case <-warmContext.Done():
+				return
+			}
 			snapshot, ok := store.Snapshot()
 			if !ok {
+				<-setupSlots
 				select {
 				case warmSessions <- udpWarmSession{err: errors.New("udp prewarm policy unavailable")}:
 				case <-warmContext.Done():
@@ -868,6 +887,7 @@ func serveUDPOnConn(
 			selectionRef := lease.SelectionRef
 			started := time.Now()
 			next, armErr := armDatagram(lease, time.Duration(config.ConnectTimeoutSecs)*time.Second)
+			<-setupSlots
 			lease.wipe()
 			if armErr != nil {
 				status.AddUDPSetupFailure()
@@ -877,7 +897,29 @@ func serveUDPOnConn(
 				}
 				return
 			}
-			warm := udpWarmSession{session: next, selectionRef: selectionRef, started: started}
+			sessionContext, sessionCancel := context.WithCancel(warmContext)
+			warm := udpWarmSession{
+				session: next, selectionRef: selectionRef, started: started,
+				keepaliveCancel: sessionCancel,
+			}
+			interval := resolveUDPKeepaliveInterval(config)
+			if interval > 0 {
+				go func() {
+					ticker := time.NewTicker(interval)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-sessionContext.Done():
+							return
+						case <-ticker.C:
+							if err := sendDatagramKeepalive(next); err != nil {
+								sessionCancel()
+								return
+							}
+						}
+					}
+				}()
+			}
 			if warmContext.Err() != nil {
 				next.Close()
 				return
@@ -885,6 +927,7 @@ func serveUDPOnConn(
 			select {
 			case warmSessions <- warm:
 			case <-warmContext.Done():
+				sessionCancel()
 				next.Close()
 				return
 			}
@@ -892,10 +935,15 @@ func serveUDPOnConn(
 			defer timer.Stop()
 			select {
 			case <-warmContext.Done():
+				sessionCancel()
 				closeWarmSession()
 			case <-timer.C:
+				sessionCancel()
 				select {
 				case stale := <-warmSessions:
+					if stale.keepaliveCancel != nil {
+						stale.keepaliveCancel()
+					}
 					if stale.session != nil {
 						stale.session.Close()
 					}
