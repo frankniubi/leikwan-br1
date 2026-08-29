@@ -216,36 +216,36 @@
   "artifact_url": "/artifacts/macos/leikwan-bridge-arm64.dmg",
   "format": "dmg",
   "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-  "sha256": "9e7bfbe668afba8304abc9e81d3482cd565198eaccc7b9c09eb435cec744cbb6",
-  "size_bytes": 75682802,
-  "version": "1.0.2"
+  "sha256": "7e29b18bf0c783d6e60a0b5d132970ed0de10a62f8b2e8f626f21a35b32caa25",
+  "size_bytes": 74759413,
+  "version": "1.0.4"
  },
  "macos_client_app_x64": {
   "architecture": "x86_64",
   "artifact_url": "/artifacts/macos/leikwan-bridge-x64.dmg",
   "format": "dmg",
   "path": "artifacts/macos/leikwan-bridge-x64.dmg",
-  "sha256": "5095ba9ceb3517ebb191b6d0177ed753d2186002ba1518cdf078f4c306242a9f",
-  "size_bytes": 79063934,
-  "version": "1.0.2"
+  "sha256": "01b7a4606abda3f345ad05a4e0096600cd9c52e34e62218f95c80c8a9ecd8284",
+  "size_bytes": 78015346,
+  "version": "1.0.4"
  },
  "macos_client_update_arm64": {
   "architecture": "arm64",
   "artifact_url": "/artifacts/macos/leikwan-bridge-update-arm64.zip",
   "format": "zip",
   "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-  "sha256": "57c5de358fb883a625caf835ef052c40f73f902447ea8cfade1aa40a61f60859",
-  "size_bytes": 66334673,
-  "version": "1.0.2"
+  "sha256": "907aaba99de47a01d3c57293b72c30062601016d761ae1cfc3b1fc819eb76c24",
+  "size_bytes": 65646509,
+  "version": "1.0.4"
  },
  "macos_client_update_x64": {
   "architecture": "x86_64",
   "artifact_url": "/artifacts/macos/leikwan-bridge-update-x64.zip",
   "format": "zip",
   "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
-  "sha256": "56572a179a720fe064eeef883ccbe7fb2b794c83a7ea8be980943107a47f511a",
-  "size_bytes": 69753995,
-  "version": "1.0.2"
+  "sha256": "acf9960a960ebe4268f6aab49d32c0220bb72fbc130ef0a90bca5b84d8b7198b",
+  "size_bytes": 68762844,
+  "version": "1.0.4"
  },
  "mptcp_client_runtime": {
   "artifact_url": "/artifacts/leikwan-mptcp-client.py",
