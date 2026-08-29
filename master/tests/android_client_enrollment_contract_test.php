@@ -45,6 +45,10 @@ $deviceControlService = source($root . '/src/Support/DeviceControlService.php');
 foreach ([
     "'/api/client/devices/challenge'",
     "'/api/client/devices/enroll'",
+    "'/api/client/devices/renew/challenge'",
+    "'/api/client/devices/renew'",
+    "'/api/client/devices/identity/enroll'",
+    "'/api/client/devices/code/identity-enroll'",
     "'/api/client/devices/ack'",
     "'/api/client/devices/code/challenge'",
     "'/api/client/devices/code/enroll'",
@@ -61,6 +65,10 @@ foreach ([
 foreach ([
     'public function deviceChallenge(',
     'public function enrollDevice(',
+    'public function deviceRenewalChallenge(',
+    'public function renewDevice(',
+    'public function deviceIdentityEnroll(',
+    'public function enrollmentCodeIdentityEnroll(',
     'public function acknowledgeDevice(',
     'public function enrollmentCodeChallenge(',
     'public function enrollmentCodeEnroll(',
@@ -76,6 +84,18 @@ foreach ([
 foreach (['ANDROID_ATTESTATION_SIGNING_CERT_SHA256', 'ANDROID_ATTESTATION_ROOT_CERT_SHA256'] as $required) {
     if (!str_contains($deviceControlService, $required)) {
         fail('missing attestation trust configuration: ' . $required);
+    }
+}
+
+foreach ([
+    'public function issueRenewalChallenge(',
+    'public function renew(',
+    'public function enrollIdentity(',
+    'LEIKWAN_ANDROID_SESSION_RENEWAL_V1',
+    'device_renewal_not_available',
+] as $required) {
+    if (!str_contains($deviceControlService, $required)) {
+        fail('missing trusted-device renewal contract: ' . $required);
     }
 }
 

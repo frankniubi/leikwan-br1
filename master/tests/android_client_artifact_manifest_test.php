@@ -13,15 +13,15 @@ $versions = json_decode((string) file_get_contents($root . '/artifacts/versions.
 $artifact = $root . '/artifacts/android/leikwan-android-client.apk';
 $packager = $root . '/scripts/package-android-client.ps1';
 
-if (!str_contains($gradle, 'versionCode = 11') || !str_contains($gradle, 'versionName = "0.2.9"')) {
-    failAndroidArtifact('Android app version must be 0.2.9 (11)');
+if (!str_contains($gradle, 'versionCode = 16') || !str_contains($gradle, 'versionName = "0.2.14"')) {
+    failAndroidArtifact('Android app version must be 0.2.14 (16)');
 }
 if (!is_array($versions) || !is_array($versions['android_client_apk'] ?? null)) {
     failAndroidArtifact('Android artifact manifest entry missing');
 }
 $entry = $versions['android_client_apk'];
-if (($entry['version'] ?? '') !== '0.2.9'
-    || (int) ($entry['version_code'] ?? 0) !== 11
+if (($entry['version'] ?? '') !== '0.2.14'
+    || (int) ($entry['version_code'] ?? 0) !== 16
     || ($entry['path'] ?? '') !== 'artifacts/android/leikwan-android-client.apk'
     || ($entry['artifact_url'] ?? '') !== '/artifacts/leikwan-android-client.apk') {
     failAndroidArtifact('Android artifact manifest metadata mismatch');

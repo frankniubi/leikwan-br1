@@ -51,6 +51,28 @@ data class DeviceChallengeResponse(
     @SerializedName("expires_at") val expiresAt: String = "",
 )
 
+data class DeviceRenewRequest(
+    @SerializedName("client_id") val clientId: Long,
+    @SerializedName("device_id") val deviceId: String,
+    val nonce: String,
+    @SerializedName("identity_public_key") val identityPublicKey: String,
+    @SerializedName("binding_signature") val bindingSignature: String,
+)
+
+data class DeviceIdentityEnrollRequest(
+    @SerializedName("client_id") val clientId: Long,
+    @SerializedName("device_id") val deviceId: String,
+    val nonce: String,
+    @SerializedName("identity_public_key") val identityPublicKey: String,
+)
+
+data class EnrollmentCodeIdentityEnrollRequest(
+    @SerializedName("enrollment_code") val enrollmentCode: String,
+    @SerializedName("device_id") val deviceId: String,
+    val nonce: String,
+    @SerializedName("identity_public_key") val identityPublicKey: String,
+)
+
 data class DeviceEnrollRequest(
     @SerializedName("client_id") val clientId: Long,
     @SerializedName("device_id") val deviceId: String,

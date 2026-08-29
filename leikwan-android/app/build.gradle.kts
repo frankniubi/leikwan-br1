@@ -15,8 +15,8 @@ android {
         applicationId = "com.leikwan.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 11
-        versionName = "0.2.9"
+        versionCode = 16
+        versionName = "0.2.14"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // QA APKs are x86_64-only for the local emulator. Published APKs
@@ -55,8 +55,11 @@ android {
                 "ALLOW_QA_TEST_DEVICE_EXCEPTIONS",
                 "false",
             )
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // R8 8.5 currently miscompiles the Kotlin suspend enrollment
+            // state machine in this project. Keep the public release
+            // unminified until the toolchain is upgraded and re-audited.
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

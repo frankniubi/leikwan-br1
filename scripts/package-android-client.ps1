@@ -9,6 +9,7 @@ param(
     [string]$AndroidSdk = $(
         if ($env:ANDROID_HOME) { $env:ANDROID_HOME }
         elseif ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT }
+        elseif (Test-Path (Join-Path $env:USERPROFILE "Android\Sdk")) { Join-Path $env:USERPROFILE "Android\Sdk" }
         else { Join-Path $env:LOCALAPPDATA "Android\Sdk" }
     )
 )
@@ -41,6 +42,8 @@ $alignedApk = Join-Path $ProjectRoot ".tmp-android-client-aligned.apk"
 $signedApk = Join-Path $ProjectRoot ".tmp-android-client-signed.apk"
 $artifact = Join-Path $ProjectRoot "artifacts\android\leikwan-android-client.apk"
 $artifactVerifier = Join-Path $ProjectRoot "scripts\verify-android-ultra-artifact.ps1"
+$enrollmentBytecodeVerifier = Join-Path $ProjectRoot "scripts\verify-android-enrollment-bytecode.ps1"
+$buildVersionVerifier = Join-Path $ProjectRoot "scripts\verify-android-build-version.ps1"
 $signingPassword = (Get-Content -LiteralPath $KeystorePasswordFile -Raw).Trim()
 if ([string]::IsNullOrWhiteSpace($signingPassword)) {
     throw "Signing password file is empty"
@@ -51,7 +54,7 @@ $env:LEIKWAN_ANDROID_KEY_PASSWORD = $signingPassword
 try {
     Push-Location $androidRoot
     try {
-        & $gradle assembleRelease --offline --no-daemon
+        & $gradle clean assembleRelease --offline --no-daemon
         if ($LASTEXITCODE -ne 0) { throw "Gradle release build failed" }
     } finally {
         Pop-Location
@@ -78,6 +81,12 @@ try {
 
     & $artifactVerifier -ApkPath $signedApk
     if ($LASTEXITCODE -ne 0) { throw "Android Ultra artifact verification failed" }
+
+    & $enrollmentBytecodeVerifier -ApkPath $signedApk -AndroidSdk $AndroidSdk
+    if ($LASTEXITCODE -ne 0) { throw "Android enrollment bytecode verification failed" }
+
+    & $buildVersionVerifier -ApkPath $signedApk -AndroidSdk $AndroidSdk
+    if ($LASTEXITCODE -ne 0) { throw "Android build version verification failed" }
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $artifact) | Out-Null
     Copy-Item -LiteralPath $signedApk -Destination $artifact -Force

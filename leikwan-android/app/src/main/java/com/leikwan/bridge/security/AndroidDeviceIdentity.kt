@@ -5,10 +5,12 @@ import android.security.keystore.KeyProperties
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.Signature
 import java.security.spec.ECGenParameterSpec
 
 interface IdentityKeyStore {
     fun getOrCreatePublicKeySpki(): ByteArray
+    fun sign(message: ByteArray): ByteArray = throw UnsupportedOperationException("identity signing unsupported")
     fun delete()
 }
 
@@ -16,6 +18,8 @@ class AndroidDeviceIdentity(
     private val keyStore: IdentityKeyStore = AndroidKeyStoreIdentityKeyStore(),
 ) {
     fun publicKeySpki(): ByteArray = keyStore.getOrCreatePublicKeySpki()
+
+    fun sign(message: ByteArray): ByteArray = keyStore.sign(message)
 
     fun deviceId(clientId: Long): String {
         require(clientId > 0L) { "clientId must be positive" }
@@ -56,6 +60,18 @@ class AndroidKeyStoreIdentityKeyStore : IdentityKeyStore {
         generator.generateKeyPair()
         keyStore.getCertificate(alias)?.publicKey?.encoded?.copyOf()
             ?: error("Android identity public key unavailable")
+    }
+
+    override fun sign(message: ByteArray): ByteArray = synchronized(lock) {
+        require(message.isNotEmpty()) { "identity signing message is required" }
+        getOrCreatePublicKeySpki()
+        val privateKey = androidKeyStore().getKey(alias, null) as? java.security.PrivateKey
+            ?: error("Android identity private key unavailable")
+        Signature.getInstance("SHA256withECDSA").run {
+            initSign(privateKey)
+            update(message)
+            sign()
+        }
     }
 
     override fun delete() = synchronized(lock) {

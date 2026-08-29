@@ -169,7 +169,22 @@ namespace {
     $db = new Database();
     $service = new DeviceControlService($db, new FixtureVerifier());
     $client = ['id' => 17];
-    $deviceId = 'android-client-17-aabbccddeeff00112233445566778899';
+    $privateKey = openssl_pkey_new([
+        'private_key_type' => OPENSSL_KEYTYPE_EC,
+        'curve_name' => 'prime256v1',
+    ]);
+    assertTrue($privateKey !== false, 'test identity key must be generated');
+    $keyDetails = openssl_pkey_get_details($privateKey);
+    assertTrue(is_array($keyDetails) && is_string($keyDetails['key'] ?? null), 'test identity public key must be available');
+    $publicKeyPem = (string) $keyDetails['key'];
+    $publicKeyDer = base64_decode((string) preg_replace(
+        ['/-----BEGIN PUBLIC KEY-----/', '/-----END PUBLIC KEY-----/', '/\s+/'],
+        '',
+        $publicKeyPem
+    ), true);
+    assertTrue(is_string($publicKeyDer) && $publicKeyDer !== '', 'test identity SPKI must be decoded');
+    $identityHash = hash('sha256', $publicKeyDer);
+    $deviceId = 'android-client-17-' . substr($identityHash, 0, 32);
 
     $challenge = $service->issueChallenge($client, $deviceId);
     assertTrue(strlen((string) ($challenge['nonce'] ?? '')) >= 32, 'challenge must have a high-entropy nonce');
@@ -185,6 +200,124 @@ namespace {
         403,
         static fn() => $service->enroll($client, $deviceId, (string) $challenge['nonce'], ['fixture' => true])
     );
+
+    $controlId = (int) array_key_first($db->controls);
+    assertTrue($controlId > 0, 'enrollment must create a device control');
+    $db->controls[$controlId]['identity_key_hash'] = $identityHash;
+    $renewalChallenge = $service->issueRenewalChallenge($client, $deviceId);
+    $renewalBinding = 'LEIKWAN_ANDROID_SESSION_RENEWAL_V1|' . $renewalChallenge['nonce']
+        . '|17|' . $deviceId . '|' . $identityHash;
+    $renewalSignature = '';
+    assertTrue(openssl_sign($renewalBinding, $renewalSignature, $privateKey, OPENSSL_ALGO_SHA256), 'renewal binding must be signed');
+    $renewed = $service->renew(
+        $client,
+        $deviceId,
+        (string) $renewalChallenge['nonce'],
+        base64_encode($publicKeyDer),
+        base64_encode($renewalSignature),
+    );
+    assertTrue((string) ($renewed['device_session'] ?? '') !== '', 'renewal must return a new device session');
+    assertTrue((string) ($renewed['device_session'] ?? '') !== $sessionToken, 'renewal must rotate the device session');
+    assertSame('session_renewed', $db->audits[array_key_last($db->audits)]['event_type'] ?? null, 'renewal must be audited');
+
+    $simpleRenewalChallenge = $service->issueRenewalChallenge($client, $deviceId);
+    $simpleRenewed = $service->renew(
+        $client,
+        $deviceId,
+        (string) $simpleRenewalChallenge['nonce'],
+        '',
+        '',
+    );
+    assertTrue((string) ($simpleRenewed['device_session'] ?? '') !== '', 'trusted session renewal must not require a second key signature');
+    assertTrue((string) ($simpleRenewed['device_session'] ?? '') !== (string) ($renewed['device_session'] ?? ''), 'simple renewal must rotate the device session');
+    expectApiException(
+        'device_renewal_invalid',
+        403,
+        static fn() => $service->renew(
+            $client,
+            $deviceId,
+            (string) $renewalChallenge['nonce'],
+            base64_encode($publicKeyDer),
+            base64_encode($renewalSignature),
+        )
+    );
+
+    $badSignatureChallenge = $service->issueRenewalChallenge($client, $deviceId);
+    expectApiException(
+        'device_renewal_invalid',
+        403,
+        static fn() => $service->renew(
+            $client,
+            $deviceId,
+            (string) $badSignatureChallenge['nonce'],
+            base64_encode($publicKeyDer),
+            base64_encode(str_repeat('invalid', 12)),
+        )
+    );
+
+    $identityOnlyClient = ['id' => 18];
+    $identityOnlyDeviceId = 'android-client-18-' . substr($identityHash, 0, 32);
+    $identityOnlyChallenge = $service->issueChallenge($identityOnlyClient, $identityOnlyDeviceId);
+    $identityOnlyEnrollment = $service->enrollIdentity(
+        $identityOnlyClient,
+        $identityOnlyDeviceId,
+        (string) $identityOnlyChallenge['nonce'],
+        base64_encode($publicKeyDer),
+        1,
+    );
+    assertTrue((string) ($identityOnlyEnrollment['device_session'] ?? '') !== '', 'identity-only enrollment must return a device session');
+    $identityOnlyControl = null;
+    foreach ($db->controls as $candidate) {
+        if ((int) ($candidate['client_id'] ?? 0) === 18) {
+            $identityOnlyControl = $candidate;
+            break;
+        }
+    }
+    $identityOnlyControl = is_array($identityOnlyControl) ? $identityOnlyControl : [];
+    assertSame('trusted', $identityOnlyControl['trust_state'] ?? null, 'identity-only enrollment must trust the persistent key');
+    assertSame('identity_only', $identityOnlyControl['trust_reason'] ?? null, 'identity-only enrollment must record its trust reason');
+    assertSame(null, $identityOnlyControl['attestation_key_hash'] ?? null, 'identity-only enrollment must not persist an attestation key');
+
+    $identityOnlyReenrollmentChallenge = $service->issueChallenge($identityOnlyClient, $identityOnlyDeviceId);
+    set_error_handler(static function (int $severity, string $message, string $file, int $line): never {
+        throw new ErrorException($message, 0, $severity, $file, $line);
+    });
+    try {
+        $identityOnlyReenrollment = $service->enrollIdentity(
+            $identityOnlyClient,
+            $identityOnlyDeviceId,
+            (string) $identityOnlyReenrollmentChallenge['nonce'],
+            base64_encode($publicKeyDer),
+            1,
+        );
+    } finally {
+        restore_error_handler();
+    }
+    assertTrue(
+        (string) ($identityOnlyReenrollment['device_session'] ?? '') !== '',
+        'repeat identity-only enrollment must not emit PHP warnings before the JSON response',
+    );
+
+    $deviceIdOnlyClient = ['id' => 19];
+    $deviceIdOnly = 'android-client-19-' . str_repeat('c', 32);
+    $deviceIdOnlyChallenge = $service->issueChallenge($deviceIdOnlyClient, $deviceIdOnly);
+    $deviceIdOnlyEnrollment = $service->enrollIdentity(
+        $deviceIdOnlyClient,
+        $deviceIdOnly,
+        (string) $deviceIdOnlyChallenge['nonce'],
+        '',
+        1,
+    );
+    assertTrue((string) ($deviceIdOnlyEnrollment['device_session'] ?? '') !== '', 'device-id-only enrollment must return a device session');
+    $deviceIdOnlyControl = null;
+    foreach ($db->controls as $candidate) {
+        if ((int) ($candidate['client_id'] ?? 0) === 19) {
+            $deviceIdOnlyControl = $candidate;
+            break;
+        }
+    }
+    $deviceIdOnlyControl = is_array($deviceIdOnlyControl) ? $deviceIdOnlyControl : [];
+    assertSame('identity_only', $deviceIdOnlyControl['trust_reason'] ?? null, 'device-id-only enrollment must be marked identity-only');
 
     $request = new Request('GET', '/api/client/configs/pull', [], [], [
         'x-device-id' => $deviceId,

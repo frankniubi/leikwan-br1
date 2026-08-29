@@ -15,8 +15,11 @@ import com.leikwan.bridge.session.DeviceChallengeRequest
 import com.leikwan.bridge.session.DeviceChallengeResponse
 import com.leikwan.bridge.session.DeviceEnrollRequest
 import com.leikwan.bridge.session.DeviceEnrollResponse
+import com.leikwan.bridge.session.DeviceRenewRequest
+import com.leikwan.bridge.session.DeviceIdentityEnrollRequest
 import com.leikwan.bridge.session.EnrollmentCodeChallengeRequest
 import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
+import com.leikwan.bridge.session.EnrollmentCodeIdentityEnrollRequest
 
 interface PanelApi {
     @POST("api/client/devices/challenge")
@@ -25,11 +28,23 @@ interface PanelApi {
     @POST("api/client/devices/enroll")
     suspend fun enrollDevice(@Body request: DeviceEnrollRequest): Response<DeviceEnrollResponse>
 
+    @POST("api/client/devices/identity/enroll")
+    suspend fun enrollDeviceIdentity(@Body request: DeviceIdentityEnrollRequest): Response<DeviceEnrollResponse>
+
+    @POST("api/client/devices/renew/challenge")
+    suspend fun deviceRenewalChallenge(@Body request: DeviceChallengeRequest): Response<DeviceChallengeResponse>
+
+    @POST("api/client/devices/renew")
+    suspend fun renewDevice(@Body request: DeviceRenewRequest): Response<DeviceEnrollResponse>
+
     @POST("api/client/devices/code/challenge")
     suspend fun enrollmentCodeChallenge(@Body request: EnrollmentCodeChallengeRequest): Response<DeviceChallengeResponse>
 
     @POST("api/client/devices/code/enroll")
     suspend fun enrollmentCodeEnroll(@Body request: EnrollmentCodeEnrollRequest): Response<DeviceEnrollResponse>
+
+    @POST("api/client/devices/code/identity-enroll")
+    suspend fun enrollmentCodeIdentityEnroll(@Body request: EnrollmentCodeIdentityEnrollRequest): Response<DeviceEnrollResponse>
 
     @POST("api/client/devices/ack")
     suspend fun acknowledgeDevice(

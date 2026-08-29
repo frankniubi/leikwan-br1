@@ -32,8 +32,11 @@ import com.leikwan.bridge.session.DeviceChallengeRequest
 import com.leikwan.bridge.session.DeviceChallengeResponse
 import com.leikwan.bridge.session.DeviceEnrollRequest
 import com.leikwan.bridge.session.DeviceEnrollResponse
+import com.leikwan.bridge.session.DeviceIdentityEnrollRequest
+import com.leikwan.bridge.session.DeviceRenewRequest
 import com.leikwan.bridge.session.EnrollmentCodeChallengeRequest
 import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
+import com.leikwan.bridge.session.EnrollmentCodeIdentityEnrollRequest
 import com.leikwan.bridge.runtime.BondingContract
 import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardEndpoint
@@ -825,10 +828,22 @@ class TunnelOrchestratorTest {
         override suspend fun enrollDevice(request: DeviceEnrollRequest): Response<DeviceEnrollResponse> =
             throw UnsupportedOperationException()
 
+        override suspend fun enrollDeviceIdentity(request: DeviceIdentityEnrollRequest): Response<DeviceEnrollResponse> =
+            throw UnsupportedOperationException()
+
+        override suspend fun deviceRenewalChallenge(request: DeviceChallengeRequest): Response<DeviceChallengeResponse> =
+            throw UnsupportedOperationException()
+
+        override suspend fun renewDevice(request: DeviceRenewRequest): Response<DeviceEnrollResponse> =
+            throw UnsupportedOperationException()
+
         override suspend fun enrollmentCodeChallenge(request: EnrollmentCodeChallengeRequest): Response<DeviceChallengeResponse> =
             throw UnsupportedOperationException()
 
         override suspend fun enrollmentCodeEnroll(request: EnrollmentCodeEnrollRequest): Response<DeviceEnrollResponse> =
+            throw UnsupportedOperationException()
+
+        override suspend fun enrollmentCodeIdentityEnroll(request: EnrollmentCodeIdentityEnrollRequest): Response<DeviceEnrollResponse> =
             throw UnsupportedOperationException()
 
         override suspend fun acknowledgeDevice(auth: String, request: DeviceAckRequest): Response<DeviceAckResponse> =
