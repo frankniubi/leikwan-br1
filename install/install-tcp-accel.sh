@@ -62,7 +62,7 @@ ensure_debian12_dependencies() {
     apt-get install -y python3 curl ca-certificates coreutils iproute2
     return 0
   fi
-  for cmd in python3 curl install ip ss; do
+  for cmd in python3 curl install ip ss sha256sum awk; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "missing required command: $cmd" >&2; return 1; }
   done
 }
@@ -80,15 +80,17 @@ json_manifest_sha256() {
 download_checked() {
   local key="$1" url="$2" path="$3" expected tmp actual
   expected="$(json_manifest_sha256 "$key")"
+  [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || {
+    echo "missing manifest sha256 for $key" >&2
+    return 1
+  }
   tmp="${path}.new"
   curl -fsSL "$url" -o "$tmp"
-  if [[ -n "$expected" ]]; then
-    actual="$(sha256_file "$tmp")"
-    if [[ "$actual" != "$expected" ]]; then
-      rm -f "$tmp"
-      echo "downloaded artifact sha256 mismatch: $key" >&2
-      return 1
-    fi
+  actual="$(sha256_file "$tmp")"
+  if [[ "$actual" != "$expected" ]]; then
+    rm -f "$tmp"
+    echo "downloaded artifact sha256 mismatch: $key" >&2
+    return 1
   fi
   chmod 0755 "$tmp"
   mv "$tmp" "$path"
@@ -113,6 +115,8 @@ install_artifact() {
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || printf '')"
 
+ensure_debian12_dependencies
+
 if [[ -n "$ARTIFACT_BASE" ]]; then
   VERSIONS_JSON="$(curl -fsSL "$ARTIFACT_BASE/artifacts/versions.json")"
 else
@@ -123,7 +127,6 @@ else
   VERSIONS_JSON="{}"
 fi
 
-ensure_debian12_dependencies
 install -d -m 0755 "$INSTALL_ROOT" "$CONFIG_ROOT" "$BIN_DIR"
 
 install_artifact tcp_accel_runtime /artifacts/leikwan-tcp-accel.py tools/tcp-accel/tcp_accel.py "$INSTALL_ROOT/tcp_accel.py"

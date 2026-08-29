@@ -188,6 +188,27 @@ class EndpointRuntimeTargetTests(unittest.TestCase):
         self.assertEqual(2, script.count(":127.0.0.1:48011"))
         self.assertNotIn(":162.245.221.78:80", script)
 
+    def test_runtime_honors_configured_wstunnel_binary_for_single_and_race(self) -> None:
+        custom = "/opt/leikwan/bin/wstunnel"
+        for mode in ("single", "race"):
+            with self.subTest(mode=mode):
+                forward = sample_forward(mode=mode)
+                if mode == "single":
+                    forward["endpoints"] = forward["endpoints"][:1]
+                rendered = install_runtime.render_forward_runtime(forward, {"wstunnel_bin": custom})
+                generated = str(rendered.get("service_unit") or "") + str(rendered.get("start_script") or "")
+                self.assertIn(f"{custom} client", generated)
+                self.assertNotIn("/usr/local/bin/wstunnel client", generated)
+
+    def test_runtime_rejects_unit_paths_with_whitespace(self) -> None:
+        forward = sample_forward(mode="single")
+        forward["endpoints"] = forward["endpoints"][:1]
+        with self.assertRaises(ValueError):
+            install_runtime.render_forward_runtime(
+                forward,
+                {"wstunnel_bin": "/opt/Lei Kwan/wstunnel"},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
