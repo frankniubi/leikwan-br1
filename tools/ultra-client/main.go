@@ -24,29 +24,31 @@ const keepPayloadHex = "\x00\x00\xa4\x64\x34\xc9\xb6\x2b\x82\xee\xd2\xa8\x7f\xaa
 const defaultProbeTarget = "1.1.1.1:53"
 
 type Config struct {
-	ForwardID           int                 `json:"forward_id"`
-	ListenHost          string              `json:"listen_host"`
-	ListenPort          int                 `json:"listen_port"`
-	Target              string              `json:"target"`
-	ProbeTarget         string              `json:"probe_target"`
-	ControlSocket       string              `json:"control_socket"`
-	PolicyGeneration    string              `json:"policy_generation"`
-	TargetDigest        string              `json:"target_digest"`
-	Transport           string              `json:"transport"`
-	MaxTCPConnections   int                 `json:"max_tcp_connections"`
-	UDPQueuePackets     int                 `json:"udp_queue_packets"`
-	UDPMaxAssociations  int                 `json:"udp_max_associations"`
-	UDPSetupWorkers     int                 `json:"udp_setup_workers"`
-	ConnectTimeoutSecs  int                 `json:"connect_timeout_seconds"`
-	LocationCachePath   string              `json:"location_cache_path"`
-	LocationLockPath    string              `json:"location_lock_path"`
-	StatusPath          string              `json:"status_path"`
-	AutoSelect          bool                `json:"auto_select"`
-	ProbeTimeoutMillis  int                 `json:"probe_timeout_ms"`
-	ProbeWorkers        int                 `json:"probe_workers"`
-	ProbeSamples        int                 `json:"probe_samples"`
-	ProbeIntervalMillis int                 `json:"probe_interval_ms"`
-	ZoneAliases         map[string][]string `json:"zone_aliases"`
+	ForwardID                int                 `json:"forward_id"`
+	ListenHost               string              `json:"listen_host"`
+	ListenPort               int                 `json:"listen_port"`
+	Target                   string              `json:"target"`
+	ProbeTarget              string              `json:"probe_target"`
+	ControlSocket            string              `json:"control_socket"`
+	PolicyGeneration         string              `json:"policy_generation"`
+	TargetDigest             string              `json:"target_digest"`
+	Transport                string              `json:"transport"`
+	MaxTCPConnections        int                 `json:"max_tcp_connections"`
+	UDPPrewarm               bool                `json:"udp_prewarm"`
+	UDPKeepaliveIntervalSecs int                 `json:"udp_keepalive_interval_seconds"`
+	UDPQueuePackets          int                 `json:"udp_queue_packets"`
+	UDPMaxAssociations       int                 `json:"udp_max_associations"`
+	UDPSetupWorkers          int                 `json:"udp_setup_workers"`
+	ConnectTimeoutSecs       int                 `json:"connect_timeout_seconds"`
+	LocationCachePath        string              `json:"location_cache_path"`
+	LocationLockPath         string              `json:"location_lock_path"`
+	StatusPath               string              `json:"status_path"`
+	AutoSelect               bool                `json:"auto_select"`
+	ProbeTimeoutMillis       int                 `json:"probe_timeout_ms"`
+	ProbeWorkers             int                 `json:"probe_workers"`
+	ProbeSamples             int                 `json:"probe_samples"`
+	ProbeIntervalMillis      int                 `json:"probe_interval_ms"`
+	ZoneAliases              map[string][]string `json:"zone_aliases"`
 }
 
 type Entry struct {
@@ -389,6 +391,16 @@ func unwrapDatagram(packet []byte) ([]byte, bool) {
 	return packet[10:], true
 }
 
+func isDatagramKeepaliveResponse(packet, payload []byte) bool {
+	reservedIP := []byte{2, 0, 0, 0}
+	if len(packet) >= 10 &&
+		((bytes.Equal(packet[4:8], reservedIP) && packet[8] == 0 && packet[9] == 0) ||
+			(packet[4] == 1 && bytes.Equal(packet[5:9], reservedIP) && packet[9] == 0)) {
+		return true
+	}
+	return bytes.Equal(payload, []byte(keepPayloadHex))
+}
+
 func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, error) {
 	address := net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port))
 	conn, err := net.DialTimeout("tcp", address, timeout)
@@ -489,22 +501,49 @@ func watchRuntimePolicy(ctx context.Context, cancel context.CancelFunc, store *P
 }
 
 type udpAssociation struct {
-	session      *DatagramSession
-	client       *net.UDPAddr
-	lastSeen     time.Time
-	packetCnt    int
-	pending      [][]byte
-	writeMu      sync.Mutex
-	setupStarted bool
+	session          *DatagramSession
+	client           *net.UDPAddr
+	lastSeen         time.Time
+	lastUserActivity time.Time
+	packetCnt        int
+	pending          [][]byte
+	writeMu          sync.Mutex
+	sessionMu        sync.Mutex
+	keepaliveCancel  context.CancelFunc
+	closed           bool
+	setupStarted     bool
 }
 
 func (association *udpAssociation) close() {
 	if association == nil {
 		return
 	}
-	if association.session != nil {
-		association.session.Close()
+	association.writeMu.Lock()
+	association.sessionMu.Lock()
+	if association.closed {
+		association.sessionMu.Unlock()
+		association.writeMu.Unlock()
+		return
 	}
+	association.closed = true
+	session := association.session
+	cancel := association.keepaliveCancel
+	association.keepaliveCancel = nil
+	association.sessionMu.Unlock()
+	association.writeMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if session != nil {
+		session.Close()
+	}
+}
+
+type udpWarmSession struct {
+	session      *DatagramSession
+	selectionRef string
+	started      time.Time
+	err          error
 }
 
 type udpRuntimeLimits struct {
@@ -534,6 +573,19 @@ func resolveUDPLimits(config Config) udpRuntimeLimits {
 		maxAssociations: maxAssociations,
 		setupWorkers:    setupWorkers,
 	}
+}
+
+const safeUDPKeepaliveInterval = 5 * time.Second
+
+func resolveUDPKeepaliveInterval(config Config) time.Duration {
+	if !stringsContainsUDP(strings.ToLower(strings.TrimSpace(config.Transport))) {
+		return 0
+	}
+	configured := time.Duration(config.UDPKeepaliveIntervalSecs) * time.Second
+	if configured != safeUDPKeepaliveInterval {
+		return safeUDPKeepaliveInterval
+	}
+	return configured
 }
 
 func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *StatusWriter) error {
@@ -574,13 +626,36 @@ func serveUDPOnConn(
 	associations := make(map[string]*udpAssociation)
 	const maxAssociationPackets = 100000
 	const associationIdle = 2 * time.Minute
+	const warmSessionExpiry = associationIdle
+	prewarmEnabled := config.UDPPrewarm && stringsContainsUDP(strings.ToLower(strings.TrimSpace(config.Transport)))
 	var associationMu sync.Mutex
+	warmClaimed := false
+	warmSessions := make(chan udpWarmSession, 1)
+	var warmWorker sync.WaitGroup
+	warmContext, cancelWarm := context.WithCancel(ctx)
+	closeWarmSession := func() {
+		select {
+		case warm := <-warmSessions:
+			if warm.session != nil {
+				warm.session.Close()
+			}
+		default:
+		}
+	}
+	defer func() {
+		cancelWarm()
+		warmWorker.Wait()
+		closeWarmSession()
+	}()
 	publishAssociationCounts := func() {
 		associationMu.Lock()
 		active := 0
 		pending := 0
 		for _, association := range associations {
-			if association.session == nil {
+			association.sessionMu.Lock()
+			hasSession := association.session != nil
+			association.sessionMu.Unlock()
+			if !hasSession {
 				pending++
 			} else {
 				active++
@@ -616,6 +691,117 @@ func serveUDPOnConn(
 		}
 		status.UpdateUDPAssociations(0, 0)
 	}()
+	startSessionLoops := func(key string, association *udpAssociation, session *DatagramSession) {
+		go func() {
+			readBuffer := make([]byte, 65535)
+			for {
+				responseCount, responseErr := session.remote.Read(readBuffer)
+				if responseErr != nil {
+					closeAssociation(key, association)
+					return
+				}
+				payload, valid := unwrapDatagram(readBuffer[:responseCount])
+				if !valid || isDatagramKeepaliveResponse(readBuffer[:responseCount], payload) || len(payload) == 0 {
+					continue
+				}
+				if store.Limiter().Consume(len(payload)) != nil {
+					continue
+				}
+				status.AddUsage(len(payload), 0)
+				_, _ = local.WriteToUDP(payload, association.client)
+			}
+		}()
+
+		interval := resolveUDPKeepaliveInterval(config)
+		if interval <= 0 {
+			return
+		}
+		keepaliveContext, keepaliveCancel := context.WithCancel(ctx)
+		association.sessionMu.Lock()
+		if association.closed {
+			association.sessionMu.Unlock()
+			keepaliveCancel()
+			return
+		}
+		association.keepaliveCancel = keepaliveCancel
+		association.sessionMu.Unlock()
+		go func() {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-keepaliveContext.Done():
+					return
+				case <-ticker.C:
+					association.writeMu.Lock()
+					association.sessionMu.Lock()
+					closed := association.closed
+					current := association.session
+					association.sessionMu.Unlock()
+					if closed || current == nil {
+						association.writeMu.Unlock()
+						return
+					}
+					packet, packetErr := makeDatagramEnvelope(current.mode, current.sid, "2.0.0.0", 0, []byte(keepPayloadHex))
+					var writeErr error
+					if packetErr != nil {
+						writeErr = packetErr
+					} else {
+						_, writeErr = current.remote.Write(packet)
+					}
+					association.writeMu.Unlock()
+					if writeErr != nil {
+						closeAssociation(key, association)
+						return
+					}
+				}
+			}
+		}()
+	}
+	attachSession := func(key string, association *udpAssociation, warm udpWarmSession) {
+		if warm.session == nil {
+			return
+		}
+		next := warm.session
+		association.writeMu.Lock()
+		associationMu.Lock()
+		if associations[key] != association {
+			associationMu.Unlock()
+			association.writeMu.Unlock()
+			next.Close()
+			return
+		}
+		association.sessionMu.Lock()
+		if association.closed {
+			association.sessionMu.Unlock()
+			associationMu.Unlock()
+			association.writeMu.Unlock()
+			next.Close()
+			return
+		}
+		association.session = next
+		association.sessionMu.Unlock()
+		queued := association.pending
+		association.pending = nil
+		associationMu.Unlock()
+		publishAssociationCounts()
+		status.UpdateUDP(warm.selectionRef, time.Since(warm.started))
+		for _, queuedPayload := range queued {
+			packet, packetErr := makeDatagramEnvelope(next.mode, next.sid, targetIP, targetPort, queuedPayload)
+			if packetErr != nil {
+				association.writeMu.Unlock()
+				closeAssociation(key, association)
+				return
+			}
+			if _, writeErr := next.remote.Write(packet); writeErr != nil {
+				association.writeMu.Unlock()
+				closeAssociation(key, association)
+				return
+			}
+		}
+		association.writeMu.Unlock()
+		startSessionLoops(key, association, next)
+	}
 	startNativeSetup := func(key string, association *udpAssociation, lease ProviderLease) {
 		selectionRef := lease.SelectionRef
 		go func() {
@@ -641,59 +827,85 @@ func serveUDPOnConn(
 			if armErr != nil {
 				status.AddUDPSetupFailure()
 				status.UpdateError("udp_association_failed")
-				associationMu.Lock()
-				if associations[key] == association {
-					association.setupStarted = false
-				}
-				associationMu.Unlock()
 				closeAssociation(key, association)
 				return
 			}
-			association.writeMu.Lock()
-			associationMu.Lock()
-			if associations[key] != association {
-				associationMu.Unlock()
-				association.writeMu.Unlock()
-				next.Close()
-				return
-			}
-			association.session = next
-			association.lastSeen = time.Now()
-			queued := association.pending
-			association.pending = nil
-			associationMu.Unlock()
-			publishAssociationCounts()
-			status.UpdateUDP(selectionRef, time.Since(started))
-			for _, queuedPayload := range queued {
-				packet, packetErr := makeDatagramEnvelope(next.mode, next.sid, targetIP, targetPort, queuedPayload)
-				if packetErr != nil {
-					association.writeMu.Unlock()
-					closeAssociation(key, association)
+			attachSession(key, association, udpWarmSession{session: next, selectionRef: selectionRef, started: started})
+		}()
+	}
+	startWarmWait := func(key string, association *udpAssociation, lease ProviderLease) {
+		go func() {
+			select {
+			case warm := <-warmSessions:
+				if warm.err != nil || warm.session == nil {
+					startNativeSetup(key, association, lease)
 					return
 				}
-				if _, writeErr := next.remote.Write(packet); writeErr != nil {
-					association.writeMu.Unlock()
-					closeAssociation(key, association)
-					return
-				}
-			}
-			association.writeMu.Unlock()
-			readBuffer := make([]byte, 65535)
-			for {
-				responseCount, responseErr := next.remote.Read(readBuffer)
-				if responseErr != nil {
-					closeAssociation(key, association)
-					return
-				}
-				payload, valid := unwrapDatagram(readBuffer[:responseCount])
-				if !valid || store.Limiter().Consume(len(payload)) != nil {
-					continue
-				}
-				status.AddUsage(len(payload), 0)
-				_, _ = local.WriteToUDP(payload, association.client)
+				lease.wipe()
+				attachSession(key, association, warm)
+			case <-warmContext.Done():
+				lease.wipe()
+				closeAssociation(key, association)
 			}
 		}()
 	}
+	if prewarmEnabled {
+		warmWorker.Add(1)
+		go func() {
+			defer warmWorker.Done()
+			snapshot, ok := store.Snapshot()
+			if !ok {
+				select {
+				case warmSessions <- udpWarmSession{err: errors.New("udp prewarm policy unavailable")}:
+				case <-warmContext.Done():
+				}
+				return
+			}
+			lease := snapshot.Lease
+			selectionRef := lease.SelectionRef
+			started := time.Now()
+			next, armErr := armDatagram(lease, time.Duration(config.ConnectTimeoutSecs)*time.Second)
+			lease.wipe()
+			if armErr != nil {
+				status.AddUDPSetupFailure()
+				select {
+				case warmSessions <- udpWarmSession{err: armErr}:
+				case <-warmContext.Done():
+				}
+				return
+			}
+			warm := udpWarmSession{session: next, selectionRef: selectionRef, started: started}
+			if warmContext.Err() != nil {
+				next.Close()
+				return
+			}
+			select {
+			case warmSessions <- warm:
+			case <-warmContext.Done():
+				next.Close()
+				return
+			}
+			timer := time.NewTimer(warmSessionExpiry)
+			defer timer.Stop()
+			select {
+			case <-warmContext.Done():
+				closeWarmSession()
+			case <-timer.C:
+				select {
+				case stale := <-warmSessions:
+					if stale.session != nil {
+						stale.session.Close()
+					}
+					select {
+					case warmSessions <- udpWarmSession{err: errors.New("udp prewarm expired")}:
+					default:
+					}
+				default:
+				}
+			}
+		}()
+	}
+	publishAssociationCounts()
 	go func() {
 		<-ctx.Done()
 		_ = local.Close()
@@ -709,7 +921,11 @@ func serveUDPOnConn(
 				associationMu.Lock()
 				stale := make(map[string]*udpAssociation)
 				for key, association := range associations {
-					if now.Sub(association.lastSeen) > associationIdle {
+					lastActivity := association.lastUserActivity
+					if lastActivity.IsZero() {
+						lastActivity = association.lastSeen
+					}
+					if now.Sub(lastActivity) > associationIdle {
 						stale[key] = association
 					}
 				}
@@ -747,6 +963,7 @@ func serveUDPOnConn(
 		needsNativeSetup := false
 		if association != nil {
 			association.lastSeen = time.Now()
+			association.lastUserActivity = association.lastSeen
 			association.packetCnt++
 			if association.packetCnt > maxAssociationPackets {
 				associationMu.Unlock()
@@ -754,7 +971,10 @@ func serveUDPOnConn(
 				closeAssociation(key, association)
 				continue
 			}
-			if association.session == nil {
+			association.sessionMu.Lock()
+			hasSession := association.session != nil
+			association.sessionMu.Unlock()
+			if !hasSession {
 				pending = true
 				if len(association.pending) < queuePackets {
 					association.pending = append(association.pending, append([]byte(nil), buffer[:count]...))
@@ -773,10 +993,13 @@ func serveUDPOnConn(
 		}
 		if association == nil {
 			clientCopy := *client
+			now := time.Now()
 			association = &udpAssociation{
-				client: &clientCopy, lastSeen: time.Now(), packetCnt: 1,
-				pending: [][]byte{append([]byte(nil), buffer[:count]...)},
+				client: &clientCopy, lastSeen: now, lastUserActivity: now, packetCnt: 1,
+				pending:      [][]byte{append([]byte(nil), buffer[:count]...)},
+				setupStarted: true,
 			}
+			var evicted *udpAssociation
 			associationMu.Lock()
 			if len(associations) >= maxAssociations {
 				oldestKey := ""
@@ -787,20 +1010,30 @@ func serveUDPOnConn(
 					}
 				}
 				if oldestKey != "" {
-					if old := associations[oldestKey]; old != nil {
-						old.close()
-					}
+					evicted = associations[oldestKey]
 					delete(associations, oldestKey)
 				}
 			}
 			associations[key] = association
 			associationMu.Unlock()
+			if evicted != nil {
+				evicted.close()
+			}
 			publishAssociationCounts()
+			claimWarm := false
 			associationMu.Lock()
-			association.setupStarted = true
+			if prewarmEnabled && !warmClaimed {
+				warmClaimed = true
+				claimWarm = true
+			}
 			associationMu.Unlock()
-			startNativeSetup(key, association, lease)
-			lease = ProviderLease{}
+			if claimWarm {
+				startWarmWait(key, association, lease)
+				lease = ProviderLease{}
+			} else {
+				startNativeSetup(key, association, lease)
+				lease = ProviderLease{}
+			}
 			continue
 		}
 		if needsNativeSetup {
@@ -817,7 +1050,10 @@ func serveUDPOnConn(
 		var session *DatagramSession
 		if current != nil {
 			current.lastSeen = time.Now()
+			current.lastUserActivity = current.lastSeen
+			current.sessionMu.Lock()
 			session = current.session
+			current.sessionMu.Unlock()
 		}
 		associationMu.Unlock()
 		if session == nil {

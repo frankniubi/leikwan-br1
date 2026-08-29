@@ -114,6 +114,276 @@ func TestDatagramEnvelopeRoundTrip(t *testing.T) {
 	}
 }
 
+type testUDPProvider struct {
+	tcp           *net.TCPListener
+	udp           *net.UDPConn
+	firstAccepted chan struct{}
+	acceptedOnce  sync.Once
+	packets       chan []byte
+}
+
+func newTestUDPProvider(t *testing.T) *testUDPProvider {
+	t.Helper()
+	tcp, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		_ = tcp.Close()
+		t.Fatal(err)
+	}
+	provider := &testUDPProvider{
+		tcp: tcp, udp: udp, firstAccepted: make(chan struct{}), packets: make(chan []byte, 128),
+	}
+	go provider.serveTCP()
+	go provider.serveUDP()
+	t.Cleanup(func() {
+		_ = provider.tcp.Close()
+		_ = provider.udp.Close()
+	})
+	return provider
+}
+
+func (provider *testUDPProvider) serveTCP() {
+	for {
+		connection, err := provider.tcp.AcceptTCP()
+		if err != nil {
+			return
+		}
+		provider.acceptedOnce.Do(func() { close(provider.firstAccepted) })
+		go func() {
+			defer connection.Close()
+			_ = connection.SetReadDeadline(time.Now().Add(time.Second))
+			_, _ = connection.Read(make([]byte, 512))
+			encodedPort := uint16(provider.udp.LocalAddr().(*net.UDPAddr).Port) ^ 0x0101
+			reply := []byte{4, 1, 1, 0, 1, 7, 0x10, 0x20, 0, 0}
+			binary.BigEndian.PutUint16(reply[8:], encodedPort)
+			_, _ = connection.Write(reply)
+		}()
+	}
+}
+
+func (provider *testUDPProvider) serveUDP() {
+	buffer := make([]byte, 65535)
+	for {
+		count, client, err := provider.udp.ReadFromUDP(buffer)
+		if err != nil {
+			return
+		}
+		packet := append([]byte(nil), buffer[:count]...)
+		select {
+		case provider.packets <- packet:
+		default:
+		}
+		if count < 16 {
+			continue
+		}
+		payload := append([]byte(nil), packet[16:]...)
+		response := make([]byte, 10+len(payload))
+		copy(response[:4], []byte{0, 0, 0, 1})
+		copy(response[10:], payload)
+		_, _ = provider.udp.WriteToUDP(response, client)
+	}
+}
+
+func testUDPStore(t *testing.T, config Config, provider *testUDPProvider) *PolicyStore {
+	t.Helper()
+	store := NewPolicyStore(config)
+	now := time.Now()
+	policy := Policy{
+		Protocol: policyProtocol, ForwardID: config.ForwardID,
+		PolicyGeneration: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SessionTicket:    "ticket", ExpiresAt: now.Add(time.Minute), Transport: "udp",
+		RateLimitMbps: 100, QuotaRemainingBytes: 1 << 20, TargetDigest: targetDigest(config.Target),
+	}
+	lease := ProviderLease{
+		LeaseID: "ul2_test", PolicyGeneration: policy.PolicyGeneration, ExpiresAt: policy.ExpiresAt,
+		Transport: "udp", SelectionRef: "selection-reference-abcdefghijklmnop",
+		NonceHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		IP:        "127.0.0.1", Port: provider.tcp.Addr().(*net.TCPAddr).Port,
+		User: []byte("user"), Password: []byte("1234567890123456"),
+	}
+	if err := store.Replace(policy, lease); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func isReservedKeepPacket(packet []byte) bool {
+	return len(packet) >= 16 &&
+		bytes.Equal(packet[10:14], net.IPv4(2, 0, 0, 0).To4()) &&
+		binary.BigEndian.Uint16(packet[14:16]) == 0 &&
+		bytes.Equal(packet[16:], []byte(keepPayloadHex))
+}
+
+func waitForProviderPacket(t *testing.T, packets <-chan []byte, timeout time.Duration, predicate func([]byte) bool) []byte {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case packet := <-packets:
+			if predicate(packet) {
+				return packet
+			}
+		case <-deadline.C:
+			t.Fatal("timed out waiting for provider datagram")
+		}
+	}
+}
+
+func TestResolveUDPKeepaliveInterval(t *testing.T) {
+	tests := []struct {
+		name   string
+		config Config
+		want   time.Duration
+	}{
+		{name: "udp invalid interval uses safe value", config: Config{Transport: "udp", UDPKeepaliveIntervalSecs: 1}, want: 5 * time.Second},
+		{name: "tcp plus udp is fixed", config: Config{Transport: "tcp+udp", UDPKeepaliveIntervalSecs: 30}, want: 5 * time.Second},
+		{name: "tcp disables udp ticker", config: Config{Transport: "tcp", UDPKeepaliveIntervalSecs: 5}, want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := resolveUDPKeepaliveInterval(test.config); got != test.want {
+				t.Fatalf("resolveUDPKeepaliveInterval(%+v) = %s, want %s", test.config, got, test.want)
+			}
+		})
+	}
+}
+
+func TestServeUDPPrewarmsAssociationBeforeFirstClientPacket(t *testing.T) {
+	provider := newTestUDPProvider(t)
+	runtimeUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeUDP.Close()
+	listenPort := runtimeUDP.LocalAddr().(*net.UDPAddr).Port
+	config := Config{
+		ForwardID: 42, ListenHost: "127.0.0.1", ListenPort: listenPort,
+		Target: "127.0.0.1:53", Transport: "udp", UDPPrewarm: true,
+		UDPKeepaliveIntervalSecs: 5, UDPQueuePackets: 2, ConnectTimeoutSecs: 1,
+	}
+	store := testUDPStore(t, config, provider)
+	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- serveUDPOnConn(ctx, config, store, status, runtimeUDP, "127.0.0.1", 53) }()
+
+	select {
+	case <-provider.firstAccepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("prewarm did not accept provider control connection before first client packet")
+	}
+
+	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	destination := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: listenPort}
+	want := []byte("first-client-payload")
+	if _, err := client.WriteToUDP(want, destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 128)
+	count, _, err := client.ReadFromUDP(response)
+	if err != nil {
+		t.Fatalf("prewarmed first client did not receive echo: %v", err)
+	}
+	if !bytes.Equal(response[:count], want) {
+		t.Fatalf("prewarmed first client response = %q, want %q", response[:count], want)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("UDP runtime did not stop")
+	}
+	status.Close()
+	if status.status.UDPQueueDrops != 0 {
+		t.Fatalf("UDP queue drops = %d, want 0 for prewarmed first association", status.status.UDPQueueDrops)
+	}
+}
+
+func TestServeUDPProtocolKeepaliveUsesReservedEnvelope(t *testing.T) {
+	provider := newTestUDPProvider(t)
+	runtimeUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeUDP.Close()
+	listenPort := runtimeUDP.LocalAddr().(*net.UDPAddr).Port
+	config := Config{
+		ForwardID: 42, ListenHost: "127.0.0.1", ListenPort: listenPort,
+		Target: "127.0.0.1:53", Transport: "udp", UDPPrewarm: true,
+		UDPKeepaliveIntervalSecs: 5, ConnectTimeoutSecs: 1,
+	}
+	store := testUDPStore(t, config, provider)
+	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- serveUDPOnConn(ctx, config, store, status, runtimeUDP, "127.0.0.1", 53) }()
+
+	select {
+	case <-provider.firstAccepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("UDP setup did not accept provider control connection")
+	}
+	waitForProviderPacket(t, provider.packets, 2*time.Second, isReservedKeepPacket)
+
+	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	destination := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: listenPort}
+	userPayload := []byte("user-before-keepalive")
+	if _, err := client.WriteToUDP(userPayload, destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 128)
+	count, _, err := client.ReadFromUDP(response)
+	if err != nil {
+		t.Fatalf("user payload did not receive echo: %v", err)
+	}
+	if !bytes.Equal(response[:count], userPayload) {
+		t.Fatalf("user payload response = %q, want %q", response[:count], userPayload)
+	}
+
+	waitForProviderPacket(t, provider.packets, 7*time.Second, isReservedKeepPacket)
+	if err := client.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if count, _, err := client.ReadFromUDP(response); err == nil {
+		t.Fatalf("keepalive response leaked to local client: %q", response[:count])
+	}
+
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("UDP runtime did not stop")
+	}
+	status.Close()
+}
+
 func TestServeUDPDoesNotBlockNewClientWhileAnotherAssociationArms(t *testing.T) {
 	providerTCP, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -189,6 +459,7 @@ func TestServeUDPDoesNotBlockNewClientWhileAnotherAssociationArms(t *testing.T) 
 		ListenPort:         listenPort,
 		Target:             "127.0.0.1:53",
 		Transport:          "udp",
+		UDPPrewarm:         false,
 		UDPQueuePackets:    2,
 		ConnectTimeoutSecs: 1,
 	}
