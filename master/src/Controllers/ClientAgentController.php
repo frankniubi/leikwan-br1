@@ -754,6 +754,11 @@ final class ClientAgentController extends BaseController
     /** @param array<string,mixed> $forward @return array<string,mixed> */
     private function scrubUltraClientForward(array $forward): array
     {
+        foreach (['name', 'tenant_label', 'tenant_description', 'tenant_badge', 'forward_chain_name'] as $field) {
+            if (array_key_exists($field, $forward)) {
+                $forward[$field] = $this->redactUltraClientDisplayText($forward[$field]);
+            }
+        }
         foreach ([
             'client_token', 'credential', 'credentials', 'password', 'provider', 'providers',
             'line_client_id', 'line_client_name', 'line_client_host',
@@ -771,6 +776,15 @@ final class ClientAgentController extends BaseController
             unset($forward[$field]);
         }
         return $forward;
+    }
+
+    private function redactUltraClientDisplayText(mixed $value): mixed
+    {
+        if (!is_string($value) || $value === '') {
+            return $value;
+        }
+        $redacted = preg_replace('/Leigod|雷神/iu', 'Ultra', $value);
+        return is_string($redacted) ? $redacted : 'Ultra';
     }
 
     /** @param array<int,array<string,mixed>> $forwards @return array<int,array<string,mixed>> */

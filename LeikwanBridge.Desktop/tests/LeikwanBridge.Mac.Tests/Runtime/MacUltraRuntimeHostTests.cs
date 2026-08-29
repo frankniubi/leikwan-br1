@@ -59,6 +59,9 @@ public sealed class MacUltraRuntimeHostTests
         Assert.DoesNotContain("line-password", bootstrapText);
         Assert.Contains("location_cache_path", bootstrapText);
         Assert.Contains("location_lock_path", bootstrapText);
+        Assert.Contains("\"auto_select\":false", bootstrapText, StringComparison.Ordinal);
+        Assert.DoesNotContain("probe_target", bootstrapText, StringComparison.Ordinal);
+        Assert.DoesNotContain("probe_samples", bootstrapText, StringComparison.Ordinal);
         Assert.NotNull(sentSocket);
         Assert.Equal(3, portProbeAttempts);
         Assert.StartsWith(socketRoot, sentSocket, StringComparison.Ordinal);

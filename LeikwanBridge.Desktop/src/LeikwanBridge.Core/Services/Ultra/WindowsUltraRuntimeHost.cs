@@ -67,31 +67,36 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
             var runtimeDirectory = Path.Combine(_config.GetEffectiveStateDir(), "runtime");
             var configPath = Path.Combine(runtimeDirectory, $"ultra-forward-{forward.ForwardId}.json");
             var statusPath = Path.Combine(runtimeDirectory, $"ultra-forward-{forward.ForwardId}.status.json");
-            var staticConfig = new
+            var autoSelect = leases.Count > 1;
+            var staticConfig = new Dictionary<string, object?>
             {
-                forward_id = forward.ForwardId,
-                listen_host = "127.0.0.1",
-                listen_port = forward.ListenPort,
-                target = forward.Target,
-                probe_target = "1.1.1.1:53",
-                control_socket = $"\\\\.\\pipe\\{UltraLeaseClient.PipeName(forward.ForwardId)}",
-                transport = leases[0].Transport,
-                policy_generation = leases[0].PolicyGeneration,
-                target_digest = leases[0].TargetDigest,
-                // Probe immediately after the runtime is enabled, even when
-                // the panel returned a single candidate, so the first status
-                // snapshot includes loss, latency, and jitter quality.
-                auto_select = true,
-                probe_timeout_ms = 300,
-                probe_samples = 20,
-                probe_interval_ms = 100,
-                max_tcp_connections = 512,
-                udp_queue_packets = 64,
-                connect_timeout_seconds = 5,
-                status_path = statusPath,
+                ["forward_id"] = forward.ForwardId,
+                ["listen_host"] = "127.0.0.1",
+                ["listen_port"] = forward.ListenPort,
+                ["target"] = forward.Target,
+                ["control_socket"] = $"\\\\.\\pipe\\{UltraLeaseClient.PipeName(forward.ForwardId)}",
+                ["transport"] = leases[0].Transport,
+                ["policy_generation"] = leases[0].PolicyGeneration,
+                ["target_digest"] = leases[0].TargetDigest,
+                ["auto_select"] = autoSelect,
+                ["max_tcp_connections"] = 512,
+                ["udp_queue_packets"] = 64,
+                ["connect_timeout_seconds"] = 5,
+                ["status_path"] = statusPath,
             };
+            if (autoSelect)
+            {
+                staticConfig["probe_target"] = "1.1.1.1:53";
+                staticConfig["probe_timeout_ms"] = 300;
+                staticConfig["probe_samples"] = 20;
+                staticConfig["probe_interval_ms"] = 100;
+            }
             Directory.CreateDirectory(runtimeDirectory);
-            File.WriteAllText(configPath, JsonSerializer.Serialize(staticConfig, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(configPath, JsonSerializer.Serialize(staticConfig, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            }));
             _supervisor.StartProcess(
                 forward.ForwardId,
                 "ultra-runtime",

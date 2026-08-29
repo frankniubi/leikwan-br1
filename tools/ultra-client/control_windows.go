@@ -50,10 +50,13 @@ func writeFrame(writer io.Writer, payload []byte) error {
 
 var (
 	kernel32            = syscall.NewLazyDLL("kernel32.dll")
+	advapi32            = syscall.NewLazyDLL("advapi32.dll")
 	createNamedPipe     = kernel32.NewProc("CreateNamedPipeW")
 	connectNamedPipe    = kernel32.NewProc("ConnectNamedPipe")
 	disconnectNamedPipe = kernel32.NewProc("DisconnectNamedPipe")
 	closeHandle         = kernel32.NewProc("CloseHandle")
+	localFree           = kernel32.NewProc("LocalFree")
+	convertStringSDDL   = advapi32.NewProc("ConvertStringSecurityDescriptorToSecurityDescriptorW")
 	pipeRejectRemote    = uint32(0x00000008)
 	pipeAccessDuplex    = uint32(0x00000003)
 	pipeTypeByte        = uint32(0x00000000)
@@ -61,6 +64,12 @@ var (
 	pipeWait            = uint32(0x00000000)
 	pipeUnlimited       = uint32(255)
 )
+
+type windowsSecurityAttributes struct {
+	length             uint32
+	securityDescriptor uintptr
+	inheritHandle      int32
+}
 
 type ControlServer struct {
 	path      string
@@ -133,13 +142,42 @@ func (server *ControlServer) createPipe() (syscall.Handle, error) {
 	if err != nil {
 		return 0, err
 	}
+	security, release, err := newPipeSecurityAttributes()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 	result, _, callErr := createNamedPipe.Call(
 		uintptr(unsafe.Pointer(name)), uintptr(pipeAccessDuplex), uintptr(pipeTypeByte|pipeReadModeByte|pipeWait|pipeRejectRemote), uintptr(pipeUnlimited),
-		uintptr(maxControlPayload+4), uintptr(maxControlPayload+4), uintptr(2000), 0)
+		uintptr(maxControlPayload+4), uintptr(maxControlPayload+4), uintptr(2000), uintptr(unsafe.Pointer(security)))
 	if result == uintptr(syscall.InvalidHandle) {
 		return 0, callErr
 	}
 	return syscall.Handle(result), nil
+}
+
+func newPipeSecurityAttributes() (*windowsSecurityAttributes, func(), error) {
+	sddl, err := syscall.UTF16PtrFromString(controlPipeSecurityDescriptor())
+	if err != nil {
+		return nil, func() {}, err
+	}
+	var descriptor uintptr
+	result, _, callErr := convertStringSDDL.Call(
+		uintptr(unsafe.Pointer(sddl)), 1, uintptr(unsafe.Pointer(&descriptor)), 0,
+	)
+	if result == 0 || descriptor == 0 {
+		if callErr == nil {
+			callErr = syscall.EINVAL
+		}
+		return nil, func() {}, callErr
+	}
+	attributes := &windowsSecurityAttributes{
+		length:             uint32(unsafe.Sizeof(windowsSecurityAttributes{})),
+		securityDescriptor: descriptor,
+	}
+	return attributes, func() {
+		_, _, _ = localFree.Call(descriptor)
+	}, nil
 }
 
 func (server *ControlServer) handlePipe(handle syscall.Handle) {

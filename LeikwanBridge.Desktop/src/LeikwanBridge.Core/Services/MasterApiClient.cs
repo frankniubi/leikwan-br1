@@ -132,7 +132,19 @@ public sealed class MasterApiClient : IDisposable
         return first;
     }
 
+    /// <summary>
+    /// Resolves the stable, single Ultra lease used by normal forwards.
+    /// Candidate racing is deliberately opt-in because a cold UDP probe can
+    /// select a different path from the one validated by the desktop client.
+    /// </summary>
     public Task<IReadOnlyList<UltraLease>> ResolveUltraLeasesAsync(ForwardConfig forward, CancellationToken ct = default)
+        => ResolveUltraLeasesCoreAsync(forward, autoSelect: false, ct);
+
+    /// <summary>
+    /// Explicit diagnostic/experimentation path for bounded candidate racing.
+    /// Production callers should use <see cref="ResolveUltraLeasesAsync"/>.
+    /// </summary>
+    public Task<IReadOnlyList<UltraLease>> ResolveUltraLeasesAutoAsync(ForwardConfig forward, CancellationToken ct = default)
         => ResolveUltraLeasesCoreAsync(forward, autoSelect: true, ct);
 
     private async Task<IReadOnlyList<UltraLease>> ResolveUltraLeasesCoreAsync(
@@ -192,14 +204,16 @@ public sealed class MasterApiClient : IDisposable
             try
             {
                 using var document = JsonDocument.Parse(responseBytes);
+                var maxCandidates = autoSelect ? 4 : 1;
                 if (!document.RootElement.TryGetProperty("leases", out var leases)
                     || leases.ValueKind != JsonValueKind.Array
-                    || leases.GetArrayLength() is < 1 or > 4)
+                    || leases.GetArrayLength() is < 1
+                    || leases.GetArrayLength() > 4)
                     return [];
-                var parsed = new List<UltraLease>(leases.GetArrayLength());
+                var parsed = new List<UltraLease>(Math.Min(leases.GetArrayLength(), maxCandidates));
                 try
                 {
-                    foreach (var item in leases.EnumerateArray())
+                    foreach (var item in leases.EnumerateArray().Take(maxCandidates))
                     {
                         var lease = ParseUltraLease(item, forward, policy);
                         if (lease is null)
