@@ -144,6 +144,32 @@ class ClientAgentMptcpHealthGraceTests(unittest.TestCase):
 
         self.assertIn("install_forward_runtime=", token)
 
+    def test_auto_update_request_token_requests_ultra_runtime_hash_mismatch_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = pathlib.Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "master_url": "https://panel.example.com",
+                        "client_id": 123,
+                        "agent_token": "token",
+                        "state_dir": str(pathlib.Path(tmp_dir) / "state"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            installed_ultra = pathlib.Path(tmp_dir) / "ultra-client"
+            installed_ultra.write_bytes(b"installed-ultra-runtime")
+            agent = client_agent_module.ClientAgent(config_path)
+
+            desired_sha256 = "f" * 64
+            with mock.patch.object(agent, "ultra_binary_path", return_value=installed_ultra):
+                token = agent.auto_update_request_token(
+                    {"desired_ultra_runtime_sha256": desired_sha256}
+                )
+
+        self.assertEqual(f"auto-release:ultra_runtime={desired_sha256}", token)
+
     def test_apply_management_state_ignores_stale_explicit_update_when_versions_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = pathlib.Path(tmp_dir) / "config.json"

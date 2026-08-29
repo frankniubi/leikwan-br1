@@ -43,9 +43,9 @@
  "client_agent": {
   "artifact_url": "/artifacts/client-agent.py",
   "path": "client-agent/client_agent.py",
-    "sha256": "d5d7c876a7a7a2460eaaef1d10e93d571c625ee0bbc202c3826bd58f50036c95",
-     "size": 278801,
-     "size_bytes": 278801,
+    "sha256": "9126042eb92699f953673b27928c2bfbf214da861de4373440abaa12e2effcaf",
+     "size": 279228,
+     "size_bytes": 279228,
   "version": "2026.08.29.1"
  },
  "client_agent_installer": {
@@ -94,9 +94,9 @@
  "install_forward_runtime": {
   "artifact_url": "/artifacts/install-forward-runtime.py",
   "path": "client-agent/install_forward_runtime.py",
-    "sha256": "aae77278ab56512dd5c3dca214addcc057d7e7f07857905bd4152847caf5f0e6",
-    "size": 95288,
-    "size_bytes": 95288,
+     "sha256": "a924ab8a25aab69b336393e5041a0af1854584108a326cf45c432411c0e9b886",
+     "size": 95431,
+     "size_bytes": 95431,
   "version": "2026.08.29.1"
  },
  "leigod_forward_relay": {

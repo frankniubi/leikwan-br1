@@ -486,6 +486,8 @@ final class ClientAgentController extends BaseController
             ? $snapshot['wstunnel_binary']
             : [];
         $desiredBondSha256 = (string) $snapshot['desired_bond_sha256'];
+        $desiredUltraRuntimeVersion = (string) $snapshot['desired_ultra_runtime_version'];
+        $desiredUltraRuntimeSha256 = (string) $snapshot['desired_ultra_runtime_sha256'];
         $updateRequestToken = (string) $snapshot['update_request_token'];
         $linuxProfileRuntime = $snapshot['linux_profile_runtime'];
 
@@ -525,6 +527,8 @@ final class ClientAgentController extends BaseController
                 'desired_installer_sha256' => (string) ($clientAgentInstaller['sha256'] ?? ''),
                 'desired_install_forward_runtime_version' => (string) ($installForwardRuntime['version'] ?? ''),
                 'desired_install_forward_runtime_sha256' => (string) ($installForwardRuntime['sha256'] ?? ''),
+                'desired_ultra_runtime_version' => $desiredUltraRuntimeVersion,
+                'desired_ultra_runtime_sha256' => $desiredUltraRuntimeSha256,
                 'desired_bond_version' => (string) ($bondBinary['version'] ?? ''),
                 'desired_bond_sha256' => $desiredBondSha256,
                 'desired_mptcp_runtime_version' => (string) ($mptcpRuntime['version'] ?? ''),
@@ -561,11 +565,14 @@ final class ClientAgentController extends BaseController
         $clientAgent = $this->artifactMetadata('client_agent');
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
         $installForwardRuntime = $this->artifactMetadata('install_forward_runtime');
+        $ultraClientRuntime = $this->artifactMetadata('ultra_client_runtime');
         $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
         $mptcpRuntime = $this->artifactMetadata('mptcp_client_runtime');
         $cfwgLatencyWatchdog = $this->artifactMetadata('cfwg_latency_watchdog');
         $wstunnelBinary = $this->artifactMetadata('wstunnel_linux_amd64');
         $desiredBondSha256 = (string) ($bondBinary['binary_sha256'] ?? $bondBinary['sha256'] ?? '');
+        $desiredUltraRuntimeVersion = (string) ($ultraClientRuntime['version'] ?? '');
+        $desiredUltraRuntimeSha256 = (string) ($ultraClientRuntime['binary_sha256'] ?? $ultraClientRuntime['sha256'] ?? '');
         $updateRequestToken = trim((string) ($client['agent_update_request_token'] ?? ''));
         if ($updateRequestToken === '') {
             $updateRequestToken = $this->autoUpdateTokenForVersion((string) ($client['agent_version'] ?? ''), 'client_agent', 'auto-client-agent');
@@ -591,6 +598,7 @@ final class ClientAgentController extends BaseController
             'client_agent' => $clientAgent,
             'client_agent_installer' => $clientAgentInstaller,
             'install_forward_runtime' => $installForwardRuntime,
+            'ultra_client_runtime' => $ultraClientRuntime,
             'leikwan_bond_linux_amd64' => $bondBinary,
             'mptcp_client_runtime' => $mptcpRuntime,
             'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
@@ -604,10 +612,13 @@ final class ClientAgentController extends BaseController
             'client_agent' => $clientAgent,
             'client_agent_installer' => $clientAgentInstaller,
             'install_forward_runtime' => $installForwardRuntime,
+            'ultra_client_runtime' => $ultraClientRuntime,
             'bond_binary' => $bondBinary,
             'mptcp_runtime' => $mptcpRuntime,
             'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
             'desired_bond_sha256' => $desiredBondSha256,
+            'desired_ultra_runtime_version' => $desiredUltraRuntimeVersion,
+            'desired_ultra_runtime_sha256' => $desiredUltraRuntimeSha256,
             'update_request_token' => $updateRequestToken,
             'forward_revision' => $forwardRevision,
             'config_revision' => $configRevision,
