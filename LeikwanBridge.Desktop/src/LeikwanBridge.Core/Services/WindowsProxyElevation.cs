@@ -37,6 +37,21 @@ public static class WindowsProxyElevation
         return startInfo;
     }
 
+    /// <summary>
+    /// Runs ShellExecute/RunAs away from the WPF dispatcher.  UAC is a modal
+    /// shell operation and can wait for user input; keeping it off the UI
+    /// thread prevents the client from appearing frozen while the prompt is
+    /// displayed or being dismissed.
+    /// </summary>
+    public static Task<Process?> StartElevatedAsync(
+        ProcessStartInfo startInfo,
+        Func<ProcessStartInfo, Process?>? launcher = null)
+    {
+        ArgumentNullException.ThrowIfNull(startInfo);
+        launcher ??= static info => Process.Start(info);
+        return Task.Run(() => launcher(startInfo));
+    }
+
     public static bool TryParseProxyStartRequest(
         IReadOnlyList<string>? args,
         out WindowsProxyStartRequest request)

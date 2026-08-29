@@ -318,7 +318,7 @@ public partial class MainWindow : Window
                 App.Config.ProxyActiveProfileId = profileId;
                 App.Config.ProxyActiveGameId = gameId?.Trim() ?? string.Empty;
                 SaveCurrentConfig();
-                if (TryLaunchElevatedProxy(profileId, gameId))
+                if (await TryLaunchElevatedProxyAsync(profileId, gameId))
                     return;
             }
 
@@ -356,7 +356,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private bool TryLaunchElevatedProxy(int profileId, string? gameId)
+    private async Task<bool> TryLaunchElevatedProxyAsync(int profileId, string? gameId)
     {
         if (!OperatingSystem.IsWindows())
             return false;
@@ -373,18 +373,19 @@ public partial class MainWindow : Window
 
         try
         {
-            using var elevated = Process.Start(WindowsProxyElevation.BuildRelaunchStartInfo(
-                executablePath,
-                new WindowsProxyStartRequest(
-                    WindowsProxyMode.Process,
-                    profileId,
-                    gameId?.Trim() ?? string.Empty)));
+            using var elevated = await WindowsProxyElevation.StartElevatedAsync(
+                WindowsProxyElevation.BuildRelaunchStartInfo(
+                    executablePath,
+                    new WindowsProxyStartRequest(
+                        WindowsProxyMode.Process,
+                        profileId,
+                        gameId?.Trim() ?? string.Empty)));
             if (elevated is null)
                 return false;
 
-            // Stop the old instance only after UAC accepted and the child was
-            // created, otherwise cancelling UAC would interrupt a live proxy.
-            _vm.StopProxyForShutdown();
+            // Stop/Disconnect cleanup runs from the normal close path.  Doing
+            // it here as well can hold the single-instance mutex while the
+            // elevated child is starting and makes the handoff look hung.
             _trayLifecycle.RequestExit();
             DisposeTrayIcon();
             System.Windows.Application.Current.Shutdown();
@@ -1072,7 +1073,6 @@ public partial class MainWindow : Window
         else
         {
             _trayLifecycle.MarkClosing();
-            _vm.StopProxyForShutdown();
             _vm.DisconnectCommand.Execute(null);
             DisposeTrayIcon();
         }
