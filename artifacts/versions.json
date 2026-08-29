@@ -43,10 +43,10 @@
  "client_agent": {
   "artifact_url": "/artifacts/client-agent.py",
   "path": "client-agent/client_agent.py",
-    "sha256": "9126042eb92699f953673b27928c2bfbf214da861de4373440abaa12e2effcaf",
+    "sha256": "901841a5df5cc05f045c9526277458a5654ae4a3d594da47ee8a56f6379c52b0",
      "size": 279228,
      "size_bytes": 279228,
-  "version": "2026.08.29.1"
+  "version": "2026.08.30.4"
  },
  "client_agent_installer": {
   "artifact_url": "/artifacts/install-client-agent.sh",
@@ -97,7 +97,7 @@
      "sha256": "a924ab8a25aab69b336393e5041a0af1854584108a326cf45c432411c0e9b886",
      "size": 95431,
      "size_bytes": 95431,
-  "version": "2026.08.29.1"
+  "version": "2026.08.30.4"
  },
  "leigod_forward_relay": {
   "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
@@ -364,16 +364,16 @@
   ],
   "obfuscator": "garble-v0.17.0",
   "path": "artifacts/ultra/ultra-client_linux_amd64",
-  "sha256": "c8cb471b8a1ba0f306c2c960d3d3813786bc3c015cef3fab5d8397a544161adc",
-  "size_bytes": 15483146,
-  "version": "2026.08.30.2"
+  "sha256": "56d56d6d5de1cd0c98cb34221b26fc50fb8792c7ff31eee24d8024c060248a56",
+  "size_bytes": 15528202,
+  "version": "2026.08.30.4"
  },
  "ultra_client_runtime_windows": {
  "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
  "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
- "sha256": "29211bb682a4db117728b957518fc7864b1743cd7010eb302a818397c7b63ad1",
- "size_bytes": 6674944,
- "version": "2026.08.30.3"
+ "sha256": "5fac22da77dc6d6cc81abb8f824fe57cd9dff736655f498af36236f4df5a7d47",
+ "size_bytes": 6695936,
+ "version": "2026.08.30.4"
  },
  "uot_bond_runtime": {
   "artifact_url": "/artifacts/leikwan-uot-bond.py",
@@ -393,9 +393,9 @@
  "windows_client_app": {
   "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
   "path": "artifacts/windows/leikwan-bridge-setup.exe",
-  "sha256": "9e1398b4f4711e9e5064f51dc59ca64912d2fd0d1b5d4d23537e12123e1beeb5",
-  "size_bytes": 105228219,
-  "version": "0.1.19.8"
+ "sha256": "ddc54a76f1b65544692925d9aa76bbdb423834380cc0bae4cfa6dc2f720b3450",
+ "size_bytes": 22341822,
+ "version": "0.1.19.9"
  },
  "wstunnel_linux_amd64": {
   "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",
