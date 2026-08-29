@@ -398,6 +398,9 @@ func isDatagramKeepaliveResponse(packet, payload []byte) bool {
 			(packet[4] == 1 && bytes.Equal(packet[5:9], reservedIP) && packet[9] == 0)) {
 		return true
 	}
+	if len(packet) >= 16 && bytes.Equal(packet[10:14], reservedIP) && binary.BigEndian.Uint16(packet[14:16]) == 0 {
+		return true
+	}
 	return bytes.Equal(payload, []byte(keepPayloadHex))
 }
 
