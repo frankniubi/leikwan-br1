@@ -119,6 +119,7 @@ foreach ([
     'OIDC_ALLOWED_SIGNING_ALGS=RS256',
     'OIDC_CLOCK_SKEW_SECONDS=120',
     'OIDC_REQUIRE_EMAIL_VERIFIED=true',
+    'OIDC_PROVIDER_RESOLVE=',
 ] as $key) {
     assertContains($key, $env, 'missing OIDC environment template key');
 }
