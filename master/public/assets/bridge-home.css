@@ -792,3 +792,428 @@
     border-top: 1px solid var(--bridge-line);
   }
 }
+
+/* Homepage visual polish: a clearer signal-led hierarchy without gradients. */
+.bridge-home-page {
+  --bridge-paper: #f7faf7;
+  --bridge-panel: #edf3ee;
+  --bridge-ink: #15221c;
+  --bridge-muted: #61736a;
+  --bridge-line: #d8e4db;
+  --bridge-line-strong: #9caf9f;
+  --bridge-coral: #d85c45;
+  --bridge-sage: #2f8065;
+  --bridge-yellow: #d9aa4c;
+  --bridge-ink-deep: #10221d;
+  background: var(--bridge-paper);
+}
+
+.bridge-home-page .public-shell {
+  background: var(--bridge-paper);
+}
+
+.bridge-home-page .site-topbar {
+  min-height: 88px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--bridge-line);
+}
+
+.bridge-home-page .site-mark {
+  flex-basis: 160px;
+  width: 160px;
+  height: 72px;
+}
+
+.bridge-home-page .site-actions .button {
+  border-radius: 8px;
+  transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.bridge-home-page .site-actions .button:hover {
+  transform: translateY(-2px);
+}
+
+.bridge-home-page .site-actions .button:not(.ghost):not(.secondary):hover {
+  background: var(--bridge-coral);
+}
+
+.bridge-home-page .bridge-home-hero {
+  position: relative;
+  min-height: 560px;
+  padding-top: 76px;
+  padding-bottom: 76px;
+  border-bottom: 0;
+}
+
+.bridge-home-page .bridge-home-hero::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 76px;
+  background: var(--bridge-coral);
+  content: "";
+}
+
+.bridge-home-page .bridge-home-hero::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 34%;
+  border-bottom: 1px solid var(--bridge-line-strong);
+  content: "";
+}
+
+.bridge-home-page .bridge-home-hero h1 {
+  font-size: 72px;
+}
+
+.bridge-home-page .bridge-home-hero h1 span {
+  color: var(--bridge-sage);
+}
+
+.bridge-home-page .bridge-home-lede {
+  max-width: 590px;
+  font-weight: 600;
+}
+
+.bridge-home-page .bridge-home-primary {
+  border: 1px solid var(--bridge-coral);
+  border-radius: 8px;
+  box-shadow: 0 7px 0 #b64735;
+  transition: background-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.bridge-home-page .bridge-home-primary:hover {
+  background: #c74f3b;
+  box-shadow: 0 10px 18px rgba(182, 71, 53, 0.22);
+  transform: translateY(-3px);
+}
+
+.bridge-home-page .bridge-home-link {
+  transition: border-color 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.bridge-home-page .bridge-home-link:hover {
+  transform: translateX(3px);
+}
+
+.bridge-home-page .bridge-home-path-note {
+  max-width: 520px;
+  padding-top: 17px;
+  border-top: 1px solid var(--bridge-line);
+}
+
+.bridge-home-page .bridge-home-status {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 328px;
+  padding: 27px 28px 24px;
+  border: 1px solid var(--bridge-ink-deep);
+  border-top: 4px solid var(--bridge-coral);
+  border-left-width: 1px;
+  border-radius: 10px;
+  background: var(--bridge-ink-deep);
+  color: #f3f8f3;
+  box-shadow: 0 24px 48px rgba(16, 34, 29, 0.16);
+}
+
+.bridge-home-page .bridge-home-status::before {
+  position: absolute;
+  inset: 70px 24px 66px 24px;
+  border: 1px solid rgba(211, 231, 217, 0.22);
+  border-left: 0;
+  border-radius: 0 12px 12px 0;
+  content: "";
+  pointer-events: none;
+  z-index: -1;
+}
+
+.bridge-home-page .bridge-home-status::after {
+  position: absolute;
+  top: 124px;
+  left: 28px;
+  width: 78%;
+  height: 1px;
+  background: rgba(216, 92, 69, 0.62);
+  box-shadow: 0 42px 0 rgba(216, 92, 69, 0.28), 0 84px 0 rgba(216, 92, 69, 0.2);
+  content: "";
+  pointer-events: none;
+  z-index: -1;
+}
+
+.bridge-home-page .bridge-home-status > * {
+  position: relative;
+  z-index: 1;
+}
+
+.bridge-home-page .bridge-home-status-head {
+  color: #aec2b4;
+}
+
+.bridge-home-page .bridge-home-status-mark {
+  width: 10px;
+  height: 10px;
+  background: #73d29c;
+  box-shadow: 0 0 0 4px rgba(115, 210, 156, 0.14);
+}
+
+.bridge-home-page .bridge-home-status strong {
+  margin-top: 67px;
+  color: #ffffff;
+  font-size: 34px;
+}
+
+.bridge-home-page .bridge-home-status p {
+  color: #bfd0c4;
+}
+
+.bridge-home-page .bridge-home-status-rule {
+  border-top-color: rgba(211, 231, 217, 0.24);
+}
+
+.bridge-home-page .bridge-home-status-meta {
+  color: #9fb5a6;
+}
+
+.bridge-home-page .bridge-home-status-meta span:last-child {
+  color: #83d7a4;
+}
+
+.bridge-home-page .bridge-home-route-catalog {
+  padding-top: 84px;
+}
+
+.bridge-home-page .bridge-home-catalog-heading,
+.bridge-home-page .bridge-home-section-heading {
+  grid-template-columns: minmax(190px, 0.48fr) minmax(0, 1.52fr);
+  column-gap: 56px;
+}
+
+.bridge-home-page .bridge-home-catalog-heading h2,
+.bridge-home-page .bridge-home-section-heading h2 {
+  font-size: 42px;
+}
+
+.bridge-home-page .bridge-home-route-grid {
+  margin-top: 49px;
+  background: var(--bridge-panel);
+}
+
+.bridge-home-page .bridge-home-route-card {
+  position: relative;
+  min-height: 184px;
+  padding-top: 25px;
+  padding-bottom: 23px;
+  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+
+.bridge-home-page .bridge-home-route-card::after {
+  position: absolute;
+  right: 20px;
+  bottom: 17px;
+  width: 20px;
+  border-bottom: 2px solid var(--bridge-coral);
+  content: "";
+  transition: width 180ms ease;
+}
+
+.bridge-home-page .bridge-home-route-card:hover {
+  background: #e5efe7;
+  box-shadow: 0 14px 24px rgba(21, 34, 28, 0.08);
+  transform: translateY(-4px);
+}
+
+.bridge-home-page .bridge-home-route-card:hover::after {
+  width: 48px;
+}
+
+.bridge-home-page .bridge-home-route-card strong {
+  font-size: 29px;
+}
+
+.bridge-home-page .bridge-home-network {
+  padding-top: 96px;
+}
+
+.bridge-home-page .bridge-home-route {
+  margin-top: 50px;
+  padding: 0 18px;
+  border: 1px solid var(--bridge-line-strong);
+  background: var(--bridge-panel);
+}
+
+.bridge-home-page .bridge-home-route-node,
+.bridge-home-page .bridge-home-route-node + .bridge-home-route-node {
+  min-height: 164px;
+  padding-top: 28px;
+  padding-bottom: 28px;
+}
+
+.bridge-home-page .bridge-home-route-node .bridge-home-route-index {
+  display: grid;
+  flex-basis: 34px;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding-top: 0;
+  border: 1px solid var(--bridge-coral);
+  border-radius: 50%;
+  background: var(--bridge-paper);
+}
+
+.bridge-home-page .bridge-home-route-node:not(:last-child)::after {
+  top: 44px;
+  right: -10px;
+  width: 20px;
+  border-top-width: 2px;
+}
+
+.bridge-home-page .bridge-home-route-node strong {
+  font-size: 17px;
+}
+
+.bridge-home-page .bridge-home-footer-grid {
+  padding-top: 88px;
+}
+
+.bridge-home-page .bridge-home-footer-copy h2 {
+  font-size: 32px;
+}
+
+.bridge-home-page .bridge-home-footer-links a {
+  min-height: 62px;
+  transition: background-color 180ms ease, color 180ms ease, padding 180ms ease;
+}
+
+.bridge-home-page .bridge-home-footer-links a:hover {
+  padding-right: 8px;
+  padding-left: 8px;
+  background: var(--bridge-panel);
+}
+
+.bridge-home-page :is(a, button, select):focus-visible {
+  outline: 3px solid var(--bridge-yellow);
+  outline-offset: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bridge-home-page *,
+  .bridge-home-page *::before,
+  .bridge-home-page *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 820px) {
+  .bridge-home-page .site-topbar {
+    min-height: 82px;
+  }
+
+  .bridge-home-page .bridge-home-hero {
+    min-height: 0;
+    padding-top: 48px;
+    padding-bottom: 48px;
+  }
+
+  .bridge-home-page .bridge-home-hero::before {
+    height: 48px;
+  }
+
+  .bridge-home-page .bridge-home-hero h1 {
+    font-size: 52px;
+  }
+
+  .bridge-home-page .bridge-home-status {
+    min-height: 286px;
+  }
+
+  .bridge-home-page .bridge-home-status strong {
+    margin-top: 51px;
+  }
+
+  .bridge-home-page .bridge-home-route-catalog,
+  .bridge-home-page .bridge-home-network {
+    padding-top: 68px;
+  }
+
+  .bridge-home-page .bridge-home-catalog-heading h2,
+  .bridge-home-page .bridge-home-section-heading h2 {
+    font-size: 34px;
+  }
+
+  .bridge-home-page .bridge-home-route-grid {
+    margin-top: 38px;
+  }
+
+  .bridge-home-page .bridge-home-route {
+    margin-top: 38px;
+    padding: 0 12px;
+  }
+
+  .bridge-home-page .bridge-home-route-node,
+  .bridge-home-page .bridge-home-route-node + .bridge-home-route-node {
+    min-height: 104px;
+    padding-top: 21px;
+    padding-bottom: 21px;
+  }
+
+  .bridge-home-page .bridge-home-footer-grid {
+    padding-top: 61px;
+  }
+}
+
+@media (max-width: 480px) {
+  .bridge-home-page .bridge-home-hero {
+    padding-top: 38px;
+    padding-bottom: 39px;
+  }
+
+  .bridge-home-page .bridge-home-hero::before {
+    height: 38px;
+  }
+
+  .bridge-home-page .bridge-home-hero h1 {
+    font-size: 43px;
+  }
+
+  .bridge-home-page .bridge-home-hero h1 span {
+    font-size: 24px;
+  }
+
+  .bridge-home-page .bridge-home-status {
+    min-height: 250px;
+    padding: 23px;
+  }
+
+  .bridge-home-page .bridge-home-status::before {
+    inset: 64px 20px 56px 20px;
+  }
+
+  .bridge-home-page .bridge-home-status::after {
+    top: 112px;
+    left: 23px;
+    width: 82%;
+  }
+
+  .bridge-home-page .bridge-home-status strong {
+    margin-top: 45px;
+    font-size: 30px;
+  }
+
+  .bridge-home-page .bridge-home-route {
+    padding: 0;
+  }
+
+  .bridge-home-page .bridge-home-route-node .bridge-home-route-index {
+    flex-basis: 31px;
+    width: 31px;
+    height: 31px;
+  }
+}

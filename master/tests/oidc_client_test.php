@@ -93,6 +93,7 @@ file_put_contents($envPath, implode("\n", [
     'OIDC_ALLOWED_SIGNING_ALGS=RS256',
     'OIDC_CLOCK_SKEW_SECONDS=30',
     'OIDC_REQUIRE_EMAIL_VERIFIED=true',
+    'OIDC_PROVIDER_RESOLVE=issuer.example:443:127.0.0.1',
 ]));
 
 $privateKey = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 2048]);
@@ -132,6 +133,7 @@ $userinfoPayload = [
 ];
 $httpClient = static function (string $method, string $url, array $options) use (&$calls, &$userinfoPayload, &$idToken, $details): array {
     $calls[] = [$method, $url, $options];
+    assertSame(['issuer.example:443:127.0.0.1'], $options['resolve'] ?? null, 'provider resolve mapping');
     if ($url === 'https://issuer.example/.well-known/openid-configuration') {
         return ['status' => 200, 'body' => json_encode([
             'issuer' => 'https://issuer.example',
@@ -178,6 +180,23 @@ assertSame('state-value', $query['state'] ?? null, 'authorization URL state');
 assertSame('nonce-value', $query['nonce'] ?? null, 'authorization URL nonce');
 assertSame('challenge-value', $query['code_challenge'] ?? null, 'authorization URL PKCE challenge');
 assertSame('S256', $query['code_challenge_method'] ?? null, 'authorization URL PKCE method');
+
+$invalidResolvePath = tempnam(sys_get_temp_dir(), 'lw-oidc-invalid-resolve-');
+if ($invalidResolvePath === false) {
+    fail('failed to create invalid resolve config file');
+}
+file_put_contents($invalidResolvePath, implode("\n", [
+    'OIDC_ENABLED=true',
+    'OIDC_ISSUER_URL=https://issuer.example',
+    'OIDC_USERINFO_URL=https://issuer.example/userinfo',
+    'OIDC_CLIENT_ID=client-123',
+    'OIDC_CLIENT_SECRET=super-secret',
+    'OIDC_REDIRECT_URI=https://panel.example/auth/oidc/callback',
+    'OIDC_TOKEN_AUTH_METHOD=client_secret_basic',
+    'OIDC_PROVIDER_RESOLVE=not-a-valid-mapping',
+]));
+$invalidResolveClient = new OidcClient(new Config($invalidResolvePath));
+assertTrue(!$invalidResolveClient->isConfigured(), 'invalid provider resolve mapping must fail closed');
 
 $identity = $client->authenticateCallback('authorization-code', $flow);
 assertSame([
@@ -479,6 +498,8 @@ try {
 $clientSource = (string) file_get_contents(__DIR__ . '/../src/Support/OidcClient.php');
 assertTrue(str_contains($clientSource, "'follow_location' => 0"), 'stream HTTP fallback must reject redirects');
 assertTrue(str_contains($clientSource, 'CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4'), 'cURL provider requests must use IPv4');
+assertTrue(str_contains($clientSource, 'CURLOPT_RESOLVE'), 'cURL provider requests must honor provider resolve mappings');
+assertTrue(str_contains($clientSource, 'OIDC_PROVIDER_RESOLVE'), 'provider resolve mapping must be configuration-driven');
 
 @unlink($envPath);
 @unlink($badConfigPath);
@@ -490,4 +511,5 @@ assertTrue(str_contains($clientSource, 'CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4')
 @unlink($whmcsEndpointsPath);
 @unlink($unsafeExplicitPath);
 @unlink($queryDiscoveryPath);
+@unlink($invalidResolvePath);
 echo "ok\n";
