@@ -80,6 +80,89 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void Initialize_PreservesSelectedProxyGameAndMirrorsLaterChanges()
+    {
+        var vm = new MainViewModel();
+        var config = new AgentConfig
+        {
+            ProxyActiveGameId = "steam",
+        };
+
+        vm.Initialize(config);
+
+        Assert.Equal("steam", vm.SelectedProxyGameId);
+        vm.SelectedProxyGameId = "valorant";
+        Assert.Equal("valorant", config.ProxyActiveGameId);
+    }
+
+    [Fact]
+    public async Task AddProxyGameFolderCreatesNamedProfileWithAllExecutableProcessNames()
+    {
+        var stateDir = Path.Combine(Path.GetTempPath(), "leikwan-proxy-game-folder-" + Guid.NewGuid().ToString("N"));
+        var gameDir = Path.Combine(stateDir, "game");
+        Directory.CreateDirectory(Path.Combine(gameDir, "bin"));
+        await File.WriteAllTextAsync(Path.Combine(gameDir, "launcher.exe"), "test");
+        await File.WriteAllTextAsync(Path.Combine(gameDir, "bin", "game.exe"), "test");
+        await File.WriteAllTextAsync(Path.Combine(gameDir, "readme.txt"), "not an executable");
+
+        var vm = new MainViewModel();
+        try
+        {
+            vm.Initialize(new AgentConfig
+            {
+                StateDir = stateDir,
+                ProxySingBoxBin = Path.Combine(stateDir, "sing-box.exe"),
+            });
+            await vm.InitializeProxyAsync();
+
+            var profile = await vm.AddProxyGameFolderAsync(gameDir, "HKG Game");
+
+            Assert.Equal("HKG Game", profile.DisplayName);
+            Assert.Equal(
+                ["game.exe", "launcher.exe"],
+                profile.ProcessPatterns.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray());
+            Assert.Contains(vm.ProxyGameOptions, option => option.Id == profile.Id);
+        }
+        finally
+        {
+            vm.DisposeProxyForShutdown();
+            try { Directory.Delete(stateDir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task RefreshProxyGameOptionsPreservesSelectedGameAndDisplayName()
+    {
+        var stateDir = Path.Combine(Path.GetTempPath(), "leikwan-proxy-game-selection-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stateDir);
+        var executable = Path.Combine(stateDir, "game.exe");
+        await File.WriteAllTextAsync(executable, "test");
+
+        var vm = new MainViewModel();
+        try
+        {
+            vm.Initialize(new AgentConfig
+            {
+                StateDir = stateDir,
+                ProxySingBoxBin = Path.Combine(stateDir, "sing-box.exe"),
+            });
+            await vm.InitializeProxyAsync();
+            var profile = await vm.AddProxyGameAsync(executable, "My Game");
+
+            vm.SelectedProxyGameId = profile.Id;
+            vm.RefreshProxyGameOptions();
+
+            Assert.Equal(profile.Id, vm.SelectedProxyGameId);
+            Assert.Equal("My Game", vm.SelectedProxyGameDisplayName);
+        }
+        finally
+        {
+            vm.DisposeProxyForShutdown();
+            try { Directory.Delete(stateDir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
     public void Initialize_WithTokenOnlyConfig_HidesSetupWizard()
     {
         var vm = new MainViewModel();
@@ -107,6 +190,44 @@ public sealed class MainViewModelTests
         Assert.True(vm.ShowSetupWizard);
         Assert.False(vm.ShouldAutoConnectOnStartup);
         Assert.False(vm.HasSignedInEmail);
+    }
+
+    [Fact]
+    public async Task SaveProxyProfileAfterInitializationKeepsEditorValuesAndAddsLibraryEntry()
+    {
+        var stateDir = Path.Combine(Path.GetTempPath(), "leikwan-proxy-vm-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stateDir);
+        var vm = new MainViewModel();
+        try
+        {
+            vm.Initialize(new AgentConfig
+            {
+                StateDir = stateDir,
+                ProxySingBoxBin = Path.Combine(stateDir, "sing-box.exe"),
+            });
+            await vm.InitializeProxyAsync();
+
+            vm.ProxyEditor.Name = "HKG test";
+            vm.ProxyEditor.Protocol = WindowsProxyProtocol.Shadowsocks2022;
+            vm.ProxyEditor.Server = "east.example.test";
+            vm.ProxyEditor.PortText = "30526";
+            vm.ProxyEditor.Method = "2022-blake3-aes-256-gcm";
+            vm.ProxyEditor.Password = "test-secret";
+
+            await vm.SaveProxyProfileAsync();
+
+            var profile = Assert.Single(vm.ProxyProfiles);
+            Assert.Equal("HKG test", profile.Name);
+            Assert.Equal("east.example.test", profile.Server);
+            Assert.Equal(30526, profile.Port);
+            Assert.Equal(profile.Id, vm.Config.ProxyActiveProfileId);
+            Assert.True(File.Exists(Path.Combine(stateDir, "proxy-profiles.json")));
+        }
+        finally
+        {
+            vm.DisposeProxyForShutdown();
+            try { Directory.Delete(stateDir, recursive: true); } catch (IOException) { }
+        }
     }
 
     [Fact]

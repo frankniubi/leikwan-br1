@@ -83,6 +83,48 @@ public sealed class AgentConfig
     [JsonPropertyName("wg_bin")]
     public string WgBin { get; set; } = "";
 
+    [JsonPropertyName("proxy_sing_box_bin")]
+    public string ProxySingBoxBin { get; set; } = "";
+
+    [JsonPropertyName("proxy_redirector_bin")]
+    public string ProxyRedirectorBin { get; set; } = "";
+
+    [JsonPropertyName("proxy_netfilter_driver")]
+    public string ProxyNetfilterDriver { get; set; } = "";
+
+    [JsonPropertyName("proxy_port")]
+    public int ProxyPort { get; set; } = 2080;
+
+    [JsonPropertyName("proxy_tun_mtu")]
+    public int ProxyTunMtu { get; set; } = 1280;
+
+    [JsonPropertyName("proxy_tun_stack")]
+    public string ProxyTunStack { get; set; } = "gvisor";
+
+    [JsonPropertyName("proxy_dns_mode")]
+    public string ProxyDnsMode { get; set; } = nameof(WindowsProxyDnsMode.Remote);
+
+    [JsonPropertyName("proxy_dns_servers")]
+    public string ProxyDnsServers { get; set; } = WindowsProxyDns.DefaultCustomServer;
+
+    [JsonPropertyName("proxy_active_profile_id")]
+    public int ProxyActiveProfileId { get; set; }
+
+    [JsonPropertyName("proxy_active_mode")]
+    public string ProxyActiveMode { get; set; } = "Http";
+
+    [JsonPropertyName("proxy_active_game_id")]
+    public string ProxyActiveGameId { get; set; } = "";
+
+    [JsonPropertyName("proxy_bypass_china_mainland")]
+    public bool ProxyBypassChinaMainland { get; set; }
+
+    [JsonPropertyName("proxy_china_ip_list")]
+    public string ProxyChinaIpList { get; set; } = "";
+
+    [JsonPropertyName("proxy_netch_mode_path")]
+    public string ProxyNetchModePath { get; set; } = "";
+
     [JsonPropertyName("wireguard_listen_port")]
     public int WireguardListenPort { get; set; }
 
@@ -183,6 +225,71 @@ public sealed class AgentConfig
         if (!string.IsNullOrWhiteSpace(WgBin))
             return WgBin;
         return Path.Combine(AppContext.BaseDirectory, "bin", "wg.exe");
+    }
+
+    public string GetEffectiveProxySingBoxBin()
+    {
+        if (!string.IsNullOrWhiteSpace(ProxySingBoxBin))
+            return ProxySingBoxBin;
+        return Path.Combine(AppContext.BaseDirectory, "bin", "sing-box.exe");
+    }
+
+    public string GetEffectiveProxyRedirectorBin()
+    {
+        if (!string.IsNullOrWhiteSpace(ProxyRedirectorBin))
+            return ProxyRedirectorBin;
+        return Path.Combine(AppContext.BaseDirectory, "bin", "Redirector.bin");
+    }
+
+    public string GetEffectiveProxyNetfilterDriver()
+    {
+        if (!string.IsNullOrWhiteSpace(ProxyNetfilterDriver))
+            return ProxyNetfilterDriver;
+        return Path.Combine(AppContext.BaseDirectory, "bin", "netfilter2.sys");
+    }
+
+    public string GetEffectiveProxyChinaIpList()
+    {
+        if (!string.IsNullOrWhiteSpace(ProxyChinaIpList))
+            return ProxyChinaIpList;
+        return Path.Combine(AppContext.BaseDirectory, "bin", "CN.conf");
+    }
+
+    public string GetEffectiveProxyNetchModePath()
+    {
+        if (!string.IsNullOrWhiteSpace(ProxyNetchModePath))
+            return ProxyNetchModePath;
+
+        var candidates = new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "mode"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Netch", "mode"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Netch", "mode"),
+        };
+        return candidates.FirstOrDefault(Directory.Exists) ?? string.Empty;
+    }
+
+    public int GetEffectiveProxyPort()
+        => ProxyPort is >= 1 and <= 65535 ? ProxyPort : 2080;
+
+    public int GetEffectiveProxyTunMtu()
+        => ProxyTunMtu is >= 576 and <= 9000 ? ProxyTunMtu : 1280;
+
+    public string GetEffectiveProxyTunStack()
+    {
+        var normalized = ProxyTunStack?.Trim().ToLowerInvariant();
+        return normalized is "system" or "gvisor" or "mixed" ? normalized : "gvisor";
+    }
+
+    public WindowsProxyDnsMode GetEffectiveProxyDnsMode()
+        => WindowsProxyDns.NormalizeMode(ProxyDnsMode);
+
+    public IReadOnlyList<string> GetEffectiveProxyDnsServers()
+    {
+        var servers = WindowsProxyDns.ParseServers(ProxyDnsServers);
+        return servers.Count > 0
+            ? servers
+            : [WindowsProxyDns.DefaultCustomServer];
     }
 
     public int GetEffectiveWireguardListenPort()

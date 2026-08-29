@@ -95,6 +95,9 @@
                         <TextBlock Text="{Binding SignedInEmail}" FontSize="11"
                                    Foreground="{StaticResource SidebarTextBrush}" Margin="0,10,0,0"
                                    Visibility="{Binding HasSignedInEmail, Converter={StaticResource BoolToVis}}"/>
+                        <TextBlock Text="{DynamicResource ProxyConvergenceHint}" FontSize="11"
+                                   Foreground="{StaticResource SidebarTextBrush}" TextWrapping="Wrap"
+                                   MaxWidth="188" Margin="0,10,0,0"/>
                     </StackPanel>
 
                     <!-- Nav Buttons -->
@@ -103,6 +106,9 @@
                                 Command="{Binding NavigateToCommand}" CommandParameter="Dashboard"/>
                         <Button Style="{StaticResource NavButton}" Content="{DynamicResource NavForwards}"
                                 Command="{Binding NavigateToCommand}" CommandParameter="Forwards"/>
+                        <Button Style="{StaticResource NavButton}" Content="{DynamicResource NavProxy}"
+                                Command="{Binding NavigateToCommand}" CommandParameter="Proxy"
+                                AutomationProperties.Name="Local proxy"/>
                         <Button Style="{StaticResource NavButton}" Content="{DynamicResource NavLog}"
                                 Command="{Binding NavigateToCommand}" CommandParameter="Log"/>
                         <Button Style="{StaticResource NavButton}" Content="{DynamicResource NavSettings}"
@@ -339,6 +345,315 @@
                                 </ListBox>
                             </StackPanel>
                         </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- Local proxy view -->
+                <ScrollViewer x:Name="ProxyPanel" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <DockPanel Margin="0,0,0,4">
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource ProxyTitle}"
+                                       DockPanel.Dock="Left"/>
+                            <Button x:Name="ProxyNewButton" Style="{StaticResource GhostButton}"
+                                    Content="{DynamicResource ProxyNew}" DockPanel.Dock="Right"
+                                    Click="OnProxyNew_Click" AutomationProperties.Name="New proxy profile"/>
+                        </DockPanel>
+                        <TextBlock Text="{DynamicResource ProxySubtitle}" Foreground="{StaticResource MutedTextBrush}"
+                                   TextWrapping="Wrap" Margin="0,0,0,12"/>
+                        <TextBlock Text="{DynamicResource ProxyElevationHint}" Foreground="{StaticResource MutedTextBrush}"
+                                   TextWrapping="Wrap" Margin="0,0,0,12"/>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="230"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,12,12">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyProfiles}"/>
+                                    <ListBox x:Name="ProxyProfileList" ItemsSource="{Binding ProxyProfiles}"
+                                             MinHeight="120" MaxHeight="360"
+                                             SelectionChanged="OnProxyProfileSelectionChanged"
+                                             AutomationProperties.Name="Proxy profiles">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="2">
+                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{Binding DisplayEndpoint}" Foreground="{StaticResource MutedTextBrush}"
+                                                               FontSize="11"/>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyNew}"
+                                            Click="OnProxyNew_Click" Margin="0,10,0,0"/>
+                                </StackPanel>
+                            </Border>
+
+                            <StackPanel Grid.Column="1" Margin="0,0,0,12">
+                                <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyImport}"/>
+                                        <DockPanel>
+                                            <TextBox x:Name="ProxyImportUri" Style="{StaticResource InputTextBox}"
+                                                     DockPanel.Dock="Left" Margin="0,0,8,0"
+                                                     AutomationProperties.Name="Proxy URI"/>
+                                            <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ProxyImport}"
+                                                    Click="OnProxyImport_Click" AutomationProperties.Name="Import proxy URI"/>
+                                        </DockPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                                    <StackPanel>
+                                         <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyProtocol}"/>
+                                                <ComboBox ItemsSource="{Binding ProxyEditor.ProtocolOptions}"
+                                                          SelectedItem="{Binding ProxyEditor.Protocol, Mode=TwoWay}"
+                                                          AutomationProperties.Name="Proxy protocol"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyMode}"/>
+                                                <ComboBox x:Name="ProxyModeCombo" SelectedIndex="0"
+                                                          SelectionChanged="OnProxyModeSelectionChanged"
+                                                          AutomationProperties.Name="Proxy mode">
+                                                    <ComboBoxItem Content="{DynamicResource ProxyModeHttp}" Tag="Http"/>
+                                                    <ComboBoxItem Content="{DynamicResource ProxyModeTun}" Tag="Tun"/>
+                                                    <ComboBoxItem Content="{DynamicResource ProxyModeProcess}" Tag="Process"/>
+                                                </ComboBox>
+                                             </StackPanel>
+                                         </Grid>
+
+                                         <CheckBox x:Name="ProxyBypassChinaCheckBox"
+                                                   Content="{DynamicResource ProxyBypassChinaMainland}"
+                                                   IsChecked="{Binding Config.ProxyBypassChinaMainland, Mode=TwoWay}"
+                                                   Margin="0,0,0,10"
+                                                   AutomationProperties.Name="Bypass mainland China IPs"/>
+
+                                        <Grid Margin="0,0,0,10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyDnsMode}"/>
+                                                <ComboBox x:Name="ProxyDnsModeCombo"
+                                                          SelectionChanged="OnProxyDnsModeSelectionChanged"
+                                                          AutomationProperties.Name="Proxy DNS mode">
+                                                    <ComboBoxItem Content="{DynamicResource ProxyDnsRemote}" Tag="Remote"/>
+                                                    <ComboBoxItem Content="{DynamicResource ProxyDnsCustom}" Tag="Custom"/>
+                                                </ComboBox>
+                                            </StackPanel>
+                                            <StackPanel x:Name="ProxyDnsServersPanel" Grid.Column="1" Margin="8,0,0,0">
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyDnsServers}"/>
+                                                <TextBox x:Name="ProxyDnsServersText"
+                                                         Style="{StaticResource InputTextBox}"
+                                                         TextChanged="OnProxyDnsServersTextChanged"
+                                                         AutomationProperties.Name="Custom DNS servers"/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <TextBlock Text="{DynamicResource ProxyDnsHint}" Foreground="{StaticResource MutedTextBrush}"
+                                                   TextWrapping="Wrap" Margin="0,0,0,10"/>
+
+                                        <Grid Margin="0,0,0,10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="160"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyLocalListenPort}"/>
+                                                <ComboBox x:Name="ProxyLocalListenPortCombo"
+                                                          ItemsSource="{Binding ProxyEditor.LocalListenPortOptions}"
+                                                          IsEditable="True"
+                                                          AutomationProperties.Name="Local proxy listen port"/>
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="1" Text="{DynamicResource ProxyLocalListenPortHint}"
+                                                       Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap"
+                                                       VerticalAlignment="Bottom" Margin="8,0,0,4"/>
+                                        </Grid>
+
+                                        <Grid Margin="0,0,0,8">
+                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyName}"/>
+                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Name, UpdateSourceTrigger=PropertyChanged}"
+                                                     AutomationProperties.Name="Proxy profile name"/>
+                                        </Grid>
+
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="120"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Margin="0,0,8,8">
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServer}"/>
+                                                <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Server, UpdateSourceTrigger=PropertyChanged}"
+                                                         AutomationProperties.Name="Proxy server"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Margin="8,0,0,8">
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPort}"/>
+                                                <ComboBox ItemsSource="{Binding ProxyEditor.PortOptions}" IsEditable="True"
+                                                          Text="{Binding ProxyEditor.PortText, UpdateSourceTrigger=PropertyChanged}"
+                                                         AutomationProperties.Name="Proxy port"/>
+                                            </StackPanel>
+                                        </Grid>
+
+                                        <StackPanel x:Name="ProxySsFields">
+                                            <StackPanel.Style>
+                                                <Style TargetType="StackPanel">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding ProxyEditor.IsShadowsocks}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </StackPanel.Style>
+                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyMethod}"/>
+                                            <ComboBox ItemsSource="{Binding ProxyEditor.ShadowsocksMethodOptions}"
+                                                      SelectedItem="{Binding ProxyEditor.Method, Mode=TwoWay}"
+                                                      Margin="0,0,0,8" AutomationProperties.Name="Shadowsocks cipher"/>
+                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPassword}"/>
+                                            <PasswordBox x:Name="ProxyPassword" Padding="10,8" FontSize="13" Margin="0,0,0,8"
+                                                         AutomationProperties.Name="Proxy password"/>
+                                            <CheckBox Content="{DynamicResource ProxyUdpOverTcp}" IsChecked="{Binding ProxyEditor.UdpOverTcp, Mode=TwoWay}"
+                                                      Margin="0,0,0,8"/>
+                                        </StackPanel>
+
+                                        <StackPanel x:Name="ProxyVlessFields">
+                                            <StackPanel.Style>
+                                                <Style TargetType="StackPanel">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding ProxyEditor.IsVless}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </StackPanel.Style>
+                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyUuid}"/>
+                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Uuid, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Grid.Column="0" Margin="0,0,8,8">
+                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyTransport}"/>
+                                                    <ComboBox ItemsSource="{Binding ProxyEditor.VlessTransportOptions}"
+                                                              SelectedItem="{Binding ProxyEditor.Transport, Mode=TwoWay}"/>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1" Margin="8,0,0,8">
+                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyFlow}"/>
+                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Flow, UpdateSourceTrigger=PropertyChanged}"/>
+                                                </StackPanel>
+                                            </Grid>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Grid.Column="0" Margin="0,0,8,8">
+                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyHost}"/>
+                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Host, UpdateSourceTrigger=PropertyChanged}"/>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1" Margin="8,0,0,8">
+                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPath}"/>
+                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Path, UpdateSourceTrigger=PropertyChanged}"/>
+                                                </StackPanel>
+                                            </Grid>
+                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServiceName}"
+                                                       Visibility="{Binding ProxyEditor.IsVlessGrpc, Converter={StaticResource BoolToVis}}"/>
+                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.ServiceName, UpdateSourceTrigger=PropertyChanged}"
+                                                     Visibility="{Binding ProxyEditor.IsVlessGrpc, Converter={StaticResource BoolToVis}}" Margin="0,0,0,8"/>
+                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServerName}"/>
+                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.ServerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyFingerprint}"/>
+                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Fingerprint, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRealityKey}"/>
+                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.RealityPublicKey, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRealityShortId}"/>
+                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.RealityShortId, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="{DynamicResource ProxyTls}" IsChecked="{Binding ProxyEditor.Tls, Mode=TwoWay}" Margin="0,0,16,0"/>
+                                                <CheckBox Content="{DynamicResource ProxyAllowInsecure}" IsChecked="{Binding ProxyEditor.AllowInsecure, Mode=TwoWay}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border x:Name="ProxyGameCard" Style="{StaticResource CardBorder}" Margin="0,0,0,12" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <DockPanel LastChildFill="False">
+                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyGame}" DockPanel.Dock="Left"/>
+                                            <WrapPanel DockPanel.Dock="Right">
+                                                <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyAddGame}"
+                                                        Click="OnProxyAddGame_Click" Margin="0,0,6,0"/>
+                                                <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyImportNetchModes}"
+                                                        Click="OnProxyImportNetchModes_Click" Margin="0,0,6,0"/>
+                                                <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyRefreshGames}"
+                                                        Click="OnProxyRefreshGames_Click"/>
+                                            </WrapPanel>
+                                        </DockPanel>
+                                        <TextBlock Text="{DynamicResource ProxyGameHint}" Foreground="{StaticResource MutedTextBrush}"
+                                                   TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                        <ComboBox x:Name="ProxyGameCombo" ItemsSource="{Binding ProxyGameOptions}"
+                                                  SelectedValuePath="Id"
+                                                  SelectedValue="{Binding SelectedProxyGameId, Mode=OneWay}"
+                                                  SelectionChanged="OnProxyGameSelectionChanged"
+                                                  AutomationProperties.Name="Game to proxy">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <DockPanel LastChildFill="True">
+                                                        <TextBlock Text="{Binding DisplayName}"/>
+                                                        <TextBlock Text="{Binding StatusText}" Foreground="{StaticResource MutedTextBrush}"
+                                                                   HorizontalAlignment="Right" Margin="12,0,0,0"/>
+                                                    </DockPanel>
+                                                </DataTemplate>
+                                         </ComboBox.ItemTemplate>
+                                     </ComboBox>
+                                         <Border Background="#E0F2FE" BorderBrush="#7DD3FC" BorderThickness="1"
+                                                 CornerRadius="4" Padding="8" Margin="0,8,0,0">
+                                             <DockPanel LastChildFill="True">
+                                                 <TextBlock Text="{DynamicResource ProxyActiveGame}" FontWeight="SemiBold"
+                                                            Foreground="{StaticResource TextBrush}" Margin="0,0,8,0"
+                                                            DockPanel.Dock="Left"/>
+                                                 <TextBlock Text="{Binding SelectedProxyGameDisplayName}" FontWeight="Bold"
+                                                            Foreground="{StaticResource PrimaryBrush}" TextTrimming="CharacterEllipsis"/>
+                                             </DockPanel>
+                                         </Border>
+                                 </StackPanel>
+                             </Border>
+
+                                <WrapPanel HorizontalAlignment="Right">
+                                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyDelete}"
+                                            Click="OnProxyDelete_Click" Margin="0,0,8,8"/>
+                                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxySave}"
+                                            Click="OnProxySave_Click" Margin="0,0,8,8"/>
+                                    <Button x:Name="ProxyStopButton" Style="{StaticResource DangerButton}" Content="{DynamicResource ProxyStop}"
+                                            Click="OnProxyStop_Click" Margin="0,0,8,8"/>
+                                    <Button x:Name="ProxyTestUdpButton" Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyTestUdp}"
+                                            Click="OnProxyTestUdp_Click" Margin="0,0,8,8"/>
+                                    <Button x:Name="ProxyStartButton" Style="{StaticResource PrimaryButton}" Content="{DynamicResource ProxyStart}"
+                                            Click="OnProxyStart_Click" Margin="0,0,0,8"/>
+                                </WrapPanel>
+                                <Border x:Name="ProxyStatusBanner" Padding="12" Margin="0,4,0,0"
+                                        CornerRadius="6" BorderThickness="1"
+                                        Background="#EFF6FF" BorderBrush="{StaticResource PrimaryBrush}">
+                                    <StackPanel>
+                                        <TextBlock x:Name="ProxyStatusTitle" Text="{DynamicResource ProxyDisconnected}"
+                                                   FontSize="18" FontWeight="Bold" Foreground="{StaticResource TextBrush}"/>
+                                        <TextBlock x:Name="ProxyStatusText" Text="{DynamicResource ProxyReady}"
+                                                   FontSize="14" Foreground="{StaticResource MutedTextBrush}"
+                                                   TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
                     </StackPanel>
                 </ScrollViewer>
 
