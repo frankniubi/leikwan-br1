@@ -62,6 +62,8 @@ public sealed class MacUltraRuntimeHostTests
         Assert.Contains("\"auto_select\":false", bootstrapText, StringComparison.Ordinal);
         Assert.DoesNotContain("probe_target", bootstrapText, StringComparison.Ordinal);
         Assert.DoesNotContain("probe_samples", bootstrapText, StringComparison.Ordinal);
+        Assert.DoesNotContain("udp_prewarm", bootstrapText, StringComparison.Ordinal);
+        Assert.DoesNotContain("udp_keepalive_interval_seconds", bootstrapText, StringComparison.Ordinal);
         Assert.NotNull(sentSocket);
         Assert.Equal(3, portProbeAttempts);
         Assert.StartsWith(socketRoot, sentSocket, StringComparison.Ordinal);
@@ -85,6 +87,39 @@ public sealed class MacUltraRuntimeHostTests
     }
 
     [Fact]
+    public void StartWithTcpAndUdpLease_IncludesUdpPrewarmAndKeepalive()
+    {
+        using var temp = new TemporaryDirectory();
+        var config = new AgentConfig
+        {
+            StateDir = temp.Path,
+            UltraBin = Path.Combine(temp.Path, "bin", "ultra-client"),
+        };
+        var state = new StateManager(temp.Path);
+        var supervisor = new RecordingProcessSupervisor();
+        var lease = CreateLease("203.0.113.199", "tcp+udp");
+        var host = new MacUltraRuntimeHost(
+            config,
+            supervisor,
+            state,
+            binaryExists: _ => true,
+            socketExists: _ => true,
+            portListeningProbe: _ => true,
+            leaseSender: (_, _, _, _) => Task.FromResult(true),
+            socketRoot: Path.Combine(temp.Path, "sockets"));
+        var forward = CreateForward("198.51.100.199:443", lease);
+
+        host.Start(forward, lease, "contract-a", "config_sync");
+
+        var bootstrapText = Encoding.UTF8.GetString(Assert.Single(supervisor.Launches).StandardInput);
+        Assert.Contains("\"udp_prewarm\":true", bootstrapText, StringComparison.Ordinal);
+        Assert.Contains("\"udp_keepalive_interval_seconds\":5", bootstrapText, StringComparison.Ordinal);
+        Assert.DoesNotContain("203.0.113.199", bootstrapText, StringComparison.Ordinal);
+        Assert.All(lease.Password, value => Assert.Equal(0, value));
+        host.Stop(42);
+    }
+
+    [Fact]
     public void StartWithCandidates_SendsBatchAndEnablesAutoSelectBeforeListenerReadiness()
     {
         using var temp = new TemporaryDirectory();
@@ -95,8 +130,8 @@ public sealed class MacUltraRuntimeHostTests
         };
         var state = new StateManager(temp.Path);
         var supervisor = new RecordingProcessSupervisor();
-        var first = CreateLease("203.0.113.199");
-        var second = CreateLease("203.0.113.200");
+        var first = CreateLease("203.0.113.199", "tcp+udp");
+        var second = CreateLease("203.0.113.200", "tcp+udp");
         var forward = CreateForward("198.51.100.199:443", first);
         var host = new MacUltraRuntimeHost(
             config,
@@ -118,6 +153,11 @@ public sealed class MacUltraRuntimeHostTests
         var bootstrapText = Encoding.UTF8.GetString(Assert.Single(supervisor.Launches).StandardInput);
         Assert.Contains("\"auto_select\":true", bootstrapText, StringComparison.Ordinal);
         Assert.Contains("\"probe_samples\":20", bootstrapText, StringComparison.Ordinal);
+        Assert.Contains("\"probe_target\":\"1.1.1.1:53\"", bootstrapText, StringComparison.Ordinal);
+        Assert.Contains("\"probe_timeout_ms\":300", bootstrapText, StringComparison.Ordinal);
+        Assert.Contains("\"probe_interval_ms\":100", bootstrapText, StringComparison.Ordinal);
+        Assert.Contains("\"udp_prewarm\":true", bootstrapText, StringComparison.Ordinal);
+        Assert.Contains("\"udp_keepalive_interval_seconds\":5", bootstrapText, StringComparison.Ordinal);
         Assert.All(first.Password, value => Assert.Equal(0, value));
         Assert.All(second.Password, value => Assert.Equal(0, value));
         host.Stop(42);
@@ -133,7 +173,7 @@ public sealed class MacUltraRuntimeHostTests
             ClientMode = "single",
             ListenPort = 12042,
             Target = target,
-            Transport = "tcp",
+            Transport = lease.Transport,
             RuntimeLease = lease,
             UltraAccess = new UltraPolicy
             {
@@ -143,14 +183,14 @@ public sealed class MacUltraRuntimeHostTests
                 SessionTicket = lease.SessionTicket,
                 ExpiresAt = lease.ExpiresAt.AddMinutes(1),
                 ServiceState = "active",
-                Transport = "tcp",
+                Transport = lease.Transport,
                 QuotaRemainingBytes = lease.QuotaRemainingBytes,
                 TargetDigest = lease.TargetDigest,
             },
         };
     }
 
-    private static UltraLease CreateLease(string providerIp)
+    private static UltraLease CreateLease(string providerIp, string transport = "tcp")
     {
         return new UltraLease
         {
@@ -160,7 +200,7 @@ public sealed class MacUltraRuntimeHostTests
             PolicyGeneration = new string('a', 64),
             TargetDigest = new string('c', 64),
             ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(3),
-            Transport = "tcp",
+            Transport = transport,
             RateLimitMbps = 20,
             QuotaRemainingBytes = 1024,
             SelectionRef = "selection-reference-abcdefghijklmnop",
