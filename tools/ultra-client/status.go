@@ -287,3 +287,17 @@ func maxInt(value, minimum int) int {
 	}
 	return value
 }
+
+func maxInt64(value, minimum int64) int64 {
+	if value < minimum {
+		return minimum
+	}
+	return value
+}
+
+func minInt64(value, maximum int64) int64 {
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
