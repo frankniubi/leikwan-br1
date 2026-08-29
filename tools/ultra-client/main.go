@@ -22,28 +22,28 @@ import (
 const keepPayloadHex = "\x00\x00\xa4\x64\x34\xc9\xb6\x2b\x82\xee\xd2\xa8\x7f\xaa\x6a\x5f\x45\xac"
 
 type Config struct {
-	ForwardID          int                 `json:"forward_id"`
-	ListenHost         string              `json:"listen_host"`
-	ListenPort         int                 `json:"listen_port"`
-	Target             string              `json:"target"`
-	ControlSocket      string              `json:"control_socket"`
-	PolicyGeneration   string              `json:"policy_generation"`
-	TargetDigest       string              `json:"target_digest"`
-	Transport          string              `json:"transport"`
-	MaxTCPConnections  int                 `json:"max_tcp_connections"`
-	UDPQueuePackets    int                 `json:"udp_queue_packets"`
-	UDPMaxAssociations int                 `json:"udp_max_associations"`
-	UDPSetupWorkers    int                 `json:"udp_setup_workers"`
-	ConnectTimeoutSecs int                 `json:"connect_timeout_seconds"`
-	LocationCachePath  string              `json:"location_cache_path"`
-	LocationLockPath   string              `json:"location_lock_path"`
-	StatusPath         string              `json:"status_path"`
-	AutoSelect         bool                `json:"auto_select"`
-	ProbeTimeoutMillis int                 `json:"probe_timeout_ms"`
-	ProbeWorkers       int                 `json:"probe_workers"`
-	ProbeSamples       int                 `json:"probe_samples"`
-	ProbeIntervalMillis int                `json:"probe_interval_ms"`
-	ZoneAliases        map[string][]string `json:"zone_aliases"`
+	ForwardID           int                 `json:"forward_id"`
+	ListenHost          string              `json:"listen_host"`
+	ListenPort          int                 `json:"listen_port"`
+	Target              string              `json:"target"`
+	ControlSocket       string              `json:"control_socket"`
+	PolicyGeneration    string              `json:"policy_generation"`
+	TargetDigest        string              `json:"target_digest"`
+	Transport           string              `json:"transport"`
+	MaxTCPConnections   int                 `json:"max_tcp_connections"`
+	UDPQueuePackets     int                 `json:"udp_queue_packets"`
+	UDPMaxAssociations  int                 `json:"udp_max_associations"`
+	UDPSetupWorkers     int                 `json:"udp_setup_workers"`
+	ConnectTimeoutSecs  int                 `json:"connect_timeout_seconds"`
+	LocationCachePath   string              `json:"location_cache_path"`
+	LocationLockPath    string              `json:"location_lock_path"`
+	StatusPath          string              `json:"status_path"`
+	AutoSelect          bool                `json:"auto_select"`
+	ProbeTimeoutMillis  int                 `json:"probe_timeout_ms"`
+	ProbeWorkers        int                 `json:"probe_workers"`
+	ProbeSamples        int                 `json:"probe_samples"`
+	ProbeIntervalMillis int                 `json:"probe_interval_ms"`
+	ZoneAliases         map[string][]string `json:"zone_aliases"`
 }
 
 type Entry struct {
@@ -886,7 +886,7 @@ func main() {
 	store := NewPolicyStore(config)
 	status := newStatusWriter(config.StatusPath, config.ForwardID, 5*time.Second)
 	status.UpdateError("awaiting_policy")
-	control := NewControlServer(config.ControlSocket, config, store)
+	control := NewControlServer(config.ControlSocket, config, store, status)
 	if err := control.Listen(); err != nil {
 		status.UpdateError("control_socket_failed")
 		status.Close()

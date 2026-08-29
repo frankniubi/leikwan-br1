@@ -65,6 +65,7 @@ type ControlServer struct {
 	path      string
 	config    Config
 	store     *PolicyStore
+	status    *StatusWriter
 	close     chan struct{}
 	done      chan struct{}
 	once      sync.Once
@@ -73,8 +74,12 @@ type ControlServer struct {
 	listening bool
 }
 
-func NewControlServer(path string, config Config, store *PolicyStore) *ControlServer {
-	return &ControlServer{path: path, config: config, store: store, close: make(chan struct{}), done: make(chan struct{})}
+func NewControlServer(path string, config Config, store *PolicyStore, status ...*StatusWriter) *ControlServer {
+	var statusWriter *StatusWriter
+	if len(status) > 0 {
+		statusWriter = status[0]
+	}
+	return &ControlServer{path: path, config: config, store: store, status: statusWriter, close: make(chan struct{}), done: make(chan struct{})}
 }
 
 func (server *ControlServer) Listen() error {
@@ -155,12 +160,13 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 	defer clearBytes(payload)
 	policy, leases, err := decodeLeaseBatchFrame(payload, server.config)
 	var selected ProviderLease
+	var probeResult udpProbeResult
 	if err == nil {
 		if len(leases) > 1 && !server.config.AutoSelect {
 			err = ErrLeaseInvalid
 		} else if server.config.AutoSelect && len(leases) > 1 {
 			selectionContext, cancel := context.WithTimeout(context.Background(), deadline)
-			selected, _, err = selectBestLease(selectionContext, server.config, policy, leases)
+			selected, probeResult, err = selectBestLease(selectionContext, server.config, policy, leases)
 			cancel()
 		} else {
 			selected = leases[0]
@@ -168,6 +174,13 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 	}
 	if err == nil {
 		err = server.store.Replace(policy, selected)
+		if err == nil && server.status != nil && probeResult.Sent > 0 {
+			if stringsContainsUDP(policy.Transport) {
+				server.status.UpdateUDPProbe(selected.SelectionRef, probeResult)
+			} else {
+				server.status.UpdateTCP(selected.SelectionRef, probeResult.MedianRTT)
+			}
+		}
 	}
 	selected.wipe()
 	for index := range leases {
