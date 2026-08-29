@@ -20,6 +20,10 @@ Release scope: Windows, Linux, and the shared Ultra runtime contract. Android is
 | Windows Ultra runtime | `2026.08.30.4` | `59d6fa47896e51308749850098f6f61fdbdc01525ca3f1bc992f22ab59fbad74` | 6,699,008 |
 | Windows setup | `0.1.19.9` | `af0ba604300a76b6f153a8384c9d9f957a8179c1f235fe3b0b101fea02c3d425` | 22,345,758 |
 | Linux client-agent/install-forward runtime | `2026.08.30.4` | source/artifact mirrors verified | n/a |
+| macOS arm64 DMG | `1.0.4` | `7e29b18bf0c783d6e60a0b5d132970ed0de10a62f8b2e8f626f21a35b32caa25` | 74,759,413 |
+| macOS arm64 update ZIP | `1.0.4` | `907aaba99de47a01d3c57293b72c30062601016d761ae1cfc3b1fc819eb76c24` | 65,646,509 |
+| macOS x86_64 DMG | `1.0.4` | `01b7a4606abda3f345ad05a4e0096600cd9c52e34e62218f95c80c8a9ecd8284` | 78,015,346 |
+| macOS x86_64 update ZIP | `1.0.4` | `acf9960a960ebe4268f6aab49d32c0220bb72fbc130ef0a90bca5b84d8b7198b` | 68,762,844 |
 
 Linux was built with the existing garble/reproducibility script. Windows was built locally with `GOOS=windows GOARCH=amd64 CGO_ENABLED=0`, `-trimpath`, and stripped linker flags; the local garble output was rejected by Windows Defender as a false-positive executable, so the published Windows helper does not claim garble hardening metadata.
 
@@ -33,21 +37,21 @@ Linux was built with the existing garble/reproducibility script. Windows was bui
 - .NET: full solution passed, Core `255`, Mac `52`, App `42`.
 - Source/artifact SHA-256 mirrors for `client-agent.py` and `install_forward_runtime.py` matched.
 - Windows setup staging contained the exact published Windows Ultra SHA-256.
-- The live Panel artifact source was updated after backups `ultra-udp-prewarm-20260830-1` and `ultra-udp-prewarm-20260830-2`; root artifacts and `master/public/artifacts` shadows match for both Ultra binaries, the Python mirrors, and `versions.json`.
-- HTTPS manifest canary from `https://v3.leikwanhost.com/artifacts/versions.json` returned Linux/Windows Ultra `2026.08.30.4` and Windows app `0.1.19.9` with the recorded hashes.
+- The live Panel artifact source was updated after backups `ultra-udp-prewarm-20260830-1`, `ultra-udp-prewarm-20260830-2`, and `ultra-udp-prewarm-20260830-3`; root artifacts and `master/public/artifacts` shadows match for the Ultra binaries, Python mirrors, Windows setup, macOS packages, and `versions.json`.
+- HTTPS manifest canary from `https://v3.leikwanhost.com/artifacts/client-manifest.json` returned Linux/Windows Ultra `2026.08.30.4`, Windows app `0.1.19.9`, and macOS `1.0.4` entries with the recorded hashes. Direct range GETs returned HTTP 206 for all four macOS packages.
 
 ## Platform Sample Status
 
 - Windows sample: local Release publish and Inno Setup package completed; static bootstrap and bundled-helper hash checks passed. A live Program Files replacement was not performed in this worktree because it would stop the user-owned running client and requires an operational maintenance window.
 - Linux sample: the live Panel artifact source and static shadows are updated; installer ordering and authenticated desired-hash convergence are covered by tests. No remote Linux client was restarted or mutated; each live client must report the new helper hash after its next authenticated pull.
-- macOS sample: not built or published. The repository has no macOS artifact directory in this environment, and `build-macos-client.sh` correctly refused to run on Windows (`real builds require macOS`). Existing macOS manifest entries remain unchanged; no false macOS release pointer was created.
+- macOS sample: arm64 and x86_64 Release packages were built on the remote macOS builder with the final Ultra runtime source, then published and hash-verified. No end-user macOS runtime smoke test was run; device-level launch/forward validation remains an operational follow-up.
 
 ## Client Update Guidance
 
 - Linux: allow the authenticated client-agent config pull to see `desired_ultra_runtime_sha256`; it will request the existing signed installer/update helper and report convergence only after the installed helper hash matches.
 - Windows: use the existing app update checker to download `windows_client_app` `0.1.19.9`; the installer verifies the bundled Ultra helper against `ultra_client_runtime_windows` before handoff.
-- macOS: keep the current `1.0.2` channel until a macOS build host produces and verifies both `arm64` and `x86_64` packages; Android remains deferred.
+- macOS: the authenticated manifest now advertises `1.0.4` for both `arm64` and `x86_64` DMG/update channels; Android remains deferred.
 
 ## Rollback
 
-Restore the previous manifest pointers and binaries (`ultra_client_runtime` `2026.08.30.2`, Windows Ultra `2026.08.30.3`, Windows app `0.1.19.8`), then restart only the previously owned client/runtime processes. Do not remove unknown processes or foreign listeners, and do not restore credential-bearing files.
+Restore the previous manifest pointers and binaries (Linux Ultra `2026.08.30.2`, Windows Ultra `2026.08.30.3`, Windows app `0.1.19.8`, macOS `1.0.2`) from the dated production backups, then restart only the previously owned client/runtime processes. Do not remove unknown processes or foreign listeners, and do not restore credential-bearing files.
