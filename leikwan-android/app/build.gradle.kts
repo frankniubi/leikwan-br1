@@ -5,6 +5,8 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val qaTest = project.findProperty("qatest") == "true"
+
 android {
     namespace = "com.leikwan.bridge"
     compileSdk = 34
@@ -13,17 +15,46 @@ android {
         applicationId = "com.leikwan.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 11
+        versionName = "0.2.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
-            abiFilters += "arm64-v8a"
+            // QA APKs are x86_64-only for the local emulator. Published APKs
+            // stay arm64-v8a-only and never include the emulator runtime.
+            abiFilters += if (qaTest) "x86_64" else "arm64-v8a"
         }
         buildConfigField("String", "PANEL_URL", "\"https://v3.leikwanhost.com\"")
     }
 
+    if (qaTest) {
+        // Keep emulator-only x86_64 runtime binaries out of published arm64
+        // artifacts while making the QA APK fully executable on the AVD.
+        sourceSets {
+            getByName("main") {
+                assets.srcDir("src/qatest/assets")
+                jniLibs.srcDir("src/qatest/jniLibs")
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            // QA-only: `-Pqatest=true` debug builds accept emulator devices and
+            // software-backed attestation for local x86_64 AVD testing.
+            buildConfigField(
+                "boolean",
+                "ALLOW_QA_TEST_DEVICE_EXCEPTIONS",
+                qaTest.toString(),
+            )
+        }
         release {
+            // Public/release APKs always enforce emulator, root, and debuggable
+            // build rejection, even when a caller accidentally passes qatest.
+            buildConfigField(
+                "boolean",
+                "ALLOW_QA_TEST_DEVICE_EXCEPTIONS",
+                "false",
+            )
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

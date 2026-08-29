@@ -98,6 +98,40 @@ class ProxySelectionPolicyTest {
     }
 
     @Test
+    fun `policy restricts ultra protocol adapter to selected node`() {
+        val result = ProxySelectionPolicy.validate(
+            selectedProxyId = 2L,
+            forwardId = 90L,
+            connectionMode = ProxyConnectionMode.SERVICES,
+            proxyNodes = listOf(
+                ProxyNode(
+                    id = 1,
+                    name = "other",
+                    type = "ss",
+                    originalServer = "other.example.com",
+                    originalPort = 443,
+                    configJson = """{"method":"aes-128-gcm","password":"other"}""",
+                    enabled = true,
+                ),
+                ProxyNode(
+                    id = 2,
+                    name = "selected",
+                    type = "ss",
+                    originalServer = "relay.example.com",
+                    originalPort = 30522,
+                    configJson = """{"method":"2022-blake3-aes-256-gcm","password":"secret"}""",
+                    enabled = true,
+                ),
+            ),
+            singleNodeForServices = true,
+        )
+
+        require(result is ProxySelectionResult.Success)
+        assertEquals(2L, result.selectedNode?.id)
+        assertEquals(listOf(2L), result.activeNodes.map { it.id })
+    }
+
+    @Test
     fun `policy allows dedicated leigod service without selected proxy`() {
         val result = ProxySelectionPolicy.validate(
             selectedProxyId = 0L,

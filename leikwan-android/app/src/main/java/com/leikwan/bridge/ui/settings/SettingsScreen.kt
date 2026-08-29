@@ -18,6 +18,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -35,12 +36,20 @@ import androidx.compose.ui.unit.dp
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.R
 import com.leikwan.bridge.ui.shared.RoutingDiagnosticsCard
+import com.leikwan.bridge.update.AppUpdateStatus
+import com.leikwan.bridge.update.AppUpdateUiState
 
 @Composable
 fun SettingsScreen(
     onLogout: () -> Unit = {},
+    updateState: AppUpdateUiState = AppUpdateUiState(),
+    onCheckForUpdates: () -> Unit = {},
+    onDownloadUpdate: () -> Unit = {},
+    onInstallUpdate: () -> Unit = {},
+    onAllowUnknownSources: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
@@ -55,6 +64,11 @@ fun SettingsScreen(
         onUpdateRules = viewModel::updateRules,
         onRollbackRules = viewModel::rollbackRules,
         onLogout = { viewModel.logout(); onLogout() },
+        updateState = updateState,
+        onCheckForUpdates = onCheckForUpdates,
+        onDownloadUpdate = onDownloadUpdate,
+        onInstallUpdate = onInstallUpdate,
+        onAllowUnknownSources = onAllowUnknownSources,
     )
 }
 
@@ -71,6 +85,11 @@ internal fun SettingsScreenContent(
     onUpdateRules: () -> Unit,
     onRollbackRules: () -> Unit,
     onLogout: () -> Unit,
+    updateState: AppUpdateUiState = AppUpdateUiState(),
+    onCheckForUpdates: () -> Unit = {},
+    onDownloadUpdate: () -> Unit = {},
+    onInstallUpdate: () -> Unit = {},
+    onAllowUnknownSources: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -259,9 +278,98 @@ internal fun SettingsScreenContent(
         Text(stringResource(R.string.settings_about), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         Text(
-            stringResource(R.string.settings_app_version),
+            stringResource(R.string.settings_app_version, BuildConfig.VERSION_NAME),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.height(12.dp))
+        UpdateSection(
+            state = updateState,
+            onCheckForUpdates = onCheckForUpdates,
+            onDownloadUpdate = onDownloadUpdate,
+            onInstallUpdate = onInstallUpdate,
+            onAllowUnknownSources = onAllowUnknownSources,
+        )
+    }
+}
+
+@Composable
+private fun UpdateSection(
+    state: AppUpdateUiState,
+    onCheckForUpdates: () -> Unit,
+    onDownloadUpdate: () -> Unit,
+    onInstallUpdate: () -> Unit,
+    onAllowUnknownSources: () -> Unit,
+) {
+    Text(stringResource(R.string.settings_app_updates), style = MaterialTheme.typography.titleSmall)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        stringResource(R.string.settings_app_current_version, state.currentVersionName),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(8.dp))
+    when (val status = state.status) {
+        AppUpdateStatus.Idle -> {
+            OutlinedButton(onClick = onCheckForUpdates) {
+                Text(stringResource(R.string.update_check))
+            }
+        }
+        AppUpdateStatus.Checking -> {
+            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.height(4.dp))
+            Text(stringResource(R.string.update_checking), style = MaterialTheme.typography.bodySmall)
+        }
+        AppUpdateStatus.UpToDate -> {
+            Text(stringResource(R.string.update_up_to_date), style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(onClick = onCheckForUpdates) {
+                Text(stringResource(R.string.update_check_again))
+            }
+        }
+        is AppUpdateStatus.Available -> {
+            Text(
+                stringResource(R.string.update_available_message, status.manifest.versionName),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(onClick = onDownloadUpdate) {
+                Text(stringResource(R.string.update_download))
+            }
+        }
+        is AppUpdateStatus.Downloading -> {
+            val fraction = if (status.totalBytes > 0L) {
+                (status.downloadedBytes.toFloat() / status.totalBytes.toFloat()).coerceIn(0f, 1f)
+            } else {
+                0f
+            }
+            Text(
+                stringResource(R.string.update_downloading_message, status.manifest.versionName, (fraction * 100).toInt()),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(4.dp))
+            LinearProgressIndicator(progress = fraction, modifier = Modifier.fillMaxWidth())
+        }
+        is AppUpdateStatus.ReadyToInstall -> {
+            Text(
+                stringResource(R.string.update_ready_message, status.manifest.versionName),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(onClick = onInstallUpdate) {
+                Text(stringResource(R.string.update_install))
+            }
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(onClick = onAllowUnknownSources) {
+                Text(stringResource(R.string.update_allow_unknown_sources))
+            }
+        }
+        is AppUpdateStatus.Error -> {
+            Text(status.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(onClick = onCheckForUpdates) {
+                Text(stringResource(R.string.update_retry))
+            }
+        }
     }
 }

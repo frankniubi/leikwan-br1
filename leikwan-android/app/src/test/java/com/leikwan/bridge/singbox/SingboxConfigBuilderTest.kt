@@ -134,8 +134,8 @@ class SingboxConfigBuilderTest {
         val direct = outbounds.first { it.get("tag").asString == "direct" }
 
         assertEquals("direct", proxy.get("type").asString)
-        assertEquals("127.0.0.1", proxy.get("override_address").asString)
-        assertEquals(11065, proxy.get("override_port").asInt)
+        assertFalse(proxy.has("override_address"))
+        assertFalse(proxy.has("override_port"))
         assertEquals("udp", remoteDns.get("type").asString)
         assertFalse(remoteDns.has("detour"))
         assertFalse(directDns.has("detour"))
@@ -144,6 +144,66 @@ class SingboxConfigBuilderTest {
         assertFalse(direct.has("override_port"))
         assertFalse(outbounds.any { it.get("tag").asString.startsWith("proxy-") })
         assertEquals("proxy", config.getAsJsonObject("route").get("final").asString)
+        val bridgeRule = config.getAsJsonObject("route").getAsJsonArray("rules")
+            .map { it.asJsonObject }
+            .first { it.get("action")?.asString == "route" && it.get("outbound")?.asString == "proxy" }
+        assertEquals("127.0.0.1", bridgeRule.get("override_address").asString)
+        assertEquals(11065, bridgeRule.get("override_port").asInt)
+    }
+
+    @Test
+    fun `ultra selected shadowsocks adapter preserves original target`() {
+        val builder = SingboxConfigBuilder(
+            settings = SingboxSettings(
+                panelUrl = "https://panel.example.com",
+                dnsServer = "1.1.1.1",
+                dnsFallback = "8.8.8.8",
+                dnsStrategy = "prefer_ipv4",
+                bypassLan = true,
+                bypassChina = false,
+                customBypassRules = "",
+            )
+        )
+        val runtimeContext = RuntimeContext(
+            forwardId = 90L,
+            mode = ForwardMode.ULTRA,
+            localListenPort = 11090,
+            localLegPorts = emptyList(),
+            processPlans = emptyList(),
+            bypassHosts = emptySet(),
+        )
+        val node = ProxyNode(
+            id = 7,
+            name = "HKG-HKG1",
+            type = "ss",
+            originalServer = "sh36.ctyun.mcbar.cc",
+            originalPort = 30522,
+            configJson = """{"method":"2022-blake3-aes-256-gcm","password":"secret"}""",
+            enabled = true,
+        )
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(node),
+                runtimeContext = runtimeContext,
+                connectionMode = ProxyConnectionMode.SERVICES,
+                runtimeOnlyProxy = true,
+            ).configJson
+        ).asJsonObject
+        val outbounds = config.getAsJsonArray("outbounds").map { it.asJsonObject }
+        val proxy = outbounds.first { it.get("tag").asString == "proxy-7" }
+        assertEquals("shadowsocks", proxy.get("type").asString)
+        assertEquals("127.0.0.1", proxy.get("server").asString)
+        assertEquals(11090, proxy.get("server_port").asInt)
+        assertEquals("2022-blake3-aes-256-gcm", proxy.get("method").asString)
+        assertEquals("secret", proxy.get("password").asString)
+        assertFalse(
+            config.getAsJsonObject("route").getAsJsonArray("rules").any {
+                val rule = it.asJsonObject
+                rule.get("action")?.asString == "route" && rule.has("override_address")
+            }
+        )
+        assertEquals("proxy-7", config.getAsJsonObject("route").get("final").asString)
     }
 
     @Test
@@ -1028,12 +1088,12 @@ class SingboxConfigBuilderTest {
 
         val tcpOutbound = outbounds.first { it.get("tag").asString == "route-direction-dir_sh_jp_1-tcp" }
         assertEquals("direct", tcpOutbound.get("type").asString)
-        assertEquals("127.0.0.1", tcpOutbound.get("override_address").asString)
-        assertEquals(12001, tcpOutbound.get("override_port").asInt)
+        assertFalse(tcpOutbound.has("override_address"))
+        assertFalse(tcpOutbound.has("override_port"))
         val udpOutbound = outbounds.first { it.get("tag").asString == "route-direction-dir_sh_jp_1-udp" }
         assertEquals("direct", udpOutbound.get("type").asString)
-        assertEquals("127.0.0.1", udpOutbound.get("override_address").asString)
-        assertEquals(12002, udpOutbound.get("override_port").asInt)
+        assertFalse(udpOutbound.has("override_address"))
+        assertFalse(udpOutbound.has("override_port"))
 
         val activeTcpIndex = rules.indexOfFirst { rule ->
             rule.get("network")?.asString == "tcp" &&
@@ -1069,6 +1129,10 @@ class SingboxConfigBuilderTest {
         assertTrue(runtimeBypassIndex >= 0)
         assertTrue(activeTcpIndex > runtimeBypassIndex)
         assertTrue(activeUdpIndex > runtimeBypassIndex)
+        assertEquals("127.0.0.1", rules[activeTcpIndex].get("override_address").asString)
+        assertEquals(12001, rules[activeTcpIndex].get("override_port").asInt)
+        assertEquals("127.0.0.1", rules[activeUdpIndex].get("override_address").asString)
+        assertEquals(12002, rules[activeUdpIndex].get("override_port").asInt)
         assertTrue(rejectTcpIndex > runtimeBypassIndex)
         assertTrue(rejectUdpIndex > runtimeBypassIndex)
         assertTrue(countryRuleIndex > activeTcpIndex)

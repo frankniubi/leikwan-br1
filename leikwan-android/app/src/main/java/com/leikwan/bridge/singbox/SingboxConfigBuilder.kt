@@ -89,6 +89,18 @@ class SingboxConfigBuilder(
         root.add("inbounds", buildInbounds(enableIpv6Tun))
         root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode, runtimeOnlyProxy, routeRuleRuntimeBindings))
         buildEndpoints(activeProxyNodes).takeIf { it.size() > 0 }?.let { root.add("endpoints", it) }
+        // sing-box 1.13 removed `direct` outbound destination-override fields
+        // (override_address/override_port). The runtime-only bridge case is expressed
+        // as a catch-all route rule carrying `route-options`.
+        val bridgeOverride = if (runtimeOnlyProxy &&
+            connectionMode == ProxyConnectionMode.SERVICES &&
+            runtimeContext != null &&
+            activeProxyNodes.isEmpty()
+        ) {
+            "127.0.0.1" to runtimeContext.localListenPort
+        } else {
+            null
+        }
         root.add(
             "route",
             buildRoute(
@@ -97,6 +109,7 @@ class SingboxConfigBuilder(
                 routingPolicySnapshot,
                 routeRuleSnapshot,
                 routeRuleRuntimeBindings,
+                bridgeOverride,
             )
         )
         return CompiledConfigResult(
@@ -204,10 +217,6 @@ class SingboxConfigBuilder(
             outbounds.add(JsonObject().apply {
                 addProperty("type", "direct")
                 addProperty("tag", "proxy")
-                if (runtimeOnlyProxy && runtimeContext != null && connectionMode == ProxyConnectionMode.SERVICES) {
-                    addProperty("override_address", "127.0.0.1")
-                    addProperty("override_port", runtimeContext.localListenPort)
-                }
             })
         }
 
@@ -216,17 +225,15 @@ class SingboxConfigBuilder(
             addProperty("tag", "direct")
         })
         routeRuleRuntimeBindings.forEach { binding ->
-            outbounds.add(routeRuleDirectOutbound(binding.tcpOutboundTag, binding.localTcpPort))
-            outbounds.add(routeRuleDirectOutbound(binding.udpOutboundTag, binding.localUdpPort))
+            outbounds.add(routeRuleDirectOutbound(binding.tcpOutboundTag))
+            outbounds.add(routeRuleDirectOutbound(binding.udpOutboundTag))
         }
         return outbounds
     }
 
-    private fun routeRuleDirectOutbound(tag: String, port: Int): JsonObject = JsonObject().apply {
+    private fun routeRuleDirectOutbound(tag: String): JsonObject = JsonObject().apply {
         addProperty("type", "direct")
         addProperty("tag", tag)
-        addProperty("override_address", "127.0.0.1")
-        addProperty("override_port", port)
     }
 
     private fun buildEndpoints(proxyNodes: List<ProxyNode>): JsonArray {
@@ -425,6 +432,7 @@ class SingboxConfigBuilder(
         snapshot: RoutingPolicySnapshot?,
         routeRuleSnapshot: ClientRouteRuleSnapshot?,
         routeRuleRuntimeBindings: List<ClientRuleSingboxBinding>,
+        bridgeOverride: Pair<String, Int>? = null,
     ): JsonObject {
         val route = JsonObject()
         val rules = JsonArray()
@@ -533,6 +541,18 @@ class SingboxConfigBuilder(
             }
         }
 
+        // Runtime-only bridge (ULTRA forward): every packet that no earlier rule captured
+        // is sent to the local forward bridge (127.0.0.1:listenPort). sing-box 1.13 requires this
+        // destination override to live on a route rule (`route-options`), not on a `direct` outbound.
+        if (bridgeOverride != null) {
+            rules.add(JsonObject().apply {
+                addProperty("action", "route")
+                addProperty("outbound", finalProxyTag)
+                addProperty("override_address", bridgeOverride.first)
+                addProperty("override_port", bridgeOverride.second)
+            })
+        }
+
         route.add("rules", rules)
         // route.final follows the user-settable global default: TUNNEL -> proxy tag; DIRECT -> direct.
         val defaultTunnelTag = snapshot?.globalDefaultNodeId?.let { "proxy-$it" } ?: finalProxyTag
@@ -578,8 +598,8 @@ class SingboxConfigBuilder(
             .forEach { rule ->
                 val binding = bindingByDirection[rule.directionId]
                 if (rule.installable && binding != null) {
-                    rules.add(routeRuleMatch(rule, "tcp", binding.tcpOutboundTag))
-                    rules.add(routeRuleMatch(rule, "udp", binding.udpOutboundTag))
+                    rules.add(routeRuleMatch(rule, "tcp", binding.tcpOutboundTag, binding.localTcpPort))
+                    rules.add(routeRuleMatch(rule, "udp", binding.udpOutboundTag, binding.localUdpPort))
                 } else {
                     rules.add(routeRuleReject(rule, "tcp"))
                     rules.add(routeRuleReject(rule, "udp"))
@@ -587,9 +607,13 @@ class SingboxConfigBuilder(
             }
     }
 
-    private fun routeRuleMatch(rule: ClientRouteRule, network: String, outbound: String): JsonObject =
+    private fun routeRuleMatch(rule: ClientRouteRule, network: String, outbound: String, overridePort: Int? = null): JsonObject =
         routeRuleBase(rule, network).apply {
             addProperty("outbound", outbound)
+            if (overridePort != null) {
+                addProperty("override_address", "127.0.0.1")
+                addProperty("override_port", overridePort)
+            }
         }
 
     private fun routeRuleReject(rule: ClientRouteRule, network: String): JsonObject =

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
+	"io"
+	"net"
 	"testing"
 	"time"
 )
@@ -21,6 +24,65 @@ func TestBuildStreamHandshake(t *testing.T) {
 	}
 }
 
+func TestBuildDatagramHandshakeKeepsNativeGreeting(t *testing.T) {
+	got, err := buildHandshake("line-user", "1234567890123456", 3, "1.1.1.1", 53)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(got, []byte{5, 3, 2, 0x80, 0x83, 1, 9}) {
+		t.Fatalf("unexpected datagram prefix: %s", hex.EncodeToString(got))
+	}
+	if !bytes.Contains(got, []byte{5, 3}) {
+		t.Fatalf("datagram command missing: %s", hex.EncodeToString(got))
+	}
+}
+
+func TestBuildHandshakeRejectsUnknownCommand(t *testing.T) {
+	if _, err := buildHandshake("line-user", "1234567890123456", 2, "1.1.1.1", 80); err == nil {
+		t.Fatal("unknown handshake command was accepted")
+	}
+}
+
+func TestReadStreamAcksConsumesUltraPreludeAndPreservesPayload(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	prelude := []byte{0, 0, 0, 0, 0, 0, 0, 0, 1, 0x15, 0x4f, 0xd1, 0xd9, 0xfe}
+	payload := []byte("HTTP/1.1 204 No Content\r\n\r\n")
+	go func() { _, _ = server.Write(append(prelude, payload...)) }()
+	reader, err := readStreamAcks(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(payload))
+	_, err = io.ReadFull(reader, got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("payload after prelude = %q, want %q", got, payload)
+	}
+}
+
+func TestReadStreamAcksAcceptsLegacySocksAck(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	legacy := []byte{5, 2, 1, 0, 4, 1, 1, 0, 1, 1, 0x12, 0x34, 0, 0}
+	payload := []byte("payload")
+	go func() { _, _ = server.Write(append(legacy, payload...)) }()
+	reader, err := readStreamAcks(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(payload))
+	_, err = io.ReadFull(reader, got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("payload after legacy ack = %q, want %q", got, payload)
+	}
+}
+
 func TestOutboundStreamTransform(t *testing.T) {
 	input := []byte("GET / HTTP/1.0\r\n\r\n")
 	encoded := xorOne(input)
@@ -29,6 +91,66 @@ func TestOutboundStreamTransform(t *testing.T) {
 	}
 	if !bytes.Equal(input, xorOne(encoded)) {
 		t.Fatal("stream transform is not reversible")
+	}
+}
+
+func TestDialStreamSendsTargetAndLeavesXorStream(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	providerPort := listener.Addr().(*net.TCPAddr).Port
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverErr <- acceptErr
+			return
+		}
+		defer conn.Close()
+		handshake := make([]byte, 20)
+		if _, err := io.ReadFull(conn, handshake); err != nil {
+			serverErr <- err
+			return
+		}
+		wantTarget := []byte{5, 1, 0, 1, 1, 1, 1, 1, 1, 0xbb}
+		if !bytes.Equal(handshake[len(handshake)-len(wantTarget):], wantTarget) {
+			serverErr <- errors.New("private command did not carry the final target")
+			return
+		}
+		ack := []byte{5, 2, 1, 0, 4, 1, 127, 0, 0, 1, 0x12, 0x34, 0, 0}
+		if err := writeAll(conn, ack); err != nil {
+			serverErr <- err
+			return
+		}
+		payload := make([]byte, 5)
+		if _, err := io.ReadFull(conn, payload); err != nil {
+			serverErr <- err
+			return
+		}
+		if !bytes.Equal(xorOne(payload), []byte("hello")) {
+			serverErr <- errors.New("post-handshake payload was not XOR encoded")
+			return
+		}
+		serverErr <- nil
+	}()
+
+	remote, err := dialStream(ProviderLease{
+		IP:       "127.0.0.1",
+		Port:     providerPort,
+		User:     []byte("u"),
+		Password: []byte("p"),
+	}, "1.1.1.1", 443, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeXor(remote, []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	remote.Close()
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
 	}
 }
 

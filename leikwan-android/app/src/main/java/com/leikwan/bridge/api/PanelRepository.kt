@@ -2,6 +2,7 @@ package com.leikwan.bridge.api
 
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import com.google.gson.JsonElement
 import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.clientrules.ClientRouteRule
@@ -20,6 +21,7 @@ import com.leikwan.bridge.net.AppDns
 import com.leikwan.bridge.net.MirrorNoSni
 import com.leikwan.bridge.security.AndroidAttestationProofFactory
 import com.leikwan.bridge.security.AndroidDeviceIdentity
+import com.leikwan.bridge.security.AndroidKeyStoreAttestationKeyProvider
 import com.leikwan.bridge.security.AttestationProof
 import com.leikwan.bridge.security.DeviceSecurity
 import com.leikwan.bridge.security.DeviceSecurityResult
@@ -49,12 +51,20 @@ class PanelRepository(
     private val httpClientOverride: OkHttpClient? = null,
     private val deviceIdProvider: (Long) -> String = AndroidDeviceIdentity()::deviceId,
     private val attestationProofProvider: (String, Long, String) -> AttestationProof =
-        AndroidAttestationProofFactory()::create,
+        AndroidAttestationProofFactory(
+            attestationKeys = AndroidKeyStoreAttestationKeyProvider(
+                allowQaSoftwareAttestation = BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS,
+            ),
+            allowQaTestAttestation = BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS,
+        )::create,
     private val deviceNameProvider: () -> String = {
         listOf(Build.MANUFACTURER, Build.MODEL).filter { !it.isNullOrBlank() }.joinToString(" ")
     },
     private val deviceSecurityCheck: () -> DeviceSecurityResult = {
-        DeviceSecurity.evaluate(context.applicationContext)
+        DeviceSecurity.evaluate(
+            context.applicationContext,
+            allowQaTestDeviceExceptions = BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS,
+        )
     },
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
@@ -202,8 +212,17 @@ class PanelRepository(
                 "device_challenge_failed",
             )
         }
-        validateChallenge(challenge, clientId)
-        val proof = attestationProofProvider(challenge.nonce, clientId, deviceId)
+        val proof = try {
+            validateChallenge(challenge, clientId)
+            attestationProofProvider(challenge.nonce, clientId, deviceId)
+        } catch (throwable: Throwable) {
+            Log.e(
+                "LeiKwanAttest",
+                "post-challenge enrollment stage failed: ${throwable::class.qualifiedName} msg=${throwable.message}",
+                throwable,
+            )
+            throw throwable
+        }
         val response = if (enrollmentCode == null) {
             requireSuccessful(
                 api.enrollDevice(
@@ -319,6 +338,7 @@ class PanelRepository(
             // panels must not block the authoritative pull.
         }
         val resp = api.pullConfigs(authHeader())
+        Log.i("LeiKwanPanel", "pull configs ok=${resp.ok} forwards=${resp.forwards.size}")
         if (!resp.ok) throw Exception("Pull configs failed")
         routeRuleStore.replaceFromPull(
             routeDirections = resp.routeDirections.orEmpty(),
@@ -335,11 +355,16 @@ class PanelRepository(
             try {
                 val contract = ForwardContractParser.parse(raw) ?: continue
                 val effective = AndroidEffectiveForwardBuilder.build(contract) ?: continue
+                Log.i(
+                    "LeiKwanPanel",
+                    "forward accepted id=${effective.forwardId} backend=${effective.runtimeContract.backendMode} mode=${effective.mode} target=${effective.target} listen=${effective.listenPort}",
+                )
                 contracts += contract
                 cachedForwardConfigs[contract.forwardId] = raw
                 cachedForwardContracts[contract.forwardId] = contract
                 cachedEffectiveForwards[effective.forwardId] = effective
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                Log.w("LeiKwanPanel", "forward skipped: ${error::class.simpleName} ${error.message}")
                 // skip unparseable forwards
             }
         }

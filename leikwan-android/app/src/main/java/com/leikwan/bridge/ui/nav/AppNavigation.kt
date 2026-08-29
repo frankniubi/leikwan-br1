@@ -36,14 +36,15 @@ import androidx.navigation.compose.rememberNavController
 import com.leikwan.bridge.R
 import com.leikwan.bridge.ui.MainActivity
 import com.leikwan.bridge.ui.clientrules.ClientRulesScreen
+import com.leikwan.bridge.ui.connections.ConnectionsScreen
 import com.leikwan.bridge.ui.proxies.ProxiesScreen
 import com.leikwan.bridge.ui.proxies.ProxiesViewModel
 import com.leikwan.bridge.ui.routing.RoutingScreen
 import com.leikwan.bridge.ui.settings.SettingsScreen
-import com.leikwan.bridge.ui.tunnels.TunnelsScreen
+import com.leikwan.bridge.update.AppUpdateUiState
 
 enum class Screen(val route: String, @StringRes val labelRes: Int, val icon: ImageVector) {
-    Tunnels("tunnels", R.string.nav_tunnels, Icons.Default.Lan),
+    Connections("connections", R.string.nav_connections, Icons.Default.Lan),
     Proxies("proxies", R.string.nav_proxies, Icons.Default.Shield),
     Routing("routing", R.string.nav_routing, Icons.Default.Route),
     ClientRules("client-rules", R.string.nav_client_rules, Icons.AutoMirrored.Filled.Rule),
@@ -51,7 +52,14 @@ enum class Screen(val route: String, @StringRes val labelRes: Int, val icon: Ima
 }
 
 @Composable
-fun MainScreen(onLogout: () -> Unit = {}) {
+fun MainScreen(
+    onLogout: () -> Unit = {},
+    updateState: AppUpdateUiState = AppUpdateUiState(),
+    onCheckForUpdates: () -> Unit = {},
+    onDownloadUpdate: () -> Unit = {},
+    onInstallUpdate: () -> Unit = {},
+    onAllowUnknownSources: () -> Unit = {},
+) {
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
     val proxiesViewModel: ProxiesViewModel = viewModel()
@@ -94,14 +102,33 @@ fun MainScreen(onLogout: () -> Unit = {}) {
     ) { padding ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Tunnels.route,
+            startDestination = Screen.Connections.route,
             modifier = Modifier.padding(padding),
         ) {
-            composable(Screen.Tunnels.route) { TunnelsScreen() }
+            composable(Screen.Connections.route) {
+                ConnectionsScreen(
+                    onImportNode = {
+                        navController.navigate(Screen.Proxies.route) {
+                            popUpTo(navController.graph.startDestinationId) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                )
+            }
             composable(Screen.Proxies.route) { ProxiesScreen(viewModel = proxiesViewModel) }
             composable(Screen.Routing.route) { RoutingScreen() }
             composable(Screen.ClientRules.route) { ClientRulesScreen() }
-            composable(Screen.Settings.route) { SettingsScreen(onLogout = onLogout) }
+            composable(Screen.Settings.route) {
+                SettingsScreen(
+                    onLogout = onLogout,
+                    updateState = updateState,
+                    onCheckForUpdates = onCheckForUpdates,
+                    onDownloadUpdate = onDownloadUpdate,
+                    onInstallUpdate = onInstallUpdate,
+                    onAllowUnknownSources = onAllowUnknownSources,
+                )
+            }
         }
     }
 }

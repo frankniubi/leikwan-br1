@@ -13,7 +13,7 @@ import java.time.Instant
 class AndroidEffectiveForwardBuilderTest {
 
     @Test
-    fun `valid ultra policy is accepted while expired policy is dropped`() {
+    fun `ultra forward is listed regardless of lease enforced at connect`() {
         val valid = sampleContract(
             forwardId = 90L,
             mode = ForwardMode.ULTRA,
@@ -26,8 +26,11 @@ class AndroidEffectiveForwardBuilderTest {
             ultraAccess = ultraAccess(91L, "2020-01-01T00:00:00Z"),
         )
 
+        // Listing (ForwardFilter / AndroidEffectiveForwardBuilder) must NOT depend on the short-lived
+        // (300s) ultra lease, or forwards flicker out every time the lease lapses between pulls. The
+        // lease is enforced only at connect time (TunnelOrchestrator.startForForward -> UltraPolicy.from).
         assertEquals(ForwardMode.ULTRA, AndroidEffectiveForwardBuilder.build(valid)?.mode)
-        assertNull(AndroidEffectiveForwardBuilder.build(expired))
+        assertEquals(ForwardMode.ULTRA, AndroidEffectiveForwardBuilder.build(expired)?.mode)
     }
 
     @Test

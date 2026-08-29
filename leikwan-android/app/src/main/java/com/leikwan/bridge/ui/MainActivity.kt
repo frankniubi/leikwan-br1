@@ -6,17 +6,23 @@ import android.content.Intent
 import android.graphics.Color
 import android.net.VpnService
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.core.view.WindowCompat
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
+import com.leikwan.bridge.R
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.proxy.ImportRouter
@@ -27,6 +33,9 @@ import com.leikwan.bridge.ui.login.EnrollmentScreen
 import com.leikwan.bridge.ui.nav.MainScreen
 import com.leikwan.bridge.ui.security.BlockedDeviceScreen
 import com.leikwan.bridge.ui.theme.LeikwanTheme
+import com.leikwan.bridge.ui.update.AppUpdatePrompt
+import com.leikwan.bridge.update.AppUpdateStatus
+import com.leikwan.bridge.update.AppUpdateViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import java.security.MessageDigest
@@ -40,6 +49,10 @@ private data class EnrollmentLink(
 class MainActivity : ComponentActivity() {
 
     private var vpnPermissionCallback: (() -> Unit)? = null
+    private val appUpdateViewModel: AppUpdateViewModel by viewModels()
+    private var updateCheckStarted = false
+    private var autoInstallPromptedVersionCode: Long? = null
+    private var unknownSourcesPromptedVersionCode: Long? = null
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -83,30 +96,60 @@ class MainActivity : ComponentActivity() {
         setContent {
             LeikwanTheme {
                 val security = androidx.compose.runtime.remember {
-                    DeviceSecurity.evaluate(applicationContext)
+                        DeviceSecurity.evaluate(
+                            applicationContext,
+                            allowQaTestDeviceExceptions = BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS,
+                        ).also { result ->
+                        android.util.Log.e(
+                            "LeiKwanAttest",
+                            "startup security result=$result qaFlag=${BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS}",
+                        )
+                    }
                 }
                 val terminalControl by SessionGate.state.collectAsState()
+                val updateState by appUpdateViewModel.state.collectAsState()
                 if (security != DeviceSecurityResult.Allowed
                     || terminalControl?.code in setOf("device_banned", "device_untrusted")) {
                     BlockedDeviceScreen()
                 } else {
-                    var isLoggedIn by remember { mutableStateOf(Prefs.get(this).isLoggedIn()) }
-                    val enrollmentLink = pendingEnrollmentLink
-                    if (isLoggedIn && terminalControl == null) {
-                        MainScreen(onLogout = {
-                            SessionGate.clear()
-                            isLoggedIn = false
-                        })
-                    } else {
-                        EnrollmentScreen(
-                            onEnrollmentSuccess = {
-                                SessionGate.clear()
-                                isLoggedIn = true
-                            },
-                            prefilledClientId = enrollmentLink?.clientId.orEmpty(),
-                            prefilledEnrollmentCode = enrollmentLink?.code.orEmpty(),
-                            onPrefillConsumed = { pendingEnrollmentLink = null },
+                    Box(modifier = androidx.compose.ui.Modifier.fillMaxSize()) {
+                        var isLoggedIn by remember { mutableStateOf(Prefs.get(this@MainActivity).isLoggedIn()) }
+                        val enrollmentLink = pendingEnrollmentLink
+                        if (isLoggedIn && terminalControl == null) {
+                            MainScreen(
+                                onLogout = {
+                                    SessionGate.clear()
+                                    isLoggedIn = false
+                                },
+                                updateState = updateState,
+                                onCheckForUpdates = { appUpdateViewModel.checkForUpdates(autoDownload = false) },
+                                onDownloadUpdate = { appUpdateViewModel.downloadAndPrepare() },
+                                onInstallUpdate = { launchUpdateInstall(force = true) },
+                                onAllowUnknownSources = { openUnknownSourcesSettings() },
+                            )
+                        } else {
+                            EnrollmentScreen(
+                                onEnrollmentSuccess = {
+                                    SessionGate.clear()
+                                    isLoggedIn = true
+                                },
+                                prefilledClientId = enrollmentLink?.clientId.orEmpty(),
+                                prefilledEnrollmentCode = enrollmentLink?.code.orEmpty(),
+                                onPrefillConsumed = { pendingEnrollmentLink = null },
+                            )
+                        }
+                        AppUpdatePrompt(
+                            state = updateState,
+                            onCheckForUpdates = { appUpdateViewModel.checkForUpdates(autoDownload = false) },
+                            onDownloadUpdate = { appUpdateViewModel.downloadAndPrepare() },
+                            onInstallUpdate = { launchUpdateInstall(force = true) },
+                            onAllowUnknownSources = { openUnknownSourcesSettings() },
+                            onDismiss = { appUpdateViewModel.reset() },
                         )
+                        val ready = updateState.status as? AppUpdateStatus.ReadyToInstall
+                        LaunchedEffect(ready?.manifest?.versionCode) {
+                            if (ready != null) launchUpdateInstall(force = false)
+                        }
                     }
                 }
             }
@@ -122,6 +165,45 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         checkClipboard()
+        if (!updateCheckStarted) {
+            updateCheckStarted = true
+            appUpdateViewModel.checkForUpdates(autoDownload = true)
+        }
+        if (appUpdateViewModel.state.value.status is AppUpdateStatus.ReadyToInstall) {
+            launchUpdateInstall(force = false)
+        }
+    }
+
+    private fun launchUpdateInstall(force: Boolean) {
+        val ready = appUpdateViewModel.state.value.status as? AppUpdateStatus.ReadyToInstall ?: return
+        if (!force && autoInstallPromptedVersionCode == ready.manifest.versionCode) return
+
+        if (!appUpdateViewModel.canRequestPackageInstalls()) {
+            if (force || unknownSourcesPromptedVersionCode != ready.manifest.versionCode) {
+                unknownSourcesPromptedVersionCode = ready.manifest.versionCode
+                openUnknownSourcesSettings()
+            }
+            return
+        }
+        unknownSourcesPromptedVersionCode = null
+
+        val intent = appUpdateViewModel.installIntent().getOrNull()
+        if (intent == null) {
+            Toast.makeText(this, R.string.update_install_prepare_failed, Toast.LENGTH_LONG).show()
+            return
+        }
+        runCatching { startActivity(intent) }
+            .onSuccess { autoInstallPromptedVersionCode = ready.manifest.versionCode }
+            .onFailure {
+                Toast.makeText(this, R.string.update_install_failed, Toast.LENGTH_LONG).show()
+            }
+    }
+
+    private fun openUnknownSourcesSettings() {
+        runCatching { startActivity(appUpdateViewModel.unknownSourcesSettingsIntent()) }
+            .onFailure {
+                Toast.makeText(this, R.string.update_unknown_sources_settings_failed, Toast.LENGTH_LONG).show()
+            }
     }
 
     private fun handleIncomingIntent(intent: Intent?) {

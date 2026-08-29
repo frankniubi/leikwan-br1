@@ -4,7 +4,7 @@ import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
-import android.security.keystore.StrongBoxUnavailableException
+import android.util.Log
 import com.google.gson.annotations.SerializedName
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
@@ -34,6 +34,10 @@ interface AttestationKeyProvider {
 class AndroidAttestationProofFactory(
     private val identity: AndroidDeviceIdentity = AndroidDeviceIdentity(),
     private val attestationKeys: AttestationKeyProvider = AndroidKeyStoreAttestationKeyProvider(),
+    private val allowQaTestAttestation: Boolean = false,
+    private val errorLogger: (String, Throwable) -> Unit = { message, throwable ->
+        Log.e(TAG, message, throwable)
+    },
 ) {
     fun create(nonce: String, clientId: Long, deviceId: String): AttestationProof {
         require(nonce.isNotBlank()) { "nonce is required" }
@@ -46,7 +50,7 @@ class AndroidAttestationProofFactory(
         val binding = "$nonce|$clientId|$deviceId|$identityHash".toByteArray(Charsets.UTF_8)
         try {
             attestationKeys.create(challenge).use { key ->
-                check(key.hardwareBacked) { "hardware-backed attestation is required" }
+                check(key.hardwareBacked || allowQaTestAttestation) { "hardware-backed attestation is required" }
                 val signature = key.sign(binding)
                 return AttestationProof(
                     certificateChain = key.certificateChain.map(Base64.getEncoder()::encodeToString),
@@ -54,6 +58,9 @@ class AndroidAttestationProofFactory(
                     bindingSignature = Base64.getEncoder().encodeToString(signature),
                 )
             }
+        } catch (throwable: Throwable) {
+            errorLogger("attestation proof creation failed: ${throwable::class.qualifiedName} msg=${throwable.message}", throwable)
+            throw throwable
         } finally {
             identitySpki.fill(0)
             challenge.fill(0)
@@ -66,17 +73,25 @@ class AndroidAttestationProofFactory(
         .joinToString("") { "%02x".format(it) }
 }
 
-class AndroidKeyStoreAttestationKeyProvider : AttestationKeyProvider {
+private const val TAG = "LeiKwanAttest"
+
+class AndroidKeyStoreAttestationKeyProvider(
+    private val allowQaSoftwareAttestation: Boolean = false,
+) : AttestationKeyProvider {
     override fun create(challenge: ByteArray): AttestationKeyMaterial {
         require(challenge.isNotEmpty()) { "attestation challenge is required" }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            try {
-                return generate(challenge, strongBox = true)
-            } catch (_: StrongBoxUnavailableException) {
-                // A TEE-backed key remains acceptable when StrongBox is absent.
+        return try {
+            createAttestationKeyWithFallback(Build.VERSION.SDK_INT) { strongBox ->
+                generate(challenge, strongBox)
             }
+        } catch (throwable: Throwable) {
+            Log.e(
+                TAG,
+                "attestation key generation failed: ${throwable::class.qualifiedName} msg=${throwable.message}",
+                throwable,
+            )
+            throw throwable
         }
-        return generate(challenge, strongBox = false)
     }
 
     private fun generate(challenge: ByteArray, strongBox: Boolean): AttestationKeyMaterial {
@@ -103,11 +118,15 @@ class AndroidKeyStoreAttestationKeyProvider : AttestationKeyProvider {
             val chain = keyStore.getCertificateChain(alias)?.map { it.encoded.copyOf() }.orEmpty()
             val keyInfo = KeyFactory.getInstance(privateKey.algorithm, ANDROID_KEY_STORE)
                 .getKeySpec(privateKey, KeyInfo::class.java)
-            if (chain.isEmpty() || !isHardwareBacked(keyInfo)) {
+            val hardwareBacked = isHardwareBacked(keyInfo)
+            if (chain.isEmpty()) {
+                error("attestation certificate chain unavailable")
+            }
+            if (!hardwareBacked && !allowQaSoftwareAttestation) {
                 error("hardware-backed attestation key unavailable")
             }
 
-            return AndroidAttestationKeyMaterial(alias, privateKey, chain)
+            return AndroidAttestationKeyMaterial(alias, privateKey, chain, hardwareBacked)
         } catch (throwable: Throwable) {
             if (keyStore.containsAlias(alias)) {
                 keyStore.deleteEntry(alias)
@@ -129,9 +148,8 @@ class AndroidKeyStoreAttestationKeyProvider : AttestationKeyProvider {
         private val alias: String,
         private val privateKey: PrivateKey,
         override val certificateChain: List<ByteArray>,
+        override val hardwareBacked: Boolean,
     ) : AttestationKeyMaterial {
-        override val hardwareBacked: Boolean = true
-
         override fun sign(message: ByteArray): ByteArray = Signature.getInstance("SHA256withECDSA").run {
             initSign(privateKey)
             update(message)
@@ -148,4 +166,19 @@ class AndroidKeyStoreAttestationKeyProvider : AttestationKeyProvider {
     private companion object {
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
     }
+}
+
+internal fun createAttestationKeyWithFallback(
+    sdkInt: Int,
+    generate: (strongBox: Boolean) -> AttestationKeyMaterial,
+): AttestationKeyMaterial {
+    if (sdkInt >= Build.VERSION_CODES.P) {
+        try {
+            return generate(true)
+        } catch (_: Exception) {
+            // StrongBox is optional. OEM providers use several exception types
+            // when it is absent or temporarily unable to provision keys.
+        }
+    }
+    return generate(false)
 }

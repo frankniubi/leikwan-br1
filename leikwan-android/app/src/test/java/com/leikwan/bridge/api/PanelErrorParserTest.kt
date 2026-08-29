@@ -17,4 +17,13 @@ class PanelErrorParserTest {
 
         assertEquals("HTTP 401 Unauthorized", message)
     }
+
+    @Test
+    fun `extracts code and reason from structured api error`() {
+        val message = PanelErrorParser.messageFromBody(
+            """{"error":{"code":"device_untrusted","details":{"reason":"attestation_configuration_missing"}}}""",
+        )
+
+        assertEquals("device_untrusted: attestation_configuration_missing", message)
+    }
 }

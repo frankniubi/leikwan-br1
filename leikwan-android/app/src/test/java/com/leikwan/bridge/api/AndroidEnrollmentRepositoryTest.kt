@@ -2,6 +2,7 @@ package com.leikwan.bridge.api
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.security.AttestationProof
@@ -84,7 +85,7 @@ class AndroidEnrollmentRepositoryTest {
         assertEquals(deviceId, challenge.getHeader("X-Device-Id"))
         assertEquals("Pixel QA", challenge.getHeader("X-Device-Name"))
         assertEquals("android-host", challenge.getHeader("X-Device-Platform"))
-        assertEquals("0.2.1", challenge.getHeader("X-Client-Version"))
+        assertEquals(BuildConfig.VERSION_NAME, challenge.getHeader("X-Client-Version"))
         assertTrue(challenge.getHeader("User-Agent")!!.startsWith("LeiKwan-Host-Android/"))
         assertNull(challenge.getHeader("X-Device-Session"))
         assertFalse(challenge.body.readUtf8().contains("password", ignoreCase = true))
