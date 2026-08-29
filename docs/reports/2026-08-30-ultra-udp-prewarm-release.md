@@ -16,9 +16,9 @@ Release scope: Windows, Linux, and the shared Ultra runtime contract. Android is
 
 | Artifact | Version | SHA-256 | Size |
 |---|---:|---|---:|
-| Linux Ultra runtime | `2026.08.30.4` | `56d56d6d5de1cd0c98cb34221b26fc50fb8792c7ff31eee24d8024c060248a56` | 15,528,202 |
-| Windows Ultra runtime | `2026.08.30.4` | `5fac22da77dc6d6cc81abb8f824fe57cd9dff736655f498af36236f4df5a7d47` | 6,695,936 |
-| Windows setup | `0.1.19.9` | `ddc54a76f1b65544692925d9aa76bbdb423834380cc0bae4cfa6dc2f720b3450` | 22,341,822 |
+| Linux Ultra runtime | `2026.08.30.4` | `0a3932e023b5de90da0b6792c672bd5c2e275060013e1c31ba6980d0bdb22d11` | 15,462,666 |
+| Windows Ultra runtime | `2026.08.30.4` | `59d6fa47896e51308749850098f6f61fdbdc01525ca3f1bc992f22ab59fbad74` | 6,699,008 |
+| Windows setup | `0.1.19.9` | `af0ba604300a76b6f153a8384c9d9f957a8179c1f235fe3b0b101fea02c3d425` | 22,345,758 |
 | Linux client-agent/install-forward runtime | `2026.08.30.4` | source/artifact mirrors verified | n/a |
 
 Linux was built with the existing garble/reproducibility script. Windows was built locally with `GOOS=windows GOARCH=amd64 CGO_ENABLED=0`, `-trimpath`, and stripped linker flags; the local garble output was rejected by Windows Defender as a false-positive executable, so the published Windows helper does not claim garble hardening metadata.
