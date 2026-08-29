@@ -197,16 +197,29 @@ public sealed class MasterApiClient : IDisposable
                     || leases.GetArrayLength() is < 1 or > 4)
                     return [];
                 var parsed = new List<UltraLease>(leases.GetArrayLength());
-                foreach (var item in leases.EnumerateArray())
+                try
                 {
-                    var lease = ParseUltraLease(item, forward, policy);
-                    if (lease is null)
+                    foreach (var item in leases.EnumerateArray())
                     {
-                        foreach (var parsedLease in parsed)
-                            parsedLease.Dispose();
-                        return [];
+                        var lease = ParseUltraLease(item, forward, policy);
+                        if (lease is null)
+                        {
+                            foreach (var parsedLease in parsed)
+                                parsedLease.Dispose();
+                            return [];
+                        }
+                        parsed.Add(lease);
                     }
-                    parsed.Add(lease);
+                }
+                catch (Exception ex) when (ex is JsonException
+                    or KeyNotFoundException
+                    or InvalidOperationException
+                    or FormatException
+                    or OverflowException)
+                {
+                    foreach (var parsedLease in parsed)
+                        parsedLease.Dispose();
+                    return [];
                 }
                 return parsed;
             }
@@ -247,10 +260,14 @@ public sealed class MasterApiClient : IDisposable
         var returnedGeneration = item.GetProperty("policy_generation").GetString() ?? "";
         var returnedTicket = item.GetProperty("session_ticket").GetString() ?? "";
         var protocol = item.GetProperty("protocol").GetString() ?? "";
+        var targetDigest = item.GetProperty("target_digest").GetString() ?? "";
+        var transport = item.GetProperty("transport").GetString() ?? "";
         if (!string.Equals(protocol, UltraPolicy.Protocol, StringComparison.Ordinal)
             || returnedForward != forward.ForwardId
             || !string.Equals(returnedGeneration, policy.PolicyGeneration, StringComparison.Ordinal)
-            || !string.Equals(returnedTicket, policy.SessionTicket, StringComparison.Ordinal))
+            || !string.Equals(returnedTicket, policy.SessionTicket, StringComparison.Ordinal)
+            || !string.Equals(targetDigest, policy.TargetDigest, StringComparison.Ordinal)
+            || !string.Equals(transport, policy.Transport, StringComparison.OrdinalIgnoreCase))
             return null;
         var endpoint = item.GetProperty("endpoint");
         var credential = item.GetProperty("credential");
@@ -261,9 +278,9 @@ public sealed class MasterApiClient : IDisposable
             SessionTicket = returnedTicket,
             ForwardId = returnedForward,
             PolicyGeneration = returnedGeneration,
-            TargetDigest = item.GetProperty("target_digest").GetString() ?? "",
+            TargetDigest = targetDigest,
             ExpiresAt = item.GetProperty("expires_at").GetDateTimeOffset(),
-            Transport = item.GetProperty("transport").GetString() ?? "",
+            Transport = transport,
             RateLimitMbps = item.GetProperty("rate_limit_mbps").GetInt64(),
             QuotaRemainingBytes = item.GetProperty("quota_remaining_bytes").GetInt64(),
             SelectionRef = item.GetProperty("selection_ref").GetString() ?? "",

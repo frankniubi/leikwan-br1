@@ -258,11 +258,23 @@ final class UltraClientStatusService
         if ($reference === '') {
             return null;
         }
-        return [
+        $normalized = [
             'selection_ref' => $reference,
             'rtt_ms' => max(0, min(60000, (int) ($selection['rtt_ms'] ?? 0))),
             'selected_at' => self::text($selection['selected_at'] ?? '', 40),
         ];
+        foreach ([
+            'p95_rtt_ms' => 60000,
+            'jitter_ms' => 60000,
+            'loss_percent' => 100,
+            'probe_sent' => 4096,
+            'probe_received' => 4096,
+        ] as $key => $maximum) {
+            if (array_key_exists($key, $selection)) {
+                $normalized[$key] = max(0, min($maximum, (int) $selection[$key]));
+            }
+        }
+        return $normalized;
     }
 
     private static function selectionRef(mixed $value): string

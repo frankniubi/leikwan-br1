@@ -73,11 +73,15 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 listen_host = "127.0.0.1",
                 listen_port = forward.ListenPort,
                 target = forward.Target,
+                probe_target = "1.1.1.1:53",
                 control_socket = $"\\\\.\\pipe\\{UltraLeaseClient.PipeName(forward.ForwardId)}",
                 transport = leases[0].Transport,
                 policy_generation = leases[0].PolicyGeneration,
                 target_digest = leases[0].TargetDigest,
-                auto_select = leases.Count > 1,
+                // Probe immediately after the runtime is enabled, even when
+                // the panel returned a single candidate, so the first status
+                // snapshot includes loss, latency, and jitter quality.
+                auto_select = true,
                 probe_timeout_ms = 300,
                 probe_samples = 20,
                 probe_interval_ms = 100,

@@ -75,6 +75,20 @@ class UltraStatusCollectionTests(unittest.TestCase):
         self.assertEqual(3, statuses[0]["forward_id"])
         self.assertIsNone(statuses[0]["latest_tcp"])
 
+    def test_collection_preserves_bounded_udp_probe_quality(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = valid_status(3)
+            status["active_udp"].update(
+                {"p95_rtt_ms": 31, "jitter_ms": 4, "loss_percent": 5, "probe_sent": 20, "probe_received": 19}
+            )
+            (root / "forward-3.status.json").write_text(json.dumps(status), encoding="utf-8")
+            statuses = MODULE.collect_ultra_status(root, expected_uid=getattr(os, "getuid", lambda: 0)())
+        self.assertEqual(
+            {"p95_rtt_ms": 31, "jitter_ms": 4, "loss_percent": 5, "probe_sent": 20, "probe_received": 19},
+            {key: statuses[0]["active_udp"][key] for key in ("p95_rtt_ms", "jitter_ms", "loss_percent", "probe_sent", "probe_received")},
+        )
+
     def test_existing_heartbeat_contains_one_status_array(self):
         source = (ROOT / "client-agent" / "client_agent.py").read_text(encoding="utf-8")
         heartbeat = source[source.index('f"{master}/api/client/heartbeat"') :]

@@ -547,11 +547,19 @@ def _normalize_ultra_selection(value: object) -> dict | None:
         rtt_ms = max(0, min(60000, int(value.get("rtt_ms", 0) or 0)))
     except (TypeError, ValueError):
         rtt_ms = 0
-    return {
+    normalized = {
         "selection_ref": selection_ref,
         "rtt_ms": rtt_ms,
         "selected_at": str(value.get("selected_at", "") or "").strip()[:40],
     }
+    for key, maximum in (("p95_rtt_ms", 60000), ("jitter_ms", 60000), ("loss_percent", 100), ("probe_sent", 4096), ("probe_received", 4096)):
+        if key not in value:
+            continue
+        try:
+            normalized[key] = max(0, min(maximum, int(value.get(key, 0) or 0)))
+        except (TypeError, ValueError):
+            normalized[key] = 0
+    return normalized
 
 
 def collect_ultra_status(
@@ -642,6 +650,8 @@ def resolve_ultra_leases(master: str, agent_token: str, device_id: str, forwards
                 "nonce": secrets.token_hex(16),
                 "target_digest": hashlib.sha256(target.encode("utf-8")).hexdigest(),
                 "transport": transport,
+                "selection_mode": "auto",
+                "max_candidates": 4,
             }
         )
     if not requests:
@@ -663,21 +673,37 @@ def resolve_ultra_leases(master: str, agent_token: str, device_id: str, forwards
                 time.sleep(0.5 if attempt == 0 else 1.5)
     if response is None:
         raise RuntimeError(f"ultra material resolution retries exhausted: {last_error}") from last_error
-    lease_by_forward = {
-        int(item.get("forward_id", 0) or 0): item
-        for item in response.get("leases", [])
-        if isinstance(item, dict) and int(item.get("forward_id", 0) or 0) > 0
-    }
+    leases_by_forward: dict[int, list[dict]] = {}
+    for item in response.get("leases", []):
+        if not isinstance(item, dict):
+            continue
+        forward_id = int(item.get("forward_id", 0) or 0)
+        if forward_id <= 0:
+            continue
+        candidates = leases_by_forward.setdefault(forward_id, [])
+        if len(candidates) < 4:
+            candidates.append(item)
     result: list[dict] = []
     for forward in forwards:
         if not isinstance(forward, dict):
             continue
         enriched = dict(forward)
-        lease = lease_by_forward.get(int(enriched.get("forward_id", 0) or 0))
-        if isinstance(lease, dict):
-            enriched["_ultra_lease"] = lease
+        leases = leases_by_forward.get(int(enriched.get("forward_id", 0) or 0), [])
+        if leases:
+            enriched["_ultra_lease"] = leases[0]
+            enriched["_ultra_leases"] = leases
         result.append(enriched)
     return result
+
+
+def ultra_lease_candidates(forward: dict) -> list[dict]:
+    raw = forward.get("_ultra_leases") if isinstance(forward, dict) else None
+    if isinstance(raw, list):
+        candidates = [item for item in raw if isinstance(item, dict)]
+        if candidates:
+            return candidates[:4]
+    single = forward.get("_ultra_lease") if isinstance(forward, dict) else None
+    return [single] if isinstance(single, dict) else []
 
 
 def file_sha256(path: pathlib.Path) -> str:
@@ -1106,6 +1132,7 @@ class ClientAgent:
             normalized_forward.pop("ultra_access", None)
             normalized_forward.pop("_ultra_material", None)
             normalized_forward.pop("_ultra_lease", None)
+            normalized_forward.pop("_ultra_leases", None)
         return self.stable_json_hash(
             {
                 "forward": normalized_forward,
@@ -1790,7 +1817,7 @@ class ClientAgent:
                 inactive_forward_ids.append(forward_id)
                 self.stop_forward(forward_id)
                 continue
-            if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra" and not isinstance(runtime_forward.get("_ultra_lease"), dict):
+            if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra" and not ultra_lease_candidates(runtime_forward):
                 previous = self.load_applied().get(str(forward_id), {})
                 if lease_resolution_failed and isinstance(previous, dict) and self.applied_forward_runtime_is_present(previous):
                     logging.warning("forward %s Ultra lease refresh failed; preserving current runtime", forward_id)
@@ -1857,7 +1884,7 @@ class ClientAgent:
                 force_runtime_restart = forward_id in force_runtime_refresh_ids
                 ultra_access_refresh = (
                     str(runtime_forward.get("backend_mode", "") or "").strip().lower() == "ultra"
-                    and isinstance(runtime_forward.get("_ultra_lease"), dict)
+                    and bool(ultra_lease_candidates(runtime_forward))
                 )
                 if not force_runtime_restart and not ultra_access_refresh and self.forward_apply_is_noop(forward_id, contract_signature):
                     noop_forward_ids.append(forward_id)
@@ -2380,8 +2407,8 @@ class ClientAgent:
             previous_runtime_present = False
         if rendered_unchanged and previous_runtime_present:
             if str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra":
-                lease = render_forward.get("_ultra_lease")
-                if not isinstance(lease, dict) or not self.send_ultra_lease(forward_id, lease):
+                leases = ultra_lease_candidates(render_forward)
+                if not leases or not self.send_ultra_leases(forward_id, leases):
                     raise RuntimeError("ultra lease delivery failed")
                 self.persist_forward_apply_signatures(forward_id, contract_signature, rendered_signature)
                 logging.debug("forward %s static runtime unchanged; delivered fresh Ultra lease", forward_id)
@@ -2483,8 +2510,8 @@ class ClientAgent:
             )
 
         if str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra":
-            lease = render_forward.get("_ultra_lease")
-            if not isinstance(lease, dict) or not self.send_ultra_lease(forward_id, lease):
+            leases = ultra_lease_candidates(render_forward)
+            if not leases or not self.send_ultra_leases(forward_id, leases):
                 self.stop_forward(forward_id, delete_files=True)
                 raise RuntimeError("ultra lease delivery failed")
 
@@ -2512,29 +2539,43 @@ class ClientAgent:
         self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def send_ultra_lease(self, forward_id: int, lease: dict) -> bool:
-        if forward_id <= 0 or not isinstance(lease, dict):
+        return self.send_ultra_leases(forward_id, [lease])
+
+    def send_ultra_leases(self, forward_id: int, leases: list[dict]) -> bool:
+        if forward_id <= 0 or not isinstance(leases, list) or not 1 <= len(leases) <= 4:
             return False
         socket_path = pathlib.Path(f"/run/ultra/forward-{forward_id}.control.sock")
-        payload = json.loads(json.dumps(lease, ensure_ascii=False))
-        payload["protocol"] = str(payload.get("protocol", "") or "")
-        endpoint = payload.get("endpoint") if isinstance(payload.get("endpoint"), dict) else {}
-        credential = payload.get("credential") if isinstance(payload.get("credential"), dict) else {}
-        if not payload.get("policy_generation") or not payload.get("lease_id") or not endpoint or not credential:
-            return False
+        wire_leases: list[dict] = []
+        sensitive: list[tuple[dict, dict, dict]] = []
         try:
-            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            for lease in leases:
+                if not isinstance(lease, dict):
+                    return False
+                payload = json.loads(json.dumps(lease, ensure_ascii=False))
+                payload["protocol"] = str(payload.get("protocol", "") or "")
+                endpoint = payload.get("endpoint") if isinstance(payload.get("endpoint"), dict) else {}
+                credential = payload.get("credential") if isinstance(payload.get("credential"), dict) else {}
+                if not payload.get("policy_generation") or not payload.get("lease_id") or not endpoint or not credential:
+                    return False
+                wire_leases.append(payload)
+                sensitive.append((payload, endpoint, credential))
+            wire_payload: object = wire_leases[0] if len(wire_leases) == 1 else {"leases": wire_leases}
+            encoded = json.dumps(wire_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             if not 1 <= len(encoded) <= 65536:
                 return False
             frame = struct.pack(">I", len(encoded)) + encoded
+            # The runtime probes immediately after accepting even one lease;
+            # allow the full probe window before treating delivery as failed.
+            timeout = 20.0
             for attempt in range(3):
                 try:
-                    deadline = time.monotonic() + 3.0
+                    deadline = time.monotonic() + min(3.0, timeout)
                     while not socket_path.exists() and time.monotonic() < deadline:
                         time.sleep(0.1)
                     if not socket_path.exists():
                         raise OSError("control socket missing")
                     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                        connection.settimeout(3.0)
+                        connection.settimeout(timeout)
                         connection.connect(str(socket_path))
                         connection.sendall(frame)
                         header = connection.recv(4)
@@ -2559,9 +2600,10 @@ class ClientAgent:
                     else:
                         time.sleep((0.1, 0.3, 0.9)[attempt])
         finally:
-            payload.clear()
-            endpoint.clear()
-            credential.clear()
+            for payload, endpoint, credential in sensitive:
+                payload.clear()
+                endpoint.clear()
+                credential.clear()
         return False
 
     def stop_forward(self, forward_id: int, delete_files: bool = False) -> None:

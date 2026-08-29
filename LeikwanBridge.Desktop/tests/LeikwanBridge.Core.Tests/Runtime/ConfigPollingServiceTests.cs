@@ -278,6 +278,33 @@ public sealed class ConfigPollingServiceTests
     }
 
     [Fact]
+    public async Task SyncOnceAsync_PassesMultipleUltraLeasesForInitialAutoSelection()
+    {
+        using var tempDir = new TempStateDirectory();
+        var payload = BuildUltraPullResponseJson().Replace("\"transport\": \"tcp\"", "\"transport\": \"tcp+udp\"", StringComparison.Ordinal);
+        using var server = new PullApiServer(payload, ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+            SuccessfulUltraLeaseCount = 2,
+        };
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        ForwardConfig? applied = null;
+        runtimeManager.OnApply = forward => applied = forward;
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+
+        Assert.NotNull(applied);
+        Assert.Equal(2, applied!.RuntimeLeases.Count);
+        Assert.Equal("tcp+udp", applied.RuntimeLeases[0].Transport);
+        foreach (var lease in applied.RuntimeLeases)
+            lease.Dispose();
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_PreservesRunningUltraWhenLeaseScopeRotates()
     {
         using var tempDir = new TempStateDirectory();
@@ -949,6 +976,8 @@ public sealed class ConfigPollingServiceTests
 
         public bool SuccessfulUltraLease { get; set; }
 
+        public int SuccessfulUltraLeaseCount { get; set; } = 1;
+
         public int UltraLeaseStatus { get; set; }
 
         public int SuccessfulUltraLeaseExpiryMinutes { get; set; } = 3;
@@ -976,7 +1005,7 @@ public sealed class ConfigPollingServiceTests
                 if (context.Request.Url?.AbsolutePath == "/api/client/ultra/lease")
                 {
                     var body = SuccessfulUltraLease
-                        ? BuildSuccessfulUltraLease(context.Request, SuccessfulUltraLeaseExpiryMinutes)
+                        ? BuildSuccessfulUltraLease(context.Request, SuccessfulUltraLeaseExpiryMinutes, SuccessfulUltraLeaseCount)
                         : "{\"ok\":false,\"error\":\"quota_exhausted\"}";
                     var bytes = Encoding.UTF8.GetBytes(body);
                     context.Response.StatusCode = UltraLeaseStatus;
@@ -1008,7 +1037,7 @@ public sealed class ConfigPollingServiceTests
             }
         }
 
-        private static string BuildSuccessfulUltraLease(HttpListenerRequest request, int expiryMinutes)
+        private static string BuildSuccessfulUltraLease(HttpListenerRequest request, int expiryMinutes, int leaseCount)
         {
             using var document = JsonDocument.Parse(request.InputStream);
             var item = document.RootElement.GetProperty("forwards")[0];
@@ -1018,29 +1047,27 @@ public sealed class ConfigPollingServiceTests
             var targetDigest = item.GetProperty("target_digest").GetString() ?? "";
             var transport = item.GetProperty("transport").GetString() ?? "tcp";
             var expiresAt = DateTimeOffset.UtcNow.AddMinutes(expiryMinutes).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+            var leases = Enumerable.Range(0, Math.Max(1, Math.Min(4, leaseCount))).Select(index => new
+            {
+                protocol = "leikwan-ultra-policy-v2",
+                forward_id = forwardId,
+                session_ticket = ticket,
+                lease_id = $"ul2_test_{index}",
+                policy_generation = generation,
+                expires_at = expiresAt,
+                transport,
+                rate_limit_mbps = 20,
+                quota_remaining_bytes = 1048576,
+                target_digest = targetDigest,
+                selection_ref = $"selection-reference-{index:000}-abcdefghijklmnop",
+                nonce_hash = new string((char)('b' + index), 64),
+                endpoint = new { ip = $"203.0.113.{10 + index}", port = 443 + index },
+                credential = new { user = "user", password = "password" },
+            }).ToArray();
             return JsonSerializer.Serialize(new
             {
                 ok = true,
-                leases = new[]
-                {
-                    new
-                    {
-                        protocol = "leikwan-ultra-policy-v2",
-                        forward_id = forwardId,
-                        session_ticket = ticket,
-                        lease_id = "ul2_test",
-                        policy_generation = generation,
-                        expires_at = expiresAt,
-                        transport,
-                        rate_limit_mbps = 20,
-                        quota_remaining_bytes = 1048576,
-                        target_digest = targetDigest,
-                        selection_ref = "selection-reference-abcdefghijklmnop",
-                        nonce_hash = new string('b', 64),
-                        endpoint = new { ip = "203.0.113.10", port = 443 },
-                        credential = new { user = "user", password = "password" },
-                    },
-                },
+                leases,
             });
         }
 

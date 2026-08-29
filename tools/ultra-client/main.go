@@ -21,11 +21,14 @@ import (
 
 const keepPayloadHex = "\x00\x00\xa4\x64\x34\xc9\xb6\x2b\x82\xee\xd2\xa8\x7f\xaa\x6a\x5f\x45\xac"
 
+const defaultProbeTarget = "1.1.1.1:53"
+
 type Config struct {
 	ForwardID           int                 `json:"forward_id"`
 	ListenHost          string              `json:"listen_host"`
 	ListenPort          int                 `json:"listen_port"`
 	Target              string              `json:"target"`
+	ProbeTarget         string              `json:"probe_target"`
 	ControlSocket       string              `json:"control_socket"`
 	PolicyGeneration    string              `json:"policy_generation"`
 	TargetDigest        string              `json:"target_digest"`

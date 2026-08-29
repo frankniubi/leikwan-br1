@@ -107,6 +107,10 @@ namespace {
             'entry_ref' => 'tcp-entry-reference-abcdefghijklmnopqrstuvwxyz',
             'relay_ip' => '203.0.113.20',
             'rtt_ms' => 18,
+            'p95_rtt_ms' => 24,
+            'loss_percent' => 5,
+            'probe_sent' => 20,
+            'probe_received' => 19,
             'selected_at' => '2030-01-01T00:00:00Z',
             'token' => 'must-not-survive',
         ],
@@ -114,6 +118,11 @@ namespace {
             'entry_ref' => 'udp-entry-reference-abcdefghijklmnopqrstuvwxyz',
             'relay_ip' => '203.0.113.21',
             'rtt_ms' => 20,
+            'p95_rtt_ms' => 31,
+            'jitter_ms' => 4,
+            'loss_percent' => 0,
+            'probe_sent' => 20,
+            'probe_received' => 20,
             'selected_at' => '2030-01-01T00:00:01Z',
         ],
         'updated_at' => '2030-01-01T00:00:02Z',
@@ -135,7 +144,12 @@ namespace {
     if (!is_array($encodedStatus)
         || ($encodedStatus[0]['latest_tcp']['selection_ref'] ?? '') !== $status['latest_tcp']['entry_ref']
         || array_key_exists('relay_ip', $encodedStatus[0]['latest_tcp'] ?? [])
-        || array_key_exists('relay_ip', $encodedStatus[0]['active_udp'] ?? [])) {
+        || array_key_exists('relay_ip', $encodedStatus[0]['active_udp'] ?? [])
+        || ($encodedStatus[0]['active_udp']['p95_rtt_ms'] ?? 0) !== 31
+        || ($encodedStatus[0]['active_udp']['jitter_ms'] ?? 0) !== 4
+        || ($encodedStatus[0]['active_udp']['loss_percent'] ?? -1) !== 0
+        || ($encodedStatus[0]['active_udp']['probe_sent'] ?? 0) !== 20
+        || ($encodedStatus[0]['active_udp']['probe_received'] ?? 0) !== 20) {
         failUltraStatus('status persistence retained provider relay identity');
     }
     $service->ingest(7, 'device-a', [$status]);

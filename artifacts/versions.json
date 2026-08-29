@@ -43,9 +43,9 @@
  "client_agent": {
   "artifact_url": "/artifacts/client-agent.py",
   "path": "client-agent/client_agent.py",
-    "sha256": "512b1bc6f22ebdb93014a1cde3498ac23396b0bd41a471c9b07bb4d1eb1e9113",
-     "size": 276004,
-     "size_bytes": 276004,
+    "sha256": "d2c459052eb577fbd0eda6465cf9f8242c72b083aedbcd66f96b96d3524e7e29",
+     "size": 278054,
+     "size_bytes": 278054,
   "version": "2026.08.29.1"
  },
  "client_agent_installer": {
@@ -94,9 +94,9 @@
  "install_forward_runtime": {
   "artifact_url": "/artifacts/install-forward-runtime.py",
   "path": "client-agent/install_forward_runtime.py",
-    "sha256": "0dc281585032ce4d8cc156748792f19cfdf2acbde9785aab8f546a95683af875",
-    "size": 94737,
-    "size_bytes": 94737,
+    "sha256": "2dc4b919c9a7a64bf408cb46e2abf8fe2f5ce27564944ecc4ae101b5da6cffdd",
+    "size": 94867,
+    "size_bytes": 94867,
   "version": "2026.08.29.1"
  },
  "leigod_forward_relay": {
@@ -364,16 +364,16 @@
   ],
   "obfuscator": "garble-v0.17.0",
   "path": "artifacts/ultra/ultra-client_linux_amd64",
-  "sha256": "089645ce20ba5495fbfa9f28c5cd4a10c9fe99ab16fc1f1abd84e556f7a4e955",
-  "size_bytes": 14627082,
-  "version": "2026.08.27.1"
+  "sha256": "c8cb471b8a1ba0f306c2c960d3d3813786bc3c015cef3fab5d8397a544161adc",
+  "size_bytes": 15483146,
+  "version": "2026.08.30.2"
  },
  "ultra_client_runtime_windows": {
-  "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
-  "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-  "sha256": "37d54cc19d3e25ab212e7014d00ff70c07a3b13077f8f70d15cacd740303fe5a",
-  "size_bytes": 6602752,
-  "version": "2026.08.26.3"
+ "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
+ "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
+ "sha256": "d6154ef704c03195a0afc07594c23b9546d67b43ca3b25c7e08cd1ed70090c48",
+ "size_bytes": 6671872,
+ "version": "2026.08.30.2"
  },
  "uot_bond_runtime": {
   "artifact_url": "/artifacts/leikwan-uot-bond.py",

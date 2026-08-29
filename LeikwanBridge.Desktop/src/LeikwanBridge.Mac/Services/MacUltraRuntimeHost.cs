@@ -102,6 +102,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 listen_host = "127.0.0.1",
                 listen_port = forward.ListenPort,
                 target = forward.Target,
+                probe_target = "1.1.1.1:53",
                 control_socket = socketPath,
                 transport = leases[0].Transport,
                 policy_generation = leases[0].PolicyGeneration,

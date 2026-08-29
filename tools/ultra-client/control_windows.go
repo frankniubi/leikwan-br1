@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -164,7 +165,8 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 	if err == nil {
 		if len(leases) > 1 && !server.config.AutoSelect {
 			err = ErrLeaseInvalid
-		} else if server.config.AutoSelect && len(leases) > 1 {
+		} else if server.config.AutoSelect {
+			log.Printf("Establishing Connection with the Server ...")
 			selectionContext, cancel := context.WithTimeout(context.Background(), deadline)
 			selected, probeResult, err = selectBestLease(selectionContext, server.config, policy, leases)
 			cancel()
@@ -181,6 +183,9 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 				server.status.UpdateTCP(selected.SelectionRef, probeResult.MedianRTT)
 			}
 		}
+	}
+	if err != nil && server.status != nil && server.config.AutoSelect && len(leases) > 0 {
+		server.status.UpdateError("ultra_probe_failed")
 	}
 	selected.wipe()
 	for index := range leases {
