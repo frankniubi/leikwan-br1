@@ -45,6 +45,20 @@ UOT_SCHEDULER_DEFAULTS = {
     "udp_socket_buffer_bytes": 8_388_608,
 }
 
+DEFAULT_WSTUNNEL_BIN = "/usr/local/bin/wstunnel"
+
+
+def configured_binary(agent_config: dict, key: str, default: str) -> str:
+    """Return a path safe for both shell wrappers and systemd ExecStart."""
+    raw = str(agent_config.get(key, default) or default).strip()
+    if raw == "":
+        raw = default
+    if not re.fullmatch(r"/[A-Za-z0-9._+@%/-]+", raw):
+        raise ValueError(
+            f"{key} must be an absolute path containing only safe unit path characters"
+        )
+    return raw
+
 UOT_SCHEDULER_LEGACY_PROFILE = {
     "aggregate_rate_bps": 300_000_000,
     "queue_target_ms": 5,
@@ -1090,6 +1104,7 @@ def append_wstunnel_direct_leg(
     remote_target: str,
     default_sni: str,
     default_path_prefix: str,
+    wstunnel_bin: str = DEFAULT_WSTUNNEL_BIN,
 ) -> None:
     host = str(endpoint.get("host", "") or "").strip()
     port = int_or_default(endpoint.get("port"), 0)
@@ -1098,7 +1113,7 @@ def append_wstunnel_direct_leg(
     leg_path_prefix = endpoint_path_prefix(endpoint, default_path_prefix)
     leg_sni = endpoint_sni(endpoint, default_sni)
     lines.append(
-        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{local_port}:{remote_target} "
+        f"{wstunnel_bin} client -L tcp://127.0.0.1:{local_port}:{remote_target} "
         f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
         f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
     )
@@ -1225,8 +1240,9 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     bond_remote_target = str(bond.get("remote_target", "")).strip()
     bond_session_token = str(bond.get("session_token", "")).strip()
     bond_udp_session_token = str(bond.get("udp_session_token", "")).strip()
-    bond_bin = str(agent_config.get("bond_bin", "/usr/local/bin/leikwan-bond")).strip() or "/usr/local/bin/leikwan-bond"
-    bond_ingress_bin = str(agent_config.get("bond_ingress_bin", "/usr/local/bin/leikwan-ingress")).strip() or "/usr/local/bin/leikwan-ingress"
+    bond_bin = configured_binary(agent_config, "bond_bin", "/usr/local/bin/leikwan-bond")
+    bond_ingress_bin = configured_binary(agent_config, "bond_ingress_bin", "/usr/local/bin/leikwan-ingress")
+    wstunnel_bin = configured_binary(agent_config, "wstunnel_bin", DEFAULT_WSTUNNEL_BIN)
 
     usable_endpoints = []
     for endpoint in endpoints:
@@ -1260,10 +1276,10 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
             endpoint_target = str(endpoint.get("runtime_target", target) or target)
             tcp_back = base + index
             udp_back = base + 200 + index
-            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
+            lines.append(f"{wstunnel_bin} client -L tcp://127.0.0.1:{tcp_back}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
             tcp_targets.append(f"127.0.0.1:{tcp_back}")
             if transport in ("udp", "tcp+udp"):
-                lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{udp_back}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
+                lines.append(f"{wstunnel_bin} client -L udp://127.0.0.1:{udp_back}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
                 udp_targets.append(f"127.0.0.1:{udp_back}")
         if transport in ("tcp", "tcp+udp"):
             tcp_race_listen_port = rate_tcp_port if speed_limit_mbps else listen_port
@@ -1396,7 +1412,7 @@ WantedBy=multi-user.target
                     direct_target_port = int_or_default(endpoint.get("target_sidecar_port"), 0)
                     direct_target = f"127.0.0.1:{direct_target_port}" if direct_target_port > 0 else bond_remote_target
                     lines.append(
-                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{direct_target} "
+                        f"{wstunnel_bin} client -L tcp://127.0.0.1:{tcp_back}:{direct_target} "
                         f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
                         f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
                     )
@@ -1409,7 +1425,7 @@ WantedBy=multi-user.target
                     )
                 else:
                     lines.append(
-                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{bond_remote_target} "
+                        f"{wstunnel_bin} client -L tcp://127.0.0.1:{tcp_back}:{bond_remote_target} "
                         f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
                         f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
                     )
@@ -1461,7 +1477,7 @@ WantedBy=multi-user.target
                     direct_target_port = int_or_default(endpoint.get("target_sidecar_port"), 0)
                     direct_target = f"127.0.0.1:{direct_target_port}" if direct_target_port > 0 else bond_remote_target
                     lines.append(
-                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{udp_back}:{direct_target} "
+                        f"{wstunnel_bin} client -L tcp://127.0.0.1:{udp_back}:{direct_target} "
                         f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
                         f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
                     )
@@ -1474,7 +1490,7 @@ WantedBy=multi-user.target
                     )
                 else:
                     lines.append(
-                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{udp_back}:{bond_remote_target} "
+                        f"{wstunnel_bin} client -L tcp://127.0.0.1:{udp_back}:{bond_remote_target} "
                         f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
                         f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
                     )
@@ -1796,6 +1812,7 @@ WantedBy=multi-user.target
                 f"127.0.0.1:{direct_target_port}",
                 sni,
                 path_prefix,
+                wstunnel_bin,
             )
         if direct_legs:
             append_wait_for_local_listener(lines, [int(leg["local_port"]) for leg in direct_legs])
@@ -1818,7 +1835,7 @@ WantedBy=multi-user.target
                 if local_udp <= 0 or cf_host == "" or cf_port <= 0 or cf_target_host == "" or cf_target_port <= 0:
                     continue
                 lines.append(
-                    f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 --tls-sni-override {cf_sni} --http-headers \"Host: {cf_sni}\" --http-upgrade-path-prefix \"{cf_path}\" wss://{cf_host}:{cf_port} &"
+                    f"{wstunnel_bin} client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 --tls-sni-override {cf_sni} --http-headers \"Host: {cf_sni}\" --http-upgrade-path-prefix \"{cf_path}\" wss://{cf_host}:{cf_port} &"
                 )
                 cf_wg_ports.append(local_udp)
         # Slave-relayed cfwg/transit legs: route WG UDP through the slave's WSS mux.
@@ -1850,7 +1867,7 @@ WantedBy=multi-user.target
                 if local_udp <= 0 or slave_host == "" or slave_port <= 0 or slave_path == "" or cf_target_host == "" or cf_target_port <= 0:
                     continue
                 lines.append(
-                    f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 {slave_sni_args}{slave_host_header_args}--http-upgrade-path-prefix \"{slave_path}\" wss://{slave_host}:{slave_port} &"
+                    f"{wstunnel_bin} client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 {slave_sni_args}{slave_host_header_args}--http-upgrade-path-prefix \"{slave_path}\" wss://{slave_host}:{slave_port} &"
                 )
                 cf_wg_ports.append(local_udp)
         if cf_wg_ports:
@@ -1907,10 +1924,10 @@ WantedBy=multi-user.target
     if speed_limit_mbps:
         lines = ["#!/usr/bin/env bash", "set -euo pipefail", "trap 'kill $(jobs -p) 2>/dev/null || true' EXIT"]
         if transport in ("tcp", "tcp+udp"):
-            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{internal_tcp_port}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
+            lines.append(f"{wstunnel_bin} client -L tcp://127.0.0.1:{internal_tcp_port}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
             lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py tcp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{internal_tcp_port} --mbps {speed_limit_mbps} &")
         if transport in ("udp", "tcp+udp"):
-            lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{internal_udp_port}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
+            lines.append(f"{wstunnel_bin} client -L udp://127.0.0.1:{internal_udp_port}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
             lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py udp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{internal_udp_port} --mbps {speed_limit_mbps} &")
         lines.append("wait -n")
         start_script_path = f"/usr/local/bin/leikwan-client-start-{forward_id}.sh"
@@ -1940,7 +1957,7 @@ WantedBy=multi-user.target
         listen_flags.append(f"-L tcp://[::]:{listen_port}:{endpoint_target}")
     if transport in ("udp", "tcp+udp"):
         listen_flags.append(f"-L udp://[::]:{listen_port}:{endpoint_target}?timeout_sec=0")
-    exec_start = f"/usr/local/bin/wstunnel client {' '.join(listen_flags)} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']}"
+    exec_start = f"{wstunnel_bin} client {' '.join(listen_flags)} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']}"
     service_unit = f"""[Unit]
 Description=Leikwan Client {forward_id}
 After=network.target

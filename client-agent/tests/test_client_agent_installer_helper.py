@@ -48,7 +48,7 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 
         self.assertIn(
-            "download_atomic \"$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64\" \"$BIN_DIR/leikwan-bond\"",
+            'download_manifest_artifact leikwan_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"',
             source,
         )
 
@@ -73,27 +73,28 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn("STRICT_DOH_PROVIDERS", source)
         self.assertNotIn("curl --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 -fsSL", source)
         self.assertIn(
-            'leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/install-client-agent.sh" /tmp/leikwan-install-client-agent.sh',
+            'leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/install-client-agent.sh" "$TEMP_INSTALLER"',
             source,
         )
 
     def test_update_helper_refreshes_itself_after_reinstall(self) -> None:
         source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
 
-        self.assertIn("LEIKWAN_SKIP_UPDATE_HELPER=1 /tmp/leikwan-install-client-agent.sh", source)
+        self.assertIn('LEIKWAN_SKIP_UPDATE_HELPER=1 "$TEMP_INSTALLER"', source)
         self.assertIn(
-            'leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/client-agent-update.sh" /tmp/leikwan-client-agent-update.sh',
+            'leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/client-agent-update.sh" "$TEMP_UPDATE_HELPER"',
             source,
         )
-        self.assertIn("mv /tmp/leikwan-client-agent-update.sh /usr/local/bin/leikwan-client-agent-update", source)
+        self.assertIn('mv "$TEMP_UPDATE_HELPER" /usr/local/bin/leikwan-client-agent-update', source)
 
-    def test_installer_downloads_mptcp_relay_binary(self) -> None:
+    def test_installer_does_not_install_retired_tcp_accel_or_mptcp_payloads(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 
-        self.assertIn(
-            'download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64" "$STATE_DIR/leikwan-mptcp-relay"',
-            source,
-        )
+        self.assertNotIn("install-tcp-accel.sh\" client", source)
+        self.assertNotIn("tcp_accel_installer", source)
+        self.assertNotIn("mptcp_client_runtime", source)
+        self.assertNotIn("mptcp-relay", source)
+        self.assertIn('if [[ "$required" != "1" && "$AUTO_INSTALL_MPTCP_KERNEL" != "1" ]]; then', source)
 
     def test_update_helper_stops_forward_services_before_reinstall(self) -> None:
         source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
@@ -114,25 +115,100 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn('sub(/^[^[:alnum:]_.@-]+/, "", unit)', source)
         self.assertIn("grep -E '^leikwan-client-[^[:space:]]+\\.service$'", source)
 
+    def test_update_helper_restores_previously_active_forward_units_on_every_exit(self) -> None:
+        source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
+
+        self.assertIn("FORWARD_UNITS_ACTIVE=()", source)
+        self.assertIn("systemctl is-active --quiet \"$unit\"", source)
+        self.assertIn("restore_previous_runtime_state", source)
+        self.assertIn("trap cleanup_update EXIT", source)
+        self.assertIn('rm -f "$TEMP_INSTALLER" "$TEMP_UPDATE_HELPER"', source)
+
+    def test_installer_bootstrap_covers_all_commands_used_before_download(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+
+        for command in ("dpkg-query", "apt-cache", "timedatectl", "sleep", "seq", "journalctl", "sysctl", "reboot"):
+            self.assertIn(command, source)
+        self.assertIn('chmod 0755 "$path"', source)
+        self.assertIn("ensure_private_dir", source)
+
+    def test_legacy_installer_checks_generated_units_and_cleans_temp_config(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client.sh").read_text(encoding="utf-8")
+
+        self.assertIn("cleanup_legacy_install", source)
+        self.assertIn("trap cleanup_legacy_install EXIT", source)
+        self.assertIn("extra_units", source)
+        self.assertIn("check=True", source)
+        self.assertIn("systemctl is-active --quiet", source)
+        self.assertIn("--data-urlencode", source)
+
     def test_installer_ensures_time_sync(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 
         self.assertIn("ensure_time_sync()", source)
         self.assertIn("timedatectl show -p NTPSynchronized --value", source)
-        self.assertIn("apt-get install -y ntp", source)
+        self.assertIn("systemd-timesyncd", source)
+        self.assertIn("ntpsec", source)
+        self.assertIn("chrony", source)
+        self.assertIn("systemctl enable --now", source)
+        self.assertIn("TIME_SYNC_TIMEOUT_SECONDS", source)
+        self.assertNotIn("apt-get install -y ntp\n", source)
         self.assertIn("ensure_time_sync", source)
+
+    def test_installer_bootstraps_clean_debian_dependencies_before_downloads(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+
+        self.assertIn("bootstrap_dependencies()", source)
+        for package in ("bash", "curl", "ca-certificates", "python3", "coreutils", "grep", "sed", "mawk", "procps", "iproute2", "nftables"):
+            self.assertIn(package, source)
+        self.assertIn("bootstrap_dependencies", source)
+        self.assertIn("unsupported architecture", source)
+        self.assertIn('uname -m', source)
+
+    def test_installer_downloads_and_configures_wstunnel(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'download_manifest_artifact wstunnel_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"',
+            source,
+        )
+        self.assertIn('"wstunnel_bin": "$BIN_DIR/wstunnel"', source)
+
+    def test_installer_has_strict_hash_gate_permissions_rollback_and_health_check(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+
+        self.assertIn('expected_sha256="$(_vers_sha256', source)
+        self.assertIn("missing manifest sha256", source)
+        self.assertIn("umask 077", source)
+        self.assertIn('install -d -m 0700 "$CONFIG_DIR" "$STATE_DIR"', source)
+        self.assertIn("rollback_install", source)
+        self.assertIn("systemctl is-active", source)
+        self.assertIn("check --live", source)
 
     def test_legacy_forward_installer_downloads_bond_runtimes_for_fresh_hosts(self) -> None:
         source = (REPO_ROOT / "install" / "install-client.sh").read_text(encoding="utf-8")
 
         self.assertIn(
-            "curl -fsSL \"$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64\" -o \"$BIN_DIR/leikwan-ingress\"",
+            'download_verified_artifact leikwan_ingress_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"',
             source,
         )
         self.assertIn(
-            "curl -fsSL \"$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64\" -o \"$BIN_DIR/leikwan-bond\"",
+            'download_verified_artifact leikwan_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"',
             source,
         )
+        self.assertIn(
+            'download_verified_artifact wstunnel_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"',
+            source,
+        )
+
+    def test_update_helper_verifies_installer_against_manifest_before_execution(self) -> None:
+        source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
+
+        self.assertIn("client_agent_installer", source)
+        self.assertIn("client_agent_update", source)
+        self.assertIn("sha256sum -c", source)
+        self.assertIn("installer sha256 mismatch", source)
+        self.assertIn("update helper sha256 mismatch", source)
 
 
 if __name__ == "__main__":

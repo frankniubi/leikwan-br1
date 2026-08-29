@@ -15,6 +15,9 @@ foreach (['request_token', 'status', 'last_attempt_at', 'last_completed_request_
     if (!str_contains($helper, $snippet)) fail('client update helper missing state field: ' . $snippet);
 }
 if (!str_contains($agent, 'agent_sha256')) fail('client heartbeat must report agent_sha256 for artifact gates');
+if (!str_contains($agent, 'wstunnel_sha256') || !str_contains($agent, 'wstunnel_version')) fail('client heartbeat must report wstunnel provenance');
 if (!str_contains($agent, 'agent_update_state')) fail('client heartbeat must report update helper state');
 if (!str_contains($helper, '/artifacts/install-client-agent.sh')) fail('client update helper must route through artifact controller installer');
+$artifactController = file_get_contents(__DIR__ . '/../src/Controllers/ArtifactController.php');
+if ($artifactController === false || !str_contains($artifactController, "'install_forward_runtime'")) fail('client manifest must advertise install_forward_runtime');
 echo "ok\n";

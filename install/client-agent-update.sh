@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 CONFIG_PATH="/etc/leikwan-client-agent/config.json"
 REQUEST_TOKEN=""
 STATE_PATH=""
 SERVICE_NAME="leikwan-client-agent"
 UPDATE_UNIT_PREFIX="leikwan-client-agent-update"
+FORWARD_UNITS=()
+FORWARD_UNITS_ACTIVE=()
+SERVICE_WAS_ACTIVE=0
+TEMP_INSTALLER="/tmp/leikwan-install-client-agent.sh"
+TEMP_UPDATE_HELPER="/tmp/leikwan-client-agent-update.sh"
+VERSIONS_TMP=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -101,6 +108,33 @@ elif status == "success":
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 PY
+}
+
+restore_previous_runtime_state() {
+  local status="${1:-0}" unit
+  if ! command -v systemctl >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ "$status" -ne 0 ]]; then
+    if [[ "$SERVICE_WAS_ACTIVE" == "1" ]]; then
+      systemctl start "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+    else
+      systemctl stop "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+    fi
+  fi
+  for unit in "${FORWARD_UNITS_ACTIVE[@]}"; do
+    [[ -n "$unit" ]] || continue
+    systemctl start "$unit" >/dev/null 2>&1 || true
+  done
+}
+
+cleanup_update() {
+  local status=$?
+  trap - EXIT
+  restore_previous_runtime_state "$status"
+  rm -f "$TEMP_INSTALLER" "$TEMP_UPDATE_HELPER"
+  [[ -z "${VERSIONS_TMP:-}" ]] || rm -f "$VERSIONS_TMP"
+  exit "$status"
 }
 
 leikwan_protected_download() {
@@ -372,38 +406,72 @@ if [[ -z "${MASTER_URL}" || -z "${CLIENT_ID}" || -z "${AGENT_TOKEN}" ]]; then
 fi
 
 write_update_state "running"
+trap cleanup_update EXIT
 
 if command -v systemctl >/dev/null 2>&1; then
-  systemctl stop "${SERVICE_NAME}.service" || true
+  if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+    SERVICE_WAS_ACTIVE=1
+  fi
   mapfile -t FORWARD_UNITS < <(systemctl list-units 'leikwan-client-*.service' --all --no-legend --no-pager 2>/dev/null | awk '{ unit=$1; if (unit !~ /^[[:alnum:]_.@-]+\.service$/) { sub(/^[^[:alnum:]_.@-]+/, "", unit); if (unit == "") unit=$2 } print unit }' | grep -E '^leikwan-client-[^[:space:]]+\.service$' | grep -v "^${SERVICE_NAME}\.service$" | grep -v "^${UPDATE_UNIT_PREFIX}" || true)
   for unit in "${FORWARD_UNITS[@]}"; do
     [[ -n "${unit}" ]] || continue
+    if systemctl is-active --quiet "$unit"; then
+      FORWARD_UNITS_ACTIVE+=("$unit")
+    fi
     systemctl stop "$unit" || true
   done
+  systemctl stop "${SERVICE_NAME}.service" || true
 fi
 
-if ! leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/install-client-agent.sh" /tmp/leikwan-install-client-agent.sh; then
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl start "${SERVICE_NAME}.service" || true
-  fi
+if ! leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/install-client-agent.sh" "$TEMP_INSTALLER"; then
   write_update_state "error" "failed to download install-client-agent.sh from ${ARTIFACT_BASE%/}/artifacts/install-client-agent.sh"
   exit 1
 fi
 
-chmod +x /tmp/leikwan-install-client-agent.sh
-if LEIKWAN_SKIP_UPDATE_HELPER=1 /tmp/leikwan-install-client-agent.sh --master "${MASTER_URL}" --artifact-base "${ARTIFACT_BASE}" --client-id "${CLIENT_ID}" --agent-token "${AGENT_TOKEN}" --config-dir "/etc/leikwan-client-agent"; then
-  if ! leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/client-agent-update.sh" /tmp/leikwan-client-agent-update.sh; then
+VERSIONS_TMP=$(mktemp)
+if ! leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/versions.json" "$VERSIONS_TMP"; then
+  write_update_state "error" "failed to download artifact manifest"
+  exit 1
+fi
+read -r EXPECTED_INSTALLER_SHA256 EXPECTED_UPDATE_SHA256 < <(python3 - "$VERSIONS_TMP" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+entry = payload.get("client_agent_installer", {})
+value = entry.get("sha256", "") if isinstance(entry, dict) else ""
+if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdefABCDEF" for char in value):
+    raise SystemExit("missing client_agent_installer sha256")
+update_entry = payload.get("client_agent_update", {})
+update_value = update_entry.get("sha256", "") if isinstance(update_entry, dict) else ""
+if not isinstance(update_value, str) or len(update_value) != 64 or any(char not in "0123456789abcdefABCDEF" for char in update_value):
+    raise SystemExit("missing client_agent_update sha256")
+print(value.lower(), update_value.lower())
+PY
+)
+rm -f "$VERSIONS_TMP"
+VERSIONS_TMP=""
+if ! echo "$EXPECTED_INSTALLER_SHA256  $TEMP_INSTALLER" | sha256sum -c - >/dev/null 2>&1; then
+  write_update_state "error" "installer sha256 mismatch"
+  exit 1
+fi
+
+chmod +x "$TEMP_INSTALLER"
+if LEIKWAN_SKIP_UPDATE_HELPER=1 "$TEMP_INSTALLER" --master "${MASTER_URL}" --artifact-base "${ARTIFACT_BASE}" --client-id "${CLIENT_ID}" --agent-token "${AGENT_TOKEN}" --config-dir "/etc/leikwan-client-agent"; then
+  if ! leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/client-agent-update.sh" "$TEMP_UPDATE_HELPER"; then
     write_update_state "error" "failed to refresh client-agent-update.sh from ${ARTIFACT_BASE%/}/artifacts/client-agent-update.sh"
     exit 1
   fi
-  chmod +x /tmp/leikwan-client-agent-update.sh
-  mv /tmp/leikwan-client-agent-update.sh /usr/local/bin/leikwan-client-agent-update
+  if ! echo "$EXPECTED_UPDATE_SHA256  $TEMP_UPDATE_HELPER" | sha256sum -c - >/dev/null 2>&1; then
+    write_update_state "error" "update helper sha256 mismatch"
+    exit 1
+  fi
+  chmod 0755 "$TEMP_UPDATE_HELPER"
+  mv "$TEMP_UPDATE_HELPER" /usr/local/bin/leikwan-client-agent-update
   write_update_state "success"
 else
   status=$?
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl start "${SERVICE_NAME}.service" || true
-  fi
   write_update_state "error" "install-client-agent exited with status ${status}"
   exit "${status}"
 fi
