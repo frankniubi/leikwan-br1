@@ -67,7 +67,12 @@ function Get-CompatibilityFileNames {
         "leikwan-ingress.exe",
         "leikwan-uot-bond.exe",
         "leikwan-mptcp-relay.exe",
-        "ultra-client.exe"
+        "ultra-client.exe",
+        "sing-box.exe",
+        "Redirector.bin",
+        "netfilter2.sys",
+        "nfapi.dll",
+        "CN.conf"
     )
 }
 
@@ -422,12 +427,21 @@ function Get-FallbackInstalledFiles {
         "leikwan-uot-bond.exe",
         "leikwan-mptcp-relay.exe",
         "ultra-client.exe",
+        "sing-box.exe",
+        "Redirector.bin",
+        "netfilter2.sys",
+        "nfapi.dll",
         "bin\wstunnel.exe",
         "bin\leikwan-bond.exe",
         "bin\leikwan-ingress.exe",
         "bin\leikwan-uot-bond.exe",
         "bin\leikwan-mptcp-relay.exe",
         "bin\ultra-client.exe",
+        "bin\sing-box.exe",
+        "bin\Redirector.bin",
+        "bin\netfilter2.sys",
+        "bin\nfapi.dll",
+        "bin\CN.conf",
         $InstalledHelperRelativePath,
         "install-manifest.json",
         "install-state.json"

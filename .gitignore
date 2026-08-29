@@ -39,6 +39,7 @@
 /artifacts/recheck/
 /artifacts/windows/publish/
 /artifacts/windows/_setup_stage/
+/artifacts/windows/proxy-runtime/
 /artifacts/*.log
 /artifacts/*.txt
 /artifacts/*.xml

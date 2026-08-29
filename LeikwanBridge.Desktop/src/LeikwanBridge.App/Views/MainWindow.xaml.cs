@@ -1,14 +1,20 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
+using Brush = System.Windows.Media.Brush;
+using Brushes = System.Windows.Media.Brushes;
+using Color = System.Windows.Media.Color;
 using LeikwanBridge.App.Services;
 using LeikwanBridge.App.ViewModels;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
+using Microsoft.Win32;
 using Serilog;
 
 namespace LeikwanBridge.App.Views;
@@ -19,6 +25,7 @@ public partial class MainWindow : Window
     private readonly TrayWindowLifecycle _trayLifecycle = new();
     private Forms.NotifyIcon? _trayIcon;
     private bool _trayReady;
+    private bool _proxyUiReady;
     private readonly WindowsAppUpdateService _updateService = new();
 
     public MainWindow()
@@ -47,6 +54,18 @@ public partial class MainWindow : Window
             EnsureTrayIcon();
             if (await TryApplyPendingUpdateAsync())
                 return;
+            try
+            {
+                await _vm.InitializeProxyAsync();
+                PopulateProxyUi();
+                _proxyUiReady = true;
+            }
+            catch (Exception ex)
+            {
+                SetProxyStatusError(ex.Message);
+                Log.Warning(ex, "local proxy initialization failed");
+            }
+            await TryStartRequestedProxyAsync();
             TryAutoConnect();
             if (WindowsAppUpdateService.ShouldCheckForUpdatesOnStartup(App.Config))
                 await CheckForUpdatesAsync();
@@ -143,6 +162,7 @@ public partial class MainWindow : Window
             var langTag = lang.Tag?.ToString() ?? "en-US";
             App.Config.Language = langTag;
             App.SwitchLanguage(langTag);
+            ApplyProxyVisualState();
         }
 
         var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
@@ -152,6 +172,439 @@ public partial class MainWindow : Window
         SetAutoStart(App.Config.AutoStart);
 
         SettingsStatus.Text = FindResource("SettingsSaved") as string ?? "Settings saved.";
+    }
+
+    private void PopulateProxyUi()
+    {
+        if (!_proxyUiReady)
+        {
+            _proxyUiReady = true;
+        }
+
+        var selected = _vm.ProxyProfiles.FirstOrDefault(profile => profile.Id == App.Config.ProxyActiveProfileId)
+            ?? _vm.ProxyProfiles.FirstOrDefault();
+        ProxyProfileList.SelectedItem = selected;
+        _vm.ProxyEditor.Load(selected);
+        ProxyPassword.Password = _vm.ProxyEditor.Password;
+        ProxyBypassChinaCheckBox.IsChecked = App.Config.ProxyBypassChinaMainland;
+        ProxyDnsModeCombo.SelectedIndex = App.Config.GetEffectiveProxyDnsMode() == WindowsProxyDnsMode.Custom ? 1 : 0;
+        ProxyDnsServersText.Text = string.IsNullOrWhiteSpace(App.Config.ProxyDnsServers)
+            ? WindowsProxyDns.DefaultCustomServer
+            : App.Config.ProxyDnsServers;
+        ProxyLocalListenPortCombo.Text = App.Config.GetEffectiveProxyPort()
+            .ToString(CultureInfo.InvariantCulture);
+        RestoreProxyGameSelection(_vm.SelectedProxyGameId);
+        UpdateProxyDnsVisibility();
+
+        var mode = Enum.TryParse<WindowsProxyMode>(App.Config.ProxyActiveMode, ignoreCase: true, out var parsed)
+            ? parsed
+            : WindowsProxyMode.Http;
+        ProxyModeCombo.SelectedIndex = mode switch
+        {
+            WindowsProxyMode.Tun => 1,
+            WindowsProxyMode.Process => 2,
+            _ => 0,
+        };
+        UpdateProxyModeVisibility();
+        ApplyProxyVisualState();
+    }
+
+    private void OnProxyProfileSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_proxyUiReady || ProxyProfileList.SelectedItem is not WindowsProxyProfile profile)
+            return;
+        _vm.ProxyEditor.Load(profile);
+        ProxyPassword.Password = profile.Password;
+        App.Config.ProxyActiveProfileId = profile.Id;
+    }
+
+    private void OnProxyNew_Click(object sender, RoutedEventArgs e)
+    {
+        ProxyProfileList.SelectedItem = null;
+        _vm.ProxyEditor.Load(null);
+        ProxyPassword.Password = string.Empty;
+        SetProxyReady();
+    }
+
+    private void OnProxyImport_Click(object sender, RoutedEventArgs e)
+    {
+        if (_vm.ProxyEditor.TryImport(ProxyImportUri.Text, out var error))
+        {
+            ProxyPassword.Password = _vm.ProxyEditor.Password;
+            ProxyProfileList.SelectedItem = null;
+            SetProxyReady();
+        }
+        else
+        {
+            SetProxyStatusError(error);
+        }
+    }
+
+    private async void OnProxySave_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.ProxyEditor.Password = ProxyPassword.Password;
+        if (!CaptureProxyLocalListenPort())
+            return;
+        CaptureProxyDnsSettings();
+        try
+        {
+            await _vm.SaveProxyProfileAsync();
+            SaveCurrentConfig();
+            PopulateProxyUi();
+            SetProxyReady();
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to save local proxy profile");
+        }
+    }
+
+    private async void OnProxyDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (ProxyProfileList.SelectedItem is not WindowsProxyProfile profile)
+            return;
+        try
+        {
+            await _vm.DeleteProxyProfileAsync(profile.Id);
+            SaveCurrentConfig();
+            PopulateProxyUi();
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to delete local proxy profile");
+        }
+    }
+
+    private async void OnProxyStart_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.ProxyEditor.Password = ProxyPassword.Password;
+        if (!CaptureProxyLocalListenPort())
+            return;
+        // Capture the game before saving the profile. Saving refreshes the
+        // profile list and can transiently clear a ComboBox selection.
+        var gameId = GetSelectedProxyGameId();
+        if (!string.IsNullOrWhiteSpace(gameId))
+        {
+            _vm.SelectedProxyGameId = gameId;
+            App.Config.ProxyActiveGameId = gameId;
+        }
+        CaptureProxyDnsSettings();
+        var mode = GetSelectedProxyMode();
+        var profileId = 0;
+        SetProxyStarting();
+        try
+        {
+            // Persist the current editor values before starting so a mode
+            // switch never runs an older password/cipher by accident.
+            await _vm.SaveProxyProfileAsync();
+            PopulateProxyUi();
+
+            profileId = _vm.ProxyEditor.Id;
+            if (profileId <= 0)
+                throw new InvalidOperationException("proxy_profile_required");
+            await _vm.StartProxyAsync(mode, profileId, gameId);
+            RestoreProxyGameSelection(mode == WindowsProxyMode.Process ? _vm.SelectedProxyGameId : gameId);
+            SaveCurrentConfig();
+        }
+        catch (Exception ex)
+        {
+            if (mode == WindowsProxyMode.Process
+                && profileId > 0
+                && string.Equals(ex.Message, "administrator_required", StringComparison.OrdinalIgnoreCase))
+            {
+                App.Config.ProxyActiveMode = mode.ToString();
+                App.Config.ProxyActiveProfileId = profileId;
+                App.Config.ProxyActiveGameId = gameId?.Trim() ?? string.Empty;
+                SaveCurrentConfig();
+                if (TryLaunchElevatedProxy(profileId, gameId))
+                    return;
+            }
+
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to start local proxy");
+        }
+    }
+
+    private async Task TryStartRequestedProxyAsync()
+    {
+        var request = App.ConsumeStartupProxyRequest();
+        if (request is null)
+            return;
+        if (!_proxyUiReady)
+        {
+            SetProxyStatusError("proxy_initialization_failed");
+            return;
+        }
+
+        App.Config.ProxyActiveMode = request.Mode.ToString();
+        App.Config.ProxyActiveProfileId = request.ProfileId;
+        App.Config.ProxyActiveGameId = request.GameId;
+        _vm.SelectedProxyGameId = request.GameId;
+        PopulateProxyUi();
+        SetProxyStarting();
+        try
+        {
+            await _vm.StartProxyAsync(request.Mode, request.ProfileId, request.GameId);
+            SaveCurrentConfig();
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to start elevated local process proxy");
+        }
+    }
+
+    private bool TryLaunchElevatedProxy(int profileId, string? gameId)
+    {
+        if (!OperatingSystem.IsWindows())
+            return false;
+
+        var executablePath = Process.GetCurrentProcess().MainModule?.FileName;
+        if (string.IsNullOrWhiteSpace(executablePath)
+            || string.Equals(
+                Path.GetFileNameWithoutExtension(executablePath),
+                "dotnet",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var elevated = Process.Start(WindowsProxyElevation.BuildRelaunchStartInfo(
+                executablePath,
+                new WindowsProxyStartRequest(
+                    WindowsProxyMode.Process,
+                    profileId,
+                    gameId?.Trim() ?? string.Empty)));
+            if (elevated is null)
+                return false;
+
+            // Stop the old instance only after UAC accepted and the child was
+            // created, otherwise cancelling UAC would interrupt a live proxy.
+            _vm.StopProxyForShutdown();
+            _trayLifecycle.RequestExit();
+            DisposeTrayIcon();
+            System.Windows.Application.Current.Shutdown();
+            return true;
+        }
+        catch (Exception exception) when (WindowsProxyElevation.IsElevationCancelled(exception))
+        {
+            Log.Information("process proxy elevation was cancelled by the user");
+            return false;
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "failed to launch elevated process proxy");
+            return false;
+        }
+    }
+
+    private async void OnProxyStop_Click(object sender, RoutedEventArgs e)
+    {
+        try { await _vm.StopProxyAsync(); }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to stop local proxy");
+        }
+    }
+
+    private async void OnProxyTestUdp_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var result = await _vm.TestProxyUdpAsync();
+            SetProxyTransientStatus(result.Succeeded
+                ? $"{FindResource("ProxyTestUdp") as string ?? "Test UDP"}: {result.ResponseBytes} bytes"
+                : result.ErrorCode, !result.Succeeded, preserveTitle: result.Succeeded);
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "proxy UDP probe failed");
+        }
+    }
+
+    private void OnProxyRefreshGames_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.RefreshProxyGameOptions();
+        RestoreProxyGameSelection(_vm.SelectedProxyGameId);
+    }
+
+    private async void OnProxyAddGame_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ProxyGameAddDialog { Owner = this };
+        if (dialog.ShowDialog() != true)
+            return;
+
+        try
+        {
+            var profile = dialog.ScanFolder
+                ? await _vm.AddProxyGameFolderAsync(dialog.SelectedPath, dialog.DisplayName)
+                : await _vm.AddProxyGameAsync(dialog.SelectedPath, dialog.DisplayName);
+            _vm.SelectedProxyGameId = profile.Id;
+            App.Config.ProxyActiveGameId = profile.Id;
+            SaveCurrentConfig();
+            RestoreProxyGameSelection(profile.Id);
+            SetProxyTransientStatus(string.Format(
+                FindResource("ProxyGameAdded") as string ?? "Process added: {0}", profile.DisplayName), false, true);
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to add proxy game process");
+        }
+    }
+
+    private async void OnProxyImportNetchModes_Click(object sender, RoutedEventArgs e)
+    {
+        var modeDirectory = _vm.Config.GetEffectiveProxyNetchModePath();
+        if (!Directory.Exists(modeDirectory))
+        {
+            using var dialog = new Forms.FolderBrowserDialog
+            {
+                Description = FindResource("ProxyNetchFolderRequired") as string ?? "Select the Netch mode folder.",
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton = false,
+            };
+            if (dialog.ShowDialog() != Forms.DialogResult.OK)
+                return;
+            modeDirectory = ResolveNetchModeDirectory(dialog.SelectedPath);
+        }
+
+        try
+        {
+            var count = await _vm.ImportNetchModesAsync(modeDirectory);
+            SaveCurrentConfig();
+            RestoreProxyGameSelection(_vm.SelectedProxyGameId);
+            SetProxyTransientStatus(string.Format(
+                FindResource("ProxyNetchImported") as string ?? "Imported {0} Netch game modes.", count), false, true);
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to import Netch mode profiles");
+        }
+    }
+
+    private void OnProxyGameSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_proxyUiReady)
+            return;
+        var id = GetSelectedProxyGameId();
+        // ItemsSource refreshes emit a null selection while the collection is
+        // being rebuilt. Do not erase the user's last valid game in that gap.
+        if (!string.IsNullOrWhiteSpace(id))
+        {
+            _vm.SelectedProxyGameId = id;
+            App.Config.ProxyActiveGameId = id;
+        }
+    }
+
+    private string? GetSelectedProxyGameId()
+    {
+        var optionId = (ProxyGameCombo.SelectedItem as WindowsProxyGameOption)?.Id;
+        if (!string.IsNullOrWhiteSpace(optionId))
+            return optionId;
+
+        var selectedValue = ProxyGameCombo.SelectedValue?.ToString();
+        if (!string.IsNullOrWhiteSpace(selectedValue))
+            return selectedValue;
+
+        if (!string.IsNullOrWhiteSpace(_vm.SelectedProxyGameId))
+            return _vm.SelectedProxyGameId;
+
+        return string.IsNullOrWhiteSpace(App.Config.ProxyActiveGameId)
+            ? null
+            : App.Config.ProxyActiveGameId;
+    }
+
+    private void OnProxyDnsModeSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_proxyUiReady || ProxyDnsModeCombo.SelectedItem is not ComboBoxItem item)
+            return;
+        App.Config.ProxyDnsMode = item.Tag?.ToString() ?? nameof(WindowsProxyDnsMode.Remote);
+        UpdateProxyDnsVisibility();
+    }
+
+    private void OnProxyDnsServersTextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_proxyUiReady || ProxyDnsServersText is null)
+            return;
+        App.Config.ProxyDnsServers = ProxyDnsServersText.Text;
+    }
+
+    private bool CaptureProxyLocalListenPort()
+    {
+        if (ProxyLocalListenPortCombo is null
+            || !TryParseProxyPort(ProxyLocalListenPortCombo.Text, out var port))
+        {
+            SetProxyStatusError("proxy_port_invalid");
+            return false;
+        }
+
+        try
+        {
+            _vm.SetProxyPort(port);
+            App.Config.ProxyPort = port;
+            return true;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentOutOfRangeException)
+        {
+            SetProxyStatusError(exception.Message);
+            return false;
+        }
+    }
+
+    private static bool TryParseProxyPort(string? text, out int port)
+        => int.TryParse(text?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out port)
+            && port is >= 1 and <= 65535;
+
+    private void UpdateProxyDnsVisibility()
+    {
+        if (ProxyDnsServersPanel is null || ProxyDnsModeCombo is null)
+            return;
+        var custom = ProxyDnsModeCombo.SelectedItem is ComboBoxItem item
+            && string.Equals(item.Tag?.ToString(), nameof(WindowsProxyDnsMode.Custom), StringComparison.OrdinalIgnoreCase);
+        ProxyDnsServersPanel.Visibility = custom ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void CaptureProxyDnsSettings()
+    {
+        if (ProxyDnsModeCombo.SelectedItem is ComboBoxItem mode)
+            App.Config.ProxyDnsMode = mode.Tag?.ToString() ?? nameof(WindowsProxyDnsMode.Remote);
+        if (ProxyDnsServersText is not null && !string.IsNullOrWhiteSpace(ProxyDnsServersText.Text))
+            App.Config.ProxyDnsServers = ProxyDnsServersText.Text.Trim();
+        if (string.IsNullOrWhiteSpace(App.Config.ProxyDnsServers))
+            App.Config.ProxyDnsServers = WindowsProxyDns.DefaultCustomServer;
+    }
+
+    private void OnProxyModeSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_proxyUiReady || ProxyModeCombo.SelectedItem is not ComboBoxItem item)
+            return;
+        App.Config.ProxyActiveMode = item.Tag?.ToString() ?? nameof(WindowsProxyMode.Http);
+        UpdateProxyModeVisibility();
+    }
+
+    private void UpdateProxyModeVisibility()
+    {
+        if (ProxyGameCard == null)
+            return;
+        ProxyGameCard.Visibility = GetSelectedProxyMode() == WindowsProxyMode.Process
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    private WindowsProxyMode GetSelectedProxyMode()
+    {
+        if (ProxyModeCombo.SelectedItem is ComboBoxItem item
+            && Enum.TryParse<WindowsProxyMode>(item.Tag?.ToString(), true, out var mode))
+            return mode;
+        return WindowsProxyMode.Http;
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -175,6 +628,156 @@ public partial class MainWindow : Window
         {
             UpdateUpdatePromptText();
         }
+        if (e.PropertyName == nameof(MainViewModel.ProxySnapshot))
+            ApplyProxyVisualState();
+        if (e.PropertyName == nameof(MainViewModel.SelectedProxyGameId)
+            || e.PropertyName == nameof(MainViewModel.SelectedProxyGameDisplayName))
+        {
+            RestoreProxyGameSelection(_vm.SelectedProxyGameId);
+        }
+    }
+
+    private void RestoreProxyGameSelection(string? gameId)
+    {
+        var id = gameId?.Trim() ?? string.Empty;
+        if (id.Length == 0 || ProxyGameCombo is null)
+            return;
+        var option = _vm.ProxyGameOptions.FirstOrDefault(item =>
+            string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase));
+        if (option is not null)
+            ProxyGameCombo.SelectedItem = option;
+        else
+            ProxyGameCombo.SelectedValue = id;
+    }
+
+    private void ApplyProxyVisualState()
+    {
+        if (ProxyStatusBanner is null || ProxyStartButton is null || ProxyStopButton is null
+            || ProxyLocalListenPortCombo is null)
+            return;
+
+        var snapshot = _vm.ProxySnapshot;
+        var titleKey = snapshot.State switch
+        {
+            WindowsProxyConnectionState.Connected => "ProxyConnected",
+            WindowsProxyConnectionState.Starting => "ProxyStarting",
+            WindowsProxyConnectionState.Error => "ProxyError",
+            _ => "ProxyDisconnected",
+        };
+        ProxyStatusTitle.Text = FindResource(titleKey) as string ?? titleKey;
+        ProxyStatusText.Text = snapshot.State switch
+        {
+            WindowsProxyConnectionState.Connected =>
+                $"{snapshot.Mode}  |  {snapshot.ActiveProfileName}  |  127.0.0.1:{snapshot.ProxyPort}",
+            WindowsProxyConnectionState.Starting =>
+                FindResource("ProxyStarting") as string ?? "Starting proxy",
+            WindowsProxyConnectionState.Error =>
+                string.IsNullOrWhiteSpace(snapshot.ErrorCode)
+                    ? (FindResource("ProxyError") as string ?? "Proxy failed")
+                    : snapshot.ErrorCode,
+            _ => FindResource("ProxyReady") as string ?? "Ready",
+        };
+
+        var titleBrushKey = snapshot.State switch
+        {
+            WindowsProxyConnectionState.Connected => "SuccessBrush",
+            WindowsProxyConnectionState.Starting => "WarningBrush",
+            WindowsProxyConnectionState.Error => "DangerBrush",
+            _ => "TextBrush",
+        };
+        var borderBrushKey = snapshot.State switch
+        {
+            WindowsProxyConnectionState.Connected => "SuccessBrush",
+            WindowsProxyConnectionState.Starting => "WarningBrush",
+            WindowsProxyConnectionState.Error => "DangerBrush",
+            _ => "PrimaryBrush",
+        };
+        ProxyStatusTitle.Foreground = FindResource(titleBrushKey) as Brush ?? Brushes.Black;
+        ProxyStatusText.Foreground = snapshot.State == WindowsProxyConnectionState.Error
+            ? (FindResource("DangerBrush") as Brush ?? Brushes.DarkRed)
+            : (FindResource("MutedTextBrush") as Brush ?? Brushes.Gray);
+        ProxyStatusBanner.BorderBrush = FindResource(borderBrushKey) as Brush ?? Brushes.Gray;
+        ProxyStatusBanner.Background = new SolidColorBrush(snapshot.State switch
+        {
+            WindowsProxyConnectionState.Connected => Color.FromRgb(236, 253, 245),
+            WindowsProxyConnectionState.Starting => Color.FromRgb(255, 251, 235),
+            WindowsProxyConnectionState.Error => Color.FromRgb(254, 242, 242),
+            _ => Color.FromRgb(239, 246, 255),
+        });
+
+        ProxyStartButton.IsEnabled = snapshot.State is not WindowsProxyConnectionState.Connected
+            and not WindowsProxyConnectionState.Starting;
+        ProxyStopButton.IsEnabled = snapshot.State is WindowsProxyConnectionState.Connected
+            or WindowsProxyConnectionState.Starting;
+        ProxyLocalListenPortCombo.IsEnabled = snapshot.State is not WindowsProxyConnectionState.Connected
+            and not WindowsProxyConnectionState.Starting;
+        ProxyStartButton.Content = FindResource(snapshot.State switch
+        {
+            WindowsProxyConnectionState.Connected => "ProxyRunning",
+            WindowsProxyConnectionState.Starting => "ProxyStarting",
+            _ => "ProxyStart",
+        }) as string ?? "Start proxy";
+        ProxyStartButton.Background = FindResource(snapshot.State switch
+        {
+            WindowsProxyConnectionState.Connected => "SuccessBrush",
+            WindowsProxyConnectionState.Starting => "WarningBrush",
+            _ => "PrimaryBrush",
+        }) as Brush ?? Brushes.DodgerBlue;
+        ProxyTestUdpButton.IsEnabled = snapshot.State == WindowsProxyConnectionState.Connected
+            && snapshot.Mode != WindowsProxyMode.Tun;
+    }
+
+    private void SetProxyStarting()
+    {
+        ProxyStatusTitle.Text = FindResource("ProxyStarting") as string ?? "Starting proxy";
+        ProxyStatusText.Text = FindResource("ProxyStarting") as string ?? "Starting proxy";
+        ProxyStatusTitle.Foreground = FindResource("WarningBrush") as Brush ?? Brushes.DarkOrange;
+        ProxyStatusText.Foreground = FindResource("WarningBrush") as Brush ?? Brushes.DarkOrange;
+        ProxyStatusBanner.BorderBrush = FindResource("WarningBrush") as Brush ?? Brushes.DarkOrange;
+        ProxyStatusBanner.Background = new SolidColorBrush(Color.FromRgb(255, 251, 235));
+        ProxyStartButton.IsEnabled = false;
+        ProxyStopButton.IsEnabled = true;
+        ProxyLocalListenPortCombo.IsEnabled = false;
+    }
+
+    private void SetProxyReady()
+    {
+        ApplyProxyVisualState();
+        if (_vm.ProxySnapshot.State == WindowsProxyConnectionState.Disconnected)
+            ProxyStatusText.Text = FindResource("ProxyReady") as string ?? "Ready";
+    }
+
+    private void SetProxyStatusError(string message)
+    {
+        ProxyStatusTitle.Text = FindResource("ProxyError") as string ?? "Proxy failed";
+        ProxyStatusText.Text = string.IsNullOrWhiteSpace(message) ? "Unknown error" : message;
+        ProxyStatusTitle.Foreground = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
+        ProxyStatusText.Foreground = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
+        ProxyStatusBanner.BorderBrush = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
+        ProxyStatusBanner.Background = new SolidColorBrush(Color.FromRgb(254, 242, 242));
+        ProxyStartButton.IsEnabled = true;
+        ProxyStopButton.IsEnabled = false;
+        ProxyLocalListenPortCombo.IsEnabled = true;
+    }
+
+    private void SetProxyTransientStatus(string message, bool error, bool preserveTitle)
+    {
+        if (error)
+        {
+            SetProxyStatusError(message);
+            return;
+        }
+        if (!preserveTitle)
+            SetProxyReady();
+        ProxyStatusText.Text = message;
+    }
+
+    private static string ResolveNetchModeDirectory(string selectedPath)
+    {
+        var path = selectedPath?.Trim() ?? string.Empty;
+        if (Directory.Exists(Path.Combine(path, "mode")))
+            return Path.Combine(path, "mode");
+        return path;
     }
 
     private void UpdateUpdatePromptText()
@@ -187,6 +790,7 @@ public partial class MainWindow : Window
     private void UpdateVisiblePanel()
     {
         DashboardPanel.Visibility = _vm.CurrentView == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
+        ProxyPanel.Visibility = _vm.CurrentView == "Proxy" ? Visibility.Visible : Visibility.Collapsed;
         LogPanel.Visibility = _vm.CurrentView == "Log" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPanel.Visibility = _vm.CurrentView == "Settings" ? Visibility.Visible : Visibility.Collapsed;
 
@@ -221,6 +825,7 @@ public partial class MainWindow : Window
 
     private void OnSignOut_Click(object sender, RoutedEventArgs e)
     {
+        _vm.StopProxyForShutdown();
         _vm.DisconnectCommand.Execute(null);
         _vm.SignOutForTests();
         var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
@@ -467,6 +1072,7 @@ public partial class MainWindow : Window
         else
         {
             _trayLifecycle.MarkClosing();
+            _vm.StopProxyForShutdown();
             _vm.DisconnectCommand.Execute(null);
             DisposeTrayIcon();
         }
@@ -476,6 +1082,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         DisposeTrayIcon();
+        _vm.DisposeProxyForShutdown();
         _updateService.Dispose();
         base.OnClosed(e);
     }

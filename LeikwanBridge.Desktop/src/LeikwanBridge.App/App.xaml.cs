@@ -10,15 +10,29 @@ namespace LeikwanBridge.App;
 public partial class App : System.Windows.Application
 {
     private static Mutex? _mutex;
+    private static WindowsProxyStartRequest? _startupProxyRequest;
 
     public static string ConfigPath { get; private set; } = "";
     public static AgentConfig Config { get; private set; } = new();
 
+    public static WindowsProxyStartRequest? ConsumeStartupProxyRequest()
+    {
+        var request = _startupProxyRequest;
+        _startupProxyRequest = null;
+        return request;
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
-        // Single instance check
-        _mutex = new Mutex(true, "LeikwanBridge_SingleInstance", out bool createdNew);
-        if (!createdNew)
+        // A process-mode elevation starts a second copy with a short-lived
+        // request.  Let the original UI release its mutex before deciding
+        // that the elevated copy is a duplicate instance.
+        _startupProxyRequest = WindowsProxyElevation.TryParseProxyStartRequest(
+            e.Args,
+            out var startupProxyRequest)
+            ? startupProxyRequest
+            : null;
+        if (!TryAcquireSingleInstanceMutex(_startupProxyRequest is not null))
         {
             System.Windows.MessageBox.Show("Leikwan Bridge is already running. Look for it in the system tray.", "Leikwan Bridge",
                 MessageBoxButton.OK, MessageBoxImage.Information);
@@ -69,9 +83,31 @@ public partial class App : System.Windows.Application
     {
         Log.Information("Leikwan Bridge GUI shutting down.");
         Log.CloseAndFlush();
-        _mutex?.ReleaseMutex();
+        try { _mutex?.ReleaseMutex(); }
+        catch (ApplicationException) { }
         _mutex?.Dispose();
         base.OnExit(e);
+    }
+
+    private static bool TryAcquireSingleInstanceMutex(bool waitForExisting)
+    {
+        const int waitAttempts = 100;
+        var attempts = waitForExisting ? waitAttempts : 1;
+        for (var attempt = 0; attempt < attempts; attempt++)
+        {
+            var candidate = new Mutex(true, "LeikwanBridge_SingleInstance", out var createdNew);
+            if (createdNew)
+            {
+                _mutex = candidate;
+                return true;
+            }
+
+            candidate.Dispose();
+            if (attempt + 1 < attempts)
+                Thread.Sleep(TimeSpan.FromMilliseconds(100));
+        }
+
+        return false;
     }
 
     public static void SwitchLanguage(string lang)

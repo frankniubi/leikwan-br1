@@ -1,0 +1,474 @@
+using System.Net;
+using System.Text.Json.Nodes;
+using LeikwanBridge.Core.Models;
+
+namespace LeikwanBridge.Core.Services;
+
+public static class WindowsProxyConfigBuilder
+{
+    public const int DefaultProxyPort = 2080;
+    public const int DefaultTunMtu = 1280;
+    public const string TunInterfaceName = "LeiKwan Bridge";
+    public const string TunAddress = "172.19.0.1/30";
+    public const string TunGateway = "172.19.0.2";
+    public const string TunIpv6Address = "fdfe:dcba:9876::1/126";
+    private const string TunIpv6Gateway = "fdfe:dcba:9876::2";
+
+    public static string NormalizeTunStack(string? value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "system" or "gvisor" or "mixed" ? normalized : "gvisor";
+    }
+
+    public static WindowsProxyConfigResult Build(
+        WindowsProxyProfile profile,
+        WindowsProxyMode mode,
+        IEnumerable<string>? bypassHosts,
+        int proxyPort = DefaultProxyPort,
+        int tunMtu = DefaultTunMtu,
+        string tunStack = "gvisor",
+        bool bypassChinaMainland = false,
+        string? chinaIpListPath = null,
+        WindowsProxyDnsMode dnsMode = WindowsProxyDnsMode.Remote,
+        IEnumerable<string>? customDnsServers = null)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        tunStack = NormalizeTunStack(tunStack);
+        var copy = profile.Clone();
+        copy.Protocol = WindowsProxyProtocol.Normalize(copy.Protocol);
+        copy.Transport = copy.Transport.Trim().ToLowerInvariant();
+        Validate(copy, proxyPort, tunMtu, tunStack);
+        var chinaIpCidrs = bypassChinaMainland
+            ? LoadChinaIpCidrs(chinaIpListPath)
+            : [];
+
+        var bypassIps = new List<string>();
+        var bypassDomains = new List<string>();
+        AddHost(copy.Server, bypassIps, bypassDomains);
+        foreach (var host in bypassHosts ?? [])
+            AddHost(host, bypassIps, bypassDomains);
+
+        var root = new JsonObject
+        {
+            ["log"] = new JsonObject { ["level"] = "error" },
+            ["dns"] = BuildDns(copy, bypassDomains, dnsMode, customDnsServers),
+            ["inbounds"] = BuildInbounds(mode, proxyPort, tunMtu, tunStack, bypassIps),
+            ["outbounds"] = new JsonArray
+            {
+                BuildOutbound(copy),
+                new JsonObject { ["type"] = "direct", ["tag"] = "direct" },
+                new JsonObject { ["type"] = "block", ["tag"] = "block" },
+            },
+            ["route"] = BuildRoute(mode, bypassIps, bypassDomains, chinaIpCidrs),
+        };
+
+        return new WindowsProxyConfigResult(
+            root.ToJsonString(),
+            bypassIps,
+            bypassDomains,
+            proxyPort,
+            TunGateway);
+    }
+
+    private static JsonObject BuildDns(
+        WindowsProxyProfile profile,
+        IReadOnlyList<string> bypassDomains,
+        WindowsProxyDnsMode dnsMode,
+        IEnumerable<string>? customDnsServers)
+    {
+        var bootstrap = new List<string>();
+        if (!IPAddress.TryParse(profile.Server, out _)
+            && Uri.CheckHostName(profile.Server) is UriHostNameType.Dns)
+            bootstrap.Add(profile.Server.ToLowerInvariant());
+        bootstrap.AddRange(bypassDomains);
+
+        var servers = new JsonArray();
+        var finalTag = "remote";
+        if (dnsMode == WindowsProxyDnsMode.Custom)
+        {
+            var custom = WindowsProxyDns.NormalizeServers(customDnsServers);
+            if (custom.Count == 0)
+                throw new InvalidOperationException("proxy_dns_server_required");
+            for (var index = 0; index < custom.Count; index++)
+            {
+                var tag = $"custom-{index}";
+                servers.Add(new JsonObject
+                {
+                    // DNS over TCP keeps TUN resolution working when a node
+                    // has no usable native UDP path (notably SS2022 on some
+                    // servers).  It still traverses the selected proxy.
+                    ["type"] = "tcp",
+                    ["tag"] = tag,
+                    ["server"] = custom[index],
+                    ["server_port"] = 53,
+                    ["detour"] = "proxy",
+                });
+            }
+            finalTag = "custom-0";
+        }
+        else
+        {
+            servers.Add(new JsonObject
+            {
+                ["type"] = "https",
+                ["tag"] = "remote",
+                ["server"] = "1.1.1.1",
+                ["server_port"] = 443,
+                ["path"] = "/dns-query",
+                ["tls"] = new JsonObject
+                {
+                    ["enabled"] = true,
+                    ["server_name"] = "cloudflare-dns.com",
+                },
+                ["detour"] = "proxy",
+            });
+        }
+        servers.Add(new JsonObject { ["type"] = "local", ["tag"] = "local" });
+        var dns = new JsonObject
+        {
+            ["servers"] = servers,
+            ["final"] = finalTag,
+        };
+        var domains = bootstrap.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (domains.Length > 0)
+        {
+            var values = new JsonArray();
+            foreach (var domain in domains)
+                values.Add(domain);
+            dns["rules"] = new JsonArray
+            {
+                new JsonObject { ["domain"] = values, ["server"] = "local" },
+            };
+        }
+        return dns;
+    }
+
+    private static JsonArray BuildInbounds(
+        WindowsProxyMode mode,
+        int proxyPort,
+        int tunMtu,
+        string tunStack,
+        IReadOnlyList<string> bypassIps)
+    {
+        if (mode != WindowsProxyMode.Tun)
+        {
+            return new JsonArray
+            {
+                new JsonObject
+                {
+                    ["type"] = "mixed",
+                    ["tag"] = "mixed-in",
+                    ["listen"] = "127.0.0.1",
+                    ["listen_port"] = proxyPort,
+                },
+            };
+        }
+
+        var tun = new JsonObject
+        {
+            ["type"] = "tun",
+            ["tag"] = "tun-in",
+            ["interface_name"] = TunInterfaceName,
+            ["address"] = new JsonArray(TunAddress),
+            ["mtu"] = tunMtu,
+            ["auto_route"] = true,
+            ["strict_route"] = true,
+            ["stack"] = tunStack,
+        };
+        // The mixed stack uses gVisor for UDP.  Endpoint-independent NAT is
+        // important for SS2022/QUIC flows that change their peer tuple while
+        // a TUN socket remains open; it is unavailable/needless on system.
+        if (tunStack is "mixed" or "gvisor")
+            tun["endpoint_independent_nat"] = true;
+
+        // Keep local loopback and broadcast traffic outside the default route.
+        // The gateway itself is deliberately *not* excluded: the route rule
+        // below rejects packets addressed to it before the private-direct rule,
+        // preventing a strict-route UDP loop.
+        var routeExcludes = new List<string>
+        {
+            "127.0.0.0/8",
+            "255.255.255.255/32",
+        };
+        routeExcludes.AddRange(bypassIps);
+        if (routeExcludes.Count > 0)
+        {
+            var excludes = new JsonArray();
+            foreach (var ip in routeExcludes.Distinct(StringComparer.OrdinalIgnoreCase))
+                excludes.Add(ip);
+            tun["route_exclude_address"] = excludes;
+        }
+        return new JsonArray(tun);
+    }
+
+    private static JsonObject BuildOutbound(WindowsProxyProfile profile)
+        => profile.IsShadowsocks ? BuildShadowsocks(profile) : BuildVless(profile);
+
+    private static JsonObject BuildShadowsocks(WindowsProxyProfile profile)
+    {
+        var outbound = new JsonObject
+        {
+            ["type"] = "shadowsocks",
+            ["tag"] = "proxy",
+            ["server"] = profile.Server,
+            ["server_port"] = profile.Port,
+            ["method"] = profile.Method,
+            ["password"] = profile.Password,
+            ["domain_resolver"] = "local",
+        };
+        if (profile.IsShadowsocks2022)
+        {
+            // Pin the SS2022 UDP-over-TCP dialect even when native UDP is
+            // selected.  Leaving this object out lets sing-box inherit a
+            // transport default that can drop UDP packets from a TUN.
+            outbound["udp_over_tcp"] = new JsonObject
+            {
+                ["enabled"] = profile.UdpOverTcp,
+                ["version"] = 2,
+            };
+        }
+        else if (profile.UdpOverTcp)
+        {
+            // sing-box 1.10+ uses an object for the opt-in SS transport.
+            outbound["udp_over_tcp"] = new JsonObject { ["enabled"] = true };
+        }
+        return outbound;
+    }
+
+    private static JsonObject BuildVless(WindowsProxyProfile profile)
+    {
+        var outbound = new JsonObject
+        {
+            ["type"] = "vless",
+            ["tag"] = "proxy",
+            ["server"] = profile.Server,
+            ["server_port"] = profile.Port,
+            ["uuid"] = profile.Uuid,
+            ["domain_resolver"] = "local",
+        };
+        if (!string.IsNullOrWhiteSpace(profile.Flow))
+            outbound["flow"] = profile.Flow;
+
+        if (profile.Transport != "tcp")
+        {
+            var transport = new JsonObject { ["type"] = profile.Transport };
+            if (profile.Transport == "ws")
+            {
+                transport["path"] = string.IsNullOrWhiteSpace(profile.Path) ? "/" : profile.Path;
+                if (!string.IsNullOrWhiteSpace(profile.Host))
+                    transport["headers"] = new JsonObject { ["Host"] = profile.Host };
+            }
+            else if (profile.Transport == "grpc" && !string.IsNullOrWhiteSpace(profile.ServiceName))
+            {
+                transport["service_name"] = profile.ServiceName;
+            }
+            outbound["transport"] = transport;
+        }
+
+        if (profile.Tls || !string.IsNullOrWhiteSpace(profile.RealityPublicKey))
+        {
+            var tls = new JsonObject { ["enabled"] = true };
+            if (!string.IsNullOrWhiteSpace(profile.ServerName))
+                tls["server_name"] = profile.ServerName;
+            if (!string.IsNullOrWhiteSpace(profile.Fingerprint))
+                tls["utls"] = new JsonObject { ["enabled"] = true, ["fingerprint"] = profile.Fingerprint };
+            if (profile.AllowInsecure)
+                tls["insecure"] = true;
+            if (!string.IsNullOrWhiteSpace(profile.Alpn))
+            {
+                var alpn = new JsonArray();
+                foreach (var value in profile.Alpn.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    alpn.Add(value);
+                if (alpn.Count > 0)
+                    tls["alpn"] = alpn;
+            }
+            if (!string.IsNullOrWhiteSpace(profile.RealityPublicKey))
+            {
+                tls["reality"] = new JsonObject
+                {
+                    ["enabled"] = true,
+                    ["public_key"] = profile.RealityPublicKey,
+                    ["short_id"] = profile.RealityShortId,
+                };
+            }
+            outbound["tls"] = tls;
+        }
+        return outbound;
+    }
+
+    private static JsonObject BuildRoute(
+        WindowsProxyMode mode,
+        IReadOnlyList<string> bypassIps,
+        IReadOnlyList<string> bypassDomains,
+        IReadOnlyList<string> chinaIpCidrs)
+    {
+        var rules = new JsonArray
+        {
+            new JsonObject { ["action"] = "sniff" },
+        };
+
+        if (mode == WindowsProxyMode.Tun)
+        {
+            rules.Add(new JsonObject
+            {
+                ["inbound"] = new JsonArray("tun-in"),
+                ["protocol"] = "dns",
+                ["action"] = "hijack-dns",
+            });
+
+            // Windows strict-route can feed discovery/DNS packets addressed to
+            // the TUN peer back into the tunnel.  Reject before the private-IP
+            // direct rule so SS2022 UDP does not disappear in a loop.
+            rules.Add(new JsonObject
+            {
+                ["inbound"] = new JsonArray("tun-in"),
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["ip_cidr"] = new JsonArray($"{TunGateway}/32", $"{TunIpv6Gateway}/128"),
+                ["action"] = "reject",
+                ["method"] = "drop",
+            });
+        }
+
+        if (bypassIps.Count > 0)
+        {
+            var values = new JsonArray();
+            foreach (var ip in bypassIps.Distinct(StringComparer.OrdinalIgnoreCase))
+                values.Add(ip);
+            rules.Add(new JsonObject { ["ip_cidr"] = values, ["outbound"] = "direct" });
+        }
+        if (bypassDomains.Count > 0)
+        {
+            var values = new JsonArray();
+            foreach (var domain in bypassDomains.Distinct(StringComparer.OrdinalIgnoreCase))
+                values.Add(domain);
+            rules.Add(new JsonObject { ["domain"] = values, ["outbound"] = "direct" });
+        }
+
+        if (chinaIpCidrs.Count > 0)
+        {
+            var values = new JsonArray();
+            foreach (var cidr in chinaIpCidrs)
+                values.Add(cidr);
+            rules.Add(new JsonObject { ["ip_cidr"] = values, ["outbound"] = "direct" });
+        }
+
+        rules.Add(new JsonObject { ["ip_is_private"] = true, ["outbound"] = "direct" });
+        return new JsonObject
+        {
+            ["auto_detect_interface"] = true,
+            ["default_domain_resolver"] = "local",
+            ["rules"] = rules,
+            ["final"] = "proxy",
+        };
+    }
+
+    private static IReadOnlyList<string> LoadChinaIpCidrs(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            throw new InvalidOperationException("proxy_china_ip_list_missing");
+
+        try
+        {
+            var info = new FileInfo(path);
+            if (info.Length == 0 || info.Length > 4 * 1024 * 1024)
+                throw new InvalidOperationException("proxy_china_ip_list_invalid");
+
+            var result = new List<string>(8192);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var sourceLine in File.ReadLines(path))
+            {
+                var line = sourceLine.Trim();
+                if (line.Length == 0 || line[0] == '#')
+                    continue;
+                var comment = line.IndexOf('#');
+                if (comment >= 0)
+                    line = line[..comment].Trim();
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2 || !string.Equals(parts[0], "route", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var cidr = parts[1].Trim();
+                if (TryValidateCidr(cidr) && seen.Add(cidr))
+                    result.Add(cidr);
+            }
+
+            if (result.Count == 0)
+                throw new InvalidOperationException("proxy_china_ip_list_invalid");
+            return result;
+        }
+        catch (InvalidOperationException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException("proxy_china_ip_list_unreadable", exception);
+        }
+    }
+
+    private static bool TryValidateCidr(string value)
+    {
+        var slash = value.LastIndexOf('/');
+        if (slash <= 0 || slash == value.Length - 1
+            || !IPAddress.TryParse(value[..slash], out var address)
+            || !int.TryParse(value[(slash + 1)..], out var prefix))
+            return false;
+        var maximum = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 32 : 128;
+        return prefix >= 0 && prefix <= maximum;
+    }
+
+    private static void AddHost(string? value, ICollection<string> ips, ICollection<string> domains)
+    {
+        var normalized = value?.Trim().TrimEnd('.') ?? string.Empty;
+        if (normalized.Length == 0)
+            return;
+        if (IPAddress.TryParse(normalized, out var address))
+        {
+            ips.Add(address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                ? $"{normalized}/32"
+                : $"{normalized}/128");
+            return;
+        }
+        if (normalized.Contains('/'))
+        {
+            var slash = normalized.IndexOf('/');
+            if (IPAddress.TryParse(normalized[..slash], out _))
+                ips.Add(normalized);
+            return;
+        }
+        if (Uri.CheckHostName(normalized) is UriHostNameType.Dns)
+            domains.Add(normalized.ToLowerInvariant());
+    }
+
+    private static void Validate(WindowsProxyProfile profile, int proxyPort, int tunMtu, string tunStack)
+    {
+        if (!WindowsProxyProtocol.IsSupported(profile.Protocol))
+            throw new ArgumentException("Unsupported proxy protocol.", nameof(profile));
+        if (string.IsNullOrWhiteSpace(profile.Server))
+            throw new ArgumentException("Proxy server is required.", nameof(profile));
+        if (profile.Port is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(profile.Port));
+        if (proxyPort is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(proxyPort));
+        if (tunMtu is < 576 or > 9000)
+            throw new ArgumentOutOfRangeException(nameof(tunMtu));
+        if (profile.IsShadowsocks)
+        {
+            if (!WindowsProxyProtocol.IsSupportedShadowsocksMethod(profile.Method))
+                throw new ArgumentException("Unsupported Shadowsocks method.", nameof(profile.Method));
+            if (profile.IsShadowsocks2022 && !WindowsProxyProtocol.IsShadowsocks2022Method(profile.Method))
+                throw new ArgumentException("SS2022 requires a 2022 method.", nameof(profile.Method));
+            if (!profile.IsShadowsocks2022 && WindowsProxyProtocol.IsShadowsocks2022Method(profile.Method))
+                throw new ArgumentException("SS2022 method requires the SS2022 protocol option.", nameof(profile.Method));
+            if (string.IsNullOrWhiteSpace(profile.Password)
+                && !string.Equals(profile.Method.Trim(), "none", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Shadowsocks password is required.", nameof(profile.Password));
+        }
+        else
+        {
+            if (!Guid.TryParse(profile.Uuid, out _))
+                throw new ArgumentException("VLESS UUID is invalid.", nameof(profile.Uuid));
+            if (!WindowsProxyProtocol.VlessTransportOptions.Contains(profile.Transport, StringComparer.Ordinal))
+                throw new ArgumentException("Unsupported VLESS transport.", nameof(profile.Transport));
+        }
+    }
+}

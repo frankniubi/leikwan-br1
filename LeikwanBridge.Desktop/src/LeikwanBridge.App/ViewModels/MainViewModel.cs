@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -24,6 +26,11 @@ public partial class MainViewModel : ObservableObject
     private HealthCheckService? _healthCheckService;
     private WireGuardManager? _wgManager;
     private InstalledRuntimeCleanupService? _installedRuntimeCleanup;
+    private WindowsProxyConnectionService? _proxyService;
+    private WindowsProxyGameProfileStore? _proxyGameStore;
+    private readonly List<WindowsProxyGameProfile> _proxyGameProfiles = [];
+    private bool _proxyServiceInitialized;
+    private bool _proxyGameStoreInitialized;
     private WindowsClientAppArtifact? _availableUpdateArtifact;
     private DispatcherTimer? _usageTimer;
     private readonly RuntimeUsageReader _usageReader = new();
@@ -45,11 +52,23 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool _showUpdatePrompt;
     [ObservableProperty] private string _availableUpdateVersion = "";
     [ObservableProperty] private ForwardViewModel? _selectedForward;
+    [ObservableProperty] private WindowsProxySnapshot _proxySnapshot = WindowsProxySnapshot.Disconnected;
+    [ObservableProperty] private string _selectedProxyGameId = "";
+    private string _selectedProxyGameDisplayName = "";
 
     public ObservableCollection<ForwardViewModel> Forwards { get; } = [];
     public ObservableCollection<ConnectionQualityForwardViewModel> ConnectionQualityForwards { get; } = [];
     public ObservableCollection<DesktopClientChoice> AvailableClientChoices { get; } = [];
     public ObservableCollection<string> LogEntries { get; } = [];
+    public ObservableCollection<WindowsProxyProfile> ProxyProfiles { get; } = [];
+    public ObservableCollection<WindowsProxyGameOption> ProxyGameOptions { get; } = [];
+    public WindowsProxyEditorViewModel ProxyEditor { get; } = new();
+
+    public string SelectedProxyGameDisplayName => _selectedProxyGameDisplayName;
+
+    public bool IsProxyConnected => ProxySnapshot.State == WindowsProxyConnectionState.Connected;
+    public bool IsProxyStarting => ProxySnapshot.State == WindowsProxyConnectionState.Starting;
+    public bool IsProxyError => ProxySnapshot.State == WindowsProxyConnectionState.Error;
 
     private readonly HashSet<int> _busyForwards = [];
     public bool ShouldAutoConnectOnStartup => !ShowSetupWizard && !IsConnected;
@@ -59,10 +78,462 @@ public partial class MainViewModel : ObservableObject
         _config = new AgentConfig();
     }
 
+    partial void OnSelectedProxyGameIdChanged(string value)
+    {
+        _config.ProxyActiveGameId = value?.Trim() ?? string.Empty;
+        UpdateSelectedProxyGameDisplayName();
+    }
+
+    /// <summary>
+    /// Initializes local proxy state without requiring a successful panel
+    /// login.  The service is lazy so unit tests and the setup wizard do not
+    /// touch ProgramData until the window is actually loaded.
+    /// </summary>
+    public async Task InitializeProxyAsync(CancellationToken ct = default)
+    {
+        if (_proxyService is null)
+        {
+            var stateDir = _config.GetEffectiveStateDir();
+            _proxyGameStore = new WindowsProxyGameProfileStore(Path.Combine(stateDir, "proxy-games.json"));
+            _proxyService = new WindowsProxyConnectionService(
+                new WindowsProxyProfileStore(Path.Combine(stateDir, "proxy-profiles.json")),
+                _config.GetEffectiveProxySingBoxBin(),
+                Path.Combine(stateDir, "proxy-runtime"),
+                processAdapter: new WindowsNetchProcessProxyAdapter(
+                    _config.GetEffectiveProxyRedirectorBin(),
+                    _config.GetEffectiveProxyNetfilterDriver()),
+                proxyPort: _config.GetEffectiveProxyPort(),
+                tunMtu: _config.GetEffectiveProxyTunMtu(),
+                tunStack: _config.GetEffectiveProxyTunStack(),
+                chinaIpListPath: _config.GetEffectiveProxyChinaIpList());
+            _proxyService.SnapshotChanged += HandleProxySnapshotChanged;
+        }
+
+        if (_proxyServiceInitialized)
+        {
+            RefreshProxyGameOptions();
+            return;
+        }
+
+        await _proxyService.InitializeAsync(ct);
+        if (_proxyGameStore is not null)
+        {
+            _proxyGameProfiles.Clear();
+            _proxyGameProfiles.AddRange(await _proxyGameStore.LoadAsync(ct));
+            await ImportDiscoveredNetchModesAsync(_proxyGameStore, ct);
+            _proxyGameStoreInitialized = true;
+        }
+        _proxyServiceInitialized = true;
+        RefreshProxyProfiles();
+        RefreshProxyGameOptions();
+    }
+
+    public void SetProxyPort(int proxyPort)
+    {
+        if (proxyPort is < 1 or > 65535)
+            throw new InvalidOperationException("proxy_port_invalid");
+        _proxyService?.SetProxyPort(proxyPort);
+        _config.ProxyPort = proxyPort;
+    }
+
+    public void RefreshProxyProfiles()
+    {
+        ProxyProfiles.Clear();
+        if (_proxyService is not null)
+        {
+            foreach (var profile in _proxyService.Profiles)
+                ProxyProfiles.Add(profile);
+        }
+
+        var selected = ProxyProfiles.FirstOrDefault(profile => profile.Id == _config.ProxyActiveProfileId)
+            ?? ProxyProfiles.FirstOrDefault();
+        ProxyEditor.Load(selected);
+    }
+
+    public void RefreshProxyGameOptions()
+    {
+        var selectedId = SelectedProxyGameId;
+        ProxyGameOptions.Clear();
+        var runningNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var process in Process.GetProcesses())
+            {
+                try { runningNames.Add(process.ProcessName + ".exe"); }
+                catch { }
+                finally { process.Dispose(); }
+            }
+        }
+        catch (Exception exception)
+        {
+            Log.Debug(exception, "failed to enumerate running games");
+        }
+
+        foreach (var option in WindowsProxyGameCatalog.BuildOptions(runningNames, _proxyGameProfiles))
+            ProxyGameOptions.Add(option);
+
+        // Rebuilding the collection temporarily clears a WPF ComboBox
+        // selection. Keep the source value and restore the display name after
+        // the new option objects have been created.
+        if (!string.IsNullOrWhiteSpace(selectedId)
+            && !string.Equals(SelectedProxyGameId, selectedId, StringComparison.Ordinal))
+        {
+            SelectedProxyGameId = selectedId;
+        }
+        UpdateSelectedProxyGameDisplayName();
+    }
+
+    public async Task<WindowsProxyGameProfile> AddProxyGameAsync(
+        string executablePath,
+        string? displayName = null,
+        CancellationToken ct = default)
+    {
+        return await AddProxyGameFilesAsync([executablePath], displayName, ct);
+    }
+
+    public async Task<WindowsProxyGameProfile> AddProxyGameFolderAsync(
+        string folderPath,
+        string? displayName = null,
+        CancellationToken ct = default)
+    {
+        var path = folderPath?.Trim() ?? string.Empty;
+        if (path.Length == 0 || !Path.IsPathFullyQualified(path))
+            throw new InvalidOperationException("proxy_game_folder_required");
+        if (!Directory.Exists(path))
+            throw new DirectoryNotFoundException("proxy_game_folder_missing");
+
+        IReadOnlyList<string> executables;
+        try
+        {
+            executables = Directory.EnumerateFiles(
+                    Path.GetFullPath(path),
+                    "*.exe",
+                    new EnumerationOptions
+                    {
+                        RecurseSubdirectories = true,
+                        IgnoreInaccessible = true,
+                        ReturnSpecialDirectories = false,
+                    })
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .Take(64)
+                .ToList();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException("proxy_game_folder_unreadable", exception);
+        }
+
+        if (executables.Count == 0)
+            throw new InvalidOperationException("proxy_game_folder_no_executables");
+
+        var fallbackName = new DirectoryInfo(path).Name;
+        return await AddProxyGameFilesAsync(executables, displayName, ct, fallbackName);
+    }
+
+    private async Task<WindowsProxyGameProfile> AddProxyGameFilesAsync(
+        IEnumerable<string> executablePaths,
+        string? displayName,
+        CancellationToken ct,
+        string? fallbackName = null)
+    {
+        await EnsureProxyGameStoreAsync(ct);
+        var paths = NormalizeProxyGameExecutablePaths(executablePaths);
+        var processNames = paths
+            .Select(Path.GetFileName)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(64)
+            .ToList();
+        if (processNames.Count == 0)
+            throw new InvalidOperationException("proxy_game_executable_invalid");
+
+        var identity = string.Join("\n", paths.Select(value => value.ToLowerInvariant()));
+        var id = "custom:" + Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity)))[..16].ToLowerInvariant();
+        var profile = new WindowsProxyGameProfile
+        {
+            Id = id,
+            DisplayName = string.IsNullOrWhiteSpace(displayName)
+                ? (paths.Count == 1
+                    ? Path.GetFileNameWithoutExtension(processNames[0]) ?? "Custom game"
+                    : (string.IsNullOrWhiteSpace(fallbackName) ? "Custom game" : fallbackName.Trim()))
+                : displayName.Trim(),
+            ProcessPatterns = [.. processNames],
+            PatternsAreRegex = false,
+            Source = "custom",
+        };
+        UpsertProxyGameProfile(profile);
+        await _proxyGameStore!.SaveAsync(_proxyGameProfiles, ct);
+        RefreshProxyGameOptions();
+        return profile;
+    }
+
+    private static IReadOnlyList<string> NormalizeProxyGameExecutablePaths(IEnumerable<string> executablePaths)
+    {
+        ArgumentNullException.ThrowIfNull(executablePaths);
+        var result = new List<string>();
+        foreach (var raw in executablePaths)
+        {
+            var path = raw?.Trim() ?? string.Empty;
+            if (path.Length == 0 || !Path.IsPathFullyQualified(path))
+                throw new InvalidOperationException("proxy_game_executable_required");
+            var fullPath = Path.GetFullPath(path);
+            if (!File.Exists(fullPath))
+                throw new FileNotFoundException("proxy_game_executable_missing", fullPath);
+            if (!string.Equals(Path.GetExtension(fullPath), ".exe", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("proxy_game_executable_invalid");
+            if (!result.Contains(fullPath, StringComparer.OrdinalIgnoreCase))
+                result.Add(fullPath);
+            if (result.Count >= 64)
+                break;
+        }
+        return result;
+    }
+
+    private void UpdateSelectedProxyGameDisplayName()
+    {
+        var id = SelectedProxyGameId?.Trim() ?? string.Empty;
+        var name = WindowsProxyGameCatalog.Find(id, _proxyGameProfiles)?.DisplayName
+            ?? ProxyGameOptions.FirstOrDefault(option =>
+                string.Equals(option.Id, id, StringComparison.OrdinalIgnoreCase))?.DisplayName
+            ?? (id.Length == 0 ? string.Empty : id);
+        if (string.Equals(_selectedProxyGameDisplayName, name, StringComparison.Ordinal))
+            return;
+        _selectedProxyGameDisplayName = name;
+        OnPropertyChanged(nameof(SelectedProxyGameDisplayName));
+    }
+
+    public async Task<int> ImportNetchModesAsync(string modeDirectory, CancellationToken ct = default)
+    {
+        await EnsureProxyGameStoreAsync(ct);
+        var imported = WindowsNetchModeImporter.Load(modeDirectory);
+        ReplaceNetchGameProfiles(imported);
+        await _proxyGameStore!.SaveAsync(_proxyGameProfiles, ct);
+        _config.ProxyNetchModePath = modeDirectory;
+        RefreshProxyGameOptions();
+        return imported.Count;
+    }
+
+    private async Task EnsureProxyGameStoreAsync(CancellationToken ct)
+    {
+        if (_proxyGameStoreInitialized)
+            return;
+        await InitializeProxyAsync(ct);
+    }
+
+    private async Task ImportDiscoveredNetchModesAsync(
+        WindowsProxyGameProfileStore store,
+        CancellationToken ct)
+    {
+        var modeDirectory = _config.GetEffectiveProxyNetchModePath();
+        if (!Directory.Exists(modeDirectory))
+            return;
+
+        try
+        {
+            var imported = WindowsNetchModeImporter.Load(modeDirectory);
+            if (imported.Count == 0)
+                return;
+            ReplaceNetchGameProfiles(imported);
+            await store.SaveAsync(_proxyGameProfiles, ct);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            Log.Debug(exception, "automatic Netch mode import skipped");
+        }
+    }
+
+    private void UpsertProxyGameProfile(WindowsProxyGameProfile profile)
+    {
+        var index = _proxyGameProfiles.FindIndex(item =>
+            string.Equals(item.Id, profile.Id, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0)
+            _proxyGameProfiles[index] = profile.Clone();
+        else
+            _proxyGameProfiles.Add(profile.Clone());
+    }
+
+    private void ReplaceNetchGameProfiles(IEnumerable<WindowsProxyGameProfile> imported)
+    {
+        _proxyGameProfiles.RemoveAll(profile =>
+            string.Equals(profile.Source, "netch", StringComparison.OrdinalIgnoreCase));
+        foreach (var profile in imported)
+            UpsertProxyGameProfile(profile);
+    }
+
+    public async Task SaveProxyProfileAsync(CancellationToken ct = default)
+    {
+        await EnsureProxyServiceAsync(ct);
+        var profile = ProxyEditor.ToProfile();
+        if (string.IsNullOrWhiteSpace(profile.Name))
+            profile.Name = $"{profile.Server}:{profile.Port}";
+        await _proxyService!.SaveProfileAsync(profile, ct);
+        _config.ProxyActiveProfileId = profile.Id;
+        RefreshProxyProfiles();
+        ProxyEditor.Load(ProxyProfiles.FirstOrDefault(item => item.Id == profile.Id) ?? profile);
+        AddLog($"Saved proxy profile {profile.Name}.");
+    }
+
+    public async Task DeleteProxyProfileAsync(int profileId, CancellationToken ct = default)
+    {
+        if (profileId <= 0)
+            return;
+        await EnsureProxyServiceAsync(ct);
+        await _proxyService!.DeleteProfileAsync(profileId, ct);
+        if (_config.ProxyActiveProfileId == profileId)
+            _config.ProxyActiveProfileId = 0;
+        RefreshProxyProfiles();
+    }
+
+    public async Task StartProxyAsync(
+        WindowsProxyMode mode,
+        int profileId,
+        string? selectedGameId = null,
+        CancellationToken ct = default)
+    {
+        await EnsureProxyServiceAsync(ct);
+        selectedGameId = string.IsNullOrWhiteSpace(selectedGameId)
+            ? (string.IsNullOrWhiteSpace(SelectedProxyGameId)
+                ? _config.ProxyActiveGameId
+                : SelectedProxyGameId)
+            : selectedGameId;
+        var game = ResolveProxyGame(selectedGameId);
+        if (mode == WindowsProxyMode.Process && game is null)
+            throw new InvalidOperationException("process_game_required");
+
+        var rules = (game?.ProcessNames ?? [])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(64)
+            .Select(name => new WindowsProcessProxyRule(
+                game?.PatternsAreRegex == true ? name : BuildProcessRule(name)))
+            .ToList();
+        var dnsMode = _config.GetEffectiveProxyDnsMode();
+        await _proxyService!.StartAsync(
+            mode,
+            profileId,
+            BuildProxyBypassHosts(),
+            rules,
+            ct,
+            _config.ProxyBypassChinaMainland,
+            dnsMode,
+            dnsMode == WindowsProxyDnsMode.Custom
+                ? _config.GetEffectiveProxyDnsServers()
+                : null);
+        _config.ProxyActiveProfileId = profileId;
+        _config.ProxyActiveMode = mode.ToString();
+        SelectedProxyGameId = mode == WindowsProxyMode.Process ? game!.Id : string.Empty;
+    }
+
+    private WindowsProxyGameDefinition? ResolveProxyGame(string? selectedGameId)
+    {
+        var game = WindowsProxyGameCatalog.Find(selectedGameId, _proxyGameProfiles);
+        if (game is not null)
+            return game;
+
+        var option = ProxyGameOptions.FirstOrDefault(item =>
+            string.Equals(item.Id, selectedGameId, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(item.DisplayName, selectedGameId, StringComparison.OrdinalIgnoreCase));
+        return option is null
+            ? null
+            : WindowsProxyGameCatalog.Find(option.Id, _proxyGameProfiles);
+    }
+
+    public async Task StopProxyAsync(CancellationToken ct = default)
+    {
+        if (_proxyService is null)
+            return;
+        await _proxyService.StopAsync(ct);
+    }
+
+    public async Task<WindowsSocks5UdpProbeResult> TestProxyUdpAsync(CancellationToken ct = default)
+    {
+        if (_proxyService is null)
+            return WindowsSocks5UdpProbeResult.Failed("proxy_not_initialized");
+        var result = await _proxyService.TestUdpAsync(ct);
+        AddLog(result.Succeeded ? "Proxy UDP probe succeeded." : $"Proxy UDP probe failed: {result.ErrorCode}");
+        return result;
+    }
+
+    public void StopProxyForShutdown()
+    {
+        try { StopProxyAsync(CancellationToken.None).GetAwaiter().GetResult(); }
+        catch (Exception exception) { Log.Warning(exception, "failed to stop Windows proxy during shutdown"); }
+    }
+
+    public void DisposeProxyForShutdown()
+    {
+        try { _proxyService?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+        catch (Exception exception) { Log.Warning(exception, "failed to dispose Windows proxy service"); }
+        finally { _proxyService = null; }
+        _proxyGameStore = null;
+        _proxyGameProfiles.Clear();
+        _proxyGameStoreInitialized = false;
+        _proxyServiceInitialized = false;
+    }
+
+    private async Task EnsureProxyServiceAsync(CancellationToken ct)
+    {
+        await InitializeProxyAsync(ct);
+    }
+
+    private void HandleProxySnapshotChanged(WindowsProxySnapshot snapshot)
+    {
+        InvokeOnUiThread(() =>
+        {
+            ProxySnapshot = snapshot;
+            OnPropertyChanged(nameof(IsProxyConnected));
+            OnPropertyChanged(nameof(IsProxyStarting));
+            OnPropertyChanged(nameof(IsProxyError));
+            if (snapshot.State == WindowsProxyConnectionState.Error)
+                AddLog($"Proxy error: {snapshot.ErrorCode}");
+        });
+    }
+
+    private IEnumerable<string> BuildProxyBypassHosts()
+    {
+        var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (Uri.TryCreate(_config.MasterUrl, UriKind.Absolute, out var master)
+            && !string.IsNullOrWhiteSpace(master.Host))
+            values.Add(master.Host);
+
+        foreach (var forward in Forwards.Select(item => item.Config).Where(item => item is not null).Cast<ForwardConfig>())
+        {
+            AddHostPortValue(forward.Target, values);
+            foreach (var endpoint in forward.Endpoints)
+            {
+                AddHostPortValue(endpoint.Host, values);
+                AddHostPortValue(endpoint.CdnHost, values);
+            }
+        }
+        return values;
+    }
+
+    private static void AddHostPortValue(string? value, ISet<string> values)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+        var candidate = value.Trim();
+        if (Uri.TryCreate(candidate.Contains("://", StringComparison.Ordinal) ? candidate : $"tcp://{candidate}", UriKind.Absolute, out var uri)
+            && !string.IsNullOrWhiteSpace(uri.Host))
+        {
+            values.Add(uri.Host);
+            return;
+        }
+        values.Add(candidate);
+    }
+
+    private static string BuildProcessRule(string processName)
+    {
+        var escaped = Regex.Escape(processName.Trim());
+        return $"(^|\\\\){escaped}$";
+    }
+
     public void Initialize(AgentConfig config)
     {
         _config = config;
         _config.MasterUrl = AppDefaults.NormalizeMasterUrl(_config.MasterUrl);
+        SelectedProxyGameId = _config.ProxyActiveGameId ?? string.Empty;
         if (config.ClientId <= 0 && config.ActiveClientId > 0)
             config.ClientId = config.ActiveClientId;
         if (config.ActiveClientId <= 0 && config.ClientId > 0)
@@ -124,6 +595,7 @@ public partial class MainViewModel : ObservableObject
 
     public void SignOutForTests()
     {
+        StopProxyForShutdown();
         _config.DesktopSessionToken = string.Empty;
         _config.SignedInUserId = 0;
         _config.SignedInUsername = string.Empty;
@@ -252,6 +724,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void Disconnect()
     {
+        StopProxyForShutdown();
         StopUsageRefresh();
         _pollingService?.Stop();
         _healthCheckService?.Stop();
