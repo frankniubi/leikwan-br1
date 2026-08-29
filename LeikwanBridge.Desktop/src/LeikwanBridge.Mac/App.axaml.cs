@@ -68,7 +68,8 @@ public sealed partial class App : Application
     {
         try
         {
-            var services = await MacAppBootstrap.CreateAsync(PlatformPaths).ConfigureAwait(false);
+            using var startupCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var services = await MacAppBootstrap.CreateAsync(PlatformPaths, startupCts.Token).ConfigureAwait(false);
             await Dispatcher.UIThread.InvokeAsync(() => InitializeDesktopUi(desktop, services));
 
             var config = services.Config;
