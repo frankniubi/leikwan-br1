@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -97,8 +99,21 @@ func buildHandshake(user, credential string, command byte, host string, port int
 	if len(user) == 0 || len(user) > 255 || len(credential) == 0 || len(credential) > 255 {
 		return nil, errors.New("credential length invalid")
 	}
+	var greeting []byte
+	switch command {
+	case 1:
+		// The production TCP stream uses the three-method LeiGod greeting.
+		greeting = []byte{5, 3, 2, 0x80, 0x83, 1}
+	case 3:
+		// Keep the native datagram greeting used by the mode-3 association
+		// protocol. Its wire format is distinct from the TCP stream variant.
+		greeting = []byte{5, 3, 2, 0x80, 0x83, 1}
+	default:
+		return nil, errors.New("unsupported handshake command")
+	}
 	var buffer bytes.Buffer
-	buffer.Write([]byte{5, 3, 2, 0x80, 0x83, 1, byte(len(user))})
+	buffer.Write(greeting)
+	buffer.WriteByte(byte(len(user)))
 	buffer.WriteString(user)
 	buffer.WriteByte(byte(len(credential)))
 	buffer.WriteString(credential)
@@ -109,23 +124,79 @@ func buildHandshake(user, credential string, command byte, host string, port int
 	return buffer.Bytes(), nil
 }
 
-func readStreamAcks(conn net.Conn) error {
+const streamPreludeSize = 14
+
+func hexPrefix(value []byte, max int) string {
+	if len(value) > max {
+		value = value[:max]
+	}
+	return hex.EncodeToString(value)
+}
+
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (conn *bufferedConn) Read(buffer []byte) (int, error) {
+	return conn.reader.Read(buffer)
+}
+
+func validStreamPrelude(prelude []byte) bool {
+	if len(prelude) != streamPreludeSize || !bytes.Equal(prelude[:8], make([]byte, 8)) {
+		return false
+	}
+	return prelude[8] != 0
+}
+
+func readStreamAcks(conn net.Conn) (*bufio.Reader, error) {
+	reader := bufio.NewReaderSize(conn, 64*1024)
 	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
-		return err
+		return nil, err
 	}
 	first := make([]byte, 2)
-	if _, err := io.ReadFull(conn, first); err != nil || !bytes.Equal(first, []byte{5, 2}) {
-		return errors.New("stream method rejected")
+	if _, err := io.ReadFull(reader, first); err != nil {
+		return nil, err
 	}
-	second := make([]byte, 2)
-	if _, err := io.ReadFull(conn, second); err != nil || !(bytes.Equal(second, []byte{1, 0}) || bytes.Equal(second, []byte{5, 2})) {
-		return errors.New("stream authentication rejected")
+	log.Printf("stream ack first len=%d hex=%s", len(first), hexPrefix(first, 16))
+	if bytes.Equal(first, []byte{5, 2}) {
+		// Compatibility with the older native SOCKS acknowledgement. The
+		// current Ultra TCP relay normally returns the prelude below instead.
+		second := make([]byte, 2)
+		if _, err := io.ReadFull(reader, second); err != nil {
+			return nil, err
+		}
+		log.Printf("stream ack second len=%d hex=%s", len(second), hexPrefix(second, 16))
+		if !(bytes.Equal(second, []byte{1, 0}) || bytes.Equal(second, []byte{5, 2})) {
+			return nil, errors.New("stream authentication rejected")
+		}
+		final := make([]byte, 10)
+		if _, err := io.ReadFull(reader, final); err != nil {
+			return nil, err
+		}
+		log.Printf("stream ack final len=%d hex=%s", len(final), hexPrefix(final, 16))
+		if final[2] == 0 {
+			return nil, errors.New("stream command rejected")
+		}
+	} else {
+		// The Ultra TCP relay emits eight zero bytes followed by six bytes of
+		// stream metadata. The metadata is framing and must not reach the local
+		// application. Keep the bufio.Reader so any bytes read past the prelude
+		// remain available to copyInbound.
+		prelude := make([]byte, streamPreludeSize)
+		copy(prelude, first)
+		if _, err := io.ReadFull(reader, prelude[len(first):]); err != nil {
+			return nil, err
+		}
+		log.Printf("stream ack prelude len=%d hex=%s", len(prelude), hexPrefix(prelude, 32))
+		if !validStreamPrelude(prelude) {
+			return nil, errors.New("stream prelude rejected")
+		}
 	}
-	final := make([]byte, 10)
-	if _, err := io.ReadFull(conn, final); err != nil || len(final) < 3 || final[2] == 0 {
-		return errors.New("stream command rejected")
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		return nil, err
 	}
-	return conn.SetReadDeadline(time.Time{})
+	return reader, nil
 }
 
 func xorOne(value []byte) []byte {
@@ -136,24 +207,50 @@ func xorOne(value []byte) []byte {
 	return result
 }
 
+func writeAll(writer io.Writer, payload []byte) error {
+	for len(payload) > 0 {
+		count, err := writer.Write(payload)
+		if count > 0 {
+			payload = payload[count:]
+		}
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
+
+func writeXor(writer io.Writer, payload []byte) error {
+	encoded := xorOne(payload)
+	defer clearBytes(encoded)
+	return writeAll(writer, encoded)
+}
+
 func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port)), timeout)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("provider connect: %w", err)
 	}
+	// The private command carries the final destination. After the relay ACK,
+	// the reference client exposes the connection as an XOR stream directly;
+	// there is no second SOCKS negotiation on this connection.
 	handshake, err := buildHandshake(string(lease.User), string(lease.Password), 1, targetHost, targetPort)
 	defer clearBytes(handshake)
 	if err == nil {
-		_, err = conn.Write(handshake)
+		err = writeAll(conn, handshake)
 	}
+	var reader *bufio.Reader
 	if err == nil {
-		err = readStreamAcks(conn)
+		reader, err = readStreamAcks(conn)
 	}
 	if err != nil {
 		conn.Close()
-		return nil, err
+		return nil, fmt.Errorf("stream handshake: %w", err)
 	}
-	return conn, nil
+	return &bufferedConn{Conn: conn, reader: reader}, nil
 }
 
 func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) error {
@@ -165,7 +262,10 @@ func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter,
 				return err
 			}
 			status.AddUsage(0, count)
-			if _, err := destination.Write(xorOne(buffer[:count])); err != nil {
+			// The reference nnauth.xorConn applies XOR 0x01 to every client
+			// byte on the TCP stream. The relay removes it before forwarding to
+			// the target; inbound bytes are returned unchanged.
+			if err := writeXor(destination, buffer[:count]); err != nil {
 				return err
 			}
 		}
@@ -236,6 +336,7 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 				started := time.Now()
 				remote, dialErr := dialStream(lease, targetHost, targetPort, time.Duration(config.ConnectTimeoutSecs)*time.Second)
 				if dialErr != nil {
+					log.Printf("tcp stream setup failed: %v", dialErr)
 					status.UpdateError("tcp_connect_failed")
 					return
 				}
@@ -252,8 +353,16 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 				defer close(connectionDone)
 				status.UpdateTCP(lease.SelectionRef, time.Since(started))
 				done := make(chan struct{}, 2)
-				go func() { _ = copyOutbound(remote, local, store.Limiter(), status); done <- struct{}{} }()
-				go func() { _ = copyInbound(local, remote, store.Limiter(), status); done <- struct{}{} }()
+				go func() {
+					err := copyOutbound(remote, local, store.Limiter(), status)
+					log.Printf("stream outbound ended err=%v", err)
+					done <- struct{}{}
+				}()
+				go func() {
+					err := copyInbound(local, remote, store.Limiter(), status)
+					log.Printf("stream inbound ended err=%v", err)
+					done <- struct{}{}
+				}()
 				<-done
 			}()
 		default:

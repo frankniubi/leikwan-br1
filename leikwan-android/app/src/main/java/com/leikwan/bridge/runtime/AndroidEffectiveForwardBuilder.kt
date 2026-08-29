@@ -52,7 +52,10 @@ object AndroidEffectiveForwardBuilder {
     private fun resolveRuntimeMode(contract: ForwardContract): ForwardMode? {
         return when (contract.backendMode.trim().lowercase()) {
             "current_mode" -> currentMode(contract)
-            "ultra" -> ForwardMode.ULTRA.takeIf { contract.hasValidUltraAccess() }
+            // Listing must not depend on the short-lived (300s) ultra lease: the forward list has to
+            // be stable, and the lease is only enforced at connect time (startForForward). Otherwise
+            // forwards flicker out every time the lease lapses between pulls.
+            "ultra" -> ForwardMode.ULTRA
             else -> null
         }
     }

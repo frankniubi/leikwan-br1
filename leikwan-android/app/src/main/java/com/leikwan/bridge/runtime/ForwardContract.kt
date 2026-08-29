@@ -63,6 +63,7 @@ data class MptcpContract(
 data class ForwardContract(
     val forwardId: Long,
     val serviceName: String,
+    val direction: String = "",
     val target: String,
     val listenPort: Int,
     val mode: ForwardMode,
@@ -93,6 +94,7 @@ data class ForwardContract(
         return ForwardListItem(
             forwardId = forwardId,
             serviceName = serviceName,
+            direction = direction,
             target = target,
             listenPort = listenPort,
             mode = runtimeMode,
@@ -120,6 +122,7 @@ data class ForwardContract(
 data class ForwardListItem(
     val forwardId: Long,
     val serviceName: String,
+    val direction: String = "",
     val target: String,
     val listenPort: Int,
     val mode: ForwardMode,
@@ -178,6 +181,7 @@ object ForwardContractParser {
         return ForwardContract(
             forwardId = forwardId,
             serviceName = obj.stringOrEmpty("service_name"),
+            direction = obj.stringOrEmpty("forward_combination_direction"),
             target = obj.stringOrEmpty("target"),
             listenPort = obj.intOrNull("listen_port") ?: 0,
             mode = mode,

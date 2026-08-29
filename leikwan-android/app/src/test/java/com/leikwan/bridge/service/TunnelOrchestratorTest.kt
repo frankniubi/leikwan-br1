@@ -432,8 +432,13 @@ class TunnelOrchestratorTest {
             .first { it.get("tag").asString == "proxy" }
         val route = config.getAsJsonObject("route")
 
-        assertEquals("127.0.0.1", proxy.get("override_address").asString)
-        assertEquals(11065, proxy.get("override_port").asInt)
+        assertFalse(proxy.has("override_address"))
+        assertFalse(proxy.has("override_port"))
+        val bridgeRule = route.getAsJsonArray("rules")
+            .map { it.asJsonObject }
+            .first { it.get("action")?.asString == "route" && it.get("outbound")?.asString == "proxy" }
+        assertEquals("127.0.0.1", bridgeRule.get("override_address").asString)
+        assertEquals(11065, bridgeRule.get("override_port").asInt)
         assertEquals("proxy", route.get("final").asString)
         assertFalse(route.has("rule_set"))
         assertFalse(

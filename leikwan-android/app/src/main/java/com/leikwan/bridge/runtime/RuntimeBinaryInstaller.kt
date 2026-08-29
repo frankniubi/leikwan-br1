@@ -9,7 +9,9 @@ import java.io.File
 open class RuntimeBinaryInstaller(private val context: Context) {
 
     open fun prepareBinaryPaths(): RuntimeBinaryPaths {
-        val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty().ifBlank { "arm64-v8a" }
+        val abi = RuntimeAbi.fromSupportedAbis(Build.SUPPORTED_ABIS?.toList().orEmpty())
+            ?.directoryName
+            ?: Build.SUPPORTED_ABIS.firstOrNull().orEmpty().ifBlank { "arm64-v8a" }
         val runtimeDir = File(context.filesDir, "runtime/$abi").apply { mkdirs() }
         val nativeLibraryDir = context.applicationInfo.nativeLibraryDir?.let(::File)
 

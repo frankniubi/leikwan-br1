@@ -66,6 +66,25 @@ class DeviceSecurityTest {
     }
 
     @Test
+    fun `qa test exception allows emulator devices`() {
+        assertEquals(
+            DeviceSecurityResult.Allowed,
+            DeviceSecurity.evaluate(
+                physicalArm64.copy(
+                    supportedAbis = listOf("x86_64", "x86"),
+                    fingerprint = "google/sdk_gphone64_x86_64/emu64xa:14/UPB4/test-keys",
+                    model = "sdk_gphone64_x86_64",
+                    hardware = "ranchu",
+                    buildTags = "test-keys",
+                    kernelQemu = true,
+                    roDebuggable = true,
+                ),
+                allowQaTestDeviceExceptions = true,
+            ),
+        )
+    }
+
+    @Test
     fun `test keys and debuggable builds are rooted`() {
         assertEquals(
             DeviceSecurityResult.Rooted,

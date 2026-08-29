@@ -47,6 +47,20 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
+import java.util.IdentityHashMap
+
+/** Keeps one runtime owner per Android application process. */
+internal class ApplicationScoped<T> {
+    private val lock = Any()
+    private val instances = IdentityHashMap<Context, T>()
+
+    fun get(context: Context, factory: () -> T): T {
+        val application = context.applicationContext ?: context
+        synchronized(lock) {
+            return instances[application] ?: factory().also { instances[application] = it }
+        }
+    }
+}
 
 private const val TAG = "TunnelOrchestrator"
 
@@ -91,6 +105,15 @@ class TunnelOrchestrator internal constructor(
         )
     },
 ) {
+    companion object {
+        private val applicationInstances = ApplicationScoped<TunnelOrchestrator>()
+
+        fun forApplication(context: Context): TunnelOrchestrator =
+            applicationInstances.get(context) {
+                TunnelOrchestrator(context.applicationContext ?: context)
+            }
+    }
+
     constructor(context: Context) : this(
         context = context,
         prefs = Prefs.get(context),
@@ -244,7 +267,13 @@ class TunnelOrchestrator internal constructor(
             forwardId = selectedForward ?: 0L,
             connectionMode = connectionMode,
             proxyNodes = proxyNodes,
-            proxyOptional = selectedEffective?.mode == ForwardMode.ULTRA,
+            // Ultra owns the provider hop, but its fixed target may itself be a
+            // protocol endpoint (the production 30522 target is Shadowsocks). When a
+            // node is selected, keep exactly that one protocol adapter and point its
+            // physical server at the local Ultra listener. With no node configured,
+            // retain the raw fixed-target path.
+            proxyOptional = selectedEffective?.mode == ForwardMode.ULTRA && prefs.selectedProxyId == 0L,
+            singleNodeForServices = selectedEffective?.mode == ForwardMode.ULTRA,
         )
         if (selection is ProxySelectionResult.Error) {
             throw Exception(selection.message)

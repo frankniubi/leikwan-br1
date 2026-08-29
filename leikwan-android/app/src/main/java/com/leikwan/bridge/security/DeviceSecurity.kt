@@ -67,7 +67,16 @@ object DeviceSecurity {
         "nox",
     )
 
-    fun evaluate(signals: DeviceSignals): DeviceSecurityResult {
+    fun evaluate(
+        signals: DeviceSignals,
+        allowQaTestDeviceExceptions: Boolean = false,
+    ): DeviceSecurityResult {
+        if (allowQaTestDeviceExceptions) {
+            // QA-only stand-in for emulator/replay testing. Release builds
+            // keep the default-false flag and enforce every check below.
+            return DeviceSecurityResult.Allowed
+        }
+
         if (signals.supportedAbis.none { it.equals("arm64-v8a", ignoreCase = true) }) {
             return DeviceSecurityResult.UnsupportedAbi
         }
@@ -101,7 +110,10 @@ object DeviceSecurity {
         return DeviceSecurityResult.Allowed
     }
 
-    fun evaluate(context: Context): DeviceSecurityResult = evaluate(collect(context))
+    fun evaluate(
+        context: Context,
+        allowQaTestDeviceExceptions: Boolean = false,
+    ): DeviceSecurityResult = evaluate(collect(context), allowQaTestDeviceExceptions)
 
     fun collect(context: Context): DeviceSignals {
         val installedRootPackages = rootPackages.filterTo(mutableSetOf()) { packageName ->

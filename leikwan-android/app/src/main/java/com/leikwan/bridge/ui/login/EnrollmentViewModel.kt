@@ -12,12 +12,31 @@ import com.leikwan.bridge.session.SessionGate
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.security.ProviderException
 
 data class EnrollmentUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val isEnrolled: Boolean = false,
 )
+
+internal fun enrollmentErrorMessage(
+    exception: Throwable,
+    generic: String,
+    hardwareAttestationMessage: String,
+): String {
+    val causes = generateSequence(exception) { it.cause }.take(4).toList()
+    if (causes.any { cause ->
+            cause is ProviderException ||
+                cause.message?.contains("ATTESTATION_KEYS_NOT_PROVISIONED", ignoreCase = true) == true
+        }) {
+        return hardwareAttestationMessage
+    }
+    return causes.asSequence()
+        .mapNotNull { it.message?.trim()?.takeIf(String::isNotBlank) }
+        .firstOrNull()
+        ?: generic
+}
 
 class EnrollmentViewModel(app: Application) : AndroidViewModel(app) {
     private val appContext = app.applicationContext
@@ -60,7 +79,11 @@ class EnrollmentViewModel(app: Application) : AndroidViewModel(app) {
                 SessionGate.markTerminal(terminal)
                 _state.value = _state.value.copy(isLoading = false, error = terminal.code)
             } catch (exception: Exception) {
-                val message = exception.message?.takeIf { it.isNotBlank() } ?: s(R.string.login_error_generic)
+                val message = enrollmentErrorMessage(
+                    exception,
+                    generic = s(R.string.login_error_generic),
+                    hardwareAttestationMessage = s(R.string.login_error_hardware_attestation),
+                )
                 _state.value = _state.value.copy(isLoading = false, error = message)
             }
         }

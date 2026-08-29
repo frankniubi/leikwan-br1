@@ -35,7 +35,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
     private val db = AppDatabase.get(app)
     private val nodeDao = db.proxyNodeDao()
     private val subDao = db.subscriptionDao()
-    private val orchestrator = TunnelOrchestrator(app)
+    private val orchestrator = TunnelOrchestrator.forApplication(app)
     private val _state = MutableStateFlow(
         ProxiesUiState(
             selectedProxyId = prefs.selectedProxyId,

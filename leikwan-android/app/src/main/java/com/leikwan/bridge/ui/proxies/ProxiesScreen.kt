@@ -42,7 +42,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leikwan.bridge.R
-import com.leikwan.bridge.service.ProxyConnectionMode
 import com.leikwan.bridge.ui.MainActivity
 
 @Composable
@@ -69,33 +68,6 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Text(stringResource(R.string.proxies_title), style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(8.dp))
-            Text(stringResource(R.string.proxies_connection_mode), style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ProxyModeChip(
-                    label = stringResource(R.string.proxy_mode_services),
-                    selected = state.connectionMode == ProxyConnectionMode.SERVICES,
-                    onClick = { viewModel.setConnectionMode(ProxyConnectionMode.SERVICES) },
-                )
-                ProxyModeChip(
-                    label = stringResource(R.string.proxy_mode_direct),
-                    selected = state.connectionMode == ProxyConnectionMode.DIRECT,
-                    onClick = { viewModel.setConnectionMode(ProxyConnectionMode.DIRECT) },
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(
-                    if (state.connectionMode == ProxyConnectionMode.DIRECT) {
-                        R.string.proxy_mode_direct_detail
-                    } else {
-                        R.string.proxy_mode_services_detail
-                    }
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             Spacer(Modifier.height(8.dp))
 
             state.error?.let { err ->
@@ -142,13 +114,7 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                         ) { _, node ->
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
-                                onClick = {
-                                    viewModel.selectNode(node)
-                                    if (state.connectionMode == ProxyConnectionMode.DIRECT && node.enabled) {
-                                        activity?.requestVpnPermission { viewModel.startDirectSelected() }
-                                            ?: viewModel.startDirectSelected()
-                                    }
-                                },
+                                onClick = { viewModel.selectNode(node) },
                                 border = if (state.selectedProxyId == node.id) {
                                     BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
                                 } else {
@@ -201,10 +167,6 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                                                 viewModel.toggleNode(node)
                                                 if (willEnable) {
                                                     viewModel.selectNode(node)
-                                                    if (state.connectionMode == ProxyConnectionMode.DIRECT) {
-                                                        activity?.requestVpnPermission { viewModel.startDirectSelected() }
-                                                            ?: viewModel.startDirectSelected()
-                                                    }
                                                 }
                                             },
                                         )
@@ -267,17 +229,4 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
             },
         )
     }
-}
-
-@Composable
-private fun ProxyModeChip(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    AssistChip(
-        onClick = onClick,
-        label = { Text(label) },
-        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
-    )
 }
