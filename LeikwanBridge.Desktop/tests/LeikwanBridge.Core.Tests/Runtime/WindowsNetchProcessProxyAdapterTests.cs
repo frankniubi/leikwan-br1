@@ -7,6 +7,31 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class WindowsNetchProcessProxyAdapterTests
 {
     [Fact]
+    public async Task StopBeforeStartDoesNotStopPreexistingDriverService()
+    {
+        var stopCalls = 0;
+        var stateCalls = 0;
+        await using var adapter = new WindowsNetchProcessProxyAdapter(
+            "missing-redirector.bin",
+            "missing-netfilter2.sys",
+            stopDriverService: () =>
+            {
+                stopCalls++;
+                return false;
+            },
+            isDriverServiceStopped: () =>
+            {
+                stateCalls++;
+                return false;
+            });
+
+        await adapter.StopAsync();
+
+        Assert.Equal(0, stopCalls);
+        Assert.Equal(0, stateCalls);
+    }
+
+    [Fact]
     public void ProcessDialPlanKeepsDnsDirectAndBypassesOwnRuntime()
     {
         var plan = WindowsNetchProcessProxyAdapter.BuildDialPlan(

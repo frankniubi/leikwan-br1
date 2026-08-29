@@ -267,3 +267,30 @@ pass; all 247 Core tests and 42 App tests pass; Release WPF build has 0
 warnings/errors. The Program Files installation was not replaced from this
 non-Administrator shell, so an administrator-led install is still required to
 exercise the fix in the installed client.
+
+## TUN driver-stop guard (2026-08-29 22:22 +08:00)
+
+After the administrator-led install, TUN startup failed before sing-box could
+create its interface with `process_driver_stop_failed`. The GUI log showed the
+failure in the common `WindowsProxyConnectionService.StopCoreAsync` pre-start
+cleanup. Live service inspection showed `netfilter2` as a `SYSTEM_START` kernel
+driver in `RUNNING` state, with no `sing-box` or process-mode redirector active.
+
+`WindowsNetchProcessProxyAdapter.StopCoreAsync` was unconditionally calling
+`sc stop netfilter2`, even when that adapter instance had never started process
+mode. A pre-existing system-start driver was therefore treated as a cleanup
+failure and blocked unrelated TUN startup.
+
+The adapter now tracks whether this instance registered/initialized the driver
+service and returns without touching an externally-owned service when idle. It
+still stops and retries a service that this instance touched, including failed
+start rollback. The regression test
+`StopBeforeStartDoesNotStopPreexistingDriverService` covers the idle path.
+
+Validation: Core tests `248/248`, App tests `42/42`, and a Release self-contained
+publish succeeded. The fix was installed through UAC from the publish output;
+the seven updated application files matched source SHA-256 values, the client
+was restarted as `C:\Program Files\LeiKwan Bridge\leikwan-client-win.exe`
+version `0.1.19.8`, and the temporary publish/script files were removed. A
+real elevated TUN/CS2 data-plane test remains pending; the installed client is
+ready for that A/B.
