@@ -334,6 +334,7 @@ final class UltraMaterialService
         string $deviceId,
         int $forwardId,
         string $policyGeneration = '',
+        int $candidateOffset = 0,
     ): array {
         $payload = str_starts_with($token, 'u2')
             ? $this->open($token)
@@ -348,6 +349,8 @@ final class UltraMaterialService
             return [];
         }
 
+        $candidateOffset = max(0, min(7, $candidateOffset));
+        $validCandidateIndex = 0;
         foreach ($this->normalizeClientScopeLines($payload) as $scopeLine) {
             $sourceId = (string) $scopeLine['source_id'];
             $lineId = (int) $scopeLine['line_id'];
@@ -375,6 +378,9 @@ final class UltraMaterialService
                     (string) ($payload['transport'] ?? 'tcp+udp'),
                 ]);
                 if ($selectionRef === '') {
+                    continue;
+                }
+                if ($validCandidateIndex++ < $candidateOffset) {
                     continue;
                 }
                 return [

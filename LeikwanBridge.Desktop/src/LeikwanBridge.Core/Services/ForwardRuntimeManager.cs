@@ -184,20 +184,25 @@ public class ForwardRuntimeManager : IDisposable
     private void ApplyUltraForward(ForwardConfig forward, AppliedForwardState? previousState, string? contractSignature, string applyReason)
     {
         var policy = forward.UltraAccess;
-        var lease = forward.RuntimeLease;
+        var leases = forward.RuntimeLeases.Count > 0
+            ? forward.RuntimeLeases.ToList()
+            : forward.RuntimeLease is null ? [] : [forward.RuntimeLease];
         var now = DateTimeOffset.UtcNow;
         var policyFailure = policy?.GetValidationFailure(forward, now);
-        var leaseUsable = policy is not null && lease is not null && lease.IsUsable(policy, forward, now);
-        if (policy is null || lease is null || policyFailure is not null || !leaseUsable)
+        var usableLeases = policy is null
+            ? []
+            : leases.Where(candidate => candidate.IsUsable(policy, forward, now)).ToList();
+        if (policy is null || usableLeases.Count == 0 || policyFailure is not null)
         {
             Log.Warning(
-                "Ultra policy or lease rejected for forward {ForwardId}; stopping without legacy fallback (policy_reason={PolicyReason}, lease_present={LeasePresent}, lease_usable={LeaseUsable})",
+                "Ultra policy or lease rejected for forward {ForwardId}; stopping without legacy fallback (policy_reason={PolicyReason}, lease_count={LeaseCount}, usable_count={UsableCount})",
                 forward.ForwardId,
                 policy is null ? "missing" : policyFailure ?? "ok",
-                lease is not null,
-                leaseUsable);
-            lease?.Dispose();
+                leases.Count,
+                usableLeases.Count);
+            DisposeLeases(leases);
             forward.RuntimeLease = null;
+            forward.RuntimeLeases.Clear();
             StopForwardForPolicy(forward.ForwardId);
             return;
         }
@@ -205,7 +210,7 @@ public class ForwardRuntimeManager : IDisposable
         {
             _ultraRuntimeHost.Start(
                 forward,
-                lease,
+                usableLeases,
                 contractSignature ?? previousState?.ContractSignature ?? string.Empty,
                 string.IsNullOrWhiteSpace(applyReason) ? "config_sync" : applyReason);
         }
@@ -217,8 +222,9 @@ public class ForwardRuntimeManager : IDisposable
         }
         finally
         {
-            lease.Dispose();
+            DisposeLeases(leases);
             forward.RuntimeLease = null;
+            forward.RuntimeLeases.Clear();
         }
     }
 
@@ -277,21 +283,24 @@ public class ForwardRuntimeManager : IDisposable
 
     public virtual bool RefreshUltraLease(ForwardConfig forward)
     {
-        var lease = forward.RuntimeLease;
+        var leases = forward.RuntimeLeases.Count > 0
+            ? forward.RuntimeLeases.ToList()
+            : forward.RuntimeLease is null ? [] : [forward.RuntimeLease];
         var policy = forward.UltraAccess;
         try
         {
             if (!string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
-                || lease is null || policy is null
+                || leases.Count == 0 || policy is null
                 || !policy.IsUsable(forward, DateTimeOffset.UtcNow)
-                || !lease.IsUsable(policy, forward, DateTimeOffset.UtcNow))
+                || leases.Any(lease => !lease.IsUsable(policy, forward, DateTimeOffset.UtcNow)))
                 return false;
-            return _ultraRuntimeHost.Refresh(forward, lease);
+            return _ultraRuntimeHost.Refresh(forward, leases);
         }
         finally
         {
-            lease?.Dispose();
+            DisposeLeases(leases);
             forward.RuntimeLease = null;
+            forward.RuntimeLeases.Clear();
         }
     }
 
@@ -306,6 +315,16 @@ public class ForwardRuntimeManager : IDisposable
     }
 
     public void Dispose() => _supervisor.Dispose();
+
+    private static void DisposeLeases(IEnumerable<UltraLease> leases)
+    {
+        var seen = new HashSet<UltraLease>();
+        foreach (var lease in leases)
+        {
+            if (seen.Add(lease))
+                lease.Dispose();
+        }
+    }
 
     private bool RequiresFeedbackScheduler(ForwardConfig forward)
     {

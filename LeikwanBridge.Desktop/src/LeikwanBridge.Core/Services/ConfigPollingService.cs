@@ -222,10 +222,10 @@ public sealed class ConfigPollingService
             var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
             if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
             {
-                UltraLease? lease;
+                IReadOnlyList<UltraLease> leases;
                 try
                 {
-                    lease = await _api.ResolveUltraLeaseAsync(effectiveForward, ct);
+                    leases = await _api.ResolveUltraLeasesAsync(effectiveForward, ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -249,7 +249,7 @@ public sealed class ConfigPollingService
                     _runtimeManager.StopForwardForPolicy(forward.ForwardId);
                     continue;
                 }
-                if (lease is null)
+                if (leases.Count == 0)
                 {
                     if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease response unavailable"))
                         continue;
@@ -257,7 +257,8 @@ public sealed class ConfigPollingService
                     _runtimeManager.StopForwardForPolicy(forward.ForwardId);
                     continue;
                 }
-                effectiveForward.RuntimeLease = lease;
+                effectiveForward.RuntimeLeases = leases.ToList();
+                effectiveForward.RuntimeLease = effectiveForward.RuntimeLeases[0];
             }
             var contractSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
             var signatureMatches = hasAppliedState
@@ -313,10 +314,10 @@ public sealed class ConfigPollingService
                 continue;
             }
 
-            UltraLease? lease;
+            IReadOnlyList<UltraLease> leases;
             try
             {
-                lease = await _api.ResolveUltraLeaseAsync(effectiveForward, ct);
+                leases = await _api.ResolveUltraLeasesAsync(effectiveForward, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -342,7 +343,7 @@ public sealed class ConfigPollingService
                 continue;
             }
 
-            if (lease is null)
+            if (leases.Count == 0)
             {
                 if (TryPreserveRunningUltra(forward.ForwardId, appliedState != null, isRunning, "lease response unavailable"))
                     continue;
@@ -351,7 +352,8 @@ public sealed class ConfigPollingService
                 continue;
             }
 
-            effectiveForward.RuntimeLease = lease;
+            effectiveForward.RuntimeLeases = leases.ToList();
+            effectiveForward.RuntimeLease = effectiveForward.RuntimeLeases[0];
             var contractSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
             var signatureMatches = appliedState != null
                 && string.Equals(appliedState.ContractSignature, contractSignature, StringComparison.Ordinal);

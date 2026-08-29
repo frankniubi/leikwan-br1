@@ -78,4 +78,7 @@ public sealed class ForwardConfig
 
     [JsonIgnore]
     public UltraLease? RuntimeLease { get; set; }
+
+    [JsonIgnore]
+    public List<UltraLease> RuntimeLeases { get; set; } = [];
 }

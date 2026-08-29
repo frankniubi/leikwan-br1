@@ -77,3 +77,51 @@ func TestStatusWriterKeepsTCPAndUDPIndependent(t *testing.T) {
 		t.Fatalf("status selections are not independent: %+v", writer.status)
 	}
 }
+
+func TestStatusWriterTracksUDPAssociationPressure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "status.json")
+	writer := newStatusWriter(path, 9, time.Millisecond)
+	writer.UpdateUDPAssociations(7, 11)
+	writer.AddUDPQueueDrop()
+	writer.AddUDPSetupFailure()
+	writer.Close()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status RuntimeStatus
+	if err := json.Unmarshal(raw, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.UDPActiveAssociations != 7 || status.UDPPendingAssociations != 11 {
+		t.Fatalf("association counts = active:%d pending:%d", status.UDPActiveAssociations, status.UDPPendingAssociations)
+	}
+	if status.UDPQueueDrops != 1 || status.UDPSetupFailures != 1 {
+		t.Fatalf("UDP failure counts = drops:%d setup:%d", status.UDPQueueDrops, status.UDPSetupFailures)
+	}
+}
+
+func TestStatusWriterPublishesUDPProbeQualityWithoutProviderMaterial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "status.json")
+	writer := newStatusWriter(path, 11, time.Millisecond)
+	writer.UpdateUDPProbe("udp-entry-reference-abcdefghijklmnop", udpProbeResult{
+		Sent: 20, Received: 19, MedianRTT: 12 * time.Millisecond, P95RTT: 18 * time.Millisecond,
+	})
+	writer.Close()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status RuntimeStatus
+	if err := json.Unmarshal(raw, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.ActiveUDP == nil || status.ActiveUDP.LossPercent != 5 || status.ActiveUDP.P95RTTMillis != 18 {
+		t.Fatalf("probe quality=%+v", status.ActiveUDP)
+	}
+	if strings.Contains(strings.ToLower(string(raw)), "provider") {
+		t.Fatalf("status contains provider material marker: %s", raw)
+	}
+}

@@ -14,6 +14,7 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
     private readonly Func<string, bool> _binaryExists;
     private readonly Func<int, bool> _portListeningProbe;
     private readonly Func<int, UltraLease, CancellationToken, Task<bool>> _leaseSender;
+    private readonly Func<int, IReadOnlyList<UltraLease>, CancellationToken, Task<bool>> _leaseBatchSender;
     private readonly Func<int, PortPreflightResult>? _portPreflight;
 
     public WindowsUltraRuntimeHost(
@@ -23,7 +24,8 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
         Func<string, bool>? binaryExists = null,
         Func<int, bool>? portListeningProbe = null,
         Func<int, UltraLease, CancellationToken, Task<bool>>? leaseSender = null,
-        Func<int, PortPreflightResult>? portPreflight = null)
+        Func<int, PortPreflightResult>? portPreflight = null,
+        Func<int, IReadOnlyList<UltraLease>, CancellationToken, Task<bool>>? leaseBatchSender = null)
     {
         _config = config;
         _supervisor = supervisor;
@@ -31,11 +33,17 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
         _binaryExists = binaryExists ?? File.Exists;
         _portListeningProbe = portListeningProbe ?? NetworkProbe.IsPortListening;
         _leaseSender = leaseSender ?? UltraLeaseClient.SendAsync;
+        _leaseBatchSender = leaseBatchSender ?? UltraLeaseClient.SendAsync;
         _portPreflight = portPreflight;
     }
 
     public void Start(ForwardConfig forward, UltraLease lease, string contractSignature, string applyReason)
+        => Start(forward, new[] { lease }, contractSignature, applyReason);
+
+    public void Start(ForwardConfig forward, IReadOnlyList<UltraLease> leases, string contractSignature, string applyReason)
     {
+        if (leases is null || leases.Count is < 1 or > 4)
+            throw new ArgumentException("Ultra lease candidates are required", nameof(leases));
         try
         {
             if (forward.ListenPort is < 1 or > 65535)
@@ -66,9 +74,13 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 listen_port = forward.ListenPort,
                 target = forward.Target,
                 control_socket = $"\\\\.\\pipe\\{UltraLeaseClient.PipeName(forward.ForwardId)}",
-                transport = lease.Transport,
-                policy_generation = lease.PolicyGeneration,
-                target_digest = lease.TargetDigest,
+                transport = leases[0].Transport,
+                policy_generation = leases[0].PolicyGeneration,
+                target_digest = leases[0].TargetDigest,
+                auto_select = leases.Count > 1,
+                probe_timeout_ms = 300,
+                probe_samples = 20,
+                probe_interval_ms = 100,
                 max_tcp_connections = 512,
                 udp_queue_packets = 64,
                 connect_timeout_seconds = 5,
@@ -82,7 +94,10 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 "Ultra direct runtime",
                 ultraBin,
                 $"--config \"{configPath}\"");
-            if (!_leaseSender(forward.ForwardId, lease, CancellationToken.None).GetAwaiter().GetResult())
+            var delivered = leases.Count == 1
+                ? _leaseSender(forward.ForwardId, leases[0], CancellationToken.None).GetAwaiter().GetResult()
+                : _leaseBatchSender(forward.ForwardId, leases, CancellationToken.None).GetAwaiter().GetResult();
+            if (!delivered)
                 throw new InvalidOperationException("ultra_lease_delivery_failed");
             if (!_portListeningProbe(forward.ListenPort))
                 throw new InvalidOperationException("ultra_listener_not_ready");
@@ -113,19 +128,36 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
         }
         finally
         {
-            lease.Dispose();
+            DisposeLeases(leases);
         }
     }
 
     public bool Refresh(ForwardConfig forward, UltraLease lease)
+        => Refresh(forward, new[] { lease });
+
+    public bool Refresh(ForwardConfig forward, IReadOnlyList<UltraLease> leases)
     {
+        if (leases is null || leases.Count is < 1 or > 4)
+            return false;
         try
         {
-            return _leaseSender(forward.ForwardId, lease, CancellationToken.None).GetAwaiter().GetResult();
+            return leases.Count == 1
+                ? _leaseSender(forward.ForwardId, leases[0], CancellationToken.None).GetAwaiter().GetResult()
+                : _leaseBatchSender(forward.ForwardId, leases, CancellationToken.None).GetAwaiter().GetResult();
         }
         finally
         {
-            lease.Dispose();
+            DisposeLeases(leases);
+        }
+    }
+
+    private static void DisposeLeases(IEnumerable<UltraLease> leases)
+    {
+        var seen = new HashSet<UltraLease>();
+        foreach (var lease in leases)
+        {
+            if (seen.Add(lease))
+                lease.Dispose();
         }
     }
 

@@ -39,12 +39,14 @@ $config = new Config($envPath);
 $generation = str_repeat('a', 64);
 $now = 1_900_000_000;
 $candidateCalls = 0;
+$candidateOffsetSeen = null;
 $service = new UltraLeaseService(
     $config,
     null,
     null,
-    static function (array $request, int $clientId, string $deviceId) use (&$candidateCalls): array {
+    static function (array $request, int $clientId, string $deviceId) use (&$candidateCalls, &$candidateOffsetSeen): array {
         $candidateCalls++;
+        $candidateOffsetSeen = $request['candidate_offset'] ?? null;
         return [
             'selection_ref' => str_repeat('r', 43),
             'ip' => '203.0.113.20',
@@ -100,6 +102,17 @@ assertUltraPolicyLease(
     'lease TTL exceeded five minutes'
 );
 assertUltraPolicyLease($candidateCalls === 1, 'candidate resolver call count mismatch');
+
+$offsetLease = $service->issueLease(
+    array_merge($request, [
+        'nonce' => 'abcdef0123456789abcdef01234535',
+        'candidate_offset' => 2,
+    ]),
+    7,
+    'device-a'
+);
+assertUltraPolicyLease(($offsetLease['ok'] ?? false) === true, 'candidate offset lease must issue');
+assertUltraPolicyLease($candidateOffsetSeen === 2, 'candidate offset was not passed to resolver');
 
 $replay = $service->issueLease($request, 7, 'device-a');
 assertUltraPolicyLease(($replay['error'] ?? '') === 'lease_replayed', 'nonce replay was not rejected');
@@ -232,6 +245,9 @@ assertUltraPolicyLease(
     substr_count($controllerSource, "'Cache-Control' => 'no-store, no-cache, must-revalidate'") >= 2,
     'Ultra policy and lease responses must be no-store'
 );
+assertUltraPolicyLease(str_contains($controllerSource, 'selection_mode'), 'auto selection mode missing');
+assertUltraPolicyLease(str_contains($controllerSource, 'max_candidates'), 'auto selection candidate bound missing');
+assertUltraPolicyLease(str_contains($controllerSource, 'candidate_offset'), 'auto selection candidate offset missing');
 
 @unlink($envPath);
 echo "ok\n";

@@ -43,6 +43,7 @@ final class UltraLeaseService
                 $deviceId,
                 (int) ($request['forward_id'] ?? 0),
                 trim((string) ($request['policy_generation'] ?? '')),
+                (int) ($request['candidate_offset'] ?? 0),
             );
         };
         $this->policyResolver = $policyResolver ?? function (int $clientId, string $deviceId, int $forwardId): array {
@@ -204,11 +205,13 @@ final class UltraLeaseService
         $nonce = strtolower(trim((string) ($request['nonce'] ?? '')));
         $targetDigest = strtolower(trim((string) ($request['target_digest'] ?? '')));
         $transport = strtolower(trim((string) ($request['transport'] ?? '')));
+        $candidateOffset = (int) ($request['candidate_offset'] ?? 0);
         if ($forwardId <= 0 || $ticket === ''
             || !preg_match('/^[a-f0-9]{64}$/', $generation)
             || !preg_match('/^[a-f0-9]{16,128}$/', $nonce)
             || !preg_match('/^[a-f0-9]{64}$/', $targetDigest)
-            || !in_array($transport, ['tcp', 'udp', 'tcp+udp'], true)) {
+            || !in_array($transport, ['tcp', 'udp', 'tcp+udp'], true)
+            || $candidateOffset < 0 || $candidateOffset > 7) {
             return null;
         }
         return [
@@ -218,6 +221,7 @@ final class UltraLeaseService
             'nonce' => $nonce,
             'target_digest' => $targetDigest,
             'transport' => $transport,
+            'candidate_offset' => $candidateOffset,
         ];
     }
 

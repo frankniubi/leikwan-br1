@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -135,7 +136,11 @@ func (server *ControlServer) Serve() error {
 
 func (server *ControlServer) handle(connection *net.UnixConn) {
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
+	deadline := 2 * time.Second
+	if server.config.AutoSelect {
+		deadline = 20 * time.Second
+	}
+	_ = connection.SetDeadline(time.Now().Add(deadline))
 	if server.peerAllowed == nil || !server.peerAllowed(connection) {
 		_ = writeJSONFrame(connection, map[string]any{"ok": false, "error": "peer_rejected"})
 		return
@@ -146,11 +151,26 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 		return
 	}
 	defer clearBytes(payload)
-	policy, lease, err := decodeLeaseFrame(payload, server.config)
+	policy, leases, err := decodeLeaseBatchFrame(payload, server.config)
+	var selected ProviderLease
 	if err == nil {
-		err = server.store.Replace(policy, lease)
+		if len(leases) > 1 && !server.config.AutoSelect {
+			err = ErrLeaseInvalid
+		} else if server.config.AutoSelect && len(leases) > 1 {
+			selectionContext, cancel := context.WithTimeout(context.Background(), deadline)
+			selected, _, err = selectBestLease(selectionContext, server.config, policy, leases)
+			cancel()
+		} else {
+			selected = leases[0]
+		}
 	}
-	lease.wipe()
+	if err == nil {
+		err = server.store.Replace(policy, selected)
+	}
+	selected.wipe()
+	for index := range leases {
+		leases[index].wipe()
+	}
 	if err != nil {
 		_ = writeJSONFrame(connection, map[string]any{"ok": false, "error": controlErrorName(err)})
 		return

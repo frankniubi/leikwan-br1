@@ -405,12 +405,28 @@ final class ClientAgentController extends BaseController
                 'quota_remaining_bytes' => (int) ($grant['quota_remaining_bytes'] ?? 0),
                 'expires_at' => (string) ($grant['expires_at'] ?? ''),
             ];
-            $result = $this->ultraLeases->issueLease($item, (int) $client['id'], $deviceId, $policy);
-            if (($result['ok'] ?? false) === true && is_array($result['lease'] ?? null)) {
-                $leases[] = $result['lease'];
-                continue;
+            $selectionMode = strtolower(trim((string) ($item['selection_mode'] ?? '')));
+            $maxCandidates = $selectionMode === 'auto'
+                ? max(1, min(4, (int) ($item['max_candidates'] ?? 4)))
+                : 1;
+            $baseNonce = strtolower(trim((string) ($item['nonce'] ?? '')));
+            for ($candidateOffset = 0; $candidateOffset < $maxCandidates; $candidateOffset++) {
+                $candidateRequest = $item;
+                $candidateRequest['candidate_offset'] = $candidateOffset;
+                if ($candidateOffset > 0) {
+                    $candidateRequest['nonce'] = hash('sha256', $baseNonce . "\n" . $candidateOffset);
+                }
+                $result = $this->ultraLeases->issueLease($candidateRequest, (int) $client['id'], $deviceId, $policy);
+                if (($result['ok'] ?? false) === true && is_array($result['lease'] ?? null)) {
+                    $leases[] = $result['lease'];
+                    continue;
+                }
+                $lastError = (string) ($result['error'] ?? $lastError);
+                if ($lastError !== 'no_approved_candidate') {
+                    break;
+                }
+                break;
             }
-            $lastError = (string) ($result['error'] ?? $lastError);
         }
         if ($leases === []) {
             return $this->json(['ok' => false, 'error' => $lastError], 409)->withHeaders([
