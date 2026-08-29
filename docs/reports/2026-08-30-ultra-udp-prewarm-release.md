@@ -33,7 +33,7 @@ Linux was built with the existing garble/reproducibility script. Windows was bui
 - .NET: full solution passed, Core `255`, Mac `52`, App `42`.
 - Source/artifact SHA-256 mirrors for `client-agent.py` and `install_forward_runtime.py` matched.
 - Windows setup staging contained the exact published Windows Ultra SHA-256.
-- The live Panel artifact source was updated after backup `ultra-udp-prewarm-20260830-1`; root artifacts and `master/public/artifacts` shadows match for both Ultra binaries, the Python mirrors, and `versions.json`.
+- The live Panel artifact source was updated after backups `ultra-udp-prewarm-20260830-1` and `ultra-udp-prewarm-20260830-2`; root artifacts and `master/public/artifacts` shadows match for both Ultra binaries, the Python mirrors, and `versions.json`.
 - HTTPS manifest canary from `https://v3.leikwanhost.com/artifacts/versions.json` returned Linux/Windows Ultra `2026.08.30.4` and Windows app `0.1.19.9` with the recorded hashes.
 
 ## Platform Sample Status
