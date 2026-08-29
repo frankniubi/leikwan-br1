@@ -364,15 +364,15 @@
   ],
   "obfuscator": "garble-v0.17.0",
   "path": "artifacts/ultra/ultra-client_linux_amd64",
-  "sha256": "56d56d6d5de1cd0c98cb34221b26fc50fb8792c7ff31eee24d8024c060248a56",
-  "size_bytes": 15528202,
+  "sha256": "0a3932e023b5de90da0b6792c672bd5c2e275060013e1c31ba6980d0bdb22d11",
+  "size_bytes": 15462666,
   "version": "2026.08.30.4"
  },
  "ultra_client_runtime_windows": {
  "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
  "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
- "sha256": "5fac22da77dc6d6cc81abb8f824fe57cd9dff736655f498af36236f4df5a7d47",
- "size_bytes": 6695936,
+ "sha256": "59d6fa47896e51308749850098f6f61fdbdc01525ca3f1bc992f22ab59fbad74",
+ "size_bytes": 6699008,
  "version": "2026.08.30.4"
  },
  "uot_bond_runtime": {
@@ -393,8 +393,8 @@
  "windows_client_app": {
   "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
   "path": "artifacts/windows/leikwan-bridge-setup.exe",
- "sha256": "ddc54a76f1b65544692925d9aa76bbdb423834380cc0bae4cfa6dc2f720b3450",
- "size_bytes": 22341822,
+ "sha256": "af0ba604300a76b6f153a8384c9d9f957a8179c1f235fe3b0b101fea02c3d425",
+ "size_bytes": 22345758,
  "version": "0.1.19.9"
  },
  "wstunnel_linux_amd64": {
