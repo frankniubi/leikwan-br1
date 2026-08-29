@@ -124,6 +124,26 @@ public sealed class MasterApiClientDesktopLoginTests
     }
 
     [Fact]
+    public async Task PullConfigsAsync_ReportsInvalidJsonForSuccessfulHtmlResponse()
+    {
+        using var http = new HttpClient(new InvalidJsonPullResponseHandler())
+        {
+            Timeout = TimeSpan.FromSeconds(5),
+        };
+        using var api = new MasterApiClient(
+            "https://v3.leikwanhost.com",
+            "agent-token-27",
+            httpClientFactory: () => http,
+            ownsHttpClient: false);
+
+        var exception = await Assert.ThrowsAsync<MasterApiException>(() => api.PullConfigsAsync());
+
+        Assert.Equal(200, exception.StatusCode);
+        Assert.Contains("master_api_invalid_json_response", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("text/html", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task PullConfigsAsync_ReturnsNotModified_On304_AndThreadsRevision()
     {
         using var http = new HttpClient(new NotModifiedHandler()) { Timeout = TimeSpan.FromSeconds(5) };
@@ -241,6 +261,50 @@ public sealed class MasterApiClientDesktopLoginTests
         Assert.Contains("policy_generation", requestBody, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ResolveUltraLeasesAsync_ReturnsBoundedCandidateBatchForAutoSelection()
+    {
+        const string target = "198.51.100.10:443";
+        var generation = new string('a', 64);
+        var now = DateTimeOffset.UtcNow;
+        var policy = new UltraPolicy
+        {
+            ProtocolValue = UltraPolicy.Protocol,
+            ForwardId = 42,
+            PolicyGeneration = generation,
+            SessionTicket = "ticket-a",
+            IssuedAt = now,
+            RenewAfter = now.AddMinutes(1),
+            ExpiresAt = now.AddMinutes(4),
+            ServiceState = "active",
+            Transport = "tcp+udp",
+            QuotaRemainingBytes = 1024 * 1024,
+            TargetDigest = UltraPolicy.ComputeTargetDigest(target),
+        };
+        var forward = new ForwardConfig
+        {
+            ForwardId = 42,
+            BackendMode = "ultra",
+            Mode = "single",
+            Target = target,
+            Transport = "tcp+udp",
+            UltraAccess = policy,
+        };
+        using var http = new HttpClient(new UltraLeaseBatchHandler(generation, target)) { Timeout = TimeSpan.FromSeconds(5) };
+        using var api = new MasterApiClient(
+            "https://v3.leikwanhost.com",
+            "agent-token",
+            "windows-client-42-device",
+            httpClientFactory: () => http,
+            ownsHttpClient: false);
+
+        var leases = await api.ResolveUltraLeasesAsync(forward);
+
+        Assert.Equal(2, leases.Count);
+        Assert.Equal("203.0.113.20", leases[0].ProviderIp);
+        Assert.Equal("203.0.113.21", leases[1].ProviderIp);
+    }
+
     private sealed class NotModifiedHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -264,6 +328,22 @@ public sealed class MasterApiClientDesktopLoginTests
                       "forwards": []
                     }
                     """, Encoding.UTF8, "application/json"),
+            };
+            return Task.FromResult(response);
+        }
+    }
+
+    private sealed class InvalidJsonPullResponseHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent(
+                    "<br /><b>Warning</b>: Undefined array key \"wstunnel_binary\"",
+                    Encoding.UTF8,
+                    "text/html"),
             };
             return Task.FromResult(response);
         }
@@ -299,6 +379,44 @@ public sealed class MasterApiClientDesktopLoginTests
                           "nonce_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                           "endpoint": { "ip": "203.0.113.20", "port": 5438 },
                           "credential": { "user": "line-user", "password": "line-password" }
+                        }
+                      ]
+                    }
+                    """, Encoding.UTF8, "application/json"),
+            };
+            return response;
+        }
+    }
+
+    private sealed class UltraLeaseBatchHandler(string generation, string target) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            Assert.Contains("selection_mode", body, StringComparison.Ordinal);
+            Assert.Contains("max_candidates", body, StringComparison.Ordinal);
+            var expires = DateTimeOffset.UtcNow.AddMinutes(3).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+            var digest = UltraPolicy.ComputeTargetDigest(target);
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent($$"""
+                    {
+                      "ok": true,
+                      "leases": [
+                        {
+                          "protocol": "leikwan-ultra-policy-v2", "forward_id": 42, "session_ticket": "ticket-a",
+                          "lease_id": "lease-a", "policy_generation": "{{generation}}", "expires_at": "{{expires}}", "transport": "tcp+udp",
+                          "rate_limit_mbps": 0, "quota_remaining_bytes": 1048576, "target_digest": "{{digest}}",
+                          "selection_ref": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", "nonce_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                          "endpoint": { "ip": "203.0.113.20", "port": 5438 }, "credential": { "user": "line-user", "password": "line-password" }
+                        },
+                        {
+                          "protocol": "leikwan-ultra-policy-v2", "forward_id": 42, "session_ticket": "ticket-a",
+                          "lease_id": "lease-b", "policy_generation": "{{generation}}", "expires_at": "{{expires}}", "transport": "tcp+udp",
+                          "rate_limit_mbps": 0, "quota_remaining_bytes": 1048576, "target_digest": "{{digest}}",
+                          "selection_ref": "sssssssssssssssssssssssssssssssssssssssssss", "nonce_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                          "endpoint": { "ip": "203.0.113.21", "port": 5439 }, "credential": { "user": "line-user", "password": "line-password" }
                         }
                       ]
                     }

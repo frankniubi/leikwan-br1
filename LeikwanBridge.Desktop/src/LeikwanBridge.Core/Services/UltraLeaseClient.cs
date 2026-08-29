@@ -14,10 +14,14 @@ public sealed class UltraLeaseClient
     public static string PipeName(int forwardId) => $"leikwan-ultra-forward-{forwardId}";
 
     public static async Task<bool> SendAsync(int forwardId, UltraLease lease, CancellationToken ct = default)
+        => await SendAsync(forwardId, new[] { lease }, ct);
+
+    public static async Task<bool> SendAsync(int forwardId, IReadOnlyList<UltraLease> leases, CancellationToken ct = default)
     {
-        if (forwardId <= 0 || lease.ForwardId != forwardId)
+        if (forwardId <= 0 || leases is null || leases.Count is < 1 or > 4 || leases.Any(lease => lease.ForwardId != forwardId))
             return false;
-        var wire = new
+
+        static object Wire(UltraLease lease) => new
         {
             protocol = UltraPolicy.Protocol,
             forward_id = lease.ForwardId,
@@ -34,6 +38,9 @@ public sealed class UltraLeaseClient
             endpoint = new { ip = lease.ProviderIp, port = lease.ProviderPort },
             credential = new { user = Encoding.UTF8.GetString(lease.User), password = Encoding.UTF8.GetString(lease.Password) },
         };
+        object wire = leases.Count == 1
+            ? Wire(leases[0])
+            : new { leases = leases.Select(Wire).ToArray() };
         byte[] body = [];
         try
         {
@@ -44,7 +51,7 @@ public sealed class UltraLeaseClient
             BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(0, 4), (uint)body.Length);
             body.CopyTo(frame, 4);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(2));
+            timeout.CancelAfter(TimeSpan.FromSeconds(leases.Count == 1 ? 2 : 20));
             await using var pipe = new NamedPipeClientStream(
                 ".", PipeName(forwardId), PipeDirection.InOut, PipeOptions.Asynchronous);
             await pipe.ConnectAsync(timeout.Token);
@@ -64,7 +71,7 @@ public sealed class UltraLeaseClient
                 && root.TryGetProperty("forward_id", out var returnedForward)
                 && returnedForward.GetInt32() == forwardId
                 && root.TryGetProperty("policy_generation", out var returnedGeneration)
-                && string.Equals(returnedGeneration.GetString(), lease.PolicyGeneration, StringComparison.Ordinal);
+                && string.Equals(returnedGeneration.GetString(), leases[0].PolicyGeneration, StringComparison.Ordinal);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

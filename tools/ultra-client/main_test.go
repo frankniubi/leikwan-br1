@@ -3,10 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
-	"errors"
+	"fmt"
 	"io"
 	"net"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -16,7 +20,7 @@ func TestBuildStreamHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.HasPrefix(got, []byte{5, 3, 2, 0x80, 0x83, 1, 9}) {
+	if !bytes.HasPrefix(got, []byte{5, 5, 0, 1, 2, 0x80, 0x83, 1, 9}) {
 		t.Fatalf("unexpected prefix: %s", hex.EncodeToString(got))
 	}
 	if !bytes.Contains(got, []byte{5, 1}) {
@@ -24,12 +28,12 @@ func TestBuildStreamHandshake(t *testing.T) {
 	}
 }
 
-func TestBuildDatagramHandshakeKeepsNativeGreeting(t *testing.T) {
+func TestBuildDatagramHandshakeUsesReferenceFiveMethodGreeting(t *testing.T) {
 	got, err := buildHandshake("line-user", "1234567890123456", 3, "1.1.1.1", 53)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.HasPrefix(got, []byte{5, 3, 2, 0x80, 0x83, 1, 9}) {
+	if !bytes.HasPrefix(got, []byte{5, 5, 0, 1, 2, 0x80, 0x83, 1, 9}) {
 		t.Fatalf("unexpected datagram prefix: %s", hex.EncodeToString(got))
 	}
 	if !bytes.Contains(got, []byte{5, 3}) {
@@ -94,66 +98,6 @@ func TestOutboundStreamTransform(t *testing.T) {
 	}
 }
 
-func TestDialStreamSendsTargetAndLeavesXorStream(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	providerPort := listener.Addr().(*net.TCPAddr).Port
-	serverErr := make(chan error, 1)
-	go func() {
-		conn, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			serverErr <- acceptErr
-			return
-		}
-		defer conn.Close()
-		handshake := make([]byte, 20)
-		if _, err := io.ReadFull(conn, handshake); err != nil {
-			serverErr <- err
-			return
-		}
-		wantTarget := []byte{5, 1, 0, 1, 1, 1, 1, 1, 1, 0xbb}
-		if !bytes.Equal(handshake[len(handshake)-len(wantTarget):], wantTarget) {
-			serverErr <- errors.New("private command did not carry the final target")
-			return
-		}
-		ack := []byte{5, 2, 1, 0, 4, 1, 127, 0, 0, 1, 0x12, 0x34, 0, 0}
-		if err := writeAll(conn, ack); err != nil {
-			serverErr <- err
-			return
-		}
-		payload := make([]byte, 5)
-		if _, err := io.ReadFull(conn, payload); err != nil {
-			serverErr <- err
-			return
-		}
-		if !bytes.Equal(xorOne(payload), []byte("hello")) {
-			serverErr <- errors.New("post-handshake payload was not XOR encoded")
-			return
-		}
-		serverErr <- nil
-	}()
-
-	remote, err := dialStream(ProviderLease{
-		IP:       "127.0.0.1",
-		Port:     providerPort,
-		User:     []byte("u"),
-		Password: []byte("p"),
-	}, "1.1.1.1", 443, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writeXor(remote, []byte("hello")); err != nil {
-		t.Fatal(err)
-	}
-	remote.Close()
-	if err := <-serverErr; err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestDatagramEnvelopeRoundTrip(t *testing.T) {
 	payload := []byte("payload")
 	packet, err := makeDatagramEnvelope(6, []byte{0x10, 0x4b, 0x20}, "1.1.1.1", 53, payload)
@@ -167,6 +111,244 @@ func TestDatagramEnvelopeRoundTrip(t *testing.T) {
 	decoded, ok := unwrapDatagram(down)
 	if !ok || !bytes.Equal(decoded, payload) {
 		t.Fatal("datagram response did not unwrap")
+	}
+}
+
+func TestServeUDPDoesNotBlockNewClientWhileAnotherAssociationArms(t *testing.T) {
+	providerTCP, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer providerTCP.Close()
+	providerUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer providerUDP.Close()
+
+	firstAccepted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseFirst) })
+	var accepted atomic.Int32
+	go func() {
+		for {
+			connection, acceptErr := providerTCP.AcceptTCP()
+			if acceptErr != nil {
+				return
+			}
+			sequence := accepted.Add(1)
+			go func() {
+				defer connection.Close()
+				_ = connection.SetReadDeadline(time.Now().Add(time.Second))
+				handshake := make([]byte, 512)
+				if _, readErr := connection.Read(handshake); readErr != nil {
+					return
+				}
+				if sequence == 1 {
+					close(firstAccepted)
+					<-releaseFirst
+				}
+				encodedPort := uint16(providerUDP.LocalAddr().(*net.UDPAddr).Port) ^ 0x0101
+				reply := []byte{4, 1, 1, 0, 1, 7, 0x10, 0x20, 0, 0}
+				binary.BigEndian.PutUint16(reply[8:], encodedPort)
+				_, _ = connection.Write(reply)
+			}()
+		}
+	}()
+	go func() {
+		buffer := make([]byte, 64*1024)
+		for {
+			count, client, readErr := providerUDP.ReadFromUDP(buffer)
+			if readErr != nil {
+				return
+			}
+			if count < 16 {
+				continue
+			}
+			payload := append([]byte(nil), buffer[16:count]...)
+			if bytes.Equal(payload, []byte(keepPayloadHex)) {
+				_, _ = providerUDP.WriteToUDP(make([]byte, 28), client)
+				continue
+			}
+			response := make([]byte, 10+len(payload))
+			copy(response[:4], []byte{0, 0, 0, 1})
+			copy(response[10:], payload)
+			_, _ = providerUDP.WriteToUDP(response, client)
+		}
+	}()
+
+	runtimeUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenPort := runtimeUDP.LocalAddr().(*net.UDPAddr).Port
+	config := Config{
+		ForwardID:          42,
+		ListenHost:         "127.0.0.1",
+		ListenPort:         listenPort,
+		Target:             "127.0.0.1:53",
+		Transport:          "udp",
+		UDPQueuePackets:    2,
+		ConnectTimeoutSecs: 1,
+	}
+	store := NewPolicyStore(config)
+	now := time.Now()
+	policy := Policy{
+		Protocol: policyProtocol, ForwardID: 42, PolicyGeneration: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SessionTicket: "ticket", ExpiresAt: now.Add(time.Minute), Transport: "udp",
+		RateLimitMbps: 100, QuotaRemainingBytes: 1 << 20, TargetDigest: targetDigest(config.Target),
+	}
+	lease := ProviderLease{
+		LeaseID: "ul2_test", PolicyGeneration: policy.PolicyGeneration, ExpiresAt: policy.ExpiresAt,
+		Transport: "udp", SelectionRef: "selection-reference-abcdefghijklmnop",
+		NonceHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		IP:        "127.0.0.1", Port: providerTCP.Addr().(*net.TCPAddr).Port,
+		User: []byte("user"), Password: []byte("1234567890123456"),
+	}
+	if err := store.Replace(policy, lease); err != nil {
+		t.Fatal(err)
+	}
+	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- serveUDPOnConn(ctx, config, store, status, runtimeUDP, "127.0.0.1", 53) }()
+
+	destination := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: listenPort}
+	clientA, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientA.Close()
+	clientB, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientB.Close()
+
+	if _, err := clientA.WriteToUDP([]byte("client-a"), destination); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("first UDP association did not start")
+	}
+	pendingA := [][]byte{[]byte("client-a-2"), []byte("client-a-3")}
+	for _, payload := range pendingA {
+		if _, err := clientA.WriteToUDP(payload, destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []byte("client-b")
+	if _, err := clientB.WriteToUDP(want, destination); err != nil {
+		t.Fatal(err)
+	}
+	_ = clientB.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
+	response := make([]byte, 128)
+	count, _, err := clientB.ReadFromUDP(response)
+	if err != nil {
+		t.Fatalf("second UDP client was blocked by the first association: %v", err)
+	}
+	if !bytes.Equal(response[:count], want) {
+		t.Fatalf("second UDP client response = %q, want %q", response[:count], want)
+	}
+	releaseOnce.Do(func() { close(releaseFirst) })
+	_ = clientA.SetReadDeadline(time.Now().Add(time.Second))
+	for _, wantA := range [][]byte{[]byte("client-a"), pendingA[0]} {
+		count, _, err := clientA.ReadFromUDP(response)
+		if err != nil {
+			t.Fatalf("pending UDP packet %q was not delivered: %v", wantA, err)
+		}
+		if !bytes.Equal(response[:count], wantA) {
+			t.Fatalf("pending UDP response = %q, want %q", response[:count], wantA)
+		}
+	}
+	_ = clientA.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if count, _, err := clientA.ReadFromUDP(response); err == nil {
+		t.Fatalf("queue overflow packet unexpectedly returned: %q", response[:count])
+	}
+
+	const burstClients = 128
+	burst := make([]*net.UDPConn, 0, burstClients)
+	for index := 0; index < burstClients; index++ {
+		client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		burst = append(burst, client)
+		payload := []byte(fmt.Sprintf("burst-%03d", index))
+		if _, err := client.WriteToUDP(payload, destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	burstDeadline := time.Now().Add(3 * time.Second)
+	for index, client := range burst {
+		_ = client.SetReadDeadline(burstDeadline)
+		count, _, err := client.ReadFromUDP(response)
+		if err != nil {
+			t.Fatalf("burst client %d did not receive a response: %v", index, err)
+		}
+		wantBurst := []byte(fmt.Sprintf("burst-%03d", index))
+		if !bytes.Equal(response[:count], wantBurst) {
+			t.Fatalf("burst client %d response = %q, want %q", index, response[:count], wantBurst)
+		}
+		_ = client.Close()
+	}
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("UDP runtime did not stop")
+	}
+	status.Close()
+	if status.status.UDPQueueDrops != 1 {
+		t.Fatalf("UDP queue drops = %d, want 1", status.status.UDPQueueDrops)
+	}
+	if status.status.UDPActiveAssociations != 0 || status.status.UDPPendingAssociations != 0 {
+		t.Fatalf("UDP associations after stop = active:%d pending:%d",
+			status.status.UDPActiveAssociations, status.status.UDPPendingAssociations)
+	}
+}
+
+func TestResolveUDPLimits(t *testing.T) {
+	tests := []struct {
+		name         string
+		config       Config
+		queue        int
+		associations int
+		workers      int
+	}{
+		{name: "defaults", queue: 64, associations: 1024, workers: 64},
+		{
+			name: "configured",
+			config: Config{
+				UDPQueuePackets:    8,
+				UDPMaxAssociations: 256,
+				UDPSetupWorkers:    32,
+			},
+			queue: 8, associations: 256, workers: 32,
+		},
+		{
+			name: "workers capped by associations",
+			config: Config{
+				UDPMaxAssociations: 16,
+				UDPSetupWorkers:    64,
+			},
+			queue: 64, associations: 16, workers: 16,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			limits := resolveUDPLimits(test.config)
+			if limits.queuePackets != test.queue || limits.maxAssociations != test.associations || limits.setupWorkers != test.workers {
+				t.Fatalf("limits = %+v, want queue=%d associations=%d workers=%d", limits, test.queue, test.associations, test.workers)
+			}
+		})
 	}
 }
 

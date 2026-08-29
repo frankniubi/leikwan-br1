@@ -68,3 +68,52 @@ func decodeLeaseFrame(raw []byte, config Config) (Policy, ProviderLease, error) 
 	}
 	return frame.decode(config, time.Now())
 }
+
+func decodeLeaseBatchFrame(raw []byte, config Config) (Policy, []ProviderLease, error) {
+	var wrapper struct {
+		Leases []json.RawMessage `json:"leases"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return Policy{}, nil, ErrFrameInvalid
+	}
+	if wrapper.Leases == nil {
+		policy, lease, err := decodeLeaseFrame(raw, config)
+		if err != nil {
+			return Policy{}, nil, err
+		}
+		return policy, []ProviderLease{lease}, nil
+	}
+	if len(wrapper.Leases) < 1 || len(wrapper.Leases) > 4 {
+		return Policy{}, nil, ErrFrameInvalid
+	}
+	var policy Policy
+	leases := make([]ProviderLease, 0, len(wrapper.Leases))
+	for index, encoded := range wrapper.Leases {
+		candidatePolicy, lease, err := decodeLeaseFrame(encoded, config)
+		if err != nil {
+			for candidateIndex := range leases {
+				leases[candidateIndex].wipe()
+			}
+			return Policy{}, nil, err
+		}
+		if index == 0 {
+			policy = candidatePolicy
+		} else if candidatePolicy.Protocol != policy.Protocol ||
+			candidatePolicy.ForwardID != policy.ForwardID ||
+			candidatePolicy.PolicyGeneration != policy.PolicyGeneration ||
+			candidatePolicy.SessionTicket != policy.SessionTicket ||
+			!candidatePolicy.ExpiresAt.Equal(policy.ExpiresAt) ||
+			candidatePolicy.Transport != policy.Transport ||
+			candidatePolicy.RateLimitMbps != policy.RateLimitMbps ||
+			candidatePolicy.QuotaRemainingBytes != policy.QuotaRemainingBytes ||
+			candidatePolicy.TargetDigest != policy.TargetDigest {
+			lease.wipe()
+			for candidateIndex := range leases {
+				leases[candidateIndex].wipe()
+			}
+			return Policy{}, nil, ErrPolicyInvalid
+		}
+		leases = append(leases, lease)
+	}
+	return policy, leases, nil
+}

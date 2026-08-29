@@ -21,6 +21,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
     private readonly Func<string, bool> _socketExists;
     private readonly Func<int, bool> _portListeningProbe;
     private readonly Func<string, int, UltraLease, CancellationToken, Task<bool>> _leaseSender;
+    private readonly Func<string, int, IReadOnlyList<UltraLease>, CancellationToken, Task<bool>> _leaseBatchSender;
     private readonly Func<int, PortPreflightResult>? _portPreflight;
     private readonly string _socketRoot;
     private readonly ConcurrentDictionary<int, RuntimeState> _runtimes = new();
@@ -34,7 +35,8 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         Func<int, bool>? portListeningProbe = null,
         Func<string, int, UltraLease, CancellationToken, Task<bool>>? leaseSender = null,
         Func<int, PortPreflightResult>? portPreflight = null,
-        string? socketRoot = null)
+        string? socketRoot = null,
+        Func<string, int, IReadOnlyList<UltraLease>, CancellationToken, Task<bool>>? leaseBatchSender = null)
     {
         _config = config;
         _supervisor = supervisor;
@@ -44,12 +46,18 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         _portListeningProbe = portListeningProbe ?? NetworkProbe.IsPortListening;
         var client = new UnixUltraLeaseClient();
         _leaseSender = leaseSender ?? client.SendAsync;
+        _leaseBatchSender = leaseBatchSender ?? client.SendAsync;
         _portPreflight = portPreflight;
         _socketRoot = socketRoot ?? (OperatingSystem.IsMacOS() ? "/tmp" : Path.GetTempPath());
     }
 
     public void Start(ForwardConfig forward, UltraLease lease, string contractSignature, string applyReason)
+        => Start(forward, new[] { lease }, contractSignature, applyReason);
+
+    public void Start(ForwardConfig forward, IReadOnlyList<UltraLease> leases, string contractSignature, string applyReason)
     {
+        if (leases is null || leases.Count is < 1 or > 4)
+            throw new ArgumentException("Ultra lease candidates are required", nameof(leases));
         byte[] bootstrap = [];
         try
         {
@@ -95,9 +103,13 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 listen_port = forward.ListenPort,
                 target = forward.Target,
                 control_socket = socketPath,
-                transport = lease.Transport,
-                policy_generation = lease.PolicyGeneration,
-                target_digest = lease.TargetDigest,
+                transport = leases[0].Transport,
+                policy_generation = leases[0].PolicyGeneration,
+                target_digest = leases[0].TargetDigest,
+                auto_select = leases.Count > 1,
+                probe_timeout_ms = 300,
+                probe_samples = 20,
+                probe_interval_ms = 100,
                 max_tcp_connections = 512,
                 udp_queue_packets = 64,
                 connect_timeout_seconds = 5,
@@ -120,8 +132,10 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             if (!socketReady)
                 throw new InvalidOperationException("ultra_control_socket_not_ready");
             Log.Information("ultra lease delivery begin for forward {ForwardId}", forward.ForwardId);
-            var leaseDelivered = _leaseSender(socketPath, forward.ForwardId, lease, CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(3))
+            var leaseDelivered = (leases.Count == 1
+                ? _leaseSender(socketPath, forward.ForwardId, leases[0], CancellationToken.None)
+                : _leaseBatchSender(socketPath, forward.ForwardId, leases, CancellationToken.None))
+                .WaitAsync(TimeSpan.FromSeconds(20))
                 .GetAwaiter()
                 .GetResult();
             Log.Information("ultra lease delivery result={LeaseDelivered} for forward {ForwardId}", leaseDelivered, forward.ForwardId);
@@ -161,17 +175,24 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         finally
         {
             CryptographicOperations.ZeroMemory(bootstrap);
-            lease.Dispose();
+            DisposeLeases(leases);
         }
     }
 
     public bool Refresh(ForwardConfig forward, UltraLease lease)
+        => Refresh(forward, new[] { lease });
+
+    public bool Refresh(ForwardConfig forward, IReadOnlyList<UltraLease> leases)
     {
+        if (leases is null || leases.Count is < 1 or > 4)
+            return false;
         try
         {
             return _runtimes.TryGetValue(forward.ForwardId, out var runtime)
                 && _socketExists(runtime.SocketPath)
-                && _leaseSender(runtime.SocketPath, forward.ForwardId, lease, CancellationToken.None).GetAwaiter().GetResult();
+                && (leases.Count == 1
+                    ? _leaseSender(runtime.SocketPath, forward.ForwardId, leases[0], CancellationToken.None)
+                    : _leaseBatchSender(runtime.SocketPath, forward.ForwardId, leases, CancellationToken.None)).GetAwaiter().GetResult();
         }
         catch
         {
@@ -179,7 +200,17 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         }
         finally
         {
-            lease.Dispose();
+            DisposeLeases(leases);
+        }
+    }
+
+    private static void DisposeLeases(IEnumerable<UltraLease> leases)
+    {
+        var seen = new HashSet<UltraLease>();
+        foreach (var lease in leases)
+        {
+            if (seen.Add(lease))
+                lease.Dispose();
         }
     }
 

@@ -18,11 +18,15 @@ public sealed class UnixUltraLeaseClient
     }
 
     public async Task<bool> SendAsync(string socketPath, int forwardId, UltraLease lease, CancellationToken ct = default)
+        => await SendAsync(socketPath, forwardId, new[] { lease }, ct);
+
+    public async Task<bool> SendAsync(string socketPath, int forwardId, IReadOnlyList<UltraLease> leases, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(socketPath)
             || forwardId <= 0
-            || lease.ForwardId != forwardId
-            || string.IsNullOrWhiteSpace(lease.PolicyGeneration))
+            || leases is null
+            || leases.Count is < 1 or > 4
+            || leases.Any(lease => lease.ForwardId != forwardId || string.IsNullOrWhiteSpace(lease.PolicyGeneration)))
             return false;
 
         byte[] body = [];
@@ -31,7 +35,7 @@ public sealed class UnixUltraLeaseClient
         byte[] response = [];
         try
         {
-            var wire = new
+            static object Wire(UltraLease lease) => new
             {
                 protocol = UltraPolicy.Protocol,
                 forward_id = lease.ForwardId,
@@ -52,6 +56,9 @@ public sealed class UnixUltraLeaseClient
                     password = Encoding.UTF8.GetString(lease.Password),
                 },
             };
+            object wire = leases.Count == 1
+                ? Wire(leases[0])
+                : new { leases = leases.Select(Wire).ToArray() };
             body = JsonSerializer.SerializeToUtf8Bytes(wire);
             if (body.Length is < 1 or > MaxFrameBytes)
                 return false;
@@ -60,7 +67,7 @@ public sealed class UnixUltraLeaseClient
             body.CopyTo(frame, 4);
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(_timeout);
+            timeout.CancelAfter(leases.Count == 1 ? _timeout : TimeSpan.FromSeconds(20));
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), timeout.Token);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -81,7 +88,7 @@ public sealed class UnixUltraLeaseClient
                 && root.TryGetProperty("forward_id", out var returnedForward)
                 && returnedForward.GetInt32() == forwardId
                 && root.TryGetProperty("policy_generation", out var returnedGeneration)
-                && string.Equals(returnedGeneration.GetString(), lease.PolicyGeneration, StringComparison.Ordinal);
+                && string.Equals(returnedGeneration.GetString(), leases[0].PolicyGeneration, StringComparison.Ordinal);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

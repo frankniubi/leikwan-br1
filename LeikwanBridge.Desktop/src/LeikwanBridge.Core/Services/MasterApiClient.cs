@@ -108,17 +108,43 @@ public sealed class MasterApiClient : IDisposable
 
         await EnsureSuccessOrThrowAsync(response, ct);
         var json = await response.Content.ReadAsStringAsync(ct);
-        return JsonSerializer.Deserialize<PullResponse>(json, JsonOptions)
-               ?? throw new InvalidOperationException("null pull response");
+        try
+        {
+            return JsonSerializer.Deserialize<PullResponse>(json, JsonOptions)
+                   ?? throw new MasterApiException((int) response.StatusCode, "master_api_empty_response");
+        }
+        catch (JsonException ex)
+        {
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
+            throw new MasterApiException(
+                (int) response.StatusCode,
+                $"master_api_invalid_json_response (HTTP {(int) response.StatusCode}, content-type {contentType})",
+                ex);
+        }
     }
 
     public async Task<UltraLease?> ResolveUltraLeaseAsync(ForwardConfig forward, CancellationToken ct = default)
+    {
+        var leases = await ResolveUltraLeasesCoreAsync(forward, autoSelect: false, ct);
+        var first = leases.FirstOrDefault();
+        foreach (var lease in leases.Skip(1))
+            lease.Dispose();
+        return first;
+    }
+
+    public Task<IReadOnlyList<UltraLease>> ResolveUltraLeasesAsync(ForwardConfig forward, CancellationToken ct = default)
+        => ResolveUltraLeasesCoreAsync(forward, autoSelect: true, ct);
+
+    private async Task<IReadOnlyList<UltraLease>> ResolveUltraLeasesCoreAsync(
+        ForwardConfig forward,
+        bool autoSelect,
+        CancellationToken ct)
     {
         var policy = forward.UltraAccess;
         if (policy is null)
         {
             Log.Warning("Ultra lease skipped for forward {ForwardId}; policy missing", forward.ForwardId);
-            return null;
+            return [];
         }
 
         var policyFailure = policy.GetValidationFailure(forward, DateTimeOffset.UtcNow);
@@ -131,8 +157,8 @@ public sealed class MasterApiClient : IDisposable
                 policy.ProtocolValue,
                 policy.ExpiresAt,
                 policy.QuotaRemainingBytes,
-                policy.Transport);
-            return null;
+                 policy.Transport);
+            return [];
         }
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         var payload = new
@@ -148,6 +174,8 @@ public sealed class MasterApiClient : IDisposable
                     nonce,
                     target_digest = policy.TargetDigest,
                     transport = policy.Transport,
+                    selection_mode = autoSelect ? "auto" : "single",
+                    max_candidates = autoSelect ? 4 : 1,
                 },
             },
         };
@@ -166,39 +194,21 @@ public sealed class MasterApiClient : IDisposable
                 using var document = JsonDocument.Parse(responseBytes);
                 if (!document.RootElement.TryGetProperty("leases", out var leases)
                     || leases.ValueKind != JsonValueKind.Array
-                    || leases.GetArrayLength() != 1)
-                    return null;
-                var item = leases[0];
-                var returnedForward = item.GetProperty("forward_id").GetInt32();
-                var returnedGeneration = item.GetProperty("policy_generation").GetString() ?? "";
-                var returnedTicket = item.GetProperty("session_ticket").GetString() ?? "";
-                var protocol = item.GetProperty("protocol").GetString() ?? "";
-                if (!string.Equals(protocol, UltraPolicy.Protocol, StringComparison.Ordinal)
-                    || returnedForward != forward.ForwardId
-                    || !string.Equals(returnedGeneration, policy.PolicyGeneration, StringComparison.Ordinal)
-                    || !string.Equals(returnedTicket, policy.SessionTicket, StringComparison.Ordinal))
-                    return null;
-                var endpoint = item.GetProperty("endpoint");
-                var credential = item.GetProperty("credential");
-                return new UltraLease
+                    || leases.GetArrayLength() is < 1 or > 4)
+                    return [];
+                var parsed = new List<UltraLease>(leases.GetArrayLength());
+                foreach (var item in leases.EnumerateArray())
                 {
-                    Protocol = item.GetProperty("protocol").GetString() ?? "",
-                    LeaseId = item.GetProperty("lease_id").GetString() ?? "",
-                    SessionTicket = returnedTicket,
-                    ForwardId = returnedForward,
-                    PolicyGeneration = returnedGeneration,
-                    TargetDigest = item.GetProperty("target_digest").GetString() ?? "",
-                    ExpiresAt = item.GetProperty("expires_at").GetDateTimeOffset(),
-                    Transport = item.GetProperty("transport").GetString() ?? "",
-                    RateLimitMbps = item.GetProperty("rate_limit_mbps").GetInt64(),
-                    QuotaRemainingBytes = item.GetProperty("quota_remaining_bytes").GetInt64(),
-                    SelectionRef = item.GetProperty("selection_ref").GetString() ?? "",
-                    NonceHash = item.GetProperty("nonce_hash").GetString() ?? "",
-                    ProviderIp = endpoint.GetProperty("ip").GetString() ?? "",
-                    ProviderPort = endpoint.GetProperty("port").GetInt32(),
-                    User = Encoding.UTF8.GetBytes(credential.GetProperty("user").GetString() ?? ""),
-                    Password = Encoding.UTF8.GetBytes(credential.GetProperty("password").GetString() ?? ""),
-                };
+                    var lease = ParseUltraLease(item, forward, policy);
+                    if (lease is null)
+                    {
+                        foreach (var parsedLease in parsed)
+                            parsedLease.Dispose();
+                        return [];
+                    }
+                    parsed.Add(lease);
+                }
+                return parsed;
             }
             finally
             {
@@ -207,28 +217,62 @@ public sealed class MasterApiClient : IDisposable
         }
         catch (JsonException)
         {
-            return null;
+            return [];
         }
         catch (KeyNotFoundException)
         {
-            return null;
+            return [];
         }
         catch (InvalidOperationException)
         {
-            return null;
+            return [];
         }
         catch (FormatException)
         {
-            return null;
+            return [];
         }
         catch (OverflowException)
         {
-            return null;
+            return [];
         }
         finally
         {
             CryptographicOperations.ZeroMemory(requestBytes);
         }
+    }
+
+    private static UltraLease? ParseUltraLease(JsonElement item, ForwardConfig forward, UltraPolicy policy)
+    {
+        var returnedForward = item.GetProperty("forward_id").GetInt32();
+        var returnedGeneration = item.GetProperty("policy_generation").GetString() ?? "";
+        var returnedTicket = item.GetProperty("session_ticket").GetString() ?? "";
+        var protocol = item.GetProperty("protocol").GetString() ?? "";
+        if (!string.Equals(protocol, UltraPolicy.Protocol, StringComparison.Ordinal)
+            || returnedForward != forward.ForwardId
+            || !string.Equals(returnedGeneration, policy.PolicyGeneration, StringComparison.Ordinal)
+            || !string.Equals(returnedTicket, policy.SessionTicket, StringComparison.Ordinal))
+            return null;
+        var endpoint = item.GetProperty("endpoint");
+        var credential = item.GetProperty("credential");
+        return new UltraLease
+        {
+            Protocol = protocol,
+            LeaseId = item.GetProperty("lease_id").GetString() ?? "",
+            SessionTicket = returnedTicket,
+            ForwardId = returnedForward,
+            PolicyGeneration = returnedGeneration,
+            TargetDigest = item.GetProperty("target_digest").GetString() ?? "",
+            ExpiresAt = item.GetProperty("expires_at").GetDateTimeOffset(),
+            Transport = item.GetProperty("transport").GetString() ?? "",
+            RateLimitMbps = item.GetProperty("rate_limit_mbps").GetInt64(),
+            QuotaRemainingBytes = item.GetProperty("quota_remaining_bytes").GetInt64(),
+            SelectionRef = item.GetProperty("selection_ref").GetString() ?? "",
+            NonceHash = item.GetProperty("nonce_hash").GetString() ?? "",
+            ProviderIp = endpoint.GetProperty("ip").GetString() ?? "",
+            ProviderPort = endpoint.GetProperty("port").GetInt32(),
+            User = Encoding.UTF8.GetBytes(credential.GetProperty("user").GetString() ?? ""),
+            Password = Encoding.UTF8.GetBytes(credential.GetProperty("password").GetString() ?? ""),
+        };
     }
 
     public async Task<HeartbeatResponse> SendHeartbeatAsync(HeartbeatPayload payload, CancellationToken ct = default)
@@ -359,8 +403,8 @@ public sealed class MasterApiClient : IDisposable
 
 public sealed class MasterApiException : Exception
 {
-    public MasterApiException(int statusCode, string message)
-        : base(message)
+    public MasterApiException(int statusCode, string message, Exception? innerException = null)
+        : base(message, innerException)
     {
         StatusCode = statusCode;
     }

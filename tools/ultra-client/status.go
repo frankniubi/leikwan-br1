@@ -11,23 +11,31 @@ import (
 )
 
 type SelectionStatus struct {
-	SelectionRef string `json:"selection_ref"`
-	RTTMillis    int64  `json:"rtt_ms"`
-	SelectedAt   string `json:"selected_at"`
+	SelectionRef  string `json:"selection_ref"`
+	RTTMillis     int64  `json:"rtt_ms"`
+	P95RTTMillis  int64  `json:"p95_rtt_ms,omitempty"`
+	LossPercent   int64  `json:"loss_percent,omitempty"`
+	ProbeSent     int    `json:"probe_sent,omitempty"`
+	ProbeReceived int    `json:"probe_received,omitempty"`
+	SelectedAt    string `json:"selected_at"`
 }
 
 type RuntimeStatus struct {
-	ForwardID           int              `json:"forward_id"`
-	State               string           `json:"state"`
-	DetectedIngressZone string           `json:"detected_ingress_zone"`
-	LocationSource      string           `json:"location_source"`
-	LatestTCP           *SelectionStatus `json:"latest_tcp,omitempty"`
-	ActiveUDP           *SelectionStatus `json:"active_udp,omitempty"`
-	UpdatedAt           string           `json:"updated_at"`
-	ErrorCode           string           `json:"error_code,omitempty"`
-	PolicyGeneration    string           `json:"policy_generation,omitempty"`
-	BytesIn             int64            `json:"bytes_in,omitempty"`
-	BytesOut            int64            `json:"bytes_out,omitempty"`
+	ForwardID              int              `json:"forward_id"`
+	State                  string           `json:"state"`
+	DetectedIngressZone    string           `json:"detected_ingress_zone"`
+	LocationSource         string           `json:"location_source"`
+	LatestTCP              *SelectionStatus `json:"latest_tcp,omitempty"`
+	ActiveUDP              *SelectionStatus `json:"active_udp,omitempty"`
+	UpdatedAt              string           `json:"updated_at"`
+	ErrorCode              string           `json:"error_code,omitempty"`
+	PolicyGeneration       string           `json:"policy_generation,omitempty"`
+	BytesIn                int64            `json:"bytes_in,omitempty"`
+	BytesOut               int64            `json:"bytes_out,omitempty"`
+	UDPActiveAssociations  int              `json:"udp_active_associations,omitempty"`
+	UDPPendingAssociations int              `json:"udp_pending_associations,omitempty"`
+	UDPQueueDrops          int64            `json:"udp_queue_drops,omitempty"`
+	UDPSetupFailures       int64            `json:"udp_setup_failures,omitempty"`
 }
 
 type StatusWriter struct {
@@ -96,6 +104,49 @@ func (writer *StatusWriter) UpdateUDP(selectionRef string, rtt time.Duration) {
 		status.ActiveUDP = selectionStatus(selectionRef, rtt)
 		status.State = "ready"
 		status.ErrorCode = ""
+	})
+}
+
+func (writer *StatusWriter) UpdateUDPProbe(selectionRef string, result udpProbeResult) {
+	if result.Sent <= 0 || result.Received <= 0 {
+		return
+	}
+	lost := result.Sent - result.Received
+	if lost < 0 {
+		lost = 0
+	}
+	lossPercent := int64(lost * 100 / result.Sent)
+	writer.update(func(status *RuntimeStatus) {
+		status.ActiveUDP = &SelectionStatus{
+			SelectionRef:  boundedStatusText(selectionRef, 128),
+			RTTMillis:     maxInt64(result.MedianRTT.Milliseconds(), 0),
+			P95RTTMillis:  maxInt64(result.P95RTT.Milliseconds(), 0),
+			LossPercent:   maxInt64(minInt64(lossPercent, 100), 0),
+			ProbeSent:     result.Sent,
+			ProbeReceived: result.Received,
+			SelectedAt:    time.Now().UTC().Format(time.RFC3339),
+		}
+		status.State = "ready"
+		status.ErrorCode = ""
+	})
+}
+
+func (writer *StatusWriter) UpdateUDPAssociations(active, pending int) {
+	writer.update(func(status *RuntimeStatus) {
+		status.UDPActiveAssociations = maxInt(active, 0)
+		status.UDPPendingAssociations = maxInt(pending, 0)
+	})
+}
+
+func (writer *StatusWriter) AddUDPQueueDrop() {
+	writer.update(func(status *RuntimeStatus) {
+		status.UDPQueueDrops++
+	})
+}
+
+func (writer *StatusWriter) AddUDPSetupFailure() {
+	writer.update(func(status *RuntimeStatus) {
+		status.UDPSetupFailures++
 	})
 }
 

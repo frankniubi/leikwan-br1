@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -33,12 +32,17 @@ type Config struct {
 	Transport          string              `json:"transport"`
 	MaxTCPConnections  int                 `json:"max_tcp_connections"`
 	UDPQueuePackets    int                 `json:"udp_queue_packets"`
+	UDPMaxAssociations int                 `json:"udp_max_associations"`
+	UDPSetupWorkers    int                 `json:"udp_setup_workers"`
 	ConnectTimeoutSecs int                 `json:"connect_timeout_seconds"`
 	LocationCachePath  string              `json:"location_cache_path"`
 	LocationLockPath   string              `json:"location_lock_path"`
 	StatusPath         string              `json:"status_path"`
+	AutoSelect         bool                `json:"auto_select"`
 	ProbeTimeoutMillis int                 `json:"probe_timeout_ms"`
 	ProbeWorkers       int                 `json:"probe_workers"`
+	ProbeSamples       int                 `json:"probe_samples"`
+	ProbeIntervalMillis int                `json:"probe_interval_ms"`
 	ZoneAliases        map[string][]string `json:"zone_aliases"`
 }
 
@@ -101,13 +105,11 @@ func buildHandshake(user, credential string, command byte, host string, port int
 	}
 	var greeting []byte
 	switch command {
-	case 1:
-		// The production TCP stream uses the three-method LeiGod greeting.
-		greeting = []byte{5, 3, 2, 0x80, 0x83, 1}
-	case 3:
-		// Keep the native datagram greeting used by the mode-3 association
-		// protocol. Its wire format is distinct from the TCP stream variant.
-		greeting = []byte{5, 3, 2, 0x80, 0x83, 1}
+	case 1, 3:
+		// Both stream and native datagram auth use the five-method greeting
+		// captured from the reference client. The trailing 01 is the private
+		// username/password sub-negotiation version, not TLS.
+		greeting = []byte{5, 5, 0, 1, 2, 0x80, 0x83, 1}
 	default:
 		return nil, errors.New("unsupported handshake command")
 	}
@@ -125,13 +127,6 @@ func buildHandshake(user, credential string, command byte, host string, port int
 }
 
 const streamPreludeSize = 14
-
-func hexPrefix(value []byte, max int) string {
-	if len(value) > max {
-		value = value[:max]
-	}
-	return hex.EncodeToString(value)
-}
 
 type bufferedConn struct {
 	net.Conn
@@ -158,7 +153,6 @@ func readStreamAcks(conn net.Conn) (*bufio.Reader, error) {
 	if _, err := io.ReadFull(reader, first); err != nil {
 		return nil, err
 	}
-	log.Printf("stream ack first len=%d hex=%s", len(first), hexPrefix(first, 16))
 	if bytes.Equal(first, []byte{5, 2}) {
 		// Compatibility with the older native SOCKS acknowledgement. The
 		// current Ultra TCP relay normally returns the prelude below instead.
@@ -166,7 +160,6 @@ func readStreamAcks(conn net.Conn) (*bufio.Reader, error) {
 		if _, err := io.ReadFull(reader, second); err != nil {
 			return nil, err
 		}
-		log.Printf("stream ack second len=%d hex=%s", len(second), hexPrefix(second, 16))
 		if !(bytes.Equal(second, []byte{1, 0}) || bytes.Equal(second, []byte{5, 2})) {
 			return nil, errors.New("stream authentication rejected")
 		}
@@ -174,7 +167,6 @@ func readStreamAcks(conn net.Conn) (*bufio.Reader, error) {
 		if _, err := io.ReadFull(reader, final); err != nil {
 			return nil, err
 		}
-		log.Printf("stream ack final len=%d hex=%s", len(final), hexPrefix(final, 16))
 		if final[2] == 0 {
 			return nil, errors.New("stream command rejected")
 		}
@@ -188,7 +180,6 @@ func readStreamAcks(conn net.Conn) (*bufio.Reader, error) {
 		if _, err := io.ReadFull(reader, prelude[len(first):]); err != nil {
 			return nil, err
 		}
-		log.Printf("stream ack prelude len=%d hex=%s", len(prelude), hexPrefix(prelude, 32))
 		if !validStreamPrelude(prelude) {
 			return nil, errors.New("stream prelude rejected")
 		}
@@ -207,40 +198,15 @@ func xorOne(value []byte) []byte {
 	return result
 }
 
-func writeAll(writer io.Writer, payload []byte) error {
-	for len(payload) > 0 {
-		count, err := writer.Write(payload)
-		if count > 0 {
-			payload = payload[count:]
-		}
-		if err != nil {
-			return err
-		}
-		if count == 0 {
-			return io.ErrShortWrite
-		}
-	}
-	return nil
-}
-
-func writeXor(writer io.Writer, payload []byte) error {
-	encoded := xorOne(payload)
-	defer clearBytes(encoded)
-	return writeAll(writer, encoded)
-}
-
 func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port)), timeout)
 	if err != nil {
 		return nil, fmt.Errorf("provider connect: %w", err)
 	}
-	// The private command carries the final destination. After the relay ACK,
-	// the reference client exposes the connection as an XOR stream directly;
-	// there is no second SOCKS negotiation on this connection.
 	handshake, err := buildHandshake(string(lease.User), string(lease.Password), 1, targetHost, targetPort)
 	defer clearBytes(handshake)
 	if err == nil {
-		err = writeAll(conn, handshake)
+		_, err = conn.Write(handshake)
 	}
 	var reader *bufio.Reader
 	if err == nil {
@@ -262,10 +228,7 @@ func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter,
 				return err
 			}
 			status.AddUsage(0, count)
-			// The reference nnauth.xorConn applies XOR 0x01 to every client
-			// byte on the TCP stream. The relay removes it before forwarding to
-			// the target; inbound bytes are returned unchanged.
-			if err := writeXor(destination, buffer[:count]); err != nil {
+			if _, err := destination.Write(xorOne(buffer[:count])); err != nil {
 				return err
 			}
 		}
@@ -353,16 +316,8 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 				defer close(connectionDone)
 				status.UpdateTCP(lease.SelectionRef, time.Since(started))
 				done := make(chan struct{}, 2)
-				go func() {
-					err := copyOutbound(remote, local, store.Limiter(), status)
-					log.Printf("stream outbound ended err=%v", err)
-					done <- struct{}{}
-				}()
-				go func() {
-					err := copyInbound(local, remote, store.Limiter(), status)
-					log.Printf("stream inbound ended err=%v", err)
-					done <- struct{}{}
-				}()
+				go func() { _ = copyOutbound(remote, local, store.Limiter(), status); done <- struct{}{} }()
+				go func() { _ = copyInbound(local, remote, store.Limiter(), status); done <- struct{}{} }()
 				<-done
 			}()
 		default:
@@ -531,10 +486,51 @@ func watchRuntimePolicy(ctx context.Context, cancel context.CancelFunc, store *P
 }
 
 type udpAssociation struct {
-	session   *DatagramSession
-	client    *net.UDPAddr
-	lastSeen  time.Time
-	packetCnt int
+	session      *DatagramSession
+	client       *net.UDPAddr
+	lastSeen     time.Time
+	packetCnt    int
+	pending      [][]byte
+	writeMu      sync.Mutex
+	setupStarted bool
+}
+
+func (association *udpAssociation) close() {
+	if association == nil {
+		return
+	}
+	if association.session != nil {
+		association.session.Close()
+	}
+}
+
+type udpRuntimeLimits struct {
+	queuePackets    int
+	maxAssociations int
+	setupWorkers    int
+}
+
+func resolveUDPLimits(config Config) udpRuntimeLimits {
+	queuePackets := config.UDPQueuePackets
+	if queuePackets < 1 || queuePackets > 4096 {
+		queuePackets = 64
+	}
+	maxAssociations := config.UDPMaxAssociations
+	if maxAssociations < 1 || maxAssociations > 8192 {
+		maxAssociations = 1024
+	}
+	setupWorkers := config.UDPSetupWorkers
+	if setupWorkers < 1 || setupWorkers > 256 {
+		setupWorkers = 64
+	}
+	if setupWorkers > maxAssociations {
+		setupWorkers = maxAssociations
+	}
+	return udpRuntimeLimits{
+		queuePackets:    queuePackets,
+		maxAssociations: maxAssociations,
+		setupWorkers:    setupWorkers,
+	}
 }
 
 func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *StatusWriter) error {
@@ -550,39 +546,151 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 	if err != nil {
 		return err
 	}
-	defer local.Close()
 	targetIP, err := resolveIPv4(targetHost)
 	if err != nil {
+		local.Close()
 		return err
 	}
+	return serveUDPOnConn(ctx, config, store, status, local, targetIP, targetPort)
+}
+
+func serveUDPOnConn(
+	ctx context.Context,
+	config Config,
+	store *PolicyStore,
+	status *StatusWriter,
+	local *net.UDPConn,
+	targetIP string,
+	targetPort int,
+) error {
+	defer local.Close()
+	limits := resolveUDPLimits(config)
+	queuePackets := limits.queuePackets
+	maxAssociations := limits.maxAssociations
+	setupSlots := make(chan struct{}, limits.setupWorkers)
 	associations := make(map[string]*udpAssociation)
-	const maxAssociations = 64
 	const maxAssociationPackets = 100000
 	const associationIdle = 2 * time.Minute
 	var associationMu sync.Mutex
-	closeAssociation := func(key string) {
+	publishAssociationCounts := func() {
 		associationMu.Lock()
-		association := associations[key]
-		delete(associations, key)
-		associationMu.Unlock()
-		if association != nil && association.session != nil {
-			association.session.Close()
-		}
-	}
-	defer func() {
-		associationMu.Lock()
-		all := make([]*DatagramSession, 0, len(associations))
-		for key, association := range associations {
-			delete(associations, key)
-			if association != nil && association.session != nil {
-				all = append(all, association.session)
+		active := 0
+		pending := 0
+		for _, association := range associations {
+			if association.session == nil {
+				pending++
+			} else {
+				active++
 			}
 		}
 		associationMu.Unlock()
-		for _, session := range all {
-			session.Close()
+		status.UpdateUDPAssociations(active, pending)
+	}
+	closeAssociation := func(key string, expected *udpAssociation) {
+		associationMu.Lock()
+		association := associations[key]
+		if association == nil || (expected != nil && association != expected) {
+			associationMu.Unlock()
+			return
 		}
+		delete(associations, key)
+		associationMu.Unlock()
+		association.close()
+		publishAssociationCounts()
+	}
+	defer func() {
+		associationMu.Lock()
+		all := make([]*udpAssociation, 0, len(associations))
+		for key, association := range associations {
+			delete(associations, key)
+			if association != nil {
+				all = append(all, association)
+			}
+		}
+		associationMu.Unlock()
+		for _, association := range all {
+			association.close()
+		}
+		status.UpdateUDPAssociations(0, 0)
 	}()
+	startNativeSetup := func(key string, association *udpAssociation, lease ProviderLease) {
+		selectionRef := lease.SelectionRef
+		go func() {
+			select {
+			case setupSlots <- struct{}{}:
+			case <-ctx.Done():
+				lease.wipe()
+				closeAssociation(key, association)
+				return
+			}
+			associationMu.Lock()
+			active := associations[key] == association
+			associationMu.Unlock()
+			if !active {
+				<-setupSlots
+				lease.wipe()
+				return
+			}
+			started := time.Now()
+			next, armErr := armDatagram(lease, time.Duration(config.ConnectTimeoutSecs)*time.Second)
+			<-setupSlots
+			lease.wipe()
+			if armErr != nil {
+				status.AddUDPSetupFailure()
+				status.UpdateError("udp_association_failed")
+				associationMu.Lock()
+				if associations[key] == association {
+					association.setupStarted = false
+				}
+				associationMu.Unlock()
+				closeAssociation(key, association)
+				return
+			}
+			association.writeMu.Lock()
+			associationMu.Lock()
+			if associations[key] != association {
+				associationMu.Unlock()
+				association.writeMu.Unlock()
+				next.Close()
+				return
+			}
+			association.session = next
+			association.lastSeen = time.Now()
+			queued := association.pending
+			association.pending = nil
+			associationMu.Unlock()
+			publishAssociationCounts()
+			status.UpdateUDP(selectionRef, time.Since(started))
+			for _, queuedPayload := range queued {
+				packet, packetErr := makeDatagramEnvelope(next.mode, next.sid, targetIP, targetPort, queuedPayload)
+				if packetErr != nil {
+					association.writeMu.Unlock()
+					closeAssociation(key, association)
+					return
+				}
+				if _, writeErr := next.remote.Write(packet); writeErr != nil {
+					association.writeMu.Unlock()
+					closeAssociation(key, association)
+					return
+				}
+			}
+			association.writeMu.Unlock()
+			readBuffer := make([]byte, 65535)
+			for {
+				responseCount, responseErr := next.remote.Read(readBuffer)
+				if responseErr != nil {
+					closeAssociation(key, association)
+					return
+				}
+				payload, valid := unwrapDatagram(readBuffer[:responseCount])
+				if !valid || store.Limiter().Consume(len(payload)) != nil {
+					continue
+				}
+				status.AddUsage(len(payload), 0)
+				_, _ = local.WriteToUDP(payload, association.client)
+			}
+		}()
+	}
 	go func() {
 		<-ctx.Done()
 		_ = local.Close()
@@ -596,15 +704,15 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 				return
 			case now := <-ticker.C:
 				associationMu.Lock()
-				stale := make([]string, 0)
+				stale := make(map[string]*udpAssociation)
 				for key, association := range associations {
 					if now.Sub(association.lastSeen) > associationIdle {
-						stale = append(stale, key)
+						stale[key] = association
 					}
 				}
 				associationMu.Unlock()
-				for _, key := range stale {
-					closeAssociation(key)
+				for key, association := range stale {
+					closeAssociation(key, association)
 				}
 			}
 		}
@@ -628,30 +736,44 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 			continue
 		}
 		lease := snapshot.Lease
-		selectionRef := lease.SelectionRef
 		key := client.String()
 		associationMu.Lock()
 		association := associations[key]
+		pending := false
+		queueDropped := false
+		needsNativeSetup := false
 		if association != nil {
 			association.lastSeen = time.Now()
 			association.packetCnt++
 			if association.packetCnt > maxAssociationPackets {
 				associationMu.Unlock()
-				closeAssociation(key)
+				lease.wipe()
+				closeAssociation(key, association)
 				continue
+			}
+			if association.session == nil {
+				pending = true
+				if len(association.pending) < queuePackets {
+					association.pending = append(association.pending, append([]byte(nil), buffer[:count]...))
+				} else {
+					queueDropped = true
+				}
+				if !association.setupStarted {
+					association.setupStarted = true
+					needsNativeSetup = true
+				}
 			}
 		}
 		associationMu.Unlock()
+		if queueDropped {
+			status.AddUDPQueueDrop()
+		}
 		if association == nil {
-			started := time.Now()
-			next, armErr := armDatagram(lease, time.Duration(config.ConnectTimeoutSecs)*time.Second)
-			lease.wipe()
-			if armErr != nil {
-				status.UpdateError("udp_association_failed")
-				continue
-			}
 			clientCopy := *client
-			association = &udpAssociation{session: next, client: &clientCopy, lastSeen: time.Now(), packetCnt: 1}
+			association = &udpAssociation{
+				client: &clientCopy, lastSeen: time.Now(), packetCnt: 1,
+				pending: [][]byte{append([]byte(nil), buffer[:count]...)},
+			}
 			associationMu.Lock()
 			if len(associations) >= maxAssociations {
 				oldestKey := ""
@@ -662,49 +784,52 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 					}
 				}
 				if oldestKey != "" {
-					if old := associations[oldestKey]; old != nil && old.session != nil {
-						old.session.Close()
+					if old := associations[oldestKey]; old != nil {
+						old.close()
 					}
 					delete(associations, oldestKey)
 				}
 			}
 			associations[key] = association
 			associationMu.Unlock()
-			status.UpdateUDP(selectionRef, time.Since(started))
-			go func(key string, current *udpAssociation) {
-				readBuffer := make([]byte, 65535)
-				for {
-					responseCount, responseErr := current.session.remote.Read(readBuffer)
-					if responseErr != nil {
-						closeAssociation(key)
-						return
-					}
-					payload, valid := unwrapDatagram(readBuffer[:responseCount])
-					if !valid || store.Limiter().Consume(len(payload)) != nil {
-						continue
-					}
-					status.AddUsage(len(payload), 0)
-					_, _ = local.WriteToUDP(payload, current.client)
-				}
-			}(key, association)
+			publishAssociationCounts()
+			associationMu.Lock()
+			association.setupStarted = true
+			associationMu.Unlock()
+			startNativeSetup(key, association, lease)
+			lease = ProviderLease{}
+			continue
+		}
+		if needsNativeSetup {
+			startNativeSetup(key, association, lease)
+			lease = ProviderLease{}
 		} else {
 			lease.wipe()
 		}
-		associationMu.Lock()
-		current := associations[key]
-		if current != nil {
-			current.lastSeen = time.Now()
-		}
-		associationMu.Unlock()
-		if current == nil {
+		if pending {
 			continue
 		}
-		packet, packetErr := makeDatagramEnvelope(current.session.mode, current.session.sid, targetIP, targetPort, buffer[:count])
+		associationMu.Lock()
+		current := associations[key]
+		var session *DatagramSession
+		if current != nil {
+			current.lastSeen = time.Now()
+			session = current.session
+		}
+		associationMu.Unlock()
+		if session == nil {
+			continue
+		}
+		current.writeMu.Lock()
+		packet, packetErr := makeDatagramEnvelope(session.mode, session.sid, targetIP, targetPort, buffer[:count])
 		if packetErr == nil {
-			if _, writeErr := current.session.remote.Write(packet); writeErr != nil {
-				closeAssociation(key)
+			if _, writeErr := session.remote.Write(packet); writeErr != nil {
+				current.writeMu.Unlock()
+				closeAssociation(key, current)
+				continue
 			}
 		}
+		current.writeMu.Unlock()
 	}
 }
 
@@ -748,6 +873,12 @@ func main() {
 	}
 	if config.ProbeWorkers < 1 || config.ProbeWorkers > 4 {
 		config.ProbeWorkers = 4
+	}
+	if config.ProbeSamples < 3 || config.ProbeSamples > 64 {
+		config.ProbeSamples = 20
+	}
+	if config.ProbeIntervalMillis < 0 || config.ProbeIntervalMillis > 1000 {
+		config.ProbeIntervalMillis = 100
 	}
 	if _, _, err := parseTarget(config.Target); err != nil {
 		log.Fatal(err)
