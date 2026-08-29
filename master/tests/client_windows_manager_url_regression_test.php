@@ -84,11 +84,22 @@ namespace {
         'id' => 42,
         'agent_token' => 'tok-42',
     ]);
-    if (!str_contains($linuxCommand, 'curl -fsSL https://artifacts.example.com/artifacts/install-client-agent.sh')) {
+    if (!str_contains($linuxCommand, 'artifacts/install-client-agent.sh')) {
         fail('expected Linux installer download to use artifact base URL');
     }
-    if (!str_contains($linuxCommand, '--master https://panel.example.com --artifact-base https://artifacts.example.com')) {
-        fail('expected Linux installer command to pass separate panel and artifact base URLs');
+    foreach (['bash', 'curl', 'ca-certificates', 'python3', 'coreutils'] as $package) {
+        if (!str_contains($linuxCommand, $package)) {
+            fail('expected Linux installer command to bootstrap ' . $package);
+        }
+    }
+    if (!str_contains($linuxCommand, 'sha256sum -c')) {
+        fail('expected Linux installer command to verify the downloaded installer');
+    }
+    if (!str_contains($linuxCommand, "--master 'https://panel.example.com' --artifact-base 'https://artifacts.example.com'")) {
+        fail('expected Linux installer command to pass separately quoted panel and artifact base URLs');
+    }
+    if (!str_contains($linuxCommand, "--agent-token 'tok-42'")) {
+        fail('expected Linux installer command to quote the agent token');
     }
 
     echo "ok\n";
