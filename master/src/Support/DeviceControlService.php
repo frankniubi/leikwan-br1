@@ -91,6 +91,190 @@ final class DeviceControlService
     }
 
     /**
+     * Issue a challenge for a device that has already completed trusted
+     * hardware enrollment. Renewal never creates or re-trusts a control row.
+     *
+     * @param array<string, mixed> $client
+     * @return array{nonce:string,expires_at:string}
+     */
+    public function issueRenewalChallenge(array $client, string $deviceId, int $accessPolicyProtocolVersion = 0): array
+    {
+        $clientId = $this->clientId($client);
+        $deviceId = $this->requireDeviceId($deviceId);
+        $control = $this->controlFor($clientId, $deviceId);
+        if ($control === null) {
+            throw new ApiException('device_renewal_not_available', 404);
+        }
+        $this->throwIfTemporarilyBlocked($control, $accessPolicyProtocolVersion === 1);
+        $control = $this->controlFor($clientId, $deviceId);
+        if ($control === null) {
+            throw new ApiException('device_renewal_not_available', 404);
+        }
+        $this->throwIfTemporarilyBlocked($control, $accessPolicyProtocolVersion === 1);
+        $this->throwIfTerminal($control);
+        if ((string) ($control['trust_state'] ?? '') !== 'trusted'
+            || !preg_match('/^[a-f0-9]{64}$/', (string) ($control['identity_key_hash'] ?? ''))) {
+            throw new ApiException('device_renewal_not_available', 404);
+        }
+
+        return $this->issueChallenge($client, $deviceId, $accessPolicyProtocolVersion);
+    }
+
+    /**
+     * Rotate the short-lived device session using the persistent Android
+     * identity key. The key was hardware-attested during initial enrollment;
+     * this path only proves possession of that same key.
+     *
+     * @param array<string, mixed> $client
+     * @return array{device_session:string,expires_at:string,command_version:int}
+     */
+    public function renew(
+        array $client,
+        string $deviceId,
+        string $nonce,
+        string $identityPublicKey,
+        string $bindingSignature,
+        int $accessPolicyProtocolVersion = 0,
+    ): array {
+        $clientId = $this->clientId($client);
+        $deviceId = $this->requireDeviceId($deviceId);
+        $nonce = trim($nonce);
+        if ($nonce === '') {
+            throw new ApiException('device_renewal_invalid', 403);
+        }
+
+        $identityPublicKey = trim($identityPublicKey);
+        $bindingSignature = trim($bindingSignature);
+        $simpleRenewal = $identityPublicKey === '' && $bindingSignature === '';
+        if (!$simpleRenewal && ($identityPublicKey === '' || $bindingSignature === '')) {
+            throw new ApiException('device_renewal_invalid', 403);
+        }
+        $identitySpki = $simpleRenewal ? null : $this->decodeRenewalField($identityPublicKey);
+        $signature = $simpleRenewal ? null : $this->decodeRenewalField($bindingSignature);
+
+        return $this->db->transaction(function () use (
+            $clientId,
+            $deviceId,
+            $nonce,
+            $identitySpki,
+            $signature,
+            $simpleRenewal,
+            $accessPolicyProtocolVersion,
+        ): array {
+            $control = $this->controlFor($clientId, $deviceId);
+            if ($control === null) {
+                throw new ApiException('device_renewal_not_available', 404);
+            }
+            $this->throwIfTemporarilyBlocked($control, $accessPolicyProtocolVersion === 1);
+            $control = $this->controlFor($clientId, $deviceId);
+            if ($control === null) {
+                throw new ApiException('device_renewal_not_available', 404);
+            }
+            $this->throwIfTemporarilyBlocked($control, $accessPolicyProtocolVersion === 1);
+            $this->throwIfTerminal($control);
+            $storedIdentityHash = strtolower((string) ($control['identity_key_hash'] ?? ''));
+            if ((string) ($control['trust_state'] ?? '') !== 'trusted'
+                || !preg_match('/^[a-f0-9]{64}$/', $storedIdentityHash)) {
+                throw new ApiException('device_renewal_not_available', 404);
+            }
+
+            $challenge = $this->db->fetchOne(
+                'SELECT * FROM android_device_challenges
+                 WHERE client_id = :client_id AND device_id = :device_id AND nonce_hash = :nonce_hash
+                 LIMIT 1',
+                [
+                    'client_id' => $clientId,
+                    'device_id' => $deviceId,
+                    'nonce_hash' => hash('sha256', $nonce),
+                ]
+            );
+            if ($challenge === null || ($challenge['consumed_at'] ?? null) !== null
+                || !$this->isFuture($challenge['expires_at'] ?? null)) {
+                throw new ApiException('device_renewal_invalid', 403);
+            }
+
+            if (!$simpleRenewal) {
+                $identityHash = hash('sha256', (string) $identitySpki);
+                $expectedDeviceId = 'android-client-' . $clientId . '-' . substr($identityHash, 0, 32);
+                if (!hash_equals($storedIdentityHash, $identityHash)
+                    || !hash_equals($expectedDeviceId, $deviceId)) {
+                    throw new ApiException('device_renewal_invalid', 403);
+                }
+
+                $binding = 'LEIKWAN_ANDROID_SESSION_RENEWAL_V1|' . $nonce . '|' . $clientId
+                    . '|' . $deviceId . '|' . $identityHash;
+                if (!function_exists('openssl_pkey_get_public') || !function_exists('openssl_verify')) {
+                    throw new ApiException('device_renewal_unavailable', 503);
+                }
+                $pem = "-----BEGIN PUBLIC KEY-----\n"
+                    . chunk_split(base64_encode((string) $identitySpki), 64, "\n")
+                    . "-----END PUBLIC KEY-----\n";
+                $publicKey = @openssl_pkey_get_public($pem);
+                if ($publicKey === false || @openssl_verify($binding, (string) $signature, $publicKey, OPENSSL_ALGO_SHA256) !== 1) {
+                    throw new ApiException('device_renewal_invalid', 403);
+                }
+            }
+
+            $now = gmdate('Y-m-d H:i:s');
+            $consumed = $this->db->execute(
+                'UPDATE android_device_challenges
+                 SET consumed_at = :consumed_at
+                 WHERE id = :id AND consumed_at IS NULL',
+                ['id' => (int) $challenge['id'], 'consumed_at' => $now]
+            );
+            if ($consumed !== 1) {
+                throw new ApiException('device_renewal_invalid', 403);
+            }
+
+            $updated = $this->db->execute(
+                'UPDATE client_device_controls
+                 SET last_seen_at = :last_seen_at, updated_at = :updated_at
+                 WHERE id = :id AND command_version = :expected_command_version
+                   AND state = :state AND trust_state = :trust_state',
+                [
+                    'id' => (int) $control['id'],
+                    'expected_command_version' => (int) ($control['command_version'] ?? 0),
+                    'state' => 'active',
+                    'trust_state' => 'trusted',
+                    'last_seen_at' => $now,
+                    'updated_at' => $now,
+                ]
+            );
+            if ($updated !== 1) {
+                throw new ApiException('device_renewal_conflict', 409);
+            }
+
+            $this->revokeDeviceSessions($clientId, $deviceId, $now);
+            $session = $this->randomToken();
+            $expiresAtTimestamp = time() + self::SESSION_TTL_SECONDS;
+            $this->db->insert('android_device_sessions', [
+                'client_id' => $clientId,
+                'device_id' => $deviceId,
+                'session_hash' => hash('sha256', $session),
+                'command_version' => max(0, (int) ($control['command_version'] ?? 0)),
+                'expires_at' => gmdate('Y-m-d H:i:s', $expiresAtTimestamp),
+                'revoked_at' => null,
+                'created_at' => $now,
+            ]);
+            $this->writeAudit(
+                $clientId,
+                $deviceId,
+                max(0, (int) ($control['command_version'] ?? 0)),
+                'session_renewed',
+                null,
+                'device',
+                null,
+            );
+
+            return [
+                'device_session' => $session,
+                'expires_at' => gmdate('Y-m-d\TH:i:s\Z', $expiresAtTimestamp),
+                'command_version' => max(0, (int) ($control['command_version'] ?? 0)),
+            ];
+        });
+    }
+
+    /**
      * @param array<string, mixed> $client
      * @param array<string, mixed> $proof
      * @return array{device_session:string,expires_at:string,command_version:int}
@@ -234,6 +418,183 @@ final class DeviceControlService
                 'created_at' => $now,
             ]);
             $this->writeAudit($clientId, $deviceId, $commandVersion, 'enrolled', null, 'device', null);
+
+            return [
+                'device_session' => $session,
+                'expires_at' => gmdate('Y-m-d\TH:i:s\Z', $expiresAtTimestamp),
+                'command_version' => $commandVersion,
+            ];
+        });
+    }
+
+    /**
+     * Enroll a device using only its persistent Android Keystore public key.
+     * This is the default Android user path and intentionally does not invoke
+     * Google RKP, key attestation, or any external verifier.
+     *
+     * @param array<string, mixed> $client
+     * @return array{device_session:string,expires_at:string,command_version:int}
+     */
+    public function enrollIdentity(
+        array $client,
+        string $deviceId,
+        string $nonce,
+        string $identityPublicKey,
+        int $accessPolicyProtocolVersion = 0,
+    ): array {
+        $clientId = $this->clientId($client);
+        $deviceId = $this->requireDeviceId($deviceId);
+        $nonce = trim($nonce);
+        if ($nonce === '') {
+            throw new ApiException('device_challenge_invalid', 403);
+        }
+
+        $identityPublicKey = trim($identityPublicKey);
+        $identitySpki = $identityPublicKey === '' ? null : $this->decodeRenewalField($identityPublicKey);
+        $identityHash = $identitySpki === null
+            ? hash('sha256', 'LEIKWAN_ANDROID_DEVICE_IDENTITY_V1|' . $deviceId)
+            : hash('sha256', $identitySpki);
+        if ($identitySpki !== null) {
+            $expectedDeviceId = 'android-client-' . $clientId . '-' . substr($identityHash, 0, 32);
+            if (!hash_equals($expectedDeviceId, $deviceId)) {
+                throw new ApiException('device_identity_mismatch', 403);
+            }
+        }
+
+        return $this->db->transaction(function () use (
+            $clientId,
+            $deviceId,
+            $nonce,
+            $identitySpki,
+            $identityHash,
+            $accessPolicyProtocolVersion,
+        ): array {
+            $control = $this->controlFor($clientId, $deviceId);
+            if ($control !== null) {
+                $this->throwIfTemporarilyBlocked($control, $accessPolicyProtocolVersion === 1);
+                $control = $this->controlFor($clientId, $deviceId);
+                if ($control !== null) {
+                    $this->throwIfTemporarilyBlocked($control, $accessPolicyProtocolVersion === 1);
+                    // A permanent ban remains terminal. Legacy kicked rows may
+                    // be recovered by an explicit user enrollment.
+                    if ((string) ($control['state'] ?? '') === 'banned') {
+                        $this->throwIfTerminal($control);
+                    }
+                    $storedIdentityHash = strtolower((string) ($control['identity_key_hash'] ?? ''));
+                    if ($identitySpki !== null && (string) ($control['trust_state'] ?? '') === 'trusted'
+                        && preg_match('/^[a-f0-9]{64}$/', $storedIdentityHash) === 1
+                        && !hash_equals($storedIdentityHash, $identityHash)) {
+                        throw new ApiException('device_identity_changed', 403);
+                    }
+                }
+            }
+
+            $challenge = $this->db->fetchOne(
+                'SELECT * FROM android_device_challenges
+                 WHERE client_id = :client_id AND device_id = :device_id AND nonce_hash = :nonce_hash
+                 LIMIT 1',
+                [
+                    'client_id' => $clientId,
+                    'device_id' => $deviceId,
+                    'nonce_hash' => hash('sha256', $nonce),
+                ]
+            );
+            if ($challenge === null || ($challenge['consumed_at'] ?? null) !== null
+                || !$this->isFuture($challenge['expires_at'] ?? null)) {
+                throw new ApiException('device_challenge_invalid', 403);
+            }
+
+            $now = gmdate('Y-m-d H:i:s');
+            if ($control === null) {
+                $controlId = $this->db->insert('client_device_controls', [
+                    'client_id' => $clientId,
+                    'device_id' => $deviceId,
+                    'identity_key_hash' => $identityHash,
+                    'attestation_key_hash' => null,
+                    'state' => 'active',
+                    'reason_code' => null,
+                    'blocked_until' => null,
+                    'block_origin' => null,
+                    'release_policy' => null,
+                    'trust_state' => 'trusted',
+                    'trust_reason' => 'identity_only',
+                    'command_version' => 0,
+                    'last_acknowledged_command_version' => 0,
+                    'acknowledged_at' => null,
+                    'last_attested_at' => null,
+                    'last_seen_at' => $now,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+                $control = [
+                    'id' => $controlId,
+                    'client_id' => $clientId,
+                    'device_id' => $deviceId,
+                    'state' => 'active',
+                    'command_version' => 0,
+                ];
+            } else {
+                $updated = $this->db->execute(
+                    'UPDATE client_device_controls
+                     SET identity_key_hash = :identity_key_hash,
+                         attestation_key_hash = NULL,
+                         state = :state,
+                         reason_code = :reason_code,
+                         blocked_until = NULL,
+                         block_origin = NULL,
+                         release_policy = NULL,
+                         trust_state = :trust_state,
+                         trust_reason = :trust_reason,
+                         last_attested_at = NULL,
+                         last_seen_at = :last_seen_at,
+                         updated_at = :updated_at
+                     WHERE id = :id AND command_version = :expected_command_version',
+                    [
+                        'id' => (int) $control['id'],
+                        'expected_command_version' => (int) ($control['command_version'] ?? 0),
+                        'identity_key_hash' => $identityHash,
+                        'state' => 'active',
+                        'reason_code' => null,
+                        'trust_state' => 'trusted',
+                        'trust_reason' => 'identity_only',
+                        'last_seen_at' => $now,
+                        'updated_at' => $now,
+                    ]
+                );
+                if ($updated !== 1) {
+                    $latest = $this->controlFor($clientId, $deviceId);
+                    if ($latest !== null && (string) ($latest['state'] ?? '') === 'banned') {
+                        $this->throwIfTerminal($latest);
+                    }
+                    throw new ApiException('device_enrollment_conflict', 409);
+                }
+                $control['state'] = 'active';
+            }
+
+            $consumed = $this->db->execute(
+                'UPDATE android_device_challenges
+                 SET consumed_at = :consumed_at
+                 WHERE id = :id AND consumed_at IS NULL',
+                ['id' => (int) $challenge['id'], 'consumed_at' => $now]
+            );
+            if ($consumed !== 1) {
+                throw new ApiException('device_challenge_invalid', 403);
+            }
+
+            $this->revokeDeviceSessions($clientId, $deviceId, $now);
+            $session = $this->randomToken();
+            $expiresAtTimestamp = time() + self::SESSION_TTL_SECONDS;
+            $commandVersion = max(0, (int) ($control['command_version'] ?? 0));
+            $this->db->insert('android_device_sessions', [
+                'client_id' => $clientId,
+                'device_id' => $deviceId,
+                'session_hash' => hash('sha256', $session),
+                'command_version' => $commandVersion,
+                'expires_at' => gmdate('Y-m-d H:i:s', $expiresAtTimestamp),
+                'revoked_at' => null,
+                'created_at' => $now,
+            ]);
+            $this->writeAudit($clientId, $deviceId, $commandVersion, 'identity_enrolled', null, 'device', null);
 
             return [
                 'device_session' => $session,
@@ -787,6 +1148,19 @@ final class DeviceControlService
             throw new ApiException('device_id_invalid', 422);
         }
         return $deviceId;
+    }
+
+    private function decodeRenewalField(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '' || strlen($value) > 16384) {
+            throw new ApiException('device_renewal_invalid', 403);
+        }
+        $decoded = base64_decode($value, true);
+        if (!is_string($decoded) || strlen($decoded) < 16 || strlen($decoded) > 4096) {
+            throw new ApiException('device_renewal_invalid', 403);
+        }
+        return $decoded;
     }
 
     private function requireStableDeviceId(string $deviceId): string

@@ -30,8 +30,11 @@ import com.leikwan.bridge.session.DeviceChallengeRequest
 import com.leikwan.bridge.session.DeviceChallengeResponse
 import com.leikwan.bridge.session.DeviceEnrollRequest
 import com.leikwan.bridge.session.DeviceEnrollResponse
+import com.leikwan.bridge.session.DeviceIdentityEnrollRequest
+import com.leikwan.bridge.session.DeviceRenewRequest
 import com.leikwan.bridge.session.EnrollmentCodeChallengeRequest
 import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
+import com.leikwan.bridge.session.EnrollmentCodeIdentityEnrollRequest
 import com.leikwan.bridge.session.EnrollmentResult
 import com.leikwan.bridge.session.PanelControlException
 import okhttp3.OkHttpClient
@@ -41,6 +44,7 @@ import retrofit2.converter.gson.GsonConverterFactory
 import java.net.URI
 import java.time.Instant
 import java.security.SecureRandom
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 class PanelRepository(
@@ -50,6 +54,8 @@ class PanelRepository(
     private val routeRuleStore: ClientRouteRuleStore = ClientRouteRuleStore.from(context),
     private val httpClientOverride: OkHttpClient? = null,
     private val deviceIdProvider: (Long) -> String = AndroidDeviceIdentity()::deviceId,
+    private val identityPublicKeyProvider: () -> ByteArray = { AndroidDeviceIdentity().publicKeySpki() },
+    private val identitySigner: (ByteArray) -> ByteArray = { AndroidDeviceIdentity().sign(it) },
     private val attestationProofProvider: (String, Long, String) -> AttestationProof =
         AndroidAttestationProofFactory(
             attestationKeys = AndroidKeyStoreAttestationKeyProvider(
@@ -129,7 +135,7 @@ class PanelRepository(
         prefs.agentToken = agentToken.trim()
         prefs.enrolledDeviceId = deviceIdProvider(clientId)
         return try {
-            performEnrollment(clientId, agentToken.trim(), enrollmentCode = null)
+            performAgentEnrollment(clientId, agentToken.trim())
         } catch (throwable: Throwable) {
             prefs.clearEnrollment(clearIdentity = false)
             throw throwable
@@ -145,7 +151,11 @@ class PanelRepository(
         prefs.clientId = clientId
         prefs.enrolledDeviceId = deviceIdProvider(clientId)
         return try {
-            performEnrollment(clientId, agentToken = null, enrollmentCode = enrollmentCode.trim())
+            performIdentityEnrollment(
+                clientId = clientId,
+                enrollmentCode = enrollmentCode.trim(),
+                suppliedAgentToken = null,
+            )
         } catch (throwable: Throwable) {
             prefs.clearEnrollment(clearIdentity = false)
             throw throwable
@@ -168,7 +178,7 @@ class PanelRepository(
         }
 
         prefs.clearDeviceSession()
-        return performEnrollment(clientId, agentToken, enrollmentCode = null)
+        return performAgentEnrollment(clientId, agentToken)
     }
 
     suspend fun acknowledgeDevice(commandVersion: Long): Boolean {
@@ -247,6 +257,156 @@ class PanelRepository(
         return persistEnrollment(response, clientId, deviceId, agentToken)
     }
 
+    private suspend fun performAgentEnrollment(clientId: Long, agentToken: String): EnrollmentResult =
+        performIdentityEnrollment(
+            clientId = clientId,
+            enrollmentCode = null,
+            suppliedAgentToken = agentToken,
+        )
+
+    /**
+     * Enroll with the app's persistent Android Keystore identity only.
+     * This is the default user path; it deliberately does not request a
+     * hardware attestation key or contact Google RKP.
+     */
+    private suspend fun performIdentityEnrollment(
+        clientId: Long,
+        enrollmentCode: String?,
+        suppliedAgentToken: String?,
+    ): EnrollmentResult {
+        val deviceId = prefs.enrolledDeviceId ?: throw IllegalStateException("device_identity_missing")
+        val challenge = if (enrollmentCode == null) {
+            requireSuccessful(
+                api.deviceChallenge(DeviceChallengeRequest(clientId, deviceId)),
+                "device_challenge_failed",
+            )
+        } else {
+            requireSuccessful(
+                api.enrollmentCodeChallenge(EnrollmentCodeChallengeRequest(enrollmentCode, deviceId)),
+                "device_challenge_failed",
+            )
+        }
+        validateChallenge(challenge, clientId)
+
+        // Some OEM Keystore providers can fail even though the stable device
+        // ID is already available. The server-side identity-only contract
+        // deliberately permits an empty key so login never depends on RKP.
+        val identitySpki = try {
+            identityPublicKeyProvider()
+        } catch (_: Exception) {
+            ByteArray(0)
+        }
+        try {
+            val encodedIdentity = if (identitySpki.isEmpty()) "" else Base64.getEncoder().encodeToString(identitySpki)
+            val response = if (enrollmentCode == null) {
+                requireSuccessful(
+                    api.enrollDeviceIdentity(
+                        DeviceIdentityEnrollRequest(
+                            clientId = clientId,
+                            deviceId = deviceId,
+                            nonce = challenge.nonce,
+                            identityPublicKey = encodedIdentity,
+                        ),
+                    ),
+                    "device_enrollment_failed",
+                )
+            } else {
+                requireSuccessful(
+                    api.enrollmentCodeIdentityEnroll(
+                        EnrollmentCodeIdentityEnrollRequest(
+                            enrollmentCode = enrollmentCode,
+                            deviceId = deviceId,
+                            nonce = challenge.nonce,
+                            identityPublicKey = encodedIdentity,
+                        ),
+                    ),
+                    "device_enrollment_failed",
+                )
+            }
+            return persistEnrollment(response, clientId, deviceId, suppliedAgentToken)
+        } finally {
+            identitySpki.fill(0)
+        }
+    }
+
+    private suspend fun tryRenewal(clientId: Long, agentToken: String): EnrollmentResult? {
+        val deviceId = prefs.enrolledDeviceId ?: throw IllegalStateException("device_identity_missing")
+        val challenge = try {
+            requireSuccessful(
+                api.deviceRenewalChallenge(DeviceChallengeRequest(clientId, deviceId)),
+                "device_renewal_challenge_failed",
+            )
+        } catch (throwable: Throwable) {
+            if (isRenewalFallback(throwable)) return null
+            throw throwable
+        }
+
+        return try {
+            validateChallenge(challenge, clientId)
+            val identitySpki = identityPublicKeyProvider()
+            try {
+                val identityHash = sha256Hex(identitySpki)
+                val binding = "LEIKWAN_ANDROID_SESSION_RENEWAL_V1|${challenge.nonce}|$clientId|$deviceId|$identityHash"
+                    .toByteArray(Charsets.UTF_8)
+                try {
+                    val signature = identitySigner(binding)
+                    try {
+                        val response = requireSuccessful(
+                            api.renewDevice(
+                                DeviceRenewRequest(
+                                    clientId = clientId,
+                                    deviceId = deviceId,
+                                    nonce = challenge.nonce,
+                                    identityPublicKey = Base64.getEncoder().encodeToString(identitySpki),
+                                    bindingSignature = Base64.getEncoder().encodeToString(signature),
+                                ),
+                            ),
+                            "device_renewal_failed",
+                        )
+                        persistEnrollment(response, clientId, deviceId, agentToken)
+                    } finally {
+                        signature.fill(0)
+                    }
+                } finally {
+                    binding.fill(0)
+                }
+            } finally {
+                identitySpki.fill(0)
+            }
+        } catch (throwable: Throwable) {
+            if (shouldTrySimpleRenewal(throwable)) {
+                trySimpleRenewal(clientId, agentToken, challenge.nonce)
+            } else {
+                throw throwable
+            }
+        }
+    }
+
+    private suspend fun trySimpleRenewal(
+        clientId: Long,
+        agentToken: String,
+        nonce: String,
+    ): EnrollmentResult? {
+        val deviceId = prefs.enrolledDeviceId ?: throw IllegalStateException("device_identity_missing")
+        return try {
+            val response = requireSuccessful(
+                api.renewDevice(
+                    DeviceRenewRequest(
+                        clientId = clientId,
+                        deviceId = deviceId,
+                        nonce = nonce,
+                        identityPublicKey = "",
+                        bindingSignature = "",
+                    ),
+                ),
+                "device_renewal_failed",
+            )
+            persistEnrollment(response, clientId, deviceId, agentToken)
+        } catch (throwable: Throwable) {
+            if (isRenewalFallback(throwable)) null else throw throwable
+        }
+    }
+
     private fun validateChallenge(challenge: DeviceChallengeResponse, clientId: Long) {
         if (!challenge.ok || challenge.nonce.isBlank()) throw IllegalStateException("device_challenge_invalid")
         if (challenge.clientId != null && challenge.clientId != clientId) {
@@ -285,6 +445,35 @@ class PanelRepository(
 
     private fun parseExpiry(value: String): Long = runCatching { Instant.parse(value).toEpochMilli() }
         .getOrElse { throw IllegalStateException("device_expiry_invalid") }
+
+    private fun sha256Hex(value: ByteArray): String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(value)
+        .joinToString("") { "%02x".format(it) }
+
+    private fun isRenewalFallback(throwable: Throwable): Boolean {
+        val code = when (throwable) {
+            is PanelControlException -> throwable.code
+            else -> throwable.message?.substringBefore(':')?.trim()
+        }
+        return code == "device_renewal_not_available"
+            || code == "device_renewal_invalid"
+            || code == "device_untrusted"
+            || code?.startsWith("HTTP 404") == true
+    }
+
+    private fun shouldTrySimpleRenewal(throwable: Throwable): Boolean {
+        if (throwable is PanelControlException) return throwable.code == "device_untrusted"
+        val code = throwable.message?.substringBefore(':')?.trim()
+        if (code == null || code.startsWith("HTTP 401") || code == "unauthorized") return false
+        if (code in setOf(
+                "device_session_expired",
+                "device_enrollment_invalid",
+                "agent_token_missing",
+                "device_challenge_invalid",
+                "device_challenge_expired",
+            )) return false
+        return isRenewalFallback(throwable) || !code.startsWith("HTTP ")
+    }
 
     private fun <T> requireSuccessful(response: retrofit2.Response<T>, fallback: String): T {
         if (!response.isSuccessful) {

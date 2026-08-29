@@ -355,9 +355,13 @@ final class Bootstrap
         $this->router->add('GET', '/api/client/access/policy', [$clientAgent, 'accessPolicyStatus']);
         $this->router->add('POST', '/api/client/devices/challenge', [$clientAgent, 'deviceChallenge']);
         $this->router->add('POST', '/api/client/devices/enroll', [$clientAgent, 'enrollDevice']);
+        $this->router->add('POST', '/api/client/devices/identity/enroll', [$clientAgent, 'deviceIdentityEnroll']);
+        $this->router->add('POST', '/api/client/devices/renew/challenge', [$clientAgent, 'deviceRenewalChallenge']);
+        $this->router->add('POST', '/api/client/devices/renew', [$clientAgent, 'renewDevice']);
         $this->router->add('POST', '/api/client/devices/ack', [$clientAgent, 'acknowledgeDevice']);
         $this->router->add('POST', '/api/client/devices/code/challenge', [$clientAgent, 'enrollmentCodeChallenge']);
         $this->router->add('POST', '/api/client/devices/code/enroll', [$clientAgent, 'enrollmentCodeEnroll']);
+        $this->router->add('POST', '/api/client/devices/code/identity-enroll', [$clientAgent, 'enrollmentCodeIdentityEnroll']);
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
         $this->router->add('POST', '/api/client/ultra/materials', [$clientAgent, 'resolveUltraMaterials']);
         $this->router->add('POST', UltraMode::LEASE_ENDPOINT, [$clientAgent, 'resolveUltraLease']);

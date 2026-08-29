@@ -182,6 +182,27 @@ final class ClientAgentController extends BaseController
         ] + $enrollment);
     }
 
+    public function deviceIdentityEnroll(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $this->assertRequestedClientId($client, $request);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $enrollment = $this->deviceControls->enrollIdentity(
+            $client,
+            $deviceId,
+            (string) $request->input('nonce', ''),
+            (string) $request->input('identity_public_key', ''),
+            1,
+        );
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+        ] + $enrollment);
+    }
+
     public function acknowledgeDevice(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
@@ -232,6 +253,40 @@ final class ClientAgentController extends BaseController
                 $this->requestedDeviceId($request),
                 (string) $request->input('nonce', ''),
                 $proof,
+            );
+            if ($this->enrollmentCodes->consume($code) === null) {
+                throw new ApiException('android_enrollment_code_invalid', 403);
+            }
+            return [$client, $enrollment];
+        });
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+            'agent_token' => (string) $client['agent_token'],
+        ] + $enrollment);
+    }
+
+    public function enrollmentCodeIdentityEnroll(Request $request, array $params): Response
+    {
+        $this->requireAndroidRequest($request);
+        $code = (string) $request->input('enrollment_code', '');
+        $identityPublicKey = (string) $request->input('identity_public_key', '');
+        $policyClient = $this->activeClientForEnrollmentCode($code);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($policyClient, $request, 'enrollment', $deviceId);
+        [$client, $enrollment] = $this->db->transaction(function () use ($code, $request, $identityPublicKey): array {
+            $codeRow = $this->enrollmentCodes->findActive($code);
+            if ($codeRow === null) {
+                throw new ApiException('android_enrollment_code_invalid', 403);
+            }
+            $client = $this->activeClientForEnrollmentCodeRow($codeRow);
+            $enrollment = $this->deviceControls->enrollIdentity(
+                $client,
+                $this->requestedDeviceId($request),
+                (string) $request->input('nonce', ''),
+                $identityPublicKey,
+                1,
             );
             if ($this->enrollmentCodes->consume($code) === null) {
                 throw new ApiException('android_enrollment_code_invalid', 403);
