@@ -210,8 +210,23 @@ func probeTimeout(config Config) time.Duration {
 }
 
 func selectBestLease(ctx context.Context, config Config, policy Policy, leases []ProviderLease) (ProviderLease, udpProbeResult, error) {
+	return selectBestLeaseWithProbe(ctx, config, policy, leases, probeLease)
+}
+
+type leaseProbe func(context.Context, ProviderLease, Config, Policy) udpProbeResult
+
+func selectBestLeaseWithProbe(
+	ctx context.Context,
+	config Config,
+	policy Policy,
+	leases []ProviderLease,
+	probe leaseProbe,
+) (ProviderLease, udpProbeResult, error) {
 	if len(leases) == 0 {
 		return ProviderLease{}, udpProbeResult{}, errProbeUnavailable
+	}
+	if probe == nil {
+		probe = probeLease
 	}
 	workers := config.ProbeWorkers
 	if workers < 1 || workers > 4 {
@@ -227,7 +242,7 @@ func selectBestLease(ctx context.Context, config Config, policy Policy, leases [
 		go func() {
 			defer func() { done <- struct{}{} }()
 			for index := range jobs {
-				results[index] = probeLease(ctx, leases[index], config, policy)
+				results[index] = probe(ctx, leases[index], config, policy)
 				results[index].Index = index
 			}
 		}()
