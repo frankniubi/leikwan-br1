@@ -1181,6 +1181,8 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         "target_digest": target_digest,
         "zone_aliases": zone_aliases,
         "auto_select": auto_select,
+        "udp_prewarm": transport in {"udp", "tcp+udp"},
+        "udp_keepalive_interval_seconds": 5 if transport in {"udp", "tcp+udp"} else 0,
     }
     if auto_select:
         config_payload.update(

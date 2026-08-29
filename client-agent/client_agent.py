@@ -2136,6 +2136,9 @@ class ClientAgent:
         desired_install_forward_runtime_sha256 = str(
             client_meta.get("desired_install_forward_runtime_sha256", "") or ""
         ).strip().lower()
+        desired_ultra_runtime_sha256 = str(
+            client_meta.get("desired_ultra_runtime_sha256", "") or ""
+        ).strip().lower()
         desired_bond_sha256 = str(client_meta.get("desired_bond_sha256", "") or "").strip().lower()
         desired_mptcp_runtime_sha256 = str(client_meta.get("desired_mptcp_runtime_sha256", "") or "").strip().lower()
         desired_cfwg_watchdog_sha256 = str(client_meta.get("desired_cfwg_watchdog_sha256", "") or "").strip().lower()
@@ -2162,6 +2165,11 @@ class ClientAgent:
             local_install_forward_runtime_sha256 = file_sha256(self.install_forward_runtime_path()).lower()
             if local_install_forward_runtime_sha256 != desired_install_forward_runtime_sha256:
                 mismatches.append(f"install_forward_runtime={desired_install_forward_runtime_sha256}")
+
+        if desired_ultra_runtime_sha256:
+            local_ultra_runtime_sha256 = file_sha256(self.ultra_binary_path()).lower()
+            if local_ultra_runtime_sha256 != desired_ultra_runtime_sha256:
+                mismatches.append(f"ultra_runtime={desired_ultra_runtime_sha256}")
 
         if desired_bond_sha256:
             local_bond_sha256 = file_sha256(self.bond_binary_path()).lower()

@@ -46,6 +46,39 @@ def sample_forward():
 
 
 class UltraRuntimeTests(unittest.TestCase):
+    def test_linux_installer_verifies_ultra_artifact_before_agent_restart(self):
+        installer = (ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        download = 'download_manifest_artifact ultra_client_runtime "$ARTIFACT_BASE/artifacts/ultra/ultra-client_linux_amd64" "$BIN_DIR/ultra-client"'
+
+        self.assertIn(download, installer)
+        self.assertIn("expected_sha256=\"$(_vers_sha256 \"$key\")\"", installer)
+        self.assertIn("downloaded artifact sha256 mismatch: $key", installer)
+        self.assertLess(installer.index(download), installer.index('systemctl restart "$SERVICE_NAME.service"'))
+
+    def test_ultra_runtime_emits_udp_prewarm_for_udp_capable_transports(self):
+        for transport in ("udp", "tcp+udp"):
+            with self.subTest(transport=transport):
+                forward = sample_forward()
+                forward["transport"] = transport
+                forward["ultra_access"]["transport"] = transport
+                rendered = MODULE.render_ultra_runtime(forward, {})
+                config_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.json"))
+                config = json.loads(config_file["content"])
+
+                self.assertTrue(config["udp_prewarm"])
+                self.assertEqual(5, config["udp_keepalive_interval_seconds"])
+
+    def test_ultra_runtime_disables_udp_prewarm_for_tcp_only(self):
+        forward = sample_forward()
+        forward["transport"] = "tcp"
+        forward["ultra_access"]["transport"] = "tcp"
+        rendered = MODULE.render_ultra_runtime(forward, {})
+        config_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.json"))
+        config = json.loads(config_file["content"])
+
+        self.assertFalse(config["udp_prewarm"])
+        self.assertEqual(0, config["udp_keepalive_interval_seconds"])
+
     def test_ultra_renders_only_generic_direct_binary_runtime(self):
         rendered = MODULE.render_forward_runtime(sample_forward(), {})
         self.assertEqual("ultra-forward-42", rendered["service_name"])
