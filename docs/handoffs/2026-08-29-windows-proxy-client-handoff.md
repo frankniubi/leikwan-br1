@@ -179,3 +179,91 @@ and stale-listener failures observed earlier in the session.
 4. If a production release is required, publish the installer through the
    panel's Windows artifact route using the backup-first deployment procedure;
    that operation is outside this handoff.
+
+## Follow-up live UDP diagnosis (2026-08-29)
+
+The subsequent live capture and isolated HK echo tests found a transport-size
+failure in addition to the earlier association head-of-line issue. The
+credential-free evidence is kept under the ignored `.tmp/cs2-live-capture-20260829-181225/`
+directory (`cs2-live.etl`, `cs2-live.pcapng`, and the native/UoT reports).
+
+- CS2 emitted 65 x 1,300-byte UDP datagrams and received no replies.
+- Direct current SS reached the same HK echo target and returned 1,300-byte
+  payloads; it does not show a deterministic 1,300-byte SS cutoff.
+- The final Ultra binary passed 1,200/1,300/1,320-byte native payloads 4/4 in
+  both single- and multi-association runs, then passed 0/4 at 1,330 and 1,400.
+  The remote saw only provider-relay source traffic. Ultra ended with 21 active
+  associations, zero pending, queue drops, and setup failures.
+- Native UoT probes using fresh rotating leases received the 14-byte associate
+  marker but the relay reset the TCP connection before any UDP frame reply.
+
+The reference native envelope adds 16 bytes. CS2's 1,300-byte datagram is
+about 1,339 bytes after SS framing and about 1,355 bytes after the native
+envelope, exceeding the live 1,320-byte carrier budget. This makes the primary
+failure a native-carrier budget issue before SS egress; SS and the selected HK
+target are not the primary cause. The asynchronous association/FIFO changes
+remain useful for smaller datagrams and were retained.
+
+Forcing MTU cannot solve this process-mode failure: there is no TUN interface in
+the active path, and the SS outbound receives a complete UDP datagram. A TUN
+MTU may create IP fragments before a user-space stack, but the stack must
+reassemble them before SS framing, so it does not automatically compensate for
+SS/native overhead. The existing TUN mode has not had a real CS2 A/B yet.
+
+The previously proven WG-over-native-UDP design is a valid separate solution:
+WG is an L3 carrier and can constrain/fragment inner IP packets before native
+UDP encryption, with reassembly at the remote WG peer. Reusing that design here
+would require a real remote WG endpoint and routing path; it is not equivalent
+to changing sing-box's TUN `mtu` field. The raw-direct oversized-packet
+experiment was removed because it bypassed the provider line. Artifact
+`2026.08.29.2` is built and manifest-pinned, but the currently running elevated
+installation was not replaced from this non-Administrator shell. A real fix
+requires a provider-supported UoT/S5 route or transport-side fragmentation and
+reassembly, followed by an administrator-led install and real CS2 smoke test.
+
+## TUN MTU 1280 probe (2026-08-29 21:00 +08:00)
+
+The active local profile was rendered through the repository's own
+`WindowsProxyConfigBuilder` with `WindowsProxyMode.Tun`, `mtu=1280`, and the
+configured `gvisor` stack. The generated inbound was confirmed as
+`type=tun`, interface `LeiKwan Bridge`, `mtu=1280`; `sing-box 1.13.19 check`
+returned exit code 0.
+
+Starting that exact temporary config from this Codex shell failed before any
+data-plane test with:
+
+`start inbound/tun[tun-in]: configure tun interface: Access is denied.`
+
+No TUN adapter was created and no temporary plaintext config was retained.
+This is an elevation boundary, not evidence for or against the UDP carrier
+size hypothesis. The persisted client setting was already `proxy_tun_mtu=1280`
+but `proxy_active_mode=Process`; it was left unchanged, and the installed
+client/binaries were not restarted or replaced.
+
+An administrator-led follow-up must start the GUI in TUN mode and repeat the
+CS2/controlled-echo A/B while recording TUN packet sizes, SS ciphertext sizes,
+and Ultra native carrier sizes. Only that run can determine whether this
+topology reassembles/segments below the observed native limit.
+
+## Process-mode UAC handoff fix (2026-08-29)
+
+The non-administrator Process-mode path was blocking the WPF dispatcher in two
+places: `ShellExecute`/`runas` was called synchronously while the UAC prompt was
+open, and the fallback shutdown path synchronously waited on native/SCM cleanup
+whose continuations could target the same blocked dispatcher. The old instance
+also invoked proxy cleanup again from `OnClosing`, `Disconnect`, and disposal,
+holding the single-instance mutex longer than necessary.
+
+The fix moves the `runas` launch to `WindowsProxyElevation.StartElevatedAsync`
+(`Task.Run` with a testable launcher), awaits it from the async click handler,
+removes the duplicate pre-shutdown stop, and runs synchronous shutdown/dispose
+bridges on the thread pool. `WindowsProxyConnectionService` now treats a
+successful disconnected stop as idempotent while still retrying failed
+cleanup. This keeps the parent responsive during UAC and releases the mutex
+without repeated native stop calls after approval.
+
+Validation: the new UAC non-blocking regression test and repeated-stop test
+pass; all 247 Core tests and 42 App tests pass; Release WPF build has 0
+warnings/errors. The Program Files installation was not replaced from this
+non-Administrator shell, so an administrator-led install is still required to
+exercise the fix in the installed client.

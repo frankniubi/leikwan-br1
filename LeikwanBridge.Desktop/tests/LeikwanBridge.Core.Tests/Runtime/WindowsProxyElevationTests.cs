@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using Xunit;
@@ -43,5 +44,27 @@ public sealed class WindowsProxyElevationTests
         Assert.False(WindowsProxyElevation.TryParseProxyStartRequest(
             [WindowsProxyElevation.ProxyStartArgument, "process", "0", "steam:counter-strike"],
             out _));
+    }
+
+    [Fact]
+    public async Task StartElevatedAsyncDoesNotBlockWhileShellWaitsForUac()
+    {
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<Process?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var startInfo = new ProcessStartInfo { FileName = "ignored.exe" };
+
+        var launch = WindowsProxyElevation.StartElevatedAsync(
+            startInfo,
+            _ =>
+            {
+                entered.SetResult(true);
+                return release.Task.GetAwaiter().GetResult();
+            });
+
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.False(launch.IsCompleted);
+
+        release.SetResult(null);
+        Assert.Null(await launch.WaitAsync(TimeSpan.FromSeconds(2)));
     }
 }

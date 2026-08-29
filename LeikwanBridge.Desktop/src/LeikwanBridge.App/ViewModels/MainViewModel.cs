@@ -457,13 +457,29 @@ public partial class MainViewModel : ObservableObject
 
     public void StopProxyForShutdown()
     {
-        try { StopProxyAsync(CancellationToken.None).GetAwaiter().GetResult(); }
+        try
+        {
+            // Shutdown callers run on the WPF dispatcher.  The proxy stop
+            // path includes native/SCM awaits; run the async cleanup on the
+            // thread pool so its continuations cannot wait on a blocked UI
+            // thread.
+            Task.Run(() => StopProxyAsync(CancellationToken.None))
+                .GetAwaiter()
+                .GetResult();
+        }
         catch (Exception exception) { Log.Warning(exception, "failed to stop Windows proxy during shutdown"); }
     }
 
     public void DisposeProxyForShutdown()
     {
-        try { _proxyService?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+        try
+        {
+            Task.Run(async () =>
+            {
+                if (_proxyService is not null)
+                    await _proxyService.DisposeAsync().ConfigureAwait(false);
+            }).GetAwaiter().GetResult();
+        }
         catch (Exception exception) { Log.Warning(exception, "failed to dispose Windows proxy service"); }
         finally { _proxyService = null; }
         _proxyGameStore = null;

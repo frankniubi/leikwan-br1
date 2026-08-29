@@ -49,6 +49,37 @@ public sealed class WindowsProxyConnectionServiceTests
     }
 
     [Fact]
+    public async Task RepeatedStopAfterSuccessfulCleanupDoesNotRepeatNativeShutdown()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var adapter = new FakeProcessAdapter();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            new FakeProcessHost(),
+            new FakeSystemProxy(),
+            adapter);
+        await service.InitializeAsync();
+        await service.SaveProfileAsync(new WindowsProxyProfile
+        {
+            Name = "test",
+            Server = "198.51.100.7",
+            Method = "aes-256-gcm",
+            Password = "secret",
+        });
+
+        await service.StartAsync(WindowsProxyMode.Http, 1);
+        await service.StopAsync();
+        var stopCallsAfterCleanup = adapter.StopCalls;
+        await service.StopAsync();
+
+        Assert.Equal(stopCallsAfterCleanup, adapter.StopCalls);
+    }
+
+    [Fact]
     public async Task ChangingLocalListenPortUsesConfiguredPort()
     {
         using var temp = new TempStateDirectory();
@@ -339,6 +370,7 @@ public sealed class WindowsProxyConnectionServiceTests
         public bool Available { get; set; } = true;
         public string AvailabilityReason { get; set; } = "";
         public bool Started { get; private set; }
+        public int StopCalls { get; private set; }
         public int LastSocksPort { get; private set; }
         public Exception? StopException { get; set; }
         public bool IsAvailable => Available;
@@ -350,6 +382,7 @@ public sealed class WindowsProxyConnectionServiceTests
         }
         public Task StopAsync(CancellationToken ct = default)
         {
+            StopCalls++;
             Started = false;
             var exception = StopException;
             StopException = null;

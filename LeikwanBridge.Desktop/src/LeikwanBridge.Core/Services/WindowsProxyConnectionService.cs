@@ -25,6 +25,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     private readonly List<WindowsProxyProfile> _profiles = [];
     private WindowsProxySnapshot _snapshot = WindowsProxySnapshot.Disconnected;
     private int _activeProfileId;
+    private bool _stopCompleted;
     private bool _disposed;
 
     public WindowsProxyConnectionService(
@@ -260,6 +261,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             }
 
             _activeProfileId = profileId;
+            _stopCompleted = false;
             Publish(new WindowsProxySnapshot(
                 WindowsProxyConnectionState.Connected,
                 mode,
@@ -297,6 +299,11 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         await _gate.WaitAsync(ct);
         try
         {
+            if (_stopCompleted
+                && _snapshot.State == WindowsProxyConnectionState.Disconnected
+                && _activeProfileId == 0)
+                return;
+
             await StopCoreAsync(ct);
             _activeProfileId = 0;
             Publish(WindowsProxySnapshot.Disconnected);
@@ -368,6 +375,13 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         try { await _processAdapter.StopAsync(CancellationToken.None); }
         catch (Exception exception) { failures.Add(exception); }
 
+        if (failures.Count == 0)
+        {
+            _stopCompleted = true;
+            return;
+        }
+
+        _stopCompleted = false;
         if (failures.Count == 1)
             throw failures[0];
         if (failures.Count > 1)
