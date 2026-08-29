@@ -33,11 +33,13 @@ Linux was built with the existing garble/reproducibility script. Windows was bui
 - .NET: full solution passed, Core `255`, Mac `52`, App `42`.
 - Source/artifact SHA-256 mirrors for `client-agent.py` and `install_forward_runtime.py` matched.
 - Windows setup staging contained the exact published Windows Ultra SHA-256.
+- The live Panel artifact source was updated after backup `ultra-udp-prewarm-20260830-1`; root artifacts and `master/public/artifacts` shadows match for both Ultra binaries, the Python mirrors, and `versions.json`.
+- HTTPS manifest canary from `https://v3.leikwanhost.com/artifacts/versions.json` returned Linux/Windows Ultra `2026.08.30.4` and Windows app `0.1.19.9` with the recorded hashes.
 
 ## Platform Sample Status
 
 - Windows sample: local Release publish and Inno Setup package completed; static bootstrap and bundled-helper hash checks passed. A live Program Files replacement was not performed in this worktree because it would stop the user-owned running client and requires an operational maintenance window.
-- Linux sample: installer ordering and authenticated desired-hash convergence are covered by tests. No remote Linux mutation was performed; a live client must report the new helper hash after its next authenticated pull.
+- Linux sample: the live Panel artifact source and static shadows are updated; installer ordering and authenticated desired-hash convergence are covered by tests. No remote Linux client was restarted or mutated; each live client must report the new helper hash after its next authenticated pull.
 - macOS sample: not built or published. The repository has no macOS artifact directory in this environment, and `build-macos-client.sh` correctly refused to run on Windows (`real builds require macOS`). Existing macOS manifest entries remain unchanged; no false macOS release pointer was created.
 
 ## Client Update Guidance
