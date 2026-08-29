@@ -47,11 +47,11 @@ public sealed class MacConnectionService : IMacConnectionService
 
     public async Task InitializeAsync(CancellationToken ct = default)
     {
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             _profiles.Clear();
-            _profiles.AddRange(await _store.LoadAsync(ct));
+            _profiles.AddRange(await _store.LoadAsync(ct).ConfigureAwait(false));
         }
         finally
         {
@@ -62,7 +62,7 @@ public sealed class MacConnectionService : IMacConnectionService
     public async Task SaveProfileAsync(MacConnectionProfile profile, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(profile);
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             MacConnectionConfigBuilder.Build(profile, MacConnectionMode.Proxy, [], _proxyPort);
@@ -74,7 +74,7 @@ public sealed class MacConnectionService : IMacConnectionService
                 _profiles[index] = copy;
             else
                 _profiles.Add(copy);
-            await _store.SaveAsync(_profiles, ct);
+            await _store.SaveAsync(_profiles, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -86,11 +86,11 @@ public sealed class MacConnectionService : IMacConnectionService
     {
         if (profileId <= 0)
             return;
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             _profiles.RemoveAll(profile => profile.Id == profileId);
-            await _store.SaveAsync(_profiles, ct);
+            await _store.SaveAsync(_profiles, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -105,7 +105,7 @@ public sealed class MacConnectionService : IMacConnectionService
         IEnumerable<ForwardConfig> forwards,
         CancellationToken ct = default)
     {
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -118,8 +118,8 @@ public sealed class MacConnectionService : IMacConnectionService
                 _proxyPort,
                 0,
                 ""));
-            await StopCoreAsync(ct);
-            var resolution = await _resolver.ResolveAsync(panelUrl, forwards ?? [], ct);
+            await StopCoreAsync(ct).ConfigureAwait(false);
+            var resolution = await _resolver.ResolveAsync(panelUrl, forwards ?? [], ct).ConfigureAwait(false);
             var compiled = MacConnectionConfigBuilder.Build(
                 profile,
                 mode,
@@ -131,11 +131,11 @@ public sealed class MacConnectionService : IMacConnectionService
             var configPath = Path.Combine(
                 _paths.RuntimeDirectory,
                 $"connection-{Guid.NewGuid():N}.json");
-            await WriteEphemeralConfigAsync(configPath, compiled.Json, ct);
+            await WriteEphemeralConfigAsync(configPath, compiled.Json, ct).ConfigureAwait(false);
             _configPath = configPath;
             try
             {
-                await _processHost.StartAsync(executable, configPath, mode, ct);
+                await _processHost.StartAsync(executable, configPath, mode, ct).ConfigureAwait(false);
             }
             finally
             {
@@ -170,10 +170,10 @@ public sealed class MacConnectionService : IMacConnectionService
 
     public async Task StopAsync(CancellationToken ct = default)
     {
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await StopCoreAsync(ct);
+            await StopCoreAsync(ct).ConfigureAwait(false);
             Publish(MacConnectionSnapshot.Disconnected);
         }
         finally
@@ -187,14 +187,14 @@ public sealed class MacConnectionService : IMacConnectionService
         if (_disposed)
             return;
         _disposed = true;
-        await StopAsync(CancellationToken.None);
-        await _processHost.DisposeAsync();
+        await StopAsync(CancellationToken.None).ConfigureAwait(false);
+        await _processHost.DisposeAsync().ConfigureAwait(false);
         _gate.Dispose();
     }
 
     private async Task StopCoreAsync(CancellationToken ct)
     {
-        await _processHost.StopAsync(ct);
+        await _processHost.StopAsync(ct).ConfigureAwait(false);
         if (_configPath is not null)
             SecureDelete(_configPath);
         _configPath = null;
@@ -205,7 +205,7 @@ public sealed class MacConnectionService : IMacConnectionService
         var bytes = Encoding.UTF8.GetBytes(json);
         try
         {
-            await File.WriteAllBytesAsync(path, bytes, ct);
+            await File.WriteAllBytesAsync(path, bytes, ct).ConfigureAwait(false);
             if (!OperatingSystem.IsWindows())
                 File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         }

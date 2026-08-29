@@ -27,34 +27,63 @@ public interface IMacKeychainNative
 public sealed class MacKeychainSecretStore : ISecretStore
 {
     public const string ServiceName = "com.leikwan.bridge";
+    private static readonly TimeSpan DefaultNativeOperationTimeout = TimeSpan.FromSeconds(2);
 
     private readonly IMacKeychainNative _native;
     private readonly string _fallbackPath;
+    private readonly TimeSpan _nativeOperationTimeout;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private int _warningRaised;
+    private int _fallbackActivated;
 
-    public MacKeychainSecretStore(IMacKeychainNative? native, string fallbackPath)
+    public MacKeychainSecretStore(
+        IMacKeychainNative? native,
+        string fallbackPath,
+        TimeSpan? nativeOperationTimeout = null)
     {
         _native = native ?? new MacKeychainNative();
         _fallbackPath = fallbackPath;
+        _nativeOperationTimeout = nativeOperationTimeout ?? DefaultNativeOperationTimeout;
+        if (_nativeOperationTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(nativeOperationTimeout));
     }
 
     public event Action<string>? WarningRaised;
-    public bool UsesFallback { get; private set; }
+    public bool UsesFallback => Volatile.Read(ref _fallbackActivated) != 0;
 
     public async Task<string?> GetAsync(string name, CancellationToken ct)
     {
         ValidateAccount(name);
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var result = _native.Read(ServiceName, name);
+            if (UsesFallback)
+                return LoadFallback().GetValueOrDefault(name);
+
+            MacKeychainReadResult result;
+            try
+            {
+                result = await RunNativeAsync(
+                    () => _native.Read(ServiceName, name),
+                    ct,
+                    cleanupIfAbandoned: value => CryptographicOperations.ZeroMemory(value.Secret)).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                ActivateFallback();
+                return LoadFallback().GetValueOrDefault(name);
+            }
+
             try
             {
                 if (result.Status == MacKeychainStatus.Success)
                     return Encoding.UTF8.GetString(result.Secret);
                 if (result.Status == MacKeychainStatus.NotFound)
-                    return MigrateFallbackValue(name);
+                    return await MigrateFallbackValueAsync(name, ct).ConfigureAwait(false);
             }
             finally
             {
@@ -72,18 +101,33 @@ public sealed class MacKeychainSecretStore : ISecretStore
     public async Task SetAsync(string name, string value, CancellationToken ct)
     {
         ValidateAccount(name);
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (UsesFallback)
+            {
+                var fallbackValues = LoadFallback();
+                fallbackValues[name] = value;
+                SaveFallback(fallbackValues);
+                return;
+            }
+
             var secret = Encoding.UTF8.GetBytes(value);
             MacKeychainStatus status;
             try
             {
-                status = _native.Set(ServiceName, name, secret);
+                status = await RunNativeAsync(
+                    () => _native.Set(ServiceName, name, secret),
+                    ct,
+                    cleanupOnCompletion: () => CryptographicOperations.ZeroMemory(secret)).ConfigureAwait(false);
             }
-            finally
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                CryptographicOperations.ZeroMemory(secret);
+                throw;
+            }
+            catch
+            {
+                status = MacKeychainStatus.Unavailable;
             }
             if (status == MacKeychainStatus.Success)
             {
@@ -104,10 +148,30 @@ public sealed class MacKeychainSecretStore : ISecretStore
     public async Task DeleteAsync(string name, CancellationToken ct)
     {
         ValidateAccount(name);
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var status = _native.Delete(ServiceName, name);
+            if (UsesFallback)
+            {
+                RemoveFallbackValue(name);
+                return;
+            }
+
+            MacKeychainStatus status;
+            try
+            {
+                status = await RunNativeAsync(
+                    () => _native.Delete(ServiceName, name),
+                    ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                status = MacKeychainStatus.Unavailable;
+            }
             if (status is not (MacKeychainStatus.Success or MacKeychainStatus.NotFound))
                 ActivateFallback();
             RemoveFallbackValue(name);
@@ -120,7 +184,7 @@ public sealed class MacKeychainSecretStore : ISecretStore
 
     private void ActivateFallback()
     {
-        UsesFallback = true;
+        Interlocked.Exchange(ref _fallbackActivated, 1);
         if (Interlocked.Exchange(ref _warningRaised, 1) == 0)
             WarningRaised?.Invoke("keychain_unavailable");
     }
@@ -145,24 +209,105 @@ public sealed class MacKeychainSecretStore : ISecretStore
         }
     }
 
-    private string? MigrateFallbackValue(string name)
+    private async Task<string?> MigrateFallbackValueAsync(string name, CancellationToken ct)
     {
         var values = LoadFallback();
         if (!values.TryGetValue(name, out var value))
             return null;
         var secret = Encoding.UTF8.GetBytes(value);
+        MacKeychainStatus status;
         try
         {
-            if (_native.Set(ServiceName, name, secret) == MacKeychainStatus.Success)
-                RemoveFallbackValue(name);
-            else
-                ActivateFallback();
+            status = await RunNativeAsync(
+                () => _native.Set(ServiceName, name, secret),
+                ct,
+                cleanupOnCompletion: () => CryptographicOperations.ZeroMemory(secret)).ConfigureAwait(false);
         }
-        finally
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            CryptographicOperations.ZeroMemory(secret);
+            throw;
         }
+        catch
+        {
+            status = MacKeychainStatus.Unavailable;
+        }
+        if (status == MacKeychainStatus.Success)
+            RemoveFallbackValue(name);
+        else
+            ActivateFallback();
         return value;
+    }
+
+    private async Task<T> RunNativeAsync<T>(
+        Func<T> operation,
+        CancellationToken ct,
+        Action? cleanupOnCompletion = null,
+        Action<T>? cleanupIfAbandoned = null)
+    {
+        Func<T> wrapped = cleanupOnCompletion is null
+            ? operation
+            : () =>
+            {
+                try
+                {
+                    return operation();
+                }
+                finally
+                {
+                    cleanupOnCompletion();
+                }
+            };
+        Task<T> work;
+        try
+        {
+            work = Task.Run(wrapped, CancellationToken.None);
+        }
+        catch
+        {
+            cleanupOnCompletion?.Invoke();
+            throw;
+        }
+
+        var abandoned = 0;
+        var cleanupClaimed = 0;
+        void CleanupAbandoned(T value)
+        {
+            if (Interlocked.Exchange(ref cleanupClaimed, 1) == 0)
+                cleanupIfAbandoned?.Invoke(value);
+        }
+        if (cleanupIfAbandoned is not null)
+            _ = ObserveAbandonedReadAsync(work, () => Volatile.Read(ref abandoned) == 1, CleanupAbandoned);
+
+        try
+        {
+            return await work.WaitAsync(_nativeOperationTimeout, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (cleanupIfAbandoned is not null)
+            {
+                Volatile.Write(ref abandoned, 1);
+                if (work.IsCompletedSuccessfully)
+                    CleanupAbandoned(await work.ConfigureAwait(false));
+            }
+            throw;
+        }
+    }
+
+    private static async Task ObserveAbandonedReadAsync<T>(
+        Task<T> work,
+        Func<bool> isAbandoned,
+        Action<T> cleanup)
+    {
+        try
+        {
+            var value = await work.ConfigureAwait(false);
+            if (isAbandoned())
+                cleanup(value);
+        }
+        catch
+        {
+        }
     }
 
     private void SaveFallback(Dictionary<string, string> values)
@@ -238,6 +383,7 @@ public sealed class MacKeychainNative : IMacKeychainNative
 {
     private const int Success = 0;
     private const int ItemNotFound = -25300;
+    private const int NoSuchKeychain = -25294;
 
     public MacKeychainReadResult Read(string service, string account)
     {
@@ -258,6 +404,8 @@ public sealed class MacKeychainNative : IMacKeychainNative
             {
                 if (status == ItemNotFound)
                     return new MacKeychainReadResult(MacKeychainStatus.NotFound, []);
+                if (status == NoSuchKeychain)
+                    return new MacKeychainReadResult(MacKeychainStatus.Unavailable, []);
                 if (status != Success || data == IntPtr.Zero || length > 64 * 1024)
                     return new MacKeychainReadResult(MacKeychainStatus.Error, []);
                 var secret = new byte[length];
@@ -322,6 +470,10 @@ public sealed class MacKeychainNative : IMacKeychainNative
                     if (addedItem != IntPtr.Zero)
                         CFRelease(addedItem);
                 }
+                else if (findStatus == NoSuchKeychain)
+                {
+                    return MacKeychainStatus.Unavailable;
+                }
                 else
                 {
                     return MacKeychainStatus.Error;
@@ -367,6 +519,8 @@ public sealed class MacKeychainNative : IMacKeychainNative
                     SecKeychainItemFreeContent(IntPtr.Zero, data);
                 if (status == ItemNotFound)
                     return MacKeychainStatus.NotFound;
+                if (status == NoSuchKeychain)
+                    return MacKeychainStatus.Unavailable;
                 if (status != Success || item == IntPtr.Zero)
                     return MacKeychainStatus.Error;
                 return SecKeychainItemDelete(item) == Success ? MacKeychainStatus.Success : MacKeychainStatus.Error;

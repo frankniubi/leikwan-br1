@@ -20,15 +20,20 @@ public static class MacAppBootstrap
     public static async Task<MacAppServices> CreateAsync(MacPlatformPaths paths, CancellationToken ct = default)
     {
         ConfigureLogging(paths);
+        Log.Information("mac_bootstrap_begin");
         var secrets = new MacKeychainSecretStore(
             new MacKeychainNative(),
             paths.Root.TrimEnd('/', '\\') + "/fallback-secrets.json");
         secrets.WarningRaised += code => Log.Warning("{WarningCode}", code);
         var configStore = new MacAgentConfigStore(paths, secrets);
-        var config = await configStore.LoadAsync(ct);
+        Log.Information("mac_bootstrap_config_load_begin");
+        var config = await configStore.LoadAsync(ct).ConfigureAwait(false);
+        Log.Information("mac_bootstrap_config_load_complete");
         if (string.IsNullOrWhiteSpace(config.MasterUrl))
             config.MasterUrl = "https://v3.leikwanhost.com";
+        Log.Information("mac_bootstrap_identity_begin");
         var identity = new MacPlatformIdentityProvider(paths).GetOrCreate();
+        Log.Information("mac_bootstrap_identity_complete");
         var autostart = new MacAutostartService(paths);
         var controller = new DesktopClientController(
             config,
@@ -38,7 +43,9 @@ public static class MacAppBootstrap
         var connections = new MacConnectionService(
             paths,
             new MacConnectionProfileStore(secrets));
-        await connections.InitializeAsync(ct);
+        Log.Information("mac_bootstrap_connections_load_begin");
+        await connections.InitializeAsync(ct).ConfigureAwait(false);
+        Log.Information("mac_bootstrap_connections_load_complete");
         var architecture = RuntimeInformation.ProcessArchitecture switch
         {
             Architecture.Arm64 => "arm64",
@@ -49,6 +56,7 @@ public static class MacAppBootstrap
             paths.Root.TrimEnd('/', '\\') + "/updates",
             paths.BundleDirectory,
             architecture);
+        Log.Information("mac_bootstrap_complete");
         return new MacAppServices(config, configStore, autostart, controller, connections, updater);
     }
 

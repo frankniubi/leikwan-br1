@@ -25,10 +25,10 @@ public sealed class MacConnectionProfileStore
 
     public async Task<IReadOnlyList<MacConnectionProfile>> LoadAsync(CancellationToken ct)
     {
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var encoded = await _secrets.GetAsync(SecretAccount, ct);
+            var encoded = await _secrets.GetAsync(SecretAccount, ct).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(encoded) || encoded.Length > MaxSerializedBytes)
                 return [];
             try
@@ -57,13 +57,13 @@ public sealed class MacConnectionProfileStore
         if (encoded.Length > MaxSerializedBytes)
             throw new InvalidOperationException("connection_profiles_too_large");
 
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             if (normalized.Count == 0)
-                await _secrets.DeleteAsync(SecretAccount, ct);
+                await _secrets.DeleteAsync(SecretAccount, ct).ConfigureAwait(false);
             else
-                await _secrets.SetAsync(SecretAccount, encoded, ct);
+                await _secrets.SetAsync(SecretAccount, encoded, ct).ConfigureAwait(false);
         }
         finally
         {

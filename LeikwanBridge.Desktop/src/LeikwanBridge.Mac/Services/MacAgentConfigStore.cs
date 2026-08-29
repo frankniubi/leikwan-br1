@@ -26,7 +26,7 @@ public sealed class MacAgentConfigStore
 
     public async Task<AgentConfig> LoadAsync(CancellationToken ct)
     {
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             AgentConfig config;
@@ -38,7 +38,7 @@ public sealed class MacAgentConfigStore
             {
                 try
                 {
-                    var encoded = await File.ReadAllBytesAsync(_paths.ConfigPath, ct);
+                    var encoded = await File.ReadAllBytesAsync(_paths.ConfigPath, ct).ConfigureAwait(false);
                     try
                     {
                         config = JsonSerializer.Deserialize<AgentConfig>(encoded, JsonOptions) ?? new AgentConfig();
@@ -54,10 +54,10 @@ public sealed class MacAgentConfigStore
                 }
             }
             ApplyMacPaths(config);
-            config.DesktopSessionToken = await _secrets.GetAsync("desktop-session", ct) ?? string.Empty;
+            config.DesktopSessionToken = await _secrets.GetAsync("desktop-session", ct).ConfigureAwait(false) ?? string.Empty;
             var clientId = EffectiveClientId(config);
             config.AgentToken = clientId > 0
-                ? await _secrets.GetAsync($"client-agent-{clientId}", ct) ?? string.Empty
+                ? await _secrets.GetAsync($"client-agent-{clientId}", ct).ConfigureAwait(false) ?? string.Empty
                 : string.Empty;
             return config;
         }
@@ -69,21 +69,21 @@ public sealed class MacAgentConfigStore
 
     public async Task SaveAsync(AgentConfig config, CancellationToken ct)
     {
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             var clientId = EffectiveClientId(config);
             if (string.IsNullOrEmpty(config.DesktopSessionToken))
-                await _secrets.DeleteAsync("desktop-session", ct);
+                await _secrets.DeleteAsync("desktop-session", ct).ConfigureAwait(false);
             else
-                await _secrets.SetAsync("desktop-session", config.DesktopSessionToken, ct);
+                await _secrets.SetAsync("desktop-session", config.DesktopSessionToken, ct).ConfigureAwait(false);
             if (clientId > 0)
             {
                 var account = $"client-agent-{clientId}";
                 if (string.IsNullOrEmpty(config.AgentToken))
-                    await _secrets.DeleteAsync(account, ct);
+                    await _secrets.DeleteAsync(account, ct).ConfigureAwait(false);
                 else
-                    await _secrets.SetAsync(account, config.AgentToken, ct);
+                    await _secrets.SetAsync(account, config.AgentToken, ct).ConfigureAwait(false);
             }
 
             var node = JsonSerializer.SerializeToNode(config, JsonOptions) as JsonObject
@@ -102,7 +102,7 @@ public sealed class MacAgentConfigStore
             var temporary = _paths.ConfigPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
-                await File.WriteAllBytesAsync(temporary, encoded, ct);
+                await File.WriteAllBytesAsync(temporary, encoded, ct).ConfigureAwait(false);
                 SetPrivateFileMode(temporary);
                 File.Move(temporary, _paths.ConfigPath, overwrite: true);
                 SetPrivateFileMode(_paths.ConfigPath);
