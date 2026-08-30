@@ -94,9 +94,10 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
             if (autoSelect)
             {
                 staticConfig["probe_target"] = "1.1.1.1:53";
-                staticConfig["probe_timeout_ms"] = 300;
-                staticConfig["probe_samples"] = 20;
-                staticConfig["probe_interval_ms"] = 100;
+                staticConfig["probe_duration_seconds"] = 30;
+                staticConfig["probe_timeout_ms"] = 800;
+                staticConfig["probe_samples"] = 30;
+                staticConfig["probe_interval_ms"] = 1000;
             }
             Directory.CreateDirectory(runtimeDirectory);
             File.WriteAllText(configPath, JsonSerializer.Serialize(staticConfig, new JsonSerializerOptions

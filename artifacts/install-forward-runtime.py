@@ -1152,7 +1152,7 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
     if transport not in {"tcp", "udp", "tcp+udp"}:
         raise RuntimeError("ultra transport invalid")
     control_socket = f"/run/ultra/forward-{forward_id}.control.sock"
-    selection_mode = normalize_ultra_selection_mode(agent_config.get("ultra_selection_mode", "single"))
+    selection_mode = normalize_ultra_selection_mode(agent_config.get("ultra_selection_mode", "auto"))
     auto_select = selection_mode == "auto"
     zone_aliases: dict[str, list[str]] = {}
     raw_aliases = access.get("zone_aliases", {})
@@ -1188,10 +1188,11 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         config_payload.update(
             {
                 "probe_target": "1.1.1.1:53",
-                "probe_timeout_ms": 300,
+                "probe_duration_seconds": 30,
+                "probe_timeout_ms": 800,
                 "probe_workers": 4,
-                "probe_samples": 20,
-                "probe_interval_ms": 100,
+                "probe_samples": 30,
+                "probe_interval_ms": 1000,
             }
         )
     if config_payload["target"] == "":

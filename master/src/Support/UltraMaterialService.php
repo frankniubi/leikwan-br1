@@ -351,6 +351,7 @@ final class UltraMaterialService
 
         $candidateOffset = max(0, min(7, $candidateOffset));
         $validCandidateIndex = 0;
+        $seenCandidates = [];
         foreach ($this->normalizeClientScopeLines($payload) as $scopeLine) {
             $sourceId = (string) $scopeLine['source_id'];
             $lineId = (int) $scopeLine['line_id'];
@@ -373,13 +374,22 @@ final class UltraMaterialService
                     (string) $forwardId,
                     $sourceId,
                     (string) $lineId,
-                    (string) ($material['generation'] ?? ''),
                     $ip,
+                    (string) $port,
                     (string) ($payload['transport'] ?? 'tcp+udp'),
                 ]);
                 if ($selectionRef === '') {
                     continue;
                 }
+                // The same relay socket may serve multiple logical lines.
+                // Deduplicate repeated material by its opaque selection
+                // reference, while preserving distinct credentials/lines for
+                // client-side quality probing.
+                $candidateKey = strtolower($ip) . ':' . $port . ':' . $selectionRef;
+                if (isset($seenCandidates[$candidateKey])) {
+                    continue;
+                }
+                $seenCandidates[$candidateKey] = true;
                 if ($validCandidateIndex++ < $candidateOffset) {
                     continue;
                 }

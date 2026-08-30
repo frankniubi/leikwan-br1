@@ -185,6 +185,34 @@ assertUltraContract(($candidate['user'] ?? '') === 'line-user', 'server candidat
 assertUltraContract(($candidate['credential'] ?? '') === '1234567890123456', 'server candidate credential missing');
 assertUltraContract(preg_match('/^[A-Za-z0-9_-]{16,128}$/', (string) ($candidate['selection_ref'] ?? '')) === 1, 'opaque selection reference missing');
 assertUltraContract(!array_key_exists('line_id', $candidate), 'server candidate exposed line number');
+$selectionRefBeforeRotation = (string) ($candidate['selection_ref'] ?? '');
+$rotationTicket = $materials->issueUploadTicket('source-a', [453]);
+$rotationAccepted = $materials->acceptSourceUpload('source-a', $rotationTicket, [[
+    'line_id' => 453,
+    'generation' => 'material-generation-2',
+    'acquired_at' => gmdate('Y-m-d\\TH:i:s\\Z', $now + 2),
+    'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $now + 1202),
+    'user' => 'line-user',
+    'credential' => '3234567890123456',
+    'relays' => [
+        ['ip' => '203.0.113.20', 'port' => 5438],
+        ['ip' => '203.0.113.21', 'port' => 5440],
+    ],
+    'probe' => ['ok' => true],
+]]);
+assertUltraContract($rotationAccepted === [453], 'rotated source material was not accepted');
+$rotatedCandidate = $materials->serverCandidateForClientToken(
+    (string) $grant['session_ticket'],
+    7,
+    'device-a',
+    42,
+    (string) $grant['policy_generation']
+);
+assertUltraContract(($rotatedCandidate['credential'] ?? '') === '3234567890123456', 'rotated source credential was not returned');
+assertUltraContract(
+    ($rotatedCandidate['selection_ref'] ?? '') === $selectionRefBeforeRotation,
+    'selection reference changed across credential generation rotation'
+);
 assertUltraContract(
     $materials->serverCandidateForClientToken((string) $grant['session_ticket'], 7, 'wrong-device', 42, (string) $grant['policy_generation']) === [],
     'token must be device scoped'

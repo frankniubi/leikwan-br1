@@ -125,9 +125,10 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             if (autoSelect)
             {
                 bootstrapConfig["probe_target"] = "1.1.1.1:53";
-                bootstrapConfig["probe_timeout_ms"] = 300;
-                bootstrapConfig["probe_samples"] = 20;
-                bootstrapConfig["probe_interval_ms"] = 100;
+                bootstrapConfig["probe_duration_seconds"] = 30;
+                bootstrapConfig["probe_timeout_ms"] = 800;
+                bootstrapConfig["probe_samples"] = 30;
+                bootstrapConfig["probe_interval_ms"] = 1000;
             }
             bootstrap = JsonSerializer.SerializeToUtf8Bytes(bootstrapConfig);
             _supervisor.StartProcess(
@@ -148,7 +149,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             var leaseDelivered = (leases.Count == 1
                 ? _leaseSender(socketPath, forward.ForwardId, leases[0], CancellationToken.None)
                 : _leaseBatchSender(socketPath, forward.ForwardId, leases, CancellationToken.None))
-                .WaitAsync(TimeSpan.FromSeconds(20))
+                .WaitAsync(TimeSpan.FromSeconds(50))
                 .GetAwaiter()
                 .GetResult();
             Log.Information("ultra lease delivery result={LeaseDelivered} for forward {ForwardId}", leaseDelivered, forward.ForwardId);

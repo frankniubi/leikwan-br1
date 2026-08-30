@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -115,7 +116,10 @@ func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpP
 		result.Err = targetErr
 		return result
 	}
-	session, err := armDatagram(lease, probeTimeout(config))
+	// Association setup scans the relay's bounded SID range and is distinct
+	// from the per-packet measurement timeout. Do not let an 800ms DNS reply
+	// timeout truncate a cold association before the quality window starts.
+	session, err := armDatagram(lease, probeAssociationTimeout(config))
 	if err != nil {
 		result.Err = err
 		return result
@@ -123,19 +127,39 @@ func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpP
 	defer session.Close()
 	packetTimeout := probeTimeout(config)
 	samples := config.ProbeSamples
-	if samples < 3 || samples > 64 {
-		samples = 20
+	if samples < 3 || samples > 300 {
+		samples = 30
 	}
 	interval := time.Duration(config.ProbeIntervalMillis) * time.Millisecond
-	if interval < 0 || interval > time.Second {
-		interval = 100 * time.Millisecond
+	if interval < 100*time.Millisecond || interval > 5*time.Second {
+		interval = time.Second
 	}
+	duration := probeDuration(config)
+	minimumSamples := int((duration + interval - 1) / interval)
+	if samples < minimumSamples {
+		samples = minimumSamples
+	}
+	deadline := time.Now().Add(duration)
 	readBuffer := make([]byte, 2048)
 	rtts := make([]time.Duration, 0, samples)
+	nextSend := time.Now()
 	for sequence := 0; sequence < samples; sequence++ {
 		if err := ctx.Err(); err != nil {
 			result.Err = err
 			return result
+		}
+		if remaining := time.Until(deadline); remaining <= 0 {
+			break
+		}
+		if wait := time.Until(nextSend); wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				result.Err = ctx.Err()
+				return result
+			case <-timer.C:
+			}
 		}
 		payload, transactionID := buildDNSProbePayload(uint16(sequence))
 		packet, packetErr := makeDatagramEnvelope(session.mode, session.sid, targetHost, targetPort, payload)
@@ -146,14 +170,18 @@ func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpP
 		}
 		result.Sent++
 		started := time.Now()
-		_ = session.remote.SetReadDeadline(time.Now().Add(packetTimeout))
+		readTimeout := packetTimeout
+		if remaining := time.Until(deadline); remaining < readTimeout {
+			readTimeout = remaining
+		}
+		_ = session.remote.SetReadDeadline(time.Now().Add(readTimeout))
 		if _, writeErr := session.remote.Write(packet); writeErr == nil {
 			for {
 				count, readErr := session.remote.Read(readBuffer)
 				if readErr != nil {
 					break
 				}
-				response, valid := unwrapDatagram(readBuffer[:count])
+				response, valid := unwrapDatagramForSession(readBuffer[:count])
 				if valid && probeResponseMatches(response, transactionID) {
 					result.Received++
 					rtts = append(rtts, time.Since(started))
@@ -161,15 +189,19 @@ func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpP
 				}
 			}
 		}
-		if interval > 0 && sequence+1 < samples {
-			timer := time.NewTimer(interval)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				result.Err = ctx.Err()
-				return result
-			case <-timer.C:
-			}
+		nextSend = nextSend.Add(interval)
+	}
+	// Keep the selection window's wall-clock length stable even when the
+	// configured sample count is reached just before the deadline. This makes
+	// the reported loss/jitter comparable across candidates.
+	if remaining := time.Until(deadline); remaining > 0 {
+		timer := time.NewTimer(remaining)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			result.Err = ctx.Err()
+			return result
+		case <-timer.C:
 		}
 	}
 	_ = session.remote.SetReadDeadline(time.Time{})
@@ -179,6 +211,18 @@ func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpP
 	}
 	result.MedianRTT, result.P95RTT, result.Jitter = summarizeRTTs(rtts)
 	return result
+}
+
+func probeAssociationTimeout(config Config) time.Duration {
+	value := config.ConnectTimeoutSecs
+	if value < 1 || value > 30 {
+		value = 5
+	}
+	configured := time.Duration(value) * time.Second
+	if configured < datagramAssociationSetupBudget {
+		return datagramAssociationSetupBudget
+	}
+	return configured
 }
 
 func probeResponseMatches(response []byte, transactionID uint16) bool {
@@ -269,22 +313,41 @@ func selectBestLeaseWithProbe(
 	if workers < 1 || workers > 4 {
 		workers = 4
 	}
-	if workers > len(leases) {
-		workers = len(leases)
+	// A Panel response can contain repeated material for one logical line, while
+	// distinct lines may intentionally share a relay IP:port. Use the opaque
+	// selection reference (and a credential-user fallback for test/legacy input)
+	// as the logical-leg identity so shared relays are not silently discarded.
+	unique := make([]ProviderLease, 0, len(leases))
+	originalIndices := make([]int, 0, len(leases))
+	seenEndpoints := make(map[string]struct{}, len(leases))
+	for index, lease := range leases {
+		key := leaseSelectionKey(lease)
+		if _, seen := seenEndpoints[key]; seen {
+			continue
+		}
+		seenEndpoints[key] = struct{}{}
+		unique = append(unique, lease)
+		originalIndices = append(originalIndices, index)
 	}
-	results := make([]udpProbeResult, len(leases))
+	if len(unique) == 0 {
+		return ProviderLease{}, udpProbeResult{}, errProbeUnavailable
+	}
+	if workers > len(unique) {
+		workers = len(unique)
+	}
+	results := make([]udpProbeResult, len(unique))
 	jobs := make(chan int)
 	done := make(chan struct{}, workers)
 	for range workers {
 		go func() {
 			defer func() { done <- struct{}{} }()
 			for index := range jobs {
-				results[index] = probe(ctx, leases[index], config, policy)
+				results[index] = probe(ctx, unique[index], config, policy)
 				results[index].Index = index
 			}
 		}()
 	}
-	for index := range leases {
+	for index := range unique {
 		jobs <- index
 	}
 	close(jobs)
@@ -295,5 +358,14 @@ func selectBestLeaseWithProbe(
 	if len(ranked) == 0 || !ranked[0].usable() {
 		return ProviderLease{}, ranked[0], fmt.Errorf("%w: all candidates failed", errProbeUnavailable)
 	}
-	return leases[ranked[0].Index], ranked[0], nil
+	return leases[originalIndices[ranked[0].Index]], ranked[0], nil
+}
+
+func leaseSelectionKey(lease ProviderLease) string {
+	endpoint := strings.ToLower(net.JoinHostPort(strings.TrimSpace(lease.IP), fmt.Sprint(lease.Port)))
+	ref := strings.TrimSpace(lease.SelectionRef)
+	if ref == "" {
+		ref = strings.ToLower(strings.TrimSpace(string(lease.User)))
+	}
+	return endpoint + "\x00" + ref
 }

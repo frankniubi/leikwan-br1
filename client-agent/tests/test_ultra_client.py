@@ -184,7 +184,7 @@ class UltraClientLeaseTests(unittest.TestCase):
         self.assertEqual("ul2_test", resolved[0]["_ultra_lease"]["lease_id"])
         self.assertNotIn("_ultra_lease", resolved[1])
 
-    def test_resolve_defaults_to_one_stable_candidate(self):
+    def test_resolve_defaults_to_bounded_candidate_batch(self):
         forward = {
             "forward_id": 42,
             "backend_mode": "ultra",
@@ -214,9 +214,9 @@ class UltraClientLeaseTests(unittest.TestCase):
             )
 
         body = request.call_args.args[3]
-        self.assertEqual("single", body["forwards"][0]["selection_mode"])
-        self.assertEqual(1, body["forwards"][0]["max_candidates"])
-        self.assertEqual(["ul2-first"], [item["lease_id"] for item in resolved[0]["_ultra_leases"]])
+        self.assertEqual("auto", body["forwards"][0]["selection_mode"])
+        self.assertEqual(4, body["forwards"][0]["max_candidates"])
+        self.assertEqual(["ul2-first", "ul2-second"], [item["lease_id"] for item in resolved[0]["_ultra_leases"]])
         self.assertEqual("ul2-first", resolved[0]["_ultra_lease"]["lease_id"])
 
     def test_resolve_can_opt_in_to_bounded_candidate_batch(self):
@@ -253,6 +253,33 @@ class UltraClientLeaseTests(unittest.TestCase):
         self.assertEqual("auto", body["forwards"][0]["selection_mode"])
         self.assertEqual(4, body["forwards"][0]["max_candidates"])
         self.assertEqual(["ul2-first", "ul2-second"], [item["lease_id"] for item in resolved[0]["_ultra_leases"]])
+
+    def test_resolve_keeps_distinct_lines_on_one_relay_endpoint(self):
+        forward = {
+            "forward_id": 42,
+            "backend_mode": "ultra",
+            "target": "203.0.113.10:443",
+            "transport": "udp",
+            "ultra_access": {
+                "session_ticket": "opaque-42",
+                "policy_generation": "a" * 64,
+            },
+        }
+        endpoint = {"ip": "203.0.113.20", "port": 5438}
+        response = {
+            "ok": True,
+            "leases": [
+                {"forward_id": 42, "lease_id": "line-a", "selection_ref": "ref-a", "endpoint": endpoint, "credential": {"user": "a"}},
+                {"forward_id": 42, "lease_id": "line-a-duplicate", "selection_ref": "ref-a", "endpoint": endpoint, "credential": {"user": "a"}},
+                {"forward_id": 42, "lease_id": "line-b", "selection_ref": "ref-b", "endpoint": endpoint, "credential": {"user": "b"}},
+            ],
+        }
+        with mock.patch.object(MODULE, "http_json", return_value=response):
+            resolved = MODULE.resolve_ultra_leases(
+                "https://panel.example.test", "client-agent-token", "device-a", [forward]
+            )
+
+        self.assertEqual(["line-a", "line-b"], [item["lease_id"] for item in resolved[0]["_ultra_leases"]])
 
     def test_normal_pull_contract_does_not_contain_ports_or_credentials(self):
         access = {"session_ticket": "opaque", "policy_generation": "a" * 64, "transport": "tcp+udp"}

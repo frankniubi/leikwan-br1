@@ -23,6 +23,14 @@ const keepPayloadHex = "\x00\x00\xa4\x64\x34\xc9\xb6\x2b\x82\xee\xd2\xa8\x7f\xaa
 
 const defaultProbeTarget = "1.1.1.1:53"
 
+const (
+	datagramCandidateFirst         = byte(0x20)
+	datagramCandidateLimit         = byte(0x40)
+	datagramCandidateTimeout       = 250 * time.Millisecond
+	datagramControlReplyTimeout    = 3 * time.Second
+	datagramAssociationSetupBudget = time.Duration(datagramCandidateLimit-datagramCandidateFirst)*datagramCandidateTimeout + datagramControlReplyTimeout + 2*time.Second
+)
+
 type Config struct {
 	ForwardID                int                 `json:"forward_id"`
 	ListenHost               string              `json:"listen_host"`
@@ -44,11 +52,20 @@ type Config struct {
 	LocationLockPath         string              `json:"location_lock_path"`
 	StatusPath               string              `json:"status_path"`
 	AutoSelect               bool                `json:"auto_select"`
+	ProbeDurationSecs        int                 `json:"probe_duration_seconds"`
 	ProbeTimeoutMillis       int                 `json:"probe_timeout_ms"`
 	ProbeWorkers             int                 `json:"probe_workers"`
 	ProbeSamples             int                 `json:"probe_samples"`
 	ProbeIntervalMillis      int                 `json:"probe_interval_ms"`
 	ZoneAliases              map[string][]string `json:"zone_aliases"`
+}
+
+func probeDuration(config Config) time.Duration {
+	value := config.ProbeDurationSecs
+	if value < 1 || value > 300 {
+		value = 30
+	}
+	return time.Duration(value) * time.Second
 }
 
 type Entry struct {
@@ -104,17 +121,27 @@ func appendAddress(buffer *bytes.Buffer, host string, port int) error {
 	return nil
 }
 
-func buildHandshake(user, credential string, command byte, host string, port int) ([]byte, error) {
+var currentHandshakeGreeting = []byte{5, 5, 0, 1, 2, 0x80, 0x83, 1}
+
+var legacyHandshakeGreeting = []byte{5, 3, 2, 0x80, 0x83, 1}
+
+func handshakeGreetingOrder(_ ProviderLease) [][]byte {
+	// Always try the current reference greeting first. A remembered legacy
+	// preference can become stale across relay upgrades and was shared by
+	// unrelated forwards that happened to use the same endpoint.
+	return [][]byte{currentHandshakeGreeting, legacyHandshakeGreeting}
+}
+
+// Kept as a compatibility no-op for callers from older tests/builds. Greeting
+// order is deliberately not persisted across connections.
+func rememberHandshakeGreeting(_ ProviderLease, _ []byte) {}
+
+func buildHandshakeWithGreeting(user, credential string, command byte, host string, port int, greeting []byte) ([]byte, error) {
 	if len(user) == 0 || len(user) > 255 || len(credential) == 0 || len(credential) > 255 {
 		return nil, errors.New("credential length invalid")
 	}
-	var greeting []byte
 	switch command {
 	case 1, 3:
-		// Both stream and native datagram auth use the five-method greeting
-		// captured from the reference client. The trailing 01 is the private
-		// username/password sub-negotiation version, not TLS.
-		greeting = []byte{5, 5, 0, 1, 2, 0x80, 0x83, 1}
 	default:
 		return nil, errors.New("unsupported handshake command")
 	}
@@ -129,6 +156,10 @@ func buildHandshake(user, credential string, command byte, host string, port int
 		return nil, err
 	}
 	return buffer.Bytes(), nil
+}
+
+func buildHandshake(user, credential string, command byte, host string, port int) ([]byte, error) {
+	return buildHandshakeWithGreeting(user, credential, command, host, port, currentHandshakeGreeting)
 }
 
 const streamPreludeSize = 14
@@ -150,8 +181,22 @@ func validStreamPrelude(prelude []byte) bool {
 }
 
 func readStreamAcks(conn net.Conn) (*bufio.Reader, error) {
+	return readStreamAcksWithTimeout(conn, 3*time.Second)
+}
+
+func readStreamAcksWithTimeout(conn net.Conn, timeout time.Duration) (*bufio.Reader, error) {
+	if timeout <= 0 {
+		return nil, context.DeadlineExceeded
+	}
+	return readStreamAcksUntil(conn, time.Now().Add(timeout))
+}
+
+func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, error) {
+	if time.Until(deadline) <= 0 {
+		return nil, context.DeadlineExceeded
+	}
 	reader := bufio.NewReaderSize(conn, 64*1024)
-	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(deadline); err != nil {
 		return nil, err
 	}
 	first := make([]byte, 2)
@@ -166,14 +211,14 @@ func readStreamAcks(conn net.Conn) (*bufio.Reader, error) {
 			return nil, err
 		}
 		if !(bytes.Equal(second, []byte{1, 0}) || bytes.Equal(second, []byte{5, 2})) {
-			return nil, errors.New("stream authentication rejected")
+			return nil, errStreamAuthenticationRejected
 		}
 		final := make([]byte, 10)
 		if _, err := io.ReadFull(reader, final); err != nil {
 			return nil, err
 		}
 		if final[2] == 0 {
-			return nil, errors.New("stream command rejected")
+			return nil, errStreamCommandRejected
 		}
 	} else {
 		// The Ultra TCP relay emits eight zero bytes followed by six bytes of
@@ -186,7 +231,7 @@ func readStreamAcks(conn net.Conn) (*bufio.Reader, error) {
 			return nil, err
 		}
 		if !validStreamPrelude(prelude) {
-			return nil, errors.New("stream prelude rejected")
+			return nil, errStreamPreludeRejected
 		}
 	}
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
@@ -203,25 +248,149 @@ func xorOne(value []byte) []byte {
 	return result
 }
 
-func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port)), timeout)
+func writeAll(writer io.Writer, payload []byte) error {
+	for len(payload) > 0 {
+		count, err := writer.Write(payload)
+		if count < 0 || count > len(payload) {
+			return errors.New("writer returned invalid count")
+		}
+		if count > 0 {
+			payload = payload[count:]
+		}
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
+
+func writeXor(writer io.Writer, payload []byte) error {
+	encoded := xorOne(payload)
+	defer clearBytes(encoded)
+	return writeAll(writer, encoded)
+}
+
+var (
+	errStreamAuthenticationRejected   = errors.New("stream authentication rejected")
+	errStreamCommandRejected          = errors.New("stream command rejected")
+	errStreamPreludeRejected          = errors.New("stream prelude rejected")
+	errDatagramControlReplyIncomplete = errors.New("datagram control reply incomplete")
+	errDatagramAssociationFailed      = errors.New("datagram association failed")
+)
+
+type handshakePhaseError struct {
+	cause error
+}
+
+func (err *handshakePhaseError) Error() string {
+	return err.cause.Error()
+}
+
+func (err *handshakePhaseError) Unwrap() error {
+	return err.cause
+}
+
+func markHandshakePhase(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &handshakePhaseError{cause: err}
+}
+
+func isRetryableHandshakeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errStreamAuthenticationRejected) ||
+		errors.Is(err, errStreamCommandRejected) ||
+		errors.Is(err, errStreamPreludeRejected) ||
+		errors.Is(err, errDatagramControlReplyIncomplete) ||
+		errors.Is(err, errDatagramAssociationFailed) {
+		return true
+	}
+	var phaseError *handshakePhaseError
+	if !errors.As(err, &phaseError) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError) && networkError.Timeout()
+}
+
+func dialStreamWithGreeting(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration, greeting []byte) (net.Conn, error) {
+	if timeout <= 0 {
+		return nil, fmt.Errorf("stream handshake: %w", context.DeadlineExceeded)
+	}
+	return dialStreamWithGreetingUntil(lease, targetHost, targetPort, time.Now().Add(timeout), greeting)
+}
+
+func dialStreamWithGreetingUntil(lease ProviderLease, targetHost string, targetPort int, deadline time.Time, greeting []byte) (net.Conn, error) {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, fmt.Errorf("stream handshake: %w", context.DeadlineExceeded)
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port)), remaining)
 	if err != nil {
 		return nil, fmt.Errorf("provider connect: %w", err)
 	}
-	handshake, err := buildHandshake(string(lease.User), string(lease.Password), 1, targetHost, targetPort)
+	handshake, err := buildHandshakeWithGreeting(string(lease.User), string(lease.Password), 1, targetHost, targetPort, greeting)
 	defer clearBytes(handshake)
 	if err == nil {
-		_, err = conn.Write(handshake)
+		// Bound a stalled provider write by the same attempt deadline used for
+		// connect/read. A TCP connection can be established while its first
+		// handshake write is still blocked by a full send buffer.
+		if time.Until(deadline) <= 0 {
+			err = context.DeadlineExceeded
+		} else if deadlineErr := conn.SetWriteDeadline(deadline); deadlineErr != nil {
+			err = deadlineErr
+		}
+	}
+	if err == nil {
+		err = writeAll(conn, handshake)
 	}
 	var reader *bufio.Reader
 	if err == nil {
-		reader, err = readStreamAcks(conn)
+		ackDeadline := deadline
+		if cap := time.Now().Add(3 * time.Second); cap.Before(ackDeadline) {
+			ackDeadline = cap
+		}
+		reader, err = readStreamAcksUntil(conn, ackDeadline)
 	}
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("stream handshake: %w", err)
+		return nil, fmt.Errorf("stream handshake: %w", markHandshakePhase(err))
 	}
+	_ = conn.SetWriteDeadline(time.Time{})
 	return &bufferedConn{Conn: conn, reader: reader}, nil
+}
+
+func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
+	if timeout <= 0 {
+		return nil, fmt.Errorf("stream handshake: %w", context.DeadlineExceeded)
+	}
+	deadline := time.Now().Add(timeout)
+	order := handshakeGreetingOrder(lease)
+	conn, err := dialStreamWithGreetingUntil(lease, targetHost, targetPort, deadline, order[0])
+	if err == nil {
+		return conn, nil
+	}
+	if !isRetryableHandshakeError(err) {
+		return conn, err
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, fmt.Errorf("stream handshake failed after legacy fallback: initial=%v; legacy=%w", err, context.DeadlineExceeded)
+	}
+	legacyConn, legacyErr := dialStreamWithGreetingUntil(lease, targetHost, targetPort, deadline, order[1])
+	if legacyErr == nil {
+		return legacyConn, nil
+	}
+	return nil, fmt.Errorf("stream handshake failed after legacy fallback: initial=%v; legacy=%w", err, legacyErr)
 }
 
 func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) error {
@@ -233,7 +402,7 @@ func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter,
 				return err
 			}
 			status.AddUsage(0, count)
-			if _, err := destination.Write(xorOne(buffer[:count])); err != nil {
+			if err := writeXor(destination, buffer[:count]); err != nil {
 				return err
 			}
 		}
@@ -332,7 +501,21 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 }
 
 func readControlReply(conn net.Conn) ([]byte, error) {
-	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+	return readControlReplyWithTimeout(conn, 3*time.Second)
+}
+
+func readControlReplyWithTimeout(conn net.Conn, timeout time.Duration) ([]byte, error) {
+	if timeout <= 0 {
+		return nil, context.DeadlineExceeded
+	}
+	return readControlReplyUntil(conn, time.Now().Add(timeout))
+}
+
+func readControlReplyUntil(conn net.Conn, deadline time.Time) ([]byte, error) {
+	if time.Until(deadline) <= 0 {
+		return nil, context.DeadlineExceeded
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
 		return nil, err
 	}
 	buffer := make([]byte, 0, 128)
@@ -351,7 +534,7 @@ func readControlReply(conn net.Conn) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return nil, errors.New("datagram control reply incomplete")
+	return nil, errDatagramControlReplyIncomplete
 }
 
 type DatagramSession struct {
@@ -384,24 +567,91 @@ func makeDatagramEnvelope(mode byte, sid []byte, targetIP string, targetPort int
 	return packet, nil
 }
 
-func unwrapDatagram(packet []byte) ([]byte, bool) {
-	if len(packet) < 10 || !bytes.Equal(packet[:4], []byte{0, 0, 0, 1}) {
-		return nil, false
-	}
-	return packet[10:], true
+type datagramResponseInfo struct {
+	addressType byte
+	address     []byte
+	port        uint16
+	payload     []byte
 }
 
-func isDatagramKeepaliveResponse(packet, payload []byte) bool {
-	reservedIP := []byte{2, 0, 0, 0}
-	if len(packet) >= 10 &&
-		((bytes.Equal(packet[4:8], reservedIP) && packet[8] == 0 && packet[9] == 0) ||
-			(packet[4] == 1 && bytes.Equal(packet[5:9], reservedIP) && packet[9] == 0)) {
-		return true
+// decodeDatagramResponse parses the provider's SOCKS UDP response envelope.
+// The native relay does not echo the client-side SID: the connected UDP socket
+// is the association boundary, while the response itself is a standard SOCKS
+// UDP frame (RSV/FRAG/ATYP/address/port/payload).
+func decodeDatagramResponse(packet []byte) (datagramResponseInfo, bool) {
+	if len(packet) < 4 || packet[0] != 0 || packet[1] != 0 || packet[2] != 0 {
+		return datagramResponseInfo{}, false
 	}
-	if len(packet) >= 16 && bytes.Equal(packet[10:14], reservedIP) && binary.BigEndian.Uint16(packet[14:16]) == 0 {
-		return true
+	info := datagramResponseInfo{addressType: packet[3]}
+	var addressEnd int
+	switch info.addressType {
+	case 1: // IPv4
+		if len(packet) < 10 {
+			return datagramResponseInfo{}, false
+		}
+		addressEnd = 8
+		info.address = packet[4:addressEnd]
+	case 3: // domain name
+		if len(packet) < 5 {
+			return datagramResponseInfo{}, false
+		}
+		domainLength := int(packet[4])
+		if domainLength == 0 {
+			return datagramResponseInfo{}, false
+		}
+		addressEnd = 5 + domainLength
+		if len(packet) < addressEnd+2 {
+			return datagramResponseInfo{}, false
+		}
+		info.address = packet[5:addressEnd]
+	case 4: // IPv6
+		if len(packet) < 22 {
+			return datagramResponseInfo{}, false
+		}
+		addressEnd = 20
+		info.address = packet[4:addressEnd]
+	default:
+		return datagramResponseInfo{}, false
 	}
-	return bytes.Equal(payload, []byte(keepPayloadHex))
+	if len(packet) < addressEnd+2 {
+		return datagramResponseInfo{}, false
+	}
+	info.port = binary.BigEndian.Uint16(packet[addressEnd : addressEnd+2])
+	info.payload = packet[addressEnd+2:]
+	return info, true
+}
+
+func unwrapDatagram(packet []byte) ([]byte, bool) {
+	info, valid := decodeDatagramResponse(packet)
+	if !valid {
+		return nil, false
+	}
+	return info.payload, true
+}
+
+func validDatagramSessionResponse(packet, sid []byte) bool {
+	// The reference response omits SID and instead returns the reserved
+	// association address. Validate the caller's SID shape, then require the
+	// complete reserved SOCKS envelope; payload bytes are intentionally opaque.
+	if len(sid) != 3 {
+		return false
+	}
+	info, valid := decodeDatagramResponse(packet)
+	return valid && info.addressType == 1 &&
+		bytes.Equal(info.address, []byte{2, 0, 0, 0}) && info.port == 0
+}
+
+func isDatagramKeepaliveResponse(packet, _ []byte) bool {
+	info, valid := decodeDatagramResponse(packet)
+	return valid && info.addressType == 1 &&
+		bytes.Equal(info.address, []byte{2, 0, 0, 0}) && info.port == 0
+}
+
+func unwrapDatagramForSession(packet []byte) ([]byte, bool) {
+	// A DatagramSession owns a connected UDP socket, so source association is
+	// enforced by the socket rather than by a SID field (which the reference
+	// relay does not include in responses).
+	return unwrapDatagram(packet)
 }
 
 func sendDatagramKeepalive(session *DatagramSession) error {
@@ -416,62 +666,180 @@ func sendDatagramKeepalive(session *DatagramSession) error {
 	return err
 }
 
-func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, error) {
+func openDatagramControl(lease ProviderLease, timeout time.Duration, greeting []byte) (*net.TCPConn, []byte, error) {
+	if timeout <= 0 {
+		return nil, nil, context.DeadlineExceeded
+	}
+	return openDatagramControlUntil(lease, time.Now().Add(timeout), greeting)
+}
+
+func openDatagramControlUntil(lease ProviderLease, deadline time.Time, greeting []byte) (*net.TCPConn, []byte, error) {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, nil, context.DeadlineExceeded
+	}
 	address := net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port))
-	conn, err := net.DialTimeout("tcp", address, timeout)
+	conn, err := net.DialTimeout("tcp", address, remaining)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("provider connect: %w", err)
 	}
 	control := conn.(*net.TCPConn)
-	handshake, err := buildHandshake(string(lease.User), string(lease.Password), 3, lease.IP, lease.Port)
+	handshake, buildErr := buildHandshakeWithGreeting(string(lease.User), string(lease.Password), 3, lease.IP, lease.Port, greeting)
 	defer clearBytes(handshake)
-	if err == nil {
-		_, err = control.Write(handshake)
+	if buildErr != nil {
+		control.Close()
+		return nil, nil, buildErr
 	}
-	var reply []byte
-	if err == nil {
-		reply, err = readControlReply(control)
+	if time.Until(deadline) <= 0 {
+		control.Close()
+		return nil, nil, fmt.Errorf("datagram handshake: %w", markHandshakePhase(context.DeadlineExceeded))
 	}
+	if err = control.SetWriteDeadline(deadline); err != nil {
+		control.Close()
+		return nil, nil, fmt.Errorf("datagram handshake: %w", markHandshakePhase(err))
+	}
+	if err = writeAll(control, handshake); err != nil {
+		control.Close()
+		return nil, nil, fmt.Errorf("datagram handshake: %w", markHandshakePhase(err))
+	}
+	readDeadline := deadline
+	if cap := time.Now().Add(datagramControlReplyTimeout); cap.Before(readDeadline) {
+		readDeadline = cap
+	}
+	reply, err := readControlReplyUntil(control, readDeadline)
 	if err != nil {
 		control.Close()
-		return nil, err
+		return nil, nil, fmt.Errorf("datagram handshake: %w", markHandshakePhase(err))
 	}
+	_ = control.SetWriteDeadline(time.Time{})
+	return control, reply, nil
+}
+
+func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, error) {
+	if timeout <= 0 {
+		return nil, context.DeadlineExceeded
+	}
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	var firstErr error
+	fallbackTried := false
+	for index, greeting := range handshakeGreetingOrder(lease) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		if index == 1 {
+			fallbackTried = true
+		}
+		control, reply, err := openDatagramControlUntil(lease, deadline, greeting)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			lastErr = err
+			if !isRetryableHandshakeError(err) {
+				return nil, err
+			}
+			continue
+		}
+		session, err := armDatagramWithControl(lease, control, reply, deadline)
+		if err == nil {
+			return session, nil
+		}
+		lastErr = err
+		if firstErr == nil {
+			firstErr = err
+		}
+		if !isRetryableHandshakeError(err) {
+			return nil, err
+		}
+	}
+	if lastErr == nil {
+		lastErr = context.DeadlineExceeded
+	}
+	if fallbackTried && firstErr != nil {
+		return nil, fmt.Errorf("datagram handshake failed after greeting fallback: initial=%v; legacy=%w", firstErr, lastErr)
+	}
+	return nil, fmt.Errorf("datagram handshake failed after greeting fallback: %w", lastErr)
+}
+
+func armDatagramWithControl(lease ProviderLease, control *net.TCPConn, reply []byte, deadline time.Time) (*DatagramSession, error) {
 	marker := bytes.LastIndex(reply, []byte{4, 1, 1, 0, 1})
 	if marker < 0 || marker+10 > len(reply) {
 		control.Close()
-		return nil, errors.New("datagram control marker missing")
+		return nil, errDatagramControlReplyIncomplete
 	}
 	reply3 := reply[marker+5 : marker+8]
 	remotePort := int(binary.BigEndian.Uint16(reply[marker+8:marker+10]) ^ 0x0101)
 	remoteAddress, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(lease.IP, fmt.Sprint(remotePort)))
-	if err != nil {
+	if err != nil || remotePort < 1 || remotePort > 65535 {
 		control.Close()
-		return nil, err
-	}
-	remote, err := net.DialUDP("udp4", nil, remoteAddress)
-	if err != nil {
-		control.Close()
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("datagram relay port invalid")
 	}
 	mode := reply3[0] ^ 1
 	sidPrefix := []byte{reply3[1] ^ 1, reply3[2] ^ 1}
 	keep := []byte(keepPayloadHex)
 	buffer := make([]byte, 2048)
-	for candidate := byte(0x20); candidate < 0x40; candidate++ {
+	for candidate := datagramCandidateFirst; candidate < datagramCandidateLimit; candidate++ {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
 		sid := append(append([]byte(nil), sidPrefix...), candidate)
-		packet, _ := makeDatagramEnvelope(mode, sid, "2.0.0.0", 0, keep)
-		_ = remote.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
-		if _, err := remote.Write(packet); err != nil {
+		// Use one socket per candidate. A response that arrives late for a
+		// rejected SID then remains queued on the closed socket and cannot arm
+		// the next candidate's association.
+		remote, dialErr := net.DialUDP("udp4", nil, remoteAddress)
+		if dialErr != nil {
 			continue
 		}
-		if _, err := remote.Read(buffer); err == nil {
-			_ = remote.SetReadDeadline(time.Time{})
-			return &DatagramSession{control: control, remote: remote, mode: mode, sid: sid}, nil
+		packet, packetErr := makeDatagramEnvelope(mode, sid, "2.0.0.0", 0, keep)
+		if packetErr != nil {
+			remote.Close()
+			continue
 		}
+		candidateTimeout := datagramCandidateTimeout
+		if remaining < candidateTimeout {
+			candidateTimeout = remaining
+		}
+		candidateDeadline := time.Now().Add(candidateTimeout)
+		if candidateDeadline.After(deadline) {
+			candidateDeadline = deadline
+		}
+		_ = remote.SetWriteDeadline(candidateDeadline)
+		_ = remote.SetReadDeadline(candidateDeadline)
+		if _, writeErr := writeAllToUDP(remote, packet); writeErr != nil {
+			remote.Close()
+			continue
+		}
+		for {
+			count, readErr := remote.Read(buffer)
+			if readErr != nil {
+				break
+			}
+			if validDatagramSessionResponse(buffer[:count], sid) {
+				_ = remote.SetReadDeadline(time.Time{})
+				_ = remote.SetWriteDeadline(time.Time{})
+				return &DatagramSession{control: control, remote: remote, mode: mode, sid: sid}, nil
+			}
+		}
+		remote.Close()
 	}
-	remote.Close()
 	control.Close()
-	return nil, errors.New("datagram session could not be established")
+	return nil, fmt.Errorf("%w: session response rejected", errDatagramAssociationFailed)
+}
+
+func writeAllToUDP(conn *net.UDPConn, payload []byte) (int, error) {
+	// UDP writes are atomic; keep this helper separate so callers cannot
+	// accidentally treat a short datagram write as a successful handshake.
+	count, err := conn.Write(payload)
+	if err == nil && count != len(payload) {
+		return count, io.ErrShortWrite
+	}
+	return count, err
 }
 
 func resolveIPv4(host string) (string, error) {
@@ -719,8 +1087,11 @@ func serveUDPOnConn(
 					closeAssociation(key, association)
 					return
 				}
-				payload, valid := unwrapDatagram(readBuffer[:responseCount])
-				if !valid || isDatagramKeepaliveResponse(readBuffer[:responseCount], payload) || len(payload) == 0 {
+				if isDatagramKeepaliveResponse(readBuffer[:responseCount], nil) {
+					continue
+				}
+				payload, valid := unwrapDatagramForSession(readBuffer[:responseCount])
+				if !valid || len(payload) == 0 {
 					continue
 				}
 				if store.Limiter().Consume(len(payload)) != nil {
@@ -837,7 +1208,7 @@ func serveUDPOnConn(
 				return
 			}
 			started := time.Now()
-			next, armErr := armDatagram(lease, time.Duration(config.ConnectTimeoutSecs)*time.Second)
+			next, armErr := armDatagram(lease, probeAssociationTimeout(config))
 			<-setupSlots
 			lease.wipe()
 			if armErr != nil {
@@ -886,7 +1257,7 @@ func serveUDPOnConn(
 			lease := snapshot.Lease
 			selectionRef := lease.SelectionRef
 			started := time.Now()
-			next, armErr := armDatagram(lease, time.Duration(config.ConnectTimeoutSecs)*time.Second)
+			next, armErr := armDatagram(lease, probeAssociationTimeout(config))
 			<-setupSlots
 			lease.wipe()
 			if armErr != nil {
@@ -1164,11 +1535,14 @@ func main() {
 	if config.ProbeWorkers < 1 || config.ProbeWorkers > 4 {
 		config.ProbeWorkers = 4
 	}
-	if config.ProbeSamples < 3 || config.ProbeSamples > 64 {
-		config.ProbeSamples = 20
+	if config.ProbeDurationSecs < 1 || config.ProbeDurationSecs > 300 {
+		config.ProbeDurationSecs = 30
 	}
-	if config.ProbeIntervalMillis < 0 || config.ProbeIntervalMillis > 1000 {
-		config.ProbeIntervalMillis = 100
+	if config.ProbeSamples < 3 || config.ProbeSamples > 300 {
+		config.ProbeSamples = 30
+	}
+	if config.ProbeIntervalMillis < 100 || config.ProbeIntervalMillis > 5000 {
+		config.ProbeIntervalMillis = 1000
 	}
 	if _, _, err := parseTarget(config.Target); err != nil {
 		log.Fatal(err)
